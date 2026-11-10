@@ -4,7 +4,7 @@ import { link, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
-import { decidedFromJournals, parsePolicyLedger, SELLER_ISSUANCE_JOURNALS, SELLER_LEDGER_HEADER_FORMAT, SELLER_LEDGER_LINE_FORMATS, sellerIssuanceJournalIds, serializedPolicy } from './operator-approval.mjs';
+import { cutTornContextLine, decidedFromJournals, parsePolicyLedger, SELLER_ISSUANCE_JOURNALS, SELLER_LEDGER_HEADER_FORMAT, SELLER_LEDGER_LINE_FORMATS, sellerIssuanceJournalIds, serializedPolicy } from './operator-approval.mjs';
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&JSON.stringify(Object.keys(value).sort())===JSON.stringify([...keys].sort());
 
 // Seller records (sellerApproval.purchaseSource "seller"): what the bound
@@ -88,6 +88,12 @@ async function bindSellerIssuanceJournals({directory,names,evidenceDirectory,bin
   // Bound journals open first: a missing, recreated or swapped one refuses
   // before the ledger is read.
   let journals=binding?openJournals(binding.journals):null;
+  // A recognizable torn context line at the end of the ledger never returned, so
+  // it is cut under the ledger lock (held by the caller) before the ledger is
+  // read. A tail too short to tell from the start of another line (for example
+  // only `{"format":"dacs-`) is kept, the ledger refuses below, and the
+  // operator repairs it.
+  await cutTornContextLine(ledgerPath);
   // The ledger's exact bytes: an existing one is rewritten whole below.
   let kept=null;
   try{kept=await readFile(ledgerPath);}catch(error){if(error.code!=='ENOENT')throw error;}

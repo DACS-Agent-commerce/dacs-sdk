@@ -6397,6 +6397,223 @@
       ]
     },
     {
+      "delta": "D11",
+      "subject": "delta(client): D11 cancel ends a purchase on the nonce slot only when the read-back body matches the slot hash, payer and nonce",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "93ec1d4ba6bf5285c5da423817b610e2f36b1647",
+          "after": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd"
+        }
+      ]
+    },
+    {
+      "delta": "D33",
+      "subject": "delta(client): D33 report a wallet-lock holder's falsy rejection as a failure",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a284092528a7f3564c8def91dd5fee530ae04b93",
+          "after": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-rejections.test.mjs",
+          "before": null,
+          "after": "4f259862831e602f05118d5aa005a73e7d676320"
+        }
+      ]
+    },
+    {
+      "delta": "D23",
+      "subject": "delta(client): D23 add executable tests for the completion readiness inspector",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-readiness.test.mjs",
+          "before": null,
+          "after": "20dddc4fc681b0e2aac6c9e0a59da9f7b5734b3a"
+        }
+      ]
+    },
+    {
+      "delta": "D23",
+      "subject": "delta(client): D23 completion readiness tests: keep the pin-mismatch copy in a temp folder, drop an unused binding, note helper-pinning assertions",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-readiness.test.mjs",
+          "before": "20dddc4fc681b0e2aac6c9e0a59da9f7b5734b3a",
+          "after": "911e9637bf0fd857efd07b6952edc414cc21a2f4"
+        }
+      ]
+    },
+    {
+      "delta": "D23",
+      "subject": "delta(client): D23 completion readiness tests: keep the assertions on the inspector's own refusals",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-readiness.test.mjs",
+          "before": "911e9637bf0fd857efd07b6952edc414cc21a2f4",
+          "after": "923878fe95df659ad6e0e363fce339d4a826a074"
+        }
+      ]
+    },
+    {
+      "delta": "D26",
+      "subject": "delta(client): D26 import PURCHASE_LIMITS in config so loadConfig can read it",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/config.mjs",
+          "before": "ecf6e88e28749d3b52dc37cd1c12405e9b2720db",
+          "after": "be9bb71e94aaacb2ffb8155d76070feb0032b3b1"
+        },
+        {
+          "path": "packages/dacs-client/test/config-nonce-slot-proof.test.mjs",
+          "before": "eaa78ba0cb607ed12ef8a6f9a2410f574b624a4d",
+          "after": "e18570d5cd4b514b98c9b4b8b8177ff7eba80c12"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e807dbf34a72b959905418192a4f144560cea331",
+      "subject": "fix(client): publish the first proposal after a signed unknown-job read",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+          "before": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b",
+          "after": "8d7ca761300e216e0785b7e91aee208e39a3a12d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e282e93ac2fcd26bb666d0981fd23c10a9cffb53",
+      "subject": "fix(client): wait for the response verifier in the buyer seller client",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "3b37b663b20165b7a8a14a8a25ee62bf662cc5e6",
+          "after": "eb89bc99364dc00d325530e5249981917b9cdb87"
+        }
+      ]
+    },
+    {
+      "delta": "D27",
+      "subject": "delta(client): D27 operator approver re-checks the request bytes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/devnet-demo/operator-approval.mjs",
+          "before": "14fe5209bdc2fff3a21ce4a13d12756fef1ce091",
+          "after": "05e2fec203bfa93fcc9e7f833b976d641b2a1cde"
+        },
+        {
+          "path": "packages/dacs-client/test/operator-approval-request-bytes.test.mjs",
+          "before": null,
+          "after": "da57bb91604b30e2b60a4edb7011a473fd9e5d3a"
+        }
+      ]
+    },
+    {
+      "delta": "D31",
+      "subject": "delta(client): D31 pin the finality profile literal refusal",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": null,
+          "after": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5"
+        }
+      ]
+    },
+    {
+      "delta": "D31",
+      "subject": "delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5",
+          "after": "565c664bbc629707665dd65c3889ac5e08ec2d09"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 reserve each purchase job id with a unique column and a bounded retry",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "652e68fa1ad0a799754f35d604bac2ffc1376f0e",
+          "after": "615dbe0271963189f792d967d3b1acf6c2fc678f"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": "557ea59e906125decb9c56d5b2322a1d30af3321",
+          "after": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd",
+          "after": "3873c4245efd90c76e2af08f56b2d609e391cf65"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+          "before": "8b91a598be9918d7177fdb04c4c35cdf9d41df0b",
+          "after": "a4a556aea31469b10698a07d3180bbbc8ef37d03"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": null,
+          "after": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 require a unique job_id index at construction",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "3873c4245efd90c76e2af08f56b2d609e391cf65",
+          "after": "06748b818244cb1924ebb4fcc93ad5a23e99b848"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b",
+          "after": "c04831cefe549f5a2c89052f0400bcdecf8b52a7"
+        },
+        {
+          "path": "packages/dacs-client/test/readme-contract.test.mjs",
+          "before": "0f7e7d6618f09f8377893affcdd5449425e4646f",
+          "after": "2f55d19d20546e56045fdac4ccb201635a30a0b5"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 tighten job id comments and README wording",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "06748b818244cb1924ebb4fcc93ad5a23e99b848",
+          "after": "4a6010356dbd967ae75c68fb30d97060fb9f0f65"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 read schema rows with plain numbers and keep the last collision as cause",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "4a6010356dbd967ae75c68fb30d97060fb9f0f65",
+          "after": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "c04831cefe549f5a2c89052f0400bcdecf8b52a7",
+          "after": "6841b7b79dece95e51c8b46abf549d0370fb4789"
+        }
+      ]
+    },
+    {
       "delta": "D25",
       "subject": "delta(client): D25 accept the reviewed testnet block layout",
       "files": [

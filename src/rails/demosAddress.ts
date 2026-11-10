@@ -9,7 +9,7 @@ import { canonicalDemosAgentPublicKey } from "../identity/demos.js";
  * `cci-xm:demos:<subchain>:0x<64-hex>` profile. ClaimReference parameters do not
  * contribute to identity and are ignored after the complete native address.
  *
- * STRICT (#32): a non-Demos scheme that merely *ends* in 64 hex — `did:ethr:…`,
+ * STRICT: a non-Demos scheme that merely *ends* in 64 hex — `did:ethr:…`,
  * `cci-xm:evm:mainnet:0x…`, `web2:…:…` — is NOT Demos-bound and returns null, so
  * pay-dem refuses to transfer rather than treating a foreign-scheme claim as an
  * intrinsic Demos destination. A claim that embeds no Demos key returns null too.

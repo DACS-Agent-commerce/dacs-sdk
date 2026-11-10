@@ -2885,6 +2885,39 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(h.counts.delivery).toBe(1);
   });
 
+  test.each([undefined, null, 0, "", false, 0n, NaN, new Error("renewal failed")])("stops delivery after a heartbeat rejection with %s", async (reason) => {
+    vi.useFakeTimers();
+    try {
+      const h = durableHarness();
+      const renew = h.store.renewLease.bind(h.store);
+      let rejectRenewal = false;
+      vi.spyOn(h.store, "renewLease").mockImplementation(async (input) => {
+        if (rejectRenewal) { rejectRenewal = false; throw reason; }
+        return renew(input);
+      });
+      const submit = h.deps.submitDelivery;
+      h.deps.submitDelivery = async (input) => {
+        rejectRenewal = true;
+        await vi.advanceTimersByTimeAsync(40_000);
+        return submit(input);
+      };
+      await expect(runDurableFulfilmentCore(h.fixture.request, h.deps, h.durability))
+        .resolves.toMatchObject({ decision: "indeterminate", code: "delivery-submission-ambiguous" });
+      expect(h.counts.delivery).toBe(1);
+      expect(h.counts.evidence).toBe(0);
+      expect(h.counts.final).toBe(0);
+      const loaded = await h.store.load("01J8ME0SXKQ4T9V2RC5HJ6WX7D");
+      expect(loaded.status).toBe("ok");
+      if (loaded.status !== "ok") throw new Error("session missing");
+      expect(loaded.record.checkpoints.some((entry) =>
+        entry.key.startsWith("seller:delivery:") && entry.stage === "outcome",
+      )).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("stale generation cannot commit or repeat an in-flight delivery effect", async () => {
     const h = durableHarness();
     let now = 0;

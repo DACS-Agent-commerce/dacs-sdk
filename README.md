@@ -51,7 +51,7 @@ and readers must use `ComponentSignedArtifact`,
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
 | **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core |
-| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
+| **Settle** | `payDemSettle` · `withRecoveredAttempts` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
 Agreement readers can call `validateFixedPriceAgreementBinding()` with the
@@ -617,9 +617,11 @@ contain the signed validity body, so it cannot reconstruct or authorize an
 exact resubmission; neither re-signing nor rebroadcasting is a permitted recovery
 action.
 
-`createPayDemRail` exposes the same boundary as the optional
-`journalPreparedTransfer` hook. Ordinary non-funded callers can omit it, but the
-low-level rail then provides only in-process hash-first observation. Across a
+`createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
+hook. A direct caller can omit it, but `runSession` refuses a pay-dem session
+whose `settle` or `resumeSettlement` bridge was built over a rail without it.
+Without the hook the low-level rail provides only in-process hash-first
+observation. Across a
 process restart, at-most-once settlement still requires `payDemSettle` with a
 durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
 additionally requires an application-owned durable journal or equivalent rail
@@ -690,10 +692,45 @@ npm run test:live:pay-dem
 `(listingId, listingVersion, contentHash)` tuple used by the session. To resume
 an interrupted session safely, pass the prior `jobId` and the same authenticated
 Listing to `runSession`; anchored artifacts are reused and the Listing remains
-pinned. No-repayment across a whole-process crash additionally requires a durable
-`sessionStore` and a rail-idempotent `resumeSettlement` implementation—a job id
-alone cannot prove whether a lost rail response moved value. The legacy native-ref
-input remains available for callers with a separate trusted pin.
+pinned. A `jobId` you pass is always a resume. A resumed run reuses anchored
+settlement evidence; only a successful native DEM (`pay-dem`) settlement still
+calls `resumeSettlement` to confirm the transaction on chain. When no evidence
+is anchored but a durable `sessionStore` records a settled outcome, the run
+reuses it without calling `resumeSettlement`, except for native DEM success.
+An unresolved intent or ambiguous outcome requires `resumeSettlement`. With no
+settled outcome on record, a resume calls `resumeSettlement` even when there is
+no `sessionStore`, no record of the job, or an Agreement anchored by an earlier
+run: none of those conditions proves the earlier run did not pay. A resume that
+needs `resumeSettlement` is refused when it is absent.
+
+Every `resumeSettlement` request is recovery-only and must never start a fresh
+payment. It must use a function an SDK bridge returned (`payDemSettle`,
+`evmErc20Settle`, `x402Settle`, or `withRecoveredAttempts` around one of them);
+any other function is refused before payment. The bridge adopts or reconciles
+what the rail's own idempotency store recorded. With no unresolved intent for
+the job, it refuses and leaves the rail's log unchanged: a crash before the rail
+recorded intent, or a release after a not-invoked attempt, needs operator
+action. A refused recovery can still write a session checkpoint, and recovering
+an expired unresolved intent takes a current `reconcile` lease. Recovery needs
+a store with `recover()` over a settlement log with `claimExistingIntent`
+(`createIdempotencyStore` over `createInMemorySettlementLog()` has both); a
+custom log without it cannot recover.
+
+A first run omits `jobId`; keep the generated job id from the `settle` request
+or `sessionStore` before anything can fail. A first run takes its id from
+`deps.newJobId`, which must return a fresh id on every call. After a crash, pass
+the id as `jobId`; never rerun the first run with it. A first run whose Agreement
+for that id is already anchored settles only by recovery, whatever the
+`sessionStore` holds. Two concurrent first runs that share one id and have
+separate stores can still both pay; a shared `sessionStore` directory prevents
+that. A restart that finds an intent and no recorded outcome refuses instead
+of paying again; for a pay-dem purchase,
+[the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)
+finishes it from the prepared-transfer journal. For durable session checkpoints
+and worker coordination, use a durable `sessionStore` and rail-idempotent
+`resumeSettlement` backed by durable rail state. A job id alone cannot prove
+whether a lost rail response moved value. The legacy native-ref input remains
+available for callers with a separate trusted pin.
 
 `publishListing` requires `AgentConfig.wallet` and
 `AgentConfig.bindings.publisher`, and fails before anchoring when either write
@@ -993,11 +1030,12 @@ dacs doctor --json --rpc-file ./rpc.url
 dacs doctor --json --wallet-secret-file ./wallet.secret --rpc https://node2.demos.sh
 ```
 
-The first slice checks runtime/package state, optional RPC reachability, secret
-redaction, and rail availability without funding, transferring, anchoring, or
-broadcasting. StorageProgram binding resolution and read-visible anchor
-completion currently report `blocked` until the resolver/completion work lands
-(tracked by dacs-sdk #58 and #57).
+It checks runtime/package state, optional RPC reachability, secret redaction,
+and rail availability without funding, transferring, anchoring, or
+broadcasting. Five checks are not done by doctor and always report `blocked`:
+wallet balance, wallet nonce, StorageProgram binding resolution, read-visible
+anchor completion, and cost estimate. Each one's remediation says why, or which
+API to use instead (for example `anchorAndWait` for anchor completion).
 
 With `--rpc`, the `node.build` check reads the node's `GET /version` (4 KiB
 limit, 5 second deadline, redirects not followed) and compares its commit with
@@ -1024,14 +1062,13 @@ does not appear in shell history or process listings.
 
 Exit codes are stable:
 
-- `0`: all required checks passed or warned. In this first slice, required
-  funding/storage/cost checks are still `blocked`, so a complete preflight is
-  expected to exit `5` until those follow-up checks are implemented.
+- `0`: all required checks passed or warned. Because the five checks above
+  always report `blocked`, a run with no failed check exits `5`.
 - `1`: at least one non-RPC check failed.
 - `2`: invalid CLI usage.
 - `3`: requested RPC check failed.
 - `4`: unexpected doctor internal error.
-- `5`: required checks are still blocked/incomplete.
+- `5`: at least one required check is `blocked` (not done by doctor).
 
 ### Canonical JSON compatibility
 

@@ -14,7 +14,10 @@ import {
 import * as root from "../../src/index.js";
 import type { DemosWriteEvidence } from "../../src/substrate/index.js";
 import * as substrate from "../../src/substrate/index.js";
-import { demosTransactionContentMatches } from "../../src/substrate/demosWriteEvidence.js";
+import {
+  demosTransactionContentDifferencePaths,
+  demosTransactionContentMatches,
+} from "../../src/substrate/demosWriteEvidence.js";
 
 const artifact = { hello: "world" };
 const artifactHash = contentHash(artifact);
@@ -60,6 +63,48 @@ const evidence: DemosWriteEvidence = {
     observedAt: 123,
   },
 };
+
+describe("Demos transaction content comparison", () => {
+  it.each([
+    ["", ""],
+    ["", "tx-abc"],
+    ["tx-abc", ""],
+    ["tx-abc", "tx-abc"],
+  ])("accepts signed txhash %j and canonical txhash %j", (signedHash, canonicalHash) => {
+    const signed = { gcr_edits: [{ type: "nonce", amount: 1, txhash: signedHash }] };
+    const canonical = { gcr_edits: [{ type: "nonce", amount: 1, txhash: canonicalHash }] };
+
+    expect(demosTransactionContentDifferencePaths(signed, canonical, "tx-abc")).toEqual([]);
+    expect(demosTransactionContentMatches(signed, canonical, "tx-abc")).toBe(true);
+  });
+
+  it.each([
+    ["another canonical hash", { txhash: "" }, { txhash: "other-tx" }],
+    ["a missing canonical key", { txhash: "" }, {}],
+    ["a missing signed key and an empty canonical hash", {}, { txhash: "" }],
+    ["a missing signed key and the canonical transaction hash", {}, { txhash: "tx-abc" }],
+    ["a numeric canonical hash", { txhash: "" }, { txhash: 1 }],
+    ["a null canonical hash", { txhash: "" }, { txhash: null }],
+    ["another signed hash", { txhash: "other-tx" }, { txhash: "" }],
+    ["matching unrelated hashes", { txhash: "other-tx" }, { txhash: "other-tx" }],
+  ])("rejects %s at the edit's txhash path", (_label, signedEdit, canonicalEdit) => {
+    const signed = { gcr_edits: [signedEdit] };
+    const canonical = { gcr_edits: [canonicalEdit] };
+
+    expect(demosTransactionContentDifferencePaths(signed, canonical, "tx-abc"))
+      .toContain("content.gcr_edits[0].txhash");
+    expect(demosTransactionContentMatches(signed, canonical, "tx-abc")).toBe(false);
+  });
+
+  it("still compares the other edit fields exactly", () => {
+    const signed = { gcr_edits: [{ type: "nonce", amount: 1, txhash: "" }] };
+    const canonical = { gcr_edits: [{ type: "balance", amount: 1, txhash: "tx-abc" }] };
+
+    expect(demosTransactionContentDifferencePaths(signed, canonical, "tx-abc"))
+      .toEqual(["content.gcr_edits[0].type"]);
+    expect(demosTransactionContentMatches(signed, canonical, "tx-abc")).toBe(false);
+  });
+});
 
 describe("Demos portable write evidence", () => {
   it("uses one proof hash for signed and canonical Demos wire projections", () => {
