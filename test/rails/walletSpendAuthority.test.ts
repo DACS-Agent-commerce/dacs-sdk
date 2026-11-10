@@ -1147,4 +1147,23 @@ describe("canonical wallet identity", () => {
     await expect(wallet.reserve(reservation("two", { wallet: `0x${"4d".repeat(20)}` })))
       .rejects.toThrow(/invalid shape or scope/);
   });
+
+  test("a retry of one reservation id in another spelling of the wallet finds the held claim", async () => {
+    const wallet = authority({});
+    const first = await wallet.reserve(reservation("one", { wallet: WALLET }));
+    expect(first.status).toBe("reserved");
+    for (const spelling of [BARE, BARE.toUpperCase(), MIXED_CASE, `0X${BARE.toUpperCase()}`]) {
+      expect(await wallet.reserve(reservation("one", { wallet: spelling }))).toMatchObject({
+        status: "held",
+        stage: "reserved",
+        bindingHash: first.status === "reserved" ? first.permit.bindingHash : "",
+      });
+    }
+    expect(await wallet.inspect()).toMatchObject({ activeEffects: 1 });
+
+    await expect(wallet.reserve(reservation("one", { wallet: `0x${"4d".repeat(20)}` })))
+      .rejects.toThrow(/invalid shape or scope/);
+    expect(await wallet.reserve(reservation("one", { wallet: BARE, payee: "seller-2" })))
+      .toMatchObject({ status: "conflict" });
+  });
 });

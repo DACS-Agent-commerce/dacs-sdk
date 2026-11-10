@@ -810,7 +810,10 @@ export function validateWalletSpendAuthorityOperationV1(
 }
 
 function bindingHash(reservation: Readonly<WalletSpendReservationV1>): string {
-  return sha256Hex(`dacs-wallet-spend-reservation:v1:${canonicalize(reservation)}`);
+  const wallet = canonicalWalletSpendWalletV1(reservation.wallet);
+  return sha256Hex(
+    `dacs-wallet-spend-reservation:v1:${canonicalize({ ...reservation, wallet })}`,
+  );
 }
 
 const emptyState = (policyHash: string): WalletSpendStateV1 => ({

@@ -420,6 +420,7 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
   }
   const policy = captureWalletSpendPolicyV1(input.policy);
   const policyHash = dacsWalletSpendPolicyHashV1(policy);
+  const requestWallet = input.policy.wallet;
   let latestRevision = -1;
 
   const send = async (operation: RemoteOperation, payload: unknown): Promise<unknown> => {
@@ -428,7 +429,7 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
       protocolVersion: "1",
       operationId,
       policyHash,
-      wallet: policy.wallet,
+      wallet: requestWallet,
       chainId: policy.chainId,
       operation,
       payload,
@@ -611,6 +612,7 @@ export async function createDacsRemoteWalletSpendAuthorityV2(input: Readonly<{
   const policy = captureWalletSpendPolicyV1(input.policy);
   const policyHash = dacsWalletSpendPolicyHashV1(policy);
   const lineageKey = dacsWalletSpendLineageKeyV1(policy.wallet, policy.chainId);
+  const requestWallet = input.policy.wallet;
   const pin = Object.freeze({
     authorityId: input.authorityId,
     epoch: input.epoch,
@@ -655,10 +657,10 @@ export async function createDacsRemoteWalletSpendAuthorityV2(input: Readonly<{
     const request: RemoteRequestV2 = {
       protocolVersion: "2", operationId, requestHashVersion: "1", clientNonce,
       authorityId: input.authorityId, epoch: input.epoch, lineageKey, policyHash,
-      wallet: policy.wallet, chainId: policy.chainId, operation, payload,
+      wallet: requestWallet, chainId: policy.chainId, operation, payload,
     };
     const requestHash = sha256Hex(canonicalize(request));
-    const expected = { operationId, requestHash, clientNonce };
+    const expected ={ operationId, requestHash, clientNonce };
     const resolveExactOperation = async (): Promise<unknown> => {
       const query = new URL(`v2/wallet-spend/operations/${operationId}`, endpoint);
       query.searchParams.set("requestHash", requestHash);
