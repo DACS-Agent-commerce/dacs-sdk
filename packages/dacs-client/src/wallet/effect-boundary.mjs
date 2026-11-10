@@ -88,6 +88,17 @@ function classifyHistory(records, operation, currentPinVersion) {
   return { signed, held, possible: possible || [...started].some((passId) => !withheld.has(passId)) };
 }
 
+// Re-read after this pass's dispatch-started: another pass that wrote its own
+// dispatch-started after this pass read the history, and before this pass's, and has
+// not withheld its bytes may send them. The first writer sends; this pass refuses.
+function assertFirstDispatch(current, earlier, passId) {
+  const known = new Set(earlier.filter((record) => record.state === 'dispatch-started').map((record) => record.passId));
+  const withheld = new Set(current.filter((record) => record.state === 'dispatch-withheld').map((record) => record.passId));
+  const own = current.findIndex((record) => record.state === 'dispatch-started' && record.passId === passId);
+  if (own < 0) throw refusal('eb_history_unavailable');
+  if (current.slice(0, own).some((record) => record.state === 'dispatch-started' && !known.has(record.passId) && !withheld.has(record.passId))) throw refusal('eb_readback_required');
+}
+
 /**
  * Builds the client's effect boundary. Required host sources, each a TypeError when
  * missing: `binding` (from bindTp1Profile), `currentLocal()`, `stopped()` (boolean or
@@ -103,14 +114,16 @@ function classifyHistory(records, operation, currentPinVersion) {
  * An operation is `{ operationId, lane, kind, paidWrite, debitOs?, approvalRef?, k1Rev?,
  * pinVersion }`. Every method rejects with the signer's, transport's or authority
  * reader's own error, or an OperationError carrying the K0 refusal code, and always
- * releases the fence it acquired.
+ * releases the fence it acquired. The caller holds the wallet lane lock across a
+ * dispatch pass.
  *
  * - `signPass(operation, sign)`: EB1-EB7. Resolves the artifact `{ ...operation, artifactHash }`
  *   after `sign()`'s bytes are durable; a refusal after that leaves `signed-held`.
  * - `dispatchPass(artifact, send, { explicit })`: EB1-EB5r, EB7-EB9 on the retained
  *   bytes, passed to `send(bytes)` once. A held or withheld artifact needs `explicit: true`,
  *   which a composition sets only for a fresh request of its own; a possible dispatch
- *   refuses `eb_readback_required`. When `send` returned but the acknowledgement record
+ *   refuses `eb_readback_required`, as does a pass that finds another pass's dispatch
+ *   intent written before its own while it ran. When `send` returned but the acknowledgement record
  *   could not be written, it rejects `eb_ack_not_persisted`: the artifact was sent, the
  *   send's return value is `error.details.result`, and the write failure is `error.cause`.
  * - `withOperation(operation, work)`: holds the fence across `work`; passes made inside
@@ -261,6 +274,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     await persist({ ...operation, passId, state: 'dispatch-started' });
     const bytes = Buffer.from(retained.signed.bytes, 'base64');
     try {
+      assertFirstDispatch(await readHistory(operation), records, passId);
       await checkStop(read);
       assertStillAuthorized(frame, operation);
     } catch (cause) {
