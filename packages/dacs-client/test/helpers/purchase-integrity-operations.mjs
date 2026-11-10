@@ -42,8 +42,8 @@ export function createOperationStore({ db, handoffSecret, now = () => Date.now()
   const handoffTokenFor = (id) => createHmac('sha256', handoffSecret).update(`dacs-handoff:${id}`).digest('base64url');
   const hashHandoffToken = (token) => sha256Hex(`dacs-handoff-hash:${token}`);
   const iso = () => new Date(now()).toISOString();
-  const insert = db.prepare(`INSERT INTO operations (id, account_id, kind, idempotency_key, request_hash, status, subject_id, terms, terms_hash, state, handoff_token_hash, expires_at, created_at, updated_at, handoff_expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insert = db.prepare(`INSERT INTO operations (id, account_id, kind, idempotency_key, request_hash, status, subject_id, terms, terms_hash, state, handoff_token_hash, expires_at, created_at, updated_at, handoff_expires_at, job_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const byKey = db.prepare('SELECT * FROM operations WHERE account_id = ? AND kind = ? AND idempotency_key = ?');
   const byIdForAccount = db.prepare('SELECT * FROM operations WHERE id = ? AND account_id = ?');
   const byId = db.prepare('SELECT * FROM operations WHERE id = ?');
@@ -68,7 +68,7 @@ export function createOperationStore({ db, handoffSecret, now = () => Date.now()
 
   // Same (account, kind, key) + same request -> the existing operation.
   // Same key with a different request -> conflict, never a silent overwrite.
-  function createIdempotent({ accountId, kind, idempotencyKey, request, status, subjectId = null, terms, termsHash, expiresAt, state = {} }) {
+  function createIdempotent({ accountId, kind, idempotencyKey, request, status, subjectId = null, terms, termsHash, expiresAt, state = {}, jobId = null }) {
     const requestHash = requestHashOf(request);
     return transaction(db, () => {
       const existing = byKey.get(accountId, kind, idempotencyKey);
@@ -81,8 +81,9 @@ export function createOperationStore({ db, handoffSecret, now = () => Date.now()
       const id = newId(kind === 'purchase' ? 'pur' : kind === 'identity' ? 'idn' : 'pub');
       const handoffToken = handoffTokenFor(id);
       try {
-        insert.run(id, accountId, kind, idempotencyKey, requestHash, status, subjectId, JSON.stringify(terms), termsHash, JSON.stringify(state), hashHandoffToken(handoffToken), expiresAt, iso(), iso(), new Date(now() + 24 * 60 * 60 * 1000).toISOString());
+        insert.run(id, accountId, kind, idempotencyKey, requestHash, status, subjectId, JSON.stringify(terms), termsHash, JSON.stringify(state), hashHandoffToken(handoffToken), expiresAt, iso(), iso(), new Date(now() + 24 * 60 * 60 * 1000).toISOString(), jobId);
       } catch (error) {
+        if (isUniqueViolation(error) && /operations\.job_id/.test(error.message)) throw new OperationError('job_id_collision', 'the job id is already used by a retained operation');
         if (isUniqueViolation(error)) throw new OperationError('idempotency_conflict', 'concurrent request with the same idempotency key');
         throw error;
       }
