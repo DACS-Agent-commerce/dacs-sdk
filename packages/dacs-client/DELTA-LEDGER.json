@@ -6680,6 +6680,30 @@
           "after": "8881f3e8ce7a766a3162f5dc6afe79d2360884c4"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "test(client): two concurrent resumes of one held artifact send it once",
+      "sha": "46d0d8b49f50a136d295e97bb666c4fb1fd8c893",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "8881f3e8ce7a766a3162f5dc6afe79d2360884c4",
+          "after": "f46d3e410597600af548d6dc5c52d0ec78858b81"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): send a held artifact once when two passes resume it at once",
+      "sha": "4451a92f7120ca03f6df4100048c0a0709d4f6c9",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "c6a536f8fee883abd654907537ce728a0245155b",
+          "after": "c235b85c61fab739e2eb29c1388130bd7d24cdd8"
+        }
+      ]
     }
   ]
 }

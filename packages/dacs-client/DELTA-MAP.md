@@ -1143,6 +1143,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | c6a536f8fee883abd654907537ce728a0245155b |
 | | `packages/dacs-client/src/wallet/effect-history.mjs:1` | 52c03f2dddbee806d14b94b223fc2fac459e7bc6 |
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 8881f3e8ce7a766a3162f5dc6afe79d2360884c4 |
+| WF | test(client): two concurrent resumes of one held artifact send it once | Git commit selector 46d0d8b49f50a136d295e97bb666c4fb1fd8c893 |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | f46d3e410597600af548d6dc5c52d0ec78858b81 |
+| WF | fix(client): send a held artifact once when two passes resume it at once | Git commit selector 4451a92f7120ca03f6df4100048c0a0709d4f6c9 |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | c235b85c61fab739e2eb29c1388130bd7d24cdd8 |
 
 ## Complete commit and file inventory
 
@@ -3624,6 +3628,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): keep a source or test change as the last delta record | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): keep a source or test change as the last delta record | `packages/dacs-client/HOLD.json:1` |
 | fix(client): keep a source or test change as the last delta record | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 46d0d8b49f50a136d295e97bb666c4fb1fd8c893 | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| 4451a92f7120ca03f6df4100048c0a0709d4f6c9 | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| fix(client): record the single-dispatch change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): record the single-dispatch change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): record the single-dispatch change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): record the single-dispatch change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| fix(client): record the single-dispatch change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
