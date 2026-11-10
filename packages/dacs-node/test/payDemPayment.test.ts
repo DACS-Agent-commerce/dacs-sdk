@@ -1726,7 +1726,7 @@ describe("native DEM buyer payment track", () => {
 
   it.each([
     ["another wallet", `0x${"9".repeat(64)}`],
-    ["a name that is not an address", "demos-wallet"],
+    ["an address that is not a Demos wallet", `0x${"9".repeat(40)}`],
   ])("refuses a policy naming %s before any reservation or broadcast", async (_label, wallet) => {
     const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
       wallet,

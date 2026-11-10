@@ -351,8 +351,8 @@ function recoveryContext(
 }
 
 /**
- * The wallet authority compares wallet strings exactly, so a reservation must
- * name the wallet in the policy's own spelling. Returns that spelling when it
+ * A reservation names the wallet in the policy's own spelling, and recovery
+ * keeps the spelling it was stored under. Returns that spelling when it
  * canonically identifies the payer, or null when the policy names another wallet.
  */
 function policyWalletSpelling(
