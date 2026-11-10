@@ -1,16 +1,14 @@
-import { recordingSettlements } from './signer-reservation-world.mjs';
-
 /**
  * A recording approval ledger for the payment-evidence adapter: `prepare` opens one authorization per request,
- * `open` finds the open one by its exact text, `settle` records outcomes by id. `script` holds one-shot behaviours
- * for the next prepare calls: 'refuse' (resolves null), 'throw' (fails before committing), 'commit-then-throw'
- * (commits, then fails), 'mutate' (changes the request object it received), 'other-text' (answers other text),
- * or a function (request, entry) run after the commit. `lookupDown` makes `open` fail. `reopen` and `confirm` are
- * not used by signing and refuse.
+ * `open` finds the open one by its exact text, `settle` records outcomes by id and is idempotent for the same outcome.
+ * `script` holds one-shot behaviours for the next prepare calls: 'refuse' (resolves null), 'throw' (fails before
+ * committing), 'commit-then-throw' (commits, then fails), 'mutate' (changes the request object it received),
+ * 'other-text' (answers other text), or a function (request, entry) run after the commit. `lookupDown` makes `open`
+ * fail. `reopen` and `confirm` are not used by signing and refuse.
  */
 export function recordingApproval() {
-  const settlements = recordingSettlements(), entries = [], prepared = [], script = [];
-  const double = { entries, prepared, script, settlements, lookupDown: false,
+  const entries = [], prepared = [], script = [], settled = new Map(), settlements = [];
+  const double = { entries, prepared, script, settled, settlements, lookupDown: false,
     async prepare(request) {
       prepared.push(structuredClone(request));
       const behaviour = script.shift();
@@ -25,12 +23,16 @@ export function recordingApproval() {
     },
     async open(requestText) {
       if (double.lookupDown) throw new Error('TEST-approval-lookup-down');
-      const entry = entries.find(row => row.requestText === requestText && !settlements.effects.has(row.ledgerId));
+      const entry = entries.find(row => row.requestText === requestText && !settled.has(row.ledgerId));
       return entry ? { ...entry } : null;
     },
     reopen: async () => { throw new Error('TEST-reopen-is-not-used-by-signing'); },
     confirm: async () => { throw new Error('TEST-confirm-is-not-used-by-signing'); },
-    settle: settlements.settleApproval,
+    async settle(ledgerId, outcome, reason) {
+      if (settled.has(ledgerId) && settled.get(ledgerId) !== outcome) throw new Error(`TEST-${ledgerId}-already-${settled.get(ledgerId)}`);
+      settled.set(ledgerId, outcome);
+      settlements.push({ ledgerId, outcome, reason });
+    },
   };
   return double;
 }

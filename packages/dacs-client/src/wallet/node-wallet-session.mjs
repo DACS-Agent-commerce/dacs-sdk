@@ -562,7 +562,7 @@ async function buildNodeComposition(options, seller) {
       request: request => selectedJournal.run(selected, () => session.request(request)),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
-    const reservations = seller ? createSignerReservations({ journal, pins: expected, clock, openApproval: requestText => paymentEvidenceApproval.open(requestText),
+    const reservations = seller ? createSignerReservations({ journal, pins: expected, openApproval: requestText => paymentEvidenceApproval.open(requestText),
       settleApproval: (ledgerId, outcome, reason) => paymentEvidenceApproval.settle(ledgerId, outcome, reason) }) : null;
     await reservations?.recover({ stateOwnership });
     const observer = seller ? createNodeObserver({ owner, clock }) : null;

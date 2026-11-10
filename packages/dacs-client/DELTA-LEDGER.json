@@ -7031,6 +7031,37 @@
           "after": "be72001c276437177160b6a87ce365b7a24d3504"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF rebuild the payment-evidence adapter on the signer reservation record",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "b364d1682f678eb9c063da18de4f5646a0ce4442",
+          "after": "0afa4bcc983436ef2658ed8bbc4f90593edbbeab"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "fa77f92cfb5934b8e80aae284eb0f1f229888433",
+          "after": "caa9f060da7856d60ed8cb0dfd43d4ad6c97dbd7"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "a10c91b1ac1ba5e0b3754533229744649f337ce3",
+          "after": "9eeb7d5e566a2ad64e4eef0ab2a317abd92fa64a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "659ceb2cc65e2139daf5032d9bf8dc4e1a6a72c7",
+          "after": "0c4803853e13c363d12b241e1d5657501538152c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "be72001c276437177160b6a87ce365b7a24d3504",
+          "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
     }
   ]
 }
