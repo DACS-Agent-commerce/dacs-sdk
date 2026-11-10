@@ -315,6 +315,7 @@ export {
 } from "./substrate/demosWriteEvidence.js";
 // Pure error value: exporting this directly does not eagerly load demosdk.
 export { AnchorWaitError } from "./substrate/AnchorWaitError.js";
+export { DemosChainIdentityError } from "./substrate/demosChainIdentity.js";
 export {
   createDemosHistoryPageFetcher,
   DEMOS_HISTORY_MAX_PAGE_SIZE,

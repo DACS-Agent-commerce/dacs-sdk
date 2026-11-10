@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
-import { DacsError } from "@kynesyslabs/dacs";
+import { DacsError, DemosChainIdentityError } from "@kynesyslabs/dacs";
 import type { DemosWriteJournal } from "@kynesyslabs/dacs/substrate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -158,7 +158,7 @@ describe("role-owned Demos runtime", () => {
   ] as const)("preserves a network pin refusal before exposing signers: %s", async (code, category) => {
     const directory = root();
     const configured = payDemConfig(directory);
-    const error = Object.assign(new DacsError(code, { category }), { code });
+    const error = new DemosChainIdentityError(code, { retryable: category === "transient" });
     const roleAdapter = adapter({ getChainIdentity: vi.fn(async () => { throw error; }) });
     const createPayDemRail = vi.fn();
     const loaded = await secret(directory);
@@ -170,6 +170,17 @@ describe("role-owned Demos runtime", () => {
     expect(roleAdapter.sign).not.toHaveBeenCalled();
     expect(createPayDemRail).not.toHaveBeenCalled();
     expect(loaded.destroyed).toBe(true);
+  });
+
+  it("reports other connect errors as demos-adapter-connect-failed", async () => {
+    const directory = root();
+    const configured = payDemConfig(directory);
+    const roleAdapter = adapter({ getChainIdentity: vi.fn(async () => { throw new DacsError("raw node detail"); }) });
+    await expect(createDacsDemosActorRuntimeV1({
+      config: { ...configured, demos: { ...configured.demos, expectedIdentity: { genesisHash: "a".repeat(64) } } },
+      role: "buyer", authority: AUTHORITY, demosIdentity: await secret(directory),
+      createAdapter: async () => roleAdapter, createPayDemRail: vi.fn(),
+    })).rejects.toMatchObject({ reasonCode: "demos-adapter-connect-failed" });
   });
 
   it("passes the configured identity pin to the role adapter", async () => {

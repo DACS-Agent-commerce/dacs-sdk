@@ -4,7 +4,7 @@ import { resolve, sep } from "node:path";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   baseUnits,
-  DacsError,
+  DemosChainIdentityError,
   createPayDemRail as createSdkPayDemRail,
   type PayDemRail,
   type PayDemSettleParams,
@@ -458,7 +458,7 @@ export async function createDacsDemosActorRuntimeV1(
         }
       }
     } catch (cause) {
-      if (cause instanceof DacsError) throw cause;
+      if (cause instanceof DemosChainIdentityError) throw cause;
       throw new DacsDemosRuntimeError("demos-adapter-connect-failed");
     }
   } finally {

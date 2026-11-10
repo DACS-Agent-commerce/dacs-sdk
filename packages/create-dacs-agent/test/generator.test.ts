@@ -460,7 +460,10 @@ describe("create-dacs-agent", () => {
     });
     vi.stubEnv("DACS_DEMOS_CHAIN_ID", "");
     expect(exports.generatedRoleConfig("buyer").demos).toMatchObject({ expectedIdentity: { genesisHash: "a".repeat(64) } });
+    vi.stubEnv("DACS_DEMOS_CHAIN_ID", "demos-test");
     vi.stubEnv("DACS_DEMOS_GENESIS_HASH", "");
+    expect(() => exports.generatedRoleConfig("buyer")).toThrow(/DACS_DEMOS_CHAIN_ID.*DACS_DEMOS_GENESIS_HASH/);
+    vi.stubEnv("DACS_DEMOS_CHAIN_ID", "");
     expect(exports.generatedRoleConfig("buyer").demos).not.toHaveProperty("expectedIdentity");
     for (const file of [".env.example", "compose.yaml"]) {
       const environment = await readFile(join(target, file), "utf8");

@@ -888,11 +888,14 @@ export class DemosAdapter implements SubstrateAdapter {
   async getChainIdentityDetails(): Promise<Readonly<DemosChainIdentity>> {
     if (this.chainIdentity) return this.chainIdentity;
     const node = await readDemosChainCall(this.config.rpc, "getChainIdentity");
-    if (node !== undefined && (!isJsonObject(node) || Object.keys(node).length !== 3 ||
+    if (node !== undefined && (!isJsonObject(node) ||
         !(node.chainId === null || typeof node.chainId === "string") ||
         typeof node.genesisHash !== "string" || !node.genesisHash.trim() ||
         typeof node.genesisDataHash !== "string" || !node.genesisDataHash.trim())) {
       throw new DemosChainIdentityError("chain_identity_invalid");
+    }
+    if (node === undefined && this.config.expectedIdentity?.chainId !== undefined) {
+      throw new DemosChainIdentityError("chain_identity_unavailable");
     }
     const genesisHash = await this.readGenesisHash();
     const identity: DemosChainIdentity = {
@@ -904,7 +907,7 @@ export class DemosAdapter implements SubstrateAdapter {
     const expected = this.config.expectedIdentity;
     if ((isJsonObject(node) && (node.genesisHash as string).trim().toLowerCase() !== genesisHash) ||
         (expected && expected.genesisHash.trim().toLowerCase() !== genesisHash) ||
-        (expected?.chainId !== undefined && node !== undefined && expected.chainId !== identity.chainId) ||
+        (expected?.chainId !== undefined && expected.chainId !== identity.chainId) ||
         (this.config.chainIdentity !== undefined && this.config.chainIdentity.trim().toLowerCase() !== genesisHash)) {
       throw new DemosChainIdentityError("chain_identity_mismatch");
     }

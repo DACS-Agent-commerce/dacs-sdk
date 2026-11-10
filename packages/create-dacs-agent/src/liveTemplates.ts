@@ -130,6 +130,9 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
   if (persistentConfirmationDetected) {
     throw new Error("write confirmation must not be persisted in .env");
   }
+  if (process.env.DACS_DEMOS_CHAIN_ID && !process.env.DACS_DEMOS_GENESIS_HASH) {
+    throw new Error("DACS_DEMOS_CHAIN_ID requires DACS_DEMOS_GENESIS_HASH");
+  }
   const publicBaseUrl = publicUrl(role === "buyer"
     ? "DACS_BUYER_PUBLIC_BASE_URL" : role === "seller"
       ? "DACS_SELLER_PUBLIC_BASE_URL" : "DACS_VERIFIER_PUBLIC_BASE_URL");

@@ -205,6 +205,18 @@ describe("DemosAdapter", () => {
       await expect(adapter.getChainIdentity()).resolves.toBe(genesisHash);
     });
 
+    it("accepts an identity reply with an extra key", async () => {
+      const { adapter } = identityAdapter({ result: 200, response: { ...nodeIdentity, unexpected: true } }, nodeIdentity);
+      await expect(adapter.getChainIdentityDetails()).resolves.toEqual({ ...nodeIdentity, source: "node-call" });
+    });
+
+    it.each([{ genesisHash, chainId: "demos-test" }, { genesisHash, chainId: null }])(
+      "refuses a pinned chain id when the node cannot report one: %j", async (expected) => {
+        const { adapter } = identityAdapter("not found", expected, genesisHash, 404);
+        await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_unavailable" });
+        await expect(adapter.sign(new Uint8Array([1]))).rejects.toMatchObject({ code: "chain_identity_unavailable" });
+      });
+
     it("refuses a wrong genesis during fallback", async () => {
       const { adapter } = identityAdapter({ result: 404, response: "not found" }, { genesisHash: "c".repeat(64) });
       await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_mismatch" });
@@ -235,7 +247,6 @@ describe("DemosAdapter", () => {
       { ...nodeIdentity, genesisHash: 5 }, { ...nodeIdentity, genesisHash: " " },
       { ...nodeIdentity, chainId: 5 }, { ...nodeIdentity, chainId: undefined },
       { ...nodeIdentity, genesisDataHash: [] }, { ...nodeIdentity, genesisDataHash: undefined },
-      { ...nodeIdentity, unexpected: true },
     ])("refuses malformed identity replies: %j", async (response) => {
       const { adapter, fetch } = identityAdapter({ result: 200, response });
       await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_invalid" });
