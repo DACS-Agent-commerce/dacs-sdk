@@ -19,6 +19,10 @@ test("required build CI runs the workflow contract regression", () => {
   assert.ok(!contract["continue-on-error"]);
 });
 
+test("build CI runs on pushes to main and phase0-completion only", () => {
+  assert.deepEqual(ci.on.push.branches, ["main", "phase0-completion"]);
+});
+
 test("build CI builds the Node host kit before any step that runs the client tests", () => {
   const steps = ci.jobs["build-test"].steps;
   const hostBuild = steps.findIndex(step => step.run === "npm run host:build");
