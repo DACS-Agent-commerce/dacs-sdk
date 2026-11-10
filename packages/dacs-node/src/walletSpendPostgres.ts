@@ -2,6 +2,8 @@ import { randomBytes, randomUUID, type KeyObject } from "node:crypto";
 
 import {
   WALLET_SPEND_STATE_VERSION,
+  canonicalWalletSpendWalletV1,
+  captureWalletSpendPolicyV1,
   createWalletSpendAuthorityV1,
   validateWalletSpendStateV1,
   type WalletSpendAuthorityDependenciesV1,
@@ -547,18 +549,35 @@ FOR EACH ROW EXECUTE FUNCTION dacs_wallet_spend_require_writer_v2();
 COMMIT;
 `;
 
+/**
+ * Lineage key of one wallet on one chain. Every spelling of a wallet that
+ * `canonicalWalletSpendWalletV1` accepts gives the same key.
+ *
+ * @throws TypeError when the wallet has no canonical form or the chain id is empty or padded.
+ */
 export function dacsWalletSpendLineageKeyV1(wallet: string, chainId: string): string {
-  if (wallet.length === 0 || chainId.length === 0 ||
-      wallet.trim() !== wallet || chainId.trim() !== chainId) {
+  const canonicalWallet = canonicalWalletSpendWalletV1(wallet);
+  if (canonicalWallet === null || chainId.length === 0 || chainId.trim() !== chainId) {
     throw new TypeError("wallet spend lineage is invalid");
   }
-  return sha256Hex(`dacs-wallet-spend-scope:v1:${canonicalize({ wallet, chainId })}`);
+  return sha256Hex(`dacs-wallet-spend-scope:v1:${canonicalize({
+    wallet: canonicalWallet,
+    chainId,
+  })}`);
 }
 
+/**
+ * Hash of a policy with its wallet in canonical form, so every spelling of one
+ * wallet gives the same hash.
+ *
+ * @throws DacsError when the policy is malformed or its wallet has no canonical form.
+ */
 export function dacsWalletSpendPolicyHashV1(
   policy: Readonly<WalletSpendPolicyV1>,
 ): string {
-  return sha256Hex(`dacs-wallet-spend-policy:v1:${canonicalize(policy)}`);
+  return sha256Hex(
+    `dacs-wallet-spend-policy:v1:${canonicalize(captureWalletSpendPolicyV1(policy))}`,
+  );
 }
 
 export interface DacsWalletSpendProvisioningEvidenceV1 {
@@ -863,7 +882,7 @@ export async function createInMemoryDacsWalletSpendContinuityStateStoreV1(
   };
   const store: DacsPostgresWalletSpendStateStoreV1 = {
     lineageScope(selectedPolicy) {
-      if (selectedPolicy.wallet !== input.policy.wallet ||
+      if (selectedPolicy.wallet !== canonicalWalletSpendWalletV1(input.policy.wallet) ||
           selectedPolicy.chainId !== input.policy.chainId) {
         throw new Error("wallet-spend-lineage-policy-mismatch");
       }
@@ -1505,7 +1524,8 @@ async function initializeLineage(
                  $10::jsonb, $11, $12, $13)
          ON CONFLICT DO NOTHING`,
         [lineage, pin.authorityId, pin.epoch, pin.verificationKey,
-          input.policy.wallet, input.policy.chainId, policyHash, input.state.generation,
+          captureWalletSpendPolicyV1(input.policy).wallet, input.policy.chainId, policyHash,
+          input.state.generation,
           nextHash, canonicalize(input.state), input.provisioningKind,
           input.evidence.sourceIdentity, input.evidence.evidenceHash],
       );
@@ -1992,7 +2012,8 @@ export function createDacsPostgresWalletSpendStateStoreV1(input: Readonly<{
 
   const store: DacsPostgresWalletSpendStateStoreV1 = {
     lineageScope(selectedPolicy): string {
-      if (selectedPolicy.wallet !== input.wallet || selectedPolicy.chainId !== input.chainId) {
+      if (selectedPolicy.wallet !== canonicalWalletSpendWalletV1(input.wallet) ||
+          selectedPolicy.chainId !== input.chainId) {
         throw new Error("wallet-spend-lineage-policy-mismatch");
       }
       return lineage;

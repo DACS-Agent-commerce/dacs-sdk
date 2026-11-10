@@ -1880,9 +1880,14 @@ export class DemosAdapter implements SubstrateAdapter {
           ? record.state
           : undefined;
       if (state) ctx.receipt.lastObservedState = state;
-      const transactionRecord = isRecord(transaction) && isRecord(transaction.response)
-        ? transaction.response
-        : transaction;
+      // An answer carrying a `result` other than 200 is the node's error
+      // envelope, so it holds no transaction row.
+      const transactionRecord =
+        isRecord(transaction) && "result" in transaction && transaction.result !== 200
+          ? undefined
+          : isRecord(transaction) && isRecord(transaction.response)
+            ? transaction.response
+            : transaction;
       const executionStatus = isRecord(transactionRecord) &&
           typeof transactionRecord.status === "string"
         ? transactionRecord.status

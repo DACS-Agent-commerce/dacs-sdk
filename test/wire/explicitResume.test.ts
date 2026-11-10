@@ -196,6 +196,27 @@ it("the in-memory ledger refuses a proof that has expired by the latest clock it
   expect(ledger.claim("live", NOW + 51, NOW)).toBe(true);
 });
 
+const NOT_UNSIGNED_INTEGERS = [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, -0, Number.MAX_SAFE_INTEGER + 1, "5", null, undefined];
+
+it("the in-memory ledger refuses a claim whose clock is not an unsigned integer and keeps working", () => {
+  const ledger = wire.createExplicitResumeLedger();
+  for (const time of NOT_UNSIGNED_INTEGERS) {
+    expect(() => ledger.claim("proof", NOW + 10, time as number)).toThrowError(expect.objectContaining({ code: "wire_input_invalid" }));
+  }
+  expect(ledger.claim("proof", NOW + 10, NOW)).toBe(true);
+  expect(ledger.claim("proof", NOW + 10, NOW)).toBe(false);
+  expect(ledger.claim("next", NOW + 30, NOW + 10)).toBe(true);
+  expect(ledger.claim("proof", NOW + 40, NOW + 10)).toBe(true);
+});
+
+it("the in-memory ledger refuses a claim whose expiry is not an unsigned integer and keeps working", () => {
+  const ledger = wire.createExplicitResumeLedger();
+  for (const expiresAt of NOT_UNSIGNED_INTEGERS) {
+    expect(() => ledger.claim("proof", expiresAt as number, NOW)).toThrowError(expect.objectContaining({ code: "wire_input_invalid" }));
+  }
+  expect(ledger.claim("proof", NOW + 10, NOW)).toBe(true);
+});
+
 it("a used proof is refused again when another verification with a later clock came between", async () => {
   const f = await fixture();
   const ledger = wire.createExplicitResumeLedger();
