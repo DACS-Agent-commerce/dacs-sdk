@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "e156943441cd7557caaedc5c60adac67c3ae339b"
+        "blob": "93003f2a4f0da430e51df0a973a0392b05a00696"
       },
       "DELTA-LEDGER.json": {
-        "blob": "0e41d6092b0ce44200123c77b45dbf46f531946f"
+        "blob": "1dbae49d7741b67caf42b50806a89a2cdc72571a"
       },
       "DELTA-MAP.md": {
-        "blob": "e9d6a93a09bad0ab67e9d8e7b3344ea10c258b2d"
+        "blob": "1ca7d9d1527ffbe52e878bc5961ff3c50f86d067"
       },
       "DELTA-NOTES.md": {
-        "blob": "98aa412d20ef891bf3de0ca2e239124b57f785e9"
+        "blob": "ea9e499da9ebe29e7fd202d63f2cda331a1f256d"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "9bf8cce3615b3ac2b340e4be8b8cf726b95b5bc6"
+        "blob": "7984068fffdc4134ef7576581c1fc5c9fb94bebd"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "94aceeb145df43419179cfe3cf342f7beab4187c"
+        "blob": "aadc335af6efb0dcb51ad134c4660aff095778e0"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1316,13 +1316,13 @@
         "blob": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
       },
       "src/wallet/node-wallet-session.mjs": {
-        "blob": "0d4803b0dcf41dd15566abe589f3756ebf2cabce"
+        "blob": "7ca77023b701055eb1bf092ff0ce632846f3702b"
       },
       "src/wallet/payload-helpers.mjs": {
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
       },
       "src/wallet/signer-reservation.mjs": {
-        "blob": "ed1935c77b265ee31428df33d4d85170d1d08d2b"
+        "blob": "7e54669ad2d3b2af37aee198f8f4de382d598186"
       },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
@@ -1811,7 +1811,7 @@
         "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
       },
       "test/node-signer-reservation.test.mjs": {
-        "blob": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f"
+        "blob": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9"
       },
       "test/node-wallet-authority-token.test.mjs": {
         "blob": "59ec4a406d02df29293034d44d466202fd68dde1"
