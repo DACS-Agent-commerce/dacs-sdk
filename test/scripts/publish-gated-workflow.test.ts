@@ -159,7 +159,7 @@ describe("code ownership", () => {
 });
 
 // The release suite is run either through its npm script or by `node --test` over the release test glob.
-const RELEASE_SUITE = /npm run release:(?:qualification:)?test(?![:\w-])|node --test\b[^\n]*test\/scripts\/release-\*\.test\.mjs/u;
+const RELEASE_SUITE = /npm run release:(?:qualification:)?test(?![:\w-])|node --test\b(?:[^\n]|\\\n)*test\/scripts\/release-\*\.test\.mjs/u;
 const CLEAN_TREE_AND_BUILDS = [
   "test ! -e dist", "test ! -e packages/dacs-node/dist", "test ! -e packages/create-dacs-agent/dist",
   "npm run build", "npm run host:build", "npm run generator:build",
@@ -189,6 +189,12 @@ describe("every workflow", () => {
   it("a job that runs the release test glob with node --test is a release-suite caller", () => {
     const callers = releaseSuiteCallers({ "direct.yml": jobRunning(RELEASE_GLOB_RUN) });
     expect(callers.map((caller) => caller.name)).toEqual(["direct.yml:check"]);
+  });
+
+  it("a release test glob run written across backslash-continued lines is a release-suite caller", () => {
+    const continued = "node --test --test-concurrency=1 \\\n  test/scripts/release-*.test.mjs";
+    const callers = releaseSuiteCallers({ "continued.yml": jobRunning(continued) });
+    expect(callers.map((caller) => caller.name)).toEqual(["continued.yml:check"]);
   });
 
   it("release:test:native and a single named release test file are not release-suite callers", () => {
