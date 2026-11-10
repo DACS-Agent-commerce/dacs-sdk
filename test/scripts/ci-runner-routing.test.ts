@@ -140,7 +140,7 @@ function evaluate(source: string, context: Record<string, Value>): Value {
 
 function route(over: {
   enabled?: string; authors?: string; blacksmith?: string; node?: string; event?: string; headRepo?: string;
-  author?: string; actor?: string; triggering?: string; labels?: string[]; prPayload?: boolean;
+  author?: string; actor?: string; triggering?: string; labels?: string[]; prPayload?: boolean; draft?: boolean;
 }) {
   const match = /^\$\{\{([\s\S]*)\}\}$/.exec(RUNS_ON.trim());
   if (!match) throw new Error("runs-on is not a single expression");
@@ -163,6 +163,7 @@ function route(over: {
           head: { repo: { full_name: over.headRepo ?? "org/repo" } },
           user: { login: over.author ?? "owner" },
           labels: (over.labels ?? []).map((name) => ({ name })),
+          draft: over.draft ?? false,
         } }
         : {},
     },
@@ -242,6 +243,15 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
         expect(route({ blacksmith, node: "20.19.0" })).toBe("ubuntu-latest");
         expect(route({ blacksmith, enabled: "off" })).toBe("ubuntu-latest");
       }
+    });
+
+    it("never takes draft pull requests", () => {
+      for (const node of ["22", "20.19.0"]) {
+        expect(route({ blacksmith: "on", draft: true, node, enabled: "off" })).toBe("ubuntu-latest");
+        expect(route({ blacksmith: "on", draft: false, node })).toBe(BLACKSMITH);
+      }
+      // A draft falls through to the rules above, which still route it like any other pull request.
+      expect(route({ blacksmith: "on", draft: true })).toEqual(POOL);
     });
 
     it("never takes pushes, merge-queue runs or fork pull requests", () => {
