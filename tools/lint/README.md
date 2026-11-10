@@ -46,7 +46,7 @@ Don't add entries to get a pass.
 
 `shared-helpers-baseline.txt` lists the copies that already existed. They don't fail the run. When one is removed, the run fails until its line is removed too (`--prune`).
 
-The check is by name. It counts top-level `function` declarations and `const` names whose value is an arrow function or a function expression.
+The check is by name. It counts top-level `function` declarations and `const` names whose value is an arrow function or a function expression, also when wrapped in parentheses, `as`, `satisfies` or `!`. Inside `src/internal/` a name may be declared once; a second declaration there counts as a copy.
 
 The file size and shared helper checks also have a `--write-baseline` flag that rewrites the list from the code. Use it only in a change that edits the check itself, and say why in that change; never use it to get a pass.
 

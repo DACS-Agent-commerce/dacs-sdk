@@ -29,17 +29,20 @@ describe("shared helper check", () => {
       "const nonEmpty = function (v: string) { return v.length > 0; };",
       "const plainRecord = { kind: 'not a function' };",
       "function outer() { function deepFreeze() {} }",
+      "const hasExactKeys = ((v: object) => true) as (v: object) => boolean;",
+      "const plainObject = (function (v: unknown) { return v; }) satisfies (v: unknown) => unknown;",
     ].join("\n"));
-    expect(names).toEqual(["isRecord", "exactKeys", "nonEmpty", "outer"]);
+    expect(names).toEqual(["isRecord", "exactKeys", "nonEmpty", "outer", "hasExactKeys", "plainObject"]);
   });
 
-  it("reports shared-helper names declared outside src/internal/, and ignores other names", () => {
+  it("reports shared-helper names declared outside src/internal/ or twice inside it, and ignores other names", () => {
     const root = repo({
       "src/internal/isRecord.ts": "export function isRecord(v: unknown) { return true; }",
+      "src/internal/other.ts": "export const isRecord = (v: unknown) => true;",
       "src/rails/a.ts": "function isRecord(v: unknown) { return true; }\nfunction parseAmount() {}",
       "src/seller/b.ts": "const hasExactKeys = () => true;",
     });
-    expect(findCopies(root)).toEqual(["src/rails/a.ts isRecord", "src/seller/b.ts hasExactKeys"]);
+    expect(findCopies(root)).toEqual(["src/internal/other.ts isRecord", "src/rails/a.ts isRecord", "src/seller/b.ts hasExactKeys"]);
   });
 
   it("splits copies into new ones and baseline lines that no longer occur", () => {

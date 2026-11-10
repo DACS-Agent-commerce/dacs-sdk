@@ -25,7 +25,20 @@ function listSourceFiles(repoRoot) {
   return out.sort();
 }
 
-const isFunctionValue = (node) => node && (ts.isArrowFunction(node) || ts.isFunctionExpression(node));
+// Looks through parentheses, `as`, `satisfies`, `<T>` and `!` to the value they wrap.
+function unwrap(node) {
+  let value = node;
+  while (value && (ts.isParenthesizedExpression(value) || ts.isAsExpression(value) || ts.isSatisfiesExpression(value)
+    || ts.isTypeAssertionExpression(value) || ts.isNonNullExpression(value))) {
+    value = value.expression;
+  }
+  return value;
+}
+
+const isFunctionValue = (node) => {
+  const value = unwrap(node);
+  return Boolean(value) && (ts.isArrowFunction(value) || ts.isFunctionExpression(value));
+};
 
 /** Names of functions declared at the top level of a file, as `function f` or `const f = () => …`. */
 export function topLevelFunctionNames(path, text) {
@@ -45,14 +58,19 @@ export function topLevelFunctionNames(path, text) {
   return [...new Set(names)];
 }
 
-/** Lists `path name` for each shared-helper name declared outside src/internal/. */
+/**
+ * Lists `path name` for each shared-helper name declared outside src/internal/, and for each
+ * second or later declaration of the same name inside src/internal/ (the first, by path, is the shared one).
+ */
 export function findCopies(repoRoot) {
   const copies = [];
+  const shared = new Set();
   for (const path of listSourceFiles(repoRoot)) {
-    if (path.startsWith(SHARED_HOME)) continue;
     const text = readFileSync(join(repoRoot, path), "utf8");
     for (const name of topLevelFunctionNames(path, text)) {
-      if (SHARED_HELPERS.includes(name)) copies.push(`${path} ${name}`);
+      if (!SHARED_HELPERS.includes(name)) continue;
+      if (path.startsWith(SHARED_HOME) && !shared.has(name)) shared.add(name);
+      else copies.push(`${path} ${name}`);
     }
   }
   return copies.sort();
@@ -89,12 +107,13 @@ function main(argv) {
     console.log(`shared-helpers: wrote ${copies.length} known copies to ${BASELINE_FILE}`);
     return 0;
   }
-  const baseline = readBaseline(repoRoot);
+  let baseline = readBaseline(repoRoot);
   const result = compareWithBaseline(copies, baseline);
   const { added } = result;
   let { stale } = result;
   if (argv.includes("--prune") && stale.length > 0) {
-    writeBaseline(repoRoot, baseline.filter((line) => !stale.includes(line)));
+    baseline = baseline.filter((line) => !stale.includes(line));
+    writeBaseline(repoRoot, baseline);
     console.log(`shared-helpers: removed ${stale.length} entries from ${BASELINE_FILE}`);
     stale = [];
   }
