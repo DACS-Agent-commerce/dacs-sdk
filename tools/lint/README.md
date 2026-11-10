@@ -28,6 +28,18 @@ Don't add entries to it to get a pass. Fix the new issue, or use an `eslint-disa
 
 `layers.mjs` checks that imports in `src/` follow the layer order in `layers.json`. `layers-baseline.txt` lists the imports that already broke it. See [ARCHITECTURE.md](../../ARCHITECTURE.md#the-check).
 
+## File size check
+
+`file-size.mjs` fails when a source file in `src/` or `packages/*/src/` is over 800 lines. Source files are `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx`, not declaration files (`.d.ts`). Split a long file into smaller modules rather than raising the limit.
+
+`file-size-baseline.json` lists the files that were already longer, with their length at the time. They don't fail the run. When one of them grows, CI shows a warning on the file. When one is deleted or drops to 800 lines or fewer, the run fails until its entry is removed:
+
+```bash
+node tools/lint/file-size.mjs --prune
+```
+
+Don't add entries to get a pass. When you move or rename a listed file, rename its entry in the same change and keep the recorded length.
+
 ## What's left out
 
 - `test/package-consumer/`: its own project, which needs the packed packages.
