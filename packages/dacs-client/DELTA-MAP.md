@@ -1109,6 +1109,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | D27 | delta(client): D27 operator approver re-checks the request bytes | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/devnet-demo/operator-approval.mjs:270`, `packages/dacs-client/src/devnet-demo/operator-approval.mjs:355` | 05e2fec203bfa93fcc9e7f833b976d641b2a1cde |
 | | `packages/dacs-client/test/operator-approval-request-bytes.test.mjs:1` | da57bb91604b30e2b60a4edb7011a473fd9e5d3a |
+| D31 | delta(client): D31 pin the finality profile literal refusal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` | b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5 |
+| D31 | delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` | 565c664bbc629707665dd65c3889ac5e08ec2d09 |
 
 ## Complete commit and file inventory
 
@@ -3509,6 +3513,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/src/devnet-demo/operator-approval.mjs:270`, `packages/dacs-client/src/devnet-demo/operator-approval.mjs:355` |
 | delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/test/operator-approval-request-bytes.test.mjs:1` |
+| delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` |
 
 ## Original moved files
 
