@@ -12,7 +12,9 @@ import { parseShard, shardFiles } from "./ci-shards.mjs";
 
 const packageDir = join(dirname(fileURLToPath(import.meta.url)), "../packages/dacs-client");
 const shard = parseShard(process.env.DACS_CLIENT_TEST_SHARD, "client");
-const { DACS_CLIENT_TEST_SHARD: _shard, ...env } = process.env;
+// The test processes never see the shard variable.
+const env = { ...process.env };
+delete env.DACS_CLIENT_TEST_SHARD;
 
 const hold = spawnSync(process.execPath, ["scripts/check-hold.mjs"], { cwd: packageDir, stdio: "inherit", env });
 if (hold.error) throw hold.error;
