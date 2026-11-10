@@ -311,10 +311,16 @@ function captureSettlementStore(
     "readOutcome",
     "pay-dem settlement store readOutcome",
   );
+  const recover = optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["recover"]>>(
+    source,
+    "recover",
+    "pay-dem settlement store recover",
+  );
   const wrapper: SettlementIdempotencyStore = {
     once: (key, binding, submit, reconcile) =>
       once(key, binding, submit, reconcile),
     ...(readOutcome === undefined ? {} : { readOutcome }),
+    ...(recover === undefined ? {} : { recover }),
   };
   return Object.freeze(wrapper);
 }

@@ -699,12 +699,22 @@ on chain. When no evidence is anchored but a durable `sessionStore` records a
 settled outcome, the run reuses that outcome without calling `resumeSettlement`,
 except a native DEM success, which it still confirms. If the record holds an
 unresolved payment intent or an ambiguous outcome, the run calls
-`resumeSettlement`. With no settled outcome on record, a resumed run also calls
-it whenever an earlier run anchored the Agreement, with or without a
+`resumeSettlement`. With no settled outcome on record, a resumed run calls it,
+including when an earlier run anchored the Agreement, with or without a
 `sessionStore`, because a session record cannot prove the earlier run did not
 pay (a fresh store, or a record that a failed or concurrent resume created,
 looks the same). A resume that needs `resumeSettlement` is refused when it is
-absent.
+absent. Every call to `resumeSettlement` is recovery-only: it must adopt or
+reconcile an existing rail intent and never start a fresh payment, even when
+the `sessionStore` has no record of the job or is absent. A rail with no
+unresolved intent refuses the recovery and leaves its log unchanged; a crash
+before the rail recorded its intent, or a release after a not-invoked attempt,
+needs operator action. A refused recovery can still write a session checkpoint,
+and recovering an expired unresolved intent takes a current `reconcile` lease.
+Recovery needs a store with `recover()` over a settlement log with
+`claimExistingIntent` (`createIdempotencyStore` over
+`createInMemorySettlementLog()` has both); a custom log without it cannot
+recover. A resume id is not a fresh id: omit `jobId` to start a new session.
 The legacy native-ref input remains available for callers with a separate trusted
 pin.
 

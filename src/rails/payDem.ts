@@ -2298,6 +2298,12 @@ export function payDemSettle(
     : stableMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
         store, "readOutcome", "pay-dem settlement store readOutcome",
       );
+  const recoverProperty = stableDataProperty(store, "recover", "pay-dem settlement store recover");
+  const storeRecover = !recoverProperty.found || recoverProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<SettlementIdempotencyStore["recover"]>>(
+        store, "recover", "pay-dem settlement store recover",
+      );
   const configuredRecipient = optionalStableString(
     cfg,
     "recipient",
@@ -2588,7 +2594,13 @@ export function payDemSettle(
             authenticatedResults.set(key, { context, result: captured });
             return captured;
           };
-      const result = await storeOnce(
+      // A recovery request never takes a fresh claim: with no retained hash it
+      // settles only through the store's `recover`, never through `once`.
+      const storeSettle = req.recoveryOnly === true ? storeRecover : storeOnce;
+      if (storeSettle === undefined) {
+        throw new DacsError("pay-dem recovery requires a store with recover(); refusing a fresh payment");
+      }
+      const result = await storeSettle(
         key,
         binding,
         submit,
