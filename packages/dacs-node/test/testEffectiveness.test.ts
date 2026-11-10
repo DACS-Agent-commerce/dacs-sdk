@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const SCRIPT = fileURLToPath(
-  new URL("../../../scripts/verify-pr303-test-effectiveness.mjs", import.meta.url),
+  new URL("../../../scripts/verify-node-test-effectiveness.mjs", import.meta.url),
 );
 
 interface EffectivenessReport {
@@ -29,7 +29,7 @@ function runEffectivenessScript(): Promise<{ status: number | null; stdout: stri
   });
 }
 
-describe("PR303 test-effectiveness witnesses", () => {
+describe("dacs-node test-effectiveness witnesses", () => {
   it("catches each selected wrong implementation through its intended assertion", async () => {
     const result = await runEffectivenessScript();
     const report = JSON.parse(result.stdout) as EffectivenessReport;
