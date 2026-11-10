@@ -7415,6 +7415,23 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged stored request bytes client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "c993d159786433207d171ee4383c7aa2b860ceb5",
+          "after": "c993d159786433207d171ee4383c7aa2b860ceb5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f80404d442afea5c691c15c3b729ec10ea9bf319",
+          "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the stored-request buyer seller client after the merge and refresh package pins",
       "files": [
         {
