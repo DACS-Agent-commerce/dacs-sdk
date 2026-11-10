@@ -232,7 +232,7 @@ function hasUniqueJobIdIndex(db) {
 }
 
 // Retained source integration; not exported by the package entry point.
-// D11:`store` is the host's PurchaseStore (purchaseStore admits only the
+// D11: `store` is the host's PurchaseStore (purchaseStore admits only the
 // package's concrete SQLite adapter); `purposes` holds the host's
 // APPROVE_PURCHASE wallet-challenge purpose. Both are checked before any
 // statement is prepared. Every action that prepares, approves, hands off or
@@ -377,7 +377,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   // The job id is reserved by the host's unique job_id index in the insert that
-  // stores the terms (JID-2): no lookup grants it. Only the host's
+  // stores the terms: no lookup grants it. Only the host's
   // job_id_collision is retried with a new id; any other error propagates. Each
   // refused insert rolls back its own savepoint, so a failure writes nothing.
   function createReservingJobId(createWith) {
