@@ -153,8 +153,8 @@ function readRequest(req, timeoutMs) {
 // `context` (seller-context-route.mjs, seller context route) mounts the
 // Vet and Agreement-context route. Without it the route table is unchanged.
 // `wire` ({ binding, connection, signer, journal, store, retainedFor, continuationFor, readCommitmentReceipt, ready, now,
-// requireDelegation }) moves the routes of WIRE_ROUTE_PATHS onto `./wire`; `store` is the raw transport store, their only
-// journal. It needs `authentication` for the challenge and the context step.
+// requireDelegation }) moves the routes of WIRE_ROUTE_PATHS onto `./wire`; `store` backs accounting and retained purchases,
+// and `journal` holds request attempts and outcomes. It needs `authentication` for the challenge and the context step.
 export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire = null } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
   if (wire !== null && (!authentication || WIRE_OPTION_MEMBERS.some((member) => wire?.[member] === undefined) || typeof agent.transportAgreementOf !== 'function')) throw new Error('the wire routes need the wire context, retained Agreement scope and the old authentication of the routes still on it');
@@ -228,7 +228,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   // The attempt is the journal's current one for this request: pending, under its binding and inside its lease.
   function assertAttemptCurrent(request, effect) {
     const view = inspectWireOperation(wire.journal, { seller: request.seller, jobId: request.jobId, path: request.path });
-    if (view.state !== 'pending' || view.attempt !== effect.attempt || view.binding !== wireOperationBinding(request) || view.leaseUntil <= wire.now()) throw new WireError('seller_effect_superseded', 500);
+    const time = wire.now();
+    if (view.state !== 'pending' || view.attempt !== effect.attempt || view.binding !== wireOperationBinding(request) || view.leaseUntil <= time) throw new WireError('seller_effect_superseded', 500);
+    // Recheck the admitted request's expiry after waits inside the agent.
+    if (request.expiresAt <= time) throw new WireError('peer_expired', 408);
   }
   // An answer ends its attempt only as its disposition says: a final 200 answer is the outcome, a proven no-effect answer ends with
   // null, anything else (progress, a retained-work refusal, uncertainty) leaves the attempt open.
