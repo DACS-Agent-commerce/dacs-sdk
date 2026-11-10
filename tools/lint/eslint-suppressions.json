@@ -550,6 +550,11 @@
       "count": 1
     }
   },
+  "test/e2e/localChainTwoSidedBundle.e2e.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
+      "count": 1
+    }
+  },
   "test/identity/domainClaimVerification.test.ts": {
     "no-useless-assignment": {
       "count": 1
@@ -560,6 +565,16 @@
       "count": 2
     }
   },
+  "test/rails/x402Paywall.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
+      "count": 2
+    }
+  },
+  "test/scripts/bounded-npm-transport.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
+      "count": 3
+    }
+  },
   "test/scripts/registry-container-disposition.test.ts": {
     "no-regex-spaces": {
       "count": 5
@@ -567,6 +582,16 @@
   },
   "test/scripts/registry-container-registry.test.ts": {
     "no-regex-spaces": {
+      "count": 1
+    }
+  },
+  "test/scripts/transport-rebuild.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
+      "count": 1
+    }
+  },
+  "test/seller/durableBundleFinalization.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
       "count": 1
     }
   },
