@@ -2,11 +2,11 @@
 // SDK paymentEvidenceHandshake delegates peer authentication to its host and
 // only supports x402 evidence anchoring. This DEM transport uses its canonical
 // hashing primitives, with a separate buyer/seller Ed25519 signing callback.
-import { createPublicKey, randomBytes, verify } from 'node:crypto';
+import { createPublicKey, randomBytes } from 'node:crypto';
 import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { createRequire } from 'node:module';
-import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, ed25519Verify, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { decodeSignature } from '../signatures.mjs';
 import { assertSellerSessionLifetime } from './seller-session-limits.mjs';
 
@@ -89,7 +89,7 @@ function verifiedHeader(header, kind, principal, { requireDelegation = false, on
   if (principal && actor !== principal) fail('peer_signer_wrong');
   const delegation = delegated ? verifySellerSessionDelegation(envelope.delegation, { buyer: p.buyer }) : null;
   const publicKey = publicKeyFor(delegation?.sessionPublicKey ?? actor.slice('did:demos:agent:'.length));
-  if (!verify(null, sellerTransportSigningBytes(p), publicKey, signatureBytes(envelope.signature))) fail('peer_signature_invalid');
+  if (!ed25519Verify(sellerTransportSigningBytes(p), signatureBytes(envelope.signature), publicKey)) fail('peer_signature_invalid');
   if (delegation) onDelegation?.(p, envelope.delegation);
   return p;
 }
@@ -124,7 +124,7 @@ export function normalizeSellerSessionDelegationSignature(signature) {
 export function verifySellerSessionDelegation(delegation, { buyer, seller, listingPin, jobId, time, deadline, allowExpired = false } = {}) {
   if (!keys(delegation, ['payload', 'signature'])) fail('peer_delegation_invalid');
   const p = delegation.payload, bytes = sellerSessionDelegationSigningBytes(p);
-  if (!verify(null, bytes, publicKeyFor(p.buyer.slice('did:demos:agent:'.length)), delegationSignatureBytes(delegation.signature))) fail('peer_delegation_signature_invalid');
+  if (!ed25519Verify(bytes, delegationSignatureBytes(delegation.signature), publicKeyFor(p.buyer.slice('did:demos:agent:'.length)))) fail('peer_delegation_signature_invalid');
   if ((buyer !== undefined && p.buyer !== buyer) || (seller !== undefined && p.seller !== seller) ||
       (listingPin !== undefined && !exact(p.listingPin, listingPin)) || (jobId !== undefined && p.jobId !== jobId)) fail('peer_delegation_mismatch', 409);
   if (time !== undefined && (!uint(time) || p.notBefore > time || (!allowExpired && p.expiresAt <= time))) fail('peer_delegation_expired', 408);

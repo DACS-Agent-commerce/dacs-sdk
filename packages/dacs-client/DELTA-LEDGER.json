@@ -6511,6 +6511,27 @@
           "after": "da57bb91604b30e2b60a4edb7011a473fd9e5d3a"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "Apply the stricter key checks to the client transport and embedded wallet",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "68a8a8946386f010d7a157a25e184bfb52370108",
+          "after": "17bf3788c7e5d12dad3a8ac4e133085b80e751ef"
+        },
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "fb364397ed046fb1211d620fb5dfa68563715c1a",
+          "after": "fc0f620997c524c5f2a7d0ab8fde77b86debdb0d"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-transport-key-validation.test.mjs",
+          "before": null,
+          "after": "26523776589d9fbb6681a585ce59031a0dcdf48b"
+        }
+      ]
     }
   ]
 }
