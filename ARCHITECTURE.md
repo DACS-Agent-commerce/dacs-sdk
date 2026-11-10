@@ -29,7 +29,7 @@ The workspace packages under `packages/` sit on top of all of this. They import 
 
 ## The check
 
-`tools/lint/layers.mjs` reads every import in `src/`, works out which part of the order each file belongs to, and fails when an import points up the order. It counts plain imports, `import type`, `export … from`, dynamic `import()` and `import("…")` types. A type-only import still ties two parts together, so it follows the same rule.
+`tools/lint/layers.mjs` reads every import in `src/`, works out which part of the order each file belongs to, and fails when an import points up the order. It reads every TypeScript file there, declaration files included, and counts plain imports, `import type`, `export … from`, `import x = require()`, `require()`, dynamic `import()` and `import("…")` types, with the path in quotes or in a template string. An `import()` or `require()` whose path is computed fails the check, because it cannot be checked. A type-only import still ties two parts together, so it follows the same rule.
 
 Run it from the repository root after installing the linter's dependencies:
 

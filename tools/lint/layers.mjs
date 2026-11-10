@@ -49,16 +49,31 @@ function listFiles(repoRoot) {
   return out.sort();
 }
 
-const isSourceFile = (path) => path.endsWith(".ts") && !path.endsWith(".d.ts");
+// TypeScript in any form, declaration files included: a .d.ts can import too.
+const isSourceFile = (path) => /\.[cm]?tsx?$/.test(path);
 
-// "./x.js" names x.ts, "./dir" names dir/index.ts, and data files ("./x.json") name themselves.
+// "./x.js" names x.ts (or x.d.ts), ".mjs" and ".cjs" name ".mts" and ".cts", "./dir" names
+// dir/index.ts, and data files ("./x.json") name themselves.
 function resolveSpecifier(fromPath, specifier, known) {
   const base = posix.normalize(posix.join(posix.dirname(fromPath), specifier));
-  const candidates = [base.replace(/\.js$/, ".ts"), `${base}.ts`, `${base}/index.ts`, base];
+  const candidates = [
+    base.replace(/\.js$/, ".ts"),
+    base.replace(/\.js$/, ".d.ts"),
+    base.replace(/\.mjs$/, ".mts"),
+    base.replace(/\.cjs$/, ".cts"),
+    `${base}.ts`,
+    `${base}.d.ts`,
+    `${base}/index.ts`,
+    base,
+  ];
   return candidates.find((candidate) => known.has(candidate));
 }
 
-/** Lists every relative import in src/, including `export … from`, `import()` and `import("…")` types. */
+/**
+ * Lists every relative import in src/: `import`, `export … from`, `import x = require()`, `require()`,
+ * `import()` and `import("…")` types, with plain or template-string paths. An `import()` or `require()`
+ * whose path is computed cannot be checked, so it is listed as unresolved.
+ */
 export function collectImports(repoRoot) {
   const all = listFiles(repoRoot);
   const known = new Set(all);
@@ -67,25 +82,34 @@ export function collectImports(repoRoot) {
   for (const from of files) {
     const text = readFileSync(join(repoRoot, from), "utf8");
     const source = ts.createSourceFile(from, text, ts.ScriptTarget.Latest, true);
+    const lineOf = (node) => source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
     const record = (node, typeOnly) => {
       const specifier = node.text;
       if (!specifier.startsWith(".")) return;
       const to = resolveSpecifier(from, specifier, known);
-      const line = source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-      imports.push({ from, to: to ?? `${specifier} (unresolved)`, line, typeOnly, resolved: Boolean(to) });
+      imports.push({ from, to: to ?? `${specifier} (unresolved)`, line: lineOf(node), typeOnly, resolved: Boolean(to) });
     };
+    const isPath = (node) => Boolean(node) && ts.isStringLiteralLike(node);
+    const isLoadCall = (node) => ts.isCallExpression(node)
+      && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+        || (ts.isIdentifier(node.expression) && node.expression.text === "require"));
     const visit = (node) => {
-      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier
-        && ts.isStringLiteral(node.moduleSpecifier)) {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && isPath(node.moduleSpecifier)) {
         const typeOnly = ts.isImportDeclaration(node)
           ? Boolean(node.importClause?.isTypeOnly)
           : node.isTypeOnly;
         record(node.moduleSpecifier, typeOnly);
-      } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
-        && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) {
-        record(node.arguments[0], false);
+      } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)
+        && isPath(node.moduleReference.expression)) {
+        record(node.moduleReference.expression, node.isTypeOnly);
+      } else if (isLoadCall(node)) {
+        const [argument] = node.arguments;
+        if (isPath(argument)) record(argument, false);
+        else if (argument) {
+          imports.push({ from, to: `${argument.getText(source)} (computed path)`, line: lineOf(node), typeOnly: false, resolved: false });
+        }
       } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)
-        && ts.isStringLiteral(node.argument.literal)) {
+        && isPath(node.argument.literal)) {
         record(node.argument.literal, true);
       }
       ts.forEachChild(node, visit);
