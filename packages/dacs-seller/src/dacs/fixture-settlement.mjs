@@ -2,7 +2,7 @@ import { canonicalize, contentHash, identityBundleHash, paymentEvidenceAddress, 
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord } from './fixture-anchors.mjs';
 import { readAdmissionCapability } from './session-admission.mjs';
 import { agreementTerms, deliverableAddress, deliveryEvidenceAddress, DEM_RAIL_DEFINITION, ed25519Deps, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
-const TX_HASH_SHAPE = /^(?:0x)?[0-9a-fA-F]{64}$/;
+const TX_HASH_SHAPE = /^(?:0[xX])?[0-9a-fA-F]{64}$/;
 const normalized = value => String(value).toLowerCase().replace(/^0x/, '');
 const same = (left, right) => canonicalize(left) === canonicalize(right);
 // Fixture settlement uses current authenticated job facts and one retained

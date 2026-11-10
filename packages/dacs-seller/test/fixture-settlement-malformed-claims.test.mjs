@@ -54,6 +54,24 @@ test('fixture settlement refuses a malformed transaction hash with no write and 
   }
 });
 
+test('fixture settlement delivers a transaction hash with an uppercase 0X prefix and still refuses malformed ones', async () => {
+  const w = await agentFixture();
+  try {
+    await w.agent.commit({jobId: FIRST_JOB});
+    const writesBefore = w.anchors.writes.length;
+    for (const txHash of ['0X', `0X0X${TX_HASH}`, `0X${'a'.repeat(63)}`, `0X${TX_HASH}\n`]) {
+      await assert.rejects(w.agent.submitPayment({jobId: FIRST_JOB, txHash, payerPayingKey: w.buyer.claim}), {code: 'payment_tx_hash_invalid', status: 422}, txHash);
+      assertNothingRetained(w, FIRST_JOB, writesBefore);
+    }
+    const answer = await w.agent.submitPayment({jobId: FIRST_JOB, txHash: `0X${TX_HASH}`, payerPayingKey: w.buyer.claim});
+    assert.equal(answer.status, 'delivered');
+    const repeat = await w.agent.submitPayment({jobId: FIRST_JOB, txHash: `0x${TX_HASH}`, payerPayingKey: w.buyer.claim});
+    assert.equal(repeat.status, 'delivered', 'the 0x spelling is the same settlement identity');
+  } finally {
+    w.close();
+  }
+});
+
 test('fixture settlement refuses a missing or malformed payer paying key with no write and no retained work', async () => {
   const w = await agentFixture();
   try {
