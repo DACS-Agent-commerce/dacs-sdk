@@ -22,7 +22,7 @@ test('buyer modules avoid seller state, portal, wallet seams and eager SQLite', 
  assert.equal('createSellerHttpHandler' in http,false);assert.equal('loopbackSocket' in http,false);
  await import(${JSON.stringify(new URL('../src/wallet/devnet-native-transport.mjs',import.meta.url).href)});
  await assert.rejects(import(${JSON.stringify(new URL('../src/seams/wallet-actions-not-wired.mjs',import.meta.url).href)}), /forbidden buyer dependency/);
- buyerLoading=false; // The retained legacy store is tested on its own, outside the buyer import graph.
+ buyerLoading=false; // The seller transport store is tested on its own, outside the buyer import graph.
  const {createSellerTransportStore}=await import(${JSON.stringify(new URL('../src/dacs/seller-transport-auth.mjs',import.meta.url).href)});
  assert.equal(sqliteLoads,0);sqliteAllowed=true;
  const dir=mkdtempSync(join(tmpdir(),'dacs-import-store-'));
