@@ -9,6 +9,8 @@ import type {
 } from "@x402/core/types";
 import {
   createIdempotencyStore,
+  declareSettlementBridge,
+  settleThroughStore,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -893,7 +895,7 @@ export function x402Settle(
   if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
     throw new CounterpartyError("x402 rail must expose its positive finality policy");
   }
-  return (req) => {
+  return declareSettlementBridge((req: SettleRequest): Promise<SettleResult> => {
     const { amount, asset: agreementAsset, expectedPayee, jobId, phase, rail: railId } = req;
     if (expectedPayee !== recipientEvm) {
       throw new CounterpartyError(
@@ -943,11 +945,14 @@ export function x402Settle(
     // authorization/session binding (SB-3) by itself. A durable recovery may
     // replay only when `reconcile` returns an authorization bound to this exact
     // deterministic EIP-3009 nonce; absence alone still fails closed.
-    return store.once(
-      settlementKey(railId, jobId, phaseIndex),
+    return settleThroughStore({
+      store,
+      recoveryOnly: req.recoveryOnly,
+      label: "x402",
+      key: settlementKey(railId, jobId, phaseIndex),
       binding,
       submit,
       reconcile,
-    );
-  };
+    });
+  });
 }

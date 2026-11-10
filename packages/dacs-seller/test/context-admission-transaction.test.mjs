@@ -84,7 +84,7 @@ function world(t, config = {}) {
     if (!control.killed) store?.close();
     control.killed = false;
     store = createSellerTransportStore({ path, generation: `test-generation-${++control.generation}`, now: () => control.clock, ready: () => control.ready,
-      maxContextRecords: options.maxContextRecords, contextStartLimits: options.contextStartLimits });
+      maxContextRecords: options.maxContextRecords, maxJobs: options.maxJobs, contextRecords: options.contextRecords, contextSessionState: options.contextSessionState, wireOperationView: options.wireOperationView, contextStartLimits: options.contextStartLimits });
     internals = sellerStoreInternals(store);
     admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity: options.capacity ?? null,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
@@ -93,9 +93,9 @@ function world(t, config = {}) {
   }
   reopen();
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  function prepare(index = 0x11, buyer = BUYER, { presenter = buyer } = {}) {
+  function prepare(index = 0x11, buyer = BUYER, { presenter = buyer, issued = null } = {}) {
     const jobId = job(index), challengeScopeHash = hash('challenge-scope');
-    const { sessionNonce: nonce } = store.challenges.issue({ jobId, buyer }, challengeScopeHash);
+    const { sessionNonce: nonce } = issued ?? store.challenges.issue({ jobId, buyer }, challengeScopeHash);
     const bundle = { presentedBy: presenter, sessionNonce: nonce, presentation: { proof: 'TEST-fixture' } };
     const attempt = { nonce, jobId, buyer, challengeScopeHash, presentationHash: hash(canonicalize(bundle)), path: 'context' };
     const result = store.challenges.attempt(attempt); assert.equal(result.kind, 'validate'); calls.validation++;
@@ -158,6 +158,45 @@ function gatedPolicy(w) {
   return jobId => { const gate = { entered: deferred(), barrier: deferred() }; gates.set(jobId, gate); return gate; };
 }
 const reject = (promise, code, status) => assert.rejects(promise, { code, ...(status ? { status } : {}) });
+test('begin refuses a job retired by the readiness limit sweep', async t => {
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === job(0x11) ? session : null });
+  const payload = { version: '1', kind: 'request', path: '/dacs/v1/agreements/proposals', method: 'POST', jobId: job(0x11), buyer: BUYER, seller: SELLER,
+    listingPin: PIN, profile: PROFILE, agreementHash: hash('agreement'), bodyHash: hash('{}'), nonce: Buffer.alloc(24, 1).toString('base64url'), expiresAt: T0 + 60000 };
+  await w.store.reservationAccounting.reserveAccounted({ payload, route: payload.path, operationId: wireOperationId(payload), keepProfile: PROFILE,
+    checked: { body: {}, reserve: async () => ({ state: 'completed', outcome: { status: 200, text: '{}' } }) } });
+  w.control.clock += HOUR + 61000;
+  const p = w.prepare();
+  Object.defineProperty(w.control, 'ready', { get() { session = 'finalised'; return true; } });
+  await assert.rejects(w.admission.begin(p.input), { code: 'context_job_closed', status: 409 });
+  assert.equal(w.row(p.input.jobId), null); assert.equal(w.holds.size, 0); assert.equal(w.calls.reserve, 0);
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'context_job_closed');
+});
+
+test('begin refuses a job retired by its admission sweep without taking a hold', async t => {
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === job(0x11) ? session : null });
+  const payload = { path: '/dacs/v1/agreements/proposals', method: 'POST', jobId: job(0x11), buyer: BUYER, seller: SELLER,
+    listingPin: PIN, agreementHash: hash('agreement'), bodyHash: hash('{}'), nonce: 'completed-proposal', expiresAt: T0 + 60000 };
+  w.store.finish(w.store.reserve(payload, {}, { keepProfile: PROFILE }), 200, '{"proposal":"kept"}');
+  w.control.clock += HOUR + 61000;
+  const p = w.prepare();
+  session = 'finalised';
+  let result, error;
+  try { result = await w.admission.begin(p.input); } catch (cause) { error = cause; }
+  const retired = w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(p.input.jobId)?.job_retired ?? 0;
+  assert.deepEqual({ code: error?.code, status: error?.status, state: w.row(p.input.jobId)?.state ?? null, retired,
+    holds: w.holds.size, policyCalls: w.calls.reserve },
+  { code: 'context_job_closed', status: 409, state: null, retired: 0, holds: 0, policyCalls: 0 });
+  assert.equal(result, undefined);
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'context_job_closed');
+  const next = w.prepare(0x22); await w.admission.begin(next.input);
+  await assert.rejects(w.admission.begin(w.prepare(0x33).input), { code: 'peer_job_capacity', status: 503 });
+  const retry = { ...payload, nonce: 'completed-proposal-retry', expiresAt: w.control.clock + 60000 };
+  assert.deepEqual(w.store.reserve(retry, {}, { keepProfile: PROFILE }),
+    { disposition: 'cached', status: 200, text: '{"proposal":"kept"}' });
+});
+
 async function running(w, p) { await w.admission.begin(p.input); return w.admission.reserveContext(p.input.jobId, w.reserveWire); }
 const openHolds = path => parsePolicyLedger(readFileSync(path, 'utf8')).rows.filter(entry => entry.contextHold && !entry.released).length;
 
@@ -555,7 +594,7 @@ test('admission-continuation-retains-envelope-parties', async t => {
   assert.deepEqual(saved.vetAddresses, { buyer: compositeVerificationAddress(p.input.jobId, EQUIVALENT_BUYER), seller: compositeVerificationAddress(p.input.jobId, SELLER) });
   assert.equal(saved.contextBinding, wireOperationBinding({ profile: PROFILE, buyer: BUYER, agreementHash: p.input.contextScopeHash }));
   assert.deepEqual(w.control.reserved, [{ jobId: p.input.jobId, effect: wireOperationId({ seller: SELLER, jobId: p.input.jobId, path: SELLER_CONTEXT_PATH }), writes: 2, hold: saved.holdId }]);
-  await reject(w.admission.begin({ ...p.input, buyer: EQUIVALENT_BUYER }), 'context_job_closed', 409);
+  await reject(w.admission.begin({ ...p.input, buyer: EQUIVALENT_BUYER }), 'peer_job_conflict', 409);
   assert.equal(w.row(p.input.jobId).buyer, BUYER); assert.equal(w.calls.reserve, 1);
 });
 
@@ -1315,4 +1354,659 @@ test('admission-live-begin-owner-is-held-while-the-d4-hooks-run-and-removed-afte
   await w.admission.jobEffectMutex(jobId).run(() => {}); await flush();
   // The refusal is compensated under the same lease: no effect happened, so the row aborts and its hold is released.
   assert.equal(w.row(jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(owned(w, jobId, 1), false);
+});
+
+// D21: accounting sees durable K1 rows before any purchase tuple exists, as well as after restart.
+const accountingInput = (jobId, path, buyer = BUYER) => {
+  const payload = { version: '1', kind: 'request', method: 'POST', path, jobId, buyer, seller: SELLER, listingPin: PIN,
+    agreementHash: hash('accounting agreement'), bodyHash: hash('{}'), nonce: hash('accounting nonce'), expiresAt: T0 + 60000, profile: PROFILE };
+  return { payload, route: path, operationId: wireOperationId(payload), keepProfile: PROFILE,
+    checked: { body: {}, reserve: async () => { throw new Error('refused accounting reached wire reservation'); } } };
+};
+for (const limit of ['jobs', 'context']) test(`D21 accounting counts K1 intent and admitted rows without tuples toward ${limit}`, async t => {
+  const w = world(t, { maxJobs: limit === 'jobs' ? 1 : 20, maxContextRecords: limit === 'context' ? 1 : 20 });
+  const gate = deferred(); w.control.beforeReserve = () => gate.promise.then(() => null);
+  const { input } = w.prepare(), pending = w.admission.begin(input);
+  await flush();
+  const args = accountingInput(job(0x22), limit === 'jobs' ? '/dacs/v1/agreements/proposals' : SELLER_CONTEXT_PATH);
+  const refusal = { code: limit === 'jobs' ? 'peer_job_capacity' : 'peer_context_capacity', status: 503 };
+  try {
+    assert.equal(w.row(input.jobId).state, 'intent');
+    assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n, 0);
+    await assert.rejects(w.store.reservationAccounting.reserveAccounted(args), refusal);
+  } finally { gate.resolve(); await pending; }
+  w.reopen();
+  assert.equal(w.row(input.jobId).state, 'admitted');
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n, 0);
+  await assert.rejects(w.store.reservationAccounting.reserveAccounted(args), refusal);
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
+});
+test('D21 accounting keeps the K1 row owner before a purchase tuple exists', async t => {
+  const w = world(t), { input } = w.prepare();
+  await w.admission.begin(input);
+  await assert.rejects(w.store.reservationAccounting.reserveAccounted(accountingInput(input.jobId, '/dacs/v1/agreements/proposals', OTHER)),
+    { code: 'peer_job_conflict', status: 409 });
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
+});
+test('D21 accounting preserves the optional contextRecords override', async t => {
+  const w = world(t, { maxContextRecords: 1, contextRecords: () => 1 });
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+  await assert.rejects(w.store.reservationAccounting.reserveAccounted(accountingInput(job(0x22), SELLER_CONTEXT_PATH)),
+    { code: 'peer_context_capacity', status: 503 });
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
+});
+
+test('D21 old-path reclamation cannot free the job slot still held by a K1 row', async t => {
+  let terminal = false, retainedJob;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => terminal && jobId === retainedJob ? 'finalised' : null });
+  const { input } = w.prepare(); retainedJob = input.jobId;
+  await w.admission.begin(input);
+  const proposal = accountingInput(retainedJob, '/dacs/v1/agreements/proposals').payload;
+  w.store.finish(w.store.reserve(proposal, {}, { keepProfile: PROFILE }), 200, '{}');
+  terminal = true; w.control.clock += HOUR + 60001;
+  w.reopen();
+  const other = { ...accountingInput(job(0x22), proposal.path).payload, nonce: hash('other nonce') };
+  assert.throws(() => w.store.reserve(other, {}, { keepProfile: PROFILE }), { code: 'peer_job_capacity', status: 503 });
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM peer_jobs').get().n, 1);
+  assert.equal(w.internals.admissionCounts().contextRecords, 1);
+});
+
+test('D21 integration retains r31 payment-route transaction binding before any charge', async t => {
+  const w = world(t), tx = hash('payment claim');
+  const valid = accountingInput(job(0x22), '/dacs/v1/payments');
+  const invalid = [
+    { ...valid, checked: { body: { txHash: tx }, reserve: valid.checked.reserve } },
+    { ...valid, paymentTx: tx },
+    { ...valid, paymentTx: tx, checked: { body: { txHash: hash('other claim') }, reserve: valid.checked.reserve } },
+    { ...accountingInput(job(0x22), SELLER_CONTEXT_PATH), paymentTx: tx },
+  ];
+  for (const input of invalid) {
+    await assert.rejects(w.store.reservationAccounting.reserveAccounted(input), { code: 'wire_input_invalid', status: 500 });
+    assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
+  }
+  await w.store.reservationAccounting.reserveAccounted({ ...valid, paymentTx: '0x' + tx.toUpperCase(),
+    checked: { body: { txHash: tx }, reserve: async () => ({ state: 'new' }) } });
+  assert.equal(w.db.prepare('SELECT tx FROM kit_payment_transactions').get().tx, tx);
+});
+test('D21 integration retains P11b1L1 terminal retry binding through the accounting ledger', async t => {
+  let terminal = false, view = null;
+  const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null, wireOperationView: () => view });
+  const first = accountingInput(job(0x22), SELLER_CONTEXT_PATH);
+  first.checked.reserve = async () => ({ state: 'new' });
+  await w.store.reservationAccounting.reserveAccounted(first);
+  terminal = true;
+  view = { state: 'present', binding: wireOperationBinding(first.payload) };
+  const retry = { ...first, payload: { ...first.payload, nonce: hash('retry nonce') } };
+  await w.store.reservationAccounting.reserveAccounted(retry);
+  const before = w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n;
+  const different = { ...first, payload: { ...first.payload, nonce: hash('different nonce'), agreementHash: hash('different scope') } };
+  await assert.rejects(w.store.reservationAccounting.reserveAccounted(different), { code: 'context_session_terminal', status: 409 });
+  view = null;
+  await assert.rejects(w.store.reservationAccounting.reserveAccounted({ ...first, payload: { ...first.payload, nonce: hash('missing view nonce') } }),
+    { code: 'context_session_terminal', status: 409 });
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, before);
+});
+
+
+test('R02 aborted K1 releases context after restart', async t => {
+  const w = world(t, { maxContextRecords: 1 }), p = w.prepare();
+  w.control.beforeReserve = () => { throw new Error('policy-refused'); };
+  await reject(w.admission.begin(p.input), 'seller_budget_unavailable');
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).state, 'aborted');
+  w.reopen();
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+  assert.equal(w.row(p.input.jobId).buyer, BUYER, 'abort retains ownership proof');
+  w.control.beforeReserve = null;
+  await w.admission.begin(w.prepare(0x22).input);
+});
+
+test('R03 aborted K1 releases job for old reserve after restart', async t => {
+  const w = world(t, { maxJobs: 1 }), p = w.prepare();
+  w.control.beforeReserve = () => { throw new Error('policy-refused'); };
+  await reject(w.admission.begin(p.input), 'seller_budget_unavailable');
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).state, 'aborted');
+  w.control.clock += HOUR + 1; w.reopen();
+  const request = accountingInput(job(0x22), '/dacs/v1/agreements/proposals').payload;
+  assert.equal(w.store.reserve(request, {}, { keepProfile: PROFILE }).disposition, 'perform');
+  assert.equal(w.row(p.input.jobId).state, 'aborted');
+});
+
+for (const [name, terminal, elapsed] of [
+  ['R06 settled nonterminal retains both slots', false, HOUR + 1],
+  ['R06 terminal inside start window retains both slots', true, HOUR - 1],
+  ['R06 terminal retirement survives restart with unknown state', true, HOUR + 1],
+]) test(name, async t => {
+  let session = null;
+  const w = world(t, { maxJobs: 1, maxContextRecords: 1, contextSessionState: () => session });
+  const p = w.prepare(), next = w.prepare(0x22), capability = await running(w, p);
+  await capability.complete(outcome);
+  const proof = w.admission.admissionRecord(p.input.jobId);
+  w.internals.transaction(() => w.internals.keepPurchaseProfileWithin(p.input.jobId, PROFILE));
+  w.control.clock += elapsed; session = terminal ? 'finalised' : null;
+  assert.equal(w.internals.admissionCounts().contextRecords, 1, 'counting alone cannot retire');
+  await w.admission.sweep({ startup: false });
+  if (!terminal || elapsed < HOUR) {
+    assert.equal(w.internals.admissionCounts().contextRecords, 1);
+    assert.deepEqual(w.store.purchaseProfile(p.input.jobId), PROFILE);
+    await reject(w.admission.begin(next.input), 'peer_job_capacity', 503);
+    const request = accountingInput(job(0x33), '/dacs/v1/agreements/proposals').payload;
+    session = null;
+    assert.throws(() => w.store.reserve(request, {}, { keepProfile: PROFILE }), { code: 'peer_job_capacity', status: 503 });
+  } else {
+    assert.equal(w.internals.admissionCounts().contextRecords, 0);
+    assert.equal(w.store.purchaseProfile(p.input.jobId), null);
+    assert.deepEqual(w.admission.admissionRecord(p.input.jobId), proof);
+    session = null; w.reopen();
+    assert.equal(w.internals.admissionCounts().contextRecords, 0);
+    await w.admission.sweep({ startup: true });
+    assert.equal(w.internals.admissionCounts().contextRecords, 0);
+    assert.equal(w.store.purchaseProfile(p.input.jobId), null);
+    assert.deepEqual(w.admission.admissionRecord(p.input.jobId), proof);
+    await w.admission.begin(w.prepare(0x33).input);
+    assert.equal(w.calls.reserve, 2, 'retirement and restart never repeat the first hold');
+    assert.equal(w.internals.admissionCounts().contextRecords, 1);
+  }
+});
+
+test('a stored context challenge keeps its exact answer after retirement and restart', async t => {
+  let session = null;
+  const w = world(t, { contextSessionState: () => session }), p = w.prepare();
+  const capability = await running(w, p);
+  await capability.complete(outcome);
+  const stored = w.store.challenges.attempt(p.attempt), record = w.admission.admissionRecord(p.input.jobId);
+  assert.equal(stored.kind, 'continuation');
+  session = 'finalised'; w.control.clock += 2 * HOUR;
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(p.input.jobId).job_retired, 1);
+  session = null; w.reopen();
+  const changes = w.changes(), calls = structuredClone(w.calls);
+  assert.deepEqual(w.store.challenges.attempt(p.attempt), stored);
+  assert.deepEqual(w.admission.admissionRecord(p.input.jobId), record);
+  assert.deepEqual(w.calls, calls); assert.equal(w.changes(), changes);
+});
+
+test('R06 retirement rollback preserves slots and restart can retry', async t => {
+  let terminal = false;
+  const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null }), p = w.prepare();
+  const capability = await running(w, p); await capability.complete(outcome);
+  terminal = true; w.control.clock += HOUR + 1;
+  assert.equal(typeof w.internals.retireSlotsWithin, 'function');
+  assert.throws(() => w.internals.retireSlotsWithin(w.control.clock), /transaction/);
+  w.db.exec("CREATE TRIGGER retirement_cut BEFORE INSERT ON kit_slot_retirements BEGIN SELECT RAISE(ABORT, 'retirement-cut'); END");
+  await assert.rejects(w.admission.sweep({ startup: false }), /retirement-cut/);
+  assert.equal(w.internals.admissionCounts().contextRecords, 1);
+  w.reopen(); assert.equal(w.internals.admissionCounts().contextRecords, 1);
+  w.db.exec('DROP TRIGGER retirement_cut');
+  w.cut('before-commit', () => w.db.prepare('SELECT 1 FROM kit_slot_retirements WHERE job_retired = 1').get() !== undefined);
+  await assert.rejects(w.admission.sweep({ startup: false }), /cut-before-commit/);
+  assert.equal(w.internals.admissionCounts().contextRecords, 1);
+  w.reopen(); assert.equal(w.internals.admissionCounts().contextRecords, 1);
+  await w.admission.sweep({ startup: true });
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+  assert.equal(w.row(p.input.jobId).state, 'settled');
+});
+
+
+test('R06 sweep retires current old-context holders without count-only subtraction', async t => {
+  let terminal = false;
+  const w = world(t, { maxContextRecords: 1, contextSessionState: () => terminal ? 'finalised' : null });
+  const p = accountingInput(job(0x11), SELLER_CONTEXT_PATH).payload;
+  w.store.finish(w.store.reserve(p, { scope: { jobId: p.jobId } }, { admit: () => w.control.clock }), 200, '{}');
+  terminal = true; w.control.clock += HOUR + 1;
+  assert.equal(w.internals.admissionCounts().contextRecords, 1, 'eligible rows still count before the writer commits');
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+  terminal = false; w.reopen();
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+  const foreign = accountingInput(job(0x11), '/dacs/v1/agreements/proposals', `did:demos:agent:${hash('foreign')}`).payload;
+  assert.throws(() => w.store.reserve(foreign, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+});
+
+test('R20 accounting adopts a detached tuple without another insert or timestamp change', async t => {
+  const w = world(t, { maxJobs: 1 }), id = job(0x11), input = accountingInput(id, '/dacs/v1/agreements/proposals');
+  w.internals.transaction(() => w.internals.keepPurchaseProfileWithin(id, PROFILE));
+  w.db.exec("CREATE TRIGGER adoption_once BEFORE INSERT ON kit_purchase_profiles BEGIN SELECT RAISE(ABORT, 'second tuple insert'); END");
+  input.checked = { body: {}, reserve: async () => ({ state: 'new' }) };
+  w.control.clock++;
+  const wrong = structuredClone(PROFILE); wrong.pinVersion += '-other';
+  await assert.rejects(w.store.reservationAccounting.reserveAccounted({ ...input, keepProfile: wrong, payload: { ...input.payload, profile: wrong } }), { code: 'tp1_purchase_profile_mismatch', status: 500 });
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM peer_jobs').get().n, 0);
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
+  assert.equal((await w.store.reservationAccounting.reserveAccounted(input)).state, 'new');
+  assert.equal(w.db.prepare('SELECT kept_at FROM kit_purchase_profiles WHERE job = ?').get(id).kept_at, T0);
+  w.reopen(); assert.deepEqual(w.store.purchaseProfile(id), PROFILE);
+});
+
+
+test('retired settled admissions do not reread session state during later capacity checks', async t => {
+  let terminal = false, retiredReads = 0;
+  const w = world(t, { contextSessionState: ({ jobId }) => {
+    if (jobId !== job(0x11)) return null;
+    if (terminal) retiredReads++;
+    return terminal ? 'finalised' : null;
+  } });
+  const first = w.prepare(0x11);
+  await (await running(w, first)).complete(outcome);
+  terminal = true; w.control.clock += HOUR + 61000;
+  w.internals.transaction(() => w.internals.retireSlotsWithin(w.control.clock));
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(first.input.jobId).job_retired, 1);
+  retiredReads = 0;
+  const next = w.prepare(0x22);
+  await w.admission.begin(next.input);
+  assert.equal(retiredReads, 0);
+});
+
+test('R06 per-job retirement leaves another settled holder active', async t => {
+  let terminal = false;
+  const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null });
+  const a = w.prepare(0x11), b = w.prepare(0x22);
+  await (await running(w, a)).complete(outcome);
+  await (await running(w, b)).complete(outcome);
+  terminal = true; w.control.clock += HOUR + 1;
+  w.internals.transaction(() => w.internals.retireSlotsWithin(w.control.clock, a.input.jobId));
+  assert.equal(w.internals.admissionCounts().contextRecords, 1);
+  const flags = w.db.prepare('SELECT job_retired, context_retired FROM kit_slot_retirements WHERE job = ?').get(a.input.jobId);
+  assert.deepEqual(flags, { job_retired: 1, context_retired: 1 });
+  assert.equal(w.db.prepare('SELECT job FROM kit_slot_retirements WHERE job = ?').get(b.input.jobId), undefined);
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+});
+
+
+// Exercise the claiming boundaries against the same fresh-store contract.
+const PROPOSALS = '/dacs/v1/agreements/proposals';
+const claimPair = w => {
+  const issued = [BUYER, OTHER].map(buyer => w.store.challenges.issue({ jobId: job(0x11), buyer }, hash('challenge-scope')));
+  return [w.prepare(0x11, BUYER, { issued: issued[0] }), w.prepare(0x11, OTHER, { issued: issued[1] })];
+};
+const claimAt = (w, boundary, input, buyer = input.buyer) => {
+  if (boundary === 'admission') return w.admission.begin(input);
+  const args = accountingInput(input.jobId, PROPOSALS, buyer);
+  args.payload.nonce = hash(input.jobId + buyer);
+  if (boundary === 'old') return w.store.reserve(args.payload, {}, { keepProfile: PROFILE });
+  return w.store.reservationAccounting.reserveAccounted({ ...args, checked: { body: {}, reserve: async () => ({ state: 'new' }) } });
+};
+const workSnapshot = w => Object.fromEntries(['peer_jobs', 'peer_effects', 'kit_context_admissions', 'kit_purchase_profiles', 'kit_job_holds', 'kit_reservations', 'kit_slot_retirements', 'kit_job_owners']
+  .map(table => [table, w.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+const ownerRow = (w, jobId) => w.db.prepare('SELECT * FROM kit_job_owners WHERE job = ?').get(jobId);
+
+for (const first of ['old', 'admission', 'accounted']) for (const second of ['old', 'admission', 'accounted']) {
+  test(`first committed ${first} claim excludes foreign ${second} without new work`, async t => {
+    const w = world(t, { maxJobs: 1 }), [winner, loser] = claimPair(w);
+    const results = await Promise.allSettled([Promise.resolve().then(() => claimAt(w, first, winner.input)),
+      Promise.resolve().then(() => claimAt(w, second, loser.input))]);
+    assert.equal(results[0].status, 'fulfilled');
+    assert.equal(results[1].status, 'rejected');
+    assert.equal(results[1].reason.code, 'peer_job_conflict'); assert.equal(results[1].reason.status, 409);
+    const before = workSnapshot(w), calls = w.calls.reserve;
+    await assert.rejects(Promise.resolve().then(() => claimAt(w, second, loser.input)), { code: second === 'admission' ? 'context_challenge_attempt_invalid' : 'peer_job_conflict' });
+    assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, calls);
+    assert.equal(ownerRow(w, winner.input.jobId).buyer, BUYER);
+    for (const table of ['kit_context_admissions', 'kit_job_holds', 'kit_reservations']) assert.equal(w.db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE buyer <> ?`).get(BUYER).n, 0);
+    for (const [table, count] of [['peer_effects', Number(first === 'old')], ['kit_reservations', Number(first === 'accounted')], ['kit_purchase_profiles', Number(first !== 'admission')]]) {
+      assert.equal(w.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, count);
+    }
+    assert.equal(w.calls.reserve, Number(first === 'admission'));
+    if (second === 'admission') assert.equal(w.store.challenges.retained(loser.input.nonce).failure.code, 'peer_job_conflict');
+    if (first !== 'admission') assert.equal(w.row(winner.input.jobId), null);
+  });
+}
+
+for (const first of ['old', 'admission', 'accounted']) for (const second of ['old', 'admission', 'accounted']) {
+  test(`maxJobs spans ${first} and ${second} claims`, async t => {
+    const w = world(t, { maxJobs: 1 }), firstInput = w.prepare().input, next = w.prepare(0x22).input;
+    await claimAt(w, first, firstInput);
+    const before = workSnapshot(w), calls = w.calls.reserve;
+    await assert.rejects(Promise.resolve().then(() => claimAt(w, second, next)), { code: 'peer_job_capacity', status: 503 });
+    assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, calls);
+    assert.equal(ownerRow(w, next.jobId), undefined);
+    if (second === 'admission') assert.equal(w.store.challenges.retained(next.nonce).failure.code, 'peer_job_capacity');
+    w.reopen(); assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.jobId), undefined);
+  });
+}
+
+test('refused INSERT rolls owner back and fails only the verified challenge', async t => {
+  const w = world(t), p = w.prepare(), other = w.prepare(0x22), before = workSnapshot(w);
+  const prepare = w.db.prepare.bind(w.db);
+  w.db.prepare = sql => {
+    if (sql.startsWith('INSERT INTO kit_context_admissions')) return { run() { throw Object.assign(new Error('definite-insert-refusal'), { code: 'peer_store_capacity', status: 503 }); } };
+    return prepare(sql);
+  };
+  await assert.rejects(w.admission.begin(p.input), { code: 'peer_store_capacity', status: 503 });
+  w.db.prepare = prepare;
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'peer_store_capacity');
+  assert.equal(w.store.challenges.retained(other.input.nonce).state, 'attempted');
+  assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, p.input.jobId), undefined); assert.equal(w.calls.reserve, 0);
+  w.reopen(); assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, p.input.jobId), undefined);
+});
+
+test('refused admission intent rolls retirement back across restart', async t => {
+  let terminal = false;
+  const w = world(t, { maxJobs: 1, contextSessionState: () => terminal ? 'finalised' : null }), p = w.prepare();
+  const capability = await running(w, p); await capability.complete(outcome);
+  w.control.clock += HOUR + 1;
+  const next = w.prepare(0x22); terminal = true;
+  const before = workSnapshot(w); w.control.ready = false;
+  await assert.rejects(w.admission.begin(next.input), { code: 'seller_not_ready', status: 503 });
+  assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
+  w.reopen(); assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
+  w.control.ready = true; terminal = false;
+  await assert.rejects(w.admission.begin(w.prepare(0x33).input), { code: 'peer_job_capacity', status: 503 });
+});
+
+test('intent commit cuts preserve atomic ownership across restart', async t => {
+  for (const at of ['before-commit', 'after-commit']) await t.test(at, async t => {
+    const w = world(t), p = w.prepare();
+    w.kill(() => w.row(p.input.jobId) !== null, at);
+    await assert.rejects(w.admission.begin(p.input));
+    w.reopen();
+    assert.equal(Boolean(ownerRow(w, p.input.jobId)), at === 'after-commit');
+    assert.equal(Boolean(w.row(p.input.jobId)), at === 'after-commit'); assert.equal(w.calls.reserve, 0);
+    await w.admission.sweep({ startup: true });
+    if (at === 'after-commit') { assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(ownerRow(w, p.input.jobId).closed, 1); }
+    assert.equal(w.calls.reserve, 0); assert.equal(w.holds.size, 0);
+  });
+});
+
+test('same nonce repeated begin writes nothing and keeps its live worker', async t => {
+  const w = world(t), p = w.prepare(), gate = deferred(); w.control.beforeReserve = () => gate.promise.then(() => null);
+  const pending = w.admission.begin(p.input); await flush(); const before = w.changes();
+  try {
+    await assert.rejects(w.admission.begin(p.input), { code: 'context_job_closed', status: 409 });
+    assert.equal(w.changes(), before); assert.equal(owned(w, p.input.jobId, 1), true); assert.equal(w.calls.reserve, 1);
+    assert.equal(w.store.challenges.retained(p.input.nonce).state, 'attempted');
+  } finally { gate.resolve(); await pending; }
+  assert.equal(w.row(p.input.jobId).state, 'admitted'); assert.equal(w.calls.reserve, 1);
+});
+
+for (const state of ['aborted', 'settled', 'retired']) test(`${state} admission keeps ownership before closure`, async t => {
+  let terminal = false;
+  const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null }), [p, foreign] = claimPair(w);
+  if (state === 'aborted') {
+    w.control.beforeReserve = () => { throw new Error('policy-refused'); };
+    await assert.rejects(w.admission.begin(p.input)); await w.admission.sweep({ startup: false });
+  } else {
+    const capability = await running(w, p); await capability.complete(outcome);
+    if (state === 'retired') { terminal = true; w.control.clock += HOUR + 1; await w.admission.sweep({ startup: false }); }
+  }
+  const before = workSnapshot(w), calls = w.calls.reserve;
+  await assert.rejects(w.admission.begin(foreign.input), { code: 'peer_job_conflict', status: 409 });
+  assert.equal(w.store.challenges.retained(foreign.input.nonce).failure.code, 'peer_job_conflict');
+  await assert.rejects(w.admission.begin(p.input), { code: 'context_job_closed', status: 409 });
+  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: state === 'retired' && boundary === 'old' ? 'context_session_terminal' : 'peer_job_conflict', status: 409 });
+  assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, calls); assert.equal(ownerRow(w, p.input.jobId).buyer, BUYER);
+  if (state !== 'settled') assert.equal(ownerRow(w, p.input.jobId).closed, 1);
+  w.reopen();
+  assert.throws(() => w.internals.transaction(() => w.internals.reserveAdmissionWithin(foreign.input, w.control.clock)), { code: 'peer_job_conflict', status: 409 });
+  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: state === 'retired' && boundary === 'old' ? 'context_session_terminal' : 'peer_job_conflict', status: 409 });
+  assert.deepEqual(workSnapshot(w), before);
+});
+
+test('an existing context admission refuses another bootstrap and fails its challenge', async t => {
+  const w = world(t), p = w.prepare(); w.legacyStart(0x11);
+  const before = workSnapshot(w);
+  await assert.rejects(w.admission.begin(p.input), { code: 'context_job_closed', status: 409 });
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'context_job_closed');
+  assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, 0); assert.equal(ownerRow(w, p.input.jobId), undefined);
+});
+
+test('effect authorized attempt cannot publish a clean null end', async t => {
+  const w = world(t), p = w.prepare(), capability = await running(w, p);
+  assert.equal(w.admission.runningCheck(p.input.jobId, capability.attempt, capability.rev), true);
+  await assert.rejects(capability.complete(null), { code: 'context_admission_closed', status: 409 });
+  assert.equal(w.calls.complete.length, 0); assert.equal(w.holds.size, 1);
+});
+
+test('old and accounted fresh nonce retries retain one job and one execution', async t => {
+  for (const boundary of ['old', 'accounted']) await t.test(boundary, async t => {
+    const w = world(t, { maxJobs: 1 }), p = w.prepare(), args = accountingInput(p.input.jobId, PROPOSALS);
+    if (boundary === 'old') {
+      const first = w.store.reserve(args.payload, {}, { keepProfile: PROFILE });
+      w.store.finish(first, 200, '{}'); w.reopen();
+      assert.equal(w.store.reserve({ ...args.payload, nonce: hash('retry') }, {}, { keepProfile: PROFILE }).disposition, 'cached');
+      assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 1);
+    } else {
+      let calls = 0;
+      const checked = { body: {}, reserve: async () => ({ state: ++calls === 1 ? 'new' : 'completed' }) };
+      await w.store.reservationAccounting.reserveAccounted({ ...args, checked });
+      await assert.rejects(w.store.reservationAccounting.reserveAccounted({ ...args, checked }), { code: 'peer_request_replayed', status: 409 });
+      assert.equal(calls, 1); assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 1); w.reopen();
+      await w.store.reservationAccounting.reserveAccounted({ ...args, payload: { ...args.payload, nonce: hash('retry') }, checked });
+      assert.equal(calls, 2); assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_job_holds').get().n, 1);
+    }
+    assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_job_owners').get().n, 1); assert.equal(ownerRow(w, p.input.jobId).buyer, BUYER);
+  });
+});
+
+
+test('context capacity refuses admission without an owner or partial work', async t => {
+  const w = world(t, { maxJobs: 2, maxContextRecords: 1 }), p = w.prepare(), next = w.prepare(0x22);
+  await w.admission.begin(p.input); const before = workSnapshot(w);
+  await assert.rejects(w.admission.begin(next.input), { code: 'peer_context_capacity', status: 503 });
+  assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined); assert.equal(w.calls.reserve, 1);
+  w.reopen(); assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
+});
+
+test('admission commits a feasible retirement and its new owner together', async t => {
+  let terminal = false;
+  const w = world(t, { maxJobs: 1, maxContextRecords: 1, contextSessionState: () => terminal ? 'finalised' : null }), p = w.prepare(), next = w.prepare(0x22);
+  const capability = await running(w, p); await capability.complete(outcome); w.control.clock += HOUR + 1;
+  terminal = true;
+  await w.admission.begin(next.input);
+  assert.equal(ownerRow(w, p.input.jobId).closed, 1); assert.equal(ownerRow(w, next.input.jobId).closed, 0);
+  assert.equal(w.internals.admissionCounts().contextRecords, 1); assert.equal(w.calls.reserve, 2);
+  w.reopen(); assert.equal(w.internals.admissionCounts().contextRecords, 1);
+  assert.equal(w.row(p.input.jobId).state, 'settled'); assert.equal(w.row(next.input.jobId).state, 'admitted');
+});
+
+test('exact owner bytes and first purchase agreement survive restart', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input);
+  assert.equal(ownerRow(w, p.input.jobId).agreement_hash, null);
+  await claimAt(w, 'accounted', p.input);
+  assert.equal(ownerRow(w, p.input.jobId).agreement_hash, hash('accounting agreement'));
+  w.reopen(); const before = workSnapshot(w);
+  for (const change of [{ buyer: OTHER }, { seller: OTHER }, { listingPin: { ...PIN, version: 2 } }, { agreementHash: hash('other agreement') }]) {
+    const args = accountingInput(p.input.jobId, PROPOSALS); Object.assign(args.payload, change);
+    args.operationId = wireOperationId(args.payload);
+    assert.throws(() => w.store.reserve(args.payload, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+    await assert.rejects(w.store.reservationAccounting.reserveAccounted(args), { code: 'peer_job_conflict', status: 409 });
+  }
+  assert.throws(() => w.internals.transaction(() => w.internals.reserveAdmissionWithin({ ...p.input, buyer: EQUIVALENT_BUYER }, w.control.clock)), { code: 'peer_job_conflict', status: 409 });
+  assert.deepEqual(workSnapshot(w), before);
+});
+
+test('an unverified attempt cannot fail either challenge or claim an owner', async t => {
+  const w = world(t), p = w.prepare(), other = w.prepare(0x22), before = workSnapshot(w);
+  await assert.rejects(w.admission.begin({ ...p.input, owner: other.input.owner }), { code: 'context_challenge_attempt_invalid', status: 409 });
+  for (const input of [p.input, other.input]) { assert.equal(w.store.challenges.retained(input.nonce).state, 'attempted'); assert.equal(ownerRow(w, input.jobId), undefined); }
+  assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, 0);
+});
+
+test('two store connections keep the first committed owner across restart', async t => {
+  for (const first of ['old', 'admission', 'accounted']) await t.test(first, async t => {
+    const w = world(t, { maxJobs: 1 }), p = w.prepare();
+    let other = createSellerTransportStore({ path: join(w.directory, 'transport.sqlite'), maxJobs: 1, now: () => w.control.clock });
+    t.after(() => other.close());
+    const args = accountingInput(p.input.jobId, PROPOSALS, OTHER);
+    const [winner, loser] = await Promise.allSettled([Promise.resolve().then(() => claimAt(w, first, p.input)),
+      Promise.resolve().then(() => other.reservationAccounting.reserveAccounted(args))]);
+    assert.equal(winner.status, 'fulfilled'); assert.equal(loser.status, 'rejected'); assert.equal(loser.reason.code, 'peer_job_conflict');
+    const before = workSnapshot(w); other.close(); w.reopen();
+    other = createSellerTransportStore({ path: join(w.directory, 'transport.sqlite'), maxJobs: 1, now: () => w.control.clock });
+    assert.throws(() => other.reserve(args.payload, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+    assert.deepEqual(workSnapshot(w), before);
+  });
+});
+
+test('SQL INSERT failure rolls back owner and retirement without failing a challenge', async t => {
+  let terminal = false;
+  const w = world(t, { maxJobs: 1, contextSessionState: () => terminal ? 'finalised' : null }), p = w.prepare(), next = w.prepare(0x22);
+  const capability = await running(w, p); await capability.complete(outcome); w.control.clock += HOUR + 1; terminal = true;
+  const before = workSnapshot(w);
+  w.db.exec("CREATE TRIGGER admission_cut BEFORE INSERT ON kit_context_admissions BEGIN SELECT RAISE(ABORT, 'admission-cut'); END");
+  await assert.rejects(w.admission.begin(next.input), /admission-cut/);
+  assert.equal(w.store.challenges.retained(next.input.nonce).state, 'attempted');
+  assert.deepEqual(workSnapshot(w), before); w.reopen(); assert.deepEqual(workSnapshot(w), before);
+  assert.equal(w.calls.reserve, 1);
+});
+
+
+test('a definite operation_uncertain refusal commits only the owning challenge failure', async t => {
+  const w = world(t, { capacity: { fitsNewPurchase() { throw Object.assign(new Error('definite'), { code: 'operation_uncertain', status: 503 }); }, allocateWithin() { assert.fail('refusal allocated'); } } });
+  const p = w.prepare(), before = workSnapshot(w);
+  await assert.rejects(w.admission.begin(p.input), { code: 'operation_uncertain', status: 503 });
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'operation_uncertain');
+  assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, 0);
+});
+
+for (const completion of ['finish', 'reconcile']) for (const restart of [false, true]) {
+  test(`${completion} without effect allows a corrected Agreement for its buyer after restart=${restart}`, t => {
+    const w = world(t), args = accountingInput(job(0x11), PROPOSALS);
+    const first = w.store.reserve(args.payload, {}, { keepProfile: PROFILE });
+    if (completion === 'finish') w.store.finish(first, 422, '{}', { noEffect: true });
+    else {
+      w.store.finish(first, 503, '{}');
+      const retained = w.store.reserve({ ...args.payload, nonce: hash('reconciliation') }, {});
+      w.store.reconcile(retained, args.payload, 422, '{}', { noEffect: true });
+    }
+    assert.equal(w.db.prepare('SELECT job FROM peer_jobs WHERE job = ?').get(args.payload.jobId), undefined);
+    assert.equal(ownerRow(w, args.payload.jobId).agreement_hash, null);
+    assert.equal(ownerRow(w, args.payload.jobId).closed, 0);
+    if (restart) w.reopen();
+    const corrected = { ...args.payload, nonce: hash('corrected proposal'), agreementHash: hash('corrected agreement') };
+    const before = workSnapshot(w);
+    assert.throws(() => w.store.reserve({ ...corrected, buyer: OTHER }, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+    assert.deepEqual(workSnapshot(w), before);
+    const second = w.store.reserve(corrected, {}, { keepProfile: PROFILE });
+    assert.equal(second.disposition, 'perform');
+    assert.equal(ownerRow(w, corrected.jobId).agreement_hash, corrected.agreementHash);
+    w.store.finish(second, 200, '{}'); w.reopen();
+    assert.equal(w.store.reserve({ ...corrected, nonce: hash('completed retry') }, {}, { keepProfile: PROFILE }).disposition, 'cached');
+    assert.throws(() => w.store.reserve({ ...args.payload, nonce: hash('refused agreement retry') }, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+  });
+}
+
+test('a refused proposal keeps its saved answer after a corrected proposal succeeds', t => {
+  const w = world(t), args = accountingInput(job(0x11), PROPOSALS);
+  const text = '{"error":"proposal_refused"}';
+  const first = w.store.reserve(args.payload, {}, { keepProfile: PROFILE });
+  w.store.finish(first, 422, text, { noEffect: true });
+  const corrected = { ...args.payload, nonce: hash('corrected proposal'), agreementHash: hash('corrected agreement') };
+  const second = w.store.reserve(corrected, {}, { keepProfile: PROFILE });
+  assert.equal(second.disposition, 'perform');
+  w.store.finish(second, 200, '{}');
+  const before = workSnapshot(w);
+  for (const reopen of [false, true]) {
+    if (reopen) w.reopen();
+    assert.deepEqual(w.store.reserve(args.payload, {}, { keepProfile: PROFILE }), { disposition: 'cached', status: 422, text });
+    assert.throws(() => w.store.reserve({ ...args.payload, agreementHash: corrected.agreementHash }, {}, { keepProfile: PROFILE }), { code: 'peer_nonce_conflict', status: 409 });
+    assert.throws(() => w.store.reserve({ ...args.payload, nonce: hash('fresh refused proposal') }, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+    assert.deepEqual(workSnapshot(w), before);
+    assert.equal(ownerRow(w, corrected.jobId).agreement_hash, corrected.agreementHash);
+  }
+});
+
+for (const boundary of ['old', 'accounted']) for (const source of ['rejecting promise', 'throw', 'non-state']) {
+  test(`${boundary} proposal gate refuses a session source returning ${source} without work`, async t => {
+    const cause = new Error('session unavailable'); let broken = false;
+    const w = world(t, { contextSessionState: () => {
+      if (!broken) return null;
+      if (source === 'throw') throw cause;
+      return source === 'rejecting promise' ? Promise.reject(cause) : 7;
+    } });
+    const args = accountingInput(job(0x11), PROPOSALS), before = workSnapshot(w);
+    broken = true;
+    const expected = { code: 'session_admission_unavailable', status: 503 };
+    if (boundary === 'old') assert.throws(() => w.store.reserve(args.payload, {}, { keepProfile: PROFILE }), expected);
+    else await assert.rejects(w.store.reservationAccounting.reserveAccounted(args), expected);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, 0);
+  });
+}
+
+test('a purchase capacity refusal rolls back the retirement it observed across restart', async t => {
+  let terminal = false, refuse = false, observed = false, w;
+  const capacity = { fitsNewPurchase() {
+    if (refuse) {
+      assert.equal(ownerRow(w, job(0x11)).closed, 1);
+      assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(job(0x11)).job_retired, 1);
+      observed = true; return false;
+    }
+    return true;
+  }, allocateWithin() {} };
+  w = world(t, { maxJobs: 1, maxContextRecords: 1, capacity, contextSessionState: () => terminal ? 'finalised' : null });
+  const p = w.prepare(), next = w.prepare(0x22);
+  await (await running(w, p)).complete(outcome);
+  w.control.clock += HOUR + 1; terminal = true; refuse = true;
+  const before = workSnapshot(w);
+  await assert.rejects(w.admission.begin(next.input), { code: 'seller_not_ready', status: 503 });
+  assert.equal(observed, true); assert.deepEqual(workSnapshot(w), before);
+  assert.equal(w.store.challenges.retained(next.input.nonce).failure.code, 'seller_not_ready');
+  assert.equal(ownerRow(w, next.input.jobId), undefined); assert.equal(w.calls.reserve, 1);
+  w.reopen(); assert.deepEqual(workSnapshot(w), before);
+});
+
+test('an aborted admission frees job and context capacity immediately and after restart', async t => {
+  const w = world(t, { maxJobs: 1, maxContextRecords: 1 }), p = w.prepare();
+  w.control.beforeReserve = () => 'budget-refused';
+  await reject(w.admission.begin(p.input), 'seller_budget_refused', 409);
+  await drained(w, p.input.jobId);
+  assert.equal(w.row(p.input.jobId).state, 'aborted');
+  for (const reopen of [false, true]) {
+    if (reopen) w.reopen();
+    assert.equal(w.internals.admissionCounts().contextRecords, 0);
+    assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM kit_context_admissions WHERE state <> 'aborted'").get().n, 0);
+    const request = accountingInput(job(0x22), '/dacs/v1/agreements/proposals').payload;
+    assert.equal(w.store.classify(request, {}, { keepProfile: PROFILE }), 'start');
+  }
+  w.control.beforeReserve = null;
+  await w.admission.begin(w.prepare(0x33).input);
+});
+
+test('failed and settled starts release both slots before a third start after restart', async t => {
+  let terminal = false;
+  const w = world(t, { maxJobs: 2, maxContextRecords: 2, contextSessionState: ({ jobId }) => terminal && jobId === job(0x11) ? 'finalised' : null });
+  const settled = w.prepare(), failed = w.prepare(0x22), third = w.prepare(0x33);
+  await (await running(w, settled)).complete(outcome);
+  // Keep the failed start uncertain until the sweep proves it had no effect.
+  w.control.inspect = () => ({ state: 'none' });
+  w.control.evidence = record => w.evidenceOf(record, 'undetermined');
+  w.control.beforeReserve = () => { throw new Error('policy-refused'); };
+  await reject(w.admission.begin(failed.input), 'seller_budget_unavailable');
+  await drained(w, failed.input.jobId);
+  assert.equal(w.row(failed.input.jobId).state, 'compensating');
+  await reject(w.admission.begin(third.input), 'peer_job_capacity', 503);
+  w.control.evidence = null; w.control.beforeReserve = null;
+  terminal = true; w.control.clock += HOUR + 61000;
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(failed.input.jobId).state, 'aborted');
+  assert.equal(w.row(settled.input.jobId).state, 'settled');
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+  terminal = false; w.reopen();
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+  await w.admission.begin(w.prepare(0x44).input);
+  assert.equal(w.internals.admissionCounts().contextRecords, 1);
+});
+
+
+test('a retired completed job refuses a fresh context admission after restart', async t => {
+  const completedJob = job(0x11);
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === completedJob ? session : null });
+  const first = accountingInput(completedJob, PROPOSALS).payload;
+  w.store.finish(w.store.reserve(first, {}, { keepProfile: PROFILE }), 200, '{}');
+  session = 'finalised'; w.control.clock += HOUR + 61000;
+  const next = { ...accountingInput(job(0x22), PROPOSALS).payload, nonce: hash('replacement job nonce'), expiresAt: w.control.clock + 60000 };
+  w.store.finish(w.store.reserve(next, {}, { keepProfile: PROFILE }), 422, '{}', { noEffect: true });
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(completedJob).job_retired, 1);
+  assert.equal(ownerRow(w, completedJob).closed, 0);
+  session = null; w.reopen();
+  const { input } = w.prepare();
+  await assert.rejects(w.admission.begin(input), { code: 'context_job_closed', status: 409 });
+  assert.equal(w.row(completedJob), null);
+  assert.equal(w.calls.reserve, 0);
+  assert.equal(w.calls.wire, 0);
+  assert.equal(w.store.challenges.retained(input.nonce).failure.code, 'context_job_closed');
 });
