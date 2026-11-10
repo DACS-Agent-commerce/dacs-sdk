@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
+import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { SELLER_PROFILE } from '../../src/dacs/session-admission.mjs';
 import { sellerStoreInternals, SellerTransportError } from '../../src/dacs/seller-transport-auth.mjs';
 import { T0, JOB, JOB2, OTHER, CONTEXT } from './reservation-accounting-fixture.mjs';
@@ -44,7 +45,8 @@ function contextStart(f, jobId) {
       firstAdmission: { challengeExpiresAt: f.now() + 600000, generatedAt: f.now(), checkedAt: f.now() } } };
 }
 function contextTransaction(f, calls) {
-  return createContextAdmissionTransaction({ store: f.store(), now: f.now, ready: () => true, deadlines: { policyMs: 10000 },
+  const purchaseCapacity = createPurchaseCapacity({ store: f.store(), now: f.now, sessionState: () => null });
+  return createContextAdmissionTransaction({ store: f.store(), capacity: purchaseCapacity, now: f.now, ready: () => true, deadlines: { policyMs: 10000 },
     policy: { reserve: async () => { calls.reserve++; return null; }, release: async () => { calls.release++; } },
     effectEvidence: async () => [], inspectContextOutcome: () => ({ state: 'none' }), completeWire: () => {} });
 }
