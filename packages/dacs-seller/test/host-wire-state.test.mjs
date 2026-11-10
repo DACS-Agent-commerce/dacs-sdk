@@ -212,6 +212,32 @@ function storeFixture(t, options = {}) {
 
 // ================================================================ host tests
 
+test('host returns a completed proposal after its session ends', async (t) => {
+  let terminal = false;
+  const f = await hostFixture(t);
+  const host = await f.start({ contextSessionState: () => terminal ? 'finalised' : null });
+  const body = await f.proposal(host);
+  const { jobId, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const signed = await buyerWire.signRequest(PROPOSALS, body, { jobId, agreementHash });
+  const first = await postSigned(host, signed);
+  assert.equal(first.status, 200);
+  assert.equal(JSON.parse(first.bytes).disposition, 'complete');
+  await verifiedAnswer(buyerWire, first);
+
+  terminal = true;
+  const fresh = await buyerWire.signRequest(PROPOSALS, body, { jobId, agreementHash });
+  assert.notEqual(fresh.payload.nonce, signed.payload.nonce);
+  const retry = await postSigned(host, fresh);
+  assert.equal(retry.status, 200, retry.bytes.toString());
+  assert.deepEqual(retry.bytes, first.bytes);
+  await verifiedAnswer(buyerWire, retry);
+
+  const replay = await postSigned(host, signed);
+  assert.equal(replay.status, 409, replay.bytes.toString());
+  assert.equal(JSON.parse(replay.bytes).error, 'peer_request_replayed');
+});
+
 test('P10-T01 start creates a private, owned, real-path journal directory, opens it with the 300 s lease and leaves no probe files', async (t) => {
   const f = await hostFixture(t);
   const host = await f.start();
@@ -936,4 +962,19 @@ test('P10-T18 through the real guarded store\'s classify, its dry-run reserve an
   const afterRestart = await contextRequest();
   assert.equal(reopened.classify(afterRestart.request, afterRestart.body), 'known', 'the context retry classifies known after restart');
   await dryRuns(reopened, 'restarted store');
+});
+
+test('started host signed proposal creates accounting and wire operation records', async (t) => {
+  const f = await hostFixture(t), host = await f.start();
+  const body = await f.proposal(host), { jobId: id, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const answer = await postSigned(host, await buyerWire.signRequest(PROPOSALS, body, { jobId: id, agreementHash }));
+  const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
+  try {
+    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations').all(), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
+  } finally { db.close(); }
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, 1);
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length, 1);
+  assert.ok(answer.header, 'the started host signs the result');
 });
