@@ -812,7 +812,10 @@ export interface PayDemRailConfig {
    * Bound for the payer's account-nonce read to reach the executed nonce
    * (default 60 seconds), both after inclusion and, when that read had not
    * caught up, before signing the payer's next transfer. If it is still behind
-   * then, the transfer is refused with a transient error before signing.
+   * then, the transfer is refused with a transient error before signing and
+   * nothing is signed or broadcast. A direct caller of the rail may retry. A
+   * caller going through the settlement store or the buyer track sees the job
+   * as held or ambiguous and must use a new job id after checking it.
    */
   nonceVisibilityTimeoutMs?: number;
   /**
@@ -1720,7 +1723,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         if (caughtUp.status !== "fulfilled") {
           throw new DacsError(
             `pay-dem: the node's nonce read is behind the last signed nonce ${unreadNonce}; ` +
-              "nothing was signed or broadcast, retry later",
+              "nothing was signed or broadcast; a direct caller of the rail may retry; " +
+              "through the settlement store or the buyer track the job is held or ambiguous, " +
+              "so check it and use a new job id",
             {
               category: "transient",
               ...(caughtUp.status === "rejected" ? { cause: caughtUp.reason } : {}),
