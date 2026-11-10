@@ -1108,6 +1108,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/dacs/purchase-protocol.mjs:1`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:7`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:45`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:54`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:72`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:93`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:144`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:147`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:164`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:180`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:188`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:274`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:308`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:449`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:467` | 8d7ca761300e216e0785b7e91aee208e39a3a12d |
 | WF | fix(client): wait for the response verifier in the buyer seller client | Git commit selector e282e93ac2fcd26bb666d0981fd23c10a9cffb53 |
 | | `packages/dacs-client/src/dacs/seller-http.mjs:9`, `packages/dacs-client/src/dacs/seller-http.mjs:113`, `packages/dacs-client/src/dacs/seller-http.mjs:233`, `packages/dacs-client/src/dacs/seller-http.mjs:236`, `packages/dacs-client/src/dacs/seller-http.mjs:241`, `packages/dacs-client/src/dacs/seller-http.mjs:243`, `packages/dacs-client/src/dacs/seller-http.mjs:246`, `packages/dacs-client/src/dacs/seller-http.mjs:250`, `packages/dacs-client/src/dacs/seller-http.mjs:255`, `packages/dacs-client/src/dacs/seller-http.mjs:258`, `packages/dacs-client/src/dacs/seller-http.mjs:267` | eb89bc99364dc00d325530e5249981917b9cdb87 |
+| D27 | delta(client): D27 operator approver re-checks the request bytes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/devnet-demo/operator-approval.mjs:270`, `packages/dacs-client/src/devnet-demo/operator-approval.mjs:355` | 05e2fec203bfa93fcc9e7f833b976d641b2a1cde |
+| | `packages/dacs-client/test/operator-approval-request-bytes.test.mjs:1` | da57bb91604b30e2b60a4edb7011a473fd9e5d3a |
 | WF | delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/effect-fence.mjs:1` | 5e899dc36581ead321d1ddd6597497965ad46af5 |
 | | `packages/dacs-client/src/wallet/effect-history.mjs:1` | 52d0f92199a96da74567b9b78107fdd5c275cfad |
@@ -3524,6 +3527,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): record the buyer client verifier wait and refresh package pins | `packages/dacs-client/DELTA-NOTES.md:1` |
 | delta(client): record the buyer client verifier wait and refresh package pins | `packages/dacs-client/HOLD.json:1` |
 | delta(client): record the buyer client verifier wait and refresh package pins | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/src/devnet-demo/operator-approval.mjs:270`, `packages/dacs-client/src/devnet-demo/operator-approval.mjs:355` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/test/operator-approval-request-bytes.test.mjs:1` |
 | delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -3636,7 +3647,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/devnet-demo/deliverable.mjs` | `http-mcp/src/devnet-demo/deliverable.mjs` | fc85372db90d6780070efc1eff696418ba62f4b2 | unchanged | fc85372db90d6780070efc1eff696418ba62f4b2 |
 | `packages/dacs-client/src/devnet-demo/issued-readback.mjs` | `http-mcp/src/devnet-demo/issued-readback.mjs` | 74a51d2c12afbe4bac618969b912aa264cfda95c | unchanged | 74a51d2c12afbe4bac618969b912aa264cfda95c |
 | `packages/dacs-client/src/devnet-demo/native-delivery.mjs` | `http-mcp/src/devnet-demo/native-delivery.mjs` | 44e46bf0721380ddd15a7e6551430835f64cfd89 | unchanged | 44e46bf0721380ddd15a7e6551430835f64cfd89 |
-| `packages/dacs-client/src/devnet-demo/operator-approval.mjs` | `http-mcp/src/devnet-demo/operator-approval.mjs` | 14fe5209bdc2fff3a21ce4a13d12756fef1ce091 | unchanged | 14fe5209bdc2fff3a21ce4a13d12756fef1ce091 |
+| `packages/dacs-client/src/devnet-demo/operator-approval.mjs` | `http-mcp/src/devnet-demo/operator-approval.mjs` | 14fe5209bdc2fff3a21ce4a13d12756fef1ce091 | changed by D27 | 05e2fec203bfa93fcc9e7f833b976d641b2a1cde |
 | `packages/dacs-client/src/devnet-demo/stop-request.mjs` | `http-mcp/src/devnet-demo/stop-request.mjs` | 9013bb2f8b75088b04f6e477beb28388cee156a8 | unchanged | 9013bb2f8b75088b04f6e477beb28388cee156a8 |
 | `packages/dacs-client/src/devnet-demo/storage-write-recovery.mjs` | `http-mcp/src/devnet-demo/storage-write-recovery.mjs` | 339752ef02b10b9f2740e833f9b6a1be239ed2b8 | unchanged | 339752ef02b10b9f2740e833f9b6a1be239ed2b8 |
 | `packages/dacs-client/src/public/portal-intent/intent.mjs` | `http-mcp/public/portal-intent/intent.mjs` | a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e | changed by D20 | 3d60f6151608b59fda215fb362bb54a5721c82ce |
