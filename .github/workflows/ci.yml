@@ -45,14 +45,18 @@ jobs:
     # Deleting SDK_SELF_HOSTED sends new runs back to ubuntu-latest. If no dacs-pool runner is online, a routed job
     # waits for one (GitHub has no fallback); cancel it and start a new run after deleting the variable.
     # Blacksmith (both legs): while the repository variable SDK_BLACKSMITH is 'on' (compared ignoring case, so 'ON' and
-    # 'On' also count as on), every pull_request run whose head branch is in this repository runs build-test on
-    # Blacksmith's blacksmith-2vcpu-ubuntu-2404 runners, ahead of the rules above (ci-hosted and SDK_SELF_HOSTED do not
-    # apply to it). Fork pull requests, pushes and merge-queue runs never go there and keep the rules above. To switch
+    # 'On' also count as on), every pull_request run whose head branch is in this repository and whose pull request is
+    # not a draft runs build-test on Blacksmith's blacksmith-2vcpu-ubuntu-2404 runners, ahead of the rules above
+    # (ci-hosted and SDK_SELF_HOSTED do not apply to it). Draft pull requests, fork pull requests, pushes and merge-queue
+    # runs never go there and keep the rules above. Marking a draft ready for review starts no run (the pull_request
+    # trigger has its default types); its next push or update-branch run goes to Blacksmith. A re-run of a run started
+    # while the pull request was a draft replays that event and stays off Blacksmith; push or update the branch instead.
+    # To switch
     # Blacksmith off, set SDK_BLACKSMITH to 'off' (or delete it); new runs then use the rules above. A job already
     # waiting for a Blacksmith runner (for example once the account's included minutes are used up) does not move:
     # cancel it and start a new run after switching off. A re-run reads the variable again. Job and required-check names
     # are the same on every runner.
-    runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
+    runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
