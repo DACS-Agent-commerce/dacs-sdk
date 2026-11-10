@@ -13,6 +13,9 @@
     "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
   },
   "type": "module",
+  "bin": {
+    "dacs-seller": "./bin/dacs-seller.mjs"
+  },
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
@@ -23,6 +26,7 @@
     "./PROFILE.json": "./PROFILE.json"
   },
   "files": [
+    "bin/",
     "src/",
     "!src/devnet-demo/operator-custody.mjs",
     "!src/devnet-demo/seller-issuance.mjs",
