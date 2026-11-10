@@ -28,7 +28,7 @@ import { exchange } from './helpers/d5-http-fixture.mjs';
 import { admittedSession } from './helpers/challenge-api.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
-import { testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { testNetwork, withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 
 const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000, DEADLINE = 10000;
 const buyer = testWallet(1), seller = testWallet(2);
@@ -75,7 +75,7 @@ async function fixture(t, options = {}) {
   const calls = { access: 0, known: 0, admission: 0, holds: 0, effects: 0, releases: 0 };
   const policy = { access: () => {}, known: () => true, hold: () => null, ...options.policy,
     admission: options.policy?.admission ?? (({ jobId, bundle }) => admittedSession({ jobId, bundle, bundleHash: identityBundleHash(bundle), seller: seller.claim, listingPin: pin })) };
-  const open = () => store = createSellerTransportStore({ path, now: () => time, generation: `TEST-generation-${++generation}`, ...options.store });
+  const open = () => store = withFixtureProfile(createSellerTransportStore({ path, now: () => time, generation: `TEST-generation-${++generation}`, ...options.store }));
   open(); t.after(() => store.close());
   const route = createSellerContextRoute({ listing, now: () => time, writable: () => true,
     assertBuyerAccess: async value => { calls.access++; return policy.access(value); },

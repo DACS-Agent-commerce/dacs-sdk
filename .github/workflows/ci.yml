@@ -25,8 +25,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  build-test-plan:
+    runs-on: ubuntu-latest
+    name: build-test plan
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: List the shard jobs for this event
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        # The assignment fails the step (bash -e) if the plan command fails, instead of writing an empty matrix.
+        run: |
+          matrix=$(node scripts/ci-shards.mjs plan --event "$EVENT_NAME")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   build-test:
-    # The node 22 leg can run on the project's own one-job runners (label dacs-pool) for our own pull requests only,
+    # The node 22 leg can run on the project's own one-job runners (label dacs-pool) for our own pull requests only
+    # (one pool job per node 22 shard, plus build-test-main's node 22 job: 5 on a pull request),
     # when ALL of these hold:
     #   - the repository variable SDK_SELF_HOSTED is 'on';
     #   - the event is pull_request and the head branch is in this repository;
@@ -54,8 +72,95 @@ jobs:
     # To switch
     # Blacksmith off, set SDK_BLACKSMITH to 'off' (or delete it); new runs then use the rules above. A job already
     # waiting for a Blacksmith runner (for example once the account's included minutes are used up) does not move:
-    # cancel it and start a new run after switching off. A re-run reads the variable again. Job and required-check names
-    # are the same on every runner.
+    # cancel it and start a new run after switching off. A re-run reads the variable again. Job names are the same
+    # on every runner; the required checks are build-test-result's, whichever runner these jobs used.
+    # The same routing applies to build-test-main.
+    runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
+    needs: build-test-plan
+    strategy:
+      fail-fast: false
+      # One entry per shard: node-version, part (seller-1, client-2, ...), suite and shard (K/N). Pull requests run
+      # the seller suite on node 22 only; pushes and the merge queue run it on both legs. The client suite runs on
+      # node 22 only. scripts/ci-shards.mjs holds the list and the file split.
+      matrix: ${{ fromJSON(needs.build-test-plan.outputs.matrix) }}
+    name: build-test shard (node ${{ matrix.node-version }}, ${{ matrix.part }})
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci --no-audit
+
+      - name: Sync DACS-Standard conformance vectors
+        run: npm run conformance:sync
+
+      - name: Build
+        run: npm run build
+
+      # The client suite imports @kynesyslabs/dacs-node/demos-loader, which is dist/demosLoader.js.
+      - name: Build Node host kit
+        run: npm run host:build
+
+      - name: Prepare locked seller consumer
+        if: matrix.suite == 'seller'
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+        run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
+
+      - name: Test seller internal primitives and journals
+        if: matrix.suite == 'seller'
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+          DACS_SELLER_TEST_SHARD: ${{ matrix.shard }}
+        run: npm run seller:test
+
+      # The package's own `npm test` (check-hold, then every test file once), split into shards.
+      - name: Check held client snapshot and native authorization contracts
+        if: matrix.suite == 'client'
+        env:
+          DACS_CLIENT_TEST_SHARD: ${{ matrix.shard }}
+        run: node scripts/run-client-tests.mjs
+
+      # The locked demosdk 4.0.16 declarations do not resolve with NodeNext, so
+      # its NetworkInfo/AddressInfo and web2 types are `any` in the checks above.
+      # 4.0.18 resolves them; typecheck and run the demosdk-related tests
+      # against it (#339). This step checks exactly 4.0.18 and never looks up
+      # the newest release, so a newer 4.x cannot fail a pull request (the pinned
+      # install itself still needs the registry or the npm cache). The daily
+      # demosdk-compat workflow reports newer releases
+      # in ^4.0.16 (scripts/demosdk-pin-drift.mjs); the PR that acts on that
+      # report replaces every 4.0.18 in this step with the new version and fixes
+      # what then fails.
+      # Last step: it replaces the installed SDK for the rest of this job. It runs in node 22's seller-2 shard, the
+      # shorter seller shard.
+      # Not on pull requests: pushes to main and phase0-completion and main's merge queue run it, so a break against
+      # 4.0.18 shows on the next phase0-completion push, not on the PR. That includes the PR that bumps this pin: run
+      # these commands locally against the new version before opening it.
+      - name: Typecheck and test against demosdk 4.0.18
+        if: matrix.part == 'seller-2' && matrix.node-version == '22' && github.event_name != 'pull_request'
+        run: |
+          npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
+          test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
+          npm run typecheck
+          npm run host:typecheck
+          npx vitest run test/substrate/demos-adapter.test.ts test/rails/payDem-adapter.test.ts test/rails/payDem.test.ts test/agent/settlementFailure.test.ts
+          # Every client file this area promises under 4.0.18, named one by one; later changes append theirs. No glob selects one.
+          node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs packages/dacs-client/test/node-wallet-demosdk.test.mjs packages/dacs-client/test/node-wallet-final-content.test.mjs packages/dacs-client/test/node-wallet-fresh-child.test.mjs packages/dacs-client/test/node-wallet-observer.test.mjs packages/dacs-client/test/node-wallet-source-reads.test.mjs packages/dacs-client/test/node-wallet-effect-gate.test.mjs packages/dacs-client/test/node-signer-reservation.test.mjs packages/dacs-client/test/node-wallet-packed.test.mjs
+          node --test packages/dacs-client/test/delta-ledger-gate.test.mjs
+
+  # build-test is split into jobs that run side by side; the required checks "build-test (node 20.19.0)" and
+  # "build-test (node 22)" are build-test-result below, which passes only when every one of them passed:
+  #   build-test-main   every step except the seller and client suites, once per Node leg;
+  #   build-test        the seller and client suites, each split into shards (scripts/ci-shards.mjs), one job per
+  #                     shard, on the legs and events that run that suite (build-test-plan lists them);
+  #   build-test-result one job per Node leg: checks that this leg's main job and each of its planned shards succeeded.
+  # build-test-main and build-test route to runners by the same runs-on expression (described at build-test).
+  build-test-main:
     runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
@@ -63,7 +168,7 @@ jobs:
         # Test the minimum declared engine (^20.19.0 floor) AND a current LTS, so
         # a floating "20" can never hide a tooling requirement above the floor (#44).
         node-version: ["20.19.0", "22"]
-    name: build-test (node ${{ matrix.node-version }})
+    name: build-test main (node ${{ matrix.node-version }})
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -80,6 +185,9 @@ jobs:
 
       - name: Test release workflow wiring
         run: node --test test/scripts/release-workflow.test.mjs
+
+      - name: Check that every seller and client test file is in exactly one shard
+        run: node scripts/ci-shards.mjs check
 
       - name: Sync DACS-Standard conformance vectors
         run: npm run conformance:sync
@@ -98,24 +206,6 @@ jobs:
 
       - name: Build Node host kit
         run: npm run host:build
-
-      - name: Prepare locked seller consumer
-        env:
-          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
-        run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
-
-      - name: Test seller internal primitives and journals
-        env:
-          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
-        run: npm run seller:test
-
-      # The client suite imports @kynesyslabs/dacs-node/demos-loader, which is dist/demosLoader.js.
-      - name: Build Node host kit
-        run: npm run host:build
-
-      - name: Check held client snapshot and native authorization contracts
-        if: matrix.node-version == '22'
-        run: npm test --workspace @kynesyslabs/dacs-client
 
       - name: Test the kit-client contract harness
         if: matrix.node-version == '22'
@@ -446,10 +536,16 @@ jobs:
           ]) if (!compose.includes(required)) process.exit(1);
           NODE
 
+      # Pull requests run this step on node 22 only, like the seller suite (scripts/ci-shards.mjs). The node 20 leg
+      # runs it on pushes to main and phase0-completion and in main's merge queue.
       - name: Test (unit + conformance harness)
+        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         run: npm test
 
+      # Pull requests run this step on node 22 only, like the seller suite (scripts/ci-shards.mjs). The node 20 leg
+      # runs it on pushes to main and phase0-completion and in main's merge queue.
       - name: Test durable RFQ filesystem record-size boundaries
+        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         env:
           DACS_SLOW_BOUNDARY: "1"
         run: npx vitest run test/negotiate/durableRfqLifecycleStoreFs.test.ts -t "record size boundary"
@@ -476,28 +572,35 @@ jobs:
       - name: Fail on direct-dependency high/critical advisories
         run: node scripts/check-npm-advisories.mjs --scope direct --omit dev --threshold high --summary
 
-      # The locked demosdk 4.0.16 declarations do not resolve with NodeNext, so
-      # its NetworkInfo/AddressInfo and web2 types are `any` in the checks above.
-      # 4.0.18 resolves them; typecheck and run the demosdk-related tests
-      # against it (#339). This step checks exactly 4.0.18 and never looks up
-      # the newest release, so a newer 4.x cannot fail a pull request (the pinned
-      # install itself still needs the registry or the npm cache). The daily
-      # demosdk-compat workflow reports newer releases
-      # in ^4.0.16 (scripts/demosdk-pin-drift.mjs); the PR that acts on that
-      # report replaces every 4.0.18 in this step with the new version and fixes
-      # what then fails.
-      # Last step: it replaces the installed SDK for the rest of this job.
-      - name: Typecheck and test against demosdk 4.0.18
-        if: matrix.node-version == '22'
+  # The required checks. Each Node leg passes only when its main job and every shard build-test-plan listed for it
+  # succeeded in this run; a failed, cancelled, skipped or missing job fails it. It runs even when a job it needs
+  # failed or the run was cancelled, so it never reports a skipped (passing) required check.
+  build-test-result:
+    if: ${{ always() }}
+    needs: [build-test-plan, build-test-main, build-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20.19.0", "22"]
+    name: build-test (node ${{ matrix.node-version }})
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check this leg's build-test jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_RESULT: ${{ needs.build-test-plan.result }}
+          NODE_VERSION: ${{ matrix.node-version }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
-          test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
-          npm run typecheck
-          npm run host:typecheck
-          npx vitest run test/substrate/demos-adapter.test.ts test/rails/payDem-adapter.test.ts test/rails/payDem.test.ts test/agent/settlementFailure.test.ts
-          # Every client file this area promises under 4.0.18, named one by one; later changes append theirs. No glob selects one.
-          node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs packages/dacs-client/test/node-wallet-demosdk.test.mjs packages/dacs-client/test/node-wallet-final-content.test.mjs packages/dacs-client/test/node-wallet-fresh-child.test.mjs packages/dacs-client/test/node-wallet-observer.test.mjs packages/dacs-client/test/node-wallet-source-reads.test.mjs packages/dacs-client/test/node-wallet-effect-gate.test.mjs packages/dacs-client/test/node-signer-reservation.test.mjs packages/dacs-client/test/node-wallet-packed.test.mjs
-          node --test packages/dacs-client/test/delta-ledger-gate.test.mjs
+          test "$PLAN_RESULT" = success || { echo "build-test plan: $PLAN_RESULT"; exit 1; }
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
+            --jq '.jobs[] | {name, status, conclusion}' > "$RUNNER_TEMP/jobs.jsonl"
+          node scripts/ci-shards.mjs verify --node "$NODE_VERSION" --event "$EVENT_NAME" --jobs "$RUNNER_TEMP/jobs.jsonl"
 
   postgres-wallet-authority:
     runs-on: ubuntu-latest
