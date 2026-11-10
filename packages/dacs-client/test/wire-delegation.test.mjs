@@ -175,3 +175,52 @@ test('a failed signature save reuses the retained delegation and wallet signatur
   assert.equal(p.get().state.protocol.sessionDelegation.signature, signature);
   assert.equal(p.policies(), 1);
 });
+// Each deadline the code starts is a fresh signal; the returned function ends the ones started so far.
+const deadline = (t) => {
+  const controllers = [];
+  t.mock.method(AbortSignal, 'timeout', () => {
+    controllers.push(new AbortController());
+    return controllers.at(-1).signal;
+  });
+  return () => controllers.forEach(controller => controller.abort(new DOMException('TEST-deadline', 'TimeoutError')));
+};
+const turn = () => new Promise(resolve => setImmediate(resolve));
+// The method's own admission check reads the authority first and answers; every later read never does.
+const silentAfterEntry = (w) => {
+  let reads = 0;
+  w.state.gate = () => ++reads > 1 ? new Promise(() => {}) : undefined;
+};
+const outcome = (call) => Promise.race([call.then(() => 'resolved', (error) => error), turn().then(() => 'pending')]);
+test('an authority read that never answers ends the wallet message at the seller deadline, and the saved payload is reused after it', async (t) => {
+  const w = await world(t), p = await purchase(t, w), expire = deadline(t);
+  silentAfterEntry(w);
+  const call = identity(p);
+  await turn();
+  expire();
+  assert.equal((await outcome(call)).code, 'seller_authority_timeout');
+  const saved = p.get().state.protocol.sessionDelegation.payload;
+  w.state.gate = null;
+  assert.deepEqual((await identity(p)).delegation.payload, saved);
+  assert.equal(p.policies(), 1);
+});
+test('an authority read that never answers while the wallet delegation is accepted ends at the seller deadline and saves no signature', async (t) => {
+  const w = await world(t), p = await purchase(t, w), expire = deadline(t), r = await identity(p);
+  silentAfterEntry(w);
+  const call = plan(p, w, r, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url'));
+  await turn();
+  expire();
+  assert.equal((await outcome(call)).code, 'seller_authority_timeout');
+  assert.equal(p.get().state.protocol.sessionDelegation.signature, undefined);
+});
+test('an authority read that never answers while the Agreement plan is saved ends at the seller deadline with its own cause', async (t) => {
+  const w = await world(t), p = await purchase(t, w), expire = deadline(t), r = await identity(p);
+  w.state.gate = async () => {
+    if (p.get().state.protocol.sessionDelegation.signature)
+      await new Promise(() => {});
+  };
+  const call = plan(p, w, r, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url'));
+  await turn();
+  expire();
+  assert.equal((await outcome(call)).code, 'seller_authority_timeout');
+  assert.equal(p.get().state.protocol.planned, undefined);
+});
