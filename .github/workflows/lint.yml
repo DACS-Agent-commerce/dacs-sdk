@@ -33,3 +33,6 @@ jobs:
 
       - name: File size check
         run: node tools/lint/file-size.mjs
+
+      - name: Shared helper check
+        run: node tools/lint/shared-helpers.mjs

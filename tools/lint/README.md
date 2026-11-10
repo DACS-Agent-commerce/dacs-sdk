@@ -40,6 +40,12 @@ node tools/lint/file-size.mjs --prune
 
 Don't add entries to get a pass.
 
+## Shared helper check
+
+`shared-helpers.mjs` fails when a file in `src/` declares its own copy of a small helper that should exist once, in `src/internal/`: `deepFreeze`, `exactKeys`, `hasExactKeys`, `isRecord`, `nonEmpty`, `plainObject` and `plainRecord`. Import the shared one instead. If there isn't one yet, move a copy into `src/internal/`, import it from there, and remove the copies you replaced.
+
+`shared-helpers-baseline.txt` lists the copies that already existed. They don't fail the run. When one is removed, the run fails until its line is removed too (`--prune`).
+
 ## What's left out
 
 - `test/package-consumer/`: its own project, which needs the packed packages.
