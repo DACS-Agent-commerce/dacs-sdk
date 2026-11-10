@@ -302,11 +302,19 @@ export function evmErc20Settle(
         amount,
       }, effectFence);
     };
-    return store.once(
-      settlementKey(railId, jobId, phaseIndex),
-      binding,
-      submit,
-      reconcile,
-    );
+    const key = settlementKey(railId, jobId, phaseIndex);
+    if (!req.recoveryOnly) return store.once(key, binding, submit, reconcile);
+    // Look the record up before `once`, which would write an intent: a refused
+    // recovery must leave nothing behind that blocks a later settlement.
+    return (async () => {
+      if (store.readOutcome === undefined) {
+        throw new DacsError("evm-erc20 recovery requires read-only settlement outcome lookup; settlement remains unresolved");
+      }
+      const recorded = await store.readOutcome(key, binding);
+      if (recorded === null && (store.hasRecord === undefined || !await store.hasRecord(key, binding))) {
+        throw new DacsError("evm-erc20 recovery has no settlement record; settlement remains unresolved");
+      }
+      return store.once(key, binding, submit, reconcile);
+    })();
   };
 }

@@ -3,7 +3,7 @@ import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
 import { DacsError } from "../../src/errors.js";
-import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
+import { createIdempotencyStore, createInMemorySettlementLog, settlementKey } from "../../src/rails/idempotency.js";
 import {
   createX402Rail,
   dacsX402AuthorizationNonce,
@@ -713,19 +713,55 @@ describe("x402SettleCore (buyer 402-dance)", () => {
 });
 
 describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () => {
-  test("recovery without a rail record never submits", async () => {
-    const settleRail = vi.fn();
-    const rail: X402Rail = { address: PAYER, finalityBlocks: 12, settle: settleRail };
+  test("recovery without a rail record writes nothing, so a later settle pays exactly once", async () => {
+    let transfers = 0;
+    const rail: X402Rail = {
+      address: PAYER,
+      finalityBlocks: 12,
+      settle: async () => {
+        transfers += 1;
+        return {
+          ok: true,
+          txHash: `0x${transfers}`,
+          chainId: NETWORK,
+          payer: PAYER,
+          payee: RECIPIENT,
+          finality: { model: "block-depth", finalityBlocks: 12 },
+        };
+      },
+    };
+    const log = createInMemorySettlementLog();
+    const claims: string[] = [];
     const settle = x402Settle(rail, {
       url: "https://seller.example/deliver", network: NETWORK,
       recipientEvm: RECIPIENT, asset: TOKEN,
-    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
-    await expect(settle({
+    }, {
+      store: createIdempotencyStore({
+        ...log,
+        claimIntent: async (input) => {
+          const claim = await log.claimIntent(input);
+          claims.push(claim.status);
+          return claim;
+        },
+      }),
+    });
+    const req = {
       rail: "pay-x402", phase: "pay-x402", amount: "1", asset: "USDC",
       payee: "did:example:seller", expectedPayee: RECIPIENT, jobId: "unrecorded",
-      recoveryOnly: true,
-    })).rejects.toThrow(/no recorded settlement outcome/);
-    expect(settleRail).not.toHaveBeenCalled();
+    };
+    const key = settlementKey(req.rail, req.jobId, 0);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(settle({ ...req, recoveryOnly: true }))
+        .rejects.toThrow(/x402 recovery has no settlement record; settlement remains unresolved/);
+      expect(transfers).toBe(0);
+      expect(claims).toEqual([]);
+      expect(await log.readOutcome?.(key)).toBeNull();
+    }
+    const paid = await settle(req);
+    expect(transfers).toBe(1);
+    expect(claims).toEqual(["acquired"]);
+    await expect(settle({ ...req, recoveryOnly: true })).resolves.toEqual(paid);
+    expect(transfers).toBe(1);
   });
   test("refuses construction without a caller-supplied store", () => {
     const settle = vi.fn();

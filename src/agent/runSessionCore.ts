@@ -4580,10 +4580,10 @@ async function runSessionCoreWithFence(
         if (claim.status === "completed") {
           settlement = await acceptRecordedOutcome(claim.outcome);
         } else if (claim.status === "held") {
-          // PC-7 recovery: this seam is explicitly contracted to reuse the original
-          // rail idempotency binding, adopt a landed payment, and resubmit only when
-          // the rail proves no payment landed. It is safe where ordinary `settle`
-          // would be an unproven second submission.
+          // Recovery: this seam reuses the original rail idempotency binding and
+          // adopts a landed payment. The request carries `recoveryOnly`, so it
+          // never resubmits. It is safe where ordinary `settle` would be an
+          // unproven second submission.
           settlement = await recoverRailOutcome("unresolved settlement intent");
         } else if (agreementExisting) {
           // An earlier run anchored this Agreement and may have paid before it
