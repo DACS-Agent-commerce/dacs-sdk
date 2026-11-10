@@ -15,7 +15,10 @@ type Job = {
   strategy?: { matrix?: { "node-version"?: (string | number)[] } };
   steps?: { name?: string; if?: string }[];
 };
-const workflow = parse(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as { jobs: Record<string, Job> };
+const workflow = parse(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as {
+  jobs: Record<string, Job>;
+  concurrency?: { group?: string; "cancel-in-progress"?: unknown };
+};
 const RUNS_ON = workflow.jobs["build-test"]?.["runs-on"] ?? "";
 const POOL = ["self-hosted", "linux", "x64", "dacs-pool"];
 const BLACKSMITH = "blacksmith-2vcpu-ubuntu-2404";
@@ -297,5 +300,24 @@ describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", (
     expect(runs(name, "push", "22")).toBe(true);
     expect(runs(name, "merge_group", "22")).toBe(true);
     for (const event of ["pull_request", "push", "merge_group"]) expect(runs(name, event, "20.19.0")).toBe(false);
+  });
+});
+
+describe("run concurrency (.github/workflows/ci.yml)", () => {
+  const group = (event: string, ref: string, runId = 7) => {
+    const match = /^\$\{\{([\s\S]*)\}\}$/.exec(String(workflow.concurrency?.group ?? "").trim());
+    if (!match) throw new Error("concurrency group is not a single expression");
+    return evaluate(match[1] ?? "", { github: { event_name: event, ref, run_id: runId } });
+  };
+
+  it("never cancels a running run, so a phase0-completion push run always finishes", () => {
+    expect(workflow.concurrency?.["cancel-in-progress"]).toBe(false);
+  });
+
+  it("puts phase0-completion push runs in one shared group and every other run in its own", () => {
+    expect(group("push", "refs/heads/phase0-completion", 1)).toBe(group("push", "refs/heads/phase0-completion", 2));
+    expect(group("push", "refs/heads/main", 3)).toBe("ci-3");
+    expect(group("pull_request", "refs/pull/9/merge", 4)).toBe("ci-4");
+    expect(group("merge_group", "refs/heads/gh-readonly-queue/main/x", 5)).toBe("ci-5");
   });
 });

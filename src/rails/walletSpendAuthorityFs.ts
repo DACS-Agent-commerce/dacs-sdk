@@ -40,19 +40,6 @@ export interface FsWalletSpendStateStoreOptionsV1 {
   lockPollMs?: number;
 }
 
-interface StoredEnvelopeV1 {
-  formatVersion: typeof STORE_FORMAT_VERSION;
-  scope: string;
-  state: Readonly<WalletSpendStateV1>;
-  mac: string;
-}
-
-interface InitializationMarkerV1 {
-  markerVersion: typeof STORE_FORMAT_VERSION;
-  scope: string;
-  mac: string;
-}
-
 interface LockOwnerV1 {
   pid: number;
   hostname: string;
