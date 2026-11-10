@@ -24,6 +24,7 @@ import {
   type ListingDraft,
   type ListingValidationDeps,
   type PaymentRailRef,
+  type SettlementIdempotencyStore,
 } from "../../src/index.js";
 import { startLiveX402Paywall } from "./live-x402-paywall.js";
 
@@ -36,6 +37,7 @@ import { startLiveX402Paywall } from "./live-x402-paywall.js";
  *   SELLER_IDENTITY_BUNDLE_JSON=… BUYER_IDENTITY_BUNDLE_JSON=… \
  *   BUYER_EVM_KEY=0x… PAYWALL_URL=local PAY_NETWORK=eip155:84532 \
  *   SELLER_EVM=0x… PAY_TOKEN=0x… DACS_STATE_DIR=… LIVE_E2E_CONFIRM=1 \
+ *   SETTLEMENT_STORE_MODULE=… \
  *   npx vitest run test/integration/live.e2e.test.ts
  */
 
@@ -53,6 +55,7 @@ const ENV = [
   "SELLER_EVM",
   "PAY_TOKEN",
   "DACS_STATE_DIR",
+  "SETTLEMENT_STORE_MODULE",
   "LIVE_E2E_CONFIRM",
 ] as const;
 
@@ -492,12 +495,14 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
         expect(published.ref).toBeTruthy();
         expect(published.listingPin.listingId).toBe(listingId);
 
+        const settlementStore = (await import(env.SETTLEMENT_STORE_MODULE!))
+          .default as SettlementIdempotencyStore;
         const settle = x402Settle(rail, {
           url: localPaywall?.url ?? env.PAYWALL_URL!,
           network: env.PAY_NETWORK!,
           recipientEvm: sellerEvm,
           asset: env.PAY_TOKEN!,
-        });
+        }, { store: settlementStore });
         const session = await retryDefinitiveDemosFailure({
           label: "buyer session",
           expectedNames: new Set([

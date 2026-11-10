@@ -209,6 +209,7 @@ deployment responsibility of the generated role services.
 import {
   createAgent,
   createFsDemosWriteJournal,
+  createIdempotencyStore,
   createInMemoryBindingStore,
   createX402Rail,
   x402Settle,
@@ -310,6 +311,7 @@ const rail = await createX402Rail({
   // Use the exact positive value from the authenticated rail descriptor.
   finalityBlocks: 1,
 });
+const settlementStore = createIdempotencyStore(durableSettlementLog);
 // Passing the authenticated result (not only `resolved.ref`) pins the selected
 // content hash across runSession's pre-payment re-read.
 const session = await buyer.runSession(resolved, {
@@ -368,7 +370,7 @@ const session = await buyer.runSession(resolved, {
     resolveAuthenticatedVetFinality(request),
   // `asset` is the on-chain token id (ERC-20 contract) the 402 must advertise —
   // the §4.1 guard compares against it, not the Price.asset symbol.
-  settle: x402Settle(rail, { url, network, recipientEvm, asset }),
+  settle: x402Settle(rail, { url, network, recipientEvm, asset }, { store: settlementStore }),
 });
 
 // Legacy compatibility only: payment settlement is not commerce completion.
@@ -625,12 +627,14 @@ caller-supplied durable `SettlementIdempotencyStore`; useful hash/nonce reconcil
 additionally requires an application-owned durable journal or equivalent rail
 record. If recovery cannot authenticate the original effect, the intent remains
 held and the application must not automatically retry the transfer.
-Both direct payment bridges require a caller-supplied store when constructed:
+The x402, direct ERC-20, and native DEM payment bridges require a caller-supplied
+durable settlement store when constructed:
 
 ```ts
-import { createIdempotencyStore, evmErc20Settle, payDemSettle } from "@kynesyslabs/dacs/rails";
+import { createIdempotencyStore, evmErc20Settle, payDemSettle, x402Settle } from "@kynesyslabs/dacs/rails";
 
 const settlementStore = createIdempotencyStore(durableSettlementLog);
+const x402SettlePayment = x402Settle(x402Rail, x402Paywall, { store: settlementStore });
 const evmSettle = evmErc20Settle(evmRail, evmConfig, { store: settlementStore });
 const demSettle = payDemSettle(demRail, {}, { store: settlementStore, reconcile: demReconcile });
 ```
@@ -641,7 +645,7 @@ multiple processes can settle the same job. An in-memory log is suitable only
 for isolated tests.
 
 For registry dispatch, pass the same store as top-level `settlementStore` for
-ERC-20 or as `payDem.settlementStore` for native DEM.
+x402 and ERC-20 or as `payDem.settlementStore` for native DEM.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
 `settlementStore`, and `reconcile`. The rail's timing bounds
@@ -684,8 +688,7 @@ or another debit. Missing lookup support fails closed; `null` never grants submi
 authority. Repeat audits always reread execution. Every request
 must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
-configured discriminator. The compatibility defaults remain process-local and
-must not be described as restart-safe.
+configured discriminator.
 
 The inclusion wait is bounded independently of the broadcast response and never
 starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios

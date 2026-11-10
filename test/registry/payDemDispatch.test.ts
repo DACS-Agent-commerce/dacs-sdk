@@ -678,6 +678,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       fetchImpl: firstFetch,
       x402FetchMode: "insecure-test",
       rpcUrl: "https://rpc.example",
+      settlementStore: testStore,
     };
 
     const pending = settleFromRail(descriptor, options);
@@ -713,6 +714,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       fetchImpl,
       x402FetchMode: "insecure-test",
       rpcUrl: "https://rpc.example",
+      settlementStore: testStore,
     })).resolves.toEqual(expect.any(Function));
     const captured = mocks.createX402Rail.mock.calls[0]![0];
     expect(captured.transportPolicy).toEqual({ mode: "insecure-test" });
@@ -883,6 +885,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       options: {
         evmPrivateKey: "0x" + "11".repeat(32),
         rpcUrl: "https://rpc.example",
+        settlementStore: testStore,
         payment: {
           url: "https://seller.example/pay",
           network: "eip155:84532",

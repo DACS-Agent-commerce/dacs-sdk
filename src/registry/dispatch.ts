@@ -49,7 +49,7 @@ export interface RailDispatchOptions {
   paywall?: { url: string; network: string; recipientEvm: string; phaseIndex?: number };
   /** Trusted EVM JSON-RPC URL — required by x402 and evm-erc20 finality. */
   rpcUrl?: string;
-  /** Durable atomic settlement store required by evm-erc20. */
+  /** Durable atomic settlement store required by x402 and evm-erc20. */
   settlementStore?: SettlementIdempotencyStore;
   /** Demos node RPC URL — required by pay-dem and pay-d402. */
   demosRpc?: string;
@@ -439,6 +439,11 @@ function captureDispatchOptions(
         "rpcUrl",
         "x402 EVM RPC URL",
       ),
+      settlementStore: captureSettlementStore(optionalDispatchValue<SettlementIdempotencyStore>(
+        opts,
+        "settlementStore",
+        "x402 settlement store",
+      )),
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
       x402FetchMode: optionalDispatchValue<"insecure-test">(
         opts,
@@ -699,6 +704,9 @@ export async function settleFromRail(
       if (!capturedOptions.rpcUrl) {
         throw new DacsError("x402 rail requires opts.rpcUrl for independent finality");
       }
+      if (capturedOptions.settlementStore === undefined) {
+        throw new DacsError("x402 rail requires a caller-supplied durable settlement store");
+      }
       const rail = await createX402Rail({
         evmPrivateKey: requiredEvmPrivateKey(
           capturedOptions.evmPrivateKey,
@@ -720,7 +728,7 @@ export async function settleFromRail(
           ? {}
           : { phaseIndex: payment.phaseIndex }),
         asset: capturedDescriptor.asset.contract,
-      }));
+      }, { store: capturedOptions.settlementStore }));
     }
     case "evm-erc20": {
       if (

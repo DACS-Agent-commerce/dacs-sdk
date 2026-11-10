@@ -1690,8 +1690,18 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
       evmPrivateKey: TEST_EVM_KEY,
       paywall,
       rpcUrl: "https://sepolia.base.org",
+      settlementStore: createIdempotencyStore(),
     });
     expect(typeof settle).toBe("function");
+  });
+
+  test("x402 refuses registry construction without a settlement store", async () => {
+    const descriptor = await authenticatedRail(x402Definition());
+    await expect(settleFromRail(descriptor, {
+      evmPrivateKey: TEST_EVM_KEY,
+      paywall,
+      rpcUrl: "https://sepolia.base.org",
+    })).rejects.toThrow(/caller-supplied durable settlement store/);
   });
 
   test("rejects an unbranded structural copy before constructing a rail", async () => {
@@ -1837,6 +1847,7 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
         evmPrivateKey: TEST_EVM_KEY,
         paywall,
         rpcUrl: "https://sepolia.base.org",
+        settlementStore: createIdempotencyStore(),
       }),
     ).rejects.toThrow(/finalityBlocks/);
   });

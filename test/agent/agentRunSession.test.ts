@@ -402,7 +402,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
           recipientEvm,
           asset,
-        }),
+        }, { store: createIdempotencyStore() }),
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(boundRail.settle).toHaveBeenCalledTimes(1);
@@ -425,7 +425,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
           recipientEvm,
           asset,
-        }),
+        }, { store: createIdempotencyStore() }),
       }),
     ).rejects.toThrow(/x402 destination mismatch/);
     expect(omittedRail.settle).not.toHaveBeenCalled();

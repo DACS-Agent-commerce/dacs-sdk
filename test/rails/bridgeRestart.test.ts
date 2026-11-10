@@ -145,8 +145,8 @@ test.skipIf(!child)("records a child settlement", async () => {
   publish(join(directory, `result-${step}.json`), { pid: process.pid, txHash: first.txHash });
 });
 
-describe.skipIf(child)("payment bridge restart", () => {
-  test.each(["evm-erc20", "pay-dem"])("keeps one external transfer for %s", (railName) => {
+describe.skipIf(child)("payment bridge restart with a caller-supplied durable store", () => {
+  test.each(["evm-erc20", "pay-dem"])("keeps one external transfer for %s across a restart", (railName) => {
     const directory = mkdtempSync(join(tmpdir(), "bridge-settlement-"));
     const runner = fileURLToPath(new URL("../../node_modules/vitest/vitest.mjs", import.meta.url));
     const file = fileURLToPath(import.meta.url);
