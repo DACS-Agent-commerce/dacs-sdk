@@ -27,3 +27,12 @@ jobs:
 
       - name: Lint
         run: npm run lint --prefix tools/lint
+
+      - name: Layer check
+        run: node tools/lint/layers.mjs
+
+      - name: File size check
+        run: node tools/lint/file-size.mjs
+
+      - name: Shared helper check
+        run: node tools/lint/shared-helpers.mjs
