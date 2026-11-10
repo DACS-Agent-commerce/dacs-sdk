@@ -76,14 +76,15 @@ export function ed25519Sign(message: Uint8Array, privateKey: KeyObject): Uint8Ar
   return nodeSign(null, message, privateKey);
 }
 
-/** Verify an Ed25519 signature. */
+/** Verify an Ed25519 signature. A private key verifies as its public key. */
 export function ed25519Verify(
   message: Uint8Array,
   signature: Uint8Array,
   publicKey: KeyObject,
 ): boolean {
+  const key = publicKey.type === "private" ? createPublicKey(publicKey) : publicKey;
   if (signature.length !== 64 || littleEndianInteger(signature.subarray(32)) >= GROUP_ORDER) return false;
-  const y = littleEndianInteger(rawPublicKey(publicKey)) & ((1n << 255n) - 1n);
+  const y = littleEndianInteger(rawPublicKey(key)) & ((1n << 255n) - 1n);
   if (y >= FIELD_PRIME || SMALL_ORDER_Y.has(y)) return false;
-  return nodeVerify(null, message, publicKey, signature);
+  return nodeVerify(null, message, key, signature);
 }

@@ -75,6 +75,19 @@ describe("Ed25519 verification", () => {
     expect(ed25519Verify(message, nonCanonical, publicKey)).toBe(false);
   });
 
+  it("verifies with a private key as with its public key", () => {
+    const message = Buffer.from("signed message");
+    const privateKey = privateKeyFromSeed(seed);
+    const publicKey = publicKeyFromSeed(seed);
+    const signature = Buffer.from(ed25519Sign(message, privateKey));
+    const altered = Buffer.from(signature);
+    altered[0] = altered[0]! ^ 1;
+    expect(ed25519Verify(message, signature, privateKey)).toBe(true);
+    expect(ed25519Verify(message, signature, publicKey)).toBe(true);
+    expect(ed25519Verify(message, altered, privateKey)).toBe(false);
+    expect(ed25519Verify(message, altered, publicKey)).toBe(false);
+  });
+
   it.each([
     "01" + "00".repeat(31),
     "00".repeat(32),
