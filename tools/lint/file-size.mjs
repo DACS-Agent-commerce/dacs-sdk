@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 
 /** Longest source file allowed without a baseline entry. */
 export const MAX_LINES = 800;
-const SOURCE_FILE = /\.(ts|mjs|js)$/;
+// JavaScript and TypeScript in every form; declaration files are left out.
+const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
+const DECLARATION_FILE = /\.d\.[cm]?ts$/;
 const BASELINE_FILE = "tools/lint/file-size-baseline.json";
 
 function packageSourceRoots(repoRoot) {
@@ -28,7 +30,7 @@ export function listSourceFiles(repoRoot) {
       const path = `${dir}/${entry.name}`;
       if (entry.isDirectory()) {
         if (entry.name !== "node_modules") walk(path);
-      } else if (SOURCE_FILE.test(entry.name) && !entry.name.endsWith(".d.ts")) {
+      } else if (SOURCE_FILE.test(entry.name) && !DECLARATION_FILE.test(entry.name)) {
         out.push(path);
       }
     }

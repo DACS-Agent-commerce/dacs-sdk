@@ -33,13 +33,16 @@ describe("file size check", () => {
     const root = repo({
       "src/a.ts": "",
       "src/types.d.ts": "",
+      "src/module.d.mts": "",
       "src/notes.md": "",
+      "src/legacy.cjs": "",
+      "src/view.tsx": "",
       "packages/kit/src/b.mjs": "",
       "packages/kit/src/node_modules/dep/c.js": "",
       "packages/kit/test/d.test.mjs": "",
       "test/e.test.ts": "",
     });
-    expect(listSourceFiles(root)).toEqual(["src/a.ts", "packages/kit/src/b.mjs"].sort());
+    expect(listSourceFiles(root)).toEqual(["src/a.ts", "src/legacy.cjs", "src/view.tsx", "packages/kit/src/b.mjs"].sort());
   });
 
   it("fails a file over the limit that the baseline does not list", () => {
