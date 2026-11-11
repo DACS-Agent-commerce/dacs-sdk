@@ -1254,6 +1254,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 705b9c4c787df1e2a6b646fc4f3d596354b4aea9 |
 | WF | delta(client): WF record the merged public API test after carrying the signer part up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74 |
+| WF | fix(wallet): check that no package export reaches the reservation module | Git commit selector fce7c509715ce94ee9153eaad2efe11d27bdef23 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 5fe427a4c2f7d293a9a1b925e381a4e24346af95 |
+| WF | delta(client): WF record the merged signer reservation test after carrying the exports test fix up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8 |
 | WF | delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | bcb216547421660a2cd0de45415cce9a0ad18ba3 |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | be72001c276437177160b6a87ce365b7a24d3504 |
@@ -3941,6 +3945,17 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fce7c509715ce94ee9153eaad2efe11d27bdef23 | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit | `packages/dacs-client/DELTA-MAP.md:1` |
