@@ -4359,5 +4359,23 @@
       "packages/dacs-client/HOLD.json",
       "packages/dacs-client/scripts/check-hold.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): WF give the effect boundary one effect per operation and lane",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/wallet/effect-boundary.mjs",
+      "packages/dacs-client/src/wallet/effect-history.mjs",
+      "packages/dacs-client/test/effect-boundary-barriers.test.mjs",
+      "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+      "packages/dacs-client/test/effect-boundary.test.mjs",
+      "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs"
+    ]
   }
 ]

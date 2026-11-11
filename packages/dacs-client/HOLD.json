@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "3a061179d64c94c250e5e793add0c77b86e7fd06"
+        "blob": "6f44c635a13a856f63014c180fb75cc30b661289"
       },
       "DELTA-LEDGER.json": {
-        "blob": "23fa3c22148142413b93c9e0e67efeadf5a95be5"
+        "blob": "0195b159bf1f74867ec2deb80477784407d4064d"
       },
       "DELTA-MAP.md": {
-        "blob": "a96bd592e38036f2cfc818885447ae9ff6dc7690"
+        "blob": "5064a684f22095bebd339d62438c2bc4cb9fc251"
       },
       "DELTA-NOTES.md": {
-        "blob": "bcb11c44cb4c9dcba7f9fbb6ba5eb43daa6f7bb9"
+        "blob": "b64dc065cf4fea24d7591d92e775bc8a6106ccd1"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "6d9bd382c27784f3f7fe51f1f3ab8e59ea7d0d4a"
+        "blob": "6f680ddbd7b2eb5df3a15c3a47962a7ef549af0d"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1307,13 +1307,13 @@
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
       },
       "src/wallet/effect-boundary.mjs": {
-        "blob": "ea9e892b09ac6333d8cec727575d5879c875f298"
+        "blob": "be747aab0f805f37b550920e8acea9c023ac7f93"
       },
       "src/wallet/effect-fence.mjs": {
         "blob": "f084d06e7fcac773a024fb36149b1f68b2826403"
       },
       "src/wallet/effect-history.mjs": {
-        "blob": "5ccc8c6f74eb51be885d17dac68c28649b34240b"
+        "blob": "ffe644ce654cbfd530822f3b5cd173295aba480f"
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
@@ -1394,10 +1394,13 @@
         "blob": "4f259862831e602f05118d5aa005a73e7d676320"
       },
       "test/effect-boundary-barriers.test.mjs": {
-        "blob": "a63d589030296a4ce2afe05b377351748a6bf250"
+        "blob": "f3d0560be2447f1a5195f646001e74f7454aa6c9"
+      },
+      "test/effect-boundary-operation.test.mjs": {
+        "blob": "c5f91f14575651303e144ec91570d7db728034e1"
       },
       "test/effect-boundary.test.mjs": {
-        "blob": "4e5486337d9cddb235f415cfe4bd819c78ae6593"
+        "blob": "f948151165e3ba48272216e650df2f9bc3c20480"
       },
       "test/effect-history.test.mjs": {
         "blob": "0eed8f24b66d3497b4f9c0ef23c6847ad56fb770"
@@ -1550,7 +1553,7 @@
         "blob": "c35e7affc754a58a39a4dfc983733fed171cbb21"
       },
       "test/helpers/effect-boundary-fixture.mjs": {
-        "blob": "aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6"
+        "blob": "1b83d2a67290fc5fb683667e993dbf498ecaf269"
       },
       "test/helpers/embedded-wallet-fixtures.mjs": {
         "blob": "c8083057ae6b2a507d5cf009b2d2b54a153f6bc4"

@@ -1,4 +1,4 @@
-// Test-only K0 harness: real history, real fence and SQLite, controlled reads/clock.
+// Test-only effect boundary world: real history, real fence and SQLite, controlled reads/clock.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';

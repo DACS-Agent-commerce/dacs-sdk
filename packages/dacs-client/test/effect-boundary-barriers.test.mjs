@@ -13,7 +13,7 @@ const changes = {
 };
 const codes = { reconnect: 'tp1_local_binding_changed', stop: 'writes_stopped', hold: 'profile_not_admitted', revision: 'context_admission_closed', approval: 'write-fee-cap' };
 
-test("at the fence wait, the final authority read and the final stop read, a fenced replacement, a bypassing reconnect, a stop, a hold flip or a K1 rev change signs nothing", async t => {
+test("at the fence wait, the final authority read and the final stop read, a fenced replacement, a bypassing reconnect, a stop, a hold flip, a revision change or a closed approval signs nothing", async t => {
   for (const barrier of ['fence', 'authority', 'stop']) for (const [change, mutate] of Object.entries(changes)) {
     const w = await boundaryWorld(t);
     let release, entered;
@@ -38,16 +38,16 @@ test("at the fence wait, the final authority read and the final stop read, a fen
   await noEffects(w, pending, 'tp1_local_binding_changed');
 });
 
-test("inside EB7's read and EB8's intent persistence, the same changes hold or withhold the signed bytes and transmit nothing", async t => {
-  for (const barrier of ['EB7', 'EB8']) for (const [change, mutate] of Object.entries(changes)) {
+test("inside the authority read after persistence and the dispatch intent write, the same changes hold or withhold the signed bytes and transmit nothing", async t => {
+  for (const barrier of ['signed', 'dispatch']) for (const [change, mutate] of Object.entries(changes)) {
     const w = await boundaryWorld(t);
-    if (barrier === 'EB7') { let reads = 0; w.authority.state.gate = async () => { if (++reads === 3) mutate(w); }; }
+    if (barrier === 'signed') { let reads = 0; w.authority.state.gate = async () => { if (++reads === 3) mutate(w); }; }
     else cutAppend(w, 'dispatch-started', { mutate: () => mutate(w) });
     await assert.rejects(w.run(), code(codes[change]));
     assert.equal(w.signatures, 1); assert.equal(w.sent.length, 0); assert.equal(w.held, false);
     const records = (await w.journal.entries()).filter(([key]) => key.startsWith('eb/')).map(([, value]) => value);
     const last = records.at(-1);
-    assert.equal(last.state, barrier === 'EB7' && change === 'reconnect' ? 'signed-held' : 'dispatch-withheld');
+    assert.equal(last.state, barrier === 'signed' ? 'signed-held' : 'dispatch-withheld');
     assert.equal(last.cause.code, codes[change]);
     const artifact = { ...w.op, artifactHash: last.artifactHash };
     w.reopen(); setPurchaseAdmission('testnet-tp1'); w.stopped = false;
@@ -67,7 +67,7 @@ test("a withheld artifact is not transmitted after restart and stop removal; a n
   await assert.rejects(w.send(artifact, { explicit: true }), code('eb_readback_required'));
   assert.deepEqual(w.sent, [signedBytes]); assert.equal(w.signatures, 1);
 
-  // K0-F19: compensation cannot be revived by any explicit pass.
+  // A closed revision cannot be revived by any explicit pass.
   const closed = await boundaryWorld(t), signed = await closed.sign();
   cutAppend(closed, 'dispatch-started', { mutate: () => { closed.revision = 2; } });
   await assert.rejects(closed.send(signed), code('context_admission_closed'));
@@ -124,7 +124,7 @@ async function requestFixture(w) {
     job: { listingPin, agreementHash: 'c'.repeat(64), profile: binding.profile }, now, endpointProof, publicEndpoint } };
 }
 
-test("signWireRequest given the EB signer refuses a stop or a hold flip at the authority read before signer.sign", async t => {
+test("signWireRequest given the boundary signer refuses a stop or a hold flip at the authority read before signer.sign", async t => {
   for (const change of ['stop', 'hold']) {
     const w = await boundaryWorld(t), fixture = await requestFixture(w);
     let jobReads = 0;
@@ -164,8 +164,11 @@ test('concurrent explicit resumes inside one operation never dispatch the same l
     w.send(artifact, { explicit: true }), w.send(artifact, { explicit: true }),
   ]));
   assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
-  assert.equal(results.find(result => result.status === 'rejected')?.reason.code, 'eb_lane_busy');
+  const lost = results.find(result => result.status === 'rejected')?.reason;
+  assert.equal(lost?.code, 'eb_persist_failed'); assert.equal(lost.cause.code, 'eb_history_conflict');
   assert.deepEqual(w.sent, [signedBytes]);
+  assert.deepEqual((await w.history.readOperation(w.op)).map(record => `${record.passId}/${record.state}`),
+    ['p1/signed', 'p1/dispatch-started', 'p1/dispatch-withheld', 'p2/signed', 'p2/dispatch-started', 'p2/dispatch-acknowledged']);
 });
 
 test('time waiting for the fence does not spend the pass read budget, and each pass of one operation has its own', async t => {

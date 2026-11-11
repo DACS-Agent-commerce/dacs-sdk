@@ -6759,6 +6759,42 @@
           "after": "db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF give the effect boundary one effect per operation and lane",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "ea9e892b09ac6333d8cec727575d5879c875f298",
+          "after": "be747aab0f805f37b550920e8acea9c023ac7f93"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "ffe644ce654cbfd530822f3b5cd173295aba480f"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-barriers.test.mjs",
+          "before": "a63d589030296a4ce2afe05b377351748a6bf250",
+          "after": "f3d0560be2447f1a5195f646001e74f7454aa6c9"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": null,
+          "after": "c5f91f14575651303e144ec91570d7db728034e1"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
+          "after": "f948151165e3ba48272216e650df2f9bc3c20480"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs",
+          "before": "aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6",
+          "after": "1b83d2a67290fc5fb683667e993dbf498ecaf269"
+        }
+      ]
     }
   ]
 }
