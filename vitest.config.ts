@@ -1,8 +1,7 @@
 import { configDefaults, defineConfig } from "vitest/config";
 
 // The client package stores its state in node:sqlite, which Node ships without
-// a flag from 22.13 and 23.4 (the package's own engines range). The root
-// suite also runs on Node 20, where test/client cannot load at all.
+// a flag from 22.13 and 23.4. On an older Node, test/client cannot load at all.
 const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split(".").map(Number);
 const hasNodeSqlite = nodeMajor >= 24 || (nodeMajor === 23 && nodeMinor >= 4) || (nodeMajor === 22 && nodeMinor >= 13);
 

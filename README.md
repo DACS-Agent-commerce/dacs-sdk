@@ -1049,8 +1049,10 @@ node that cannot be reached, has no `/version` endpoint or sends an unusable
 reply is `skip` with `node build unknown (no build RPC)`; a routed or
 credential-bearing URL makes no request. This check never changes the exit code.
 
-The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
-engine contract and the Vitest/Rolldown toolchain requirement.
+The supported runtime range is `^22.22.2 || ^24.15.0`, matching the package
+engine contract: the `@kynesyslabs/demosdk` dependency chain (sigstore 5 and its
+dependencies) requires `^22.22.2 || ^24.15.0 || >=26.0.0`, and `better-sqlite3`
+supports Node up to 25.x.
 
 Secrets must not be passed directly as command-line values. Direct `--rpc` only
 accepts origin-only URLs such as `https://node2.demos.sh`. For RPC URLs with

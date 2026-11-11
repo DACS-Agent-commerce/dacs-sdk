@@ -48,7 +48,7 @@ test("main, pull requests and merge queues prepare on both pinned Node versions"
   assert.equal(release.if, undefined);
   assert.ok(!release["continue-on-error"]);
   assert.equal(release.strategy["fail-fast"], false);
-  assert.deepEqual(release.strategy.matrix["node-version"], ["20.19.0", "22.21.1"]);
+  assert.deepEqual(release.strategy.matrix["node-version"], ["22.22.2", "24.15.0"]);
   const setup = release.steps.find(step => step.uses?.startsWith("actions/setup-node@"));
   assert.equal(setup.with["node-version"], "${{ matrix.node-version }}");
   assert.equal(step("npm install --global --ignore-scripts npm@11.19.0").if, undefined);
