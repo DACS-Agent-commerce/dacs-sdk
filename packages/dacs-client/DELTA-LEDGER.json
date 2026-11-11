@@ -6653,6 +6653,22 @@
           "after": "6823ed3ecdc354d9f81d84299518f7eff91781c5"
         }
       ]
+    },
+    {
+      "delta": "D35",
+      "subject": "delta(client): D35 re-apply the monotonic clock to the seller rate window and the wallet lane wait",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "eb89bc99364dc00d325530e5249981917b9cdb87",
+          "after": "b32273fc468d862e55d626121c8b2de60462d397"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7",
+          "after": "bc36e9f0477613f54e57b1a94424971e42e5c6e1"
+        }
+      ]
     }
   ]
 }
