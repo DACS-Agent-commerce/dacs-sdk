@@ -502,7 +502,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.getTxByHash).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts only the live node's equivalent integer wire projection", async () => {
+  it.each(["empty", "transaction"])("accepts canonical integer wire fields with %s edit hashes", async (hashKind) => {
     const { adapter, raw } = await makeAdapter();
     const sign = raw.storagePrograms.sign.getMockImplementation()!;
     raw.storagePrograms.sign.mockImplementation(async (...args: any[]) => {
@@ -527,6 +527,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     const canonical = raw.getTxByHash.getMockImplementation()!;
     raw.getTxByHash.mockImplementation(async (txRef: string) => {
       const transaction = await canonical(txRef);
+      const storedTxHash = hashKind === "empty" ? "" : txRef;
       return {
         ...transaction,
         content: {
@@ -541,20 +542,21 @@ describe("DemosAdapter.anchorAndWait", () => {
             rpc_address: null,
           },
           gcr_edits: [
-            { type: "balance", amount: 1000, txhash: txRef },
-            { type: "nonce", amount: "1", txhash: txRef },
+            { type: "balance", amount: 1000, txhash: storedTxHash },
+            { type: "nonce", amount: "1", txhash: storedTxHash },
           ],
         },
       };
     });
 
-    await expect(
-      adapter.anchorAndWait(
-        "live-wire-integer-projection",
-        { value: 1 },
-        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
-      ),
-    ).resolves.toMatchObject({ state: "included" });
+    const receipt = await adapter.anchorAndWait(
+      "live-wire-integer-projection",
+      { value: 1 },
+      { completion: "read-visible", timeoutMs: 1_000, pollMs: 1 },
+    );
+    expect(receipt).toMatchObject({ state: "read-visible" });
+    await expect(adapter.verifyDemosWriteEvidence(receipt.demosEvidence!))
+      .resolves.toBe(true);
   });
 
   it("refuses a mutable create signed with a different nonce", async () => {
@@ -1722,6 +1724,86 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.getTxByHash).toHaveBeenCalledWith(error.receipt.txRef);
     expect(error.message).toMatch(/terminal state failed/);
   });
+
+  it("reads the row of a result 200 transaction answer as the transaction", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.nodeCall.mockResolvedValue({ state: "pending" });
+    raw.getTxByHash.mockResolvedValue({
+      result: 200,
+      response: { status: "failed", blockNumber: 42 },
+    });
+
+    const error = asAnchorError(
+      await adapter
+        .anchorWriteOnce(
+          "wrapped-200-failed",
+          { value: 1 },
+          { timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+
+    expect(error).toMatchObject({
+      code: "inclusion-failed",
+      receipt: { state: "failed", blockNumber: 42 },
+    });
+  });
+
+  it.each([
+    ["failed", 400, 42],
+    ["confirmed", 404, 43],
+  ])(
+    "does not read a %s row inside a result %i answer as the transaction",
+    async (status, result, blockNumber) => {
+      const { adapter, raw } = await makeAdapter();
+      raw.nodeCall.mockResolvedValue({ state: "pending" });
+      raw.getTxByHash.mockResolvedValue({
+        result,
+        response: { status, blockNumber },
+      });
+
+      const error = asAnchorError(
+        await adapter
+          .anchorWriteOnce(
+            "wrapped-non-200-row",
+            { value: 1 },
+            { timeoutMs: 20, pollMs: 1 },
+          )
+          .catch((caught: unknown) => caught),
+      );
+
+      expect(error.code).toBe("timeout");
+      expect(error.receipt.state).not.toBe("failed");
+      expect(error.receipt.state).not.toBe("included");
+      expect(error.receipt.blockNumber).toBeUndefined();
+    },
+  );
+
+  it.each([
+    [{ result: 400, response: "error" }],
+    [{ result: 404, response: null }],
+  ])(
+    "treats the node error answer %j as no transaction yet",
+    async (answer) => {
+      const { adapter, raw } = await makeAdapter();
+      raw.nodeCall.mockResolvedValue({ state: "pending" });
+      raw.getTxByHash.mockResolvedValue(answer);
+
+      const error = asAnchorError(
+        await adapter
+          .anchorWriteOnce(
+            "node-error-answer",
+            { value: 1 },
+            { timeoutMs: 20, pollMs: 1 },
+          )
+          .catch((caught: unknown) => caught),
+      );
+
+      expect(error.code).toBe("timeout");
+      expect(error.receipt.state).not.toBe("failed");
+      expect(error.receipt.state).not.toBe("included");
+    },
+  );
 
   it("preserves immutable inclusion-timeout evidence at the shared completion deadline", async () => {
     const { adapter, raw } = await makeAdapter();

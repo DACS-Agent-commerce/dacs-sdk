@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Generated live-consumer verification for PR #303.
+ * Generated live-consumer verification.
  *
  * Mirrors the CI `packed-live-rail` job for both rails: pack the exact
  * three-package release set, install the packed generator, generate a fresh
@@ -13,7 +13,7 @@
  * downloads made by npm itself. No live RPC, testnet, wallet or funded action
  * is configured or run. Shell-free; fixed commands; finite per-step budgets.
  *
- * usage: node scripts/verify-pr303-generated-consumer.mjs --output-dir <dir>
+ * usage: node scripts/verify-generated-consumer.mjs --output-dir <dir>
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -47,7 +47,7 @@ const MINUTE = 60_000;
 
 const args = process.argv.slice(2);
 if (args.length !== 2 || args[0] !== "--output-dir" || !args[1]) {
-  throw new Error("usage: node scripts/verify-pr303-generated-consumer.mjs --output-dir <dir>");
+  throw new Error("usage: node scripts/verify-generated-consumer.mjs --output-dir <dir>");
 }
 const outputDirectory = resolve(args[1]);
 
@@ -216,9 +216,9 @@ async function releaseSetComparison(packs) {
 await prepareOutputDirectory();
 const started = Date.now();
 const version = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8")).version;
-const scratch = await mkdtemp(join(tmpdir(), "dacs-pr303-consumer-"));
+const scratch = await mkdtemp(join(tmpdir(), "dacs-generated-consumer-"));
 const report = {
-  schema: "dacs-pr303-generated-consumer/v1",
+  schema: "dacs-generated-consumer/v1",
   packageVersion: version,
   toolchain: { node: process.version },
   network: "public npm registry and better-sqlite3 native artifacts only; no live services",

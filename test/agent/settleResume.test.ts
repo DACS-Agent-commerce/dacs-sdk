@@ -9,6 +9,7 @@ import {
 } from "../../src/agent/runSessionCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { IdentityBundle } from "../../src/artifacts/types.js";
+import { registerResumeSeam } from "../support/restartableSettlement.js";
 import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/index.js";
 import {
   createIdempotencyStore,
@@ -123,6 +124,8 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
     authenticateRecoveredArtifact: () => true,
     // kv shared across resume via the same closure
   };
+  // A resumed job reconciles through the same durable-store wrapper.
+  deps.resumeSettlement = deps.settle;
   return { deps, kv, listingRef };
 }
 
@@ -137,8 +140,10 @@ describe("runSession resume is at-most-once across a settle→anchor crash (#43)
     await expect(runSessionCore(listingRef, terms, deps)).rejects.toThrow(/simulated crash/);
     expect(counter.n).toBe(1); // paid once
 
-    // Run 2: resume the SAME jobId with the SAME idempotency store.
-    const res = await runSessionCore(listingRef, terms, deps, "job-1");
+    // Run 2: resume the SAME jobId with the SAME idempotency store. `settle` is
+    // itself the store-backed bridge, so it serves as the recovery seam too.
+    const resumed = registerResumeSeam({ ...deps, resumeSettlement: deps.settle });
+    const res = await runSessionCore(listingRef, terms, resumed, "job-1");
     expect(res.outcome).toBe("completed");
     expect(counter.n).toBe(1); // NOT re-paid — the store reconciled the prior settlement
   });
