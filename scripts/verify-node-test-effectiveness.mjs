@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Bounded PR #303 test-effectiveness witnesses.
+ * Bounded test-effectiveness witnesses for the dacs-node package.
  *
  * Each case copies the host package (and the core sources it aliases) into a
  * disposable task-owned directory, applies one exact wrong implementation to
@@ -12,7 +12,7 @@
  * Offline and shell-free: fixed paths, fixed mutations, process.execPath plus
  * the locally installed Vitest CLI, finite per-run and total budgets.
  *
- * usage: node scripts/verify-pr303-test-effectiveness.mjs
+ * usage: node scripts/verify-node-test-effectiveness.mjs
  * Prints one JSON report on stdout; exits 0 only when every case is killed.
  */
 import { spawn } from "node:child_process";
@@ -36,16 +36,16 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = join("packages", "dacs-node");
-const CHILD_ENV = "DACS_PR303_EFFECTIVENESS_CHILD";
-const READINESS_TEST = "pr303Readiness.test.ts";
+const CHILD_ENV = "DACS_NODE_EFFECTIVENESS_CHILD";
+const EFFECTIVENESS_TEST = "testEffectiveness.test.ts";
 const RUN_TIMEOUT_MS = 240_000;
 const TOTAL_BUDGET_MS = 900_000;
 
 if (process.env[CHILD_ENV] === "1") {
-  throw new Error("refusing a recursive PR303 effectiveness invocation");
+  throw new Error("refusing a recursive test-effectiveness invocation");
 }
 if (process.argv.length !== 2) {
-  throw new Error("usage: node scripts/verify-pr303-test-effectiveness.mjs");
+  throw new Error("usage: node scripts/verify-node-test-effectiveness.mjs");
 }
 
 const SUITES = Object.freeze({
@@ -290,7 +290,7 @@ async function prepareCopy(root) {
   await cp(join(repoRoot, HOST, "src"), join(host, "src"), { recursive: true });
   await cp(join(repoRoot, HOST, "test"), join(host, "test"), {
     recursive: true,
-    filter: (source) => !source.endsWith(READINESS_TEST),
+    filter: (source) => !source.endsWith(EFFECTIVENESS_TEST),
   });
   const hostModules = join(repoRoot, HOST, "node_modules");
   if (existsSync(hostModules)) {
@@ -514,7 +514,7 @@ const vitestManifest = JSON.parse(
   await readFile(join(repoRoot, "node_modules", "vitest", "package.json"), "utf8"),
 );
 const before = await repositoryTargets();
-const root = await mkdtemp(join(tmpdir(), "dacs-pr303-effectiveness-"));
+const root = await mkdtemp(join(tmpdir(), "dacs-node-effectiveness-"));
 const baselines = [];
 const mutants = [];
 try {
@@ -545,9 +545,9 @@ try {
 const after = await repositoryTargets();
 const unchanged = JSON.stringify(before) === JSON.stringify(after);
 const report = {
-  schema: "dacs-pr303-test-effectiveness/v1",
+  schema: "dacs-node-test-effectiveness/v1",
   toolchain: { node: process.version, vitest: vitestManifest.version },
-  command: "node scripts/verify-pr303-test-effectiveness.mjs",
+  command: "node scripts/verify-node-test-effectiveness.mjs",
   repositoryTargets: { sha256: before, unchanged },
   baselines,
   mutants,

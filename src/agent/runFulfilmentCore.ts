@@ -1628,7 +1628,7 @@ function auditSourceViolation(
 }
 
 /**
- * Re-run the complete #120 pre-delivery SessionRecord and provenance checks
+ * Re-run the complete fulfilment pre-delivery SessionRecord and provenance checks
  * against independently verified Agreement and Listing views. Durable recovery
  * and finalization use this seam instead of treating a signed source envelope
  * as authority for its own parties, pipeline, or artifact inventory.

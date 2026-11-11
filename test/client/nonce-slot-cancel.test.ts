@@ -31,7 +31,9 @@ type Gate = 'off' | 'account';
 type View = 'int' | 'node2';
 type Variant = { signer: 'wallet' | 'alt' | 'mixed'; nonceOwner: 'account' | 'signer' };
 type Opts = { historyDown?: boolean; noSeam?: boolean; lag?: number; cap?: number; oldestFirst?: boolean; base?: number;
-  failPayment?: 'consumes' | 'free' | null; amountDem?: boolean; bodyNonceOff?: boolean; bodyStatus?: 'failed' | 'pending'; badHash?: boolean; farGap?: number; tsOf?: (a: any, i: number) => number | undefined };
+  failPayment?: 'consumes' | 'free' | null; amountDem?: boolean; bodyNonceOff?: boolean; bodyStatus?: 'failed' | 'pending'; bodyHash?: string; bodyPayer?: string; bodyDown?: boolean; badHash?: boolean; farGap?: number; tsOf?: (a: any, i: number) => number | undefined;
+  // The purchase declares a seller transport; this is the seller request the protocol makes once a payment settles it.
+  sellerRecheck?: (operation: any, coords: any) => Promise<any> };
 // Node payloads, history rows and operation records are untyped JSON here.
 type Row = { name: string; transfers: number; rejected: number; doublePay: boolean; paidCancelled: boolean; doublePayMismatch: boolean; extra: any };
 type World = ReturnType<typeof world>;
@@ -39,6 +41,7 @@ type Scenario = (world: (o?: Opts) => World) => Promise<Row[]>;
 
 const CHAIN = 'f'.repeat(64), WALLET = '0x' + 'a'.repeat(64), PAYEE = '0x' + '7'.repeat(64), OTHER = '0x' + '5'.repeat(64), AMOUNT = '2500000000';
 const ALT_KEY = '0x' + 'c'.repeat(64);
+const SELLER_PROTOCOL = { jobId: 'TEST-job', transportBinding: { source: 'TEST-seller-transport' } };
 const store = { transaction, isUniqueViolation }, purposes = { APPROVE_PURCHASE: 'approve-purchase' };
 const ok = (response: any) => new Response(JSON.stringify({ result: 200, response }), { headers: { 'content-type': 'application/json' } });
 
@@ -92,7 +95,11 @@ function world(view: View, variant: Variant, gate: Gate, o: Opts = {}) {
       const content = project(a); if (o.bodyNonceOff) content.nonce = view === 'node2' ? String(a.nonce + 1) : a.nonce + 1;
       // bodyStatus: the observation reads the transaction confirmed; every later read of its body (cancel's own) shows another status.
       const reads = (chain.reads[a.hash] = (chain.reads[a.hash] ?? 0) + 1);
-      return ok({ hash: a.hash, status: a.failed ? 'failed' : o.bodyStatus && reads > 1 ? o.bodyStatus : 'confirmed', blockNumber: 10, content });
+      // bodyPayer and bodyDown: every later read answers another payer, or fails. bodyHash: only cancel's first read of the body answers
+      // another transaction's hash, so a repeated cancel reads the agreeing body.
+      if (o.bodyDown && reads > 1) throw new Error('body unavailable');
+      if (o.bodyPayer && reads > 1) { content.from = o.bodyPayer; content.from_ed25519_address = o.bodyPayer; }
+      return ok({ hash: o.bodyHash && reads === 2 ? o.bodyHash : a.hash, status: a.failed ? 'failed' : o.bodyStatus && reads > 1 ? o.bodyStatus : 'confirmed', blockNumber: 10, content });
     }
     if (message === 'getBlockByNumber') return ok({ number: 10, status: 'confirmed', content: { ordered_transactions: chain.applied.map((a: any) => a.hash), timestamp: 1761900000 } });
     throw new Error(`unexpected ${message}`);
@@ -104,11 +111,12 @@ function world(view: View, variant: Variant, gate: Gate, o: Opts = {}) {
   const verifier = { verify: async () => ({ transactable: true, contentHash: CHAIN, price: { amountOs: AMOUNT }, payee: PAYEE, checks: [], evidence: { chainMode: 'public-chain-read' } }) };
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8) });
   const coordinates = createCoordinateStore({ db });
-  const purchases = createPurchaseService({ db, ops, coordinates, config: { demAmountEncoding: 'os-string', nonceSlotProof: gate }, chain: chainApi, verifier, protocol: null, store, purposes });
+  const protocol = o.sellerRecheck ? { available: true, assertBuyerAccess() {}, recheckCommitment: async () => {}, recheck: o.sellerRecheck } : null;
+  const purchases = createPurchaseService({ db, ops, coordinates, config: { demAmountEncoding: 'os-string', nonceSlotProof: gate }, chain: chainApi, verifier, protocol, store, purposes });
   db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('TEST-buyer', 'TEST', 'TEST-buyer', new Date().toISOString());
   const terms = { buyer: { wallet: WALLET }, seller: { payee: PAYEE, claim: 'TEST-seller' }, price: { amountOs: AMOUNT, amount: '2.5' },
     listing: { listingId: 'TEST-listing', version: 1, contentHash: CHAIN }, network: 'testnet', rail: 'demos-native:DEM',
-    domain: { network: 'testnet', rail: 'demos-native:DEM', mode: 'public-chain-read', chainIdentity: CHAIN } };
+    domain: { network: 'testnet', rail: 'demos-native:DEM', mode: 'public-chain-read', chainIdentity: CHAIN }, ...(o.sellerRecheck ? { protocol: SELLER_PROTOCOL } : {}) };
   const buy = (key: string) => ops.createIdempotent({ accountId: 'TEST-buyer', kind: 'purchase', idempotencyKey: key, request: { k: key }, status: 'approved',
     terms, termsHash: CHAIN, expiresAt: new Date(Date.now() + 3_600_000).toISOString() }).operation;
   const handoff = (op: any) => purchases.prepareHandoff({ operationId: op.id, token: ops.handoffTokenFor(op.id) });
@@ -424,6 +432,71 @@ describe.each(SETTINGS)('cancel of a handed-off non-native payment, signer $vari
       }
     }
   }, 120_000);
+});
+
+// The slot's transaction body is read back by hash: cancel ends the purchase only when that body is the slot's own transaction.
+describe.each(['int', 'node2'] as const)('cancel reads the nonce slot body back, view %s', (view) => {
+  const walletKey: Variant = { signer: 'wallet', nonceOwner: 'account' };
+  const afterSlotTaken = async (name: string, o: Opts) => {
+    const w = world(view, walletKey, 'account', o);
+    return (await openAfterSlotTaken(name, w, () => w.external())).extra;
+  };
+  test('a body that agrees with the slot ends the purchase cancelled', async () => {
+    expect(await afterSlotTaken('agree', {})).toEqual({ resolve: true, op1: 'cancelled' });
+  });
+  test.each([
+    ['a body whose hash is another transaction\'s hash', { bodyHash: 'c'.repeat(64) }],
+    ['a body from another payer than the observation', { bodyPayer: OTHER }],
+    ['a body whose nonce is not the slot\'s nonce', { bodyNonceOff: true }],
+    ['a body read that fails', { bodyDown: true }],
+  ] as [string, Opts][])('%s leaves the purchase payment_uncertain', async (name, o) => {
+    expect(await afterSlotTaken(name, o)).toEqual({ resolve: false, op1: 'payment_uncertain' });
+  });
+  test('a repeated cancel after a disagreeing body reads the slot again and ends the purchase cancelled', async () => {
+    const w = world(view, walletKey, 'account', { bodyHash: 'c'.repeat(64) });
+    const op1 = w.buy('one'); await w.handoff(op1); await attempt(() => w.cancel(op1)); w.external();
+    const first = await attempt(() => w.cancel(op1)), open = w.status(op1);
+    const again = await attempt(() => w.cancel(op1));
+    expect([cancelled(first), open, cancelled(again), w.status(op1)]).toEqual([false, 'payment_uncertain', true, 'cancelled']);
+    w.close();
+  });
+});
+
+// A purchase that declares a seller transport: when cancel finds the payment at the nonce slot, the purchase settles and the protocol
+// makes its seller request for that transaction. A slot taken by another transaction settles nothing and sends no seller request.
+describe.each(['int', 'node2'] as const)('cancel of a purchase with a declared seller transport, view %s', (view) => {
+  const walletKey: Variant = { signer: 'wallet', nonceOwner: 'account' };
+  const advanced = (operation: any) => ({ ...operation, state: { ...operation.state, protocol: { stage: 'payment-observed' } } });
+  const landedPayment = async (sellerRecheck: Opts['sellerRecheck']) => {
+    const w = world(view, walletKey, 'account', { sellerRecheck });
+    const op = w.buy('one'); const sent = await w.handoff(op); w.broadcast(sent.payload); w.mine();
+    return { w, op, paymentHash: createHash('sha256').update(JSON.stringify(sent.payload)).digest('hex') };
+  };
+  test('a payment found at the slot makes one seller request for that transaction and returns the advanced purchase', async () => {
+    const recheck = vi.fn(async (operation: any) => advanced(operation));
+    const { w, op, paymentHash } = await landedPayment(recheck);
+    const result = await w.cancel(op);
+    expect(recheck).toHaveBeenCalledTimes(1);
+    const [asked, coords] = recheck.mock.calls[0] as unknown as [any, any];
+    expect([asked.id, asked.status, coords.reportedTxHash]).toEqual([op.id, 'settled_verified', paymentHash]);
+    expect([result.cancelled, result.operation.state.protocol.stage, w.status(op)]).toEqual([false, 'payment-observed', 'settled_verified']);
+    w.close();
+  });
+  test('a failed seller request leaves the payment settled and reaches the caller with its own error', async () => {
+    const recheck = vi.fn(async () => { throw new Error('TEST-seller-refused'); });
+    const { w, op } = await landedPayment(recheck);
+    await expect(w.cancel(op)).rejects.toThrow('TEST-seller-refused');
+    expect(w.status(op)).toBe('settled_verified');
+    w.close();
+  });
+  test('a release transfer at the slot cancels the purchase without a seller request', async () => {
+    const recheck = vi.fn(async (operation: any) => advanced(operation));
+    const w = world(view, walletKey, 'account', { sellerRecheck: recheck });
+    const op = w.buy('one'); await w.handoff(op); await decline(w, op);
+    const result = await w.cancel(op);
+    expect([result.cancelled, w.status(op), recheck.mock.calls.length]).toEqual([true, 'cancelled', 0]);
+    w.close();
+  });
 });
 
 // verify_deal's mismatch branch, read directly: where the network may count a nonce per signing key (gate off) a different transfer at the

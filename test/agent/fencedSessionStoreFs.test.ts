@@ -1,5 +1,6 @@
 import { expectMonotonicTimeout } from "../support/monotonicWait.js";
 import {
+  link,
   mkdir,
   mkdtemp,
   open,
@@ -14,7 +15,7 @@ import {
 } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -76,6 +77,42 @@ async function completeDelivery(
   });
   if (!completed.ok) throw new Error(`delivery completion failed: ${completed.reason}`);
   return binding;
+}
+
+/** The single marker file a binding published in `directory`. */
+async function onlyMarker(directory: string): Promise<string> {
+  const [name, ...others] = await readdir(directory);
+  if (name === undefined || others.length > 0) {
+    throw new Error(`expected exactly one marker in ${directory}`);
+  }
+  return join(directory, name);
+}
+
+/**
+ * Runs `operation` while `marker` also has its temporary name, as it does
+ * between the link and the temporary removal of an exclusive publication, and
+ * removes that name once the operation is waiting on a timer or has settled.
+ */
+async function duringPublicationWindow<T>(
+  marker: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const temporaryName = join(dirname(marker), `.${basename(marker)}.publishing.tmp`);
+  await link(marker, temporaryName);
+  vi.useFakeTimers({ toFake: ["setTimeout"] });
+  try {
+    let settled = false;
+    const running = operation();
+    running.then(() => { settled = true; }, () => { settled = true; });
+    while (!settled && vi.getTimerCount() === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    await unlink(temporaryName);
+    await vi.runAllTimersAsync();
+    return await running;
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 beforeEach(async () => {
@@ -2081,3 +2118,44 @@ for (const jump of [-60_000, 60_000]) {
     });
   }
 }
+
+describe("binding markers read during their exclusive publication", () => {
+  test("a settlement contender reading the winner's marker at two links reports settlement-replay", async () => {
+    const other = await createFsFencedSessionStore({ dir });
+    await store.create({ jobId: "j1" });
+    await other.create({ jobId: "j2" });
+    const lease1 = await store.acquireLease({ jobId: "j1", owner: "A", ttlMs: 1000 });
+    const lease2 = await other.acquireLease({ jobId: "j2", owner: "B", ttlMs: 1000 });
+    if (!lease1.ok || !lease2.ok) throw new Error("leases missing");
+    const settlementId = `evm:8453:${"a".repeat(64)}:0`;
+    const winner = await store.bindSessionAuthorization({
+      jobId: "j1",
+      leaseToken: lease1.lease,
+      binding: { ...authorizationBinding("b".repeat(64), "3"), settlementId },
+    });
+    expect(winner.ok).toBe(true);
+    const marker = await onlyMarker(join(dir, "settlements"));
+
+    const contender = await duringPublicationWindow(marker, () =>
+      other.bindSessionAuthorization({
+        jobId: "j2",
+        leaseToken: lease2.lease,
+        binding: { ...authorizationBinding("c".repeat(64), "6", 2), settlementId },
+      }));
+
+    expect(contender).toMatchObject({ ok: false, reason: "settlement-replay", boundTo: "j1" });
+  });
+
+  test("a hash contender reading the winner's marker at two links reports the owner", async () => {
+    await store.create({ jobId: "j1" });
+    await store.create({ jobId: "j2" });
+    expect(await store.bindHash({ hash: "0xagr", jobId: "j1", kind: "agreement" }))
+      .toEqual({ ok: true, boundTo: "j1" });
+    const marker = await onlyMarker(join(dir, "hashes"));
+
+    const contender = await duringPublicationWindow(marker, () =>
+      store.bindHash({ hash: "0xagr", jobId: "j2", kind: "agreement" }));
+
+    expect(contender).toEqual({ ok: false, boundTo: "j1" });
+  });
+});

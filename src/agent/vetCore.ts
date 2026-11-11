@@ -83,6 +83,7 @@ import {
   type FencedSessionStoreV2,
   type SessionLeaseToken,
 } from "./fencedSessionStore.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** SIG-4 domain for the method-native self-signed assertion evidence. */
 export const SELF_SIGNED_ASSERTION_SEPARATOR =
@@ -90,18 +91,6 @@ export const SELF_SIGNED_ASSERTION_SEPARATOR =
 
 const KEY_CLAIM = /^key:([0-9a-f]{64})(?:\?(.+))?$/;
 const SIGNATURE_HEX = /^[0-9a-f]{128}$/;
-
-function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreezeSnapshot(child, seen);
-  }
-  return Object.freeze(value);
-}
 
 function snapshotValue(
   value: unknown,
@@ -530,7 +519,7 @@ async function authenticateFinalizedJson(
   if (!isExactJsonRecord(artifact)) {
     throw new DacsError(`${logicalAddress} artifact must be exact JSON data`);
   }
-  const artifactSnapshot = deepFreezeSnapshot(
+  const artifactSnapshot = deepFreeze(
     snapshot(artifact, `${logicalAddress} artifact`),
   );
   const expectedHash = hashArtifact(artifactSnapshot);
@@ -553,11 +542,11 @@ async function authenticateFinalizedJson(
   try {
     receiptValid =
       (await deps.verifyFinalizedAnchor(
-        deepFreezeSnapshot({
+        deepFreeze({
           logicalAddress,
-          artifact: deepFreezeSnapshot(snapshot(artifactSnapshot, "receipt artifact input")),
-          ref: deepFreezeSnapshot(snapshot(anchored.ref, "receipt ref input")),
-          receipt: deepFreezeSnapshot(snapshot(anchored.receipt, "receipt input")),
+          artifact: deepFreeze(snapshot(artifactSnapshot, "receipt artifact input")),
+          ref: deepFreeze(snapshot(anchored.ref, "receipt ref input")),
+          receipt: deepFreeze(snapshot(anchored.receipt, "receipt input")),
         }),
       )) === true;
   } catch {
@@ -567,7 +556,7 @@ async function authenticateFinalizedJson(
     throw new DacsError(`${logicalAddress} finalized receipt did not authenticate`);
   }
   const returnedReadback = await deps.readAnchoredJson(
-    deepFreezeSnapshot(snapshot(anchored.ref, "readback ref input")),
+    deepFreeze(snapshot(anchored.ref, "readback ref input")),
   );
   if (
     returnedReadback !== null &&
@@ -577,7 +566,7 @@ async function authenticateFinalizedJson(
   }
   const readback = returnedReadback === null
     ? null
-    : deepFreezeSnapshot(snapshot(returnedReadback, `${logicalAddress} readback`));
+    : deepFreeze(snapshot(returnedReadback, `${logicalAddress} readback`));
   if (
     readback === null ||
     !validate(readback) ||
@@ -599,13 +588,13 @@ async function persistFinalizedJson(
   validate: (value: unknown) => boolean,
   hashArtifact: (value: Record<string, unknown>) => string = contentHash,
 ): Promise<FinalizedVetAnchor> {
-  const artifactSnapshot = deepFreezeSnapshot(
+  const artifactSnapshot = deepFreeze(
     snapshot(artifact, `${logicalAddress} artifact`),
   );
   const anchored = await deps.anchorFinalizedArtifact(
-    deepFreezeSnapshot({
+    deepFreeze({
       logicalAddress,
-      artifact: deepFreezeSnapshot(
+      artifact: deepFreeze(
         snapshot(artifactSnapshot, "anchor artifact input"),
       ),
     }),
@@ -1003,7 +992,7 @@ export interface VetRequest {
 export interface PartyVetAttemptRequest {
   requirementPath: PartyVetRequirementPath;
   claimSubject: string;
-  /** Exact generation-fenced recipe pin produced by #143. */
+  /** Exact generation-fenced recipe pin from `pinSessionRecipeSelection`. */
   recipePin: DurableSessionRecipePin;
   methodInput: PartyVetMethodInput;
 }
@@ -1197,7 +1186,7 @@ function captureVetRequest(source: VetRequest): VetRequest {
       writable: true,
     });
   }
-  return deepFreezeSnapshot(
+  return deepFreeze(
     snapshot(captured, "Vet request"),
   ) as unknown as VetRequest;
 }
@@ -1270,7 +1259,7 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
         `party Vet attempt ${index} requires a runtime-authenticated durable recipe pin`,
       );
     }
-    return deepFreezeSnapshot({
+    return deepFreeze({
       requirementPath: snapshot(
         attempt.requirementPath!.value,
         `party Vet attempt ${index} requirement path`,
@@ -1292,7 +1281,7 @@ function capturePartyVetRequest(source: PartyVetRequest): PartyVetRequest {
       "party Vet requires a runtime-authenticated session registry snapshot",
     );
   }
-  return deepFreezeSnapshot({
+  return deepFreeze({
     jobId: descriptors.jobId!.value,
     evaluatedParty: descriptors.evaluatedParty!.value,
     identityBundle: snapshot(
@@ -1391,7 +1380,7 @@ function captureNativeCciTlsnInputs(
     index > 0 && captured[index - 1]!.proofHash === entry.proofHash)) {
     throw new DacsError("party Vet native CCI TLSN inputs repeat a proof hash");
   }
-  return deepFreezeSnapshot(captured);
+  return deepFreeze(captured);
 }
 
 function capturePartyVetWithNativeCciTlsnRequest(
@@ -1447,7 +1436,7 @@ function capturePartyVetWithNativeCciTlsnRequest(
       "party Vet native CCI signals are SDK-owned and cannot be supplied by the caller",
     );
   }
-  return deepFreezeSnapshot({ vet, nativeCciTlsn });
+  return deepFreeze({ vet, nativeCciTlsn });
 }
 
 function isSafeNativeTime(value: unknown): value is number {
@@ -1549,7 +1538,7 @@ export function readPartyVetNativeCciTlsnEvidence(
       canonicalize(parsed) !== signal.value ||
       parsed.verifiedAt !== signal.observedAt
     ) return null;
-    return deepFreezeSnapshot(parsed);
+    return deepFreeze(parsed);
   } catch {
     return null;
   }
@@ -2117,7 +2106,7 @@ async function proxyAttestation(
     throw new DacsError("consensus-backed-proxy URL template is incomplete");
   }
   const rawResponse = await deps.proxyFetch(
-      deepFreezeSnapshot({
+      deepFreeze({
         url,
         method: method.endpoint.method,
         ...(method.endpoint.headers
@@ -2364,7 +2353,7 @@ async function runVetStep(
   }
   try {
     const raw = await store.runOnce(
-        deepFreezeSnapshot({
+        deepFreeze({
           operationKey: context.operationKey,
           operationHash: context.operationHash,
           step,
@@ -2380,7 +2369,7 @@ async function runVetStep(
     const detail = error instanceof Error && error.message
       ? `: ${error.message}`
       : "";
-    throw new DacsError(`Vet ${step} step failed${detail}`);
+    throw new DacsError(`Vet ${step} step failed${detail}`, { cause: error });
   }
 }
 
@@ -2568,7 +2557,7 @@ async function transitionVetCheckpoint(
   let changed: boolean | undefined;
   try {
     const response = await store.compareAndSet(
-      deepFreezeSnapshot({
+      deepFreeze({
         operationKey: context.operationKey,
         expected: expected === null
           ? null
@@ -2606,7 +2595,7 @@ async function resolveFinalizedJson(
   let resolved: FinalizedVetAnchor | null;
   try {
     resolved = await deps.resolveFinalizedArtifact(
-      deepFreezeSnapshot({ logicalAddress, contentHash: expectedHash }),
+      deepFreeze({ logicalAddress, contentHash: expectedHash }),
     );
   } catch {
     throw new DacsError(`${logicalAddress} finalized lookup is indeterminate`);
@@ -2699,7 +2688,7 @@ async function executeVetMethod(
     req.recipe.availability === "mocked" ||
     req.recipe.availability === "failed"
   ) {
-    const evidence = deepFreezeSnapshot({
+    const evidence = deepFreeze({
       availabilityEvidenceVersion: "1",
       jobId: req.jobId,
       subject: req.subject,
@@ -2806,7 +2795,7 @@ async function executeVetMethod(
       ) {
         try {
           const matched = await deps.matchRequirementParameters!(
-            deepFreezeSnapshot({
+            deepFreeze({
               requirement: snapshot(
                 selectedRequirement,
                 "parameter requirement",
@@ -3331,7 +3320,7 @@ async function authenticatePartyComponent<TKey>(
   let verdict: Awaited<ReturnType<typeof verifyComponentSignature<TKey>>>;
   try {
     verdict = await verifyComponentSignature(
-      deepFreezeSnapshot(snapshot(artifact, "party Vet signed component")),
+      deepFreeze(snapshot(artifact, "party Vet signed component")),
       separator,
       {
         isSignerAuthorized: async (candidate, signature) => {
@@ -3426,7 +3415,7 @@ async function authenticateCarriedResult<TKey>(
   let raw: Record<string, unknown> | null;
   try {
     raw = await deps.vet.readAnchoredJson(
-      deepFreezeSnapshot(snapshot(claim.verifiedBy, "carried VerifyResult ref")),
+      deepFreeze(snapshot(claim.verifiedBy, "carried VerifyResult ref")),
     );
   } catch {
     throw new DacsError(
@@ -3443,7 +3432,7 @@ async function authenticateCarriedResult<TKey>(
       `party Vet carried VerifyResult for ${claimSubject} is malformed`,
     );
   }
-  const result = deepFreezeSnapshot(
+  const result = deepFreeze(
     snapshot(raw, `party Vet carried VerifyResult ${claimSubject}`),
   ) as VerifyResult;
   const { scheme, identifier } = claimParts(claimSubject);
@@ -3490,7 +3479,7 @@ function finalizedAttemptFor(
   if (priorIds.includes(outcome.attemptId)) {
     throw new DacsError("party Vet attempt identity is duplicated");
   }
-  return deepFreezeSnapshot({
+  return deepFreeze({
     attemptId: attempt.attemptId,
     resultAddress: checkpoint.resultAddress,
     result: checkpoint.result,
@@ -3669,7 +3658,7 @@ function capturePartyFinalizedAttempts(
     ) {
       throw new DacsError(`party Vet finalized attempt ${index} bindings differ`);
     }
-    return deepFreezeSnapshot(
+    return deepFreeze(
       snapshot(raw, `party Vet finalized attempt ${index}`),
     ) as unknown as PartyVetFinalizedAttempt;
   });
@@ -3770,7 +3759,7 @@ async function transitionPartyCheckpoint(
   try {
     const compareAndSet = store.compareAndSet as unknown as PartyVetCompareAndSet;
     const response = await compareAndSet(
-      deepFreezeSnapshot({
+      deepFreeze({
         operationKey: plan.recordAddress,
         expected: expected === null
           ? null
@@ -3816,7 +3805,7 @@ async function authenticatePartyAttempt<TKey>(
   const acceptedAt = readClock(deps.vet.nowMs, "party Vet result acceptance");
   assertPartyResultTime(finalized.result, acceptedAt, "party Vet VerifyResult");
   assertSharedPartyResultFresh(finalized.result, attempt, acceptedAt);
-  return deepFreezeSnapshot({ ...finalized, resultAnchor: anchor });
+  return deepFreeze({ ...finalized, resultAnchor: anchor });
 }
 
 async function qualifySharedPartyAttempt(
@@ -3849,7 +3838,7 @@ async function qualifySharedPartyAttempt(
     inputHash,
     async () => {
       try {
-        const matcherInput = deepFreezeSnapshot({
+        const matcherInput = deepFreeze({
             requirement: snapshot(
               attempt.requirement,
               "shared parameter requirement",
@@ -3942,7 +3931,7 @@ async function partyVetCoreCaptured<TKey>(
   try {
     presentationValid = (
       await deps.verifyIdentityPresentation(
-        deepFreezeSnapshot({
+        deepFreeze({
           bundle: snapshot(request.identityBundle, "party Vet presentation bundle"),
           signedBytes: signedBytes(
             "dacs-bundle-presentation:v1:",
@@ -3976,7 +3965,7 @@ async function partyVetCoreCaptured<TKey>(
     ) {
       try {
         presentedClaimControlled = (
-          await deps.isPresentedClaimControlled(deepFreezeSnapshot({
+          await deps.isPresentedClaimControlled(deepFreeze({
             bundle: snapshot(
               request.identityBundle,
               "party Vet selector-control bundle",
@@ -4127,7 +4116,7 @@ async function partyVetCoreCaptured<TKey>(
   );
   while (execution.status === "pending") {
     const attempt = execution.nextAttempt;
-    const vetRequest = deepFreezeSnapshot({
+    const vetRequest = deepFreeze({
       jobId: plan.jobId,
       subject: attempt.claimSubject,
       bundleHash: plan.bundleHash,
@@ -4621,7 +4610,7 @@ function nativeCciTlsnEvidenceFromDisposition(
       "party Vet native CCI TLSN qualification returned invalid provenance",
     );
   }
-  return deepFreezeSnapshot(evidence);
+  return deepFreeze(evidence);
 }
 
 function captureDurableNativeCciTlsnEvidence(
@@ -4652,7 +4641,7 @@ function captureDurableNativeCciTlsnEvidence(
       "party Vet native CCI TLSN journal returned conflicting evidence",
     );
   }
-  return deepFreezeSnapshot(evidence);
+  return deepFreeze(evidence);
 }
 
 /**
@@ -4691,7 +4680,7 @@ export async function partyVetWithNativeCciTlsnCore<TKey>(
     subject: noncePresenter,
     sessionNonce: nonce,
   });
-  const nonceBinding = deepFreezeSnapshot({
+  const nonceBinding = deepFreeze({
     bindingVersion: "1",
     jobId: request.vet.jobId,
     subject: request.vet.evaluatedParty,
@@ -4735,7 +4724,7 @@ export async function partyVetWithNativeCciTlsnCore<TKey>(
   const nativeCciTlsn: PartyVetNativeCciTlsnEvidence[] = [];
   const signals: SupplementarySignal[] = [];
   for (const input of request.nativeCciTlsn) {
-    const qualificationIdentity = deepFreezeSnapshot({
+    const qualificationIdentity = deepFreeze({
       qualificationVersion: "1",
       jobId: request.vet.jobId,
       subject: request.vet.evaluatedParty,
@@ -4771,7 +4760,7 @@ export async function partyVetWithNativeCciTlsnCore<TKey>(
           let disposition: unknown;
           try {
             disposition = await Reflect.apply(qualifier, INERT_VET_RECEIVER, [
-              deepFreezeSnapshot({
+              deepFreeze({
                 subject: request.vet.evaluatedParty,
                 bundle: snapshot(
                   request.vet.identityBundle,
@@ -4822,7 +4811,7 @@ export async function partyVetWithNativeCciTlsnCore<TKey>(
       input,
     );
     nativeCciTlsn.push(evidence);
-    signals.push(deepFreezeSnapshot({
+    signals.push(deepFreeze({
       source: "cci-tlsn",
       signalType: PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE,
       value: canonicalize(evidence),
@@ -4830,7 +4819,7 @@ export async function partyVetWithNativeCciTlsnCore<TKey>(
     }));
   }
   const production = await partyVetCoreCaptured(
-    deepFreezeSnapshot({
+    deepFreeze({
       ...request.vet,
       supplementary: [
         ...(request.vet.supplementary ?? []),
@@ -4851,7 +4840,7 @@ export async function partyVetWithNativeCciTlsnCore<TKey>(
       "party Vet durable record did not retain exact native CCI TLSN evidence",
     );
   }
-  return deepFreezeSnapshot({
+  return deepFreeze({
     ...production,
     nativeCciTlsn,
   });

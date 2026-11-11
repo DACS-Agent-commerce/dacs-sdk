@@ -25,8 +25,3 @@ The provider boundary owns substrate-specific receipt proof authentication and
 the mapping between the portable receipt transaction reference and the returned
 DACS-4 `TxRef`. It must verify transaction, writer, nonce, finality evidence,
 and native ordering; receipt fields alone are assertions under CORE SR2-4.
-
-This PR advances #99 but does not close it. The public legacy `runSession()`
-path is intentionally unchanged. Wiring this gate before `settle()`, persisting
-the receipt in `SessionStore`, and recovering the high-level two-party seller
-session remain the subsequent orchestration PR.

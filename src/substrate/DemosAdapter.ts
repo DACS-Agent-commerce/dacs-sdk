@@ -65,10 +65,10 @@ import type {
 } from "./demosWriteJournal.js";
 
 /**
- * Address-derivation salt. EMPTY per the observed on-chain convention
- * (DACS-Standard #242) — `deriveStorageAddress` hashes
- * `{deployer}:{programName}:{nonce}:{salt}`, and live deals derive with an empty
- * salt. (Was `"dacs:v1"`, which produced addresses no live reader could match.)
+ * Address-derivation salt. EMPTY per the observed on-chain convention:
+ * `deriveStorageAddress` hashes `{deployer}:{programName}:{nonce}:{salt}`, and
+ * live deals derive with an empty salt. Any other salt yields addresses that
+ * live readers cannot match.
  */
 const ANCHOR_SALT = "";
 const DEFAULT_ANCHOR_TIMEOUT_MS = 120_000;
@@ -305,7 +305,7 @@ export interface DemosRawClient {
   // Only the fields the SDK reads. No index signatures: demosdk's `NetworkInfo`
   // and `AddressInfo` interfaces have none. Under 4.0.16 its declarations do
   // not resolve with NodeNext, so they type as `any`; from 4.0.18 they resolve
-  // and must be assignable here (#339).
+  // and must be assignable here.
   getNetworkInfo(): Promise<
     | {
         forks?: {
@@ -513,12 +513,9 @@ function serializeSignedTransaction(value: unknown): string {
 }
 
 /**
- * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demosdk`.
- *
- * T1 scaffold status: `connect` / `getAddress` are wired to the real SDK so the
- * package provably reaches a Demos RPC. The substrate operations (`anchor`,
- * `readAnchor`, `proxyFetch`, `resolveIdentity`, `sign`) are defined by the seam
- * but land in later tasks — see the per-method task refs.
+ * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demosdk`. It
+ * connects to a Demos RPC and implements `anchor`, `readAnchor`, `proxyFetch`,
+ * `resolveIdentity` and `sign` against it.
  */
 export class DemosAdapter implements SubstrateAdapter {
   readonly #demos: Demos;
@@ -1660,7 +1657,7 @@ export class DemosAdapter implements SubstrateAdapter {
   /**
    * SR-2 anchoring via Demos Storage Programs. A logical name maps to one
    * storage program, created at `deriveStorageAddress(writer, name, nonce, "")`
-   * where `nonce` is the writer's NEXT account nonce (#58 / DACS-Standard #242) —
+   * where `nonce` is the writer's NEXT account nonce —
    * the node enforces sequential nonces and rejects the skeleton default 0. First
    * write creates the program (public-read ACL); later writes update it in place
    * at that address.
@@ -1670,9 +1667,9 @@ export class DemosAdapter implements SubstrateAdapter {
    */
   /**
    * The account nonce a NEW storage program will be created under: the writer's
-   * next nonce (`getAddressNonce` + 1) per DACS-Standard #242. The node enforces
-   * sequential nonces and REJECTS the skeleton default of 0, so a fixed nonce
-   * made every live create fail (#58).
+   * next nonce (`getAddressNonce` + 1). The node enforces sequential nonces
+   * and REJECTS the skeleton default of 0, so a fixed nonce cannot create a
+   * program.
    */
   private async nextAnchorNonce(key = this.walletQueueKey()): Promise<number> {
     const chainNext =
@@ -1693,7 +1690,7 @@ export class DemosAdapter implements SubstrateAdapter {
   /**
    * The storage address a name would anchor to, for THIS writer, right now.
    *
-   * IMPORTANT (#58 / DACS-Standard #242): this is NOT third-party derivable. The
+   * IMPORTANT: this is NOT third-party derivable. The
    * physical address folds in the writer's account nonce at create time, so only
    * the writer can compute it, and only BEFORE the create lands. A reader that
    * doesn't know the write nonce MUST resolve by program name through the node's
@@ -1770,7 +1767,7 @@ export class DemosAdapter implements SubstrateAdapter {
     }
 
     // A new program uses the live next account nonce and the same empty salt as
-    // current Demos writes (#58 / DACS-Standard #242). This must happen inside
+    // current Demos writes. This must happen inside
     // the same-wallet queue so another SDK write cannot consume the nonce first.
     const programName = logicalToStorageProgramName(name);
     const nonce = await this.nextAnchorNonce(key);
@@ -1859,9 +1856,14 @@ export class DemosAdapter implements SubstrateAdapter {
           ? record.state
           : undefined;
       if (state) ctx.receipt.lastObservedState = state;
-      const transactionRecord = isRecord(transaction) && isRecord(transaction.response)
-        ? transaction.response
-        : transaction;
+      // An answer carrying a `result` other than 200 is the node's error
+      // envelope, so it holds no transaction row.
+      const transactionRecord =
+        isRecord(transaction) && "result" in transaction && transaction.result !== 200
+          ? undefined
+          : isRecord(transaction) && isRecord(transaction.response)
+            ? transaction.response
+            : transaction;
       const executionStatus = isRecord(transactionRecord) &&
           typeof transactionRecord.status === "string"
         ? transactionRecord.status
@@ -3149,7 +3151,7 @@ export class DemosAdapter implements SubstrateAdapter {
   }
 
   /**
-   * Anchor to an explicit completion level (#57). The total timeout covers the
+   * Anchor to an explicit completion level. The total timeout covers the
    * wallet queue, owner-bound lookup, nonce acquisition, signing, broadcast,
    * inclusion, and exact canonical readback. The process queue protects adapter
    * instance state while the durable chain+wallet journal serializes and fences
@@ -3355,7 +3357,7 @@ export class DemosAdapter implements SubstrateAdapter {
    *
    * This is deliberately separate from update-capable {@link anchor}: listing
    * version slots and other immutable artifacts must never flow through an
-   * update path. Existing programs are resolved by NAME and OWNER (#70), not by
+   * update path. Existing programs are resolved by NAME and OWNER, not by
    * predicting the writer's next nonce-derived address. New programs use only
    * `createStorageProgram`, wait for authenticated canonical inclusion and an
    * exact owner/provenance-bound native readback, then let the secondary name
@@ -3823,7 +3825,7 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /**
    * SR-2 discovery — resolve a logical program NAME to its storage address,
-   * bound to the expected writer (#58 / DACS-Standard #242).
+   * bound to the expected writer.
    *
    * This is the reader-side counterpart to {@link anchorAddress}: because the
    * physical address folds in the writer's create-time nonce, a third party
@@ -3913,7 +3915,7 @@ export class DemosAdapter implements SubstrateAdapter {
       candidates = await this.searchStorageProgramsByName(programName, true);
     } catch (e) {
       // A failed name lookup is NOT an absence — treat it as indeterminate so a
-      // caller never mistakes a substrate hiccup for "never created" (#70).
+      // caller never mistakes a substrate hiccup for "never created".
       return {
         status: "indeterminate",
         reason: `name lookup failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -4109,7 +4111,7 @@ export class DemosAdapter implements SubstrateAdapter {
    * Resolves by address: a ref that is (or contains) an address returns its
    * identity graph (all eight production GCR contexts; parseCciRecord reads it).
    * Requires demosdk ≥ 4.0.12 — 4.0.6's auth-header path 401s against the public
-   * nodes on gcr_routine (issue #20). Reverse claim-ref resolution is
+   * nodes on gcr_routine. Reverse claim-ref resolution is
    * findSubjectsByClaim below.
    */
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
@@ -4156,7 +4158,7 @@ export class DemosAdapter implements SubstrateAdapter {
     const identities = new Identities();
     // Guard and call in one branch so `platform` narrows away "domain":
     // demosdk's web2 context has no "domain", which its types enforce once
-    // they resolve with NodeNext (4.0.18; 4.0.16's are `any`) (#339).
+    // they resolve with NodeNext (4.0.18; 4.0.16's are `any`).
     let accounts;
     if (parsed.kind === "web2") {
       if (parsed.platform === "domain") {

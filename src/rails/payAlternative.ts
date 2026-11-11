@@ -38,6 +38,7 @@ import {
 } from "../negotiate/fixedPrice.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import type { DomainSeparator } from "../crypto/signing.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export const PRIOR_PAYMENT_DISPOSITION_SEPARATOR =
   "dacs-prior-payment-disposition:v1:" as const satisfies DomainSeparator;
@@ -205,18 +206,6 @@ function stableDataMethod<T extends (...args: never[]) => unknown>(
     throw new DacsError(`${label} must be a non-Proxy function`);
   }
   return method.bind(source) as T;
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function decision<TVerdict extends AlternativePaymentVerdict>(

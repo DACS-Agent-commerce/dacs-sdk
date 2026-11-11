@@ -80,7 +80,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       return Buffer.byteLength(pointedText) > SELLER_TRANSPORT_MAX_RESPONSE ? text : pointedText;
     } catch { return text; }
   };
-  let windowStart = performance.now();
+  let windowStart = Date.now();
   let requests = 0;
   let active = 0;
   const send = async (res, status, body, request, { close = false, text = JSON.stringify(body) } = {}) => {
@@ -97,7 +97,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     let counted = false;
     try {
       if (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress)) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
-      if (performance.now() - windowStart >= rateWindowMs) { windowStart = performance.now(); requests = 0; }
+      if (Date.now() - windowStart >= rateWindowMs) { windowStart = Date.now(); requests = 0; }
       if (++requests > maxRequestsPerWindow || active >= maxConcurrent) return await send(res, 429, { error: 'seller_rate_limited' }, null, { close: true });
       active++; counted = true;
       // Match the raw request target exactly: query strings, alternate paths
@@ -247,11 +247,13 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
           chunks.push(value);
         }
       }
-      const answer = admitRawJson(Buffer.concat(chunks), { maxBytes: SELLER_TRANSPORT_MAX_RESPONSE });
-      const answerText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+      const responseBytes = Buffer.concat(chunks);
+      const answer = admitRawJson(responseBytes, { maxBytes: SELLER_TRANSPORT_MAX_RESPONSE });
+      const answerText = new TextDecoder('utf-8', { fatal: true }).decode(responseBytes);
       // Unsigned 429/404/415/503 answers cannot authenticate their status.
       // Verify first: these failures stay response-auth, including signer fallback 503.
-      if (authentication) authentication.verifyResponse(signed.payload, { header: response.headers.get(SELLER_TRANSPORT_HEADER), status: response.status, text: answerText });
+      // The wire verifier is asynchronous and reads the exact bytes: wait for it within the deadline.
+      if (authentication) await settleOnAbort(authentication.verifyResponse(signed.payload, { header: response.headers.get(SELLER_TRANSPORT_HEADER), status: response.status, text: answerText, responseBytes }), signal);
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');
