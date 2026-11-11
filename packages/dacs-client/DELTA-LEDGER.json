@@ -7651,6 +7651,80 @@
           "after": "f0834ba649d3a26ad1136f96195fea50feb9d8c3"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged request signer route limit in the seller request deadlines and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
+          "after": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged request signer route limit in the continuing routes and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
+          "after": "4754c968bde4ee62121134b3645c16d5d40c9cbf"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "9552cf74c2bf1dd739eee1dd1315b7bb7ef46e8c",
+      "subject": "fix(client): state which seller routes the wire request signer can sign",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5",
+          "after": "948a90f0c28e84d88cdb098baf69478d0bc4286f"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-authentication.test.mjs",
+          "before": "c105cadb85dac6be089bcfd69e053dae8aacdecb",
+          "after": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF wrap the request signer doc comment in lines",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
+          "after": "1319c19e69704a0a4294a5a62d5e83eec182b4c4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the request signer doc comment with and without evidence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
+          "after": "1eaa3e419dc2d124c78fbc916d0cef0ae99f6f4c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the request signer doc comment in the authenticated request retries",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "fc66e463671c98bddf7d8da31761a7c79046d88f",
+          "after": "6ca61271e2daf5de7781479b88a971723597cc10"
+        }
+      ]
     }
   ]
 }

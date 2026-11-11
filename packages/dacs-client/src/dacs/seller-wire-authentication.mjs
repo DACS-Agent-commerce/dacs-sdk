@@ -10,9 +10,12 @@ const EVIDENCE_MEMBERS = ['commitment', 'agreement', 'signedListing'];
 const evidenceMembers = (kept) => Object.fromEntries(EVIDENCE_MEMBERS.filter((member) => kept?.[member] !== undefined).map((member) => [member, kept[member]]));
 
 /**
- * Returns a wire request signer and async response verifier using the kept job and current admission. Rejects with wire errors or profile_not_admitted; malformed configuration throws TypeError, and a missing delegation throws OperationError(seller_delegation_unavailable). No transport is invoked. `request` takes optional `{ signal, checkDeadline }` guards for one absolute deadline: once it aborts, the session signer is not called and a late signature is dropped.
+ * Returns a wire request signer and async response verifier using the kept job and current admission.
  * `evidence` (optional) is an async function returning `{commitment, agreement, signedListing}` bytes for a committed purchase, or undefined before commitment.
  * It is asked only for the continuing routes and the two ordinary read routes; every other route is signed with none, and the wire refuses a continuing route without it.
+ * Without `evidence` it signs only the routes up to the commitment (proposals, state, context, context challenge, commitments and commitment signature); the payment routes, the bundle routes and the buyer's bundle copy are refused with continuation_commitment_invalid before the signer is called, and a read of an already committed purchase is signed as a read of a new one.
+ * Rejects with wire errors or profile_not_admitted; malformed configuration throws TypeError, and a missing delegation throws OperationError(seller_delegation_unavailable). No transport is invoked.
+ * `request` takes optional `{ signal, checkDeadline }` guards for one absolute deadline: once it aborts, the session signer is not called and a late signature is dropped.
  */
 export function createSellerWireAuthentication({ admission, sessionSigner, delegation, seller, publicEndpoint, endpointProof, job, evidence, now = () => Date.now() }) {
   if (!admission?.binding || typeof admission.currentLocal !== 'function') throw new TypeError('admission_required');
