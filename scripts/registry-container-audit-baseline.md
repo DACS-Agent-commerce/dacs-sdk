@@ -199,6 +199,8 @@ location, integrity and engine range identify each engine exception.
 
 The seven newer sigstore-chain engine entries and the two newer audit IDs were reported by the clean registry consumer job at https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/41941378864/job/126968852052 (failed 2026-11-05T00:47:34Z, head 67f5c99888b0731bf9bb38e7c05d5b6e368cfff4), whose log lists each package with its location, integrity and engine range. The JSON records no separate source block for them.
 
+The `minipass-fetch@6.0.1` engine entry and `GHSA-h895-cgqg-jf52` were reported by the clean registry consumer job at https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/42990767480/job/130422803688 (failed 2026-11-11T09:01:09Z, head 39b36e30bb3a657d11ee1776593b155c4a023403), whose log lists the engine entry with its location, integrity and engine range, and the new audit ID.
+
 A major-version override would replace dependencies outside their parents'
 declared contracts. That needs a separate consumer dependency change and its
 runtime compatibility checks. The current allowed tuf-js/models majors have
