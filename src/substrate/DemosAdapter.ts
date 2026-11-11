@@ -452,6 +452,36 @@ function isDefinitiveBroadcastRejection(value: unknown): boolean {
   );
 }
 
+type DemosPost = (
+  url: string,
+  request: unknown,
+  headers: unknown,
+  opts?: { retries?: number; baseSleepMs?: number },
+) => Promise<{ data: unknown }>;
+
+/**
+ * A Demos client that sends each transaction post (`execute`: confirmTx and
+ * broadcastTx) exactly once. demosdk resends a post after a 502/503/504 or a
+ * dropped connection, which would submit the same signed transaction again; a
+ * failed attempt instead takes the adapter's unknown-outcome path. Reads keep
+ * demosdk's retries.
+ */
+function createDemosClient(): Demos {
+  const demos = new Demos();
+  const client = demos as unknown as { _doPost: DemosPost };
+  const post = client._doPost.bind(demos);
+  client._doPost = (url, request, headers, opts = {}) =>
+    post(
+      url,
+      request,
+      headers,
+      isRecord(request) && request.method === "execute"
+        ? { ...opts, retries: 0 }
+        : opts,
+    );
+  return demos;
+}
+
 function journalPortableValue(
   value: unknown,
   seen = new Set<object>(),
@@ -1089,7 +1119,7 @@ export class DemosAdapter implements SubstrateAdapter {
       ...(chainIdentity === undefined ? {} : { chainIdentity }),
     });
     this.#pendingWalletSecret = secret;
-    this.#demos = new Demos();
+    this.#demos = createDemosClient();
   }
 
   /** Underlying demosdk instance through a peer-independent escape-hatch type. */
