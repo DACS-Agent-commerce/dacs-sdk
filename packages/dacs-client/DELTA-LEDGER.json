@@ -7987,6 +7987,18 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged recorded suspension fixes and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f6492ec9771611dd72c96e94107384db860ca748",
+          "after": "f6492ec9771611dd72c96e94107384db860ca748"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the merged public endpoint client and refresh package pins",
       "compact": true,
       "files": [
