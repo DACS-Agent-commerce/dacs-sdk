@@ -15,6 +15,26 @@ it("requires the expected seller principal when opening a signed response", asyn
     .rejects.toMatchObject({ code: "peer_signer_wrong" });
 });
 
+it("refuses to return a response header signed by a key other than the seller's", async () => {
+  const x = await wireWorld();
+  const payload: wire.WireResponsePayload = { ...x.request, kind: "response", requestHash: wire.wireRequestHash(x.request), status: 200 };
+  const wrongKey = { claim: x.seller.claim, sign: x.buyer.signBytes };
+  await expect(wire.signWireEnvelope(payload, { ...x.context, signer: wrongKey })).rejects.toMatchObject({ code: "peer_signature_invalid", status: 500 });
+});
+
+it("refuses to return a request header signed by a key other than the buyer's", async () => {
+  const x = await wireWorld();
+  const wrongKey = { claim: x.buyer.claim, sign: x.seller.signBytes };
+  await expect(wire.signWireEnvelope(x.request, { ...x.input, signer: wrongKey, purchaseProfile: x.binding.profile })).rejects.toMatchObject({ code: "peer_signature_invalid", status: 500 });
+});
+
+it("refuses to return a delegated request header signed by a key other than the session key", async () => {
+  const x = await wireWorld();
+  const delegation = x.signed(x.delegation, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation) as wire.SellerSessionDelegation;
+  const wrongKey = { claim: x.session.claim, sign: x.buyer.signBytes };
+  await expect(wire.signWireEnvelope(x.request, { ...x.input, signer: wrongKey, purchaseProfile: x.binding.profile }, delegation)).rejects.toMatchObject({ code: "peer_signature_invalid", status: 500 });
+});
+
 it("refuses response delegations, malformed response fields and a request-domain signature", async () => {
   const x = await wireWorld();
   const payload: wire.WireResponsePayload = { ...x.request, kind: "response", requestHash: wire.wireRequestHash(x.request), status: 200 };

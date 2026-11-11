@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
+import { purchaseCapacityOf } from './bound-transport-store.mjs';
 import { SELLER_PROFILE } from '../../src/dacs/session-admission.mjs';
 import { sellerStoreInternals, SellerTransportError } from '../../src/dacs/seller-transport-auth.mjs';
 import { T0, JOB, JOB2, OTHER, CONTEXT } from './reservation-accounting-fixture.mjs';
@@ -44,7 +45,8 @@ function contextStart(f, jobId) {
       firstAdmission: { challengeExpiresAt: f.now() + 600000, generatedAt: f.now(), checkedAt: f.now() } } };
 }
 function contextTransaction(f, calls) {
-  return createContextAdmissionTransaction({ store: f.store(), now: f.now, ready: () => true, deadlines: { policyMs: 10000 },
+  const purchaseCapacity = purchaseCapacityOf(f.store());
+  return createContextAdmissionTransaction({ store: f.store(), capacity: purchaseCapacity, now: f.now, ready: () => true, deadlines: { policyMs: 10000 },
     policy: { reserve: async () => { calls.reserve++; return null; }, release: async () => { calls.release++; } },
     effectEvidence: async () => [], inspectContextOutcome: () => ({ state: 'none' }), completeWire: () => {} });
 }
@@ -57,7 +59,7 @@ for (const limit of ['context records', 'jobs']) test(`hold-release refuses a re
   session.state = null; f.reopen();
   const calls = { reserve: 0, release: 0 }, admission = contextTransaction(f, calls);
   const before = proof(f);
-  const error = await admission.begin(contextStart(f, JOB)).then(() => null, cause => cause);
+  const error = await Promise.resolve().then(() => admission.begin(contextStart(f, JOB))).then(() => null, cause => cause);
   const refused = proof(f);
   await admission.begin(contextStart(f, JOB2));
   const admissions = f.db.prepare("SELECT jobId FROM kit_context_admissions WHERE state <> 'aborted'").all();
@@ -72,7 +74,7 @@ for (const limit of ['context records', 'jobs']) test(`hold-release refuses a re
     assert.equal(liveJobs.size, 2);
     await assert.rejects(f.reserve(await f.admit(f.payload({ jobId: job4 }))), capacity);
   }
-  assert.equal(error?.code, 'context_job_closed'); assert.equal(error.status, 409);
+  assert.equal(error?.code, 'context_session_terminal'); assert.equal(error.status, 409);
   assert.deepEqual(refused, before); assert.deepEqual(calls, { reserve: 1, release: 0 });
 });
 
