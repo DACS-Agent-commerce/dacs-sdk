@@ -313,7 +313,6 @@ describe("Demos write outcome from recorded testnet answers", () => {
     ["a bare string", () => readOnly.returned.getTxByHashEmptyHash],
     ["an error object without a state", () => readOnly.returned.getTransactionStatusEmptyHash],
     ["an unknown-message object", () => sameBlock.unknownMessage],
-    ["the SDK transport-failure value", sdkTransportFailure],
   ])("fails closed on %s as the status, even beside a confirmed row", async (_label, status) => {
     const { write, rounds } = pending;
     const { adapter } = scriptedAdapter({
@@ -333,7 +332,6 @@ describe("Demos write outcome from recorded testnet answers", () => {
   it.each([
     ["a bare string", () => readOnly.returned.getTxByHashEmptyHash],
     ["an unknown-message object", () => sameBlock.unknownMessage],
-    ["the SDK transport-failure value", sdkTransportFailure],
   ])("fails closed on %s as the transaction row", async (_label, row) => {
     const { write, rounds } = pending;
     const { adapter } = scriptedAdapter({
@@ -395,6 +393,65 @@ describe("Demos write outcome from recorded testnet answers", () => {
 
     expect(stages(lease)).toEqual(["canonical-failed"]);
     expect(reads.filter((read) => read === "getTxByHash")).toHaveLength(2);
+    await lease.release();
+  });
+
+  it("a transport failure then a confirmed row ends confirmed", async () => {
+    const { write, rounds } = pending;
+    const { adapter, broadcast } = scriptedAdapter({
+      reads: [
+        { getTransactionStatus: await sdkTransportFailure(), getTxByHash: rounds.B1.getTxByHash },
+        rounds.C,
+      ],
+      block: blockListing(74_920, write.hash),
+      accountNonce: rounds.C.getAddressNonce,
+    });
+    const lease = await journalledTransfer(write);
+
+    expect(await reconcile(adapter, lease)).toBeUndefined();
+
+    expect(stages(lease)).toEqual(["canonical-confirmed"]);
+    expect(broadcast).not.toHaveBeenCalled();
+    await lease.release();
+  });
+
+  it("a transport failure then a failed row ends failed", async () => {
+    const { writes, rounds } = sameBlock;
+    const { adapter, broadcast } = scriptedAdapter({
+      reads: [
+        { getTransactionStatus: rounds.B1.A.getTransactionStatus, getTxByHash: await sdkTransportFailure() },
+        rounds.B40.A,
+      ],
+    });
+    const lease = await journalledTransfer(writes.A);
+
+    expect(await reconcile(adapter, lease)).toBeUndefined();
+
+    expect(stages(lease)).toEqual(["canonical-failed"]);
+    expect(broadcast).not.toHaveBeenCalled();
+    await lease.release();
+  });
+
+  it("transport failures until the deadline end demos-write-unresolved with their count", async () => {
+    const { write, rounds } = pending;
+    const transportFailure = await sdkTransportFailure();
+    const { adapter, reads, broadcast } = scriptedAdapter({
+      reads: [{ getTransactionStatus: transportFailure, getTxByHash: transportFailure }],
+      nonces: [rounds.B36.getAddressNonce],
+      lastBlock: rounds.B36.getLastBlockNumber,
+    });
+    const lease = await journalledTransfer(write);
+
+    const error = expectUnresolved(await reconcile(adapter, lease), write);
+    expect(error.message).toContain(`account nonce ${rounds.B36.getAddressNonce}`);
+    expect(error.message).toContain(`last block ${rounds.B36.getLastBlockNumber}`);
+    const failures = Number(/only transport failures: (\d+)/.exec(error.message)?.[1]);
+    // Each round answered by two transport failures then reads the account
+    // nonce once; a round cut off by the deadline is neither counted nor read.
+    expect(failures).toBeGreaterThan(2);
+    expect(failures).toBe(2 * reads.filter((read) => read === "getAddressNonce").length);
+    expect(stages(lease)).toEqual(["broadcast-intent"]);
+    expect(broadcast).not.toHaveBeenCalled();
     await lease.release();
   });
 });
