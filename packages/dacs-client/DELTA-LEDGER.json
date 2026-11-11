@@ -7203,6 +7203,17 @@
           "after": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying the signer part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74",
+          "after": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74"
+        }
+      ]
     }
   ]
 }
