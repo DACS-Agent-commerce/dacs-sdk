@@ -6820,6 +6820,7 @@
     {
       "delta": "WF",
       "subject": "fix(client): require a string artifact hash in the dispatch history",
+      "sha": "6387ec98397795aea109a075a4b27cdfc34c1f8a",
       "files": [
         {
           "path": "packages/dacs-client/src/wallet/effect-history.mjs",
