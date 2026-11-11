@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as wire from '@kynesyslabs/dacs/wire';
-import { world, JOB, setPurchaseAdmission } from './helpers/wire-client-fixture.mjs';
+import { world, purchase, JOB, T0, setPurchaseAdmission } from './helpers/wire-client-fixture.mjs';
+import { fixtureListing } from './fixtures/listings.mjs';
 const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
 const { SELLER_ANSWER_CLASS } = await import('../src/dacs/seller-response-class.mjs');
 
@@ -29,6 +30,15 @@ test('a public endpoint written with a trailing slash is reached at the same add
   });
   await assert.rejects(client.agreementState({ jobId: JOB }));
   assert.deepEqual(sent, [`${SELLER_ORIGIN}${wire.DACS_SELLER_HTTP_PATHS.state}`]);
+});
+
+test('preparing a purchase keeps the public https origin of a seller whose transport is declared', async (t) => {
+  const w = await world(t, { publicEndpoint: SELLER_ORIGIN });
+  const p = await purchase(t, w, { paid: true });
+  const listing = fixtureListing(w.seller, { now: T0 });
+  const { terms } = await p.service.prepareTerms({ verification: { listing }, domain: { mode: 'public-chain-read', network: 'testnet', chainIdentity: w.binding.profile.chainIdentity }, sellerClaim: w.seller.claim });
+  assert.equal(terms.sellerAgent, SELLER_ORIGIN);
+  assert.deepEqual(terms.sellerTransport, p.transport.declaration);
 });
 
 test('a public endpoint without a wire authentication is refused', async () => {
