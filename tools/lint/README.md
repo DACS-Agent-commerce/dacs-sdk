@@ -60,7 +60,7 @@ In a migrated file the check refuses:
 - a catalog code on `TransientError`, `CounterpartyError` or `SubstrateError` whose category in the table differs from the class's;
 - `category` beside `code` on `DacsError`, because the table decides the category;
 - any other class that extends `DacsError` and neither takes a catalog code nor declares its own `code`;
-- `new WireError`, `new RawJsonAdmissionError`, `new AnchorWaitError`, `fail()` and `reject()` without a code. Their codes stay outside the catalog;
+- `new WireError`, `new RawJsonAdmissionError`, `new AnchorWaitError`, and a call without a code to the `fail()` helper declared in `src/wire/validate.ts` or the `reject()` helper declared in `src/canonical/rawJson.ts`, in a file that declares or imports it. A function of the same name that is not that helper, such as a Promise executor's `reject`, is not checked. Their codes stay outside the catalog;
 - a plain `Error`, `TypeError`, `RangeError` or `SyntaxError` throw that is not listed under `retainedPlainThrows`.
 
 A retained throw is listed with its path, the throw written as it is in the file, and the reason it stays, for example a programmer assertion that no caller can reach. The check also fails when a listed throw has no reason or no longer exists, or when a migrated path does not exist.

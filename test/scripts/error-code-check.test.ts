@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+const repoRoot = resolve(import.meta.dirname, "../..");
 const modulePath = "../../tools/lint/error-codes.mjs";
 const { findErrorClasses, findProblems, readCatalog } = await import(modulePath);
 
@@ -22,7 +23,7 @@ function repo(files: Record<string, string>): string {
 }
 
 const CLASSES = [
-  "export class DacsError extends Error {}",
+  "export class DacsError extends Error { declare readonly code?: string; }",
   "export class TransientError extends DacsError {}",
   "export class CounterpartyError extends DacsError {}",
   "export class SubstrateError extends DacsError {}",
@@ -90,6 +91,22 @@ describe("error code check", () => {
     });
   });
 
+  it("classes the error classes of the real tree and checks a base-class construction against the real errors file", () => {
+    const kinds = Object.fromEntries(findErrorClasses(repoRoot));
+    for (const name of ["DacsError", "TransientError", "CounterpartyError", "SubstrateError"]) expect(kinds[name]).toBe("catalog");
+    for (const name of ["WireError", "RawJsonAdmissionError", "AnchorWaitError"]) expect(kinds[name]).toBe("owned");
+    expect(readCatalog(repoRoot).problems).toEqual([]);
+    const root = repo({
+      "src/errors.ts": readFileSync(join(repoRoot, "src/errors.ts"), "utf8"),
+      "src/migrated.ts": 'export const a = new DacsError("x");\nexport const b = new DacsError("x", { code: "sdk.unclassified" });',
+      "tools/lint/error-codes.json": JSON.stringify({ migrated: ["src/migrated.ts"], retainedPlainThrows: [] }),
+    });
+    expect(findProblems(root)).toEqual([
+      "src/migrated.ts:1: DacsError must be given a catalog code written as a string literal",
+      'src/migrated.ts:2: "sdk.unclassified" marks code that is not classified yet; it is not a catalog code',
+    ]);
+  });
+
   it("accepts a coded construction in a migrated file", () => {
     expect(problemsOf([
       'import { DacsError, TransientError } from "./errors.js";',
@@ -149,24 +166,42 @@ describe("error code check", () => {
 
   it("leaves subclass-owned codes outside the catalog but refuses a missing code", () => {
     const owned = { "src/wire.ts": 'export class WireError extends DacsError { constructor(readonly code: string) { super(code); } }' };
+    const importFail = 'import { fail } from "./wire/validate.js";';
     expect(problemsOf([
+      importFail,
       'export const a = new WireError("bad_sig");',
       'export function f() { return fail("peer_signature_invalid", 401); }',
-      'export function g(code: string) { return reject("parse", code); }',
     ].join("\n"), { extra: owned })).toEqual([]);
     expect(problemsOf([
+      importFail,
       "export const a = new WireError();",
       'export const b = new WireError("");',
       "export function f() { return fail(); }",
       'export function g() { return fail("sdk.unclassified"); }',
-      'export function h() { return reject("parse"); }',
     ].join("\n"), { extra: owned })).toEqual([
-      "src/migrated.ts:1: WireError needs a code argument",
       "src/migrated.ts:2: WireError needs a code argument",
-      "src/migrated.ts:3: fail needs a code argument",
+      "src/migrated.ts:3: WireError needs a code argument",
       "src/migrated.ts:4: fail needs a code argument",
-      "src/migrated.ts:5: reject needs a code argument",
+      "src/migrated.ts:5: fail needs a code argument",
     ]);
+  });
+
+  it("checks a helper call only where the name is the real helper", () => {
+    const declareReject = 'function reject(stage: string, code: string): never { throw new DacsError(stage, { code: "net.timeout" }); }';
+    const rawJson = (...lines: string[]) => ({ migrated: ["src/canonical/rawJson.ts"], extra: { "src/canonical/rawJson.ts": [declareReject, ...lines].join("\n") } });
+    const executor = 'export const a = new Promise((resolve, reject) => reject(new DacsError("x", { code: "schema.invalid_field" })));';
+    expect(problemsOf(executor)).toEqual([]);
+    expect(problemsOf("", rawJson('export function f(code: string) { return reject("parse", code); }', executor))).toEqual([]);
+    expect(problemsOf("", rawJson('export function f() { return reject("parse"); }', executor))).toEqual([
+      "src/canonical/rawJson.ts:2: reject needs a code argument",
+    ]);
+    expect(problemsOf([
+      'import { fail } from "./other.js";',
+      'import { fail as refuse } from "./wire/validate.js";',
+      "export function f() { return fail(); }",
+      "export function g() { return refuse(); }",
+      "export function h(fail: () => void) { return fail(); }",
+    ].join("\n"))).toEqual(["src/migrated.ts:4: refuse needs a code argument"]);
   });
 
   it("refuses plain error throws that are not retained", () => {

@@ -2,7 +2,7 @@
 // Checks how errors are built in the files that tools/lint/error-codes.json lists as migrated to error codes.
 // The catalog is the `codeCategory` table in src/errors.ts. See tools/lint/README.md.
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { listSourceFiles, unwrap } from "./shared-helpers.mjs";
@@ -18,8 +18,11 @@ const BASE_CLASS = "DacsError";
 const CATALOG_CLASSES = { DacsError: null, TransientError: "transient", CounterpartyError: "counterparty", SubstrateError: "substrate" };
 /** Where the code sits among the arguments where a subclass that owns its `code` is built; other owned classes take it first. */
 const OWNED_CONSTRUCTORS = { WireError: 0, RawJsonAdmissionError: 1, AnchorWaitError: 0 };
-/** The same for the helpers that build those errors. */
-const OWNED_HELPERS = { fail: 0, reject: 1 };
+/** The helpers that build those errors, each with the file that declares it and the position of its code. A call is checked only where the name is that helper. */
+const OWNED_HELPERS = {
+  fail: { file: "src/wire/validate.ts", position: 0 },
+  reject: { file: "src/canonical/rawJson.ts", position: 1 },
+};
 const PLAIN_ERRORS = ["Error", "TypeError", "RangeError", "SyntaxError"];
 
 const parse = (path, text) => ts.createSourceFile(path, text, ts.ScriptTarget.Latest, false);
@@ -86,12 +89,30 @@ export function findErrorClasses(repoRoot) {
   const kinds = new Map();
   for (const name of parents.keys()) {
     if (!extendsBase(name)) continue;
-    kinds.set(name, owners.has(name) ? "owned" : Object.hasOwn(CATALOG_CLASSES, name) ? "catalog" : "closed");
+    kinds.set(name, Object.hasOwn(CATALOG_CLASSES, name) ? "catalog" : owners.has(name) ? "owned" : "closed");
   }
   return kinds;
 }
 
 const collapseSpace = (text) => text.replace(/\s+/g, " ");
+
+/** The names that stand for an owned-code helper in a file: its top-level declaration, or an import of it from the declaring file. */
+function helperNames(path, source) {
+  const names = new Map();
+  const helperNamed = (name) => (Object.hasOwn(OWNED_HELPERS, name) ? OWNED_HELPERS[name] : undefined);
+  for (const statement of source.statements) {
+    const declared = ts.isFunctionDeclaration(statement) && statement.name ? helperNamed(statement.name.text) : undefined;
+    if (declared?.file === path) names.set(statement.name.text, declared);
+    const bindings = ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) ? statement.importClause?.namedBindings : undefined;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    const from = posix.join(posix.dirname(path), statement.moduleSpecifier.text).replace(/\.js$/, ".ts");
+    for (const { name, propertyName } of bindings.elements) {
+      const helper = helperNamed((propertyName ?? name).text);
+      if (helper?.file === from) names.set(name.text, helper);
+    }
+  }
+  return names;
+}
 
 function ownedCodeProblem(args, position) {
   const code = args?.[position];
@@ -135,15 +156,18 @@ function checkFile(path, text, { codes, classes, retained, matched }) {
     else report(node, `plain ${thrown.expression.text} throw; throw a coded ${BASE_CLASS}, or list it in retainedPlainThrows with a reason`);
   };
 
-  const visit = (node) => {
+  const helpers = helperNames(path, source);
+  /** `shadowed` holds the parameter names of the functions around the node; a parameter named like a helper is not the helper. */
+  const visit = (node, shadowed) => {
     if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) checkConstruction(node, node.expression.text);
-    else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && Object.hasOwn(OWNED_HELPERS, node.expression.text)) {
+    else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && helpers.has(node.expression.text) && !shadowed.has(node.expression.text)) {
       const name = node.expression.text;
-      if (ownedCodeProblem(node.arguments, OWNED_HELPERS[name])) report(node, `${name} needs a code argument`);
+      if (ownedCodeProblem(node.arguments, helpers.get(name).position)) report(node, `${name} needs a code argument`);
     } else if (ts.isThrowStatement(node)) checkThrow(node);
-    ts.forEachChild(node, visit);
+    const inner = ts.isFunctionLike(node) ? new Set([...shadowed, ...node.parameters.flatMap((parameter) => (ts.isIdentifier(parameter.name) ? [parameter.name.text] : []))]) : shadowed;
+    ts.forEachChild(node, (child) => visit(child, inner));
   };
-  visit(source);
+  visit(source, new Set());
   return problems;
 }
 
