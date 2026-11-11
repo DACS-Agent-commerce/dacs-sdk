@@ -7245,6 +7245,28 @@
           "after": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF wrap the request signer doc comment in lines",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
+          "after": "1319c19e69704a0a4294a5a62d5e83eec182b4c4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the request signer doc comment with and without evidence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
+          "after": "1eaa3e419dc2d124c78fbc916d0cef0ae99f6f4c"
+        }
+      ]
     }
   ]
 }
