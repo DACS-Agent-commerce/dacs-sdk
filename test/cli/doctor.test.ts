@@ -30,7 +30,7 @@ describe("dacs doctor", () => {
 
     expect(report.exitCode).toBe(1);
     expect(report.checks.find((c) => c.id === "runtime.node")?.status).toBe("fail");
-    const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
+    const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
       engines: { node: string };
     };
     expect(report.checks.find((c) => c.id === "runtime.node")?.data?.required).toBe(packageJson.engines.node);

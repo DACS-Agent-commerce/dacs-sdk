@@ -310,6 +310,21 @@ printf '%s' "$auth_token"`, {
     expect(passwords[0]).not.toBe(passwords[1]);
   });
 
+  it("sends the account-creation request once, without curl retry options", () => {
+    const root = scratch();
+    const calls = join(root, "curl-calls");
+    const result = runStages(`http_json_curl=(--disable)
+curl() {
+  printf '%s\\n' "$*" >> "$calls"
+  printf '{"token":"fixture-auth-token"}'
+}
+authenticate_registry`, { calls, host_registry: "http://127.0.0.1:1", registry_log: join(root, "registry.log") });
+    expect(result.status, result.stderr).toBe(0);
+    const requests = readFileSync(calls, "utf8").trim().split("\n");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).not.toMatch(/--retry/);
+  });
+
   it("rejects a token outside the bearer-token character set", () => {
     const result = runStages(`http_json_curl=(--disable)
 curl() { printf '%s' '{"token":"bad\\nvalue123"}'; }

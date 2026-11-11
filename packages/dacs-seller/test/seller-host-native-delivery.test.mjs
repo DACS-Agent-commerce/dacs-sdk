@@ -38,6 +38,7 @@ import { privateModule, privateModuleUrl } from './helpers/private-module.mjs';
 import { testNetwork, FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
+import { hostJobCapacityTests } from './helpers/host-job-capacity-cases.mjs';
 
 // A paid order that has healed reaches delivery: the seller prepares and sends
 // its Deliverable exactly once, and every later claim reads it back.
@@ -208,7 +209,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast; 'refuse-broadcast' signs and keeps it and the node refuses it (see refusedCreates).
-async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, finishHook = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
+async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, finishHook = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true }, contextSessionState = () => null } = {}) {
   let startHost = seller.startSellerHost;
   if (agentTransform) {
     const agentUrl = await privateModuleUrl(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], agentTransform);
@@ -284,7 +285,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const inputs = new Map();
   const vettedInput = async (jobId) => {
     if (!inputs.has(jobId)) {
-      const buyerBundle = await buyerBundleFor(jobId), input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
+      const buyerBundle = await buyerBundleFor(jobId), input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: clock() });
       const sellerBundle = sellerPresentation ? sessionSeller(sellerPresentation === 'forged' ? buyerKey : sellerKey) : listing.seller.identity;
       inputs.set(jobId, { ...input, buyer: { ...input.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
         seller: { identityBundle: sellerBundle, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, sellerBundle, { requirement: SELLER_REQUIREMENT, verifier: sellerKey }) } });
@@ -606,7 +607,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery: deliveryCapability(), railAuthority: rails.authority,
-    sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}),
+    sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), now: clock, contextSessionState, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}),
     ...(journalInUse ? { resumeDeliverableCreate: deliveryJournalWallet.resume } : {}) });
   const start = async () => {
     const host = await startHost({ ...capabilities(), dataDirectory, artifactAnchor });
@@ -636,14 +637,15 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
         },
       } });
     };
-    const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: await buyerBundleFor(jobId) });
+    const proposalRequest = { proposal, transportIdentity, buyerIdentityBundle: await buyerBundleFor(jobId) };
+    const answer = await client().propose(proposalRequest);
     if (!expectSigned) return answer;
     assert.equal(answer.disposition, 'complete', `the seller signs the vetted Agreement: ${JSON.stringify(answer)}`);
     const agreement = await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier);
     agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
     if (commit) assert.equal((await client().commit(jobId)).status, 'committed');
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
-    return { jobId, agreement, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client,
+    return { jobId, agreement, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client, proposalRequest, proposalAnswer: answer,
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
       claim: async (txHash) => { advancePastPending(jobId); try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
         catch (error) { return { error: error.code, status: error.status, causeCode:error.causeCode }; } } };
@@ -709,13 +711,15 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // Another write of the seller's account takes the nonce a kept CREATE signed.
   const overtakeWallet = () => node.create(sellerKey, { logicalAddress: 'dacs4:TEST-other-write', artifact: { TEST: 'another write of the seller wallet' }, artifactKind: 'TEST-other' });
   return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, replaceDeliveryWallet, openDeliveryJournal, overtakeWallet, deliveryWallet: () => deliveryJournalWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
-    host: () => host, capabilities, dataDirectory, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession,
+    host: () => host, capabilities, dataDirectory, advanceTime: ms => { reservationTime = clock() + ms; }, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession,
     unguardedCapability: () => deliveryCapability(false), useGuardedDelivery: (guarded) => { guardedStart = guarded; },
     useDeliveryJournal: (on) => { journalInUse = on; } };
 }
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
 const shown = (answer) => JSON.stringify(answer);
+
+hostJobCapacityTests(world);
 
 // A host must refuse presence before any Agreement signature or payment effect.
 for (const placement of ['required', 'oneOf']) {

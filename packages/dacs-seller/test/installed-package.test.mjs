@@ -21,6 +21,7 @@ const ENTRY_MODULES = ['src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-co
 const ADDED_HELPERS = ['src/dacs/process-lease.mjs', 'src/devnet-demo/approval-ledger-append.mjs', 'src/util/bounded-resolution.mjs', 'src/dacs/fixture-settlement.mjs'];
 // Operator-side sources that need the operator's wallet, journal or custody.
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs'];
+const SELLER_BIN = 'bin/dacs-seller.mjs';
 const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerContextClient', 'createSellerContextRoute', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
@@ -74,7 +75,8 @@ test('operator-custody.mjs stays out of the packed files and no shipped module i
 
 test('the seller pack ships every source module but the operator ones, and everything each shipped module imports', () => {
   const packed = sellerPackFiles().sort();
-  assert.deepEqual(packed, [...shippedModules(), ...DOCUMENTS].sort());
+  assert.deepEqual(packed.filter((path) => path.startsWith('src/')), shippedModules());
+  assert.deepEqual(packed.filter((path) => !path.startsWith('src/')), [SELLER_BIN, ...DOCUMENTS].sort());
   for (const file of ADDED_HELPERS) assert.ok(packed.includes(file), `${file} ships`);
   for (const file of NOT_SHIPPED) assert.ok(!packed.includes(file), `${file} is not part of the package`);
   for (const path of packed) assert.doesNotMatch(path, /(?:^|\/)(?:wallet|embedded-wallet|test|port-sources)\/|operator-custody|seller-issuance/, `${path} is a run-time seller module`);
@@ -86,6 +88,48 @@ test('the seller pack ships every source module but the operator ones, and every
   }
 });
 
+test('the packed seller ships the dacs-seller bin, the CLI modules and durable-file.mjs, and the installed bin prints usage', () => {
+  const manifest = JSON.parse(readFileSync(join(packageDirectory, 'package.json'), 'utf8'));
+  assert.deepEqual(manifest.bin, { 'dacs-seller': './' + SELLER_BIN });
+  const packed = sellerPackFiles();
+  for (const file of [SELLER_BIN, 'src/cli/main.mjs', 'src/cli/config.mjs', 'src/cli/init.mjs', 'src/devnet-demo/durable-file.mjs']) assert.ok(packed.includes(file), file);
+  const app = process.env.DACS_SELLER_SMOKE_DIR;
+  assert.ok(app, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
+  assert.equal(staleSetupReason(app), null, 'setup must provision these exact sources, lock and runtime');
+  const child = spawnSync(join(app, 'node_modules', '.bin', 'dacs-seller'), ['--help'], {
+    cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, env: { PATH: process.env.PATH },
+  });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+  assert.match(child.stdout, /Usage: dacs-seller/);
+  assert.match(child.stdout, /--data-dir/);
+});
+
+// The runtimes the installed bin must run init on: the one running this test, and an explicit Node 20.19 when one is given.
+const INIT_RUNTIMES = [process.execPath, ...(process.env.DACS_SELLER_NODE_20_19 ? [process.env.DACS_SELLER_NODE_20_19] : [])];
+
+test('the packed bin runs init on Node 20.19 and on the purchase range, and the identity entry it imports loads no SQLite', t => {
+  const app = process.env.DACS_SELLER_SMOKE_DIR;
+  assert.ok(app, 'prepare a locked installed consumer');
+  for (const runtime of INIT_RUNTIMES) {
+    const work = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-installed-init-')));
+    t.after(() => rmSync(work, { recursive: true, force: true }));
+    const child = spawnSync(runtime, [join(app, 'node_modules', '.bin', 'dacs-seller'), 'init', '--data-dir', join(work, 'seller')], {
+      cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, env: { ...process.env, NODE_OPTIONS: '' },
+    });
+    assert.equal(child.status, 0, child.stderr);
+    assert.match(child.stdout, /^claim: did:demos:agent:[0-9a-f]{64}\naddress: (?:0x)?[0-9a-f]{64}\n$/);
+    assert.equal(child.stderr, '');
+    assert.deepEqual(readdirSync(join(work, 'seller')).sort(), ['seller-key.json', 'seller.json']);
+  }
+  const probe = `import { createRequire } from 'node:module';
+    const { generateWalletMnemonic, deriveWalletIdentity } = await import('@kynesyslabs/dacs-seller/src/cli/node-identity.mjs');
+    await deriveWalletIdentity(await generateWalletMnemonic());
+    process.stdout.write(JSON.stringify(Object.keys(createRequire(import.meta.url).cache).filter(path => /sqlite/i.test(path))));`;
+  const loaded = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, env: { PATH: process.env.PATH } });
+  assert.equal(loaded.status, 0, loaded.stderr);
+  assert.equal(loaded.stdout, '[]');
+});
+
 test('P10-T15 the packed archive contains no authority fixture', () => {
   const packed = sellerPackFiles().sort();
   assert.deepEqual(packed.filter((path) => /authority-fixture/.test(path)), []);
@@ -94,9 +138,10 @@ test('P10-T15 the packed archive contains no authority fixture', () => {
 
 test('no EB test double or authority fixture ships in the packed kit', () => {
   const packed = sellerPackFiles().sort();
-  for (const file of ['src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs']) assert.ok(packed.includes(file), `${file} ships`);
+  const effectModules = ['src/dacs/effect-boundary.mjs', 'src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs'];
+  for (const file of effectModules) assert.ok(packed.includes(file), `${file} ships`);
   assert.deepEqual(packed.filter((path) => /authority-fixture|effect-boundary-fixture|kit-guard-fixture|(?:^|\/)test\//.test(path)), []);
-  for (const file of ['src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs']) {
+  for (const file of effectModules) {
     assert.deepEqual(relativeImports(file).filter((target) => /(?:^|\/)test\//.test(target)), [], `${file} imports no test module`);
     assert.doesNotMatch(readFileSync(join(packageDirectory, file), 'utf8'), /setKitOperationGuardForTest|authority-fixture|effect-boundary-fixture/, `${file} names no test setter or fixture`);
   }
@@ -134,9 +179,9 @@ test('P11a1-T22: the packed host test passes with the wire buyer helper; the pac
   const { sellerPack } = JSON.parse(readFileSync(join(app, 'prepared.json'), 'utf8'));
   assert.equal(manifest.exports['./PROFILE.json'], './PROFILE.json');
 
-  // Exactly the shipped modules, the governing documents, the manifest, README and LICENSE.
+  // Exactly the shipped modules, the bin, the governing documents, the manifest, README and LICENSE.
   const packed = sellerPack.files.map((entry) => entry.path).sort();
-  assert.deepEqual(packed, [...shippedModules(), ...DOCUMENTS].sort());
+  assert.deepEqual(packed, [...shippedModules(), SELLER_BIN, ...DOCUMENTS].sort());
   for (const file of ENTRY_MODULES) assert.ok(packed.includes(file), `${file} is shipped`);
 
   assert.ok(!existsSync(join(app,'node_modules','@kynesyslabs','dacs-seller','test')),'test files are not shipped');

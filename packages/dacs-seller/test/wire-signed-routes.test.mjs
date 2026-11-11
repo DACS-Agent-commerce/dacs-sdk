@@ -26,7 +26,8 @@ import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { wireContinuationFixture, receiptReader } from './helpers/wire-continuation-fixture.mjs';
 import { WIRE_ROUTE_PATHS, createWireContext, wireAuthenticator } from '../src/dacs/seller-wire-requests.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportServerAuth, createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportServerAuth } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 
 const PATHS = DACS_SELLER_HTTP_PATHS;
 const BUYER = { claim: buyer.claim, sign: buyer.signBytes };
@@ -1448,7 +1449,7 @@ test('host wire restart after publication retains the reserving row and attempt'
   assert.equal(w.journalFiles().filter(name => /^o-.*-0$/.test(name)).length, 1); assert.equal(w.agent.calls.proposals, 0);
   w.reopen(); assert.equal((await job.post()).body.error, 'seller_effect_pending'); w.state.time += JOURNAL_LEASE_MS;
   assert.equal((await job.post()).status, 200);
-  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving', 'recover'], 'the expired pending refusal is retired');
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving', 'refused', 'recover'], 'the expired pending refusal remains durable');
   assert.equal(w.agent.calls.proposals, 0); assert.equal(w.agent.calls.reconciled, 1);
 });
 

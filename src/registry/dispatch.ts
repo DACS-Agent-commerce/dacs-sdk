@@ -12,8 +12,9 @@ import {
   type PayDemPreparedTransfer,
   type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
-import type {
-  SettlementIdempotencyStore,
+import {
+  inheritSettlementBridge,
+  type SettlementIdempotencyStore,
 } from "../rails/idempotency.js";
 import {
   isAuthenticatedRailDefinition,
@@ -49,15 +50,16 @@ export interface RailDispatchOptions {
   paywall?: { url: string; network: string; recipientEvm: string; phaseIndex?: number };
   /** Trusted EVM JSON-RPC URL — required by x402 and evm-erc20 finality. */
   rpcUrl?: string;
+  /** Durable atomic settlement store required by x402 and evm-erc20. */
+  settlementStore?: SettlementIdempotencyStore;
   /** Demos node RPC URL — required by pay-dem and pay-d402. */
   demosRpc?: string;
   /** Demos wallet secret used by pay-dem and pay-d402 to sign payments. */
   demosSecret?: string;
   /**
    * Native pay-DEM operator-safety and PC-7 recovery dependencies. Production
-   * restart recovery should supply all three of `settlementStore`,
-   * `reconcile`, and `journalPreparedTransfer`; omitting them preserves the
-   * low-level process-local compatibility behavior but is not restart-safe.
+   * restart recovery uses `settlementStore`, `reconcile`, and
+   * `journalPreparedTransfer`. The settlement store is required.
    */
   payDem?: {
     /** Maximum transfer amount plus confirmed Demos fees, in OS base units. */
@@ -105,7 +107,7 @@ function bindDescriptorRequest(
   executor: (req: SettleRequest) => Promise<SettleResult>,
 ): (req: SettleRequest) => Promise<SettleResult> {
   const expectedPhase = descriptor.phaseHandler;
-  return async (req) => {
+  const bound = async (req: SettleRequest): Promise<SettleResult> => {
     // Capture the two authority-bearing request fields once, then overwrite any
     // accessor/proxy values copied by the compatibility spread below. The rail
     // executor must receive the same descriptor id and phase that this gate
@@ -128,6 +130,7 @@ function bindDescriptorRequest(
       phase: requestPhase,
     });
   };
+  return inheritSettlementBridge(executor, bound);
 }
 
 async function enforceAvailability(
@@ -215,6 +218,7 @@ interface CapturedRailDispatchOptions {
   payment: Readonly<ResolvedPaymentCoordinates>;
   evmPrivateKey?: string;
   rpcUrl?: string;
+  settlementStore?: SettlementIdempotencyStore;
   demosRpc?: string;
   demosSecret?: string;
   payDem?: Readonly<CapturedPayDemOptions>;
@@ -311,10 +315,16 @@ function captureSettlementStore(
     "readOutcome",
     "pay-dem settlement store readOutcome",
   );
+  const recover = optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["recover"]>>(
+    source,
+    "recover",
+    "pay-dem settlement store recover",
+  );
   const wrapper: SettlementIdempotencyStore = {
     once: (key, binding, submit, reconcile) =>
       once(key, binding, submit, reconcile),
     ...(readOutcome === undefined ? {} : { readOutcome }),
+    ...(recover === undefined ? {} : { recover }),
   };
   return Object.freeze(wrapper);
 }
@@ -437,6 +447,11 @@ function captureDispatchOptions(
         "rpcUrl",
         "x402 EVM RPC URL",
       ),
+      settlementStore: captureSettlementStore(optionalDispatchValue<SettlementIdempotencyStore>(
+        opts,
+        "settlementStore",
+        "x402 settlement store",
+      )),
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
       x402FetchMode: optionalDispatchValue<"insecure-test">(
         opts,
@@ -458,6 +473,11 @@ function captureDispatchOptions(
         "rpcUrl",
         "EVM rail RPC URL",
       ),
+      settlementStore: captureSettlementStore(optionalDispatchValue<SettlementIdempotencyStore>(
+        opts,
+        "settlementStore",
+        "evm-erc20 settlement store",
+      )),
     });
   }
   if (railType === "demos-native") {
@@ -692,6 +712,9 @@ export async function settleFromRail(
       if (!capturedOptions.rpcUrl) {
         throw new DacsError("x402 rail requires opts.rpcUrl for independent finality");
       }
+      if (capturedOptions.settlementStore === undefined) {
+        throw new DacsError("x402 rail requires a caller-supplied durable settlement store");
+      }
       const rail = await createX402Rail({
         evmPrivateKey: requiredEvmPrivateKey(
           capturedOptions.evmPrivateKey,
@@ -713,7 +736,7 @@ export async function settleFromRail(
           ? {}
           : { phaseIndex: payment.phaseIndex }),
         asset: capturedDescriptor.asset.contract,
-      }));
+      }, { store: capturedOptions.settlementStore }));
     }
     case "evm-erc20": {
       if (
@@ -726,6 +749,9 @@ export async function settleFromRail(
       }
       if (!capturedOptions.rpcUrl) {
         throw new DacsError("evm-erc20 rail requires opts.rpcUrl");
+      }
+      if (capturedOptions.settlementStore === undefined) {
+        throw new DacsError("evm-erc20 rail requires a caller-supplied durable settlement store");
       }
       const network = requireMatchingNetwork(
         payment.network,
@@ -750,7 +776,7 @@ export async function settleFromRail(
         tokenAddress: capturedDescriptor.asset.contract,
         network,
         recipientEvm,
-      }));
+      }, { store: capturedOptions.settlementStore }));
     }
     case "demos-native": {
       if (
@@ -775,6 +801,9 @@ export async function settleFromRail(
       const maxTotalDebitOs = payDem?.maxTotalDebitOs;
       const journalPreparedTransfer = payDem?.journalPreparedTransfer;
       const settlementStore = payDem?.settlementStore;
+      if (settlementStore === undefined) {
+        throw new DacsError("pay-dem rail requires a caller-supplied durable settlement store");
+      }
       const reconcile = payDem?.reconcile;
       const inclusionTimeoutMs = payDem?.inclusionTimeoutMs;
       const inclusionPollIntervalMs = payDem?.inclusionPollIntervalMs;
@@ -824,9 +853,7 @@ export async function settleFromRail(
           ? {}
           : { phaseIndex: demPhaseIndex }),
       }, {
-        ...(settlementStore === undefined
-          ? {}
-          : { store: settlementStore }),
+        store: settlementStore,
         ...(reconcile === undefined
           ? {}
           : { reconcile }),
