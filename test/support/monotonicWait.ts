@@ -1,6 +1,10 @@
 import { setImmediate } from "node:timers/promises";
 import { expect, vi } from "vitest";
 
+// Real time the filesystem work may take. It is generous for slow storage and
+// stays under Vitest's 5 s test timeout, so a stuck operation fails here.
+const REAL_IO_LIMIT_MS = 4_000;
+
 /** Drive real filesystem work and virtual poll timers with independent clocks. */
 export async function expectMonotonicTimeout(
   operation: () => Promise<unknown>,
@@ -24,13 +28,17 @@ export async function expectMonotonicTimeout(
     (value: unknown) => { failure = value; settled = true; },
     (error: unknown) => { failure = error; settled = true; },
   );
+  // process.hrtime is not mocked above, so it measures the real time spent.
+  const realStart = process.hrtime.bigint();
+  const realElapsedMs = () => Number(process.hrtime.bigint() - realStart) / 1e6;
   try {
     // Let filesystem callbacks complete without advancing time until a poll is scheduled.
-    for (let turn = 0; !settled && turn < 100_000; turn += 1) {
+    // Slow storage needs more turns, so real time bounds the wait, not a turn count.
+    while (!settled && realElapsedMs() < REAL_IO_LIMIT_MS) {
       await setImmediate();
       if (vi.getTimerCount() > 0) await vi.runOnlyPendingTimersAsync();
     }
-    expect(settled).toBe(true);
+    expect(settled, `operation still pending after ${REAL_IO_LIMIT_MS} ms of real time`).toBe(true);
     expect(typeof failure === "object" && !(failure instanceof Error) ? JSON.stringify(failure) : String(failure)).toMatch(message);
     expect(elapsed).toBeGreaterThanOrEqual(budget);
     expect(elapsed).toBeLessThanOrEqual(budget + poll);
