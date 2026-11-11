@@ -9,7 +9,9 @@ import {
   createUnsafeManualAgent,
   createFsDemosWriteJournal,
   createFsSessionStore,
+  createIdempotencyStore,
   createInMemoryBindingStore,
+  createInMemorySettlementLog,
   createX402Rail,
   ed25519Verify,
   generateCanonicalJobId,
@@ -497,7 +499,7 @@ describe("LIVE on-chain lifecycle (publish → settle → verify)", () => {
           network: env.PAY_NETWORK!,
           recipientEvm: sellerEvm,
           asset: env.PAY_TOKEN!,
-        });
+        }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
         const session = await retryDefinitiveDemosFailure({
           label: "buyer session",
           expectedNames: new Set([
