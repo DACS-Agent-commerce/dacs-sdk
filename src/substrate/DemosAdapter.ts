@@ -408,12 +408,6 @@ function httpStatus(error: unknown): number | undefined {
     : undefined;
 }
 
-function plainNonNegativeInteger(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-    ? value
-    : undefined;
-}
-
 /**
  * demosdk answers a node call that failed in transport with
  * `{result: 500, response: <error>}` instead of throwing. A record whose
@@ -439,7 +433,7 @@ type DemosStatusAnswer =
 function demosStatusAnswer(value: unknown): DemosStatusAnswer {
   if (isDemosTransportFailure(value)) return { state: "transport-failure" };
   if (!isRecord(value)) return { state: "unrecognised" };
-  const blockNumber = plainNonNegativeInteger(value.blockNumber);
+  const blockNumber = demosNonNegativeInteger(value.blockNumber);
   switch (value.state) {
     case "pending":
     case "unknown":
@@ -481,7 +475,7 @@ function demosRowAnswer(value: unknown): DemosRowAnswer {
   return {
     status: value.status,
     row: value,
-    blockNumber: plainNonNegativeInteger(value.blockNumber),
+    blockNumber: demosNonNegativeInteger(value.blockNumber),
   };
 }
 
@@ -1949,6 +1943,9 @@ export class DemosAdapter implements SubstrateAdapter {
       }
 
       if (status) ctx.receipt.lastObservedState = status.state;
+      // Set again below only by this round's nonce read; any other round that
+      // read the hash is not one whose nonce went unread.
+      nonceUnread = false;
       if (status?.state === "unrecognised" || row?.status === "unrecognised") {
         throw this.unresolvedWrite(
           ctx,
@@ -2119,14 +2116,14 @@ export class DemosAdapter implements SubstrateAdapter {
       return undefined;
     }
     if (isDemosTransportFailure(nonceAnswer)) return "transport-failure";
-    const accountNonce = plainNonNegativeInteger(nonceAnswer);
+    const accountNonce = demosNonNegativeInteger(nonceAnswer);
     if (accountNonce === undefined) {
       throw this.unresolvedWrite(
         ctx,
         txRef,
         signedNonce,
         await this.readLastBlock(ctx),
-        "the node's account nonce answer is not a plain integer",
+        "the node's account nonce answer is not a non-negative integer",
       );
     }
     const recheck = await this.readWriteOutcome(txRef, ctx);
@@ -2146,7 +2143,7 @@ export class DemosAdapter implements SubstrateAdapter {
   /** The node's last block number for an error message, if it can be read. */
   private async readLastBlock(ctx: AnchorContext): Promise<number | undefined> {
     try {
-      return plainNonNegativeInteger(await this.waitFor(
+      return demosNonNegativeInteger(await this.waitFor(
         ctx,
         this.#demos.nodeCall("getLastBlockNumber"),
         "last block read",
@@ -2159,7 +2156,7 @@ export class DemosAdapter implements SubstrateAdapter {
   /** The wallet's account nonce for an error message, if it can be read. */
   private async readAccountNonce(ctx: AnchorContext): Promise<number | undefined> {
     try {
-      return plainNonNegativeInteger(await this.waitFor(
+      return demosNonNegativeInteger(await this.waitFor(
         ctx,
         this.#demos.nodeCall("getAddressNonce", {
           address: this.#demos.getAddress(),

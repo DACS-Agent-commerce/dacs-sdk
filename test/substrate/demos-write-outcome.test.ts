@@ -303,7 +303,7 @@ describe("Demos write outcome from recorded testnet answers", () => {
     const lease = await journalledTransfer(write);
 
     const error = expectUnresolved(await reconcile(adapter, lease), write);
-    expect(error.message).toContain("account nonce answer is not a plain integer");
+    expect(error.message).toContain("account nonce answer is not a non-negative integer");
     expect(stages(lease)).toEqual(["broadcast-intent"]);
     await lease.release();
   });
@@ -446,6 +446,38 @@ describe("Demos write outcome from recorded testnet answers", () => {
 
     expect(stages(lease)).toEqual(["canonical-confirmed"]);
     expect(reads.filter((read) => read === "getAddressNonce")).toHaveLength(1);
+    expect(broadcast).not.toHaveBeenCalled();
+    await lease.release();
+  });
+
+  it("reads a decimal-string account nonce as the nonce", async () => {
+    const { writes, rounds } = late;
+    const { adapter } = scriptedAdapter({
+      reads: [rounds.B1.L],
+      nonces: [String(rounds.B1.getAddressNonce)],
+      lastBlock: rounds.B1.getLastBlockNumber,
+    });
+    const lease = await journalledTransfer(writes.L);
+
+    const error = expectUnresolved(await reconcile(adapter, lease), writes.L);
+    expect(error.message).toContain(`account nonce ${rounds.B1.getAddressNonce}, so nonce`);
+    expect(stages(lease)).toEqual(["broadcast-intent"]);
+    await lease.release();
+  });
+
+  it("a nonce-read transport failure then pending answers until the deadline is a plain timeout", async () => {
+    const { write, rounds } = pending;
+    const { adapter, broadcast } = scriptedAdapter({
+      reads: [pending.neverSeen.B1, rounds.B1],
+      nonces: [await sdkTransportFailure()],
+      lastBlock: rounds.B36.getLastBlockNumber,
+    });
+    const lease = await journalledTransfer(write);
+
+    const error = await reconcile(adapter, lease);
+    expect(error).toBeInstanceOf(AnchorWaitError);
+    expect((error as AnchorWaitError).code).toBe("timeout");
+    expect(stages(lease)).toEqual(["broadcast-intent"]);
     expect(broadcast).not.toHaveBeenCalled();
     await lease.release();
   });
