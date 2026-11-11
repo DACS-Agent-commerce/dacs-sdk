@@ -41,6 +41,19 @@ const railJournals = new WeakMap<object, boolean>();
 // returned, per RPC URL and payer. Shared by every rail in the process so the
 // next transfer from that payer, from any rail, waits for the read first.
 const unreadExecutedNonces = new Map<string, number>();
+// Payers, per RPC URL, with a payment in progress. Demos signs with the
+// node's nonce read, so a second payment started meanwhile could sign the
+// same nonce; it is refused before signing instead.
+const payersInPayment = new Set<string>();
+
+function nothingSignedRefusal(reason: string, options: { cause?: unknown } = {}): DacsError {
+  return new DacsError(
+    `pay-dem: ${reason}; nothing was signed or broadcast; a direct caller of the rail may retry; ` +
+      "through the settlement store or the buyer track the job is held or ambiguous, " +
+      "so check it and use a new job id",
+    { category: "transient", ...options },
+  );
+}
 
 const DEMOS_TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
@@ -195,6 +208,11 @@ function canonicalDemosTxHash(value: unknown): string | null {
  * nonce, amount). A `failed` record settles `ok: false`; a record the bounded
  * read cannot establish stays indeterminate (`ok: false` with the hash retained,
  * so the settlement intent stays held). Neither ever causes another broadcast.
+ *
+ * One payment per payer at a time: Demos signs with the node's account nonce
+ * read, so within a process a payment from a payer and RPC URL that starts
+ * while another is in progress is refused with a transient error before
+ * signing; nothing is signed or broadcast.
  *
  * Amount units (§9.5.9 step 2): the agreement's DACS `Price.amount` is a canonical
  * DECIMAL DEM string; the chain moves integer OS base units (1 DEM = 10^9 OS). The
@@ -1728,18 +1746,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           nonceVisibilityTimeoutMs,
         );
         if (caughtUp.status !== "fulfilled") {
-          throw new DacsError(
-            `pay-dem: the node's nonce read is behind the last signed nonce ${unreadNonce}; ` +
-              "nothing was signed or broadcast; a direct caller of the rail may retry; " +
-              "through the settlement store or the buyer track the job is held or ambiguous, " +
-              "so check it and use a new job id",
-            {
-              category: "transient",
-              ...(caughtUp.status === "rejected" ? { cause: caughtUp.reason } : {}),
-            },
+          throw nothingSignedRefusal(
+            `the node's nonce read is behind the last signed nonce ${unreadNonce}`,
+            caughtUp.status === "rejected" ? { cause: caughtUp.reason } : {},
           );
         }
-        unreadExecutedNonces.delete(unreadNonceKey);
       }
       // The transaction is already signed. Demos nodes compare GCR edits via
       // order-sensitive JSON bytes, so JCS key sorting here would invalidate
@@ -1959,14 +1970,16 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // the executed payment final regardless: a lag may delay only idempotent
       // evidence-anchor bookkeeping and can never authorise resubmission.
       // An unread nonce is kept so the next transfer waits for it before signing.
+      // Only a read that reaches the highest kept nonce clears it.
       const nonceRead = await boundedPromise(
         Promise.resolve().then(() => waitForNonce(address, signedNonce)),
         nonceVisibilityTimeoutMs,
       );
-      if (nonceRead.status === "fulfilled") {
+      const keptNonce = unreadExecutedNonces.get(unreadNonceKey);
+      if (nonceRead.status !== "fulfilled") {
+        unreadExecutedNonces.set(unreadNonceKey, Math.max(keptNonce ?? signedNonce, signedNonce));
+      } else if (keptNonce !== undefined && keptNonce <= signedNonce) {
         unreadExecutedNonces.delete(unreadNonceKey);
-      } else {
-        unreadExecutedNonces.set(unreadNonceKey, signedNonce);
       }
 
       return executionAuthority.attest<DemosTransferResult>({
@@ -2007,12 +2020,20 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
         );
       }
-      return payDemSettleCore(
-        params,
-        client,
-        network ?? "demos",
-        effectFence,
-      );
+      if (payersInPayment.has(unreadNonceKey)) {
+        throw nothingSignedRefusal("another payment from this payer is still in progress");
+      }
+      payersInPayment.add(unreadNonceKey);
+      try {
+        return await payDemSettleCore(
+          params,
+          client,
+          network ?? "demos",
+          effectFence,
+        );
+      } finally {
+        payersInPayment.delete(unreadNonceKey);
+      }
     },
   };
   railJournals.set(rail, journalPreparedTransfer !== undefined);
