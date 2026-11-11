@@ -36,10 +36,10 @@
     {
       "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "2f2048209a109684a3b7ab2d085a3a846005f3075d0f641abae6c817087a7cdd",
+      "preparationManifestSha256": "7c5e3a5b5f117d35d437e586701c5fb38efe309b069bc379bda96f0c7c5f0998",
       "preparationSnapshotBlockers": ["@kynesyslabs/dacs-seller: release identity or publish policy is invalid"],
       "requiredExports": ["."],
-      "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs", "PROFILE.json", "ADMISSION.md", "SOURCES.md"]
+      "allow": ["package.json", "README.md", "LICENSE", "bin/**/*.mjs", "src/**/*.mjs", "PROFILE.json", "ADMISSION.md", "SOURCES.md"]
     },
     {
       "name": "create-dacs-agent", "directory": "packages/create-dacs-agent",
