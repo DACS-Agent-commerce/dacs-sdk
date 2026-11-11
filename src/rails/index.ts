@@ -174,6 +174,7 @@ export {
   resumeWalletSpendAuthorityOperationV1,
   validateWalletSpendAuthorityOperationV1,
   validateWalletSpendStateV1,
+  captureWalletSpendPolicyV1,
   executeWalletSpendEffectV1,
   combineWalletSpendEffectFenceV1,
   type WalletSpendDebitPurpose,
@@ -203,6 +204,7 @@ export {
   type WalletSpendExecutionResultV1,
   type WalletSpendExecutionInputV1,
 } from "./walletSpendAuthority.js";
+export { canonicalWalletSpendWalletV1 } from "./walletSpendWallet.js";
 export {
   createFsWalletSpendStateStoreV1,
   type FsWalletSpendStateStoreOptionsV1,
@@ -381,6 +383,7 @@ export {
   PayDemIncludedNonceVisibilityError,
   payDemSettle,
   payDemSettleCore,
+  withRecoveredAttempts,
   type PayDemRail,
   type PayDemRailResult,
   type PayDemRailConfig,

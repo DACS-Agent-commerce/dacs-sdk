@@ -12,7 +12,8 @@ import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs
 import {railSteward} from './helpers/rail-authority-fixture.mjs';
 import {seller,buyer,JOB,NOW} from './helpers/protocol-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
-import {createSellerTransportStore,createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
 import {SellerAgentError,transportOutcome} from '../src/dacs/seller-agent.mjs';
 import {createOperatorBuyerAccess} from '../src/devnet-demo/buyer-access.mjs';
 import {privateModule} from './helpers/private-module.mjs';
@@ -104,6 +105,18 @@ test('crash before agent, rejected proposal, then corrected receipt releases onl
 test('actual resume recovers a lost fixture evidence answer after reopen without another CREATE',async()=>{
  const f=await agentFixture({lifecycle:true});try{const jobId=JOBS[0],address=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2);await f.agent.commit({jobId});f.anchors.controls.failAfterWrite=address;await assert.rejects(f.agent.submitPayment({jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim}));await f.reopen();assert.notEqual((await f.agent.reconcile({jobId})).status,'held');assert.equal((await f.agent.resume({jobId})).status,'delivered');assert.equal(f.anchors.writes.filter(a=>a===address).length,1);}finally{f.close();}
 });
+test('unfinished work is read from the saved session for the route asked about',async()=>{
+ const f=await agentFixture({lifecycle:true});try{
+  const jobId=JOBS[0],kept=()=>['/dacs/v1/agreements/proposals','/dacs/v1/payments'].map(path=>f.agent.retainsUnfinishedWork({jobId,path}));
+  assert.deepEqual(kept(),[false,false],'an Agreement alone leaves nothing to finish');
+  f.anchors.controls.failAfterWrite=`dacs3:commit:${jobId}`;await assert.rejects(f.agent.commit({jobId}));await f.reopen();
+  assert.deepEqual(kept(),[true,true],'a commitment write waits for its read-back');
+  await f.agent.commit({jobId});assert.deepEqual(kept(),[false,false]);
+  f.anchors.controls.failAfterWrite=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2);await assert.rejects(f.agent.submitPayment({jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim}));await f.reopen();
+  assert.deepEqual(kept(),[false,true],'a recorded payment waits for its stored answer');
+  assert.equal((await f.agent.resume({jobId})).status,'delivered');assert.deepEqual(kept(),[false,true],'delivery alone stores no answer');
+ }finally{f.close();}
+});
 for(const answer of ['waiting','indeterminate'])test(`pending proposal recovers ${answer} and keeps its exact retry slot`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);
  const first=w.store.reserve(w.request,body);assert.equal(first.disposition,'perform');
@@ -141,9 +154,12 @@ test('recovery does not run a proposal again after its context session ended and
  assert.equal(w.store.reserve(w.request,body).disposition,'perform');state='aborted-by-self';const signed=f.signed.length;
  await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
  assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
- state=null;assert.equal((await w.peer.propose(body)).disposition,'complete','the effect was held, not released');
+ // The session's end is kept as a closure, so the port no longer reporting it does not reopen the proposal.
+ state=null;await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
+ assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
+ assert.equal(w.store.reserve({...w.request,nonce:'TEST-terminal-inspection-00001'},body).disposition,'uncertain','the effect was held, not released');
 });
-for(const retained of ['pending contribution','uncertain contribution','signature intent','retry contribution'])test(`HTTP terminal proposal keeps ${retained} uncertain until context clears`,async t=>{
+for(const retained of ['pending contribution','uncertain contribution','signature intent','retry contribution'])test(`HTTP terminal proposal keeps ${retained} uncertain, also once the port stops reporting the ended session`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true});let state=null,cut=retained==='signature intent';
  const sign=f.config.signer.sign;
  f.config.signer.sign=bytes=>{
@@ -172,11 +188,11 @@ for(const retained of ['pending contribution','uncertain contribution','signatur
   assert.equal(statuses.at(-1),503);assert.equal(signatures().length,before,'terminal attempts sign nothing');
   assert.equal(w.store.reserve(inspection,body).disposition,'uncertain');assert.equal(agent.retainsProposalWork(JOB),true);
  }
- state=null;const complete=await w.peer.propose(body);
- assert.equal(statuses.at(-1),200);assert.equal(complete.disposition,'complete');assert.equal(signatures().length,1);
- if(initial.value?.contribution)assert.deepEqual(complete.contribution,initial.value.contribution);
- assert.equal(w.store.reserve(inspection,body).disposition,'cached');
- assert.deepEqual((await w.peer.propose(body)).contribution,complete.contribution);assert.equal(signatures().length,1);
+ // The session's end is kept as a closure: the port no longer reporting it leaves the work retained and still refused.
+ state=null;
+ await assert.rejects(w.peer.propose(body),{name:'SellerUnavailableError',code:'seller_unavailable'});
+ assert.equal(statuses.at(-1),503);assert.equal(signatures().length,before);
+ assert.equal(w.store.reserve(inspection,body).disposition,'uncertain');assert.equal(agent.retainsProposalWork(JOB),true);
 });
 test('HTTP fresh proposal on a terminal context is still refused without retaining work',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);

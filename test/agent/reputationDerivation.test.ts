@@ -386,6 +386,39 @@ describe("deriveReputation (DACS-5 §10.5)", () => {
     expect(neutral.metrics.counterpartyFaultRate).toBeNull();
   });
 
+  describe("legacy copies from opposite anchors that both blame someone other than themselves", () => {
+    const threeParties = [
+      { role: "buyer", bundleHash: "h", primaryClaim: PARTY },
+      { role: "seller", bundleHash: "h", primaryClaim: CP },
+      { role: "orchestrator", bundleHash: "h", primaryClaim: "did:demos:orchestrator" },
+    ];
+    const completedJob = [bundle("j-done", "completed", 1100, "buyer")];
+
+    test("an orchestrator-only shared fault set is neutral for the buyer and the seller", () => {
+      const copies = [
+        ...completedJob,
+        bundle("j-orch", "aborted-by-other", 1100, "buyer", threeParties),
+        bundle("j-orch", "aborted-by-other", 1100, "seller", threeParties),
+      ];
+      for (const party of [PARTY, CP]) {
+        const r = deriveReputation(party, copies, WINDOW, TRUSTED_WITH_ABSENCE);
+        expect(r.metrics.completionRate).toBe(1);
+        expect(r.metrics.counterpartyFaultRate).toBe(0);
+      }
+    });
+
+    test("a shared fault set that includes the seller still counts against the seller's counterparty", () => {
+      const copies = [
+        ...completedJob,
+        bundle("j-shared", "failed-counterparty", 1100, "buyer", threeParties),
+        bundle("j-shared", "failed-perm", 1100, "seller", threeParties),
+      ];
+      const buyer = deriveReputation(PARTY, copies, WINDOW, TRUSTED_WITH_ABSENCE);
+      expect(buyer.metrics.completionRate).toBe(0.5);
+      expect(buyer.metrics.counterpartyFaultRate).toBe(0.5);
+    });
+  });
+
   test("two present perspective-flipped phase error classes are divergent and excluded", () => {
     const buyerCopy = bundle("j1", "completed", 1100, "buyer");
     buyerCopy.phaseSummary = [
