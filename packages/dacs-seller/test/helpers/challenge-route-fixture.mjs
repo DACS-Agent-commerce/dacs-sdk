@@ -16,7 +16,8 @@ import { AGREEMENT_CONTEXT_SOURCE } from '../../src/dacs/agreement-context-consu
 import { createSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth, createSellerTransportStore } from '../../src/dacs/seller-transport-auth.mjs';
+import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './bound-transport-store.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { testWallet } from './protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
