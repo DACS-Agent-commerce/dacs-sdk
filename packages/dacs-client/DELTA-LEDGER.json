@@ -6612,6 +6612,22 @@
           "after": "6841b7b79dece95e51c8b46abf549d0370fb4789"
         }
       ]
+    },
+    {
+      "delta": "D37",
+      "subject": "delta(client): D37 project elapsed approvals against the wall clock in diagnostic reads",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a",
+          "after": "353259d6d98e8d809bf95bd11c79ab5cb6739793"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4",
+          "after": "1534c01cc8e7959911d59cf24b3192eecd217c4a"
+        }
+      ]
     }
   ]
 }

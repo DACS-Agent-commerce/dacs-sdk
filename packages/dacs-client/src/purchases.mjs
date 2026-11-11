@@ -323,13 +323,15 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return operation;
   }
 
-  function approvalElapsed(operation) {
-    return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now();
+  function approvalElapsed(operation, at = now()) {
+    return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= at;
   }
 
   // Diagnostic reads project expiry without persisting the action transition.
+  // They also count the wall clock, so a stale service clock cannot keep an
+  // elapsed approval open.
   function projectExpiry(operation) {
-    return approvalElapsed(operation) ? { ...operation, status: 'expired' } : operation;
+    return approvalElapsed(operation) || approvalElapsed(operation, Date.now()) ? { ...operation, status: 'expired' } : operation;
   }
 
   function selectWallet(accountId, requested) {
