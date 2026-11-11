@@ -113,7 +113,7 @@ for (const jump of [-60_000, 60_000]) test(`publisher propagation budget ignores
 });
 
 for (const jump of [-60_000, 60_000]) test(`verification tool total budget ignores a ${jump} ms wall jump`, () => {
-  const source = readFileSync(new URL('../../scripts/verify-pr303-test-effectiveness.mjs', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../../scripts/verify-node-test-effectiveness.mjs', import.meta.url), 'utf8');
   const declaration = source.match(/^const started = (.+);$/mu)[0];
   const condition = source.match(/if \((!baselinePassed \|\| .+ > TOTAL_BUDGET_MS)\)/u)[1];
   let elapsed = 0;
@@ -138,7 +138,7 @@ for (const jump of [-60_000, 60_000]) {
 
   test(`verification subprocess elapsed time ignores a ${jump} ms wall jump`, async () => {
     let elapsed = 0, wall = 1_000_000;
-    const run = loadFunction('scripts/verify-pr303-test-effectiveness.mjs', 'runVitest', {
+    const run = loadFunction('scripts/verify-node-test-effectiveness.mjs', 'runVitest', {
       Date: { now: () => wall }, performance: { now: () => elapsed },
       repoRoot: '/test', join, escapeRegExp: value => value, childEnvironment: () => ({}), RUN_TIMEOUT_MS: 100,
       setTimeout: () => 0, clearTimeout() {},
@@ -154,7 +154,7 @@ for (const jump of [-60_000, 60_000]) {
 
   test(`generated consumer command elapsed time ignores a ${jump} ms wall jump`, async () => {
     let elapsed = 0, wall = 1_000_000;
-    const steps = [], step = loadFunction('scripts/verify-pr303-generated-consumer.mjs', 'step', {
+    const steps = [], step = loadFunction('scripts/verify-generated-consumer.mjs', 'step', {
       Date: { now: () => wall }, performance: { now: () => elapsed },
       steps, outputDirectory: '/test', join, writeFile: async () => {},
       spawnSync: () => { elapsed = 10; wall += 10 + jump; return { status: 0, signal: null, stdout: '', stderr: '' }; },
@@ -165,7 +165,7 @@ for (const jump of [-60_000, 60_000]) {
 
   test(`generated consumer total elapsed time ignores a ${jump} ms wall jump`, () => {
     let elapsed = 0, wall = 1_000_000;
-    const source = readFileSync(new URL('../../scripts/verify-pr303-generated-consumer.mjs', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('../../scripts/verify-generated-consumer.mjs', import.meta.url), 'utf8');
     const start = source.match(/^const started = (.+);$/mu)[0];
     const finish = source.match(/^report.durationMs = (.+);$/mu)[0];
     const duration = new Function('Date', 'performance', `${start} const report = {}; return () => { ${finish} return report.durationMs; };`)(
