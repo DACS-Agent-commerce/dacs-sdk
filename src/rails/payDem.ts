@@ -2,7 +2,11 @@ import { types as nodeTypes } from "node:util";
 
 import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
 import { createPayDemExecutionAuthority } from "./payDemExecutionAuthority.js";
-import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import type {
+  SettleRequest,
+  SettleResult,
+  SettlementRecoveryAttempt,
+} from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import {
   snapshotCanonicalJsonRead,
@@ -13,7 +17,8 @@ import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
-  createIdempotencyStore,
+  declareSettlementBridge,
+  inheritSettlementBridge,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -28,6 +33,26 @@ export const DEM_DECIMALS = 9;
 
 // Only this module owns the authority used by its factory and record reads.
 const executionAuthority = createPayDemExecutionAuthority();
+/** SDK-built rails: whether each was built with a prepared-transfer journal. A rail not in here declares nothing. */
+const railJournals = new WeakMap<object, boolean>();
+
+// Executed nonce whose account read had not caught up when its payment
+// returned, per RPC URL and payer. Shared by every rail in the process so the
+// next transfer from that payer, from any rail, waits for the read first.
+const unreadExecutedNonces = new Map<string, number>();
+// Payers, per RPC URL, with a payment in progress. Demos signs with the
+// node's nonce read, so a second payment started meanwhile could sign the
+// same nonce; it is refused before signing instead.
+const payersInPayment = new Set<string>();
+
+function nothingSignedRefusal(reason: string, options: { cause?: unknown } = {}): DacsError {
+  return new DacsError(
+    `pay-dem: ${reason}; nothing was signed or broadcast; a direct caller of the rail may retry; ` +
+      "through the settlement store or the buyer track the job is held or ambiguous, " +
+      "so check it and use a new job id",
+    { category: "transient", ...options },
+  );
+}
 
 const DEMOS_TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
@@ -174,7 +199,7 @@ function canonicalDemosTxHash(value: unknown): string | null {
  * A transfer that doesn't reach observed inclusion settles `ok: false` and no
  * finality is stamped — evidence is never minted for a payment we didn't see land.
  *
- * EXECUTION-GATED (#338): inclusion alone is not execution. A node can include a
+ * EXECUTION-GATED: inclusion alone is not execution. A node can include a
  * transaction and record it `failed` (for example a stale nonce). After the
  * status index reports `included`, the rail reads the node's transaction record
  * for the signed hash and reports success only for a `confirmed` record at the
@@ -182,6 +207,11 @@ function canonicalDemosTxHash(value: unknown): string | null {
  * nonce, amount). A `failed` record settles `ok: false`; a record the bounded
  * read cannot establish stays indeterminate (`ok: false` with the hash retained,
  * so the settlement intent stays held). Neither ever causes another broadcast.
+ *
+ * One payment per payer at a time: Demos signs with the node's account nonce
+ * read, so within a process a payment from a payer and RPC URL that starts
+ * while another is in progress is refused with a transient error before
+ * signing; nothing is signed or broadcast.
  *
  * Amount units (§9.5.9 step 2): the agreement's DACS `Price.amount` is a canonical
  * DECIMAL DEM string; the chain moves integer OS base units (1 DEM = 10^9 OS). The
@@ -194,7 +224,10 @@ function canonicalDemosTxHash(value: unknown): string | null {
  */
 
 export interface PayDemSettleParams {
-  /** Recipient Demos address (payee). */
+  /**
+   * Recipient Demos address (payee): 64 hex digits, with or without `0x`, any
+   * case. It is sent to the native client as lowercase `0x`-prefixed hex.
+   */
   recipient: string;
   /** Amount in integer OS base units (string). */
   amount: string;
@@ -260,7 +293,7 @@ export interface PayDemReconciledSettlement extends SettleResult {
   /**
    * The reconciler's statement that the node's transaction record for
    * `txHash` is `confirmed` at `blockNumber` and binds the payer, payee and
-   * amount (#338). A status-index `included` alone is not execution: the SDK
+   * amount. A status-index `included` alone is not execution: the SDK
    * refuses a reconciliation without this, as {@link payDemSettleCore} refuses
    * a transfer result without {@link DemosTransferResult.execution}. It is not
    * persisted with the settlement.
@@ -276,7 +309,7 @@ export interface PayDemReconciledSettlement extends SettleResult {
  * Return a settlement only after reading the node's transaction record for the
  * hash and finding it `confirmed` at the inclusion block for this payer, payee
  * and amount, and set `execution: "executed"`. A node reports `included` in its
- * status index for a transaction whose record `failed` (#338), so inclusion
+ * status index for a transaction whose record `failed`, so inclusion
  * alone must not be returned as a settlement. A bound `failed` record may
  * return `PayDemReconciledFailure` with a permanent class and exact failure
  * proof. Indeterminate or non-final observations must throw.
@@ -302,13 +335,13 @@ export interface DemosTransferResult {
    * (`confirmed`, `finalized`, `failed`, `timeout`, `indeterminate`, a
    * nonterminal poll, …) fails closed. A client reports `included` with
    * `ok: true` only after the node's transaction record shows the prepared
-   * transfer executed (#338).
+   * transfer executed.
    */
   state?: string;
   /**
    * `"executed"` when the client read the node's transaction record for the
-   * signed hash and it shows the prepared transfer executed at `blockNumber`
-   * (#338). Inclusion alone is not execution: {@link payDemSettleCore} reports
+   * signed hash and it shows the prepared transfer executed at `blockNumber`.
+   * Inclusion alone is not execution: {@link payDemSettleCore} reports
    * success only when this is present, so a client that observed only the
    * status index fails closed.
    */
@@ -340,9 +373,10 @@ export interface DemosNativeClient {
    * Sign, confirm, and broadcast a native DEM transfer; resolve its receipt.
    * Resolve `ok: true, state: "included", execution: "executed"` only when the
    * node's transaction record for the signed hash shows the exact prepared
-   * transfer executed; inclusion alone is not success (#338).
+   * transfer executed; inclusion alone is not success.
    */
   transfer(args: {
+    /** Lowercase `0x`-prefixed 32-byte hex address. */
     to: string;
     amountOs: bigint;
     maxTotalDebitOs?: bigint;
@@ -506,11 +540,16 @@ export async function payDemSettleCore(
   // await. A mutable parameter/client object must not be able to change the
   // transfer destination and then make the returned evidence attest a different
   // payer or payee.
-  const recipient = requiredStableString(
+  const recipient = normalizeDemosNativeAddress(requiredStableString(
     params,
     "recipient",
     "pay-dem recipient",
-  );
+  ));
+  if (recipient === null) {
+    throw new DacsError(
+      "pay-dem recipient must be a 32-byte hex native Demos address",
+    );
+  }
   const amount = requiredStableString(params, "amount", "pay-dem amount");
   const defaultNetwork = typeof defaultNetworkOrFence === "string"
     ? defaultNetworkOrFence
@@ -573,12 +612,12 @@ export async function payDemSettleCore(
     "pay-dem transfer",
   );
 
-  let amountOs: bigint;
-  try {
-    amountOs = BigInt(amount);
-  } catch {
+  // Canonical decimal OS text only. BigInt() alone would also accept hex,
+  // binary and octal prefixes, a sign and leading zeros.
+  if (!/^(?:0|[1-9][0-9]*)$/.test(amount)) {
     throw new DacsError(`pay-dem: invalid OS base-unit amount ${amount}`);
   }
+  const amountOs = BigInt(amount);
   if (amountOs <= 0n) {
     throw new DacsError(`pay-dem: amount must be > 0 (got ${amount})`);
   }
@@ -601,13 +640,11 @@ export async function payDemSettleCore(
 
   if (recovery !== undefined) {
     const canonicalPayer = normalizeDemosNativeAddress(payer);
-    const canonicalPayee = normalizeDemosNativeAddress(recipient);
     const chainId = network ?? "demos";
     if (
       canonicalPayer === null ||
-      canonicalPayee === null ||
       recovery.payer !== canonicalPayer ||
-      recovery.payee !== canonicalPayee ||
+      recovery.payee !== recipient ||
       recovery.network !== chainId ||
       recovery.amountOs !== amountOs.toString()
     ) {
@@ -620,7 +657,7 @@ export async function payDemSettleCore(
   executionAuthority.assertCapability(client);
   await effectFence?.assertCurrent();
   const response = await transfer({
-    to: recipient,
+    to: `0x${recipient}`,
     amountOs,
     ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
     ...(recovery === undefined ? {} : { recovery }),
@@ -660,6 +697,11 @@ export async function payDemSettleCore(
     response,
     "recordFeeOs",
     "pay-dem transfer result recordFeeOs",
+  );
+  const messageProperty = stableDataProperty(
+    response,
+    "message",
+    "pay-dem transfer result message",
   );
   const failureProperty = stableDataProperty(response, "failureProof", "pay-dem failure proof");
   const failureProof = failureProperty.value === undefined ? undefined :
@@ -702,7 +744,7 @@ export async function payDemSettleCore(
   // `included` state AND the finality-witness block height. Broadcast acceptance
   // or an unregistered status alias is NOT finality — without these three, we do
   // not stamp bft-final, because the tx may never have landed. Inclusion is not
-  // execution either (#338): the client must also attest that the node's
+  // execution either: the client must also attest that the node's
   // transaction record shows the transfer executed.
   const observedFinal =
     okProperty.value === true &&
@@ -750,10 +792,11 @@ export async function payDemSettleCore(
     blockNumber: blockNumber as number,
     txRefKind: "demos",
     // networkFeeOs is what the chain debits beyond the amount; recordFeeOs is
-    // the fee the record declares, which can differ (#604).
+    // the fee the record declares, which can differ.
     ...(totalDebitOs === undefined
       ? {}
       : { networkFeeOs: (totalDebitOs - amountOs).toString(), recordFeeOs: recordFeeOs as string }),
+    ...(typeof messageProperty.value === "string" ? { message: messageProperty.value } : {}),
   });
 }
 
@@ -789,7 +832,15 @@ export interface PayDemRailConfig {
   inclusionPollIntervalMs?: number;
   /** Bound for each possibly non-cooperative status RPC (default 5 seconds). */
   statusRequestTimeoutMs?: number;
-  /** Bound for the post-inclusion account-nonce projection (default 60 seconds). */
+  /**
+   * Bound for the payer's account-nonce read to reach the executed nonce
+   * (default 60 seconds), both after inclusion and, when that read had not
+   * caught up, before signing the payer's next transfer. If it is still behind
+   * then, the transfer is refused with a transient error before signing and
+   * nothing is signed or broadcast. A direct caller of the rail may retry. A
+   * caller going through the settlement store or the buyer track sees the job
+   * as held or ambiguous and must use a new job id after checking it.
+   */
   nonceVisibilityTimeoutMs?: number;
   /**
    * Overall budget for reading the node's transaction record after inclusion
@@ -832,7 +883,15 @@ export interface PayDemPreparedTransfer {
 
 /** Fresh native-rail outcome. Success attests a bound, confirmed record. */
 export type PayDemRailResult = SettleResult & (
-  | { ok: true; execution: "executed" }
+  | {
+    ok: true;
+    execution: "executed";
+    /**
+     * Set when the payer's account nonce read timed out or was rejected before
+     * it reached the executed nonce. The payment is still final.
+     */
+    message?: string;
+  }
   | { ok: false; execution?: never }
 );
 
@@ -1365,7 +1424,7 @@ function transactionRecordWithinLimits(root: unknown): boolean {
 }
 
 /**
- * Establish whether an included transaction executed (#338). The status index
+ * Establish whether an included transaction executed. The status index
  * can report `included` for a transaction the node recorded as `failed`, so read
  * the node's transaction record for the retained signed hash. Only a
  * `confirmed` record at the observed inclusion block whose body is exactly the
@@ -1514,7 +1573,7 @@ export async function observeDemosExecutionByHash(
  *
  * The low-level rail signs a fresh transaction on every call. The exported
  * runSession bridge, {@link payDemSettle}, therefore wraps it in the shared
- * session/phase-keyed settlement idempotency store (#43/#52).
+ * session/phase-keyed settlement idempotency store.
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
   const rpc = requiredStableString(config, "rpc", "pay-dem rail rpc");
@@ -1655,6 +1714,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   ) {
     throw new DacsError("pay-dem wallet returned an invalid payer address");
   }
+  const unreadNonceKey = JSON.stringify([rpc, normalizedDemosAccount(address)]);
 
   const client: DemosNativeClient = {
     address,
@@ -1676,6 +1736,21 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       }
       const effectiveMaxTotalDebitOs = invocationMaxTotalDebitOs ??
         configuredMaxTotalDebitOs;
+      // Demos signs with the node's account nonce read. If that read has not
+      // yet reached the last executed nonce, signing now would reuse it.
+      const unreadNonce = unreadExecutedNonces.get(unreadNonceKey);
+      if (unreadNonce !== undefined) {
+        const caughtUp = await boundedPromise(
+          Promise.resolve().then(() => waitForNonce(address, unreadNonce)),
+          nonceVisibilityTimeoutMs,
+        );
+        if (caughtUp.status !== "fulfilled") {
+          throw nothingSignedRefusal(
+            `the node's nonce read is behind the last signed nonce ${unreadNonce}`,
+            caughtUp.status === "rejected" ? { cause: caughtUp.reason } : {},
+          );
+        }
+      }
       // The transaction is already signed. Demos nodes compare GCR edits via
       // order-sensitive JSON bytes, so JCS key sorting here would invalidate
       // an otherwise valid signature/confirmation payload.
@@ -1850,7 +1925,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         };
       }
 
-      // `included` is not execution (#338): the node can include the signed
+      // `included` is not execution: the node can include the signed
       // transaction and record it failed. Require the transaction record to
       // show this exact prepared transfer executed before reporting success.
       const recordDeadline = Date.now() + transactionRecordTimeoutMs;
@@ -1893,10 +1968,18 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // Bound even a non-cooperative projection read. DACS-4 §9.5.1 PC-7 makes
       // the executed payment final regardless: a lag may delay only idempotent
       // evidence-anchor bookkeeping and can never authorise resubmission.
-      await boundedPromise(
+      // An unread nonce is kept so the next transfer waits for it before signing.
+      // Only a read that reaches the highest kept nonce clears it.
+      const nonceRead = await boundedPromise(
         Promise.resolve().then(() => waitForNonce(address, signedNonce)),
         nonceVisibilityTimeoutMs,
       );
+      const keptNonce = unreadExecutedNonces.get(unreadNonceKey);
+      if (nonceRead.status !== "fulfilled") {
+        unreadExecutedNonces.set(unreadNonceKey, Math.max(keptNonce ?? signedNonce, signedNonce));
+      } else if (keptNonce !== undefined && keptNonce <= signedNonce) {
+        unreadExecutedNonces.delete(unreadNonceKey);
+      }
 
       return executionAuthority.attest<DemosTransferResult>({
         ok: true,
@@ -1909,6 +1992,13 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           : {
             totalDebitOs: confirmedDebitOs.totalDebitOs.toString(),
             recordFeeOs: confirmedDebitOs.recordFeeOs.toString(),
+          }),
+        ...(nonceRead.status === "fulfilled"
+          ? {}
+          : {
+            message: nonceRead.status === "timeout"
+              ? `pay-dem: account nonce read did not reach ${signedNonce} before nonceVisibilityTimeoutMs; payment is final`
+              : `pay-dem: account nonce read for ${signedNonce} was rejected; payment is final`,
           }),
       });
     },
@@ -1929,14 +2019,23 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
         );
       }
-      return payDemSettleCore(
-        params,
-        client,
-        network ?? "demos",
-        effectFence,
-      );
+      if (payersInPayment.has(unreadNonceKey)) {
+        throw nothingSignedRefusal("another payment from this payer is still in progress");
+      }
+      payersInPayment.add(unreadNonceKey);
+      try {
+        return await payDemSettleCore(
+          params,
+          client,
+          network ?? "demos",
+          effectFence,
+        );
+      } finally {
+        payersInPayment.delete(unreadNonceKey);
+      }
     },
   };
+  railJournals.set(rail, journalPreparedTransfer !== undefined);
   return executionAuthority.register(rail);
 }
 
@@ -2139,7 +2238,7 @@ function capturePayDemReconciliation(
       "pay-dem reconciliation is indeterminate; a definitive finalized result is required",
     );
   }
-  // Inclusion is not execution (#338): a reconciler written when `included`
+  // Inclusion is not execution: a reconciler written when `included`
   // alone meant success must not turn an included-but-failed transfer into a
   // settlement on recovery.
   if (!captured.ok && record.execution !== undefined) {
@@ -2147,7 +2246,7 @@ function capturePayDemReconciliation(
   }
   if (captured.ok && record.execution !== "executed") {
     throw new DacsError(
-      "pay-dem reconciliation does not attest that the transaction record shows the transfer executed (#338); refusing reuse or rebroadcast",
+      "pay-dem reconciliation does not attest that the transaction record shows the transfer executed; refusing reuse or rebroadcast",
     );
   }
   return captured;
@@ -2161,7 +2260,8 @@ function captureFreshPayDemResult(
   if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
     throw new DacsError("fresh pay-dem settlement must be a settlement result object");
   }
-  const { execution, ...settlement } = snapshot as Record<string, unknown>;
+  // The rail's diagnostic message describes this invocation and is not stored.
+  const { execution, message: _message, ...settlement } = snapshot as Record<string, unknown>;
   const captured = capturePayDemResult(settlement, context, "fresh pay-dem settlement");
   if (captured.ok && execution !== "executed") {
     throw new DacsError("fresh pay-dem settlement does not attest executed transaction record; refusing success or rebroadcast");
@@ -2252,11 +2352,11 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * payee-bound-artifact path is separate follow-up work; here `req.payee` is the
  * listing seller carried through the fixed-price agreement.
  *
- * SAFE BY DEFAULT (#43/#52): settlement is submitted at most once per
- * `(railId, jobId, phaseIndex)`. The default store protects concurrent and
- * same-process retries; inject a durable store and reconcile capability for
- * restart/crash recovery. A request carrying priorAttempts is a read-only audit:
- * it never claims a submit generation, even if the rail store lost its record.
+ * SAFE BY DEFAULT: settlement is submitted at most once per
+ * `(railId, jobId, phaseIndex)`. The caller must supply a durable store; add a
+ * reconcile capability for restart/crash recovery. A request carrying
+ * priorAttempts is a read-only audit: it never claims a submit generation,
+ * even if the rail store lost its record.
  *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
@@ -2275,18 +2375,22 @@ export function payDemSettle(
     phaseIndex?: number;
   } = {},
   opts: {
-    store?: SettlementIdempotencyStore;
+    store: SettlementIdempotencyStore;
     reconcile?: PayDemSettlementReconcile;
-  } = {},
+  },
 ): (req: SettleRequest) => Promise<SettleResult> {
+  if (opts === undefined) {
+    throw new DacsError("pay-dem settlement requires a caller-supplied durable store");
+  }
   const storeProperty = stableDataProperty(
     opts,
     "store",
     "pay-dem settlement store",
   );
-  const store = !storeProperty.found || storeProperty.value === undefined
-    ? createIdempotencyStore()
-    : storeProperty.value as SettlementIdempotencyStore;
+  if (!storeProperty.found || storeProperty.value === undefined) {
+    throw new DacsError("pay-dem settlement requires a caller-supplied durable store");
+  }
+  const store = storeProperty.value as SettlementIdempotencyStore;
   const storeOnce = stableMethod<SettlementIdempotencyStore["once"]>(
     store,
     "once",
@@ -2297,6 +2401,12 @@ export function payDemSettle(
     ? undefined
     : stableMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
         store, "readOutcome", "pay-dem settlement store readOutcome",
+      );
+  const recoverProperty = stableDataProperty(store, "recover", "pay-dem settlement store recover");
+  const storeRecover = !recoverProperty.found || recoverProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<SettlementIdempotencyStore["recover"]>>(
+        store, "recover", "pay-dem settlement store recover",
       );
   const configuredRecipient = optionalStableString(
     cfg,
@@ -2381,7 +2491,7 @@ export function payDemSettle(
   // Keep a slow submit/reconcile from being overtaken by another call for the
   // same effect. Different settlement keys remain independent.
   const operations = new Map<string, Promise<SettleResult>>();
-  return async (req) => {
+  const bridge = async (req: SettleRequest): Promise<SettleResult> => {
     const {
       amount,
       asset,
@@ -2588,7 +2698,13 @@ export function payDemSettle(
             authenticatedResults.set(key, { context, result: captured });
             return captured;
           };
-      const result = await storeOnce(
+      // A recovery request never takes a fresh claim: with no retained hash it
+      // settles only through the store's `recover`, never through `once`.
+      const storeSettle = req.recoveryOnly === true ? storeRecover : storeOnce;
+      if (storeSettle === undefined) {
+        throw new DacsError("pay-dem recovery requires a store with recover(); refusing a fresh payment");
+      }
+      const result = await storeSettle(
         key,
         binding,
         submit,
@@ -2653,4 +2769,30 @@ export function payDemSettle(
       if (operations.get(key) === operation) operations.delete(key);
     }
   };
+  const journaled = railJournals.get(rail);
+  return declareSettlementBridge(bridge, journaled === undefined ? {} : { journaled });
+}
+
+/**
+ * The resume seam for an operator who read a transaction hash from the
+ * prepared-transfer journal. For a recovery request that carries no history it
+ * calls `attempts` and forwards the request with what it returns; a request that
+ * already carries history, or is not a recovery, is forwarded unchanged. The
+ * wrapper keeps `bridge`'s registration and declared traits, so `runSession`
+ * accepts it. It only adds history: the bridge still decides whether the
+ * payment landed, and still never pays on a recovery request.
+ *
+ * @returns A function with the same shape as `bridge`.
+ * @throws Whatever `attempts` or `bridge` throws; nothing is caught.
+ */
+export function withRecoveredAttempts(
+  bridge: (req: SettleRequest) => Promise<SettleResult>,
+  attempts: (req: Readonly<SettleRequest>) => Promise<readonly SettlementRecoveryAttempt[]>,
+): (req: SettleRequest) => Promise<SettleResult> {
+  const recovering = async (req: SettleRequest): Promise<SettleResult> => {
+    if (req.recoveryOnly !== true || (req.priorAttempts?.length ?? 0) > 0) return bridge(req);
+    const found = await attempts(req);
+    return bridge(found.length === 0 ? req : { ...req, priorAttempts: found });
+  };
+  return inheritSettlementBridge(bridge, recovering);
 }

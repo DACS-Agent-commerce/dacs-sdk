@@ -72,7 +72,7 @@ export interface FixedPriceAgreementInput {
   payoutBindings?: PayoutBinding[];
   /** Required exactly when the pinned Listing uses metered pricing. */
   meteredQuantity?: MeteredQuantityInput;
-  /** Provisional signing-time clock; #99 re-checks deadlines at finalized commit. */
+  /** Provisional signing-time clock; deadlines are re-checked at finalized commit. */
   generatedAt: number;
 }
 

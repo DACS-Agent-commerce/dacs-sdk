@@ -16,8 +16,8 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
-import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, assertTp1Authority } from '@kynesyslabs/dacs/wire';
+import { canonicalize, generateCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, assertTp1Authority, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
@@ -29,7 +29,9 @@ import { wireBuyer } from './helpers/wire-buyer.mjs';
 import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall, isBoundedCallTimeout } from '../src/dacs/bounded-call.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
+import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportStore as createUnboundTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 
 const HOST_URL = new URL('../src/host.mjs', import.meta.url);
 const PACKAGE_DIRECTORY = fileURLToPath(new URL('../', import.meta.url));
@@ -46,8 +48,17 @@ const FORMAT_REFUSED = 'kit_store_format_unsupported';
 const ACCOUNTING_MISMATCH = 'kit_journal_accounting_mismatch';
 const PROPOSALS = '/dacs/v1/agreements/proposals';
 const STATE = '/dacs/v1/agreements/state';
+const COMMITMENTS = '/dacs/v1/commitments';
+// The host's default `maxRecords`, and the units a purchase allocation needs free.
+const DEFAULT_RESERVATION_BUDGET = 10000;
+const PURCHASE_ALLOTMENT = 68;
+const DAY_MS = 86400000;
+// The fixture anchors no Agreement, so a commitment the host admits is refused by the agent with this answer.
+const COMMITMENT_UNANCHORED = Object.freeze({ status: 422, error: 'agreement_not_anchored' });
 // The host's handler serves at most this many requests at once.
 const HANDLER_CONCURRENCY = 8;
+// The challenge ledger issues one buyer at most this many challenges an hour (CHALLENGE_LIMIT_DEFAULTS.maxPerBuyerPerHour).
+const PROPOSALS_PER_BUYER = 5;
 const BUYER = { claim: buyer.claim, sign: buyer.signBytes };
 const SELLER = { claim: seller.claim, sign: seller.signBytes };
 const MISMATCH = { code: 'tp1_purchase_profile_mismatch', status: 500 };
@@ -78,7 +89,7 @@ async function hostFixture(t) {
   // The host fixes its Vet mode and takes no such option.
   delete config.vetMode;
   const api = await privateModule(HOST_URL, ['setTestRecorder'], (source) => {
-    const text = sub(source, 'bindTp1Profile, openWireRequestJournal } from', 'bindTp1Profile as REAL_BIND, openWireRequestJournal as REAL_OPEN_JOURNAL } from');
+    const text = sub(source, 'bindTp1Profile, inspectWireOperation, openWireRequestJournal } from', 'bindTp1Profile as REAL_BIND, inspectWireOperation, openWireRequestJournal as REAL_OPEN_JOURNAL } from');
     return sub(text, 'const REQUIRED =', `let testRecorder = { bindings: [], journals: [] }; function setTestRecorder(value) { testRecorder = value; }
 const bindTp1Profile = async (options) => { const binding = await REAL_BIND(options); testRecorder.bindings.push(binding); return binding; };
 const openWireRequestJournal = (...args) => { const journal = REAL_OPEN_JOURNAL(...args); testRecorder.journals.push(journal); return journal; };
@@ -210,6 +221,32 @@ function storeFixture(t, options = {}) {
 
 // ================================================================ host tests
 
+test('host returns a completed proposal after its session ends', async (t) => {
+  let terminal = false;
+  const f = await hostFixture(t);
+  const host = await f.start({ contextSessionState: () => terminal ? 'finalised' : null });
+  const body = await f.proposal(host);
+  const { jobId, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const signed = await buyerWire.signRequest(PROPOSALS, body, { jobId, agreementHash });
+  const first = await postSigned(host, signed);
+  assert.equal(first.status, 200);
+  assert.equal(JSON.parse(first.bytes).disposition, 'complete');
+  await verifiedAnswer(buyerWire, first);
+
+  terminal = true;
+  const fresh = await buyerWire.signRequest(PROPOSALS, body, { jobId, agreementHash });
+  assert.notEqual(fresh.payload.nonce, signed.payload.nonce);
+  const retry = await postSigned(host, fresh);
+  assert.equal(retry.status, 200, retry.bytes.toString());
+  assert.deepEqual(retry.bytes, first.bytes);
+  await verifiedAnswer(buyerWire, retry);
+
+  const replay = await postSigned(host, signed);
+  assert.equal(replay.status, 409, replay.bytes.toString());
+  assert.equal(JSON.parse(replay.bytes).error, 'peer_request_replayed');
+});
+
 test('P10-T01 start creates a private, owned, real-path journal directory, opens it with the 300 s lease and leaves no probe files', async (t) => {
   const f = await hostFixture(t);
   const host = await f.start();
@@ -264,6 +301,95 @@ test('P10-T03 a restart reopens the same journal; a second run is refused on the
   assert.equal(statSync(f.path(JOURNAL_DIRECTORY)).ino, inode, 'the restart reopens the same directory');
   const another = { ...reservation, key: derive('key-2') };
   assert.equal((await rejection(Promise.resolve().then(() => reserveEffect(journalStore(f.journals[1]), another)))).code, 'seller_effect_pending', 'the reopened journal still holds the first attempt');
+});
+
+test('host start releases the open slots of a finished session once, starts with a maxRecords below what is already allotted, and refuses a zero one', async (t) => {
+  const f = await hostFixture(t);
+  await (await f.start()).close();
+  const finished = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) }), live = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 2) });
+  const withCapacity = (work) => {
+    const store = createUnboundTransportStore({ path: f.path(STORE_FILE) });
+    const internals = sellerStoreInternals(store);
+    try { return work(createPurchaseCapacity({ store, now: () => NOW, sessionState: internals.sessionState }), internals); } finally { store.close(); }
+  };
+  withCapacity((capacity, { transaction }) => {
+    for (const id of [finished, live]) transaction(() => capacity.allocateWithin({ jobId: id, buyer: claim('buyer'), seller: claim('seller'), listingPin: { listingId: 'host-listing', version: 1, contentHash: derive('listing') } }));
+  });
+  const states = () => withCapacity((capacity) => Object.fromEntries(capacity.capacityReport().allocations.map((allocation) => [allocation.jobId, allocation.state])));
+  assert.deepEqual(states(), { [finished]: 'live', [live]: 'live' });
+  const contextSessionState = ({ jobId: id }) => (id === finished ? 'finalised' : null);
+  await (await f.start({ contextSessionState })).close();
+  assert.deepEqual(states(), { [finished]: 'released', [live]: 'live' });
+  await (await f.start({ contextSessionState, maxRecords: 40 })).close();
+  assert.deepEqual(states(), { [finished]: 'released', [live]: 'live' });
+  assert.ok(await rejection(f.start({ maxRecords: 0 })));
+  lockReleased(f);
+});
+
+// A host with the default budget whose seller history holds `count` settled accounting rows of an earlier purchase, written
+// in the accounting's own shape while the host is stopped (one clean restart). The rows are a day old, so the store's own
+// record limit no longer counts them; the purchase budget counts every row ever written.
+async function hostWithAccountingHistory(t, count) {
+  const f = await hostFixture(t);
+  const first = await f.start(), listingPin = first.listingPin;
+  await first.close();
+  const earlier = generateCanonicalJobId({ timestamp: NOW - DAY_MS, entropy: Buffer.alloc(10, 9) }), historyBuyer = claim('history-buyer');
+  const operationId = wireOperationId({ seller: seller.claim, jobId: earlier, path: PROPOSALS });
+  const db = new DatabaseSync(f.path(STORE_FILE));
+  try {
+    db.transaction(() => {
+      db.prepare('INSERT INTO kit_job_holds VALUES (?, ?, ?, ?, 0)').run(earlier, historyBuyer, seller.claim, canonicalize(listingPin));
+      const row = db.prepare(`INSERT INTO kit_reservations (key, buyer, jobId, operationId, route, allocationId, class, requestHash, at, state, rev)
+        VALUES (?, ?, ?, ?, ?, NULL, 'general', ?, ?, 'completed', 2)`);
+      for (let n = 0; n < count; n++) row.run(derive(`history-${n}`), historyBuyer, earlier, operationId, PROPOSALS, derive('history-request'), NOW - DAY_MS);
+    })();
+  } finally { db.close(); }
+  const host = await f.start();
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const read = (sql, ...args) => { const view = new DatabaseSync(f.path(STORE_FILE), { readonly: true }); try { return view.prepare(sql).all(...args); } finally { view.close(); } };
+  const accountingRows = () => read('SELECT COUNT(*) AS n FROM kit_reservations')[0].n;
+  const rowStates = (id) => read('SELECT state FROM kit_reservations WHERE jobId = ? ORDER BY rowid', id).map((row) => row.state);
+  const propose = async (id) => {
+    const body = await f.proposal(host, id), { agreementHash } = body.transportIdentity;
+    const sign = () => buyerWire.signRequest(PROPOSALS, body, { jobId: id, agreementHash });
+    return { id, agreementHash, sign, answer: await postSigned(host, await sign()) };
+  };
+  const commit = async ({ id, agreementHash }) => {
+    const { status, bytes } = await postSigned(host, await buyerWire.signRequest(COMMITMENTS, { jobId: id }, { jobId: id, agreementHash }));
+    return { status, error: JSON.parse(bytes).error };
+  };
+  return { host, accountingRows, rowStates, propose, commit };
+}
+
+test('with the default budget and 9,930 earlier accounting rows, a purchase whose proposal was answered reaches the agent with its commitment after another purchase takes the free budget below one allotment', async (t) => {
+  const { accountingRows, propose, commit } = await hostWithAccountingHistory(t, 9930);
+  const a = await propose(generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) }));
+  assert.equal(a.answer.status, 200, a.answer.bytes.toString());
+  assert.equal(JSON.parse(a.answer.bytes).disposition, 'complete');
+  const b = await propose(generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 2) }));
+  assert.equal(b.answer.status, 200, b.answer.bytes.toString());
+  assert.deepEqual(await commit(b), COMMITMENT_UNANCHORED);
+  assert.ok(DEFAULT_RESERVATION_BUDGET - accountingRows() < PURCHASE_ALLOTMENT, 'the free budget is below one allotment');
+  assert.deepEqual(await commit(a), COMMITMENT_UNANCHORED, 'the commitment passes the readiness gate');
+});
+
+test('with the default budget and 9,932 earlier accounting rows, a proposal is served and its retry answers the same; no request is charged and then refused', async (t) => {
+  const { host, rowStates, propose } = await hostWithAccountingHistory(t, 9932);
+  const a = await propose(generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) }));
+  assert.equal(a.answer.status, 200, a.answer.bytes.toString());
+  assert.equal(JSON.parse(a.answer.bytes).disposition, 'complete');
+  const retry = await postSigned(host, await a.sign());
+  assert.equal(retry.status, 200, retry.bytes.toString());
+  assert.deepEqual(retry.bytes, a.answer.bytes);
+  assert.deepEqual(rowStates(a.id).filter((state) => state === 'refused'), [], 'no row of the purchase is a charged refusal');
+});
+
+test('with the default budget and 9,933 earlier accounting rows, the host still issues a challenge and serves a new purchase', async (t) => {
+  const { accountingRows, propose } = await hostWithAccountingHistory(t, 9933);
+  assert.ok(DEFAULT_RESERVATION_BUDGET - accountingRows() < PURCHASE_ALLOTMENT, 'the free budget is below one allotment');
+  const a = await propose(generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) }));
+  assert.equal(a.answer.status, 200, a.answer.bytes.toString());
+  assert.equal(JSON.parse(a.answer.bytes).disposition, 'complete');
 });
 
 test('P10-T04 a journal open failure closes the agent and store and reports the original cause', async (t) => {
@@ -427,10 +553,13 @@ test('the reader each signed request calls is bounded: a stalled read is pending
     const host = await f.start({ tp1Network: testNetwork({ readAuthority }) });
     const [binding] = f.bindings;
     const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+    // Signed proposals up to the buyer's challenge limit; the other stalled requests are signed state reads, which need no challenge.
     const proposals = await Promise.all(Array.from({ length: HANDLER_CONCURRENCY }, async (_, index) => {
+      if (index >= PROPOSALS_PER_BUYER) return unknownStateRequest(buyerWire, `stalled-${index}`);
       const body = await f.proposal(host, jobId(`stalled-${index}`));
       return buyerWire.signRequest(PROPOSALS, body, { jobId: body.transportIdentity.jobId, agreementHash: body.transportIdentity.agreementHash });
     }));
+    assert.equal(new Set(proposals.map(({ payload }) => payload.nonce)).size, HANDLER_CONCURRENCY);
     const [overflow, afterwards] = [await unknownStateRequest(buyerWire, 'overflow'), await unknownStateRequest(buyerWire, 'afterwards')];
     stall = true;
     mock.timers.enable({ apis: ['setTimeout'] });
@@ -1014,4 +1143,19 @@ test('R20 detached profiles do not hold job slots', t => {
   assert.equal(w.store.reserve(w.request(jobId('active')), {}, { keepProfile: OTHER_PROFILE }).disposition, 'perform');
   w.reopen(); assert.deepEqual(w.store.purchaseProfile(detached), PROFILE);
   assert.throws(() => w.store.reserve(w.request(jobId('full')), {}, { keepProfile: PROFILE }), { code: 'peer_job_capacity', status: 503 });
+});
+
+test('started host signed proposal creates accounting and wire operation records', async (t) => {
+  const f = await hostFixture(t), host = await f.start();
+  const body = await f.proposal(host), { jobId: id, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const answer = await postSigned(host, await buyerWire.signRequest(PROPOSALS, body, { jobId: id, agreementHash }));
+  const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
+  try {
+    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations').all(), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
+  } finally { db.close(); }
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, 1);
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length, 1);
+  assert.ok(answer.header, 'the started host signs the result');
 });

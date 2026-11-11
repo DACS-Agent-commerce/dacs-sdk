@@ -7,7 +7,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { canonicalize, identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS, sessionAdmissionProblem } from './session-admission.mjs';
-import { readSellerSessionState, SellerTransportError, TERMINAL_CONTEXT_STATES } from './seller-transport-auth.mjs';
+import { SellerTransportError, TERMINAL_CONTEXT_STATES } from './seller-transport-auth.mjs';
 
 const CHALLENGE_WINDOW_MS = 3_600_000;
 /** The ledger's limits and their defaults; `limits` may override any of these names. */
@@ -162,13 +162,12 @@ function replayAnswer(row, input) {
  * Creates the challenge ledger on the caller's SQLite handle and returns a frozen API.
  * `transaction(fn, rollback = false)` runs fn synchronously in BEGIN IMMEDIATE and returns its result.
  * `now()` is the seller clock in ms; `generation` identifies this process, drawn after the seller state
- * lock is held. `sessionState({ jobId })` answers synchronously with a state string or null. At issuance a throw,
- * a promise or any other invalid answer refuses unavailable 503 with cause and no writes; at reclamation such a row
- * counts as an unknown state and is never reclaimed. `admissionCounts()` returns `{ contextRecords, starts, buyerStarts(buyer) }`
- * over durable rows. `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
+ * lock is held. `sessionState({ jobId })` is the store's synchronous observation adapter and answers with a state string or null.
+ * Its unavailable-state errors propagate at issuance; reclamation treats them as unknown and retains the row.
+ * `admissionCounts({ jobId })` returns `{ contextRecords, starts, buyerStarts(buyer) }`
+ * over durable rows (`jobId` is the job being issued for, so a count may leave out a record that job already holds). `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
  * Entries: `issue(request, challengeScopeHash, authorization)` and `issueForOperator(request)` return
- * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class; the
- * unreadable `sessionState` refuses session_admission_unavailable 503 with its cause);
+ * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class);
  * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check;
  * it, the guard and the stop check also run before a reused live nonce is returned.
  * `attempt(input)` returns `{ kind: 'validate', owner }`, `{ kind: 'continuation', accepted }` or
@@ -243,16 +242,16 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (!db.inTransaction) throw new TypeError(`${entry} runs inside an open transaction`);
   }
 
-  // Only explicit null means unknown; unreadable state keeps its unavailable cause.
-  function readSessionState(jobId) {
-    return readSellerSessionState(sessionState, jobId);
-  }
-
-  const isTerminalState = (state) => typeof state === 'string' && TERMINAL_CONTEXT_STATES.has(state);
-
-  // Reclamation only: a state that cannot be read is unknown, and an unknown state never reclaims a row.
+  // Only an exact terminal state answers true. The store's observation adapter owns the session read.
+  // Errors from the adapter and its cleanup barrier propagate.
+  const isTerminal = (jobId) => TERMINAL_CONTEXT_STATES.has(sessionState({ jobId }));
+  // Reclamation keeps rows when the session source is unavailable; observer failures still propagate.
   function isKnownTerminal(jobId) {
-    try { return isTerminalState(readSessionState(jobId)); } catch { return false; }
+    try { return isTerminal(jobId); }
+    catch (error) {
+      if (error?.code !== 'session_admission_unavailable' || error.status !== 503) throw error;
+      return false;
+    }
   }
 
   function decodedRow(row) {
@@ -319,8 +318,8 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   }
 
   // K1 steps 14-15: the context-record count, then the unpaid start counts.
-  function enforceAdmissionLimits(buyer) {
-    const counts = requireSynchronous(admissionCounts(), 'admissionCounts');
+  function enforceAdmissionLimits(buyer, jobId) {
+    const counts = requireSynchronous(admissionCounts({ jobId }), 'admissionCounts');
     if (!isRecord(counts) || typeof counts.buyerStarts !== 'function') throw new TypeError('admissionCounts must answer { contextRecords, starts, buyerStarts(buyer) }');
     if (readCount(counts.contextRecords, 'contextRecords') >= capacity.maxContextRecords) fail('peer_context_capacity', 503);
     if (readCount(counts.starts, 'starts') >= capacity.maxStartsPerHour) fail('unpaid_start_limit', 429);
@@ -336,7 +335,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
 
   // K1 steps 7-17, inside the transaction: every refusal is decided before the first write.
   function issueInTransaction({ jobId, buyer }, challengeScopeHash, origin, authorization, time) {
-    if (isTerminalState(readSessionState(jobId))) fail('context_session_terminal');
+    if (isTerminal(jobId)) fail('context_session_terminal');
     const jobRows = all('SELECT * FROM kit_challenges WHERE jobId = ?', jobId);
     if (jobRows.some((row) => row.state !== 'issued')) fail('context_job_closed');
     const live = jobRows.find((row) => row.expiresAt > time && row.challengeScopeHash === challengeScopeHash && sameCanonicalClaimIdentity(row.buyer, buyer));
@@ -344,7 +343,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (!live) {
       enforceIssuanceLimits(buyer, jobRows.length, time);
       reclaimed = planReclamation(time);
-      enforceAdmissionLimits(buyer);
+      enforceAdmissionLimits(buyer, jobId);
     }
     // A reused nonce is answered only while the seller may still answer: it skips the counts and the writes, not step 16.
     assertStillAllowed(origin, authorization);
@@ -361,6 +360,8 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     assertIssueAdmitted(origin);
     validateIssueRequest(request, challengeScopeHash, origin);
     if (origin === 'route' && typeof authorization?.assertStillLive !== 'function') throw new TypeError('issue needs the final-liveness closure assertStillLive');
+    // A seller that is not ready, or has no room for a whole purchase, issues nothing.
+    if (ready() !== true) fail('seller_not_ready', 503);
     // K1 step 6 refuses an unusable clock before the lock is taken. The lock can be waited for: expiry,
     // reuse and the written times use the clock read again once it is held.
     readClock(SESSION_CHALLENGE_LIFETIME_MS);

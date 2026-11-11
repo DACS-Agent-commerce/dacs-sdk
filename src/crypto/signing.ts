@@ -11,7 +11,7 @@ import {
 
 /**
  * The closed §B.7 registry of signature domain separators — the full 30-entry
- * set at this revision, in CORE §B.7 table order (issue #86; oracle pin
+ * set at this revision, in CORE §B.7 table order (oracle pin
  * d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20). A signature produced under one
  * separator MUST NOT validate under any other (SIG-2).
  *

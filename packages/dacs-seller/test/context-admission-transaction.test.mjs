@@ -41,9 +41,10 @@ const deferred = () => {
   return { promise, resolve };
 };
 const flush = () => new Promise(resolve => setImmediate(resolve));
-let createContextAdmissionTransaction, admissionTransactionInternals, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
+let createContextAdmissionTransaction, createPurchaseCapacity, admissionTransactionInternals, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
 try {
   ({ createContextAdmissionTransaction, admissionTransactionInternals } = await import('../src/dacs/seller-admission-transaction.mjs'));
+  ({ createPurchaseCapacity } = await import('../src/dacs/seller-purchase-capacity.mjs'));
   ({ createSellerTransportStore, sellerStoreInternals, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs'));
   if (typeof sellerStoreInternals !== 'function') throw new Error('sellerStoreInternals is not exported');
 } catch (error) { importFailure = error; }
@@ -79,17 +80,18 @@ function world(t, config = {}) {
     const outcomes = [...wire.ends.values()].filter(end => end !== null);
     return outcomes.length === 0 ? { state: 'none' } : { state: 'completed', binding: row(jobId).contextBinding, outcome: outcomes.at(-1) };
   };
-  let store, admission, internals;
+  let store, admission, internals, capacity;
   function reopen() {
     if (!control.killed) store?.close();
     control.killed = false;
     store = createSellerTransportStore({ path, generation: `test-generation-${++control.generation}`, now: () => control.clock, ready: () => control.ready,
       maxContextRecords: options.maxContextRecords, maxJobs: options.maxJobs, contextRecords: options.contextRecords, contextSessionState: options.contextSessionState, wireOperationView: options.wireOperationView, contextStartLimits: options.contextStartLimits });
     internals = sellerStoreInternals(store);
-    admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity: options.capacity ?? null,
+    capacity = createPurchaseCapacity({ store, now: () => control.clock, maxRecords: options.maxRecords ?? 10000, sessionState: internals.sessionState });
+    admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
       inspectContextOutcome: jobId => (control.inspect ? control.inspect(jobId) : publishedView(jobId)), completeWire: options.completeWire ?? doubleCompleteWire,
-      now: () => control.clock, ready: () => control.ready, deadlines: { policyMs: POLICY_MS } });
+      now: () => control.clock, ready: () => options.ready?.() ?? control.ready, deadlines: { policyMs: POLICY_MS } });
   }
   reopen();
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -144,7 +146,7 @@ function world(t, config = {}) {
     };
   }
   return { directory, holds, calls, wire, control, options, prepare, reserveWire, legacyStart, row, compensating, cut, kill, reopen, wireEnds: wire.ends, evidenceOf,
-    get store() { return store; }, get admission() { return admission; }, get internals() { return internals; }, get db() { return internals.db; },
+    get store() { return store; }, get admission() { return admission; }, get capacity() { return capacity; }, get internals() { return internals; }, get db() { return internals.db; },
     get policy() { return options.policy ?? defaultPolicy; }, changes: () => internals.db.prepare('SELECT total_changes() AS n').get().n };
 }
 // The live-begin registry is closure-private (the sweep of P09bb reads it from inside the module); the shipped module hands the same reader
@@ -158,6 +160,45 @@ function gatedPolicy(w) {
   return jobId => { const gate = { entered: deferred(), barrier: deferred() }; gates.set(jobId, gate); return gate; };
 }
 const reject = (promise, code, status) => assert.rejects(promise, { code, ...(status ? { status } : {}) });
+test('begin refuses a job retired by the readiness limit sweep', async t => {
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === job(0x11) ? session : null });
+  const payload = { version: '1', kind: 'request', path: '/dacs/v1/agreements/proposals', method: 'POST', jobId: job(0x11), buyer: BUYER, seller: SELLER,
+    listingPin: PIN, profile: PROFILE, agreementHash: hash('agreement'), bodyHash: hash('{}'), nonce: Buffer.alloc(24, 1).toString('base64url'), expiresAt: T0 + 60000 };
+  await w.store.reservationAccounting.reserveAccounted({ payload, route: payload.path, operationId: wireOperationId(payload), keepProfile: PROFILE,
+    checked: { body: {}, reserve: async () => ({ state: 'completed', outcome: { status: 200, text: '{}' } }) } });
+  w.control.clock += HOUR + 61000;
+  const p = w.prepare();
+  Object.defineProperty(w.control, 'ready', { get() { session = 'finalised'; return true; } });
+  await assert.rejects(w.admission.begin(p.input), { code: 'context_job_closed', status: 409 });
+  assert.equal(w.row(p.input.jobId), null); assert.equal(w.holds.size, 0); assert.equal(w.calls.reserve, 0);
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'context_job_closed');
+});
+
+test('begin refuses a job retired by its admission sweep without taking a hold', async t => {
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === job(0x11) ? session : null });
+  const payload = { path: '/dacs/v1/agreements/proposals', method: 'POST', jobId: job(0x11), buyer: BUYER, seller: SELLER,
+    listingPin: PIN, agreementHash: hash('agreement'), bodyHash: hash('{}'), nonce: 'completed-proposal', expiresAt: T0 + 60000 };
+  w.store.finish(w.store.reserve(payload, {}, { keepProfile: PROFILE }), 200, '{"proposal":"kept"}');
+  w.control.clock += HOUR + 61000;
+  const p = w.prepare();
+  session = 'finalised';
+  let result, error;
+  try { result = await w.admission.begin(p.input); } catch (cause) { error = cause; }
+  const retired = w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(p.input.jobId)?.job_retired ?? 0;
+  assert.deepEqual({ code: error?.code, status: error?.status, state: w.row(p.input.jobId)?.state ?? null, retired,
+    holds: w.holds.size, policyCalls: w.calls.reserve },
+  { code: 'context_job_closed', status: 409, state: null, retired: 0, holds: 0, policyCalls: 0 });
+  assert.equal(result, undefined);
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'context_job_closed');
+  const next = w.prepare(0x22); await w.admission.begin(next.input);
+  await assert.rejects(w.admission.begin(w.prepare(0x33).input), { code: 'peer_job_capacity', status: 503 });
+  const retry = { ...payload, nonce: 'completed-proposal-retry', expiresAt: w.control.clock + 60000 };
+  assert.deepEqual(w.store.reserve(retry, {}, { keepProfile: PROFILE }),
+    { disposition: 'cached', status: 200, text: '{"proposal":"kept"}' });
+});
+
 async function running(w, p) { await w.admission.begin(p.input); return w.admission.reserveContext(p.input.jobId, w.reserveWire); }
 const openHolds = path => parsePolicyLedger(readFileSync(path, 'utf8')).rows.filter(entry => entry.contextHold && !entry.released).length;
 
@@ -306,7 +347,7 @@ test('admission-D2-refusal-table', async t => {
   const scenarios = [
     ['context_job_closed', 409, {}, async (w, p) => { await w.admission.begin(p.input); }, false],
     ['seller_not_ready', 503, {}, (w) => { w.control.ready = false; }, true],
-    ['seller_not_ready', 503, { capacity: { fitsNewPurchase: () => false, allocateWithin() {} } }, () => {}, true],
+    ['seller_not_ready', 503, { maxRecords: 67 }, () => {}, true],
     ['unpaid_start_limit', 429, { contextStartLimits: { maxStartsPerHour: 2, maxStartsPerBuyerPerHour: 5 } }, async (w) => { await w.admission.begin(w.prepare(0x22, OTHER).input); w.legacyStart(0x33, OTHER); }, true],
     ['buyer_unpaid_start_limit', 429, { contextStartLimits: { maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 2 } }, async (w) => { await w.admission.begin(w.prepare(0x22).input); w.legacyStart(0x33); }, true],
     ['context_challenge_attempt_invalid', 409, {}, (w, p) => { w.store.challenges.recordFailed(p.input.owner, p.input.nonce, 'validator_lost'); }, false],
@@ -352,13 +393,17 @@ test('admission-policy-append-lost-ack', async t => {
 });
 
 test('admission-D4-atomic-hook-cuts', async t => {
-  const order = [], capacity = { fitsNewPurchase: () => true, allocateWithin: purchase => { order.push('capacity'); assert.deepEqual(purchase, { jobId: purchase.jobId, buyer: BUYER, seller: SELLER, listingPin: PIN }); } };
-  const refused = world(t, { capacity }), p = refused.prepare(), db = refused.db;
+  // The purchase allocation is the first hook: it exists, with the exact parties, when the next hook runs, and rolls back with it.
+  const order = [], refused = world(t), p = refused.prepare(), db = refused.db;
   db.exec('CREATE TABLE test_acceptance (jobId TEXT PRIMARY KEY)');
-  refused.admission.addAcceptanceHook(input => { order.push('first'); db.prepare('INSERT INTO test_acceptance VALUES (?)').run(input.jobId); });
+  refused.admission.addAcceptanceHook(input => {
+    const held = refused.capacity.allocationWithin(input.jobId);
+    order.push('first'); assert.deepEqual({ buyer: held.buyer, seller: held.seller, listingPin: held.listingPin }, { buyer: BUYER, seller: SELLER, listingPin: PIN });
+    db.prepare('INSERT INTO test_acceptance VALUES (?)').run(input.jobId);
+  });
   refused.admission.addAcceptanceHook(() => { order.push('second'); throw Object.assign(new Error('hook-full'), { code: 'peer_store_capacity', status: 503 }); });
   await reject(refused.admission.begin(p.input), 'peer_store_capacity', 503);
-  assert.deepEqual(order, ['capacity', 'first', 'second']); assert.equal(db.prepare('SELECT count(*) AS n FROM test_acceptance').get().n, 0);
+  assert.deepEqual(order, ['first', 'second']); assert.equal(refused.internals.transaction(() => refused.capacity.allocationWithin(p.input.jobId)), null); assert.equal(db.prepare('SELECT count(*) AS n FROM test_acceptance').get().n, 0);
   await drained(refused, p.input.jobId); refused.reopen(); assert.equal(refused.row(p.input.jobId).state, 'aborted'); assert.equal(refused.row(p.input.jobId).admittedAt, null);
   assert.equal(refused.store.challenges.retained(p.input.nonce).state, 'failed'); assert.equal(refused.holds.size, 0); assert.equal(refused.calls.effective, 1);
   assert.equal(refused.internals.admissionCounts().starts, 0);
@@ -1471,6 +1516,23 @@ for (const [name, terminal, elapsed] of [
   }
 });
 
+test('a stored context challenge keeps its exact answer after retirement and restart', async t => {
+  let session = null;
+  const w = world(t, { contextSessionState: () => session }), p = w.prepare();
+  const capability = await running(w, p);
+  await capability.complete(outcome);
+  const stored = w.store.challenges.attempt(p.attempt), record = w.admission.admissionRecord(p.input.jobId);
+  assert.equal(stored.kind, 'continuation');
+  session = 'finalised'; w.control.clock += 2 * HOUR;
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(p.input.jobId).job_retired, 1);
+  session = null; w.reopen();
+  const changes = w.changes(), calls = structuredClone(w.calls);
+  assert.deepEqual(w.store.challenges.attempt(p.attempt), stored);
+  assert.deepEqual(w.admission.admissionRecord(p.input.jobId), record);
+  assert.deepEqual(w.calls, calls); assert.equal(w.changes(), changes);
+});
+
 test('R06 retirement rollback preserves slots and restart can retry', async t => {
   let terminal = false;
   const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null }), p = w.prepare();
@@ -1505,7 +1567,7 @@ test('R06 sweep retires current old-context holders without count-only subtracti
   terminal = false; w.reopen();
   assert.equal(w.internals.admissionCounts().contextRecords, 0);
   const foreign = accountingInput(job(0x11), '/dacs/v1/agreements/proposals', `did:demos:agent:${hash('foreign')}`).payload;
-  assert.throws(() => w.store.reserve(foreign, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+  assert.throws(() => w.store.reserve(foreign, {}, { keepProfile: PROFILE }), { code: 'context_session_terminal', status: 409 });
 });
 
 test('R20 accounting adopts a detached tuple without another insert or timestamp change', async t => {
@@ -1523,6 +1585,24 @@ test('R20 accounting adopts a detached tuple without another insert or timestamp
   w.reopen(); assert.deepEqual(w.store.purchaseProfile(id), PROFILE);
 });
 
+
+test('retired settled admissions do not reread session state during later capacity checks', async t => {
+  let terminal = false, retiredReads = 0;
+  const w = world(t, { contextSessionState: ({ jobId }) => {
+    if (jobId !== job(0x11)) return null;
+    if (terminal) retiredReads++;
+    return terminal ? 'finalised' : null;
+  } });
+  const first = w.prepare(0x11);
+  await (await running(w, first)).complete(outcome);
+  terminal = true; w.control.clock += HOUR + 61000;
+  w.internals.transaction(() => w.internals.retireSlotsWithin(w.control.clock));
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(first.input.jobId).job_retired, 1);
+  retiredReads = 0;
+  const next = w.prepare(0x22);
+  await w.admission.begin(next.input);
+  assert.equal(retiredReads, 0);
+});
 
 test('R06 per-job retirement leaves another settled holder active', async t => {
   let terminal = false;
@@ -1619,7 +1699,10 @@ test('refused admission intent rolls retirement back across restart', async t =>
   assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
   w.reopen(); assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
   w.control.ready = true; terminal = false;
-  await assert.rejects(w.admission.begin(w.prepare(0x33).input), { code: 'peer_job_capacity', status: 503 });
+  const replacement = w.prepare(0x33);
+  await w.admission.begin(replacement.input);
+  assert.equal(w.row(replacement.input.jobId).state, 'admitted');
+  assert.equal(w.db.prepare('SELECT state FROM kit_terminal_closures WHERE jobId = ?').get(p.input.jobId).state, 'finalised');
 });
 
 test('intent commit cuts preserve atomic ownership across restart', async t => {
@@ -1661,12 +1744,12 @@ for (const state of ['aborted', 'settled', 'retired']) test(`${state} admission 
   await assert.rejects(w.admission.begin(foreign.input), { code: 'peer_job_conflict', status: 409 });
   assert.equal(w.store.challenges.retained(foreign.input.nonce).failure.code, 'peer_job_conflict');
   await assert.rejects(w.admission.begin(p.input), { code: 'context_job_closed', status: 409 });
-  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: 'peer_job_conflict', status: 409 });
+  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: state === 'retired' && boundary === 'old' ? 'context_session_terminal' : 'peer_job_conflict', status: 409 });
   assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, calls); assert.equal(ownerRow(w, p.input.jobId).buyer, BUYER);
   if (state !== 'settled') assert.equal(ownerRow(w, p.input.jobId).closed, 1);
   w.reopen();
   assert.throws(() => w.internals.transaction(() => w.internals.reserveAdmissionWithin(foreign.input, w.control.clock)), { code: 'peer_job_conflict', status: 409 });
-  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: 'peer_job_conflict', status: 409 });
+  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: state === 'retired' && boundary === 'old' ? 'context_session_terminal' : 'peer_job_conflict', status: 409 });
   assert.deepEqual(workSnapshot(w), before);
 });
 
@@ -1780,7 +1863,7 @@ test('SQL INSERT failure rolls back owner and retirement without failing a chall
 
 
 test('a definite operation_uncertain refusal commits only the owning challenge failure', async t => {
-  const w = world(t, { capacity: { fitsNewPurchase() { throw Object.assign(new Error('definite'), { code: 'operation_uncertain', status: 503 }); }, allocateWithin() { assert.fail('refusal allocated'); } } });
+  const w = world(t, { ready() { throw Object.assign(new Error('definite'), { code: 'operation_uncertain', status: 503 }); } });
   const p = w.prepare(), before = workSnapshot(w);
   await assert.rejects(w.admission.begin(p.input), { code: 'operation_uncertain', status: 503 });
   assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'operation_uncertain');
@@ -1814,6 +1897,26 @@ for (const completion of ['finish', 'reconcile']) for (const restart of [false, 
   });
 }
 
+test('a refused proposal keeps its saved answer after a corrected proposal succeeds', t => {
+  const w = world(t), args = accountingInput(job(0x11), PROPOSALS);
+  const text = '{"error":"proposal_refused"}';
+  const first = w.store.reserve(args.payload, {}, { keepProfile: PROFILE });
+  w.store.finish(first, 422, text, { noEffect: true });
+  const corrected = { ...args.payload, nonce: hash('corrected proposal'), agreementHash: hash('corrected agreement') };
+  const second = w.store.reserve(corrected, {}, { keepProfile: PROFILE });
+  assert.equal(second.disposition, 'perform');
+  w.store.finish(second, 200, '{}');
+  const before = workSnapshot(w);
+  for (const reopen of [false, true]) {
+    if (reopen) w.reopen();
+    assert.deepEqual(w.store.reserve(args.payload, {}, { keepProfile: PROFILE }), { disposition: 'cached', status: 422, text });
+    assert.throws(() => w.store.reserve({ ...args.payload, agreementHash: corrected.agreementHash }, {}, { keepProfile: PROFILE }), { code: 'peer_nonce_conflict', status: 409 });
+    assert.throws(() => w.store.reserve({ ...args.payload, nonce: hash('fresh refused proposal') }, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+    assert.deepEqual(workSnapshot(w), before);
+    assert.equal(ownerRow(w, corrected.jobId).agreement_hash, corrected.agreementHash);
+  }
+});
+
 for (const boundary of ['old', 'accounted']) for (const source of ['rejecting promise', 'throw', 'non-state']) {
   test(`${boundary} proposal gate refuses a session source returning ${source} without work`, async t => {
     const cause = new Error('session unavailable'); let broken = false;
@@ -1834,15 +1937,15 @@ for (const boundary of ['old', 'accounted']) for (const source of ['rejecting pr
 
 test('a purchase capacity refusal rolls back the retirement it observed across restart', async t => {
   let terminal = false, refuse = false, observed = false, w;
-  const capacity = { fitsNewPurchase() {
+  const ready = () => {
     if (refuse) {
       assert.equal(ownerRow(w, job(0x11)).closed, 1);
       assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(job(0x11)).job_retired, 1);
       observed = true; return false;
     }
     return true;
-  }, allocateWithin() {} };
-  w = world(t, { maxJobs: 1, maxContextRecords: 1, capacity, contextSessionState: () => terminal ? 'finalised' : null });
+  };
+  w = world(t, { maxJobs: 1, maxContextRecords: 1, ready, contextSessionState: () => terminal ? 'finalised' : null });
   const p = w.prepare(), next = w.prepare(0x22);
   await (await running(w, p)).complete(outcome);
   w.control.clock += HOUR + 1; terminal = true; refuse = true;
@@ -1894,4 +1997,26 @@ test('failed and settled starts release both slots before a third start after re
   assert.equal(w.internals.admissionCounts().contextRecords, 0);
   await w.admission.begin(w.prepare(0x44).input);
   assert.equal(w.internals.admissionCounts().contextRecords, 1);
+});
+
+
+test('a retired completed job refuses a fresh context admission after restart', async t => {
+  const completedJob = job(0x11);
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === completedJob ? session : null });
+  const first = accountingInput(completedJob, PROPOSALS).payload;
+  w.store.finish(w.store.reserve(first, {}, { keepProfile: PROFILE }), 200, '{}');
+  session = 'finalised'; w.control.clock += HOUR + 61000;
+  const next = { ...accountingInput(job(0x22), PROPOSALS).payload, nonce: hash('replacement job nonce'), expiresAt: w.control.clock + 60000 };
+  w.store.finish(w.store.reserve(next, {}, { keepProfile: PROFILE }), 422, '{}', { noEffect: true });
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(completedJob).job_retired, 1);
+  assert.equal(ownerRow(w, completedJob).closed, 0);
+  session = null; w.reopen();
+  const before = workSnapshot(w), challenges = w.db.prepare('SELECT COUNT(*) AS n FROM kit_challenges').get().n;
+  assert.throws(() => w.prepare(), { code: 'context_session_terminal', status: 409 });
+  assert.equal(w.row(completedJob), null);
+  assert.equal(w.calls.reserve, 0);
+  assert.equal(w.calls.wire, 0);
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_challenges').get().n, challenges);
+  assert.deepEqual(workSnapshot(w), before);
 });

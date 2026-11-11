@@ -7,9 +7,10 @@ import { spawnSync } from 'node:child_process';
 import { Server } from 'node:net';
 import Database from 'better-sqlite3';
 import { canonicalize, generateCanonicalJobId, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
-import { createSellerTransportStore, createSellerTransportServerAuth, createSellerTransportClientAuth,
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
+import { createSellerTransportServerAuth, createSellerTransportClientAuth,
   sellerContextScopeHash, sellerContextChallengeScope, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH,
-  sellerSessionDelegationSigningBytes, SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
+  sellerSessionDelegationSigningBytes, SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_PROFILE_ID, TP1_PROFILE_REVISION, TP1_BASE_REVISION } from '@kynesyslabs/dacs/wire';
 import { createSellerChallengeLedger } from '../src/dacs/seller-challenge-ledger.mjs';
 import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';
@@ -211,7 +212,7 @@ async function hostFixture(t, edit = source => source) {
   let current;
   // These nonce tests leave the wire journal unused, but its handle must still satisfy the context's construction check.
   const api = await privateModule(new URL('../src/host.mjs', import.meta.url), ['testStore', 'setStartupFailure'], source => edit(
-    source.replace("const generation = randomBytes(16).toString('hex');", "if (failStartup) throw new Error('TEST generation source failed'); const generation = randomBytes(16).toString('hex');").replace('openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });', '({});').replace('const REQUIRED =', 'let testStore; let failStartup = false; function setStartupFailure(value) { failStartup = value; }\nconst REQUIRED =').replace('opened.push(() => store.close());', 'testStore = store; opened.push(() => store.close());')));
+    source.replace("const generation = randomBytes(16).toString('hex');", "if (failStartup) throw new Error('TEST generation source failed'); const generation = randomBytes(16).toString('hex');").replace('const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });', 'const journal = Object.freeze({});').replace('const REQUIRED =', 'let testStore; let failStartup = false; function setStartupFailure(value) { failStartup = value; }\nconst REQUIRED =').replace('opened.push(() => store.close());', 'testStore = store; opened.push(() => store.close());')));
   const start = async changes => current = await api.startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor,
     dataDirectory, tp1Network: testNetwork(), now: () => NOW, ...changes });
   t.after(async () => { await current?.close(); await rm(dataDirectory, { recursive: true, force: true }); });
@@ -244,6 +245,7 @@ test(card('T14'), async t => {
 
 test(card('T20'), async t => {
   for (const reopen of [false, true]) for (const variant of ['unknown', 'consumed', 'mismatched']) await t.test(`${variant} reopened=${reopen}`, async t => {
+    // Job slots are not under test: the finished prior job keeps its slot until its session ends, so leave room for the second job.
     const f = await fixture(t, { store: { maxRecords: 1, maxJobs: 2 } }), input = await f.input(), body = structuredClone(input.body);
     // Leave a completed, expired transport nonce at capacity before each signed refusal.
     const prior = f.request({scope:f.scope(JOB2)}, '/dacs/v1/agreements/proposals');
@@ -744,7 +746,7 @@ test('context-journal-readback-after-delegation-expiry', async t => {
   assert.equal(reservation.disposition, 'cached'); assert.equal(reservation.status, 200); assert.equal(f.calls.effects, 0);
 });
 
-test('host-refuses-issuance-when-the-session-reader-fails', async t => {
+test('host refuses issuance when the session reader fails', async t => {
   for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
     const source = unreadableSource(name), f = await hostFixture(t); let broken = false;
     await f.start({ contextSessionState: () => broken ? source.read() : null });
@@ -832,8 +834,9 @@ test('R09 ledger refusal precedes retained recovery', async t => {
 
 test('R09 rejected retained body keeps challenges unchanged', async t => {
   const { f, input } = await legacyOperation(t), before = recoverySnapshot(f);
-  const store = { ...f.store, classify: () => { throw new Error('TEST classification failed'); } };
-  assert.throws(() => f.route.onRejectedBody(input.request, input.body, store), { code: 'context_challenge_mismatch' });
+  const failure = new Error('TEST classification failed');
+  const store = { ...f.store, classify: () => { throw failure; } };
+  assert.throws(() => f.route.onRejectedBody(input.request, input.body, store), error => error === failure);
   assert.doesNotThrow(() => f.route.onRejectedBody(input.request, input.body, f.store));
   assert.deepEqual(recoverySnapshot(f), before); assert.equal(f.calls.effects, 0);
 });
@@ -846,24 +849,27 @@ test('R09 unavailable retained proof keeps uncertainty', async t => {
   assert.equal(f.calls.releases, 0); assert.equal(f.calls.effects, 0); assert.equal(f.calls.holds, 0);
 });
 
-test('R13 standalone ledger maps unreadable authority', async t => {
-  for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, t => {
-    const source = unreadableSource(name), db = new Database(':memory:'); t.after(() => db.close());
+test('standalone ledger uses the shared adapter to refuse unavailable state', async t => {
+  for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
+    const source = unreadableSource(name), directory = await mkdtemp(join(tmpdir(), 'TEST-observer-'));
+    const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite'), now: () => T0, contextSessionState: source.read });
+    t.after(async () => { store.close(); await rm(directory, { recursive: true, force: true }); });
+    const db = new Database(':memory:'); t.after(() => db.close());
     const ledger = createSellerChallengeLedger({ db, transaction: fn => db.transaction(fn)(), now: () => T0, generation: 'TEST generation',
-      sessionState: source.read, admissionCounts: () => ({ contextRecords: 0, starts: 0, buyerStarts: () => 0 }), ready: () => true, stopped: () => false });
+      sessionState: sellerStoreInternals(store).sessionState, admissionCounts: () => ({ contextRecords: 0, starts: 0, buyerStarts: () => 0 }), ready: () => true, stopped: () => false });
     assert.throws(() => ledger.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope'), { assertStillLive() {} }), error => unavailable(error, source));
     assert.equal(db.prepare('SELECT count(*) n FROM kit_challenges').get().n, 0);
   });
 });
 
-test('R13 mapped session error preserves its identity', async t => {
+test('mapped session error preserves its identity', async t => {
   const error = new SellerTransportError('session_admission_unavailable', 503, { cause: new Error('TEST original cause') });
   const f = await fixture(t, { store: { contextSessionState: () => { throw error; } } });
   assert.throws(() => f.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope')), actual => actual === error);
   assert.equal(f.rows().length, 0);
 });
 
-test('R19 transport gates refuse unreadable authority', async t => {
+test('transport gates refuse unreadable authority', async t => {
   for (const gate of ['proposal', 'context start', 'resume', 'claim', 'claim check', 'assertPending']) for (const name of ['throws', 'thenable', 'non-state']) await t.test(`${gate}: ${name}`, async t => {
     const source = unreadableSource(name); let broken = false;
     const f = await fixture(t, { store: { contextSessionState: () => broken ? source.read() : null } });
@@ -1015,7 +1021,7 @@ test('R09 cached readback revalidates retained source proof', async t => {
 });
 
 
-test('R13 a wrongly tagged source error keeps its cause under unavailable 503', async t => {
+test('a wrongly tagged source error keeps its cause under unavailable 503', async t => {
   const cause = new SellerTransportError('session_admission_unavailable', 409);
   const f = await fixture(t, { store: { contextSessionState: () => { throw cause; } } });
   assert.throws(() => f.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope')), error => {

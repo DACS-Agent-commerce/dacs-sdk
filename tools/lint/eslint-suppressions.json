@@ -19,11 +19,6 @@
       "count": 1
     }
   },
-  "packages/dacs-client/src/config.mjs": {
-    "no-undef": {
-      "count": 3
-    }
-  },
   "packages/dacs-client/src/dacs/buyer-chain-readback.mjs": {
     "no-unused-vars": {
       "count": 4
@@ -445,7 +440,7 @@
       "count": 1
     }
   },
-  "scripts/verify-pr303-test-effectiveness.mjs": {
+  "scripts/verify-node-test-effectiveness.mjs": {
     "no-useless-assignment": {
       "count": 1
     }

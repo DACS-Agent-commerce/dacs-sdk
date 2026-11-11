@@ -2,13 +2,16 @@
 // Admission reserves two writes. Pre-payment writes still require exact
 // seller approval. This is the kit's only context mode.
 import { identityBundleHash, isCanonicalJobId, isIdentityBundle, sha256Hex } from '@kynesyslabs/dacs';
+import { admitPreAgreementRequest } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
+import { KitOperationGuardError, kitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { sellerData } from '../mcp/seller-content.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from './agreement-context-consumer.mjs';
 import { DEM_RAIL, canonicalize, purchaseSupport, verifyComponent } from './listing.mjs';
 import { listingPin } from './purchase-protocol.mjs';
 import { SellerRefusedError, sellerFailureAttempt } from './seller-http.mjs';
+import { openWireRequest } from './seller-wire-requests.mjs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash, sellerTransportEffect } from './seller-transport-auth.mjs';
 
 // Per buyer: five accepted starts per rolling hour.
@@ -27,6 +30,9 @@ const GENERATED_AT_SKEW_MS = 10 * 60 * 1000;
 // dem-delivery-context-consumer.mjs keeps at most 240 characters of a reason.
 const REASON_MAX = 240;
 
+// The challenge scope is the context scope without the bundle hash, which only the presentation carries.
+const CHALLENGE_SCOPE_KEYS = SELLER_CONTEXT_SCOPE_KEYS.filter((key) => key !== 'buyerBundleHash');
+
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const keys = (value, expected) => record(value) && Object.keys(value).length === expected.length && expected.every((key) => Object.hasOwn(value, key));
 const same = (left, right) => { try { return canonicalize(left) === canonicalize(right); } catch { return false; } };
@@ -38,6 +44,34 @@ function requireJobId(jobId) {
 function requireContextJob(request, body) {
   requireJobId(request?.jobId);
   requireJobId(body?.scope?.jobId);
+}
+
+/**
+ * The final check of K1 issue step 16 for a wire request, which the ledger runs inside its transaction after its own guard and
+ * stop checks: the admitted request's expiry, then its delegation's (`null` on a direct request), against the seller clock read
+ * again, in the wire's order. Returns the `authorization` the ledger takes; its `assertStillLive()` throws `peer_expired` or
+ * `peer_delegation_expired` (408).
+ */
+const expiryRecheck = (now, request, delegationExpiresAt) => ({
+  assertStillLive: () => {
+    const at = now();
+    if (!Number.isSafeInteger(at) || at < 0 || request.expiresAt <= at) throw new SellerTransportError('peer_expired', 408);
+    if (delegationExpiresAt !== null && delegationExpiresAt <= at) throw new SellerTransportError('peer_delegation_expired', 408);
+  },
+});
+
+/**
+ * The host's checks that precede admission (K1 issue step 5): the kit guard, then the stop predicate. A predicate that throws
+ * counts as stopped with cause `stop_check_failed`, and one that answers a non-boolean (a promise included, whose rejection is
+ * then handled) with cause `stop_check_invalid`. Throws `kit_operation_guard_off` or `seller_stopped` (503).
+ */
+function assertOpenForChallenges(stopped) {
+  if (!kitOperationAdmitted()) throw new SellerTransportError('kit_operation_guard_off', 503);
+  let answer;
+  try { answer = stopped(); } catch { throw new SellerTransportError('seller_stopped', 503, { cause: 'stop_check_failed' }); }
+  if (typeof answer?.then === 'function') Promise.resolve(answer).then(undefined, () => {});
+  if (typeof answer !== 'boolean') throw new SellerTransportError('seller_stopped', 503, { cause: 'stop_check_invalid' });
+  if (answer) throw new SellerTransportError('seller_stopped', 503);
 }
 
 function savedDisposition(text) {
@@ -149,12 +183,12 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
   }
   // Bytes the journal already holds (an answer, or an effect it keeps fenced) are answered by the journal alone when the ledger has no
   // record of their challenge (an earlier store's, or one reclaimed) or already accepted it. A challenge the ledger refused or still
-  // validates keeps the ledger's answer. The journal's own read-only reserve decides; a refusal or missing capability means not known.
+  // validates keeps the ledger's answer. The journal's own read-only reserve decides; its errors propagate rather than claiming the bytes are new.
   // The reserve that follows a known answer gets no admission callback, so it can never start new work without a challenge.
   function journalKnows(request, body, store) {
     const row = store.challenges.retained(body.buyerIdentityBundle?.sessionNonce);
     if (row !== null && row.state !== 'accepted') return false;
-    try { return store.classify?.(request, body) === 'known'; } catch { return false; }
+    return store.classify?.(request, body) === 'known';
   }
   function attemptRefused(request, code = 'operation_uncertain') {
     const entry = attempts.get(request);
@@ -175,6 +209,40 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       if (problem) refuse(problem);
       await checkPolicy(request);
       return store.challenges.issue(request, sellerContextScopeHash(body.scope));
+    },
+    /**
+     * The challenge route on the wire (K1 issue steps 1-17, K2 for `contextChallenge`). `wire` is a `createWireContext` context
+     * with its stop check; `input` is the raw request: `header`, `method`, `path`, the exact `rawBody` and its parsed `body`, and
+     * `onOpened(request)`, called once the envelope is verified so that later refusals can be signed. No Agreement is needed and
+     * the wire journal is never written: the ledger's insert is the only write. Returns `{ sessionNonce, expiresAt }`. Throws the
+     * refusal, a SellerTransportError or the wire's WireError, with its code, status and cause.
+     */
+    challengeOnWire: async (wire, { header, method, path, rawBody, body, onOpened }) => {
+      const opened = await openWireRequest(wire, header, onOpened);
+      const request = opened.payload;
+      // K2 compares its route with the signed path as a fault of the host (`wire_input_invalid` 500): a request signed for another path is the peer's.
+      if (request.path !== path) throw new SellerTransportError('peer_request_mismatch', 401);
+      requireContextJob(request, body);
+      if (request.jobId !== body.scope.jobId) refuse('peer_job_mismatch');
+      if (!keys(body, ['scope']) || !keys(body.scope, CHALLENGE_SCOPE_KEYS)) refuse('peer_context_mismatch');
+      const scopeHash = sellerContextScopeHash(body.scope);
+      // Each admission reads the clock, readiness, kept tuple and authority anew.
+      const admit = () => admitPreAgreementRequest(opened, { route: 'contextChallenge', binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId),
+        seller, listingPin: pin, method, path, rawBody, now: wire.now(), requireDelegation: wire.requireDelegation, ready: wire.ready(),
+        retained: { jobId: body.scope.jobId, agreementHash: scopeHash, buyer: body.scope.buyer, seller } });
+      try {
+        assertOpenForChallenges(wire.stopped);
+        const admitted = await admit();
+        const problem = scopeProblem(admitted.body, true);
+        if (problem) refuse(problem);
+        await checkPolicy(request);
+        // The two callbacks above may each take their full deadline, and nothing after this admission awaits: authority, the
+        // delegation or readiness that closed meanwhile refuses here, before the ledger's insert.
+        const current = await admit();
+        return wire.store.challenges.issue(request, scopeHash, expiryRecheck(wire.now, request, current.delegationExpiresAt));
+      } catch (error) {
+        throw error instanceof KitOperationGuardError ? new SellerTransportError(error.code, 503, { cause: error }) : error;
+      }
     },
     reserve: async (request, body, store) => {
       requireContextJob(request, body);

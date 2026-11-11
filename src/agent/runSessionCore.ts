@@ -19,6 +19,7 @@ import {
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
+import { isSettlementBridge, settlementBridgeTraits } from "../rails/idempotency.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import {
   isComponentSignature,
@@ -96,23 +97,26 @@ import {
   type FinalizedVetAnchor,
   type VetProduction,
 } from "./vetCore.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
- * Pure orchestration for the legacy MVP buyer session (T4 runSession): negotiate
+ * Pure orchestration for the legacy MVP buyer session (`runSession`): negotiate
  * (fixed-price) → settle → verify, producing + anchoring the AgreementDocument,
  * legacy SettlementEvidence and one-sided AttestationBundle records. These
- * pre-#308 shapes are isolated in `artifacts/legacyMvp`; issue #81 owns migration
- * of this producer to normative DACS-4/DACS-5 records. Identify is implicit (the
+ * pre-normative shapes are isolated in `artifacts/legacyMvp`; this producer
+ * does not yet emit normative DACS-4/DACS-5 records. Identify is implicit (the
  * buyer's id) and vet is a seam. Settlement execution is injected (`settle`) so
  * the rail integration is pluggable and this is testable.
  *
- * Idempotent / crash-safe (T9): every phase anchors at a deterministic address
+ * Idempotent / crash-safe: every phase anchors at a deterministic address
  * keyed by jobId, so the anchored artifacts ARE the session state. On resume
  * (same jobId) each phase checks-before-acting — a present agreement/evidence/
  * bundle is reused, never re-signed or re-anchored, and crucially settlement is
- * skipped if evidence already exists (no double-pay). A crash between paying and
- * anchoring evidence is the rail's idempotency window — `settle` is handed the
- * jobId so the rail can dedupe there.
+ * skipped if evidence already exists (no double-pay). A job whose Agreement an
+ * earlier run anchored but whose evidence is absent, with no settled outcome on
+ * record, never calls `settle`, with or without a session store: it goes
+ * through `resumeSettlement`, which must reconcile through the original rail
+ * idempotency binding.
  */
 
 export interface SessionTerms {
@@ -140,7 +144,7 @@ export interface SettleRequest {
   jobId: string;
   /**
    * The settlement phase index — part of the `(railId, jobId, phaseIndex)`
-   * idempotency key a rail dedupes on (#43). Defaults to 0 (the single MVP
+   * idempotency key a rail dedupes on. Defaults to 0 (the single MVP
    * settle phase) when the caller omits it.
    */
   phaseIndex?: number;
@@ -151,6 +155,15 @@ export interface SettleRequest {
    * settlement requests omit it.
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
+  /**
+   * Set by `runSession` on every `resumeSettlement` request. A bridge honours it
+   * by never taking a fresh claim: it settles through its store's `recover`,
+   * whose own atomic claim returns a recorded outcome or reconciles an
+   * unresolved intent (adopting a payment it proves landed), and refuses when
+   * the store holds no unresolved intent for the key. A store without `recover`
+   * is refused.
+   */
+  recoveryOnly?: boolean;
 }
 
 export interface SettlementRecoveryAttempt {
@@ -187,7 +200,7 @@ export interface SettleResult {
   networkFeeOs?: string;
   /**
    * The fee the native DEM transaction record declares, in integer OS; sent
-   * only with `networkFeeOs`. It can differ from what the chain debits (#604).
+   * only with `networkFeeOs`. It can differ from what the chain debits.
    */
   recordFeeOs?: string;
   /** Durable raw x402 settlement-response input used to re-derive its receipt hash. */
@@ -200,8 +213,8 @@ export interface SettleResult {
 }
 
 /**
- * Result of resolving whether a session artifact is already anchored, for resume
- * (#70). `indeterminate` (the lookup failed) is DISTINCT from `absent` — the
+ * Result of resolving whether a session artifact is already anchored, for
+ * resume. `indeterminate` (the lookup failed) is DISTINCT from `absent` — the
  * session must never treat a substrate failure as "never anchored", which would
  * reopen duplicate-settlement risk.
  */
@@ -244,7 +257,7 @@ export interface SessionDeps {
   /**
    * Sign the reduced-MVP AgreementDocument compatibility artifact. The exact
    * DACS-3 producer is exposed by the transport-independent fixed-price core;
-   * wiring it into this legacy public orchestration path remains in #98.
+   * this legacy public orchestration path does not use it yet.
    */
   sign: (artifact: object, separator: string) => Promise<object>;
   /** Sign raw bytes for ComponentSignature artifacts and the bundle. */
@@ -263,7 +276,7 @@ export interface SessionDeps {
    * Returns the stored value + its ref when present; `absent` when not yet
    * anchored; `indeterminate` when the lookup itself failed. Resolution MUST be
    * by NAME, not by a re-derived address: the physical address folds in the
-   * writer's create-time nonce and can't be recomputed (#70). On `indeterminate`
+   * writer's create-time nonce and can't be recomputed. On `indeterminate`
    * the session refuses to proceed rather than treat a substrate hiccup as
    * "absent" and risk a duplicate anchor or a double settlement.
    */
@@ -271,13 +284,14 @@ export interface SessionDeps {
   /**
    * Execute payment on the chosen rail.
    *
-   * CRASH-WINDOW NOTE (#67/#52): this seam starts a freshly claimed payment. A
+   * CRASH-WINDOW NOTE: this seam starts a freshly claimed payment. A
    * SessionStore intent cannot prove what happened if the process dies AFTER
    * `settle` moved value but BEFORE its outcome checkpoint. When `sessionStore` is
    * wired, callers must therefore also wire `resumeSettlement` to the durable
    * rail-idempotency/reconciliation path. The SessionStore and rail store are
    * complementary: one guards the orchestration claim, the other resolves the
-   * post-payment crash window.
+   * post-payment crash window. A resumed run that finds its Agreement already
+   * anchored never calls `settle`; see `resumeSettlement`.
    */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -307,6 +321,12 @@ export interface SessionDeps {
    * Callers may then wire the same wrapper as both `settle` and
    * `resumeSettlement`.
    *
+   * It is also called instead of `settle` whenever a resumed run finds its
+   * Agreement already anchored and no settled outcome on record, with or
+   * without a session store. The rail's own durable state is then the record
+   * of whether an earlier run paid; when it shows no earlier effect under the
+   * original binding, the wrapper above may pay once.
+   *
    * For a saved native success this is a read-only audit of the original
    * transfer's execution, including its retained signed nonce. Return executed
    * success or a bound permanent failure for that hash; throw on absence or
@@ -314,7 +334,16 @@ export interface SessionDeps {
    *
    * `runSessionCore` deliberately does not call the ordinary `settle` seam under
    * an unresolved SessionStore intent because it cannot assume every implementation
-   * is restart-safe.
+   * is restart-safe. It sets `recoveryOnly` on every request to this seam, and
+   * settles only through it when it is given a job id the SessionStore has no
+   * record of (or has no SessionStore), or when a first run finds its Agreement
+   * already anchored and the SessionStore has no record of the job.
+   *
+   * It must be a function an SDK settle bridge returned (`payDemSettle`,
+   * `evmErc20Settle`, `x402Settle` or `settleFromRail`): those are the only
+   * functions known to honour `recoveryOnly`, and any other function is refused
+   * before a payment is made. A pay-dem bridge over a rail built without
+   * `journalPreparedTransfer` is refused, as `settle` is, before the listing is read.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -344,15 +373,20 @@ export interface SessionDeps {
   authenticateVetFinality?: (
     request: Readonly<VetFinalityAuthenticationRequest>,
   ) => Promise<FinalizedVetAnchor | null>;
-  /** Fresh canonical uppercase ULID for a new normative session. */
+  /**
+   * Fresh canonical uppercase ULID for a new normative session. It must return a
+   * new id on every call: a first run whose Agreement for the id is already
+   * anchored settles only by recovery. After a crash, pass the id as the resume
+   * argument instead of rerunning the first run.
+   */
   newJobId: () => string;
   /** Current ISO-8601 timestamp (used where the spec field is a string). */
   now: () => string;
   /** Current unix-ms timestamp (used where the spec field is a number). */
   nowMs: () => number;
   /**
-   * Verify the anchored listing before any external effect is taken from it
-   * (#41). Receives the raw stored artifact (signature intact) and the seller
+   * Verify the anchored listing before any external effect is taken from it.
+   * Receives the raw stored artifact (signature intact) and the seller
    * claim it advertises; must return true only if the signature verifies AND
    * binds to that seller.
    *
@@ -412,8 +446,8 @@ export interface SessionDeps {
     raw: Record<string, unknown>,
   ) => Promise<ListingValidationResult> | ListingValidationResult;
   /**
-   * OPTIONAL durable session store (#55). When wired, the store is the
-   * settlement BOUNDARY PROTOCOL (#52/#67), not just an after-the-fact log:
+   * OPTIONAL durable session store. When wired, the store is the
+   * settlement BOUNDARY PROTOCOL, not just an after-the-fact log:
    *   1. BEFORE paying, fail CLOSED on corrupt/unsupported durable state and
    *      REJECT a replayed agreement hash — so a second session over the same
    *      deal can never reach `settle`.
@@ -423,7 +457,10 @@ export interface SessionDeps {
    *      `resumeSettlement`, never blindly re-paid.
    *   3. The agreement/settlement/bundle receipts + final status are recorded
    *      for restart-safe status/receipt queries without an app-specific job DB.
-   * Fully additive: with no store wired the session behaves exactly as before.
+   * Whatever the store holds, a resumed run whose Agreement an earlier run
+   * anchored, with no settled outcome on record, reconciles through
+   * `resumeSettlement` instead of calling `settle`, and is refused when
+   * `resumeSettlement` is not wired.
    */
   sessionStore?: SessionStore;
 }
@@ -464,7 +501,7 @@ export interface VetFinalityAuthenticationRequest {
 }
 
 /**
- * Address grammar emitted by the quarantined pre-#308 buyer-only session
+ * Address grammar emitted by the quarantined pre-normative buyer-only session
  * producer. These names exist for deterministic resume and legacy reads only;
  * they are not the current normative DACS addressing contract.
  *
@@ -496,21 +533,9 @@ type VerifiedVetMatch =
   | { ok: false; reason: string }
   | { ok: true; record: CompositeVerificationRecord };
 
-function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreezeSnapshot(child, seen);
-  }
-  return Object.freeze(value);
-}
-
 function immutableSnapshot<T>(value: T, label: string): T {
   try {
-    return deepFreezeSnapshot(structuredClone(value));
+    return deepFreeze(structuredClone(value));
   } catch {
     throw new CounterpartyError(`${label} is not snapshot-safe`);
   }
@@ -1891,7 +1916,7 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
     stableDataProperty(input, "sessionStore", "deps.sessionStore"),
   );
 
-  return Object.freeze({
+  const captured = Object.freeze({
     buyerId,
     buyerIdentityBundle,
     authenticateBuyerIdentityBundle: stableDataMethod<
@@ -2014,20 +2039,30 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
     trustListing: trustListing as boolean | undefined,
     sessionStore,
   });
+  recordBridgeRegistrations(input, captured);
+  return captured;
 }
 
-function deepFreezeJson<T extends object>(value: T): Readonly<T> {
-  const seen = new WeakSet<object>();
-  const visit = (candidate: object): void => {
-    if (seen.has(candidate)) return;
-    seen.add(candidate);
-    for (const nested of Object.values(candidate)) {
-      if (nested !== null && typeof nested === "object") visit(nested);
-    }
-    Object.freeze(candidate);
-  };
-  visit(value);
-  return value;
+/** Captured deps whose `resumeSettlement` is an SDK settle bridge. */
+const bridgeBackedResume = new WeakSet<object>();
+/** Captured deps whose `settle` or `resumeSettlement` is a pay-dem bridge over a rail with no prepared-transfer journal. */
+const unjournaledBridge = new WeakSet<object>();
+
+/**
+ * The bound copies in `captured` carry no registration, so read it from the
+ * caller's own functions. The rail that pays a first run is the one whose journal
+ * recovery reads, so `settle` counts as well as `resumeSettlement`.
+ */
+function recordBridgeRegistrations(input: SessionDeps, captured: Readonly<SessionDeps>): void {
+  const resumeSeam = stableDataProperty(input, "resumeSettlement", "deps.resumeSettlement");
+  const settleSeam = stableDataProperty(input, "settle", "deps.settle");
+  if (isSettlementBridge(resumeSeam)) bridgeBackedResume.add(captured);
+  if (
+    settlementBridgeTraits(resumeSeam)?.journaled === false ||
+    settlementBridgeTraits(settleSeam)?.journaled === false
+  ) {
+    unjournaledBridge.add(captured);
+  }
 }
 
 /** Capture and strictly validate a resolver result before retaining it. */
@@ -2222,7 +2257,7 @@ function sameSettlementOutcome(
 /**
  * A saved native fee binds the audited one. A checkpoint without `recordFeeOs`
  * was written when `networkFeeOs` carried the record's declared fee, so it
- * binds either the audited debit or the audited record fee (#604).
+ * binds either the audited debit or the audited record fee.
  */
 function sameSavedNativeFee(
   prior: Pick<DurableSettlementOutcome, "networkFeeOs" | "recordFeeOs">,
@@ -2793,7 +2828,7 @@ function assertSessionAgreementBinding(
 }
 
 /**
- * Record a completed/failed session to the durable store (#55): create-or-load,
+ * Record a completed/failed session to the durable store: create-or-load,
  * bind the agreement hash for cross-session anti-replay, and checkpoint each
  * receipt + the final phase via compare-and-set. Every store result is checked:
  * silently dropping a receipt would make a successful return disagree with the
@@ -2879,12 +2914,18 @@ async function recordSessionOutcome(
 const NATIVE_SESSION_LEASE_MS = 30_000;
 const NATIVE_SESSION_RENEW_MS = 10_000;
 
+/** Phase of a record that a fresh run created; the only phase that allows a fresh claim before an intent. */
+const FRESH_RUN_PHASE = "negotiated";
+/** Phase of a record that a recovery-only run created; a later run must not read it as a fresh run's record. */
+const RECOVERY_CREATED_PHASE = "recovering";
+
 /** Hold native settlement decisions and publication under one renewable store lease. */
 function createNativeSettlementFence() {
   const owner = randomUUID();
   let active: { store: SessionStore; jobId: string; now: () => number; revision: number } | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
-  let lost: unknown;
+  const noError = Symbol();
+  let lost: unknown = noError;
   let queue = Promise.resolve();
   const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
     const pending = queue.then(operation);
@@ -2892,7 +2933,7 @@ function createNativeSettlementFence() {
     return pending;
   };
   const check = async (): Promise<void> => {
-    if (lost !== undefined) throw lost;
+    if (lost !== noError) throw lost;
     if (!active) return;
     const loaded = await active.store.load(active.jobId);
     if (loaded.status !== "ok" || loaded.record.lease?.owner !== owner ||
@@ -3006,6 +3047,17 @@ async function runSessionCoreWithFence(
   protocolString(terms.deliveryFormat, "session delivery format", {
     allowColon: true,
   });
+  // Without a prepared-transfer journal a crash after the broadcast leaves no record to
+  // recover from, so a pay-dem session does not start on such a rail. Only the pay-dem
+  // bridge declares `journaled`, so this holds whatever rail id the terms carry.
+  if (unjournaledBridge.has(deps)) {
+    throw new DacsError(
+      "pay-dem settlement through runSession requires a rail built with journalPreparedTransfer; " +
+        (resumeJobId === undefined
+          ? "nothing was anchored or paid"
+          : "this call anchored and paid nothing, but an earlier run of this job may have paid"),
+    );
+  }
 
   const stored = await deps.readListing(listingRef);
   if (stored == null || typeof stored !== "object" || Array.isArray(stored)) {
@@ -3198,7 +3250,7 @@ async function runSessionCoreWithFence(
     );
   }
 
-  // #41 — authenticate the listing before any external effect. Fresh admission
+  // Authenticate the listing before any external effect. Fresh admission
   // preserves the existing early gate. An expired recovery deliberately waits
   // until the exact signed Agreement and successful SettlementEvidence prove
   // that this is completion of an already-paid deal; only that path may use an
@@ -3206,7 +3258,7 @@ async function runSessionCoreWithFence(
   if (!deps.verifyListing && !deps.trustListing) {
     throw new DacsError(
       "runSessionCore requires deps.verifyListing or an explicit deps.trustListing: true opt-out — " +
-        "acting on an unverified listing lets a forged listing drive payment (#41)",
+        "acting on an unverified listing lets a forged listing drive payment",
     );
   }
   if (listingExpired && !deps.verifyListing) {
@@ -3238,7 +3290,7 @@ async function runSessionCoreWithFence(
     try {
       verified =
         (await deps.verifyListing(
-          deepFreezeJson(
+          deepFreeze(
             snapshotCanonicalJson(storedRecord, "Listing verifier input"),
           ),
           listingView.sellerClaim,
@@ -3248,7 +3300,7 @@ async function runSessionCoreWithFence(
     }
     if (!verified) {
       throw new CounterpartyError(
-        `listing at ${requestedListingRef} failed signature verification for seller ${listingView.sellerClaim} (#41)`,
+        `listing at ${requestedListingRef} failed signature verification for seller ${listingView.sellerClaim}`,
       );
     }
   };
@@ -3306,7 +3358,7 @@ async function runSessionCoreWithFence(
   let buyerIdentityAuthenticated: unknown;
   try {
     buyerIdentityAuthenticated = await deps.authenticateBuyerIdentityBundle({
-      bundle: deepFreezeJson(
+      bundle: deepFreeze(
         snapshotCanonicalJson(
           deps.buyerIdentityBundle,
           "buyer IdentityBundle authentication input",
@@ -3439,7 +3491,7 @@ async function runSessionCoreWithFence(
   ): Promise<{ ref: string; value: Record<string, unknown>; existing: boolean }> => {
     // Resolve BY NAME (the address can't be recomputed). Fail closed on an
     // indeterminate lookup: proceeding as if absent could re-anchor a duplicate
-    // or, for evidence, defeat the no-double-pay guard and settle twice (#70).
+    // or, for evidence, defeat the no-double-pay guard and settle twice.
     let lookup: AnchorLookup;
     try {
       lookup = knownLookup ?? (await deps.resolveAnchor(name));
@@ -3542,7 +3594,7 @@ async function runSessionCoreWithFence(
     // the authoritative owned snapshot used for every later hash/ref so even a
     // hostile adapter that retains or mutates its argument cannot change the
     // authenticated view this session returns.
-    const publication = deepFreezeJson(
+    const publication = deepFreeze(
       snapshotCanonicalJson(built, `publication for "${name}"`),
     );
     const builtCanonical = canonicalize(built);
@@ -4131,7 +4183,11 @@ async function runSessionCoreWithFence(
   }
 
   // Negotiate (fixed-price): accept the listed terms.
-  const { ref: agreementRef, value: agreementValue } = await anchorOnce(
+  const {
+    ref: agreementRef,
+    value: agreementValue,
+    existing: agreementExisting,
+  } = await anchorOnce(
     legacyMvpSessionAnchorName.agreement(jobId),
     matchAgreement,
     () => {
@@ -4181,10 +4237,18 @@ async function runSessionCoreWithFence(
     agreementHash,
   );
 
-  // #52/#67 settlement boundary — BEFORE paying, when a durable store is wired:
+  // Settlement boundary — BEFORE paying, when a durable store is wired:
   // fail CLOSED on untrustworthy durable state, and reject a replayed agreement
   // hash. `create` binds the hash atomically and THROWS on a cross-session reuse,
   // so a replayed deal aborts here — before any call to `settle`.
+  // A caller-supplied jobId requests recovery. Unless a SessionStore already holds
+  // this job's record, nothing proves the job never reached the rail, so its
+  // settlement may only recover (never a fresh claim through `settle`). A first
+  // run whose Agreement is already anchored reruns a job that may have paid.
+  // A record that a recovery-only run created proves nothing either: it is
+  // stored in RECOVERY_CREATED_PHASE until the settlement intent replaces it, so
+  // a run that failed between the two writes does not allow a fresh claim next time.
+  let freshClaimAllowed = resumeJobId === undefined && !agreementExisting;
   const store = fence.protect(runtime.sessionStore);
   if (store) {
     const loaded = await store.load(jobId);
@@ -4194,8 +4258,16 @@ async function runSessionCoreWithFence(
       );
     }
     if (loaded.status === "missing") {
-      await store.create({ jobId, agreementHash, phase: "negotiated", now: runtime.nowMs() });
+      await store.create({
+        jobId,
+        agreementHash,
+        phase: freshClaimAllowed ? FRESH_RUN_PHASE : RECOVERY_CREATED_PHASE,
+        now: runtime.nowMs(),
+      });
     } else {
+      // A stored fresh phase never turns an explicit resume into a fresh claim.
+      // Any other phase without a settlement checkpoint recovers or refuses.
+      freshClaimAllowed = freshClaimAllowed && loaded.record.phase === FRESH_RUN_PHASE;
       // Resume: enforce that the live record's bound hash is THIS deal's — a
       // mismatch is a replayed/altered agreement under a reused jobId.
       if (loaded.record.agreementHash !== agreementHash) {
@@ -4389,6 +4461,12 @@ async function runSessionCoreWithFence(
           "resumeSettlement is required to reconcile it",
       );
     }
+    // Only an SDK settle bridge is known to honour `recoveryOnly`.
+    if (!bridgeBackedResume.has(deps)) {
+      throw new CounterpartyError(
+        `settlement for ${jobId} recovery requires deps.resumeSettlement built by an SDK settle bridge (no payment is made)`,
+      );
+    }
     let priorAttempts: SettlementRecoveryAttempt[] = [];
     if (store) {
       const durable = await store.load(jobId);
@@ -4414,11 +4492,12 @@ async function runSessionCoreWithFence(
     const recoveryRequest: SettleRequest = {
       ...settleRequest,
       ...(priorAttempts.length > 0 ? { priorAttempts } : {}),
+      recoveryOnly: true,
     };
     await fence.assertCurrent();
     const recovered = snapshotSettleResult(
       await deps.resumeSettlement(
-        deepFreezeJson(
+        deepFreeze(
           snapshotCanonicalJson(
             recoveryRequest,
             "settlement recovery request",
@@ -4553,7 +4632,7 @@ async function runSessionCoreWithFence(
     legacyMvpSessionAnchorName.evidence(jobId),
     matchSettlementEvidence,
     async () => {
-      // Reconcile across a crash (#52): if a prior run already PAID — recorded a
+      // Reconcile across a crash: if a prior run already PAID — recorded a
       // `settle:outcome` write-ahead — but crashed before the evidence was
       // anchored, rebuild the evidence from the recorded tx ref instead of paying
       // again. Without this the anchoring guard alone would re-pay in that window.
@@ -4580,7 +4659,7 @@ async function runSessionCoreWithFence(
         // CLAIM the settlement phase via the intent checkpoint's atomic CAS, AND
         // write-ahead the intent, BEFORE the irreversible payment. A lost claim
         // means a concurrent worker already advanced this phase — abort rather than
-        // settle twice (#67). (When no store is wired this always claims.)
+        // settle twice. (When no store is wired this always claims.)
         const claim = await claimSettlement({ ...expectedSettlementBinding });
         if (claim.status === "completed") {
           settlement = await acceptRecordedOutcome(claim.outcome);
@@ -4590,11 +4669,16 @@ async function runSessionCoreWithFence(
           // the rail proves no payment landed. It is safe where ordinary `settle`
           // would be an unproven second submission.
           settlement = await recoverRailOutcome("unresolved settlement intent");
+        } else if (!freshClaimAllowed || agreementExisting) {
+          // An explicit resume or an Agreement anchored by an earlier run may
+          // already have paid. A session record cannot rule that out, so only
+          // the rail's existing intent may be reconciled here.
+          settlement = await recoverRailOutcome("resume or previously anchored Agreement");
         } else {
           await fence.assertCurrent();
           const pay = snapshotSettleResult(
             await deps.settle(
-              deepFreezeJson(
+              deepFreeze(
                 snapshotCanonicalJson(settleRequest, "settlement request"),
               ),
             ),
