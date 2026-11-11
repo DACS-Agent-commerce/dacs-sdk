@@ -22,6 +22,7 @@
  *   PAY_ASSET          DACS asset id for the advertised token (e.g. usdc)
  *   SELLER_EVM         seller EVM address that x402 pays
  *   DACS_STATE_DIR     durable private state directory for wallet journals
+ *   SETTLEMENT_STORE_MODULE  ESM module exporting a durable settlement store as default
  *
  *   npx tsx examples/hello-world.ts
  */
@@ -38,6 +39,7 @@ import {
   vetCore,
   x402Settle,
   type IdentityBundle,
+  type SettlementIdempotencyStore,
 } from "../src/index.js";
 
 const env = (k: string): string => {
@@ -170,6 +172,8 @@ async function main(): Promise<void> {
     // process; production consumers use the deployment's catalog/index.
     bindings: { index: bindings },
   });
+  const settlementStore = (await import(env("SETTLEMENT_STORE_MODULE")))
+    .default as SettlementIdempotencyStore;
 
   const resolved = await buyer.readListing(published.logicalAddress);
   if (
@@ -213,7 +217,7 @@ async function main(): Promise<void> {
       network: env("PAY_NETWORK"),
       recipientEvm: sellerEvm,
       asset: env("PAY_ASSET"),
-    }),
+    }, { store: settlementStore }),
   });
   console.log("session", session.outcome, "→ bundle", session.bundleRef);
 
