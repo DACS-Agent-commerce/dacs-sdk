@@ -54,6 +54,9 @@ import {
 } from "../../src/registry/index.js";
 import type { RailDefinition } from "../../src/registry/types.js";
 
+const testStore: SettlementIdempotencyStore = {
+  async once() { throw new Error("settlement store was not invoked"); },
+};
 const STEWARD_SEED = Uint8Array.from(Buffer.alloc(32, 42));
 const stewardPrivateKey = privateKeyFromSeed(STEWARD_SEED);
 const stewardPublicKey = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
@@ -328,29 +331,19 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(capturedRecovery.reconcile).not.toBe(reconcile);
   });
 
-  test("keeps the documented process-local compatibility defaults explicit", async () => {
+  test("requires a settlement store before constructing the native rail", async () => {
     const rail = { address: "aa".repeat(32), settle: vi.fn() };
     const executor = vi.fn();
     mocks.createPayDemRail.mockResolvedValue(rail);
     mocks.payDemSettle.mockReturnValue(executor);
     const descriptor = await authenticatedDefinition();
 
-    const dispatched = await settleFromRail(descriptor, {
+    await expect(settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
-    });
-    expect(typeof dispatched).toBe("function");
-
-    expect(mocks.createPayDemRail).toHaveBeenCalledWith({
-      rpc: "https://demos.example",
-      secret: "test-secret",
-      network: "demos",
-    });
-    expect(mocks.payDemSettle).toHaveBeenCalledWith(
-      rail,
-      { network: "demos", railId: DEM_RAIL_ID },
-      {},
-    );
+    })).rejects.toThrow(/caller-supplied durable settlement store/);
+    expect(mocks.createPayDemRail).not.toHaveBeenCalled();
+    expect(mocks.payDemSettle).not.toHaveBeenCalled();
   });
 
   test("the descriptor wrapper carries the registration and declared traits of the executor it binds", async () => {
@@ -358,7 +351,11 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const descriptor = await authenticatedDefinition();
     const dispatch = async (executor: (req: never) => Promise<never>) => {
       mocks.payDemSettle.mockReturnValue(executor);
-      return settleFromRail(descriptor, { demosRpc: "https://demos.example", demosSecret: "test-secret" });
+      return settleFromRail(descriptor, {
+        demosRpc: "https://demos.example",
+        demosSecret: "test-secret",
+        payDem: { settlementStore: testStore },
+      });
     };
     const unused = async (): Promise<never> => { throw new Error("unused"); };
 
@@ -721,6 +718,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       fetchImpl: firstFetch,
       x402FetchMode: "insecure-test",
       rpcUrl: "https://rpc.example",
+      settlementStore: testStore,
     };
 
     const pending = settleFromRail(descriptor, options);
@@ -756,6 +754,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       fetchImpl,
       x402FetchMode: "insecure-test",
       rpcUrl: "https://rpc.example",
+      settlementStore: testStore,
     })).resolves.toEqual(expect.any(Function));
     const captured = mocks.createX402Rail.mock.calls[0]![0];
     expect(captured.transportPolicy).toEqual({ mode: "insecure-test" });
@@ -789,6 +788,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const options: RailDispatchOptions = {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
+      payDem: { settlementStore: testStore },
       availabilityPolicy: {
         environment: "production",
         authorize: firstAuthorize,
@@ -815,6 +815,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const dispatched = await settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
+      payDem: { settlementStore: testStore },
       payment: { phaseIndex: 4 },
     });
 
@@ -856,6 +857,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       await expect(settleFromRail(descriptor, {
         demosRpc: "https://demos.example",
         demosSecret: "test-secret",
+        payDem: { settlementStore: testStore },
         availabilityPolicy: { environment: "production", authorize },
       })).resolves.toEqual(expect.any(Function));
       expect(authorize).toHaveBeenCalledWith({
@@ -894,6 +896,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     await expect(settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
+      payDem: { settlementStore: testStore },
       availabilityPolicy: {
         environment: "non-production",
         authorize: async () => true,
@@ -909,6 +912,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       options: {
         demosRpc: "https://demos.example",
         demosSecret: "test-secret",
+        payDem: { settlementStore: testStore },
         payment: { phaseIndex: 4 },
       },
       create: mocks.createPayDemRail,
@@ -921,6 +925,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       options: {
         evmPrivateKey: "0x" + "11".repeat(32),
         rpcUrl: "https://rpc.example",
+        settlementStore: testStore,
         payment: {
           url: "https://seller.example/pay",
           network: "eip155:84532",
@@ -937,6 +942,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       options: {
         evmPrivateKey: "0x" + "11".repeat(32),
         rpcUrl: "https://rpc.example",
+        settlementStore: testStore,
         payment: {
           network: "eip155:84532",
           recipient: "0x2222222222222222222222222222222222222222",
@@ -987,6 +993,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const dispatched = await settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
+      payDem: { settlementStore: testStore },
       payment: { phaseIndex: 4 },
     });
 
