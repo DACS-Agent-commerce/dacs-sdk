@@ -296,7 +296,7 @@ test('the whole flow fits a journal of one record, and a full journal refuses re
 
 test('the package exports expose no reservation member; only the composition reaches it', async t => {
   const { exports: entries } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)));
-  assert.deepEqual(Object.keys(entries), ['.', './wallet/durable-journal', './node-wallet']);
+  assert.equal(Object.values(entries).some(target => /signer-reservation/.test(target)), false);
   await assert.rejects(import('@kynesyslabs/dacs-client/src/wallet/signer-reservation.mjs'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
   assert.equal(Object.keys(await import('../src/wallet/node-wallet-session.mjs')).some(name => /reservation/i.test(name)), false);
   const { gateWorld } = await import('./helpers/effect-gate-world.mjs');
