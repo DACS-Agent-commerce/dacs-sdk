@@ -480,3 +480,86 @@ describe("explicit legacy Listing read compatibility", () => {
     expect(isListingDraft(legacy)).toBe(false);
   });
 });
+
+const STRING_LENGTH = JSON.parse(
+  readFileSync(
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../fixtures/standard-next/listing-string-length-v0.1.json",
+    ),
+    "utf8",
+  ),
+) as {
+  vectors: Array<{
+    name: string;
+    field: "displayName" | "title" | "description" | "tag";
+    limit: number;
+    expected: "pass" | "fail";
+    value: string;
+  }>;
+};
+
+const withListingText = (
+  listing: Listing,
+  field: (typeof STRING_LENGTH.vectors)[number]["field"],
+  value: string,
+): Listing => {
+  if (field === "displayName") listing.seller.displayName = value;
+  else if (field === "title") listing.offering.title = value;
+  else if (field === "description") listing.offering.description = value;
+  else listing.offering.tags = [value];
+  return listing;
+};
+
+describe("DACS-1 §6.3.4 Listing text bounds count NFC scalar values", () => {
+  it("replays every bounded field of the Standard vectors", () => {
+    expect(STRING_LENGTH.vectors).toHaveLength(13);
+    expect(new Set(STRING_LENGTH.vectors.map((v) => v.field))).toEqual(
+      new Set(["displayName", "title", "description", "tag"]),
+    );
+  });
+
+  for (const vector of STRING_LENGTH.vectors) {
+    it(`${vector.expected === "pass" ? "admits" : "rejects"} ${vector.name}`, () => {
+      const listing = withListingText(fixture(), vector.field, vector.value);
+      expect(isListing(listing)).toBe(vector.expected === "pass");
+      const draft: Record<string, unknown> = { ...listing };
+      delete draft.signature;
+      expect(isListingDraft(draft)).toBe(vector.expected === "pass");
+    });
+  }
+
+  // Not Standard vectors. The Standard's cases separate the NFC scalar count from a
+  // UTF-16 count and from a pre-NFC count; these separate it from a grapheme-cluster
+  // count. Each sequence is one visible character but several scalar values, is
+  // already NFC, and (for the last two pairs) has the same UTF-16 length as its
+  // scalar count, so only a grapheme-based count would admit the over-bound case.
+  const SCALARS_NOT_GRAPHEMES: Array<[string, string, boolean]> = [
+    ["66 ZWJ emoji sequences (198 scalars)", "\u{1F469}\u200D\u{1F4BB}".repeat(66), true],
+    ["67 ZWJ emoji sequences (201 scalars)", "\u{1F469}\u200D\u{1F4BB}".repeat(67), false],
+    ["100 non-composing accents (200 scalars)", "x\u0301".repeat(100), true],
+    ["101 non-composing accents (202 scalars)", "x\u0301".repeat(101), false],
+    ["100 variation-selector pairs (200 scalars)", "\u00A9\uFE0F".repeat(100), true],
+    ["101 variation-selector pairs (202 scalars)", "\u00A9\uFE0F".repeat(101), false],
+  ];
+  for (const [name, title, expected] of SCALARS_NOT_GRAPHEMES) {
+    it(`counts scalar values, not graphemes: ${name}`, () => {
+      expect(isListing(withListingText(fixture(), "title", title))).toBe(expected);
+    });
+  }
+
+  it("gives canonically equivalent titles the same verdict without mutating the input", () => {
+    const decomposed = "e\u0301".repeat(200);
+    const precomposed = "\u00E9".repeat(200);
+    const a = withListingText(fixture(), "title", decomposed);
+    const b = withListingText(fixture(), "title", precomposed);
+    expect(isListing(a)).toBe(true);
+    expect(isListing(b)).toBe(true);
+    expect(a.offering.title).toBe(decomposed);
+    expect(isListing(withListingText(fixture(), "title", decomposed + "x"))).toBe(false);
+  });
+
+  it("still refuses an unpaired surrogate in a signed envelope", () => {
+    expect(isListingEnvelope(withListingText(fixture(), "title", "\uD800"))).toBe(false);
+  });
+});

@@ -10,7 +10,8 @@ import DatabaseSync from 'better-sqlite3';
 import {canonicalize,identityBundleHash,sha256Hex} from '@kynesyslabs/dacs';
 const {createSellerHttpHandler}=await import('../src/dacs/seller-http.mjs');
 const {createSellerContextRoute,SELLER_CONTEXT_LIMITS}=await import('../src/dacs/seller-context-route.mjs');
-const {createSellerTransportStore,createSellerTransportServerAuth,createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.mjs');
+const {createSellerTransportServerAuth,createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.mjs');
+const {createSellerTransportStore}=await import('./helpers/bound-transport-store.mjs');
 import {JOBS,T,key,bundleFor,exchange,presentContext,world} from './helpers/d5-http-fixture.mjs';
 
 test('transport job capacity is independent of live nonce capacity, with completed jobs retained', async t => {
