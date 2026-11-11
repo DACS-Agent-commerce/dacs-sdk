@@ -77,9 +77,8 @@ import {
   type SessionResult,
   type SessionTerms,
   type SessionVetRequest,
-  type SettleRequest,
-  type SettleResult,
 } from "./runSessionCore.js";
+import type { SettleRequest, SettleResult } from "../rails/settlementTypes.js";
 import {
   validateListingArtifact,
   type ListingValidationDeps,
