@@ -258,6 +258,20 @@ test('a WF record selected by its full commit hash may carry a fix(client) subje
  r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/invalid delta fix\(client\): TEST published fix without a delta id/);
 });
 
+// The hash selects the commit, but a listed delta other than the exempt one keeps the subject prefix rule.
+test('a hashed record whose subject has neither a delta nor a fix(client) prefix is refused',t=>{
+ const dir=scratch(t),git=scratchGit(dir);useThisChecker(dir);
+ const subject='TEST source change without a prefix',record='delta(client): WF TEST record the unprefixed change by its hash';
+ appendFileSync(join(dir,moved),'\n// TEST unprefixed change\n');git('add','--',moved);git('commit','-qm',subject);
+ const sha=git('rev-parse','HEAD'),ledgerFile=join(dir,control[1]),inventoryFile=join(dir,control[0]);
+ const data=JSON.parse(readFileSync(ledgerFile,'utf8')),rows=JSON.parse(readFileSync(inventoryFile,'utf8'));
+ data.changes.push({delta:'WF',sha,subject,files:[{path:moved,before:git('rev-parse',`${sha}^:${moved}`),after:git('rev-parse',`${sha}:${moved}`)}]});
+ rows.push({sha,subject,files:[moved]},{sha:null,subject:record,files:[...control].sort()});
+ writeFileSync(ledgerFile,JSON.stringify(data));writeFileSync(inventoryFile,JSON.stringify(rows,null,2)+'\n');
+ execFileSync(process.execPath,['packages/dacs-client/scripts/delta-map.mjs'],{cwd:dir});git('add','--',...control);git('commit','-qm',record);
+ const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/invalid delta TEST source change without a prefix/);
+});
+
 // Each fault edits only the PR's own records, in a scratch clone of the checked head.
 const LEDGER_FAULTS=[
  {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,
