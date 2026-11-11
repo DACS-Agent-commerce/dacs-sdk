@@ -179,6 +179,20 @@ test('read rejects eb_history_unavailable for a key under the artifact that is n
   await assert.rejects(history.append({ lane: LANE, artifactHash: ARTIFACT, passId: 'pass-1' }), TypeError, 'a record without a state is refused');
 });
 
+test('a lane or artifact hash that is not a string, even an array holding a valid hash, is refused with TypeError on append and read and writes nothing', async (t) => {
+  const { journal } = tempJournal(t);
+  const history = createEffectHistory({ journal });
+  for (const artifactHash of [[ARTIFACT], { toString: () => ARTIFACT }, new String(ARTIFACT)]) {
+    await assert.rejects(history.append({ lane: LANE, artifactHash, passId: 'pass-1', state: 'signed' }), TypeError);
+    await assert.rejects(history.read({ lane: LANE, artifactHash }), TypeError);
+  }
+  for (const lane of [[LANE], new String(LANE)]) {
+    await assert.rejects(history.append({ lane, artifactHash: ARTIFACT, passId: 'pass-1', state: 'signed' }), TypeError);
+    await assert.rejects(history.read({ lane, artifactHash: ARTIFACT }), TypeError);
+  }
+  assert.deepEqual(await journal.entries(), []);
+});
+
 test('a history append committed before its lane owner was killed is kept, the lane is reclaimed only from the dead holder, and the same record is existing after restart', async (t) => {
   const { path, journal, reopen } = tempJournal(t);
   const laneRecord = { stage: 'broadcast-started', hash: ARTIFACT };

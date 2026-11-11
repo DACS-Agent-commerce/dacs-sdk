@@ -16,7 +16,7 @@ const historyPrefix = (lane, artifactHash) => `${lanePrefix(lane)}${artifactHash
 const historyKey = ({ lane, artifactHash, passId, state }) => `${historyPrefix(lane, artifactHash)}${encodeURIComponent(passId)}/${encodeURIComponent(state)}`;
 const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isText = (value) => typeof value === 'string' && value !== '';
-const isArtifact = ({ lane, artifactHash } = {}) => isText(lane) && ARTIFACT_HASH.test(artifactHash);
+const isArtifact = ({ lane, artifactHash } = {}) => isText(lane) && typeof artifactHash === 'string' && ARTIFACT_HASH.test(artifactHash);
 const unavailable = (message, options) => new OperationError('eb_history_unavailable', `the dispatch history is unavailable: ${message}`, undefined, options);
 const persistFailed = (cause) => new OperationError('eb_persist_failed', 'the dispatch record was not persisted; nothing was transmitted', undefined, { cause });
 

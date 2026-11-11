@@ -7,9 +7,8 @@ import { createFsSessionStore } from "../../src/agent/sessionStoreFs.js";
 import {
   runSessionCore,
   type SessionDeps,
-  type SettleRequest,
-  type SettleResult,
 } from "../../src/agent/runSessionCore.js";
+import type { SettleRequest, SettleResult } from "../../src/rails/settlementTypes.js";
 import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { IdentityBundle } from "../../src/artifacts/types.js";
