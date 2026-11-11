@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "5047173f1f9c5b66a60bdce30d1a7981cb59bc03"
+        "blob": "d6d6aa365a2784b741fe29a9c78fcf5c2adb7ada"
       },
       "DELTA-LEDGER.json": {
-        "blob": "04f44dfaf273778ba46fdc7c0814137e6dfe0bf8"
+        "blob": "23d862f4ccc8ad3d5d6a56d1d02c3ac551be10c6"
       },
       "DELTA-MAP.md": {
-        "blob": "3a574411caa5eadc7b13468b08c4bf6c17997be9"
+        "blob": "6178b4adde9c5b027ea5e55e39ba5c0ac8cd5f10"
       },
       "DELTA-NOTES.md": {
         "blob": "480fe9ab41bea06f958ac2fa57b176091dc3b069"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "950c1f8363ff9efda636bf3880e0fc5270dd4290"
+        "blob": "aa99d8c0f0588c54b6f16927a79e29a68bb81f20"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "05aecddde57e93c2e7e90572e5757fef722946e6"
+        "blob": "f1a4fbce6428436de99852fc2555c2f5aacf17ac"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1301,7 +1301,7 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e"
+        "blob": "53cb946760c16418ef295626bbce65c9c1042987"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
@@ -1817,7 +1817,7 @@
         "blob": "8a0d5f40a09ba49a79011580142ef137bc9db113"
       },
       "test/passive-observation.test.mjs": {
-        "blob": "cf4497afe1bd896a8d18a55993bb8b38f4896c16"
+        "blob": "2a6f47ebfb1788974642eb560643ceeaad52b2bf"
       },
       "test/portal-capability.test.mjs": {
         "blob": "073700c9a849a4bfc092cb5913498364fd622f0d"

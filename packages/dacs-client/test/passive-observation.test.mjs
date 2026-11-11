@@ -396,21 +396,53 @@ async function abortAt(t, point) {
 for (const point of ['admission', 'lock', 'fence', 'binding', 'getTransactionStatus', 'getTxByHash', 'block', 'body']) {
   test(`passive abort at ${point} rejects with the caller reason and releases the fence once`, t => abortAt(t, point));
 }
-test('a stalled connection fence past the passive deadline runs no read and rejects with timeout once released', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  let stall = false, reached, release;
-  const arrived = new Promise(resolve => { reached = resolve; }), gate = new Promise(resolve => { release = resolve; });
-  const w = await memoryWorld(t, { onFence: () => { if (stall) { reached(); return gate; } } });
-  const before = await w.journal.entries(); stall = true;
+// A passive read queued behind the source-read lock or the connection fence,
+// which another holder keeps until free() lets go (at the latest before close).
+async function readBehind(t, wait, signal) {
+  let stalled = false, reached, letGo;
+  const arrived = new Promise(resolve => { reached = resolve; }), held = new Promise(resolve => { letGo = resolve; });
+  t.after(() => letGo());
+  const w = await memoryWorld(t, { onFence: () => { if (stalled) { stalled = false; reached(); return held; } } });
+  const before = await w.journal.entries();
+  let holder;
+  if (wait === 'source-read lock') holder = w.journal.withWalletLock(`devnet/source-read/${w.source.transportBinding.bindingId}`, () => { reached(); return held; });
+  else stalled = true;
   let outcome = 'pending';
-  const read = passive(w).then(value => { outcome = { value }; }, error => { outcome = { error }; });
-  await arrived; t.mock.timers.tick(10_000); await flush();
-  assert.equal(outcome, 'pending');
-  release(); await read;
-  assert.equal(outcome.error?.kind, 'timeout'); assert.deepEqual(w.calls, []);
-  assert.deepEqual(w.fences, { acquired: 1, released: 1 });
-  await assertUnchanged(w, before);
-  await w.source.close();
+  const read = passive(w, HASH, { signal }).then(value => { outcome = { value }; }, error => { outcome = { error }; });
+  await arrived; await flush();
+  return { w, before, outcome: () => outcome, free: async () => { letGo(); await holder; await read; await flush(); } };
+}
+for (const wait of ['source-read lock', 'connection fence']) {
+  test(`a passive read waiting for the ${wait} rejects with timeout at the deadline`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { w, before, outcome, free } = await readBehind(t, wait);
+    t.mock.timers.tick(9_999); await flush();
+    assert.equal(outcome(), 'pending');
+    t.mock.timers.tick(1); await flush();
+    assert.equal(outcome().error?.kind, 'timeout');
+    await free();
+    assert.deepEqual(w.calls, []);
+    await assertUnchanged(w, before);
+  });
+  test(`a ${wait} granted after the caller aborted is released unused and the next reader gets it`, async t => {
+    const controller = new AbortController(), reason = new Error('TEST-stop');
+    const { w, before, outcome, free } = await readBehind(t, wait, controller.signal);
+    controller.abort(reason); await flush();
+    assert.equal(outcome().error, reason);
+    await free();
+    assert.deepEqual(w.calls, []);
+    assert.deepEqual(w.fences, wait === 'connection fence' ? { acquired: 1, released: 1 } : { acquired: 0, released: 0 });
+    await assertUnchanged(w, before);
+    const next = await settledWithin(passive(w), 500);
+    assert.equal(next.value?.sourceDisposition, 'included');
+  });
+}
+test('close settles a passive read that is still waiting for the source-read lock', async t => {
+  const { w, outcome, free } = await readBehind(t, 'source-read lock');
+  assert.notEqual(await settledWithin(w.source.close()), 'stalled');
+  assert.equal(outcome().error?.code, 'transport_closed');
+  await free();
+  assert.deepEqual(w.calls, []); assert.deepEqual(w.fences, { acquired: 0, released: 0 });
 });
 test('close aborts an in-flight passive read and waits for it', async t => {
   let reached; const arrived = new Promise(resolve => { reached = resolve; });

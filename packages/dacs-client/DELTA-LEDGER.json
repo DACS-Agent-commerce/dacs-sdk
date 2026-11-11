@@ -6612,6 +6612,22 @@
           "after": "6841b7b79dece95e51c8b46abf549d0370fb4789"
         }
       ]
+    },
+    {
+      "delta": "D38",
+      "subject": "delta(client): D38 end passive lock and fence waits at the deadline",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "53cb946760c16418ef295626bbce65c9c1042987"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "cf4497afe1bd896a8d18a55993bb8b38f4896c16",
+          "after": "2a6f47ebfb1788974642eb560643ceeaad52b2bf"
+        }
+      ]
     }
   ]
 }
