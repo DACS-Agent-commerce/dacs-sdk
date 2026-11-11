@@ -414,6 +414,47 @@ describe("Demos write outcome from recorded testnet answers", () => {
     await lease.release();
   });
 
+  // The node answers a failure of its own lookup with
+  // `{result: 500, response: {error: "INTERNAL_ERROR"}}`; demosdk passes back
+  // only `response` for a node call.
+  const nodeReadError = { error: "INTERNAL_ERROR" };
+
+  it("the node's read-error status beside a confirmed row ends confirmed", async () => {
+    const { write, rounds } = pending;
+    const { adapter, broadcast } = scriptedAdapter({
+      reads: [{ getTransactionStatus: nodeReadError, getTxByHash: rounds.C.getTxByHash }],
+      block: blockListing(74_920, write.hash),
+      accountNonce: rounds.C.getAddressNonce,
+    });
+    const lease = await journalledTransfer(write);
+
+    expect(await reconcile(adapter, lease)).toBeUndefined();
+
+    expect(stages(lease)).toEqual(["canonical-confirmed"]);
+    expect(broadcast).not.toHaveBeenCalled();
+    await lease.release();
+  });
+
+  it("a pending write, then the node's read-error status, then a confirmed row ends confirmed", async () => {
+    const { write, rounds } = pending;
+    const { adapter, broadcast } = scriptedAdapter({
+      reads: [
+        rounds.B1,
+        { getTransactionStatus: nodeReadError, getTxByHash: rounds.B1.getTxByHash },
+        rounds.C,
+      ],
+      block: blockListing(74_920, write.hash),
+      accountNonce: rounds.C.getAddressNonce,
+    });
+    const lease = await journalledTransfer(write);
+
+    expect(await reconcile(adapter, lease)).toBeUndefined();
+
+    expect(stages(lease)).toEqual(["canonical-confirmed"]);
+    expect(broadcast).not.toHaveBeenCalled();
+    await lease.release();
+  });
+
   it("a transport failure then a failed row ends failed", async () => {
     const { writes, rounds } = sameBlock;
     const { adapter, broadcast } = scriptedAdapter({

@@ -418,6 +418,17 @@ function isDemosTransportFailure(value: unknown): boolean {
   return isRecord(value) && typeof value.result === "number" && value.result !== 200;
 }
 
+/**
+ * The node answers a failure of its own lookup with
+ * `{result: 500, response: {error: "INTERNAL_ERROR"}}`, and demosdk passes back
+ * only `response` for a node call. Like a transport failure, that answer
+ * carries no information about the write. Other `error` answers (a bad hash,
+ * an unknown message) say the request itself is wrong and stay unrecognised.
+ */
+function isDemosNodeReadError(value: unknown): boolean {
+  return isRecord(value) && value.error === "INTERNAL_ERROR" && !("state" in value);
+}
+
 /** A `getTransactionStatus` answer, as demosdk returns it, read strictly. */
 type DemosStatusAnswer =
   | { state: "pending" | "unknown" | "unrecognised" | "transport-failure" }
@@ -427,11 +438,13 @@ type DemosStatusAnswer =
 /**
  * The node answers `{state:"pending"}`, `{state:"unknown"}` (never seen),
  * `{state:"included", blockNumber}` or `{state:"failed", ...}`. The SDK's
- * transport-failure answer is `transport-failure`; anything else is
- * unrecognised.
+ * transport-failure answer and the node's own read-error answer are
+ * `transport-failure`; anything else is unrecognised.
  */
 function demosStatusAnswer(value: unknown): DemosStatusAnswer {
-  if (isDemosTransportFailure(value)) return { state: "transport-failure" };
+  if (isDemosTransportFailure(value) || isDemosNodeReadError(value)) {
+    return { state: "transport-failure" };
+  }
   if (!isRecord(value)) return { state: "unrecognised" };
   const blockNumber = demosNonNegativeInteger(value.blockNumber);
   switch (value.state) {
