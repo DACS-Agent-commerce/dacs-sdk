@@ -1205,6 +1205,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/effect-history.test.mjs:1` | d7894853a7aa7c21b1b993b37d74642856ce1e4c |
 | WF | delta(client): WF record the dispatch history blob merged with the string artifact hash fix | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/effect-history.mjs:1` | d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53 |
+| WF | delta(client): WF record the dispatch history blob merged with the lower branch fixes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | c9067c8d3faf5b01d1f2f174280d81877786e2d5 |
 | WF | delta(client): WF name the packed contents test without a plan abbreviation | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | e159d0cb9ca487ba30500a5a3da40ea5bfab4b32 |
 
@@ -3846,6 +3848,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/HOLD.json:1` |
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

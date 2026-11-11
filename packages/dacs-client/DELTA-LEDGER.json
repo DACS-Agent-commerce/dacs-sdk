@@ -7001,6 +7001,17 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the dispatch history blob merged with the lower branch fixes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "c9067c8d3faf5b01d1f2f174280d81877786e2d5",
+          "after": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF name the packed contents test without a plan abbreviation",
       "files": [
         {
