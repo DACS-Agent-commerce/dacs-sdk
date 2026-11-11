@@ -964,16 +964,6 @@ export type FixedPriceOfflineTrack = FixedPriceX402Track;
 export type FixedPriceOfflineTrackState = FixedPriceX402TrackState;
 export type FixedPriceOfflineEffectFence = FixedPriceX402EffectFence;
 
-const TRACKS = Object.freeze([
-  "agreement",
-  "payment",
-  "payment-evidence",
-  "delivery",
-  "buyer-received",
-  "delivery-evidence",
-  "audit",
-] as const satisfies readonly FixedPriceX402Track[]);
-
 const TRACKS_BY_ROLE = Object.freeze({
   buyer: Object.freeze([
     "agreement",
