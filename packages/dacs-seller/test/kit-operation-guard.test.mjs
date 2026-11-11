@@ -34,6 +34,7 @@ const GUARD_SITES = {
   'src/dacs/seller-reservation-accounting.mjs': ['reserveAccounted'],
   'src/dacs/seller-wire-client-auth.mjs': ['createSellerWireClientAuth'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
+  'src/dacs/effect-boundary.mjs': ['effectBoundary'],
   'src/dacs/payment-evidence-wallet-journal.mjs': ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'],
   'src/dacs/native-payment-evidence-consumer.mjs': ['createNativePaymentEvidenceConsumer'],
   'src/dacs/native-dem-delivery-consumer.mjs': ['submitNativeDemDelivery'],

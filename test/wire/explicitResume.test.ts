@@ -227,3 +227,64 @@ it("a used proof is refused again when another verification with a later clock c
   expect(await wire.verifyExplicitCreateResume(await signWith(f, other), { ...f.scope(), ledger, time: used.expiresAt + 1 })).toEqual(other);
   await refused(() => wire.verifyExplicitCreateResume(usedHeader, { ...f.scope(), ledger, time: used.expiresAt - 5 }), "explicit_resume_used");
 });
+
+it("a scope missing a member is refused and leaves the proof unused", async () => {
+  const f = await fixture();
+  const signed = await signWith(f, f.payload);
+  const ledger = wire.createExplicitResumeLedger();
+  const complete = { ...f.scope(), ledger };
+  const incomplete: Array<[string, unknown]> = [
+    ["binding", { ...complete, binding: undefined }],
+    ["request", { ...complete, request: undefined }],
+    ["time", { ...complete, time: undefined }],
+    ["ledger", { ...complete, ledger: undefined }],
+    ["ledger claim", { ...complete, ledger: {} }],
+  ];
+  for (const [, scope] of incomplete) await refused(() => wire.verifyExplicitCreateResume(signed, scope as wire.ExplicitResumeScope), "wire_input_invalid");
+  expect(await wire.verifyExplicitCreateResume(signed, complete)).toEqual(f.payload);
+});
+
+it("a scope that omits delegation is refused and leaves the proof unused, while null verifies", async () => {
+  const f = await fixture();
+  const signed = await signWith(f, f.payload);
+  const ledger = wire.createExplicitResumeLedger();
+  const { delegation: _delegation, ...omitted } = { ...f.scope(), ledger };
+  await refused(() => wire.verifyExplicitCreateResume(signed, omitted as wire.ExplicitResumeScope), "wire_input_invalid");
+  expect(await wire.verifyExplicitCreateResume(signed, { ...omitted, delegation: null })).toEqual(f.payload);
+});
+
+it("a header naming another peer profile is refused and leaves the proof unused", async () => {
+  const f = await fixture();
+  const ledger = wire.createExplicitResumeLedger();
+  const otherProfile = { ...f.payload, profile: { ...f.payload.profile, pinVersion: `${f.payload.profile.pinVersion}-other` } };
+  await refused(() => wire.verifyExplicitCreateResume(header(otherProfile), { ...f.scope(), ledger }), "tp1_profile_mismatch");
+  expect(await wire.verifyExplicitCreateResume(header(f.payload), { ...f.scope(), ledger })).toEqual(f.payload);
+});
+
+it("a delegation that does not cover the request is refused and leaves the proof unused", async () => {
+  const f = await fixture();
+  const signed = await signWith(f, f.payload, f.sessionSigner);
+  const ledger = wire.createExplicitResumeLedger();
+  const differs: Array<[string, Partial<wire.SellerSessionDelegationPayload>]> = [
+    ["buyer", { buyer: SELLER }],
+    ["seller", { seller: BUYER }],
+    ["job", { jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F" }],
+    ["listing pin", { listingPin: { ...f.delegation.listingPin, version: 2 } }],
+  ];
+  for (const [, change] of differs) {
+    await refused(() => wire.verifyExplicitCreateResume(signed, { ...f.scope(), ledger, delegation: { ...f.delegation, ...change } }), "explicit_resume_mismatch");
+  }
+  expect(await wire.verifyExplicitCreateResume(signed, { ...f.scope(), ledger, delegation: f.delegation })).toEqual(f.payload);
+});
+
+it("two verifications of one proof at once: exactly one succeeds and the other is refused as used", async () => {
+  const f = await fixture();
+  const signed = await signWith(f, f.payload);
+  const scope = { ...f.scope(), ledger: wire.createExplicitResumeLedger() };
+  const results = await Promise.allSettled([wire.verifyExplicitCreateResume(signed, scope), wire.verifyExplicitCreateResume(signed, scope)]);
+  const verified = results.filter((r): r is PromiseFulfilledResult<wire.ExplicitCreateResumePayload> => r.status === "fulfilled");
+  const refusedAsUsed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+  expect(verified.map((r) => r.value)).toEqual([f.payload]);
+  expect(refusedAsUsed).toHaveLength(1);
+  expect(refusedAsUsed[0]?.reason).toMatchObject({ code: "explicit_resume_used" });
+});
