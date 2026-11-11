@@ -128,6 +128,10 @@ export interface EnvelopeSigningContext extends SigningContext {
  * header all come from those copies. A delegation is verified for the
  * request's buyer, seller, Listing and job at `now` before the signer is called
  * (expiry is not checked here: the receiver decides which routes an expired one serves).
+ * The signature the signer returns is verified under the key the receiver will
+ * use (the delegated session key, else the buyer's key for a request or the
+ * seller's for a response); a signature that does not verify throws
+ * `peer_signature_invalid` and no header is returned.
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
   const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing, continuation } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing", "continuation"]) as EnvelopeSigningContext;
@@ -148,7 +152,7 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   if (encode("A".repeat(86)).length > DACS_SELLER_HTTP_LIMITS.maxHeaderLength) fail("peer_envelope_too_large", 500);
   // A delegation is verified against this request's scope and clock before a request signature is spent on it. Expiry is the receiver's call: it
   // reads back an operation already started under a lapsed delegation, and refuses every effect route.
-  if (delegation !== null) await verifySellerSessionDelegation(Buffer.from(canonicalize(delegation)), {
+  const verifiedDelegation = delegation === null ? null : await verifySellerSessionDelegation(Buffer.from(canonicalize(delegation)), {
     binding, local, buyer: payload.buyer as string, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin, jobId: payload.jobId as string, time: now,
     allowExpired: true,
   });
@@ -157,7 +161,11 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
     publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment, agreement, signedListing, continuation,
   });
   await assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
-  const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes)).toString("base64url");
+  const signatureBytes = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes));
+  // The receiver verifies under the delegated session key, or else the key of the actor the payload names.
+  const verifyingKey = verifiedDelegation?.sessionPublicKey ?? claimKey((payload.kind === "request" ? payload.buyer : payload.seller) as string);
+  if (!verifyEd25519(signingBytes, signatureBytes, verifyingKey)) fail("peer_signature_invalid", 500);
+  const signature = signatureBytes.toString("base64url");
   await assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   return Buffer.from(canonicalize({ payload, signature, ...(delegation ? { delegation } : {}) })).toString("base64url");
 }
