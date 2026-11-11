@@ -136,8 +136,11 @@ export interface WalletSpendStateStore {
   /** Optional authoritative store clock (for example PostgreSQL server time). */
   serverNow?(): Promise<number>;
   /**
-   * Explicit durable-lineage selector. Stores that omit it retain the
-   * historical wallet/chain/policy scope so existing state stays addressable.
+   * Explicit durable-lineage selector. Stores that omit it use the
+   * wallet/chain/policy-id scope with the wallet in its canonical form (`0x`
+   * and lowercase hex), so every spelling of one wallet addresses the same
+   * state. State written by an earlier SDK under another spelling of the
+   * wallet is not found under that scope.
    */
   lineageScope?(policy: Readonly<WalletSpendPolicyV1>): string;
   /** Optional authenticated read path used by status/doctor without a write. */
@@ -1166,8 +1169,9 @@ export function createWalletSpendAuthorityV1(
         "lineageScope",
         "wallet spend state lineage selector",
       );
-  // Stores without an explicit selector retain the historical scope. This is
-  // essential for existing filesystem/custom journals to remain authoritative.
+  // Stores without an explicit selector use the wallet/chain/policy-id scope
+  // with the canonical wallet, so every spelling of one wallet shares it. A
+  // journal written under another spelling of the wallet is not found here.
   const scope = lineageScope === undefined
     ? sha256Hex(`dacs-wallet-spend-scope:v1:${canonicalize({
         wallet: policy.wallet,
