@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { parse } from "yaml";
 
-const workflow = parse(readFileSync(new URL("../../.github/workflows/package-artifact.yml", import.meta.url), "utf8"));
+const workflowsDirectory = new URL("../../.github/workflows/", import.meta.url);
+const scriptsDirectory = new URL("../../scripts/", import.meta.url);
+const workflow = parse(readFileSync(new URL("package-artifact.yml", workflowsDirectory), "utf8"));
 const ci = parse(readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"));
 const release = workflow.jobs["release-packages"];
 const step = run => {
@@ -51,7 +53,7 @@ test("main, pull requests and merge queues prepare on both pinned Node versions"
   assert.deepEqual(release.strategy.matrix["node-version"], ["22.22.2", "24.15.0"]);
   const setup = release.steps.find(step => step.uses?.startsWith("actions/setup-node@"));
   assert.equal(setup.with["node-version"], "${{ matrix.node-version }}");
-  assert.equal(step("npm install --global --ignore-scripts npm@11.19.0").if, undefined);
+  assert.equal(release.steps.find(step => step.name === "Pin release npm client").if, undefined);
   assert.equal(step("npm ci --ignore-scripts --no-audit --no-fund").id, "install");
   assert.equal(step("npm ci --ignore-scripts --no-audit --no-fund").if, undefined);
   assert.equal(step("npm run release:test").if, undefined);
@@ -79,4 +81,34 @@ test("failed manual checks retain evidence and still prepare unless cancelled", 
   assert.ok(!preparation["continue-on-error"]);
   assert.ok(release.steps.indexOf(strict) < release.steps.indexOf(upload));
   assert.ok(release.steps.indexOf(upload) < release.steps.indexOf(preparation));
+});
+
+const workflows = readdirSync(workflowsDirectory).filter(name => name.endsWith(".yml"))
+  .map(name => ({ name, jobs: parse(readFileSync(new URL(name, workflowsDirectory), "utf8")).jobs }));
+const pinsNpm = line => /\bnpm (?:install|i)\b/.test(line) && /\s(?:-g|--global)\b/.test(line) && /\snpm@/.test(line);
+
+// A global install of npm over the npm that is running it fails midway with
+// the npm bundled in Node 22.22.2, so every pin must install to its own prefix.
+test("no workflow or shell script installs npm over the running npm", () => {
+  const sources = [
+    ...workflows.flatMap(({ name, jobs }) => Object.values(jobs).flatMap(job => (job.steps ?? []).map(step => [name, step.run ?? ""]))),
+    ...readdirSync(scriptsDirectory).filter(name => name.endsWith(".sh"))
+      .map(name => [`scripts/${name}`, readFileSync(new URL(name, scriptsDirectory), "utf8")]),
+  ];
+  const pins = sources.flatMap(([name, text]) => text.split("\n").filter(pinsNpm).map(line => [name, line.trim()]));
+  assert.ok(pins.length >= 4);
+  for (const [name, line] of pins) assert.match(line, /\s--prefix\s/, `${name}: ${line}`);
+});
+
+test("every workflow job that pins npm checks the pinned version in the next step", () => {
+  let checked = 0;
+  for (const { name, jobs } of workflows) for (const [id, job] of Object.entries(jobs)) {
+    const steps = job.steps ?? [];
+    steps.forEach((step, index) => {
+      if (!(step.run ?? "").split("\n").some(pinsNpm)) return;
+      assert.match(steps[index + 1]?.run ?? "", /test "\$\(npm --version\)" = 11\.19\.0/, `${name} ${id}`);
+      checked += 1;
+    });
+  }
+  assert.equal(checked, 3);
 });
