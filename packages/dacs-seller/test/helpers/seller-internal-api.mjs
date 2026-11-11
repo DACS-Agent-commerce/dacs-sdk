@@ -5,4 +5,5 @@ import * as protocol from '../../src/dacs/purchase-protocol.mjs';
 import * as agent from '../../src/dacs/seller-agent.mjs';
 import { validateSellerListing } from '../../src/dacs/rail-authority.mjs';
 import { createOperatorBuyerAccess } from '../../src/devnet-demo/buyer-access.mjs';
-export const sellerApi={...transport,...listing,...protocol,...agent,validateListing:validateSellerListing,createOperatorBuyerAccess};
+import { createSellerTransportStore } from './bound-transport-store.mjs';
+export const sellerApi={...transport,...listing,...protocol,...agent,validateListing:validateSellerListing,createOperatorBuyerAccess,createSellerTransportStore};

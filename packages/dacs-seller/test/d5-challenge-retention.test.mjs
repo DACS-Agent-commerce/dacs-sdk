@@ -7,7 +7,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
-const { createSellerTransportClientAuth, createSellerTransportServerAuth, createSellerTransportStore, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
+const { createSellerTransportClientAuth, createSellerTransportServerAuth, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
+const { createSellerTransportStore } = await import('./helpers/bound-transport-store.mjs');
 const buyer = 'did:demos:agent:' + 'a'.repeat(64), seller = 'did:demos:agent:' + 'b'.repeat(64);
 const HOUR = 3600000;
 const jid = label => '0' + createHash('sha256').update(String(label)).digest('hex').slice(0,25).toUpperCase();
@@ -185,10 +186,13 @@ test('terminal job cleanup keeps unresolved effects and retention windows', t =>
   }
 });
 
+// Terminal-observation metadata (a closure and the release of an existing allocation) is counted apart from the work's own writes.
+const OBSERVATION_METADATA = /^\s*(INSERT OR IGNORE INTO kit_terminal_closures|UPDATE kit_allocations)/i;
 function noMutations(work) {
   const prepare = DatabaseSync.prototype.prepare, exec = DatabaseSync.prototype.exec, mutations = [];
-  DatabaseSync.prototype.prepare = function(sql) { if (/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)/i.test(sql)) mutations.push(sql); return prepare.call(this, sql); };
-  DatabaseSync.prototype.exec = function(sql) { if (/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)/i.test(sql)) mutations.push(sql); return exec.call(this, sql); };
+  const note = sql => { if (/^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)/i.test(sql) && !OBSERVATION_METADATA.test(sql)) mutations.push(sql); };
+  DatabaseSync.prototype.prepare = function(sql) { note(sql); return prepare.call(this, sql); };
+  DatabaseSync.prototype.exec = function(sql) { note(sql); return exec.call(this, sql); };
   try { work(); } finally { DatabaseSync.prototype.prepare = prepare; DatabaseSync.prototype.exec = exec; }
   assert.deepEqual(mutations, []);
 }
@@ -478,7 +482,8 @@ test('T18 context capacity uses indexed nonce lookups and stops after enough ter
     if (method === 'issue') issue('room');
     else if (method === 'reserve') assert.equal(w.store.reserve(context(w, 'room'), contextBody('room'), { admit: () => w.now() }).disposition, 'perform');
     else noMutations(() => assert.equal(w.store.classify(context(w, 'room'), contextBody('room'), { admit: () => w.now() }), 'start'));
-    assert.equal(calls.filter(job => oldJobs.has(job)).length, method === 'reserve' ? 0 : 1, 'stop after one active admission retires');
+    // The first run reads the port once; its closure then answers for that admission, so later runs read nothing.
+    assert.equal(calls.filter(job => oldJobs.has(job)).length, method === 'classify' ? 1 : 0, 'stop after one active admission retires');
     assert.equal(w.count('peer_context_admissions'), method === 'reserve' ? 10001 : 10000, 'retirement retains completed admission proofs');
   }
 });

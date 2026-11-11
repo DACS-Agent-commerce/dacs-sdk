@@ -11,7 +11,7 @@ import {seller,buyer,JOB,NOW} from './protocol-fixture.mjs';
 import {fixtureListing,fixtureIdentityBundle} from '../fixtures/listings.mjs';
 import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
-import {createSellerTransportStore} from '../../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportStore} from './bound-transport-store.mjs';
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import {createNativePaymentEvidenceConsumer} from '../../src/dacs/native-payment-evidence-consumer.mjs';
 // `ledger` is a function returning the challenge ledger the agent uses; by default one transport store lives as long as the fixture.

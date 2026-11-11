@@ -4,6 +4,7 @@ import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
+import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import assert from 'node:assert/strict';
 
@@ -14,7 +15,8 @@ const refusalCode = async (run) => { try { await run(); return null; } catch (er
 const directory = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-admission-guard-off-')));
 const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite') });
 const { db } = sellerStoreInternals(store);
-const admission = createContextAdmissionTransaction({ store, policy: { reserve: port, release: port }, effectEvidence: port, inspectContextOutcome: port,
+const capacity = createPurchaseCapacity({ store, now: port, sessionState: sellerStoreInternals(store).sessionState });
+const admission = createContextAdmissionTransaction({ store, capacity, policy: { reserve: port, release: port }, effectEvidence: port, inspectContextOutcome: port,
   completeWire: port, now: port, ready: port, deadlines: { policyMs: 10000 } });
 const changes = () => db.prepare('SELECT total_changes() AS n').get().n;
 const before = changes();

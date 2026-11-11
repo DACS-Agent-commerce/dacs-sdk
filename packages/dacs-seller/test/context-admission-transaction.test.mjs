@@ -41,9 +41,10 @@ const deferred = () => {
   return { promise, resolve };
 };
 const flush = () => new Promise(resolve => setImmediate(resolve));
-let createContextAdmissionTransaction, admissionTransactionInternals, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
+let createContextAdmissionTransaction, createPurchaseCapacity, admissionTransactionInternals, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
 try {
   ({ createContextAdmissionTransaction, admissionTransactionInternals } = await import('../src/dacs/seller-admission-transaction.mjs'));
+  ({ createPurchaseCapacity } = await import('../src/dacs/seller-purchase-capacity.mjs'));
   ({ createSellerTransportStore, sellerStoreInternals, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs'));
   if (typeof sellerStoreInternals !== 'function') throw new Error('sellerStoreInternals is not exported');
 } catch (error) { importFailure = error; }
@@ -79,17 +80,18 @@ function world(t, config = {}) {
     const outcomes = [...wire.ends.values()].filter(end => end !== null);
     return outcomes.length === 0 ? { state: 'none' } : { state: 'completed', binding: row(jobId).contextBinding, outcome: outcomes.at(-1) };
   };
-  let store, admission, internals;
+  let store, admission, internals, capacity;
   function reopen() {
     if (!control.killed) store?.close();
     control.killed = false;
     store = createSellerTransportStore({ path, generation: `test-generation-${++control.generation}`, now: () => control.clock, ready: () => control.ready,
       maxContextRecords: options.maxContextRecords, maxJobs: options.maxJobs, contextRecords: options.contextRecords, contextSessionState: options.contextSessionState, wireOperationView: options.wireOperationView, contextStartLimits: options.contextStartLimits });
     internals = sellerStoreInternals(store);
-    admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity: options.capacity ?? null,
+    capacity = createPurchaseCapacity({ store, now: () => control.clock, maxRecords: options.maxRecords ?? 10000, sessionState: internals.sessionState });
+    admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
       inspectContextOutcome: jobId => (control.inspect ? control.inspect(jobId) : publishedView(jobId)), completeWire: options.completeWire ?? doubleCompleteWire,
-      now: () => control.clock, ready: () => control.ready, deadlines: { policyMs: POLICY_MS } });
+      now: () => control.clock, ready: () => options.ready?.() ?? control.ready, deadlines: { policyMs: POLICY_MS } });
   }
   reopen();
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -144,7 +146,7 @@ function world(t, config = {}) {
     };
   }
   return { directory, holds, calls, wire, control, options, prepare, reserveWire, legacyStart, row, compensating, cut, kill, reopen, wireEnds: wire.ends, evidenceOf,
-    get store() { return store; }, get admission() { return admission; }, get internals() { return internals; }, get db() { return internals.db; },
+    get store() { return store; }, get admission() { return admission; }, get capacity() { return capacity; }, get internals() { return internals; }, get db() { return internals.db; },
     get policy() { return options.policy ?? defaultPolicy; }, changes: () => internals.db.prepare('SELECT total_changes() AS n').get().n };
 }
 // The live-begin registry is closure-private (the sweep of P09bb reads it from inside the module); the shipped module hands the same reader
@@ -345,7 +347,7 @@ test('admission-D2-refusal-table', async t => {
   const scenarios = [
     ['context_job_closed', 409, {}, async (w, p) => { await w.admission.begin(p.input); }, false],
     ['seller_not_ready', 503, {}, (w) => { w.control.ready = false; }, true],
-    ['seller_not_ready', 503, { capacity: { fitsNewPurchase: () => false, allocateWithin() {} } }, () => {}, true],
+    ['seller_not_ready', 503, { maxRecords: 67 }, () => {}, true],
     ['unpaid_start_limit', 429, { contextStartLimits: { maxStartsPerHour: 2, maxStartsPerBuyerPerHour: 5 } }, async (w) => { await w.admission.begin(w.prepare(0x22, OTHER).input); w.legacyStart(0x33, OTHER); }, true],
     ['buyer_unpaid_start_limit', 429, { contextStartLimits: { maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 2 } }, async (w) => { await w.admission.begin(w.prepare(0x22).input); w.legacyStart(0x33); }, true],
     ['context_challenge_attempt_invalid', 409, {}, (w, p) => { w.store.challenges.recordFailed(p.input.owner, p.input.nonce, 'validator_lost'); }, false],
@@ -391,13 +393,17 @@ test('admission-policy-append-lost-ack', async t => {
 });
 
 test('admission-D4-atomic-hook-cuts', async t => {
-  const order = [], capacity = { fitsNewPurchase: () => true, allocateWithin: purchase => { order.push('capacity'); assert.deepEqual(purchase, { jobId: purchase.jobId, buyer: BUYER, seller: SELLER, listingPin: PIN }); } };
-  const refused = world(t, { capacity }), p = refused.prepare(), db = refused.db;
+  // The purchase allocation is the first hook: it exists, with the exact parties, when the next hook runs, and rolls back with it.
+  const order = [], refused = world(t), p = refused.prepare(), db = refused.db;
   db.exec('CREATE TABLE test_acceptance (jobId TEXT PRIMARY KEY)');
-  refused.admission.addAcceptanceHook(input => { order.push('first'); db.prepare('INSERT INTO test_acceptance VALUES (?)').run(input.jobId); });
+  refused.admission.addAcceptanceHook(input => {
+    const held = refused.capacity.allocationWithin(input.jobId);
+    order.push('first'); assert.deepEqual({ buyer: held.buyer, seller: held.seller, listingPin: held.listingPin }, { buyer: BUYER, seller: SELLER, listingPin: PIN });
+    db.prepare('INSERT INTO test_acceptance VALUES (?)').run(input.jobId);
+  });
   refused.admission.addAcceptanceHook(() => { order.push('second'); throw Object.assign(new Error('hook-full'), { code: 'peer_store_capacity', status: 503 }); });
   await reject(refused.admission.begin(p.input), 'peer_store_capacity', 503);
-  assert.deepEqual(order, ['capacity', 'first', 'second']); assert.equal(db.prepare('SELECT count(*) AS n FROM test_acceptance').get().n, 0);
+  assert.deepEqual(order, ['first', 'second']); assert.equal(refused.internals.transaction(() => refused.capacity.allocationWithin(p.input.jobId)), null); assert.equal(db.prepare('SELECT count(*) AS n FROM test_acceptance').get().n, 0);
   await drained(refused, p.input.jobId); refused.reopen(); assert.equal(refused.row(p.input.jobId).state, 'aborted'); assert.equal(refused.row(p.input.jobId).admittedAt, null);
   assert.equal(refused.store.challenges.retained(p.input.nonce).state, 'failed'); assert.equal(refused.holds.size, 0); assert.equal(refused.calls.effective, 1);
   assert.equal(refused.internals.admissionCounts().starts, 0);
@@ -1561,7 +1567,7 @@ test('R06 sweep retires current old-context holders without count-only subtracti
   terminal = false; w.reopen();
   assert.equal(w.internals.admissionCounts().contextRecords, 0);
   const foreign = accountingInput(job(0x11), '/dacs/v1/agreements/proposals', `did:demos:agent:${hash('foreign')}`).payload;
-  assert.throws(() => w.store.reserve(foreign, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+  assert.throws(() => w.store.reserve(foreign, {}, { keepProfile: PROFILE }), { code: 'context_session_terminal', status: 409 });
 });
 
 test('R20 accounting adopts a detached tuple without another insert or timestamp change', async t => {
@@ -1693,7 +1699,10 @@ test('refused admission intent rolls retirement back across restart', async t =>
   assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
   w.reopen(); assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
   w.control.ready = true; terminal = false;
-  await assert.rejects(w.admission.begin(w.prepare(0x33).input), { code: 'peer_job_capacity', status: 503 });
+  const replacement = w.prepare(0x33);
+  await w.admission.begin(replacement.input);
+  assert.equal(w.row(replacement.input.jobId).state, 'admitted');
+  assert.equal(w.db.prepare('SELECT state FROM kit_terminal_closures WHERE jobId = ?').get(p.input.jobId).state, 'finalised');
 });
 
 test('intent commit cuts preserve atomic ownership across restart', async t => {
@@ -1854,7 +1863,7 @@ test('SQL INSERT failure rolls back owner and retirement without failing a chall
 
 
 test('a definite operation_uncertain refusal commits only the owning challenge failure', async t => {
-  const w = world(t, { capacity: { fitsNewPurchase() { throw Object.assign(new Error('definite'), { code: 'operation_uncertain', status: 503 }); }, allocateWithin() { assert.fail('refusal allocated'); } } });
+  const w = world(t, { ready() { throw Object.assign(new Error('definite'), { code: 'operation_uncertain', status: 503 }); } });
   const p = w.prepare(), before = workSnapshot(w);
   await assert.rejects(w.admission.begin(p.input), { code: 'operation_uncertain', status: 503 });
   assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'operation_uncertain');
@@ -1928,15 +1937,15 @@ for (const boundary of ['old', 'accounted']) for (const source of ['rejecting pr
 
 test('a purchase capacity refusal rolls back the retirement it observed across restart', async t => {
   let terminal = false, refuse = false, observed = false, w;
-  const capacity = { fitsNewPurchase() {
+  const ready = () => {
     if (refuse) {
       assert.equal(ownerRow(w, job(0x11)).closed, 1);
       assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(job(0x11)).job_retired, 1);
       observed = true; return false;
     }
     return true;
-  }, allocateWithin() {} };
-  w = world(t, { maxJobs: 1, maxContextRecords: 1, capacity, contextSessionState: () => terminal ? 'finalised' : null });
+  };
+  w = world(t, { maxJobs: 1, maxContextRecords: 1, ready, contextSessionState: () => terminal ? 'finalised' : null });
   const p = w.prepare(), next = w.prepare(0x22);
   await (await running(w, p)).complete(outcome);
   w.control.clock += HOUR + 1; terminal = true; refuse = true;
@@ -2003,10 +2012,11 @@ test('a retired completed job refuses a fresh context admission after restart', 
   assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(completedJob).job_retired, 1);
   assert.equal(ownerRow(w, completedJob).closed, 0);
   session = null; w.reopen();
-  const { input } = w.prepare();
-  await assert.rejects(w.admission.begin(input), { code: 'context_job_closed', status: 409 });
+  const before = workSnapshot(w), challenges = w.db.prepare('SELECT COUNT(*) AS n FROM kit_challenges').get().n;
+  assert.throws(() => w.prepare(), { code: 'context_session_terminal', status: 409 });
   assert.equal(w.row(completedJob), null);
   assert.equal(w.calls.reserve, 0);
   assert.equal(w.calls.wire, 0);
-  assert.equal(w.store.challenges.retained(input.nonce).failure.code, 'context_job_closed');
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_challenges').get().n, challenges);
+  assert.deepEqual(workSnapshot(w), before);
 });

@@ -95,7 +95,17 @@ function world(t, { limits = {} } = {}) {
     };
     const ledger = createSellerChallengeLedger({
       db, transaction, generation, limits, now: () => control.now,
-      sessionState: ({ jobId }) => { control.ports++; return control.sessionState(jobId); },
+      // The ledger is handed the store's observation adapter, which has already read a throw, a Promise or a non-string as unknown
+      // (the adapter itself is tested in purchase-capacity.test.mjs), so this double answers a string or null.
+      sessionState: ({ jobId }) => {
+        control.ports++;
+        try {
+          const state = control.sessionState(jobId);
+          if (typeof state === 'string') return state;
+          void Promise.resolve(state).then(undefined, () => {});
+        } catch { return null; }
+        return null;
+      },
       admissionCounts: () => { control.ports++; control.countReads++; return { contextRecords: control.counts.contextRecords, starts: control.counts.starts, buyerStarts: () => control.counts.buyerStarts }; },
       ready: () => control.ready,
       stopped: () => control.stopped,
@@ -1281,35 +1291,28 @@ test('challenge-accepted-presentation-answers-an-equivalent-buyer', (t) => {
   assert.deepEqual(w.quiet(() => w.ledger.attempt(equivalent)), { kind: 'continuation', accepted: exact });
 });
 
-test('challenge-issuance-refuses-a-session-state-that-cannot-be-read', (t) => {
+test('unusable session observations remain unknown across restart', (t) => {
   const readers = {
-    throws: [() => { throw new Error('state unavailable'); }, /state unavailable/],
-    promise: [() => Promise.resolve('finalised'), TypeError],
-    'rejected promise': [() => Promise.reject(new Error('late')), TypeError],
-    object: [() => ({ state: 'finalised' }), TypeError],
-    number: [() => 42, TypeError],
-    undefined: [() => undefined, TypeError],
+    throws: () => { throw new Error('state unavailable'); },
+    promise: () => Promise.resolve('finalised'),
+    'rejected promise': () => Promise.reject(new Error('late')),
+    object: () => ({ state: 'finalised' }),
+    number: () => 42,
+    undefined: () => undefined,
   };
   const entries = {
     issue: (w) => w.issue(),
     issueForOperator: (w) => w.ledger.issueForOperator({ jobId: job('one'), buyer: BUYER }),
   };
-  const unavailable = (error) => error.code === 'session_admission_unavailable' && error.status === 503;
-  for (const [entry, issue] of Object.entries(entries)) for (const [name, [reader, expected]] of Object.entries(readers)) {
+  for (const [entry, issue] of Object.entries(entries)) for (const [name, reader] of Object.entries(readers)) {
     const label = `${entry} ${name}`;
     const w = world(t);
     w.control.sessionState = reader;
-    w.quiet(() => assert.throws(() => issue(w), (error) => unavailable(error) && (expected instanceof RegExp ? expected.test(error.cause?.message) : error.cause instanceof expected), label));
-    assert.deepEqual(w.rows(), [], label);
-    assert.equal(w.control.countReads, 0, `${label} refuses at step 7, before the counts`);
-
-    // A live nonce is not handed back once the job's state can no longer be read, also after a restart.
-    w.control.sessionState = () => null;
     const first = issue(w);
-    w.control.sessionState = reader;
-    w.quiet(() => assert.throws(() => issue(w), unavailable, `${label} reuse`));
+    assert.ok(first.sessionNonce, label);
+    assert.equal(issue(w).sessionNonce, first.sessionNonce, `${label} reuse`);
     w.reopen('generation-two');
-    w.quiet(() => assert.throws(() => issue(w), unavailable, `${label} reuse after restart`));
+    assert.equal(issue(w).sessionNonce, first.sessionNonce, `${label} reuse after restart`);
     assert.deepEqual(w.rows().map((row) => row.nonce), [first.sessionNonce], label);
   }
 });

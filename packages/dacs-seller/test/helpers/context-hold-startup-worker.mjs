@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { createSellerTransportStore } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './bound-transport-store.mjs';
 import { createSellerContextAdmission } from '../../src/devnet-demo/operator-approval.mjs';
 import { acquireSellerStateLock } from '../../src/devnet-demo/seller-state-lock.mjs';
 import { dirname } from 'node:path';

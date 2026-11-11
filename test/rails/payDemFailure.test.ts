@@ -169,7 +169,7 @@ describe("terminal failed Demos record", () => {
     ["success with failure proof", { ...failure, ok: true, finality: { model: "bft-final" } }],
     ["failure with success finality time", { ...failure, finalityObservedAt: 42 }],
   ])("refuses to persist %s", async (_label, value) => {
-    const store = createIdempotencyStore();
+    const store = createIdempotencyStore(createInMemorySettlementLog());
     await expect(store.once(key, binding, async () => value as SettleResult))
       .rejects.toThrow(/terminal-failure proof|canonical/);
   });

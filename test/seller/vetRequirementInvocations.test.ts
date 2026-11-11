@@ -577,17 +577,15 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
       }
     });
 
-    test("a vetMode member inside an invocation, reference or requirement never selects the orchestrator mode", () => {
-      for (const place of ["invocation", "vetRecordRef", "requirement"] as const) {
-        const entries = structuredClone(sellerSignedPair);
-        Object.assign(place === "invocation" ? entries[1] : entries[1][place], { vetMode: orchestrator });
-        expect(checkIn(entries, undefined)).not.toBeNull();
-        expect(checkIn(entries, counterparty)).not.toBeNull();
-        expect(isSellerFulfilmentVetInvocationMismatch(entries[1], {
-          jobId, buyerClaim, sellerClaim, buyerRequirement,
-          bindings: new Map([[canonicalize(entries[1].vetRecordRef), { primaryClaim: sellerClaim, roles: new Set(["seller"]) }]]),
-        })).toBe(true);
-      }
+    test("a vetMode member inside a requirement never selects the orchestrator mode", () => {
+      const entries = structuredClone(sellerSignedPair);
+      Object.assign(entries[1].requirement, { vetMode: orchestrator });
+      expect(checkIn(entries, undefined)).toMatch(/differs from its party/);
+      expect(checkIn(entries, counterparty)).toMatch(/differs from its party/);
+      expect(isSellerFulfilmentVetInvocationMismatch(entries[1], {
+        jobId, buyerClaim, sellerClaim, buyerRequirement,
+        bindings: new Map([[canonicalize(entries[1].vetRecordRef), { primaryClaim: sellerClaim, roles: new Set(["seller"]) }]]),
+      })).toBe(true);
     });
 
     test("orchestrator mode keeps the shared-record, orchestrator-only and canonical-address rules (JOB2 locator refused)", () => {

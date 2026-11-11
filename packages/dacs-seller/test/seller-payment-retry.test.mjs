@@ -15,7 +15,8 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
 import * as transport from '../src/index.mjs';
-const seller={...transport,...listingApi,agreementInput,listingPin};
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
+const seller={...transport,...listingApi,agreementInput,listingPin,createSellerTransportStore};
 import { transportOutcome } from '../src/dacs/seller-agent.mjs';
 import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 
