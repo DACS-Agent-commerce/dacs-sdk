@@ -17,7 +17,6 @@ import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
-  createIdempotencyStore,
   declareSettlementBridge,
   inheritSettlementBridge,
   settlementKey,
@@ -2269,10 +2268,10 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * listing seller carried through the fixed-price agreement.
  *
  * SAFE BY DEFAULT: settlement is submitted at most once per
- * `(railId, jobId, phaseIndex)`. The default store protects concurrent and
- * same-process retries; inject a durable store and reconcile capability for
- * restart/crash recovery. A request carrying priorAttempts is a read-only audit:
- * it never claims a submit generation, even if the rail store lost its record.
+ * `(railId, jobId, phaseIndex)`. The caller must supply a durable store; add a
+ * reconcile capability for restart/crash recovery. A request carrying
+ * priorAttempts is a read-only audit: it never claims a submit generation,
+ * even if the rail store lost its record.
  *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
@@ -2291,18 +2290,22 @@ export function payDemSettle(
     phaseIndex?: number;
   } = {},
   opts: {
-    store?: SettlementIdempotencyStore;
+    store: SettlementIdempotencyStore;
     reconcile?: PayDemSettlementReconcile;
-  } = {},
+  },
 ): (req: SettleRequest) => Promise<SettleResult> {
+  if (opts === undefined) {
+    throw new DacsError("pay-dem settlement requires a caller-supplied durable store");
+  }
   const storeProperty = stableDataProperty(
     opts,
     "store",
     "pay-dem settlement store",
   );
-  const store = !storeProperty.found || storeProperty.value === undefined
-    ? createIdempotencyStore()
-    : storeProperty.value as SettlementIdempotencyStore;
+  if (!storeProperty.found || storeProperty.value === undefined) {
+    throw new DacsError("pay-dem settlement requires a caller-supplied durable store");
+  }
+  const store = storeProperty.value as SettlementIdempotencyStore;
   const storeOnce = stableMethod<SettlementIdempotencyStore["once"]>(
     store,
     "once",
