@@ -1188,6 +1188,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-fresh-child.test.mjs:1` | 396b4f470820de6aa77cce86839ce5a287b31ccd |
 | | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | fc9f5943d11b41eed2ded177c8e0982f1a5e0360 |
 | | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | 116879d4872c10a8d0c65ad5bb3cada05e5052aa |
+| WF | delta(client): WF record the merged public API test after carrying the fence part up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72 |
 
 ## Complete commit and file inventory
 
@@ -3745,6 +3747,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep seller identity and packed runtime checks stable | `packages/dacs-client/test/node-wallet-fresh-child.test.mjs:1` |
 | fix(client): D11 keep seller identity and packed runtime checks stable | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` |
 | fix(client): D11 keep seller identity and packed runtime checks stable | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` |
+| delta(client): WF record the merged public API test after carrying the fence part up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged public API test after carrying the fence part up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged public API test after carrying the fence part up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged public API test after carrying the fence part up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged public API test after carrying the fence part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
