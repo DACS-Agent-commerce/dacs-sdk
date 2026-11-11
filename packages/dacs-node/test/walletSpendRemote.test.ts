@@ -28,6 +28,7 @@ import {
   type DacsWalletSpendContinuityReceiptV1,
 } from "../src/walletSpendPostgres.js";
 
+const WALLET_A = `0x${"5e".repeat(20)}`;
 const roots: string[] = [];
 const HASH = "a".repeat(64);
 const TOKEN = "role-scoped-test-token-which-is-long-enough";
@@ -41,7 +42,7 @@ afterEach(async () => {
 const policy = (policyId = "policy-a"): WalletSpendPolicyV1 => ({
   policyVersion: "1",
   policyId,
-  wallet: "wallet-a",
+  wallet: WALLET_A,
   chainId: "chain-a",
   maximumConcurrentEffects: 1,
   maximumRetainedReservations: 10,
@@ -68,7 +69,7 @@ const reservation = (): WalletSpendReservationV1 => ({
   settlementBindingHash: "b".repeat(64),
   railId: "rail-one",
   railDefinitionHash: "c".repeat(64),
-  wallet: "wallet-a",
+  wallet: WALLET_A,
   chainId: "chain-a",
   payee: "payee-a",
   finality: { model: "final" },
@@ -155,6 +156,7 @@ async function serverV2(
   });
   return {
     authority: binding.authority,
+    binding,
     bindingInput,
     operations,
     handler,
@@ -214,7 +216,7 @@ describe("remote PostgreSQL wallet authority boundary", () => {
       const operationId = version === "1"
         ? "00000000-0000-4000-8000-000000000101"
         : "00000000-0000-4000-8000-000000000102";
-      const unknownWallet = "wallet-unprovisioned";
+      const unknownWallet = `0x${"6f".repeat(20)}`;
       const item = { ...reservation(), wallet: unknownWallet };
       const common = {
         operationId,
@@ -350,7 +352,7 @@ describe("remote PostgreSQL wallet authority boundary", () => {
           protocolVersion: "1",
           operationId,
           policyHash: HASH,
-          wallet: "wallet-a",
+          wallet: WALLET_A,
           chainId: "chain-a",
           operation: "reserve",
           payload: { reservation: reservation(), options: {} },
@@ -1446,6 +1448,174 @@ describe("remote PostgreSQL wallet authority boundary", () => {
     expect((await remote.reserve(reservation())).status).toBe("reserved");
     expect((await remote.inspect()).revision).toBe(1);
   });
+
+  it("accepts a status naming the policy wallet in any spelling of the client policy and refuses another wallet", async () => {
+    const tokenFilePath = await tokenFile();
+    const statusNaming = (
+      local: ReturnType<typeof server>,
+      wallet: string | undefined,
+    ): typeof fetch =>
+      (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const response = await local.handler(new Request(input, init));
+        if (wallet === undefined || !response.ok) return response;
+        const body = await response.json() as Record<string, unknown>;
+        const result = body.result as Record<string, unknown>;
+        return new Response(JSON.stringify({ ...body, result: { ...result, wallet } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch;
+    const inspectWith = async (policyWallet: string, statusWallet?: string) => {
+      const configured = { ...policy(), wallet: policyWallet };
+      const remote = await createDacsRemoteWalletSpendAuthorityV1({
+        policy: configured,
+        endpoint: "http://127.0.0.1:8080/",
+        tokenFilePath,
+        allowInsecureLoopback: true,
+        fetch: statusNaming(server(undefined, configured), statusWallet),
+      });
+      return remote.inspect();
+    };
+
+    await expect(inspectWith(WALLET_A)).resolves.toMatchObject({ wallet: WALLET_A });
+    await expect(inspectWith(WALLET_A.slice(2).toUpperCase())).resolves.toMatchObject({
+      wallet: WALLET_A,
+    });
+    await expect(inspectWith(WALLET_A, WALLET_A.slice(2))).resolves.toMatchObject({
+      wallet: WALLET_A.slice(2),
+    });
+    for (const otherWallet of [`0x${"6f".repeat(20)}`, "wallet-a"]) {
+      await expect(inspectWith(WALLET_A, otherWallet)).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-status-invalid",
+      });
+    }
+  });
+
+  it("refuses a client policy whose wallet has no canonical form before sending anything", async () => {
+    const tokenFilePath = await tokenFile();
+    const fetchSpy = vi.fn();
+    await expect(createDacsRemoteWalletSpendAuthorityV1({
+      policy: { ...policy(), wallet: "wallet-a" },
+      endpoint: "http://127.0.0.1:8080/",
+      tokenFilePath,
+      allowInsecureLoopback: true,
+      fetch: fetchSpy as unknown as typeof fetch,
+    })).rejects.toThrow(/20-byte or 32-byte hex address/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("a V1 client with a bare-address policy reaches an authority keyed by its configured wallet", async () => {
+    const configured = { ...policy(), wallet: WALLET_A.slice(2) };
+    const local = server(undefined, configured);
+    const remote = await createDacsRemoteWalletSpendAuthorityV1({
+      policy: configured,
+      endpoint: "http://127.0.0.1:8080/",
+      tokenFilePath: await tokenFile(),
+      allowInsecureLoopback: true,
+      fetch: handlerFetch(local.handler),
+    });
+    await expect(remote.inspect()).resolves.toMatchObject({ wallet: WALLET_A });
+    const claim = await remote.reserve(reservation());
+    expect(claim.status).toBe("reserved");
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    await claim.permit.beginEffect();
+    await claim.permit.settle({
+      disposition: "settled",
+      evidenceHash: "d".repeat(64),
+      debits: [{ asset: "ASSET", purpose: "service", amount: "25" }],
+    });
+    await expect(remote.inspect()).resolves.toMatchObject({ revision: 3 });
+  });
+
+  it("a V2 client with a bare-address policy reaches an authority keyed by its configured wallet", async () => {
+    const configured = { ...policy(), wallet: WALLET_A.slice(2) };
+    const local = await serverV2(undefined, configured);
+    const handler = createDacsWalletSpendAuthorityServiceV2({
+      authenticate: (token) => token === TOKEN ? "buyer" : null,
+      resolveAuthority: ({ wallet }) => wallet === configured.wallet ? local.binding : null,
+      operations: createInMemoryDacsWalletSpendRemoteOperationStoreV1(),
+    });
+    const remote = await createDacsRemoteWalletSpendAuthorityV2({
+      policy: configured,
+      endpoint: "http://127.0.0.1:8080/",
+      tokenFilePath: await tokenFile(),
+      authorityId: local.authorityId,
+      epoch: local.epoch,
+      witnessVerificationKey: local.verificationKey,
+      allowInsecureLoopback: true,
+      fetch: handlerFetch(handler),
+    });
+    await expect(remote.inspect()).resolves.toMatchObject({ wallet: WALLET_A });
+    const claim = await remote.reserve(reservation());
+    expect(claim.status).toBe("reserved");
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    await claim.permit.beginEffect();
+    await claim.permit.settle({
+      disposition: "settled",
+      evidenceHash: "d".repeat(64),
+      debits: [{ asset: "ASSET", purpose: "service", amount: "25" }],
+    });
+    await expect(remote.inspect()).resolves.toMatchObject({ revision: 3 });
+  });
+
+  it.each(["1", "2"] as const)(
+    "a V%s service compares a request wallet canonically",
+    async (version) => {
+      const local = version === "1" ? server() : await serverV2();
+      const operations = createInMemoryDacsWalletSpendRemoteOperationStoreV1();
+      const authenticate = (token: string) => token === TOKEN ? "buyer" : null;
+      const handler = version === "1"
+        ? createDacsWalletSpendAuthorityServiceV1({
+          authenticate,
+          resolveAuthority: () => (local as ReturnType<typeof server>).authority,
+          operations,
+        })
+        : createDacsWalletSpendAuthorityServiceV2({
+          authenticate,
+          resolveAuthority: () => (local as Awaited<ReturnType<typeof serverV2>>).binding,
+          operations,
+        });
+      let next = 0;
+      const post = async (wallet: string, lineageWallet = wallet) => {
+        next += 1;
+        const operationId = `00000000-0000-4000-8000-00000000030${next}`;
+        const common = {
+          operationId,
+          policyHash: local.authority.policyHash,
+          wallet,
+          chainId: "chain-a",
+          operation: "inspect",
+          payload: {},
+        };
+        const body = version === "1" ? { protocolVersion: "1", ...common } : {
+          protocolVersion: "2",
+          requestHashVersion: "1",
+          clientNonce: "3".repeat(64),
+          authorityId: "wallet-authority-production",
+          epoch: "epoch-2026-09",
+          lineageKey: dacsWalletSpendLineageKeyV1(lineageWallet, "chain-a"),
+          ...common,
+        };
+        return postService(version, handler, body);
+      };
+
+      for (const spelling of [WALLET_A.slice(2), WALLET_A.slice(2).toUpperCase(), `0X${WALLET_A.slice(2).toUpperCase()}`]) {
+        expect((await post(spelling)).status).toBe(200);
+      }
+
+      const other = await post(`0x${"6f".repeat(20)}`);
+      expect(other.status).toBe(400);
+      await expect(other.json()).resolves.toEqual({
+        reasonCode: "wallet-spend-authority-lineage-unavailable",
+      });
+
+      const label = await post("wallet-a", WALLET_A);
+      expect(label.status).toBe(400);
+      await expect(label.json()).resolves.toEqual({
+        reasonCode: "wallet-spend-authority-request-invalid",
+      });
+    },
+  );
 
   it("keeps inspect read-only and fails closed for unavailable or stale authority", async () => {
     const tokenFilePath = await tokenFile();

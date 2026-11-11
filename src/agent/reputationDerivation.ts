@@ -20,6 +20,7 @@ import { bundlesDiverge } from "./bundleDivergence.js";
 import {
   bundleArtifactType,
   isFaultBundle,
+  pairHasOrchestratorFault,
   scoredBundleOutcome,
 } from "./bundleSemantics.js";
 import { deepFreeze } from "../internal/deepFreeze.js";
@@ -395,7 +396,7 @@ function deriveReputationCore(
     reconciled.push(authoritative);
     reconciledRoles.push(roleOfParty);
     outcomes.push(scored);
-    if (isFaultBundle(authoritative) && authoritative.faultedParty === "orchestrator") {
+    if (pairHasOrchestratorFault(authoritative, selfCopy, cp)) {
       orchestratorFaultJobs.add(authoritative.jobId);
     }
   }

@@ -7,6 +7,7 @@ import { canonicalize, compositeVerificationAddress, isAttestationRef, isCanonic
 import { isTp1WireProfile, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
+import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { SELLER_CONTEXT_PATH, SellerTransportError, pinValid, sellerStoreInternals } from './seller-transport-auth.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 
@@ -31,13 +32,16 @@ const OPEN_CLEANUP = `json_extract(record, '$.cleanup.releasePending') = 1 OR js
 
 // Per transaction instance: the live-begin reader below, kept off the frozen API so that nothing outside the module can take it for authority.
 const instanceReaders = new WeakMap();
+const instanceLeaseChecks = new WeakMap();
+const ALLOCATION_CLEANUP = new Map([['success', 'context-slot'], ['vet-non-pass', 'all'], ['other', 'all'], ['none', 'all']]);
 
 const isHash = (value) => typeof value === 'string' && HASH.test(value);
 const isUint = (value) => Number.isSafeInteger(value) && value >= 0;
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fail = (code, status = 409, cause) => { throw new SellerTransportError(code, status, cause === undefined ? undefined : { cause }); };
 // An error that names its own refusal (a seller or wire error: a code and an HTTP error status) keeps it; any other local error is an uncertain operation.
-const refusalOf = (error) => (typeof error?.code === 'string' && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599
+const isRefusal = (error) => typeof error?.code === 'string' && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599;
+const refusalOf = (error) => (isRefusal(error)
   ? { code: error.code, status: error.status } : { code: 'operation_uncertain', status: 503 });
 const storedCause = (cause) => ({ ...refusalOf(cause), message: cause?.message ?? String(cause) });
 // boundedCall answers at the deadline or at the work's end, whichever is first. A late hold or lease needs the work's own end too, so
@@ -82,8 +86,10 @@ function contextOutcomeClass(row, outcome) {
 /**
  * Creates the admission transaction on the shared store `createSellerTransportStore` returned, in its one SQLite transaction owner.
  * `policy` is `createSellerContextAdmission`'s `{ reserve, release }`; `completeWire(effect, outcome)` is synchronous and completes only
- * the wire effect handle it is given; `capacity` is null or `{ fitsNewPurchase, allocateWithin }`, whose allocation runs as the first
- * acceptance hook; `now` and `ready` are synchronous; `deadlines.policyMs` bounds the policy call.
+ * the wire effect handle it is given; `capacity` is the purchase capacity `createPurchaseCapacity` built on this same store (anything else
+ * is a TypeError): admission checks that a whole purchase fits, its allocation runs as the first acceptance hook, and a settlement or an abort
+ * returns the allocation's slots in the same transaction (a validated context returns only its own); `now` and `ready` are synchronous;
+ * `deadlines.policyMs` bounds the policy call.
  * `inspectContextOutcome(jobId)` is the wire's synchronous, read-only operation view; `effectEvidence(row)` resolves one `{ address, kind, cause? }` per
  * Vet sink address (C3; only `no-intent` and `proven-unsigned` on both retained presenter addresses prove no effect).
  * `begin(request)` is D2-D4: it resolves `{ jobId, rev }` once the intent, the policy hold and the acceptance are durable. A D3 or D4 failure
@@ -103,12 +109,11 @@ function contextOutcomeClass(row, outcome) {
  * compensating, or holds a pending release, a pending policy call or a cleanup cause. `admissionRecord(jobId)` is the frozen read-only projection, or null.
  * Throws TypeError for an unusable option; operations reject with a SellerTransportError (guard errors keep their own class) that keeps its cause.
  */
-export function createContextAdmissionTransaction({ store, policy, capacity = null, effectEvidence, inspectContextOutcome, completeWire, now, ready, deadlines }) {
-  const { db, transaction, challenges, admissionCounts, limits } = sellerStoreInternals(store);
+export function createContextAdmissionTransaction({ store, policy, capacity, effectEvidence, inspectContextOutcome, completeWire, now, ready, deadlines }) {
+  const { db, transaction, challenges, admissionCounts, limits, reserveAdmissionWithin, retireSlotsWithin } = sellerStoreInternals(store);
   if (![policy?.reserve, policy?.release, effectEvidence, inspectContextOutcome, completeWire, now, ready].every((port) => typeof port === 'function')
-    || !Number.isSafeInteger(deadlines?.policyMs) || deadlines.policyMs <= 0
-    || (capacity !== null && !['fitsNewPurchase', 'allocateWithin'].every((name) => typeof capacity?.[name] === 'function'))) {
-    throw new TypeError('admission needs the store, policy, evidence, completion, clock, readiness and deadline ports');
+    || !Number.isSafeInteger(deadlines?.policyMs) || deadlines.policyMs <= 0 || !ownsPurchaseCapacity(store, capacity)) {
+    throw new TypeError('admission needs the store, its purchase capacity, policy, evidence, completion, clock, readiness and deadline ports');
   }
   const mutexes = new Map(), leases = new WeakMap(), acceptanceHooks = [];
   // The live-begin owners: the one `begin` per job between D2's commit and the end of its D3/D4 work, late policy settlement and failure
@@ -119,7 +124,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
   // the state lock, and this process's own when recording the call's end failed. Only these are settled-unknown.
   const endedCalls = new Set();
   let hooksSealed = false, sweeping = null;
-  if (capacity !== null) acceptanceHooks.push(({ jobId, buyer, seller, listingPin }) => { capacity.allocateWithin({ jobId, buyer, seller, listingPin }); });
+  acceptanceHooks.push(({ jobId, buyer, seller, listingPin }) => { capacity.allocateWithin({ jobId, buyer, seller, listingPin }); });
 
   const read = (jobId) => {
     const found = db.prepare('SELECT record FROM kit_context_admissions WHERE jobId = ?').get(jobId);
@@ -132,6 +137,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     const changed = db.prepare('UPDATE kit_context_admissions SET state = ?, rev = ?, admittedAt = ?, record = ? WHERE jobId = ? AND record = ?')
       .run(next.state, next.rev, next.admittedAt, JSON.stringify(next), row.jobId, JSON.stringify(row)).changes;
     if (changed !== 1) fail('context_admission_closed');
+    if (patch.state === 'aborted') db.prepare('UPDATE kit_job_owners SET closed = 1 WHERE job = ?').run(row.jobId);
     return next;
   }
   function clock() {
@@ -171,14 +177,15 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     return held;
   }
 
-  // D2's dry check and D4's authoritative one: readiness, the context-record and unpaid-start limits, then purchase capacity.
+  // Sweep before the store's closure guard; recheck context capacity after policy awaits.
   function checkLimits(buyer, ownRow) {
+    retireSlotsWithin(clock(), undefined, { capacity: true, jobs: [] });
     if (ready() !== true) fail('seller_not_ready', 503);
     const counts = admissionCounts();
-    if (counts.contextRecords - Number(ownRow) >= limits.maxContextRecords) fail('peer_context_capacity', 503);
+    if (ownRow && counts.contextRecords - 1 >= limits.maxContextRecords) fail('peer_context_capacity', 503);
     if (counts.starts >= limits.maxStartsPerHour) fail('unpaid_start_limit', 429);
     if (counts.buyerStarts(buyer) >= limits.maxStartsPerBuyerPerHour) fail('buyer_unpaid_start_limit', 429);
-    if (capacity !== null && capacity.fitsNewPurchase() !== true) fail('seller_not_ready', 503);
+    if (!capacity.fitsNewPurchase()) fail('seller_not_ready', 503);
   }
   function requireOwner({ nonce, jobId, buyer, presentationHash, owner }) {
     const challenge = challenges.retained(nonce);
@@ -253,19 +260,25 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     return true;
   }
 
-  // D2: the intent commits in one transaction, or its refusal fails the owning challenge alone and nothing else is written.
-  // A job that already has a row is refused without touching the challenge: its owner may still be validating.
+  // A refused intent rolls back its reservation writes and fails only its owning challenge.
+  // Same-nonce re-entry leaves the live worker's challenge untouched.
   function commitIntent(input, row) {
     const refusal = transaction(() => {
-      if (read(row.jobId) !== null) fail('context_job_closed');
+      const repeated = read(row.jobId)?.nonce === input.nonce;
+      let verified = false;
+      db.exec('SAVEPOINT admission_intent');
       try {
-        requireOwner(input); checkLimits(input.buyer, false);
+        if (!repeated) { requireOwner(input); verified = true; }
+        checkLimits(input.buyer, false); reserveAdmissionWithin(input, row.createdAt);
+        db.prepare('INSERT INTO kit_context_admissions VALUES (?, ?, ?, ?, ?, ?)').run(row.jobId, row.buyer, null, row.state, row.rev, JSON.stringify(row));
+        db.exec('RELEASE admission_intent');
       } catch (error) {
+        db.exec('ROLLBACK TO admission_intent'); db.exec('RELEASE admission_intent');
         const { code, status } = refusalOf(error);
-        challenges.recordFailedWithin(input.owner, input.nonce, code, status);
+        if (!isRefusal(error)) throw error;
+        if (verified) challenges.recordFailedWithin(input.owner, input.nonce, code, status);
         return error;
       }
-      db.prepare('INSERT INTO kit_context_admissions VALUES (?, ?, ?, ?, ?, ?)').run(row.jobId, row.buyer, null, row.state, row.rev, JSON.stringify(row));
       return null;
     });
     if (refusal !== null) throw refusal;
@@ -328,8 +341,8 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     }
   }
   async function begin(request) {
-    assertKitOperationAdmitted('begin');
     hooksSealed = true;
+    assertKitOperationAdmitted('begin');
     const { input, row } = startRow(request, clock());
     commitIntent(input, row);
     // Registered in the turn the intent commits, with no await between; only this begin's own compare-and-delete removes it.
@@ -421,9 +434,26 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     else await releaseHold(settled.jobId);
   }
 
+  // The allocation follows the row's end in the same transaction. A validated `present` context returns only its own slot, so
+  // the purchase's later stages still spend theirs; every other end releases all open slots. A class this table lacks releases nothing and
+  // refuses, so the settlement rolls back and the row keeps its cause.
+  function cleanAllocationWithin(row) {
+    const cleanup = ALLOCATION_CLEANUP.get(row.state === 'aborted' ? 'none' : row.contextOutcome);
+    if (cleanup === undefined) fail('context_outcome_unavailable', 503);
+    const allocation = capacity.allocationWithin(row.jobId);
+    if (allocation?.state !== 'live') return;
+    const held = { allocationId: allocation.allocationId, allocationRev: allocation.rev };
+    if (cleanup === 'all') capacity.releaseAllWithin(held); else capacity.returnRouteSlotWithin({ ...held, route: SELLER_CONTEXT_PATH });
+  }
+  // A transition to a closed state, with the allocation's cleanup in the same transaction.
+  function closeWithin(row, patch) {
+    const closed = update(row, patch);
+    cleanAllocationWithin(closed);
+    return closed;
+  }
   // D8 from `admitted`, `running` or `compensating`: the row settles with the context outcome's class and its hold is released afterwards.
   function settleWithin(row, contextOutcome) {
-    return transaction(() => update(row, { state: 'settled', contextOutcome, cleanup: { ...row.cleanup, releasePending: true } }));
+    return transaction(() => closeWithin(row, { state: 'settled', contextOutcome, cleanup: { ...row.cleanup, releasePending: true } }));
   }
   // The context outcome comes first. It is the class of a completed outcome under this row's own binding, or null while there is none.
   // An inspection that fails, or that reports another binding, throws and settles nothing.
@@ -467,7 +497,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       if (current?.rev !== row.rev || current.state !== 'compensating') fail('context_admission_closed');
       return update(current, { compensation: { ...current.compensation, proof: 'no-effect', evidence } });
     });
-    return transaction(() => update(proven, { state: 'aborted', cleanup: { ...proven.cleanup, releasePending: true } }));
+    return transaction(() => closeWithin(proven, { state: 'aborted', cleanup: { ...proven.cleanup, releasePending: true } }));
   }
   // A pending D3 call whose end is known is settled-unknown: compensation then releases its hold, if it appended one, by holdId.
   function adoptEndedCall(row) {
@@ -551,6 +581,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     for (const { jobId } of unfinished) {
       try { await sweepRow(jobId, startup); } catch (fault) { faults.push(fault); }
     }
+    const time = now(); if (Number.isSafeInteger(time) && time >= 0) transaction(() => retireSlotsWithin(time));
     if (faults.length > 0) throw new AggregateError(faults, 'the sweep could not record the state of every row it visited');
   }
   // Not behind the kit operation guard: the sweep starts no effect, and with the guard off it only finishes the cleanup of rows that exist.
@@ -579,6 +610,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       acceptanceHooks.push(hook);
     } });
   instanceReaders.set(api, Object.freeze({ ownedIntent }));
+  instanceLeaseChecks.set(api, heldLease);
   return api;
 }
 
@@ -587,4 +619,11 @@ export function admissionTransactionInternals(transaction) {
   const readers = instanceReaders.get(transaction);
   if (readers === undefined) throw new TypeError('admissionTransactionInternals needs a transaction made by createContextAdmissionTransaction');
   return readers;
+}
+
+/** Verify a live same-job lease belonging to this admission transaction. Throws TypeError before I/O for any other lease. */
+export function assertAdmissionJobLease(transaction, jobId, lease) {
+  const checkLease = instanceLeaseChecks.get(transaction);
+  if (checkLease === undefined) throw new TypeError('the job lease needs its owning admission transaction');
+  checkLease(lease, jobId);
 }

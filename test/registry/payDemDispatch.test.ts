@@ -22,9 +22,12 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
   evmErc20Settle: mocks.evmErc20Settle,
 }));
 
-import type {
-  SettlementBinding,
-  SettlementIdempotencyStore,
+import {
+  isSettlementBridge,
+  declareSettlementBridge,
+  settlementBridgeTraits,
+  type SettlementBinding,
+  type SettlementIdempotencyStore,
 } from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
@@ -51,6 +54,9 @@ import {
 } from "../../src/registry/index.js";
 import type { RailDefinition } from "../../src/registry/types.js";
 
+const testStore: SettlementIdempotencyStore = {
+  async once() { throw new Error("settlement store was not invoked"); },
+};
 const STEWARD_SEED = Uint8Array.from(Buffer.alloc(32, 42));
 const stewardPrivateKey = privateKeyFromSeed(STEWARD_SEED);
 const stewardPublicKey = rawPublicKey(publicKeyFromSeed(STEWARD_SEED));
@@ -325,29 +331,38 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(capturedRecovery.reconcile).not.toBe(reconcile);
   });
 
-  test("keeps the documented process-local compatibility defaults explicit", async () => {
+  test("requires a settlement store before constructing the native rail", async () => {
     const rail = { address: "aa".repeat(32), settle: vi.fn() };
     const executor = vi.fn();
     mocks.createPayDemRail.mockResolvedValue(rail);
     mocks.payDemSettle.mockReturnValue(executor);
     const descriptor = await authenticatedDefinition();
 
-    const dispatched = await settleFromRail(descriptor, {
+    await expect(settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
-    });
-    expect(typeof dispatched).toBe("function");
+    })).rejects.toThrow(/caller-supplied durable settlement store/);
+    expect(mocks.createPayDemRail).not.toHaveBeenCalled();
+    expect(mocks.payDemSettle).not.toHaveBeenCalled();
+  });
 
-    expect(mocks.createPayDemRail).toHaveBeenCalledWith({
-      rpc: "https://demos.example",
-      secret: "test-secret",
-      network: "demos",
-    });
-    expect(mocks.payDemSettle).toHaveBeenCalledWith(
-      rail,
-      { network: "demos", railId: DEM_RAIL_ID },
-      {},
-    );
+  test("the descriptor wrapper carries the registration and declared traits of the executor it binds", async () => {
+    mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle: vi.fn() });
+    const descriptor = await authenticatedDefinition();
+    const dispatch = async (executor: (req: never) => Promise<never>) => {
+      mocks.payDemSettle.mockReturnValue(executor);
+      return settleFromRail(descriptor, {
+        demosRpc: "https://demos.example",
+        demosSecret: "test-secret",
+        payDem: { settlementStore: testStore },
+      });
+    };
+    const unused = async (): Promise<never> => { throw new Error("unused"); };
+
+    const unjournaled = await dispatch(declareSettlementBridge(async () => unused(), { journaled: false }));
+    expect(settlementBridgeTraits(unjournaled)).toEqual({ journaled: false });
+    expect(settlementBridgeTraits(await dispatch(declareSettlementBridge(async () => unused())))).toEqual({});
+    expect(isSettlementBridge(await dispatch(async () => unused()))).toBe(false);
   });
 
   test("captures recovery authorities before the optional peer connects", async () => {
@@ -364,6 +379,16 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         return null;
       }
       get lookupCalls() { return this.#lookupCalls; }
+      #recoverCalls: string[] = [];
+      async recover(
+        key: string,
+        _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
+        submit: Parameters<SettlementIdempotencyStore["once"]>[2],
+      ) {
+        this.#recoverCalls.push(key);
+        return runStoreSubmit(submit);
+      }
+      get recoverCalls() { return this.#recoverCalls; }
       async once(
         key: string,
         _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
@@ -405,6 +430,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       settlementFinality: "bft-final" as const,
     }));
     firstStore.readOutcome = vi.fn(async () => { throw new Error("mutated lookup"); });
+    firstStore.recover = vi.fn(async () => { throw new Error("mutated recover"); });
     options.payDem!.maxTotalDebitOs = 20n;
     options.payDem!.journalPreparedTransfer = secondJournal;
     options.payDem!.settlementStore = secondStore;
@@ -464,6 +490,11 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     )).resolves.toBeNull();
     expect(firstStore.lookupCalls).toEqual(["demos-native:DEM:job-1:4"]);
     expect(firstStore.readOutcome).not.toHaveBeenCalled();
+    await expect(capturedRecovery.store!.recover!(
+      "demos-native:DEM:job-1:4", storeBinding("demos-native:DEM", "job-1", 4), async () => submitted,
+    )).resolves.toEqual(submitted);
+    expect(firstStore.recoverCalls).toEqual(["demos-native:DEM:job-1:4"]);
+    expect(firstStore.recover).not.toHaveBeenCalled();
     await capturedRecovery.reconcile!({} as never);
     expect(firstReconcile).toHaveBeenCalledTimes(1);
     expect(secondReconcile).not.toHaveBeenCalled();
@@ -514,6 +545,8 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       .resolves.toEqual(outcome);
     expect(poison).not.toHaveBeenCalled();
     expect(store.keys).toEqual(["rail:job:4"]);
+    // A store without recover() is forwarded without one, so pay-dem refuses its recovery requests.
+    expect("recover" in captured).toBe(false);
   });
 
   test("retains a class store receiver across restart-style dispatch reconstruction", async () => {
@@ -685,6 +718,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       fetchImpl: firstFetch,
       x402FetchMode: "insecure-test",
       rpcUrl: "https://rpc.example",
+      settlementStore: testStore,
     };
 
     const pending = settleFromRail(descriptor, options);
@@ -720,6 +754,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       fetchImpl,
       x402FetchMode: "insecure-test",
       rpcUrl: "https://rpc.example",
+      settlementStore: testStore,
     })).resolves.toEqual(expect.any(Function));
     const captured = mocks.createX402Rail.mock.calls[0]![0];
     expect(captured.transportPolicy).toEqual({ mode: "insecure-test" });
@@ -753,6 +788,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const options: RailDispatchOptions = {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
+      payDem: { settlementStore: testStore },
       availabilityPolicy: {
         environment: "production",
         authorize: firstAuthorize,
@@ -779,6 +815,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const dispatched = await settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
+      payDem: { settlementStore: testStore },
       payment: { phaseIndex: 4 },
     });
 
@@ -820,6 +857,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       await expect(settleFromRail(descriptor, {
         demosRpc: "https://demos.example",
         demosSecret: "test-secret",
+        payDem: { settlementStore: testStore },
         availabilityPolicy: { environment: "production", authorize },
       })).resolves.toEqual(expect.any(Function));
       expect(authorize).toHaveBeenCalledWith({
@@ -858,6 +896,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     await expect(settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
+      payDem: { settlementStore: testStore },
       availabilityPolicy: {
         environment: "non-production",
         authorize: async () => true,
@@ -873,6 +912,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       options: {
         demosRpc: "https://demos.example",
         demosSecret: "test-secret",
+        payDem: { settlementStore: testStore },
         payment: { phaseIndex: 4 },
       },
       create: mocks.createPayDemRail,
@@ -885,6 +925,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       options: {
         evmPrivateKey: "0x" + "11".repeat(32),
         rpcUrl: "https://rpc.example",
+        settlementStore: testStore,
         payment: {
           url: "https://seller.example/pay",
           network: "eip155:84532",
@@ -901,6 +942,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       options: {
         evmPrivateKey: "0x" + "11".repeat(32),
         rpcUrl: "https://rpc.example",
+        settlementStore: testStore,
         payment: {
           network: "eip155:84532",
           recipient: "0x2222222222222222222222222222222222222222",
@@ -951,6 +993,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const dispatched = await settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
+      payDem: { settlementStore: testStore },
       payment: { phaseIndex: 4 },
     });
 

@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, contentHash, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, finalizeFixedPriceAgreementContributions, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, admitPreAgreementRequest, bindTp1Profile, checkWireRequest, inspectWireOperation, openWireEnvelope, openWireRequestJournal, TP1_APPROVED_IDENTITY_RECORD, wireOperationId } from '@kynesyslabs/dacs/wire';
-import { createSellerTransportStore } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore as createUnboundStore } from '../../src/dacs/seller-transport-auth.mjs';
+import { bindPurchaseCapacity } from './bound-transport-store.mjs';
 import { testWallet } from './protocol-fixture.mjs';
 import { FIXTURE_PROFILE, TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
 import { fixtureIdentityBundle, fixtureListing } from '../fixtures/listings.mjs';
@@ -24,17 +25,21 @@ const SESSION = testWallet(3);
 export const PIN = { listingId: 'tp1-vector-listing', version: 1, contentHash: sha256Hex('contracts-vector-listing') };
 export const nonceKey = (p) => sha256Hex(canonicalize({ buyer: p.buyer, seller: p.seller, profile: p.profile, nonce: p.nonce }));
 
-// Actual SQL and wire journal, with a clock that never depends on wall time.
+// Actual SQL and wire journal, with a clock that never depends on wall time. The store has its purchase capacity bound, as the host's
+// has, unless `leaveCapacityToTest` is set: the test then builds the capacity itself.
 export async function accountingFixture(t, options = {}) {
+  const { leaveCapacityToTest = false } = options;
   t.mock.method(performance, 'now', () => 0);
+  const createSellerTransportStore = storeOptions => (leaveCapacityToTest ? createUnboundStore(storeOptions) : bindPurchaseCapacity(createUnboundStore(storeOptions), now));
   const dir = mkdtempSync(join(tmpdir(), 'TEST-accounting-'));
   const journalDir = join(dir, 'journal'); mkdirSync(journalDir, { mode: 0o700 });
   const path = join(dir, 'transport.sqlite');
   let time = T0, sequence = 0;
   const now = () => time;
   // The store reads the wire's own record of an operation, as the host does with its journal.
-  const wireOperationView = target => inspectWireOperation(journal, target);
-  let store = createSellerTransportStore({ path, now, wireOperationView, ...options });
+  // No seller agent runs here, so unless a test says otherwise no ended attempt leaves work behind.
+  const readers = { wireOperationView: target => inspectWireOperation(journal, target), retainsUnfinishedWork: () => false };
+  let store = createSellerTransportStore({ path, now, ...readers, ...options });
   const db = new DatabaseSync(path);
   const journal = openWireRequestJournal(journalDir, { clock: now, leaseMs: 300000 });
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: TEST_CONNECTION, readAuthority: authorityReader() });
@@ -105,7 +110,7 @@ export async function accountingFixture(t, options = {}) {
   };
   return { dir, path, db, journal, journalDir, payload, admit, admitContext, payment, args, reserve, rows, files, nonces, now,
     store: () => store, setTime: value => { time = value; },
-    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, wireOperationView, ...options }); },
+    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, ...readers, ...options }); },
     tuples: () => db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n,
     payments: () => db.prepare('SELECT * FROM kit_payment_transactions').all(),
     jobRows: () => db.prepare('SELECT * FROM peer_jobs ORDER BY rowid').all(),
