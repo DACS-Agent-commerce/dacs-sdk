@@ -6615,6 +6615,116 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/substrate/demos.mjs",
+          "before": null,
+          "after": "bda7c603b0ec336b8d633c1a2976098b6277b389"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/public-demos-reader-node.mjs",
+          "before": null,
+          "after": "d96f4f1c7bf7ac0e485b8cc0f366eb778f561cd5"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/public-demos-reader-purchase.mjs",
+          "before": null,
+          "after": "a128c6978a07bd5f9b8d1e3ed72898565fe31533"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "9b3fac5c0509ab6f0e5401c7d76700814a73842d",
+          "after": "2cc98f9293fb88da1db38152d03b8cfa1861195b"
+        },
+        {
+          "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+          "before": "8a0d5f40a09ba49a79011580142ef137bc9db113",
+          "after": "8e433835a01a81de01ea3a4d6f377270905ae434"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2",
+          "after": "864ac07cb6e9d025adb5a776d41143bd139a801f"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-construction.test.mjs",
+          "before": null,
+          "after": "c9bb95cb0d3ce5b24fb1f43015bc828db1d995c0"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-consumers.test.mjs",
+          "before": null,
+          "after": "1abbf24badfff4341a1746a121e70079bb27105e"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-errors.test.mjs",
+          "before": null,
+          "after": "1b8071e6367724b5b4ca7120b5a9effc7280f6a5"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-first-read.test.mjs",
+          "before": null,
+          "after": "4f4db2f55ef80d013e7d6d90323f7603b91d10c9"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-purchase-observation.test.mjs",
+          "before": null,
+          "after": "402f6c02881cd173bda5b8b974d481122072251f"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-surface.test.mjs",
+          "before": null,
+          "after": "042048f96e210c436f14068e67636a078e46e8ca"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): refuse a public reader result once an answer is marked simulated",
+      "sha": "1b1d5ff04ac41277bba8a9fb6c26e67b1851be42",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/substrate/demos.mjs",
+          "before": "bda7c603b0ec336b8d633c1a2976098b6277b389",
+          "after": "3ac12a3aecade25cda81b6a3c0065cdaafeda6c9"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-first-read.test.mjs",
+          "before": "4f4db2f55ef80d013e7d6d90323f7603b91d10c9",
+          "after": "94ca4ccfe1e9665a7c5a8492b2e269e9826cfac4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF name the commit of the simulated-answer fix in the ledger",
+      "files": []
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test a public reader read left open across a marked answer",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-first-read.test.mjs",
+          "before": "94ca4ccfe1e9665a7c5a8492b2e269e9826cfac4",
+          "after": "bb916bc970fc5e7dba074ae95e9edf98b84137d0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF document the refusal of a marked answer in the public reader",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/substrate/demos.mjs",
+          "before": "3ac12a3aecade25cda81b6a3c0065cdaafeda6c9",
+          "after": "1210a631918cb1b11824b80770e1497c52738180"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P13a1 sign and verify seller traffic through the wire",
       "compact": true,
       "files": [
@@ -6875,6 +6985,23 @@
     },
     {
       "delta": "WF",
+      "sha": "9552cf74c2bf1dd739eee1dd1315b7bb7ef46e8c",
+      "subject": "fix(client): state which seller routes the wire request signer can sign",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5",
+          "after": "948a90f0c28e84d88cdb098baf69478d0bc4286f"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-authentication.test.mjs",
+          "before": "c105cadb85dac6be089bcfd69e053dae8aacdecb",
+          "after": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "test(client): cover changed signed response bytes",
       "sha": "cedf85a39a23d95242c9b3a393ca6206d2550ef1",
       "compact": true,
@@ -7041,6 +7168,29 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged request signer route limit in the seller request deadlines and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
+          "after": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF wrap the request signer doc comment in lines",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
+          "after": "1319c19e69704a0a4294a5a62d5e83eec182b4c4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P13a2 sign continuing routes and committed reads with the finalized commitment",
       "files": [
         {
@@ -7094,6 +7244,29 @@
           "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
           "before": "7de38417501b62e785e7a84181b057a76f5810fe",
           "after": "7de38417501b62e785e7a84181b057a76f5810fe"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged request signer route limit in the continuing routes and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
+          "after": "4754c968bde4ee62121134b3645c16d5d40c9cbf"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the request signer doc comment with and without evidence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
+          "after": "1eaa3e419dc2d124c78fbc916d0cef0ae99f6f4c"
         }
       ]
     },
@@ -7438,69 +7611,6 @@
           "path": "packages/dacs-client/src/dacs/seller-http.mjs",
           "before": "f80404d442afea5c691c15c3b729ec10ea9bf319",
           "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the merged request signer route limit in the seller request deadlines and refresh package pins",
-      "compact": true,
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
-          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
-          "after": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the merged request signer route limit in the continuing routes and refresh package pins",
-      "compact": true,
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
-          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
-          "after": "4754c968bde4ee62121134b3645c16d5d40c9cbf"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "sha": "9552cf74c2bf1dd739eee1dd1315b7bb7ef46e8c",
-      "subject": "fix(client): state which seller routes the wire request signer can sign",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
-          "before": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5",
-          "after": "948a90f0c28e84d88cdb098baf69478d0bc4286f"
-        },
-        {
-          "path": "packages/dacs-client/test/wire-authentication.test.mjs",
-          "before": "c105cadb85dac6be089bcfd69e053dae8aacdecb",
-          "after": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF wrap the request signer doc comment in lines",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
-          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
-          "after": "1319c19e69704a0a4294a5a62d5e83eec182b4c4"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the request signer doc comment with and without evidence",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
-          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
-          "after": "1eaa3e419dc2d124c78fbc916d0cef0ae99f6f4c"
         }
       ]
     }
