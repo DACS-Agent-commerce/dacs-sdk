@@ -31,8 +31,8 @@ const USAGE = "usage: check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]";
 class UsageError extends Error {}
 
 export const PINNED = Object.freeze({
-  holdSha256: "4808f6cd63b97a9928c084285f828e8f9c0a8594b1cc3378bea66eb090d12a84",
-  holdBytesSha256: "e9c5a7b75b8fe1e92422426dac607d2961fa8dc581cc693e380d06feb2eefb53",
+  holdSha256: "6272451f998ed136adb98907c9f18bb343a994c6d9c0e4c64bbb8e830752857f",
+  holdBytesSha256: "0da9b120d4f260420aa779a01533444cb285fd357228de0f919f9b8832f1fc07",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -41,7 +41,7 @@ export const PINNED = Object.freeze({
   delta: "D15",
   sourceRepository: "DACS-Agent-commerce/frontend",
   sourceCommit: "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
-  exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs", "./node-wallet": "./src/wallet/node-wallet-session.mjs" }),
+  exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs", "./node-wallet": "./src/wallet/node-wallet-session.mjs", "./substrate/demos": "./src/substrate/demos.mjs" }),
   files: Object.freeze([
     Object.freeze({ path: "packages/dacs-client/src/purchases.mjs", sourcePath: "http-mcp/src/purchases.mjs", heldBlob: "ee71c89fcfa2ef7fa44716084a810e546343452c", lines: Object.freeze(["666", "789", "811", "905", "927-934"]) }),
     Object.freeze({ path: "packages/dacs-client/src/dacs/wallet-transactions.mjs", sourcePath: "http-mcp/src/dacs/wallet-transactions.mjs", heldBlob: "948107e13dba08f162dd3f1b27968b2eae96d799", lines: Object.freeze(["114"]) }),
