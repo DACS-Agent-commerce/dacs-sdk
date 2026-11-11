@@ -7110,6 +7110,18 @@
           "after": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(wallet): check that no package export reaches the reservation module",
+      "sha": "fce7c509715ce94ee9153eaad2efe11d27bdef23",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f",
+          "after": "5fe427a4c2f7d293a9a1b925e381a4e24346af95"
+        }
+      ]
     }
   ]
 }
