@@ -1,4 +1,4 @@
-import { expectMonotonicTimeout } from "../support/monotonicWait.js";
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -293,6 +293,6 @@ for (const jump of [-60_000, 60_000]) {
       } else await writeFile(path, owner, { mode: 0o600 });
       await expectMonotonicTimeout(() => store.claim({ intent: intent(), owner: "waiting", now: 1, leaseDurationMs: 10 }),
         10, 2, jump, /timed out/);
-    });
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
   }
 }

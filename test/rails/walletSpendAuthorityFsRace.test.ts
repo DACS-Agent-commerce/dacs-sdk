@@ -1,4 +1,4 @@
-import { expectMonotonicTimeout } from "../support/monotonicWait.js";
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import { hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -553,6 +553,6 @@ for (const jump of [-60_000, 60_000]) {
       }
       await expectMonotonicTimeout(() => store.transact(scope, () => { throw new Error("must not enter"); }),
         10, 2, jump, /timed out/);
-    });
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
   }
 }

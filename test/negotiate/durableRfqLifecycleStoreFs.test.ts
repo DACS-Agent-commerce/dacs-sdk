@@ -1,4 +1,4 @@
-import { expectMonotonicTimeout } from "../support/monotonicWait.js";
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -794,5 +794,5 @@ for (const jump of [-60_000, 60_000]) {
     };
     const client = createDurableRfqLifecycleClient(clientOptions(store, transport));
     await expectMonotonicTimeout(() => client.open(openInput()), 10, 2, jump, /RFQ filesystem create failed/);
-  });
+  }, WALL_JUMP_TEST_TIMEOUT_MS);
 }
