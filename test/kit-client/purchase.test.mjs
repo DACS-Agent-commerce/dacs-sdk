@@ -31,11 +31,13 @@ test('K12-H7 / A37 today: a purchase through the public entries on the fixture n
   assert.equal(kept.bundle.sessionNonce, selfDerivedNonce({ operation, jobId: operation.terms.protocol.jobId }), 'the client derived its own nonce (K12-H1)');
 
   // The first failing step, exactly as the index records it.
+  assert.ok(failure, 'the purchase failed at its plan step');
   const [contextFailure, ...laterFailures] = world.contextFailures;
+  assert.ok(contextFailure, 'the seller client reported a failed context exchange');
   assert.deepEqual(laterFailures, [], 'one failed context exchange only');
   const requests = Object.fromEntries(REQUEST_COUNTERS.map((name) => [name, world.sellerRequests.filter((path) => path === DACS_SELLER_HTTP_PATHS[name]).length]));
   assert.equal(world.sellerRequests.length, Object.values(requests).reduce((sum, count) => sum + count, 0), 'no seller request outside the counted routes');
-  assert.deepEqual({ step: failure.step, code: failure.error.code, layer: contextFailure.layer,
+  assert.deepEqual({ step: failure.step, code: failure.error.code, failureClass: contextFailure.failureClass, layer: contextFailure.layer,
     counters: { ...requests, sellerSignatures: fixture.signed.length - sellerSignaturesBefore, walletEffects: world.native.writes.length + world.native.calls.length + world.chain.broadcasts } },
-  { step: CURRENT.step, code: CURRENT.code, layer: CURRENT.layer, counters: CURRENT.counters });
+  { step: CURRENT.step, code: CURRENT.code, failureClass: CURRENT.failureClass, layer: CURRENT.layer, counters: CURRENT.counters });
 });
