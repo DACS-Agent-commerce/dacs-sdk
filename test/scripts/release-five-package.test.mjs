@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -159,13 +161,34 @@ function releaseFixture({ version = PLANNED, changes = {} } = {}) {
 // instead of the set's own archive would fail the run.
 function releaseSet(root, { strict }) {
   const output = join(root, "package-artifacts/release-set");
-  const result = spawnSync(process.execPath, [
-    join(root, "scripts/verify-release-set.mjs"), "--output-dir", output, ...(strict ? ["--strict"] : []),
-  ], { cwd: root, encoding: "utf8", env: { ...process.env, npm_config_offline: "true" }, timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
+  const result = spawnSync(process.execPath, releaseSetArguments(root, output, strict),
+    { cwd: root, encoding: "utf8", env: { ...process.env, npm_config_offline: "true" }, timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
+  return releaseSetResult(output, result.status, result.stdout + result.stderr);
+}
+
+// Runs the release set against a registry the test serves itself, which the
+// blocking `releaseSet` cannot do while the server shares its process.
+async function releaseSetAgainstRegistry(root, registryUrl) {
+  const output = join(root, "package-artifacts/release-set");
+  const child = spawn(process.execPath, releaseSetArguments(root, output, true), {
+    cwd: root, env: { ...process.env, npm_config_offline: "false", npm_config_registry: registryUrl },
+  });
+  let text = "";
+  child.stdout.on("data", (chunk) => { text += chunk; });
+  child.stderr.on("data", (chunk) => { text += chunk; });
+  const [status] = await once(child, "close");
+  return releaseSetResult(output, status, text);
+}
+
+function releaseSetArguments(root, output, strict) {
+  return [join(root, "scripts/verify-release-set.mjs"), "--output-dir", output, ...(strict ? ["--strict"] : [])];
+}
+
+function releaseSetResult(output, status, text) {
   const provenancePath = join(output, "release-provenance.json");
   return {
-    status: result.status,
-    output: result.stdout + result.stderr,
+    status,
+    output: text,
     outputDirectory: output,
     provenance: existsSync(provenancePath) ? JSON.parse(readFileSync(provenancePath, "utf8")) : undefined,
   };
@@ -231,6 +254,46 @@ test("client and kit SBOM consumers resolve internal packages from the set's own
       const [distribution] = sbom.components.find((component) => component.name === name).externalReferences;
       assert.match(distribution.url, /^file:.+\.tgz$/u, `${label} SBOM resolves ${name} from an archive`);
     }
+  }
+});
+
+// A registry that knows only `better-sqlite3`, at the one version it is asked for.
+function nativeRegistry(version) {
+  const server = createServer((request, response) => {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    if (request.url !== "/better-sqlite3") {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      name: "better-sqlite3",
+      "dist-tags": { latest: version },
+      versions: { [version]: { name: "better-sqlite3", version, dist: { tarball: `${base}/better-sqlite3/-/better-sqlite3-${version}.tgz` } } },
+    }));
+  });
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({
+    url: `http://127.0.0.1:${server.address().port}`,
+    close: () => new Promise((done) => server.close(done)),
+  })));
+}
+
+test("the host SBOM resolves better-sqlite3 from the pin in the host's packed manifest", { timeout: 150_000 }, async () => {
+  const pinnedVersion = "7.7.7";
+  const withoutPin = JSON.parse(readFileSync(join(strictRunOnFiveReleasablePackages().outputDirectory, "host.cdx.json"), "utf8"));
+  assert.equal(withoutPin.components.some((component) => component.name === "better-sqlite3"), false);
+
+  const registry = await nativeRegistry(pinnedVersion);
+  try {
+    const root = releaseFixture({ changes: { [HOST]: { optionalDependencies: { "better-sqlite3": pinnedVersion } } } });
+    const run = await releaseSetAgainstRegistry(root, registry.url);
+    assert.equal(run.status, 0, run.output);
+    const host = JSON.parse(readFileSync(join(run.outputDirectory, "host.cdx.json"), "utf8"));
+    assert.equal(host.components.find((component) => component.name === "better-sqlite3")?.version, pinnedVersion);
+    const client = JSON.parse(readFileSync(join(run.outputDirectory, "client.cdx.json"), "utf8"));
+    assert.equal(client.components.some((component) => component.name === "better-sqlite3"), false);
+  } finally {
+    await registry.close();
   }
 });
 

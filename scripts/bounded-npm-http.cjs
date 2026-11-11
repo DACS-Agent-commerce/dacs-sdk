@@ -110,7 +110,9 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
     const request = transport.request;
     transport.request = function (...args) {
       const pending = request.apply(this, args), emit = pending.emit;
-      pending.setHeader("accept-encoding", "identity");
+      // Headers already written (Expect: 100-continue, raw header array) cannot change;
+      // an encoded reply is still refused when it arrives.
+      if (!pending.headersSent) pending.setHeader("accept-encoding", "identity");
       let failed = false, timer, deadline, response;
       // Admission can outlive the request (its body may already be read), so the
       // deadline and request failures cancel admission directly.

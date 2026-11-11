@@ -138,9 +138,10 @@ test('P10-T15 the packed archive contains no authority fixture', () => {
 
 test('no EB test double or authority fixture ships in the packed kit', () => {
   const packed = sellerPackFiles().sort();
-  for (const file of ['src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs']) assert.ok(packed.includes(file), `${file} ships`);
+  const effectModules = ['src/dacs/effect-boundary.mjs', 'src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs'];
+  for (const file of effectModules) assert.ok(packed.includes(file), `${file} ships`);
   assert.deepEqual(packed.filter((path) => /authority-fixture|effect-boundary-fixture|kit-guard-fixture|(?:^|\/)test\//.test(path)), []);
-  for (const file of ['src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs']) {
+  for (const file of effectModules) {
     assert.deepEqual(relativeImports(file).filter((target) => /(?:^|\/)test\//.test(target)), [], `${file} imports no test module`);
     assert.doesNotMatch(readFileSync(join(packageDirectory, file), 'utf8'), /setKitOperationGuardForTest|authority-fixture|effect-boundary-fixture/, `${file} names no test setter or fixture`);
   }
