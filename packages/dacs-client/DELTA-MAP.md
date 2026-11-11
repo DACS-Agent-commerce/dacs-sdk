@@ -1209,6 +1209,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/effect-history.mjs:1` | c9067c8d3faf5b01d1f2f174280d81877786e2d5 |
 | WF | delta(client): WF name the packed contents test without a plan abbreviation | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | e159d0cb9ca487ba30500a5a3da40ea5bfab4b32 |
+| WF | delta(client): WF record the effect boundary blobs merged with the lower branch fixes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | b4d690799d4ea3e95f16278a542759e6f59f15ce |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9 |
 
 ## Complete commit and file inventory
 
@@ -3853,6 +3856,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

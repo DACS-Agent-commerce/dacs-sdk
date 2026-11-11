@@ -7020,6 +7020,22 @@
           "after": "e159d0cb9ca487ba30500a5a3da40ea5bfab4b32"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the effect boundary blobs merged with the lower branch fixes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "b4d690799d4ea3e95f16278a542759e6f59f15ce",
+          "after": "b4d690799d4ea3e95f16278a542759e6f59f15ce"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9"
+        }
+      ]
     }
   ]
 }
