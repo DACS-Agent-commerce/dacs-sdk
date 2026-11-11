@@ -223,7 +223,7 @@ out.refusedConfigurations = {
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
   otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
   scriptedJournal: await refusal({ signer, listing, dataDirectory, ...capabilities(), reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
-  scriptedAgent: await agentRefusal({ signer, listing, vetMode: KIT_TP1_VET_MODE, ...capabilities(), nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
+  scriptedAgent: await agentRefusal({ signer, listing, vetMode: KIT_TP1_VET_MODE, ...withoutAdmission, nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
     reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
 };
 
