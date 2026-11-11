@@ -354,14 +354,15 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
   // One transaction on the latest stored row: a newer save, even one that moved the status or stage, does not drop the suspension.
   // An ended purchase takes no further requests, so nothing is recorded for it.
   // With an attempt id the route's unknown outcome becomes `suspended`; the attempt counts are untouched, so it stays possibly dispatched.
+  // A stop for an attempt that is no longer the route's unresolved one (a newer attempt replaced or answered it) records nothing.
   function recordSuspension(cause, path, { attemptId, queuedOnly = false } = {}) {
     const saved = transaction(db, () => {
       const seen = holder.get(), row = ops.get(seen.accountId, seen.id), protocol = row?.state.protocol;
       if (!row) throw new StaleProtocolCheck(seen);
-      if ((ENDED_STATUSES.has(row.status) && row.status !== 'settled_verified') || (queuedOnly && !hasQueuedWork(protocol))) return row;
       const prior = protocol.sellerRequests?.[path];
-      const outcome = attemptId && prior?.attemptId === attemptId && prior.lastClass === SELLER_ANSWER_CLASS.UNKNOWN
-        ? { sellerRequests: { ...protocol.sellerRequests, [path]: { ...prior, lastClass: SELLER_ANSWER_CLASS.SUSPENDED } } } : {};
+      const current = prior?.attemptId === attemptId && prior?.lastClass === SELLER_ANSWER_CLASS.UNKNOWN;
+      if ((ENDED_STATUSES.has(row.status) && row.status !== 'settled_verified') || (queuedOnly && !hasQueuedWork(protocol)) || (attemptId && !current)) return row;
+      const outcome = attemptId ? { sellerRequests: { ...protocol.sellerRequests, [path]: { ...prior, lastClass: SELLER_ANSWER_CLASS.SUSPENDED } } } : {};
       return writeProtocol(row, { ...outcome, sellerSuspension: { id: randomUUID(), cause, path, at: new Date(now()).toISOString() } }, 'seller_suspended', { cause, path });
     });
     if (sameProgress(holder.get(), saved)) holder.set(saved);

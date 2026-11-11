@@ -7970,6 +7970,23 @@
     },
     {
       "delta": "WF",
+      "subject": "fix(client): ignore a seller stop for an attempt a newer one replaced",
+      "sha": "5f1cbcdb4498a6475f546ac7e383f46763b990e6",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "23db67d4be5c8be2b7b27aa8723434d490fbc821",
+          "after": "84bf663eba41f78d4a44672a2caf21ea52ad6f63"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-suspension.test.mjs",
+          "before": "97a78d7307c1ac3947efdcba2d3368ac353a582a",
+          "after": "c3f5dac05fd2af76c65238f819d636869f7919fb"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the merged public endpoint client and refresh package pins",
       "compact": true,
       "files": [
