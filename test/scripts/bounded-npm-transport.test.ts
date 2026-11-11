@@ -497,6 +497,15 @@ describe("total command deadline and retry budget", () => {
   it.each([0, 4, -1])("rejects retry budget %s", attempts => {
     expect(() => runBoundedCommand("docker", [], { attempts })).toThrow("retry budget");
   });
+  it.each([0, -1, 1.5, 2_147_484, Number.MAX_SAFE_INTEGER])("rejects deadline %s seconds", seconds => {
+    expect(() => runBoundedCommand("docker", [], { seconds })).toThrow("command deadline");
+  });
+  it("schedules the longest accepted deadline within the timer limit", async () => {
+    const h = harness(); const scheduled: number[] = [];
+    const result = runBoundedCommand("npm", ["install"], { ...h.options, seconds: 2_147_483, schedule: (callback: () => void, ms: number) => { scheduled.push(ms); return h.options.schedule(callback); } });
+    h.children[0]?.emit("exit", 0); await result;
+    expect(scheduled).toEqual([2_147_483_000]);
+  });
 });
 
 const buildModule = "../../scripts/bounded-build.mjs";

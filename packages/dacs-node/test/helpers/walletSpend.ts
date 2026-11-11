@@ -8,24 +8,25 @@ import {
   type WalletSpendStatusV1,
 } from "@kynesyslabs/dacs";
 
-const TEST_POLICY: Readonly<WalletSpendPolicyV1> = Object.freeze({
-  policyVersion: "1",
-  policyId: "test-only-permissive-wallet-authority",
-  wallet: "test-wallet",
-  chainId: "test-chain",
-  maximumConcurrentEffects: 1,
-  maximumRetainedReservations: 1,
-  assets: Object.freeze([]),
-});
-
 /**
  * Test seam for payment-track tests whose subject is the outer coordinator,
  * not wallet policy arithmetic. Dedicated wallet-authority tests use the real
- * implementation and durable stores.
+ * implementation and durable stores. `wallet` is the spelling the policy names.
  */
-export function createPermissiveTestWalletSpendAuthorityV1(): WalletSpendAuthorityV1 {
+export function createPermissiveTestWalletSpendAuthorityV1(
+  wallet = "test-wallet",
+): WalletSpendAuthorityV1 {
+  const policy: Readonly<WalletSpendPolicyV1> = Object.freeze({
+    policyVersion: "1",
+    policyId: "test-only-permissive-wallet-authority",
+    wallet,
+    chainId: "test-chain",
+    maximumConcurrentEffects: 1,
+    maximumRetainedReservations: 1,
+    assets: Object.freeze([]),
+  });
   return Object.freeze({
-    policy: TEST_POLICY,
+    policy,
     policyHash: "f".repeat(64),
     async reserve(reservation: Readonly<WalletSpendReservationV1>) {
       return Object.freeze({
@@ -52,14 +53,14 @@ export function createPermissiveTestWalletSpendAuthorityV1(): WalletSpendAuthori
     async inspect(): Promise<Readonly<WalletSpendStatusV1>> {
       return Object.freeze({
         revision: 0,
-        policyId: TEST_POLICY.policyId,
+        policyId: policy.policyId,
         policyHash: "f".repeat(64),
-        wallet: TEST_POLICY.wallet,
-        chainId: TEST_POLICY.chainId,
-        maximumConcurrentEffects: TEST_POLICY.maximumConcurrentEffects,
+        wallet: policy.wallet,
+        chainId: policy.chainId,
+        maximumConcurrentEffects: policy.maximumConcurrentEffects,
         activeEffects: 0,
         retainedReservations: 0,
-        maximumRetainedReservations: TEST_POLICY.maximumRetainedReservations,
+        maximumRetainedReservations: policy.maximumRetainedReservations,
         operatorActionReservations: Object.freeze([]),
         assets: Object.freeze([]),
       });

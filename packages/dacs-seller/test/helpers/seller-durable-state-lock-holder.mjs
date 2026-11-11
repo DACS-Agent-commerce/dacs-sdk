@@ -24,11 +24,11 @@ process.on('disconnect', () => process.exit(0));
 process.on('message', async (message) => {
   try {
     if (message.type === 'hold') {
-      // Optional: the file-creation mask this process runs with.
+      // Optional: the file-creation mask this process runs with, and the store's maxJobs.
       if (message.umask !== undefined) process.umask(message.umask);
       const key = createPrivateKey({ key: Buffer.from(message.pkcs8, 'base64'), format: 'der', type: 'pkcs8' });
       const signer = { claim: message.claim, sign: (bytes) => { if (!Buffer.from(bytes).toString().startsWith('dacs-chatgpt-plugin:')) effects.signs += 1; return sign(null, Buffer.from(bytes), key); } };
-      store = await createSellerDurableState({ dir: message.dir, signer, listingPin: message.listingPin });
+      store = await createSellerDurableState({ dir: message.dir, signer, listingPin: message.listingPin, maxJobs: message.maxJobs });
       jobId = message.jobId;
       let started = false;
       store.withJob(jobId, (session) => new Promise((resolve) => {
