@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { createServer } from "node:http";
+import { createServer, get as httpGet, request as httpRequest } from "node:http";
 import { EventEmitter } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -61,6 +61,38 @@ describe("inert bounded npm HTTP admission", () => {
     const error = await rejected;
     expect(error.message).toContain("ELIMIT");
     expect(error).toMatchObject({ code: "ELIMIT" });
+  });
+  describe("requests whose headers are already written", () => {
+    const headerForms = [
+      ["an Expect: 100-continue header", (port: number) => ({ host: "127.0.0.1", port, path: "/pkg", headers: { Expect: "100-continue" } })],
+      ["a raw header array", (port: number) => ({ host: "127.0.0.1", port, path: "/pkg", headers: ["Host", "127.0.0.1", "Accept", "*/*"] })],
+    ] as const;
+    const fetchThroughAdmission = async (options: (port: number) => object, replyHeaders: Record<string, string>) => {
+      const server = createServer((_request, serverReply) => { serverReply.writeHead(200, replyHeaders); serverReply.end("{}"); });
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing test address");
+      const transport = { request: httpRequest, get: httpGet };
+      installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+      try {
+        return await new Promise<{ body?: string; error?: Error }>(resolve => {
+          const pending = transport.get(options(address.port));
+          pending.once("error", (error: Error) => resolve({ error }));
+          pending.once("response", (incoming: PassThrough) => {
+            const parts: Buffer[] = [];
+            incoming.on("data", (part: Buffer) => parts.push(part)).on("end", () => resolve({ body: Buffer.concat(parts).toString() }));
+          });
+        });
+      } finally { server.close(); }
+    };
+    it.each(headerForms)("delivers an identity reply to a request with %s", async (_label, options) => {
+      const result = await fetchThroughAdmission(options, { "content-type": "application/json" });
+      expect(result).toEqual({ body: "{}" });
+    });
+    it.each(headerForms)("still refuses an encoded reply to a request with %s", async (_label, options) => {
+      const result = await fetchThroughAdmission(options, { "content-type": "application/json", "content-encoding": "gzip" });
+      expect(result.error?.message).toContain("unsupported npm HTTP content encoding");
+    });
   });
   it("bounds gzip archive expansion before npm's tar decoder receives it", async () => {
     const archive = gzipSync(Buffer.alloc(8));
@@ -496,6 +528,15 @@ describe("total command deadline and retry budget", () => {
   });
   it.each([0, 4, -1])("rejects retry budget %s", attempts => {
     expect(() => runBoundedCommand("docker", [], { attempts })).toThrow("retry budget");
+  });
+  it.each([0, -1, 1.5, 2_147_484, Number.MAX_SAFE_INTEGER])("rejects deadline %s seconds", seconds => {
+    expect(() => runBoundedCommand("docker", [], { seconds })).toThrow("command deadline");
+  });
+  it("schedules the longest accepted deadline within the timer limit", async () => {
+    const h = harness(); const scheduled: number[] = [];
+    const result = runBoundedCommand("npm", ["install"], { ...h.options, seconds: 2_147_483, schedule: (callback: () => void, ms: number) => { scheduled.push(ms); return h.options.schedule(callback); } });
+    h.children[0]?.emit("exit", 0); await result;
+    expect(scheduled).toEqual([2_147_483_000]);
   });
 });
 
