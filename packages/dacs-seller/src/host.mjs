@@ -42,7 +42,7 @@ import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, inspectWireOperation, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
 import { demDeliveryContextVetMode } from './dacs/dem-delivery-context-consumer.mjs';
@@ -52,6 +52,7 @@ import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
+import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
@@ -312,9 +313,10 @@ export async function startSellerHost(options) {
     let stopping = false;
     // The seller takes new purchases until it stops. No route allocates purchase capacity yet, so readiness does not read it.
     const sellerReady = () => !stopping;
+    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.
-    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity });
+    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before

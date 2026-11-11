@@ -32,6 +32,7 @@ const OPEN_CLEANUP = `json_extract(record, '$.cleanup.releasePending') = 1 OR js
 
 // Per transaction instance: the live-begin reader below, kept off the frozen API so that nothing outside the module can take it for authority.
 const instanceReaders = new WeakMap();
+const instanceLeaseChecks = new WeakMap();
 const ALLOCATION_CLEANUP = new Map([['success', 'context-slot'], ['vet-non-pass', 'all'], ['other', 'all'], ['none', 'all']]);
 
 const isHash = (value) => typeof value === 'string' && HASH.test(value);
@@ -609,6 +610,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
       acceptanceHooks.push(hook);
     } });
   instanceReaders.set(api, Object.freeze({ ownedIntent }));
+  instanceLeaseChecks.set(api, heldLease);
   return api;
 }
 
@@ -617,4 +619,11 @@ export function admissionTransactionInternals(transaction) {
   const readers = instanceReaders.get(transaction);
   if (readers === undefined) throw new TypeError('admissionTransactionInternals needs a transaction made by createContextAdmissionTransaction');
   return readers;
+}
+
+/** Verify a live same-job lease belonging to this admission transaction. Throws TypeError before I/O for any other lease. */
+export function assertAdmissionJobLease(transaction, jobId, lease) {
+  const checkLease = instanceLeaseChecks.get(transaction);
+  if (checkLease === undefined) throw new TypeError('the job lease needs its owning admission transaction');
+  checkLease(lease, jobId);
 }

@@ -58,7 +58,11 @@ enabled), and admission allots one only while the whole allotment is free. A
 successful context completion returns only the context slot; an aborted start, a
 failed or non-validated context and a terminal DACS-5 session (checked once at
 startup) return every open slot. Returned units never reduce what has been
-charged. Admission and accounting accept capacity through their internal ports.
+charged. The host composes a reservation coordinator: one
+in-process mutex per operation covers journal inspection, capacity classification,
+accounting and recording the reservation result. The routes do not yet reserve
+through the coordinator. Admission and accounting accept capacity through their
+internal ports.
 The routes do not yet reserve through these units, so the host's readiness does
 not read them: signed routes reserve through the store's accounting, and the
 periodic terminal cleanup comes with the routes that use the units.

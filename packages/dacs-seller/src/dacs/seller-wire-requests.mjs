@@ -120,12 +120,12 @@ function admitAnswerText(text) {
  * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. Returns the frozen context,
  * the only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
  */
-export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, stopped = null }) {
+export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, stopped = null }) {
   const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
   if (stopped !== null && typeof stopped !== 'function') throw new TypeError('the wire context\'s stop check must be a function');
-  const context = Object.freeze({ binding, signer, journal, store, requireDelegation, readCommitmentReceipt,
+  const context = Object.freeze({ binding, signer, journal, store, reservations, requireDelegation, readCommitmentReceipt,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
     stopped: stopped === null ? null : () => stopped(),
     retainedFor: (input) => retainedFor(agent, input, { store, capacity }), continuationFor: (input) => continuationFor(agent, input, signedListing) });

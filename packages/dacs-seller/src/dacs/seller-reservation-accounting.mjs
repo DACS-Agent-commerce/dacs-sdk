@@ -1,10 +1,15 @@
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
-import { isTp1WireProfile, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS as PATHS, isTp1WireProfile, wireOperationBinding, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
+import { assertAdmissionJobLease } from './seller-admission-transaction.mjs';
 import { SELLER_CONTEXT_PATH, SellerTransportError } from './seller-transport-auth.mjs';
 
 // The wire journal's lease; accounting refuses a clock whose lease sum the journal could not take.
 const RESERVATION_LEASE_MS = 300000;
+// How long a request waits for the mutex of its operation before it is answered `seller_effect_pending`.
+const MUTEX_WAIT_MS = 10000;
+const STORE_CAPACITY_CODE = 'peer_store_capacity';
 const RESULTS = new Set(['new', 'recover', 'completed']);
 const PURCHASE_SLOT_UNITS = 17;
 const GENERAL_CAPACITY = Object.freeze({ class: 'general', allocationId: null });
@@ -164,6 +169,110 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       if (!RESULTS.has(effect?.state) || (replay && effect.state !== 'completed')) fail('wire_input_invalid', 500);
       saveResult(key, effect.state);
       return effect;
+    },
+  };
+}
+
+// One in-process first-come mutex per key. `acquire(key)` resolves to a release function (safe to call twice); a key nobody owns or
+// waits for leaves no entry. The mutex lives in memory only: a restart starts with every key free, relying on the seller state lock
+// that excludes a second live host.
+function createKeyedMutex() {
+  const tails = new Map();
+  return function acquire(key) {
+    const previous = tails.get(key) ?? Promise.resolve();
+    let release;
+    const owned = new Promise((resolve) => { release = resolve; });
+    const tail = previous.then(() => owned);
+    tails.set(key, tail);
+    void tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
+    return previous.then(() => release);
+  };
+}
+
+/**
+ * Compose the reservation coordinator over the accounting, the purchase capacity and `inspectOperation(payload)`, the
+ * synchronous read-only wire inspection of the payload's operation. `admissionTransaction`, when given, validates the job lease the
+ * context route borrows. Returns an object with reserveCoordinated; throws a TypeError when a port is missing or unusable.
+ */
+export function createReservationCoordinator({ accounting, capacity, inspectOperation, admissionTransaction }) {
+  if (typeof accounting?.reserveAccounted !== 'function' || typeof capacity?.classify !== 'function' || typeof capacity.recordExhaustion !== 'function'
+      || typeof inspectOperation !== 'function') {
+    throw new TypeError('the reservation coordinator needs accounting, purchase capacity, an operation inspection and, for context, the admission transaction');
+  }
+  const acquire = createKeyedMutex();
+  // What a request running under a borrowed job lease releases here: nothing, since its caller releases the lease.
+  const releaseNothing = () => {};
+
+  // A waiter that passes the deadline is refused, and the grant its place in the queue still earns is handed back unused.
+  async function acquireWithinDeadline(operationId) {
+    const acquiring = acquire(operationId);
+    try { return await boundedCall(() => acquiring, { timeoutMs: MUTEX_WAIT_MS }); } catch (cause) {
+      if (!isBoundedCallTimeout(cause)) throw cause;
+      void acquiring.then(release => release(), () => {});
+      throw new SellerTransportError('seller_effect_pending', 503, { cause });
+    }
+  }
+  // The context route runs inside the job's effect mutex, which its caller owns and releases; every other route takes its operation's.
+  async function enter({ payload, operationId }, ownership) {
+    if (payload.path !== PATHS.context) {
+      if (ownership !== undefined) throw new TypeError('only the context route runs under a borrowed job lease');
+      return acquireWithinDeadline(operationId);
+    }
+    assertAdmissionJobLease(admissionTransaction, payload.jobId, ownership?.jobLease);
+    return releaseNothing;
+  }
+
+  // The exhaustion record is written after the refused charge rolled back; a failed write is thrown with the refusal as its cause.
+  function annotateExhaustion({ payload, route, operationId }, refusal) {
+    try { capacity.recordExhaustion({ operationId, jobId: payload.jobId, route, cause: refusal.code }); } catch (failure) {
+      if (failure instanceof Error && failure.cause === undefined && Object.isExtensible(failure)) failure.cause = refusal;
+      throw failure;
+    }
+  }
+  async function reserveUnderMutex({ retainedWork, ...accounted }) {
+    const { payload, route } = accounted;
+    const inspection = inspectOperation(payload);
+    let refusal = null;
+    const checkCapacityWithin = () => {
+      let classified;
+      try {
+        classified = capacity.classify({ jobId: payload.jobId, buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin,
+          route, binding: wireOperationBinding(payload), inspection, retainedWork });
+      } catch (error) {
+        if (error?.code === STORE_CAPACITY_CODE) refusal = error;
+        throw error;
+      }
+      // A completed operation at capacity has no unit to charge, and answering it needs its source revalidated: it is refused.
+      if (classified.class === 'completed-at-capacity') fail(STORE_CAPACITY_CODE, 503);
+      return classified;
+    };
+    try { return await accounting.reserveAccounted({ ...accounted, checkCapacityWithin }); } catch (error) {
+      if (refusal !== null && error === refusal) annotateExhaustion(accounted, refusal);
+      throw error;
+    }
+  }
+
+  return {
+    /**
+     * Reserve one request under its operation's mutex: inspect the operation, then run the accounting (steps 1 to 8) with step 5
+     * classifying that inspection through the purchase capacity, call checked.reserve and record its result. The input is
+     * reserveAccounted's plus `retainedWork`, the host's flag for a retained purchase stage. Returns the wire effect.
+     * The mutex is released only once reserveAccounted has settled, whether it returned or threw; a context request borrows the
+     * `ownership.jobLease` its caller holds instead, validated against the job and never released here.
+     * Throws seller_effect_pending 503 (the timeout as its cause) after 10,000 ms without the mutex, before inspecting and with no
+     * row, unit or file. Throws peer_store_capacity 503 for a completed operation at capacity, with no row, unit, file or exhaustion record,
+     * and where the class has no capacity, after its exhaustion record; wire_input_invalid 500
+     * for malformed input; a TypeError for a context request without a live lease of its job or any other route given one;
+     * otherwise the inspection's, accounting's or reservation's own error.
+     */
+    async reserveCoordinated(input = {}, ownership) {
+      assertKitOperationAdmitted('reserveCoordinated');
+      const { payload, route, operationId, retainedWork } = input;
+      if (payload === null || typeof payload !== 'object' || route !== payload.path || operationId !== wireOperationId(payload) || typeof retainedWork !== 'boolean') {
+        fail('wire_input_invalid', 500);
+      }
+      const release = await enter(input, ownership);
+      try { return await reserveUnderMutex(input); } finally { release(); }
     },
   };
 }
