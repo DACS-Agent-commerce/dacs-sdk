@@ -6682,6 +6682,7 @@
     {
       "delta": "WF",
       "subject": "fix(client): refuse a public reader result once an answer is marked simulated",
+      "sha": "1b1d5ff04ac41277bba8a9fb6c26e67b1851be42",
       "files": [
         {
           "path": "packages/dacs-client/src/substrate/demos.mjs",
@@ -6694,6 +6695,11 @@
           "after": "94ca4ccfe1e9665a7c5a8492b2e269e9826cfac4"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF name the commit of the simulated-answer fix in the ledger",
+      "files": []
     }
   ]
 }
