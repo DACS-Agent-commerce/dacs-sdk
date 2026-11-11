@@ -260,6 +260,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 
 - `P11b1L2` (WF) — the buyer coordinator treats an authenticated HTTP 404 `peer_unknown_job` as absence only during proposal reconciliation, so the first proposal reaches the wire host. Publication and seller-contribution refusals keep their classifications. The buyer package's seller HTTP client (`src/dacs/seller-http.mjs`) now passes the exact response bytes to the response verifier and awaits it within the call's deadline, so an unsigned, invalidly signed or changed-body 404 ends the call as an unavailable answer (`response-auth`, or `timeout` for a stalled verifier) instead of reaching the refusal path. Offline wire/coordinator tests, including the buyer package's own client, cover authentication failures and both sides of dispatch; the package integrity pins record the exact changed bytes.
 
+- `P52c` (WF) — the public, testnet-pinned, read-only Demos chain reader (`src/substrate/demos.mjs`, new export `./substrate/demos`, whose only name is `createDemosPublicChainReader`). It wraps `createDemosChainReader` from `src/dacs/chain.mjs`, which is unchanged, and offers a frozen object of nine reads and five metadata fields with no identity, passive-transfer or request method. The first read checks the pinned identity before its own request; only a successful check is shared. `observePurchaseTransfer` reports an included transfer as unavailable. The root still exports no chain reader.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -1133,6 +1135,27 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-session.test.mjs:1` | e84121241791b080837b9e2fbff8161aa1936889 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | fcab22c19cf83506883a5e2ad08e0f0d89658134 |
 | | `packages/dacs-client/test/runtime-floor.test.mjs:1` | c8133057b9b84685e1227cbb72fd1e1e8467f6ef |
+| WF | delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/substrate/demos.mjs:1` | bda7c603b0ec336b8d633c1a2976098b6277b389 |
+| | `packages/dacs-client/test/helpers/public-demos-reader-node.mjs:1` | d96f4f1c7bf7ac0e485b8cc0f366eb778f561cd5 |
+| | `packages/dacs-client/test/helpers/public-demos-reader-purchase.mjs:1` | a128c6978a07bd5f9b8d1e3ed72898565fe31533 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 2cc98f9293fb88da1db38152d03b8cfa1861195b |
+| | `packages/dacs-client/test/packed-consumer.test.mjs:1` | 8e433835a01a81de01ea3a4d6f377270905ae434 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 864ac07cb6e9d025adb5a776d41143bd139a801f |
+| | `packages/dacs-client/test/public-demos-reader-construction.test.mjs:1` | c9bb95cb0d3ce5b24fb1f43015bc828db1d995c0 |
+| | `packages/dacs-client/test/public-demos-reader-consumers.test.mjs:1` | 1abbf24badfff4341a1746a121e70079bb27105e |
+| | `packages/dacs-client/test/public-demos-reader-errors.test.mjs:1` | 1b8071e6367724b5b4ca7120b5a9effc7280f6a5 |
+| | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` | 4f4db2f55ef80d013e7d6d90323f7603b91d10c9 |
+| | `packages/dacs-client/test/public-demos-reader-purchase-observation.test.mjs:1` | 402f6c02881cd173bda5b8b974d481122072251f |
+| | `packages/dacs-client/test/public-demos-reader-surface.test.mjs:1` | 042048f96e210c436f14068e67636a078e46e8ca |
+| WF | fix(client): refuse a public reader result once an answer is marked simulated | Git commit selector 1b1d5ff04ac41277bba8a9fb6c26e67b1851be42 |
+| | `packages/dacs-client/src/substrate/demos.mjs:1` | 3ac12a3aecade25cda81b6a3c0065cdaafeda6c9 |
+| | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` | 94ca4ccfe1e9665a7c5a8492b2e269e9826cfac4 |
+| WF | delta(client): WF name the commit of the simulated-answer fix in the ledger | Git subject selector (must resolve exactly once after publication checkpoint) |
+| WF | delta(client): WF test a public reader read left open across a marked answer | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` | bb916bc970fc5e7dba074ae95e9edf98b84137d0 |
+| WF | delta(client): WF document the refusal of a marked answer in the public reader | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/substrate/demos.mjs:1` | 1210a631918cb1b11824b80770e1497c52738180 |
 
 ## Complete commit and file inventory
 
@@ -3594,6 +3617,52 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P52a admit purchases only on the engines range, Node 22.22.2 to 22.x and 24.15.0 to 24.x | `packages/dacs-client/test/node-wallet-session.test.mjs:1` |
 | delta(client): WF P52a admit purchases only on the engines range, Node 22.22.2 to 22.x and 24.15.0 to 24.x | `packages/dacs-client/test/public-api.test.mjs:1` |
 | delta(client): WF P52a admit purchases only on the engines range, Node 22.22.2 to 22.x and 24.15.0 to 24.x | `packages/dacs-client/test/runtime-floor.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/README.md:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/package.json:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/src/substrate/demos.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/helpers/public-demos-reader-node.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/helpers/public-demos-reader-purchase.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/packed-consumer.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-api.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-construction.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-consumers.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-errors.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-purchase-observation.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-surface.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `scripts/release-policy.json:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/HOLD.json:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/src/substrate/demos.mjs:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` |
+| delta(client): WF name the commit of the simulated-answer fix in the ledger | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF name the commit of the simulated-answer fix in the ledger | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF name the commit of the simulated-answer fix in the ledger | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF name the commit of the simulated-answer fix in the ledger | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF name the commit of the simulated-answer fix in the ledger | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF test a public reader read left open across a marked answer | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF test a public reader read left open across a marked answer | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF test a public reader read left open across a marked answer | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF test a public reader read left open across a marked answer | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF test a public reader read left open across a marked answer | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF test a public reader read left open across a marked answer | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` |
+| delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/README.md:1` |
+| delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/src/substrate/demos.mjs:1` |
 
 ## Original moved files
 

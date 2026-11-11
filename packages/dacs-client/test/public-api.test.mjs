@@ -120,7 +120,8 @@ test('candidate manifest uses release metadata and the exact public boundary', a
   assert.equal(client.type, 'module');
   assert.equal(client.version, core.version);
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
-  assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs', './node-wallet': './src/wallet/node-wallet-session.mjs' });
+  assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs', './node-wallet': './src/wallet/node-wallet-session.mjs',
+    './substrate/demos': './src/substrate/demos.mjs' });
   assert.equal(client.publishConfig, undefined, 'release-set admission is pending');
   assert.deepEqual(client.repository, { type: 'git', url: core.repository.url, directory: 'packages/dacs-client' });
   assert.equal(client.bugs.url, core.bugs.url);
@@ -134,7 +135,7 @@ test('the client manifest declares exactly demosdk ^4.0.16 and dacs-node and @sc
   assert.equal(client.dependencies['@kynesyslabs/demosdk'], '^4.0.16');
   assert.equal(client.dependencies['@kynesyslabs/dacs-node'], core.version);
   assert.match(client.dependencies['@scure/bip39'], /^\d+\.\d+\.\d+$/);
-  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet'], 'no export is added for the loading modules');
+  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos'], 'no export is added for the loading modules');
   const script = `import * as module from 'node:module';
     const refuse = (specifier, context, next) => {
       if (/demosdk|demos-loader|demos-quiet-hooks|node-demos-loading/.test(specifier)) throw new Error('unexpected import of ' + specifier);
@@ -200,6 +201,10 @@ for (const profileAuthority of [undefined, {}, { standardRevision: 'old' }, { st
 test('unqualified node reader and held transport constructors are outside the public candidate', async () => {
   const client = await import('@kynesyslabs/dacs-client');
   for (const name of ['createDemosChainReader', 'createDemosSr2WalletBridge', 'isDevnetAgreementTransport', 'isDevnetNativeTransport']) assert.equal(client[name], undefined);
+  // The one public chain reader is the testnet-pinned, read-only projection, offered only on its own subpath.
+  assert.equal(client.createDemosPublicChainReader, undefined);
+  const demos = await import('@kynesyslabs/dacs-client/substrate/demos');
+  assert.deepEqual(Object.keys(demos), ['createDemosPublicChainReader']);
 });
 
 test('the complete public protocol method set refuses actions before host effects', async () => {

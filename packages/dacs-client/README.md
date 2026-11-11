@@ -16,7 +16,7 @@ npm install /tmp/dacs-artifacts/kynesyslabs-dacs-0.1.0-alpha.0.tgz /tmp/dacs-art
 
 All three artifacts must come from the same reviewed SDK revision. Release-set admission requires coordinated artifact, lifecycle, SBOM and publication checks; `private: true` prevents publication until that happens.
 
-Both public entry points require Node ^22.22.2 or ^24.15.0. The root does not load SQLite during import. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal and its format/version constants. Source paths are private.
+Every public entry point requires Node ^22.22.2 or ^24.15.0. The root does not load SQLite during import. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal and its format/version constants. Source paths are private.
 
 The client depends on `@kynesyslabs/dacs-node` (the exact same release), `@kynesyslabs/demosdk` (`^4.0.16`) and `@scure/bip39` (exact). The Node wallet session loads demosdk's websdk through an internal loading module that is not a package export and that the root import never reaches. It imports `@kynesyslabs/dacs-node/demos-loader`, which registers the SDK's package-scoped resolver for demosdk's one extensionless directory import, and then registers a reviewed load transform. The transform removes demosdk's own diagnostic output on the signing paths by replacing only these statements with an empty statement on the same line: GCRGeneration.js lines 173, 246, 249, 250 and demosclass.js lines 719, 1547 (demosdk 4.0.16), or GCRGeneration.js lines 178, 302, 305, 306 and demosclass.js lines 738, 1775, 1781 (demosdk 4.0.18). It first checks the source's SHA-256 against a reviewed table, then each listed line against its recorded text, then the output's SHA-256 against its recorded digest, and refuses any other source shape with `node_wallet_sdk_unreviewed`. Nothing assigns `console`, `process.stdout` or `process.stderr`. Host rule: build the composition before any other import of `@kynesyslabs/demosdk/websdk` in the process; a module imported earlier never passes through the transform, so loading refuses `node_wallet_sdk_preloaded`.
 
@@ -72,6 +72,14 @@ Passive: none
 - `purchaseNext`, `protocolView` and `PURCHASE_STATUS_HELP` read the hold constant on every call or read: historical held text while held, the full text once admitted.
 - `OFFLINE_AGREEMENT_MODE` and `DEVNET_NATIVE_COMMITMENT_MARKER` are constants. `isOfflineWalletAgreement` returns a boolean; `deriveStorageAddress` returns text and throws `TypeError` for a non-text owner.
 - Every other export states its own contract in its doc comment. Failures are the exported error classes (`OperationError`, `NotWiredError`, `OutboundError`, the seller and wallet errors), which keep their cause. No export hands out a fixture identity, a simulation header or an unqualified chain reader.
+
+## Public Demos chain reader
+
+`@kynesyslabs/dacs-client/substrate/demos` exports only `createDemosPublicChainReader({rpcUrl, network, pinnedIdentity, timeoutMs, fetchImpl})`. It accepts only `network: 'testnet'` with the 64-hex chain identity pinned for testnet, and otherwise throws `OperationError` `invalid_configuration`. It holds no key and cannot sign or send.
+
+The returned frozen object has nine reads: `readStorageProgram`, `getAddressBalance`, `getTransactionFees`, `networkIdentity`, `getAddressNonce`, `observePurchaseTransfer`, `observeTransfer`, `getTransaction` and `findTransferAtNonce`. It also carries `network`, `pinnedIdentity`, `rpcOrigin`, `observer` and `evidenceMode`. Pass it unchanged as `chain` to `createPurchaseService` and `createListingVerifier` when no native Agreement transport is composed; with one, pass that transport's own `chainReader()` instead.
+
+The first read checks the RPC's chain identity before its own request, and refuses a simulated or different chain with `OperationError` `network_identity_mismatch`. Later reads rely on a successful check, but a read whose answer is marked simulated throws the same error instead of returning it and the next read checks again; a failed check is not reused. Each read otherwise returns and throws what the client's internal reader does, and honours the caller's `signal` where it takes one. `observePurchaseTransfer` reports an included transfer as `{status: 'unavailable', reason: 'native source evidence unavailable from public reader'}`, because this reader keeps no signed native source; a native purchase read through it stays unresolved.
 
 ## Node wallet session
 
