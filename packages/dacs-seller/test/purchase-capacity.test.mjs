@@ -771,17 +771,56 @@ test('with `maxRecords` small and `free` 0, then again after the 60,000 ms buyer
   w.reopen(); w.reopen(); await flood(2);
 });
 
-test('a completed reservation at capacity returns its inspected outcome without a charge', async t => {
+// An operation completed through the coordinator, then the store reopened at `limit` (FOUR leaves `free` 0).
+async function completedOperation(t, limit) {
   const w = await coordination(t); w.allocate(fixture.JOB);
-  completeWireEffect(w.f.journal, await w.reserve(await w.request({}, { newJob: true })), { status: 200, text: '{"status":"delivered"}' });
-  w.reopen(FOUR);
-  assert.equal(w.capacity.capacityReport().free, 0);
-  const rows = w.f.rows().length, files = w.f.files();
-  const input = await w.request();
-  input.checked = { reserve: () => assert.fail('completed replay starts no reservation') };
-  const effect = await w.reserve(input);
-  assert.deepEqual(effect, { state: 'completed', operationId: input.operationId, outcome: { status: 200, text: '{\"status\":\"delivered\"}' } });
-  assert.equal(w.f.rows().length, rows); assert.deepEqual(w.f.files(), files); assert.deepEqual(w.capacity.capacityReport().exhausted, []);
+  completeWireEffect(w.f.journal, await w.reserve(await w.request()), { status: 200, text: '{"status":"delivered"}' });
+  w.reopen(limit);
+  return w;
+}
+// One signed retry of the operation, admitted again for each reservation.
+const signedRetry = (w, change = {}) => {
+  const p = w.f.payload(change);
+  return async () => w.reserve({ ...(await w.f.admit(p)), paymentTx: null, retainedWork: true });
+};
+
+test('a completed operation at capacity refuses the same signed retry twice with no row, file or exhaustion record; with room the second is `peer_request_replayed`', async t => {
+  await t.test('at capacity', async st => {
+    const w = await completedOperation(st, FOUR);
+    assert.equal(w.capacity.capacityReport().free, 0);
+    const rows = w.f.rows().length, files = w.f.files(), retry = signedRetry(w);
+    await rejects(retry(), 'peer_store_capacity', 503);
+    await rejects(retry(), 'peer_store_capacity', 503);
+    assert.equal(w.f.rows().length, rows); assert.deepEqual(w.f.files(), files); assert.deepEqual(w.capacity.capacityReport().exhausted, []);
+  });
+  await t.test('with room', async st => {
+    const retry = signedRetry(await completedOperation(st, 1000));
+    assert.equal((await retry()).state, 'completed');
+    await rejects(retry(), 'peer_request_replayed', 409);
+  });
+});
+
+test('a completed context operation at capacity is refused `peer_store_capacity` under the borrowed job lease, with no row, file or exhaustion record', async t => {
+  const w = withCoordinator(world(t, { maxRecords: FOUR })), p = w.prepare();
+  await w.begin(p); await w.coordinatedContext(p);
+  assert.equal(w.report().free, 0);
+  const files = readdirSync(w.directory), allocation = w.current(p.jobId);
+  w.control.operation = target => view.completed(wireOperationBinding(target));
+  await rejects(w.coordinatedContext(p), 'peer_store_capacity', 503);
+  assert.equal(w.db().prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 1);
+  assert.deepEqual(w.current(p.jobId), allocation); assert.deepEqual(readdirSync(w.directory), files); assert.deepEqual(w.report().exhausted, []);
+});
+
+test('a completed operation at capacity refuses a retry that expired before it was reserved; with room it is `peer_expired`', async t => {
+  for (const [name, limit, code, status] of [['at capacity', FOUR, 'peer_store_capacity', 503], ['with room', 1000, 'peer_expired', 408]]) {
+    await t.test(name, async st => {
+      const w = await completedOperation(st, limit);
+      const input = { ...(await w.f.admit(w.f.payload({ expiresAt: fixture.T0 + 5000 }))), paymentTx: null, retainedWork: true };
+      // Eight seconds pass between admission and the reservation, on the wall clock and on the monotonic clock the wire re-checks with.
+      w.f.setTime(fixture.T0 + 8000); performance.now.mock.mockImplementation(() => 8000);
+      await rejects(w.reserve(input), code, status);
+    });
+  }
 });
 
 test('reservation-exhaustion-record-failure-keeps-the-refusal-as-cause', async t => {

@@ -47,24 +47,28 @@ that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host without the capability reclaims nothing. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 
+Verified additive migration is forward-only: the unchanged format marker does not
+detect downgrade, so older code can open migrated data and ignore required metadata.
+Rollback requires restoring a coherent pre-upgrade backup.
+
 The host's optional `maxRecords` (default 10,000) is the permanent reservation
-budget. Each admitted purchase holds one durable allocation of 17 units for each
-of the context, proposals, commitments and payments routes (68 units, or 85 when
-commitments/signature is enabled). A new challenge, admission or purchase needs
-the whole allotment free, so a seller whose budget falls below the units it has
-already charged and allotted starts, serves the purchases it holds, and refuses
-new ones as not ready. A successful context completion returns only the context
-slot; an aborted start, a failed or non-validated context and a terminal DACS-5
-session return every open slot. Returned units never
-reduce what has been charged. The host composes a reservation coordinator: one
+budget. A purchase allocation holds 17 units for each of the context, proposals,
+commitments and payments routes (68 units, or 85 when commitments/signature is
+enabled), and admission allots one only while the whole allotment is free. A
+successful context completion returns only the context slot; an aborted start, a
+failed or non-validated context and a terminal DACS-5 session return every open
+slot. Returned units never reduce what has been charged. The host composes a
+reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
 accounting and recording the reservation result. A request that cannot acquire
 the mutex within 10,000 ms receives 503 `seller_effect_pending` before inspection
 or writes. Context reservations borrow the admission transaction's job lease
 without acquiring or releasing another mutex. Admission and accounting accept
 capacity through their internal ports.
-Signed routes reserve through the store's accounting; terminal allocation cleanup
-runs at startup and when a store reader observes a terminal session.
+No route allocates a purchase yet, so the host's readiness does not read these
+units: signed effect routes reserve through the coordinator, terminal allocation
+cleanup runs at startup and when a store reader observes a terminal session, and
+the periodic terminal cleanup comes with the routes that use the units.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
 the old store's checks, startup cleanup and the coordinator) is kept as a durable,
@@ -103,7 +107,7 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
-  maxRecords: 10000,     // optional permanent reservation budget; a new purchase needs 68 units
+  maxRecords: 10000,     // optional permanent reservation budget; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)

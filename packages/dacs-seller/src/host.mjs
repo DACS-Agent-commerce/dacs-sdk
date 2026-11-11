@@ -287,13 +287,11 @@ export async function startSellerHost(options) {
     // The store comes first: its one challenge ledger is the agent's only challenge store, and the agent checks the
     // sessions it restores against that ledger.
     mkdirSync(transport, { recursive: true, mode: 0o700 });
-    let capacity;
-    const capacityReady = () => capacity?.fitsNewPurchase() === true;
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, ready: capacityReady, contextSessionState,
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, contextSessionState,
       wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
     // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
-    capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
+    const capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
     // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();
@@ -314,8 +312,8 @@ export async function startSellerHost(options) {
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     let stopping = false;
-    // New purchases require room for a whole allotment while the seller is running.
-    const sellerReady = () => !stopping && capacityReady();
+    // The seller takes new purchases until it stops. No route allocates purchase capacity yet, so readiness does not read it.
+    const sellerReady = () => !stopping;
     // Every effect route reserves through it under one mutex per operation, inspected from this journal; the context route's job
     // lease is validated once the host composes the admission transaction. The completion port ends the attempts it issued.
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
