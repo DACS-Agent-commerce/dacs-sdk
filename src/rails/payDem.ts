@@ -36,6 +36,24 @@ const executionAuthority = createPayDemExecutionAuthority();
 /** SDK-built rails: whether each was built with a prepared-transfer journal. A rail not in here declares nothing. */
 const railJournals = new WeakMap<object, boolean>();
 
+// Executed nonce whose account read had not caught up when its payment
+// returned, per RPC URL and payer. Shared by every rail in the process so the
+// next transfer from that payer, from any rail, waits for the read first.
+const unreadExecutedNonces = new Map<string, number>();
+// Payers, per RPC URL, with a payment in progress. Demos signs with the
+// node's nonce read, so a second payment started meanwhile could sign the
+// same nonce; it is refused before signing instead.
+const payersInPayment = new Set<string>();
+
+function nothingSignedRefusal(reason: string, options: { cause?: unknown } = {}): DacsError {
+  return new DacsError(
+    `pay-dem: ${reason}; nothing was signed or broadcast; a direct caller of the rail may retry; ` +
+      "through the settlement store or the buyer track the job is held or ambiguous, " +
+      "so check it and use a new job id",
+    { category: "transient", ...options },
+  );
+}
+
 const DEMOS_TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 const DEFAULT_INCLUSION_POLL_INTERVAL_MS = 500;
@@ -189,6 +207,11 @@ function canonicalDemosTxHash(value: unknown): string | null {
  * nonce, amount). A `failed` record settles `ok: false`; a record the bounded
  * read cannot establish stays indeterminate (`ok: false` with the hash retained,
  * so the settlement intent stays held). Neither ever causes another broadcast.
+ *
+ * One payment per payer at a time: Demos signs with the node's account nonce
+ * read, so within a process a payment from a payer and RPC URL that starts
+ * while another is in progress is refused with a transient error before
+ * signing; nothing is signed or broadcast.
  *
  * Amount units (§9.5.9 step 2): the agreement's DACS `Price.amount` is a canonical
  * DECIMAL DEM string; the chain moves integer OS base units (1 DEM = 10^9 OS). The
@@ -675,6 +698,11 @@ export async function payDemSettleCore(
     "recordFeeOs",
     "pay-dem transfer result recordFeeOs",
   );
+  const messageProperty = stableDataProperty(
+    response,
+    "message",
+    "pay-dem transfer result message",
+  );
   const failureProperty = stableDataProperty(response, "failureProof", "pay-dem failure proof");
   const failureProof = failureProperty.value === undefined ? undefined :
     snapshotCanonicalJsonRead(failureProperty.value, "pay-dem failure proof");
@@ -768,6 +796,7 @@ export async function payDemSettleCore(
     ...(totalDebitOs === undefined
       ? {}
       : { networkFeeOs: (totalDebitOs - amountOs).toString(), recordFeeOs: recordFeeOs as string }),
+    ...(typeof messageProperty.value === "string" ? { message: messageProperty.value } : {}),
   });
 }
 
@@ -803,7 +832,15 @@ export interface PayDemRailConfig {
   inclusionPollIntervalMs?: number;
   /** Bound for each possibly non-cooperative status RPC (default 5 seconds). */
   statusRequestTimeoutMs?: number;
-  /** Bound for the post-inclusion account-nonce projection (default 60 seconds). */
+  /**
+   * Bound for the payer's account-nonce read to reach the executed nonce
+   * (default 60 seconds), both after inclusion and, when that read had not
+   * caught up, before signing the payer's next transfer. If it is still behind
+   * then, the transfer is refused with a transient error before signing and
+   * nothing is signed or broadcast. A direct caller of the rail may retry. A
+   * caller going through the settlement store or the buyer track sees the job
+   * as held or ambiguous and must use a new job id after checking it.
+   */
   nonceVisibilityTimeoutMs?: number;
   /**
    * Overall budget for reading the node's transaction record after inclusion
@@ -846,7 +883,15 @@ export interface PayDemPreparedTransfer {
 
 /** Fresh native-rail outcome. Success attests a bound, confirmed record. */
 export type PayDemRailResult = SettleResult & (
-  | { ok: true; execution: "executed" }
+  | {
+    ok: true;
+    execution: "executed";
+    /**
+     * Set when the payer's account nonce read timed out or was rejected before
+     * it reached the executed nonce. The payment is still final.
+     */
+    message?: string;
+  }
   | { ok: false; execution?: never }
 );
 
@@ -1669,6 +1714,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   ) {
     throw new DacsError("pay-dem wallet returned an invalid payer address");
   }
+  const unreadNonceKey = JSON.stringify([rpc, normalizedDemosAccount(address)]);
 
   const client: DemosNativeClient = {
     address,
@@ -1690,6 +1736,21 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       }
       const effectiveMaxTotalDebitOs = invocationMaxTotalDebitOs ??
         configuredMaxTotalDebitOs;
+      // Demos signs with the node's account nonce read. If that read has not
+      // yet reached the last executed nonce, signing now would reuse it.
+      const unreadNonce = unreadExecutedNonces.get(unreadNonceKey);
+      if (unreadNonce !== undefined) {
+        const caughtUp = await boundedPromise(
+          Promise.resolve().then(() => waitForNonce(address, unreadNonce)),
+          nonceVisibilityTimeoutMs,
+        );
+        if (caughtUp.status !== "fulfilled") {
+          throw nothingSignedRefusal(
+            `the node's nonce read is behind the last signed nonce ${unreadNonce}`,
+            caughtUp.status === "rejected" ? { cause: caughtUp.reason } : {},
+          );
+        }
+      }
       // The transaction is already signed. Demos nodes compare GCR edits via
       // order-sensitive JSON bytes, so JCS key sorting here would invalidate
       // an otherwise valid signature/confirmation payload.
@@ -1907,10 +1968,18 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // Bound even a non-cooperative projection read. DACS-4 §9.5.1 PC-7 makes
       // the executed payment final regardless: a lag may delay only idempotent
       // evidence-anchor bookkeeping and can never authorise resubmission.
-      await boundedPromise(
+      // An unread nonce is kept so the next transfer waits for it before signing.
+      // Only a read that reaches the highest kept nonce clears it.
+      const nonceRead = await boundedPromise(
         Promise.resolve().then(() => waitForNonce(address, signedNonce)),
         nonceVisibilityTimeoutMs,
       );
+      const keptNonce = unreadExecutedNonces.get(unreadNonceKey);
+      if (nonceRead.status !== "fulfilled") {
+        unreadExecutedNonces.set(unreadNonceKey, Math.max(keptNonce ?? signedNonce, signedNonce));
+      } else if (keptNonce !== undefined && keptNonce <= signedNonce) {
+        unreadExecutedNonces.delete(unreadNonceKey);
+      }
 
       return executionAuthority.attest<DemosTransferResult>({
         ok: true,
@@ -1923,6 +1992,13 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           : {
             totalDebitOs: confirmedDebitOs.totalDebitOs.toString(),
             recordFeeOs: confirmedDebitOs.recordFeeOs.toString(),
+          }),
+        ...(nonceRead.status === "fulfilled"
+          ? {}
+          : {
+            message: nonceRead.status === "timeout"
+              ? `pay-dem: account nonce read did not reach ${signedNonce} before nonceVisibilityTimeoutMs; payment is final`
+              : `pay-dem: account nonce read for ${signedNonce} was rejected; payment is final`,
           }),
       });
     },
@@ -1943,12 +2019,20 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           "pay-dem cannot combine configured and per-settlement prepared-transfer journals",
         );
       }
-      return payDemSettleCore(
-        params,
-        client,
-        network ?? "demos",
-        effectFence,
-      );
+      if (payersInPayment.has(unreadNonceKey)) {
+        throw nothingSignedRefusal("another payment from this payer is still in progress");
+      }
+      payersInPayment.add(unreadNonceKey);
+      try {
+        return await payDemSettleCore(
+          params,
+          client,
+          network ?? "demos",
+          effectFence,
+        );
+      } finally {
+        payersInPayment.delete(unreadNonceKey);
+      }
     },
   };
   railJournals.set(rail, journalPreparedTransfer !== undefined);
@@ -2176,7 +2260,8 @@ function captureFreshPayDemResult(
   if (snapshot === null || typeof snapshot !== "object" || Array.isArray(snapshot)) {
     throw new DacsError("fresh pay-dem settlement must be a settlement result object");
   }
-  const { execution, ...settlement } = snapshot as Record<string, unknown>;
+  // The rail's diagnostic message describes this invocation and is not stored.
+  const { execution, message: _message, ...settlement } = snapshot as Record<string, unknown>;
   const captured = capturePayDemResult(settlement, context, "fresh pay-dem settlement");
   if (captured.ok && execution !== "executed") {
     throw new DacsError("fresh pay-dem settlement does not attest executed transaction record; refusing success or rebroadcast");
