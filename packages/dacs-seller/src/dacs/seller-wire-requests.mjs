@@ -7,7 +7,7 @@ import { contentHash, createFixedPriceAgreementSigningPlan } from '@kynesyslabs/
 import { DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, admitWireResponseBody, authorizeWireRequest, checkWireRequest, completeWireEffect, inspectWireOperation, isReadRoute, openWireEnvelope, signWireResponse, wireOperationBinding, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { isSmallOrderPublicKey } from './demos-claims.mjs';
-import { SellerTransportError, transportStoreOf, validateBody } from './seller-transport-auth.mjs';
+import { SellerTransportError, sellerStoreInternals, transportStoreOf, validateBody } from './seller-transport-auth.mjs';
 
 // The routes that continue a committed purchase: the wire admits them only on the purchase's commitment, Agreement and Listing.
 const CONTINUING_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature, DACS_SELLER_HTTP_PATHS.bundleBuyerCopy]);
@@ -19,7 +19,7 @@ const COMMITMENT_RECEIPT_TIMEOUT_MS = 10000;
  * journal), not through this list.
  */
 export const WIRE_ROUTE_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.state, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature, ...CONTINUING_PATHS]);
-// The routes that start or commit a purchase carry the host's own `allocated` flag (false until the purchase allocation exists).
+// The routes that start or commit a purchase carry the host's own `allocated` flag (false unless the purchase holds a live allocation).
 const STAGE_PATHS = new Set([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature]);
 // The contexts createWireContext made, each with the agent and raw store it was made over: the handler takes no other, and
 // only a pair it serves with the same agent and the same store.
@@ -50,12 +50,26 @@ function initialDraft(body) {
 /**
  * What the host retained for the request's job, for `checkWireRequest`: `{ retained, artifacts, held }` from the agent's retained
  * plan or Agreement (`held`), or from the draft an initial proposal itself carries. `null` when the host holds nothing for the job
- * (never for a proposal). Throws `peer_proposal_invalid` for an initial proposal whose draft cannot be derived.
+ * (never for a proposal). With capacity, `allocated` requires a live allocation and a successful settled context.
+ * Throws `peer_proposal_invalid` for an initial proposal whose draft cannot be derived.
  */
-function retainedFor(agent, { path, request, body }) {
+function retainedFor(agent, { path, request, body }, { store, capacity } = {}) {
   const known = agent.transportAgreementOf(request.jobId);
-  if (known !== null) return { ...retainedByArtifact(path, known), held: true };
-  return path === DACS_SELLER_HTTP_PATHS.proposals ? { ...retainedByArtifact(path, initialDraft(body)), held: false } : null;
+  const records = known !== null ? { ...retainedByArtifact(path, known), held: true }
+    : path === DACS_SELLER_HTTP_PATHS.proposals ? { ...retainedByArtifact(path, initialDraft(body)), held: false } : null;
+  if (records !== null && capacity !== undefined && STAGE_PATHS.has(path)) {
+    const { buyer, seller } = records.retained;
+    records.retained.allocated = capacity.retainedAllocated({ jobId: request.jobId, buyer, seller, listingPin: agent.listingPin,
+      route: path, stageAuthorized: contextSettledAsSuccess(store, request.jobId) });
+  }
+  return records;
+}
+
+// The host's accepted context settled with a validated result.
+function contextSettledAsSuccess(store, jobId) {
+  const found = sellerStoreInternals(store).db.prepare('SELECT record FROM kit_context_admissions WHERE jobId = ?').get(jobId);
+  const row = found ? JSON.parse(found.record) : null;
+  return row?.state === 'settled' && row.contextOutcome === 'success';
 }
 
 /**
@@ -106,7 +120,7 @@ function admitAnswerText(text) {
  * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. Returns the frozen context,
  * the only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
  */
-export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, stopped = null }) {
+export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, stopped = null }) {
   const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
@@ -114,7 +128,7 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
   const context = Object.freeze({ binding, signer, journal, store, requireDelegation, readCommitmentReceipt,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
     stopped: stopped === null ? null : () => stopped(),
-    retainedFor: (input) => retainedFor(agent, input), continuationFor: (input) => continuationFor(agent, input, signedListing) });
+    retainedFor: (input) => retainedFor(agent, input, { store, capacity }), continuationFor: (input) => continuationFor(agent, input, signedListing) });
   wireContexts.set(context, { agent, store });
   return context;
 }

@@ -51,6 +51,7 @@ import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wall
 import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
+import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
@@ -65,12 +66,14 @@ import { isPrivateDirectory } from './private-directory.mjs';
 export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network', 'readCommitmentReceipt']);
-const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now', 'contextSessionState']);
+const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'host', 'port', 'now', 'contextSessionState']);
 const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 // The startup binding read is bounded; a later answer grants nothing.
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
 // One journal for every seller route; its lease must exceed the 240 s context step.
 const KIT_JOURNAL_LEASE_MS = 300000;
+// The permanent reservation budget of the wire accounting rows.
+const DEFAULT_MAX_RECORDS = 10000;
 const JOURNAL_DIRECTORY = 'wire-journal';
 const TRANSPORT_STORE_FILE = join('transport', 'transport.sqlite');
 // The journal's nonce-key (`k-`) and operation (`o-`) files: reservations a fresh kit store knows nothing of.
@@ -239,7 +242,7 @@ export async function startSellerHost(options) {
   const missing = REQUIRED.filter((key) => options[key] == null);
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
-    nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS,
+    nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
     host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
   if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
@@ -283,13 +286,16 @@ export async function startSellerHost(options) {
     // The store comes first: its one challenge ledger is the agent's only challenge store, and the agent checks the
     // sessions it restores against that ledger.
     mkdirSync(transport, { recursive: true, mode: 0o700 });
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, generation, stopped: stopRequested, contextSessionState,
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, contextSessionState,
       wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
+    const capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState: contextSessionState });
     // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();
     store.recoverLostContextReservations();
+    // A purchase whose session already ended gives its unspent units back before anything is served.
+    capacity.releaseTerminalAllocations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'), jobSlotReleased: store.jobSlotReleased,
       agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE });
@@ -304,11 +310,11 @@ export async function startSellerHost(options) {
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     let stopping = false;
-    // The seller takes new purchases until it stops.
+    // The seller takes new purchases until it stops. No route allocates purchase capacity yet, so readiness does not read it.
     const sellerReady = () => !stopping;
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.
-    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt });
+    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before

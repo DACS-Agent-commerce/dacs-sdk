@@ -6,7 +6,7 @@ import { SELLER_CONTEXT_PATH, SellerTransportError } from './seller-transport-au
 // The wire journal's lease; accounting refuses a clock whose lease sum the journal could not take.
 const RESERVATION_LEASE_MS = 300000;
 const RESULTS = new Set(['new', 'recover', 'completed']);
-const CAPACITY_CLASSES = new Set(['general', 'purchase']);
+const PURCHASE_SLOT_UNITS = 17;
 const GENERAL_CAPACITY = Object.freeze({ class: 'general', allocationId: null });
 const PAYMENT_PATH = '/dacs/v1/payments';
 // A transaction's key as the transport store keeps it: no 0x prefix, lower case.
@@ -66,10 +66,15 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     if (get('SELECT key FROM kit_reservations WHERE key = ?', key)) fail('peer_request_replayed', 409);
     const { payload, route, operationId, checkCapacityWithin } = input;
     const capacity = checkCapacityWithin ? checkCapacityWithin({ get, run, payload, route, operationId, at }) : GENERAL_CAPACITY;
-    if (!CAPACITY_CLASSES.has(capacity?.class) || !(capacity.allocationId === null || typeof capacity.allocationId === 'string')) {
-      fail('wire_input_invalid', 500);
-    }
-    return capacity;
+    if (capacity?.class === 'general') return GENERAL_CAPACITY;
+    if (capacity?.class !== 'purchase-stage') fail('wire_input_invalid', 500);
+    const changed = run(`UPDATE kit_allocations SET rev = rev + 1
+      WHERE allocationId = ? AND jobId = ? AND state = 'live' AND rev = ?
+        AND json_extract(record, ?) = 'open'
+        AND (SELECT COUNT(*) FROM kit_reservations WHERE allocationId = ? AND route = ? AND class = 'purchase') < ?`,
+    capacity.allocationId, payload.jobId, capacity.allocationRev, '$.slots."' + route + '"', capacity.allocationId, route, PURCHASE_SLOT_UNITS);
+    if (changed.changes !== 1) fail('peer_store_capacity', 503);
+    return { class: 'purchase', allocationId: capacity.allocationId };
   }
 
   // Steps 1 to 6 in one transaction: a refusal at any step, or a failed commit, leaves no hold, row, unit, claim or tuple.
@@ -141,7 +146,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
      * capacity, a job held by other parties, a closed job (context_job_closed), a tuple mismatch, a replayed nonce key,
      * or a refusal from checkCapacityWithin. Ownership remains after the job row is removed; a no-effect end
      * releases only its provisional Agreement binding when nothing else retains the job.
-     * checkCapacityWithin is step 5: synchronous, run inside the transaction, returning {class, allocationId};
+     * checkCapacityWithin is step 5: synchronous, run inside the transaction, returning a general or purchase-stage classification;
      * its SQL writes roll back with the rest. Without it every row is general capacity.
      */
     async reserveAccounted(options = {}) {
