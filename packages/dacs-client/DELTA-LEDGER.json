@@ -7440,6 +7440,47 @@
           "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged request signer route limit in the seller request deadlines and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
+          "after": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged request signer route limit in the continuing routes and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
+          "after": "4754c968bde4ee62121134b3645c16d5d40c9cbf"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "9552cf74c2bf1dd739eee1dd1315b7bb7ef46e8c",
+      "subject": "fix(client): state which seller routes the wire request signer can sign",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5",
+          "after": "948a90f0c28e84d88cdb098baf69478d0bc4286f"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-authentication.test.mjs",
+          "before": "c105cadb85dac6be089bcfd69e053dae8aacdecb",
+          "after": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
+        }
+      ]
     }
   ]
 }
