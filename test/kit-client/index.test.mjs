@@ -33,7 +33,7 @@ test('K12 index: every case id has exactly one harness test, every harness test 
 
 test('split insertion preserves prior flips and attributes H7 current observations without a target flip', () => {
   const entry = (id, extra = {}) => ({ id, today: 'today', target: 'target', owner: 'P99', flippedBy: null, ...extra });
-  const current = { step: 'plan', code: null, layer: 'response-auth', counters: { context: 1 }, updatedBy: 'P06' };
+  const current = { step: 'plan', code: null, failureClass: 'SellerUnavailableError', layer: 'response-auth', counters: { context: 1 }, updatedBy: 'P06' };
   const withoutH7 = CASE_IDS.slice(0, -1);
   const flippedBefore = withoutH7.map((id) => entry(id, id === 'K12-H4-wire' ? { flippedBy: 'P99' } : {}));
   assert.deepEqual(indexProblems(flippedBefore, withoutH7), [], 'an index of the cases introduced so far, one already flipped, holds');
@@ -42,5 +42,6 @@ test('split insertion preserves prior flips and attributes H7 current observatio
   assert.match(indexProblems([...flippedBefore, entry('K12-H7', { current, flippedBy: 'P12b1' })]).join(), /K12-H7 is unflipped or flipped by its owner/, 'an update by another PR is not a flip');
   assert.match(indexProblems([...flippedBefore, entry('K12-H7')]).join(), /K12-H7 has no current observation/);
   assert.match(indexProblems([...flippedBefore, entry('K12-H7', { current: { ...current, counters: { context: -1 } } })]).join(), /non-negative integers/);
+  assert.match(indexProblems([...flippedBefore, entry('K12-H7', { current: { ...current, failureClass: undefined } })]).join(), /error class of its failed context exchange/, 'an observation without its error class is refused');
   assert.match(indexProblems(flippedBefore).join(), /not exactly/, 'the full index requires every case');
 });

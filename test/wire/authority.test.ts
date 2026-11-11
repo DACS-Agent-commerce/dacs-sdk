@@ -158,6 +158,19 @@ describe("independent TP-1 authorization context", () => {
     await expect(x.response(), name).rejects.toMatchObject({ code: "tp1_participant_profile_mismatch" });
     expect(x.seller.calls).toBe(0);
   });
+  it.each([
+    ["an http endpoint", (d: wire.Tp1AuthorityDecision) => ({ ...d, local: { ...d.local, endpoint: "http://unverified.example/" } })],
+    ["an endpoint that is not a string", (d: wire.Tp1AuthorityDecision) => ({ ...d, local: { ...d.local, endpoint: 443 } })],
+    ["an extra member", (d: wire.Tp1AuthorityDecision) => ({ ...d, local: { ...d.local, region: "eu" } })],
+    ["a missing member", (d: wire.Tp1AuthorityDecision) => ({ ...d, local: { endpoint: d.local.endpoint, transportAuthority: d.local.transportAuthority } })],
+    ["a local that is not a record", (d: wire.Tp1AuthorityDecision) => ({ ...d, local: "unverified" })],
+  ])("blames the authority reply, not the caller's local option, for a reader reply with %s", async (_name, change) => {
+    const x = (await world());
+    x.setChange(change);
+    await expect(Promise.resolve().then(async () => (await wire.bindTp1Profile(x.options))))
+      .rejects.toMatchObject({ code: "tp1_connection_unverified" });
+    expect(x.buyer.calls + x.seller.calls).toBe(0);
+  });
   it.each(["timeout", "not found", "refused"])("preserves the authority reader's %s cause", async (message) => {
     const x = (await world()), entries = await boundaries(x), cause = new Error(message);
     x.setChange(() => { throw cause; });
