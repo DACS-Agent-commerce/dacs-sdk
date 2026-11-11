@@ -11,7 +11,6 @@
 import test from 'node:test';
 import { Readable } from 'node:stream';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync,readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -464,6 +464,67 @@ test('an agent result the wire refuses as an outcome is not completed and answer
   }
 });
 
+const TERMINAL_SESSIONS = ['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate'];
+const UNREADABLE_SESSIONS = { throws: () => { throw new Error('the session reader is down'); }, thenable: () => ({ then() {} }), number: () => 7 };
+const failSession = (w, read) => Object.defineProperty(w.state, 'session', { configurable: true, enumerable: true, get: read,
+  set(value) { Object.defineProperty(w.state, 'session', { configurable: true, enumerable: true, writable: true, value }); } });
+
+test('a context session that ends while a proposal request is in flight refuses the work before it signs, in every terminal state, and a live session is admitted', async t => {
+  const w = await routeWorld(t);
+  for (const terminal of [null, ...TERMINAL_SESSIONS]) {
+    w.state.session = null;
+    const job = await proposeJob(w, `ended-while-in-flight-${terminal}`);
+    // The agent reads the session after its waits, just before it signs.
+    w.agent.onWork = () => { w.state.session = terminal; };
+    const answer = await job.post();
+    w.agent.onWork = () => {};
+    assert.equal(w.agent.transportAgreementOf(job.jobId) !== null, terminal === null, `${terminal}: the contribution is kept only for a live session`);
+    assert.deepEqual({ status: answer.status, error: answer.body.error }, terminal === null ? { status: 200, error: undefined } : { status: 503, error: 'operation_uncertain' }, String(terminal));
+  }
+});
+
+test('a session source that cannot be read is never read as live by proposal work, and nothing is signed or kept', async t => {
+  const w = await routeWorld(t);
+  for (const [label, fault] of Object.entries(UNREADABLE_SESSIONS)) {
+    w.state.session = null;
+    const job = await proposeJob(w, `unreadable-${label}`);
+    w.agent.onWork = () => failSession(w, fault);
+    const answer = await job.post();
+    w.agent.onWork = () => {};
+    w.state.session = null;
+    assert.equal(w.agent.transportAgreementOf(job.jobId), null, `${label}: nothing is kept`);
+    assert.deepEqual({ status: answer.status, error: answer.body.error }, { status: 503, error: 'operation_uncertain' }, label);
+  }
+});
+
+test('a recovered proposal is not claimed once its session ended after accounting, and one claimed while the session was live is refused at its next check', async t => {
+  const w = await routeWorld(t, { leaseMs: SHORT_LEASE_MS });
+  const observed = [];
+  // The session ends after the reservation passed: before the agent's claim, or after it.
+  const reconciling = (beforeClaim, afterClaim) => async ({ transport }) => {
+    w.state.session = beforeClaim;
+    let claim;
+    try { claim = transport.claim(); } catch (error) { observed.push({ claim: `${error.code} ${error.status}` }); return; }
+    w.state.session = afterClaim;
+    try { claim.check(); observed.push({ check: 'live' }); } catch (error) { observed.push({ check: `${error.code} ${error.status}` }); }
+    await transport.settle({ disposition: 'present', status: 200, value: { disposition: 'complete', contribution: { signed: true } }, settle: true });
+  };
+  const recovered = async (label, beforeClaim, afterClaim) => {
+    w.state.session = null;
+    const job = await proposeJob(w, `recovered-${label}`);
+    await leaveOpen(w, () => job.post());
+    lapse(w);
+    w.agent.reconcileTransport = reconciling(beforeClaim, afterClaim);
+    return job.post();
+  };
+  assert.equal((await recovered('live', null, null)).status, 200);
+  const ended = await recovered('ended', 'aborted-by-other', null);
+  assert.equal(ended.status, 503);
+  assert.equal(ended.body.error, 'operation_uncertain');
+  assert.equal((await recovered('ends-after-claim', null, 'vet-failed')).status, 200, 'the answer the agent settles is still completed');
+  assert.deepEqual(observed, [{ check: 'live' }, { claim: 'seller_unavailable 503' }, { check: 'context_session_terminal 409' }]);
+});
+
 test('a valid answer containing non-NFC text completes and is replayed with byte-identical stored text', async t => {
   const w = await routeWorld(t), job = await proposeJob(w, 't21');
   const answer = { text: 'é' };

@@ -110,7 +110,7 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
   t.after(() => rm(directory, { recursive: true, force: true }));
   mkdirSync(join(directory, 'transport'), { mode: 0o700 });
   const storePath = join(directory, 'transport', 'transport.sqlite');
-  const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [] };
+  const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [], session: null };
   // The wire measures the time an admission takes with `performance.now`: the test moves it forward by `elapsedMs`.
   const monotonicNow = performance.now.bind(performance);
   mock.method(performance, 'now', () => monotonicNow() + state.elapsedMs);
@@ -151,7 +151,7 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
   const handle = { store: null, handler: null, finishFails: false, wireOverrides: {} };
   const mount = () => {
     if (fixture) fixture.admittedListing = admitWireArtifact(Buffer.from(JSON.stringify(fixture.listing)));
-    const store = createUnboundStore({ path: storePath, maxJobs, maxRecords, now: clock });
+    const store = createUnboundStore({ path: storePath, maxJobs, maxRecords, now: clock, contextSessionState: () => state.session });
     const capacity = createPurchaseCapacity({ store, now: clock, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
     // A restart reopens the same journal.
     const journalDirectory = join(directory, 'wire-journal');

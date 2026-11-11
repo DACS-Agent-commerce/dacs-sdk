@@ -249,6 +249,9 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     if (status === 200) await assertCreditHeld(request.jobId);
     write(res, status, headers, sent);
   }
+  // Proposal work ends with its context session. The session is read at each check, after the agent's own waits, because accounting's
+  // start check cannot cover work that follows it; a source that cannot be read throws and so never reads as not terminal.
+  const sessionEnded = (request) => request.path === PROPOSAL_PATH && wire.store.sessionTerminal(request.jobId);
   // The attempt is the journal's current one for this request: pending, under its binding and inside its lease.
   function assertAttemptCurrent(request, effect) {
     const view = inspectWireOperation(wire.journal, { seller: request.seller, jobId: request.jobId, path: request.path });
@@ -279,7 +282,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       write(res, outcome.status, headers, sent);
       delivered = true;
     };
-    const frame = Object.freeze({ path: url, check, claim: () => { check(); return Object.freeze({ check }); }, settle: conclude });
+    // What the agent checks before it signs or claims: the attempt, and for proposal work the session too. Ending the attempt needs
+    // only the attempt: work the agent already signed and kept is completed even if its session ended since.
+    const fenced = () => { check(); if (sessionEnded(request)) throw new SellerTransportError('context_session_terminal', 409); };
+    const claim = () => { if (sessionEnded(request)) throw new SellerTransportError('seller_unavailable', 503); fenced(); return Object.freeze({ check: fenced }); };
+    const frame = Object.freeze({ path: url, check: fenced, claim, settle: conclude });
     let result;
     try {
       result = effect.state === 'recover' ? { answer: await agent.reconcileTransport?.({ request, body, rawBody, readOnly: false, transport: frame }) } : { answer: await route(agent, body, { transport: frame }) };
