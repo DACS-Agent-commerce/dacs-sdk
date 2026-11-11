@@ -18,6 +18,7 @@ import {
   rawPublicKey,
 } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
+import { createDemosClient } from "../rails/demosClient.js";
 import { readBoundedDemosJson } from "../rails/demosRpc.js";
 import {
   assertDemosCciResponseBounds,
@@ -1089,7 +1090,7 @@ export class DemosAdapter implements SubstrateAdapter {
       ...(chainIdentity === undefined ? {} : { chainIdentity }),
     });
     this.#pendingWalletSecret = secret;
-    this.#demos = new Demos();
+    this.#demos = createDemosClient(Demos);
   }
 
   /** Underlying demosdk instance through a peer-independent escape-hatch type. */
