@@ -1725,6 +1725,86 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(error.message).toMatch(/terminal state failed/);
   });
 
+  it("reads the row of a result 200 transaction answer as the transaction", async () => {
+    const { adapter, raw } = await makeAdapter();
+    raw.nodeCall.mockResolvedValue({ state: "pending" });
+    raw.getTxByHash.mockResolvedValue({
+      result: 200,
+      response: { status: "failed", blockNumber: 42 },
+    });
+
+    const error = asAnchorError(
+      await adapter
+        .anchorWriteOnce(
+          "wrapped-200-failed",
+          { value: 1 },
+          { timeoutMs: 20, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+
+    expect(error).toMatchObject({
+      code: "inclusion-failed",
+      receipt: { state: "failed", blockNumber: 42 },
+    });
+  });
+
+  it.each([
+    ["failed", 400, 42],
+    ["confirmed", 404, 43],
+  ])(
+    "does not read a %s row inside a result %i answer as the transaction",
+    async (status, result, blockNumber) => {
+      const { adapter, raw } = await makeAdapter();
+      raw.nodeCall.mockResolvedValue({ state: "pending" });
+      raw.getTxByHash.mockResolvedValue({
+        result,
+        response: { status, blockNumber },
+      });
+
+      const error = asAnchorError(
+        await adapter
+          .anchorWriteOnce(
+            "wrapped-non-200-row",
+            { value: 1 },
+            { timeoutMs: 20, pollMs: 1 },
+          )
+          .catch((caught: unknown) => caught),
+      );
+
+      expect(error.code).toBe("timeout");
+      expect(error.receipt.state).not.toBe("failed");
+      expect(error.receipt.state).not.toBe("included");
+      expect(error.receipt.blockNumber).toBeUndefined();
+    },
+  );
+
+  it.each([
+    [{ result: 400, response: "error" }],
+    [{ result: 404, response: null }],
+  ])(
+    "treats the node error answer %j as no transaction yet",
+    async (answer) => {
+      const { adapter, raw } = await makeAdapter();
+      raw.nodeCall.mockResolvedValue({ state: "pending" });
+      raw.getTxByHash.mockResolvedValue(answer);
+
+      const error = asAnchorError(
+        await adapter
+          .anchorWriteOnce(
+            "node-error-answer",
+            { value: 1 },
+            { timeoutMs: 20, pollMs: 1 },
+          )
+          .catch((caught: unknown) => caught),
+      );
+
+      expect(error.code).toBe("timeout");
+      expect(error.receipt.state).not.toBe("failed");
+      expect(error.receipt.state).not.toBe("included");
+    },
+  );
+
   it("preserves immutable inclusion-timeout evidence at the shared completion deadline", async () => {
     const { adapter, raw } = await makeAdapter();
     raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
