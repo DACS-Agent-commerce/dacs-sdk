@@ -7163,6 +7163,57 @@
           "after": "be72001c276437177160b6a87ce365b7a24d3504"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF replay the retained payment-evidence CREATE and read its execution back",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "16c28532b8fe2b1ff6cf5acc3b50c9987aa87bfe",
+          "after": "4fdcc1cb090c890ef2e90babc3e2d801e5f69c3e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "0afa4bcc983436ef2658ed8bbc4f90593edbbeab",
+          "after": "784ba66530fcc1030fb4c0dc837fcb4a7b65c4dc"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "caa9f060da7856d60ed8cb0dfd43d4ad6c97dbd7",
+          "after": "eaef929c56a238c6a47cacd1646bbed80d0fb40e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "bcb216547421660a2cd0de45415cce9a0ad18ba3",
+          "after": "9bd5c322d57372369babd53cc4a456aca3ed723a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "11db4783591d76f54036ef9c5d176ef9f54cc62e",
+          "after": "47fcf62e29a1560193069ee1ba7737eff82ae214"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "9eeb7d5e566a2ad64e4eef0ab2a317abd92fa64a",
+          "after": "67912a3a4bc79b56a4f36e47fed8cb148b3c5da1"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "0c4803853e13c363d12b241e1d5657501538152c",
+          "after": "eeb6174390def3dcf19749b82ca0d6e38aac620c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "be72001c276437177160b6a87ce365b7a24d3504",
+          "after": "ad2ca009773a8e1616f265734de2560d80d9285f"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-rpc-clock.test.mjs",
+          "before": "026f7fffb6ac5e064067f5352eb021788490322c",
+          "after": "23a5c14494356db736948abef01b67602c97eea8"
+        }
+      ]
     }
   ]
 }
