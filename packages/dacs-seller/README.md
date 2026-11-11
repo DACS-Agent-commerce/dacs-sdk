@@ -16,10 +16,10 @@ origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
 `agreementAnchor` and `artifactAnchor` only by shape, and the wallet journal's
 `broadcast` is the operator's own callback, so an operator-supplied anchor or
 broadcast can still reach a real Demos node: keep them on the fixture too. It
-is not qualified for mainnet. The standalone host retains all jobs and refuses
-new jobs before admission after `maxJobs` (default 10,000); terminal DACS-5
-bundle completion is not wired, and transport-row reclamation needs the
-`contextSessionState` capability described below.
+is not qualified for mainnet. The standalone host preserves job ownership and refuses
+new jobs before admission at `maxJobs` (default 10,000) unless completed work
+can safely retire. Terminal DACS-5 bundle completion is not wired; slot retirement
+needs the `contextSessionState` capability described below.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
@@ -36,7 +36,9 @@ none of these signatures; what your own signer does with them is up to it.
 
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
-the host reclaim that job's retained challenge and context rows; an unknown name,
+the host retire that job's challenge and context slots. Completed answers and
+their admission proofs remain available for retries. A terminal name does not
+retire a job whose payment or commitment a retry must still finish. An unknown name,
 an agent stage name or an unreadable answer keeps them. A throw, Promise or
 non-null non-string refuses issuance and new work with `session_admission_unavailable`
 503 and its cause; only explicit `null` means unknown. Promise results are ignored
@@ -67,7 +69,7 @@ const host = await startSellerHost({
   deliverableProducer,  // synchronous, deterministic (input) -> JSON bound to the Agreement and settlement
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
-  maxJobs: 10000,        // shared agent/store lifetime cap; checked before challenge consumption
+  maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
@@ -825,6 +827,28 @@ per-client limiter so one client cannot exhaust the shared request budget.
   Expired unattempted challenges may be reclaimed; accepted presentations
   retain their exact admission checkpoint and their job binding for replay.
   The operator issues challenges only for buyers about to present.
+- The signed challenge route is composed directly, not by the host:
+  `createSellerHttpHandler(agent, { authentication, context, wire })` serves
+  `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the
+  `wire` context (`createWireContext`) carries the host's `stopped` predicate; without
+  one the handler refuses construction. No Agreement exists yet and the wire journal is never
+  written. The seller refuses in this order: the body (64 KiB, one JSON value, no duplicate
+  members or lossy numbers: `body_too_large`, `bad_json`; unsigned, like the envelope's
+  refusals); the envelope (the wire's refusals); the signed path (`peer_request_mismatch`) and
+  the scope job (`peer_job_invalid`, `peer_job_mismatch`); anything but `{ scope }` with the
+  ten challenge-scope keys (`peer_context_mismatch`); the kit guard
+  (`kit_operation_guard_off`) and the stop predicate (`seller_stopped`, with `cause`
+  `stop_check_failed` or `stop_check_invalid` when it throws or answers a non-boolean); the
+  wire's pre-Agreement admission (Listing pin, parties, delegation, `seller_not_ready`); the
+  scope against the Listing (`context_scope_invalid`, `context_generated_at`), buyer access
+  and the known job (ten seconds each, `session_admission_unavailable` with its cause);
+  then the wire's pre-Agreement admission again, so that authority, delegation or readiness
+  that closed during those callbacks refuses before anything is written; then the ledger's
+  limits and capacity and a last check of the request's and delegation's expiry
+  (`peer_expired`, `peer_delegation_expired`) before the insert. Every refusal after
+  the envelope is signed. The answer is `{ sessionNonce, expiresAt }`, signed; the same job,
+  buyer and scope get the same nonce back, also after a restart. The context step, and the
+  challenge of a handler composed without `wire`, stay on the old auth.
 - The devnet source transport and wallet custody are not part of this
   package (the payment-evidence journal composes the operator's own wallet
   primitives). The kit builders that need them (the devnet artifact

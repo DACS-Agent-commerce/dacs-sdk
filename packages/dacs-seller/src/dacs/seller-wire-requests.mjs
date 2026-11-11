@@ -15,7 +15,8 @@ const COMMITMENT_RECEIPT_TIMEOUT_MS = 10000;
 
 /**
  * The routes the wire opens and signs. `commitments/signature` is one only where the handler mounts it (`commitOnSignature`);
- * only the challenge and the context step keep the old server auth.
+ * the context step keeps the old server auth, and the challenge is opened by `challengeOnWire` (it has no Agreement and no
+ * journal), not through this list.
  */
 export const WIRE_ROUTE_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.state, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature, ...CONTINUING_PATHS]);
 // The routes that start or commit a purchase carry the host's own `allocated` flag (false until the purchase allocation exists).
@@ -101,18 +102,33 @@ function admitAnswerText(text) {
  * `tp1Network.connection()` called on `tp1Network`, `tuple(jobId)` the tuple the store keeps for a job, `now()`, `ready()`
  * and `retainedFor` the agent's retained records, `continuationFor` a continuing route's commitment, Agreement and
  * `signedListing`; `binding` (whose authority reader carries its own deadline), `signer`, `journal`, `store` (the raw transport
- * store for durable reservation accounting), `readCommitmentReceipt` and `requireDelegation` are values. Returns the frozen context, the
- * only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
+ * store for durable reservation accounting), `readCommitmentReceipt` and `requireDelegation` are values. `stopped()` is the host's stop
+ * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. Returns the frozen context,
+ * the only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
  */
-export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt }) {
+export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, stopped = null }) {
   const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
+  if (stopped !== null && typeof stopped !== 'function') throw new TypeError('the wire context\'s stop check must be a function');
   const context = Object.freeze({ binding, signer, journal, store, requireDelegation, readCommitmentReceipt,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
+    stopped: stopped === null ? null : () => stopped(),
     retainedFor: (input) => retainedFor(agent, input), continuationFor: (input) => continuationFor(agent, input, signedListing) });
   wireContexts.set(context, { agent, store });
   return context;
+}
+
+/**
+ * Open the signed request envelope under the host's binding, carrying no kept tuple, and refuse a small-order signer. Calls
+ * `onOpened(request)` as soon as the envelope is verified, so a refusal after it can be signed. Returns the opened envelope.
+ * Throws the wire's own refusal for the envelope, or `peer_signature_invalid` / `peer_delegation_signature_invalid` (401).
+ */
+export async function openWireRequest(wire, header, onOpened) {
+  const opened = await openWireEnvelope(header, 'request', { binding: wire.binding, local: wire.local(), purchaseProfile: null, requireDelegation: wire.requireDelegation });
+  assertNoSmallOrderSigner(opened);
+  onOpened(opened.payload);
+  return opened;
 }
 
 /**
@@ -126,14 +142,12 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
  * on a fresh clock for work that follows without a reservation (a cached refresh). Records in `limits` the times the admitted
  * request and its delegation expire, for the store calls that follow admission.
  * Throws the wire's own refusal with its code, status and cause, `peer_unknown_job` 404 for a job the host holds nothing for
- * (only after the exchange checks pass), `tp1_purchase_profile_mismatch` 500 (cause `missing`) for a held job with no kept
- * tuple, or the seller's body refusal.
+ * (only after the exchange checks pass), `tp1_purchase_profile_mismatch` 500 (cause `missing`) for a held job with neither
+ * a kept tuple nor a bound completed operation after retirement, or the seller's body refusal.
  */
 async function admitWireRoute(wire, agent, limits, { header, method, path, rawBody, body, onOpened }) {
-  const opened = await openWireEnvelope(header, 'request', { binding: wire.binding, local: wire.local(), purchaseProfile: null, requireDelegation: wire.requireDelegation });
-  assertNoSmallOrderSigner(opened);
+  const opened = await openWireRequest(wire, header, onOpened);
   const request = opened.payload;
-  onOpened(request);
   // An initial proposal whose draft cannot be derived is refused after the exchange checks, so that a prefix refusal keeps its own code.
   let records = null, invalidDraft = null;
   try { records = wire.retainedFor({ path, request, body }); } catch (error) {
@@ -152,9 +166,15 @@ async function admitWireRoute(wire, agent, limits, { header, method, path, rawBo
   const checked = await checkWireRequest(opened, check());
   if (invalidDraft !== null) throw invalidDraft;
   if (records === null) throw new SellerTransportError('peer_unknown_job', 404);
-  // The one tuple gate of every wire route: a job the agent holds with no kept tuple (one retained before tuples were kept, or
-  // whose store row is gone) is never answered, and never reserved, where a new reservation would adopt the request's tuple.
-  if (held && kept === null) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
+  // Retirement removes the active purchase tuple. Only a completed operation whose journal
+  // binds this request can replay without it; other held jobs still need their kept tuple.
+  if (held && kept === null) {
+    const view = wire.store.jobSlotReleased(request.jobId) && !isReadRoute(path)
+      ? inspectWireOperation(wire.journal, request) : null;
+    if (view?.state !== 'completed' || view.binding !== wireOperationBinding(request)) {
+      throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
+    }
+  }
   validateBody(request, checked.body);
   limits.set(request, { request: request.expiresAt, delegation: opened.delegation?.payload.expiresAt ?? Infinity });
   return { checked, body: structuredClone(checked.body), readbackOnly: checked.readbackOnly, profile: request.profile, recheck: () => authorizeWireRequest(opened, check()) };
