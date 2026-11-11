@@ -1,4 +1,4 @@
-import { expectMonotonicTimeout } from "../support/monotonicWait.js";
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import { createHash } from "node:crypto";
 import {
   mkdir,
@@ -474,6 +474,6 @@ for (const jump of [-60_000, 60_000]) {
       await mkdir(path, { mode: 0o700 });
       await writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), token: "held", createdAt: 1 }), { mode: 0o600 });
       await expectMonotonicTimeout(() => journal.acquire(key), 50, 10, jump, /timed out|contended/);
-    });
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
   }
 }

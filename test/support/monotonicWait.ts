@@ -1,9 +1,16 @@
 import { setImmediate } from "node:timers/promises";
 import { expect, vi } from "vitest";
 
-// Real time the filesystem work may take. It is generous for slow storage and
-// stays under Vitest's 5 s test timeout, so a stuck operation fails here.
-const REAL_IO_LIMIT_MS = 4_000;
+// Real time the store's filesystem work may take. Slow storage can need
+// several seconds, so the limit is generous.
+const REAL_IO_LIMIT_MS = 20_000;
+
+/**
+ * Timeout for a test that calls `expectMonotonicTimeout`. It is longer than
+ * the real-time limit, so a stuck operation fails in the helper, which then
+ * restores its mocks, instead of at the test timeout.
+ */
+export const WALL_JUMP_TEST_TIMEOUT_MS = REAL_IO_LIMIT_MS + 10_000;
 
 /** Drive real filesystem work and virtual poll timers with independent clocks. */
 export async function expectMonotonicTimeout(

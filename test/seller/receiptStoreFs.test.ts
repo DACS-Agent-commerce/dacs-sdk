@@ -1,4 +1,4 @@
-import { expectMonotonicTimeout } from "../support/monotonicWait.js";
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   access,
@@ -837,6 +837,6 @@ for (const jump of [-60_000, 60_000]) {
       await mkdir(path, { mode: 0o700 });
       await writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid, token: "held" }), { mode: 0o600 });
       await expectMonotonicTimeout(() => store.claim(receiptClaim()), 10, 2, jump, /timed out/);
-    });
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
   }
 }

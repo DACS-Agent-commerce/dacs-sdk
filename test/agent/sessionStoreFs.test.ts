@@ -1,4 +1,4 @@
-import { expectMonotonicTimeout } from "../support/monotonicWait.js";
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import {
   mkdtemp,
   writeFile,
@@ -425,6 +425,6 @@ for (const jump of [-60_000, 60_000]) {
       }
       await expectMonotonicTimeout(() => store.transition({ jobId: "clock-job", expectedRevision: 0, phase: "waiting", now: 1 }),
         2_000, 5, jump, /contended|timed out/);
-    });
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
   }
 }

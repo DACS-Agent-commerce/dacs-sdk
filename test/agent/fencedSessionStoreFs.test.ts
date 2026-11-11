@@ -1,4 +1,4 @@
-import { expectMonotonicTimeout } from "../support/monotonicWait.js";
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import {
   link,
   mkdir,
@@ -2115,7 +2115,7 @@ for (const jump of [-60_000, 60_000]) {
       }
       await expectMonotonicTimeout(() => store.create({ jobId: "clock-job", agreementHash: "a".repeat(64), now: 1 }),
         2_000, 5, jump, /contended|timed out/);
-    });
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
   }
 }
 
