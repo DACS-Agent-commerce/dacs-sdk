@@ -60,11 +60,9 @@ failed or non-validated context and a terminal DACS-5 session (checked once at
 startup) return every open slot. Returned units never reduce what has been
 charged. The host composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
-accounting and recording the reservation result. A request that cannot acquire
-the mutex within 10,000 ms receives 503 `seller_effect_pending` before inspection
-or writes. Context reservations borrow the admission transaction's job lease
-without acquiring or releasing another mutex. Admission and accounting accept
-capacity through their internal ports.
+accounting and recording the reservation result. The routes do not yet reserve
+through the coordinator. Admission and accounting accept capacity through their
+internal ports.
 The routes do not yet reserve through these units, so the host's readiness does
 not read them: signed routes reserve through the store's accounting, and the
 periodic terminal cleanup comes with the routes that use the units.
