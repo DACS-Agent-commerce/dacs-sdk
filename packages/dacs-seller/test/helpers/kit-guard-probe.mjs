@@ -125,9 +125,12 @@ async function effectEntries() {
   const { createDevnetDemoDeliveryCapability } = await import('../../src/devnet-demo/native-delivery.mjs');
   const { storageWriteRpcSigner } = await import('../../src/devnet-demo/storage-write-recovery.mjs');
   const { createEffectBoundary } = await import('../../src/dacs/effect-boundary.mjs');
-  const { createReservationAccounting } = await import('../../src/dacs/seller-reservation-accounting.mjs');
+  const { createReservationAccounting, createReservationCoordinator } = await import('../../src/dacs/seller-reservation-accounting.mjs');
   const accounting = createReservationAccounting({ store: {}, now: () => 0,
     limits: { maxRecords: 1, maxJobs: 1, maxContextRecords: 1, maxNoncesPerBuyerPerWindow: 1 } });
+  const coordinator = createReservationCoordinator({ accounting, capacity: { classify: never('classification'), recordExhaustion: never('the exhaustion record'),
+    terminalSession: never('the terminal check'), flushTerminalObservations: never('the observation flush') },
+    inspectOperation: never('the inspection') });
 
   await attempt('startSellerHost', () => startSellerHost({}));
   await attempt('createSellerAgent', () => createSellerAgent({}));
@@ -135,9 +138,11 @@ async function effectEntries() {
   await attempt('issueForOperator', () => ledger.issueForOperator());
   ledgerDb.close();
   const { createContextAdmissionTransaction } = await import('../../src/dacs/seller-admission-transaction.mjs');
-  const { createSellerTransportStore: createAdmissionStore } = await import('../../src/dacs/seller-transport-auth.mjs');
+  const { createSellerTransportStore: createAdmissionStore, sellerStoreInternals } = await import('../../src/dacs/seller-transport-auth.mjs');
   const admissionStore = createAdmissionStore({ path: join(privateTemporaryDirectory(), 'transport.sqlite') });
-  const admission = createContextAdmissionTransaction({ store: admissionStore, policy: { reserve: never('the policy'), release: never('the policy') },
+  const { createPurchaseCapacity } = await import('../../src/dacs/seller-purchase-capacity.mjs');
+  const capacity = createPurchaseCapacity({ store: admissionStore, now: never('the clock'), sessionState: sellerStoreInternals(admissionStore).sessionState });
+  const admission = createContextAdmissionTransaction({ store: admissionStore, capacity, policy: { reserve: never('the policy'), release: never('the policy') },
     effectEvidence: never('evidence'), inspectContextOutcome: never('the outcome inspection'), completeWire: never('the wire completion'),
     now: never('the clock'), ready: never('readiness'), deadlines: { policyMs: 10000 } });
   await attempt('begin', () => admission.begin());
@@ -151,6 +156,7 @@ async function effectEntries() {
   await attempt('createSellerTransportClientAuth', () => createSellerTransportClientAuth({}));
   await attempt('createSellerWireClientAuth', () => createSellerWireClientAuth({}));
   await attempt('reserveAccounted', () => accounting.reserveAccounted({}));
+  await attempt('reserveCoordinated', () => coordinator.reserveCoordinated({}));
   await attempt('createNativePaymentEvidenceConsumer', () => createNativePaymentEvidenceConsumer({ anchorEvidence: async () => { effects.sends++; } }));
   await attempt('createDevnetDemoAgreementContextProvider', () => createDevnetDemoAgreementContextProvider({}));
   await attempt('signAnchorWrite', () => signAnchorWrite(signBytes, 'logical', 'hash'));
