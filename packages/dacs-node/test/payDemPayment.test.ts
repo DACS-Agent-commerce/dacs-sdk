@@ -146,6 +146,7 @@ function recoveryPayment(): Readonly<DacsPayDemBuyerPaymentInputV1> {
 
 function recoveryReservation(
   payment = recoveryPayment(),
+  wallet = `0x${payment.payer}`,
 ): WalletSpendReservationV1 {
   return {
     reservationVersion: "1",
@@ -157,7 +158,7 @@ function recoveryReservation(
     settlementBindingHash: payment.orderLocalBindingHash,
     railId: payment.railId,
     railDefinitionHash: payment.railDescriptorHash,
-    wallet: `0x${payment.payer}`,
+    wallet,
     chainId: payment.network,
     payee: payment.payee,
     finality: { model: "bft-final" },
@@ -236,12 +237,13 @@ function recoveryWalletAuthority(
     typeof createDacsPayDemWalletSpendRecoveryAuthenticatorV1
   >,
   now: { value: number },
+  wallet = PAYER_WALLET,
 ) {
   const ceiling = "999999999999999999999999";
   return createWalletSpendAuthorityV1({
     policyVersion: "1",
     policyId: "pay-dem-recovery-test",
-    wallet: PAYER_WALLET,
+    wallet,
     chainId: "demos",
     maximumConcurrentEffects: 1,
     maximumRetainedReservations: 10,
@@ -910,13 +912,18 @@ describe("native DEM buyer payment track", () => {
       },
     };
     const generated = await composedGeneratedRail(directory, innerRail, events);
-    // A policy naming the wallet in another form makes the core validator
-    // throw on reserve, before any authority state changes.
-    const authority = createAccountingTestWalletSpendAuthorityV1({
-      wallet: PAYER,
+    // An authority whose reserve throws leaves its own state unchanged.
+    const accounting = createAccountingTestWalletSpendAuthorityV1({
+      wallet: PAYER_WALLET,
       chainId: "demos",
       asset: "DEM",
       maximumConcurrentEffects: 1,
+    });
+    const authority: WalletSpendAuthorityV1 = Object.freeze({
+      ...accounting,
+      async reserve(): Promise<never> {
+        throw new Error("wallet authority store unavailable");
+      },
     });
     const payment = createDacsPayDemBuyerPaymentTrackV1({
       walletSpendAuthority: authority,
@@ -1416,7 +1423,7 @@ describe("native DEM buyer payment track", () => {
       },
     };
     const firstPayment = createDacsPayDemBuyerPaymentTrackV1({
-      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(PAYER),
       database: first,
       workerId: "buyer-dem-before-restart",
       rail: firstRail,
@@ -1462,7 +1469,7 @@ describe("native DEM buyer payment track", () => {
       },
     }));
     const publishNotice = vi.fn();
-    const baseRecoveryWallet = createPermissiveTestWalletSpendAuthorityV1();
+    const baseRecoveryWallet = createPermissiveTestWalletSpendAuthorityV1(PAYER);
     const walletReconcile = vi.fn(baseRecoveryWallet.reconcile);
     const recoveryWallet = { ...baseRecoveryWallet, reconcile: walletReconcile };
     const resumedPayment = createDacsPayDemBuyerPaymentTrackV1({
@@ -1501,6 +1508,8 @@ describe("native DEM buyer payment track", () => {
       return;
     }
     expect(walletReconcile).toHaveBeenCalledTimes(1);
+    // The policy names the wallet bare; the reconciled reservation keeps that spelling.
+    expect(walletReconcile.mock.calls[0]?.[0]).toMatchObject({ wallet: PAYER });
     expect(publishNotice).toHaveBeenCalledWith(expect.objectContaining({
       notice: expect.objectContaining({ settlement: {
         ok: true,
@@ -1637,6 +1646,237 @@ describe("native DEM buyer payment track", () => {
       activeEffects: 1,
       assets: [{ reservedWorstCaseDebit: AUTHORITY.maxTotalDebitOs }],
     });
+  });
+
+  async function runPaymentUnderWalletAuthority(
+    walletSpendAuthority: WalletSpendAuthorityV1,
+  ) {
+    const database = await open(join(root(), "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    let broadcasts = 0;
+    const rail: PayDemRail = {
+      address: PAYER,
+      async settle(input) {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 7,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          denomination: "os",
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        broadcasts += 1;
+        return {
+          ok: true,
+          execution: "executed",
+          txHash: TX_HASH,
+          chainId: "demos",
+          payer: PAYER,
+          payee: PAYEE,
+          finality: { model: "bft-final" },
+          blockNumber: 42,
+          txRefKind: "demos",
+          networkFeeOs: "1000000000",
+        };
+      },
+    };
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-wallet-spelling",
+      operations: {
+        agreement: success,
+        payment: createDacsPayDemBuyerPaymentTrackV1({
+          walletSpendAuthority,
+          database,
+          workerId: "buyer-dem-wallet-spelling",
+          rail,
+          resolveAuthority: () => AUTHORITY,
+          reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+          publishNotice: vi.fn(),
+        }),
+      },
+    });
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+    return {
+      broadcasts,
+      track: (await coordinator.getOrderStatus(JOB_ID))?.tracks.payment,
+    };
+  }
+
+  it.each([
+    ["0x-prefixed", PAYER_WALLET],
+    ["bare", PAYER],
+  ])("reserves and settles under a policy naming the wallet %s", async (_label, wallet) => {
+    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
+      wallet,
+      chainId: "demos",
+      asset: "DEM",
+    });
+
+    const { broadcasts, track } = await runPaymentUnderWalletAuthority(walletSpendAuthority);
+
+    expect(broadcasts).toBe(1);
+    expect(track).toMatchObject({ state: "final", outcome: "success" });
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 0,
+      retainedReservations: 1,
+      assets: [{ cumulativeSettledDebit: AUTHORITY.maxTotalDebitOs }],
+    });
+  });
+
+  it.each([
+    ["another wallet", `0x${"9".repeat(64)}`],
+    ["an address that is not a Demos wallet", `0x${"9".repeat(40)}`],
+  ])("refuses a policy naming %s before any reservation or broadcast", async (_label, wallet) => {
+    const walletSpendAuthority = createAccountingTestWalletSpendAuthorityV1({
+      wallet,
+      chainId: "demos",
+      asset: "DEM",
+    });
+
+    const { broadcasts, track } = await runPaymentUnderWalletAuthority(walletSpendAuthority);
+
+    expect(broadcasts).toBe(0);
+    expect(track).toMatchObject({
+      state: "indeterminate",
+      reasonCode: "pay-dem-wallet-policy-mismatch",
+    });
+    expect(await walletSpendAuthority.inspect()).toMatchObject({
+      activeEffects: 0,
+      retainedReservations: 0,
+    });
+  });
+
+  it("sends a stored payment to operator action when a restart finds a policy naming another wallet", async () => {
+    const first = await open(join(root(), "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database: first, order: ORDER, application: {} });
+    const lostResponseRail: PayDemRail = {
+      address: PAYER,
+      async settle(input) {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 7,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          denomination: "os",
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        throw new Error("transfer completed but response was lost");
+      },
+    };
+    const initial = createFixedPricePayDemBuyerCoordinator({
+      store: first.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-before-policy-change",
+      operations: {
+        agreement: success,
+        payment: createDacsPayDemBuyerPaymentTrackV1({
+          walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(PAYER_WALLET),
+          database: first,
+          workerId: "buyer-dem-before-policy-change",
+          rail: lostResponseRail,
+          resolveAuthority: () => AUTHORITY,
+          reconcile: () => ({ status: "indeterminate", reasonCode: "not-yet" }),
+          publishNotice: vi.fn(),
+          retryDelayMs: 1,
+        }),
+      },
+    });
+    await initial.startOrder(ORDER);
+    await initial.runPending({ limit: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const reconcile = vi.fn();
+    const otherWalletPolicy = createPermissiveTestWalletSpendAuthorityV1(
+      `0x${"9".repeat(64)}`,
+    );
+    const walletReconcile = vi.fn(otherWalletPolicy.reconcile);
+    const changedPolicyWallet = { ...otherWalletPolicy, reconcile: walletReconcile };
+    const resumed = createFixedPricePayDemBuyerCoordinator({
+      store: first.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-after-policy-change",
+      operations: {
+        payment: createDacsPayDemBuyerPaymentTrackV1({
+          walletSpendAuthority: changedPolicyWallet,
+          database: first,
+          workerId: "buyer-dem-after-policy-change",
+          rail: { address: PAYER, settle: vi.fn() },
+          resolveAuthority: () => AUTHORITY,
+          reconcile,
+          publishNotice: vi.fn(),
+          retryDelayMs: 1,
+        }),
+      },
+    });
+    await resumed.runPending({ limit: 1 });
+
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(walletReconcile).not.toHaveBeenCalled();
+    expect((await resumed.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
+      state: "operator-action",
+      reasonCode: "pay-dem-wallet-policy-mismatch",
+    });
+  });
+
+  it.each([
+    ["0x-prefixed", PAYER_WALLET],
+    ["bare", PAYER],
+  ])("authenticates recovery of a stored reservation naming the wallet %s", async (
+    _label, wallet,
+  ) => {
+    const payment = recoveryPayment();
+    const authenticateRecovery = createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+      database: recoveryEvidenceDatabase(payment, true),
+      observeDemosTransfer: async () => ({
+        status: "included", execution: "executed", nonce: 7, txHash: TX_HASH,
+        payer: PAYER, payee: PAYEE, amountOs: payment.amountOs, blockNumber: 42,
+        includedAt: 1_780_000_000_000,
+      }),
+    });
+    const walletSpendAuthority = recoveryWalletAuthority(
+      authenticateRecovery,
+      { value: 1_000 },
+      wallet,
+    );
+    const claim = await walletSpendAuthority.reserve(recoveryReservation(payment, wallet));
+    if (claim.status !== "reserved") throw new Error("expected wallet permit");
+    await claim.permit.beginEffect();
+
+    await expect(claim.permit.settle({
+      disposition: "settled",
+      evidenceHash: TX_HASH,
+      debits: [
+        { asset: "DEM", purpose: "service", amount: payment.amountOs },
+        { asset: "DEM", purpose: "network-fee",
+          amount: (BigInt(payment.maxTotalDebitOs) - BigInt(payment.amountOs)).toString() },
+      ],
+    })).resolves.toBeUndefined();
+    expect(await walletSpendAuthority.inspect()).toMatchObject({ activeEffects: 0 });
+  });
+
+  it("refuses recovery of a stored reservation naming a different wallet", async () => {
+    const payment = recoveryPayment();
+    const observeDemosTransfer = vi.fn();
+    const authenticateRecovery = createDacsPayDemWalletSpendRecoveryAuthenticatorV1({
+      database: recoveryEvidenceDatabase(payment, true),
+      observeDemosTransfer,
+    });
+
+    await expect(authenticateRecovery(
+      recoveryReservation(payment, `0x${"9".repeat(64)}`),
+      { disposition: "settled", evidenceHash: TX_HASH, debits: [] },
+    )).resolves.toBe(false);
+    expect(observeDemosTransfer).not.toHaveBeenCalled();
   });
 
   it("authenticates the complete DEM service and confirmed fee debit", async () => {

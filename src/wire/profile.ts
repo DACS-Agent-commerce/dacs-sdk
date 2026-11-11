@@ -217,7 +217,7 @@ async function readAuthorityDecision(reader: Tp1AuthorityReader, local: LocalNet
   const decision = ownedArtifact(await reader(deepFreeze({ local: { ...local }, sessionId, participants: [...participants] })), "tp1_connection_unverified", 500);
   if (!hasKeys(decision, ["local", "chainIdentity", "provenance", "sessionId", "participants"]) ||
       decision.chainIdentity !== chainIdentity || !isIdentifier(decision.provenance) ||
-      canonicalize(localBinding(decision.local)) !== canonicalize(local)) fail("tp1_connection_unverified", 500);
+      canonicalize(decision.local) !== canonicalize(local)) fail("tp1_connection_unverified", 500);
   if (decision.sessionId !== sessionId || !Array.isArray(decision.participants) ||
       decision.participants.length !== participants.length) fail("tp1_participant_profile_mismatch", 500);
   return decision as unknown as Tp1AuthorityDecision;

@@ -207,7 +207,10 @@ function canonicalDemosTxHash(value: unknown): string | null {
  */
 
 export interface PayDemSettleParams {
-  /** Recipient Demos address (payee). */
+  /**
+   * Recipient Demos address (payee): 64 hex digits, with or without `0x`, any
+   * case. It is sent to the native client as lowercase `0x`-prefixed hex.
+   */
   recipient: string;
   /** Amount in integer OS base units (string). */
   amount: string;
@@ -356,6 +359,7 @@ export interface DemosNativeClient {
    * transfer executed; inclusion alone is not success.
    */
   transfer(args: {
+    /** Lowercase `0x`-prefixed 32-byte hex address. */
     to: string;
     amountOs: bigint;
     maxTotalDebitOs?: bigint;
@@ -519,11 +523,16 @@ export async function payDemSettleCore(
   // await. A mutable parameter/client object must not be able to change the
   // transfer destination and then make the returned evidence attest a different
   // payer or payee.
-  const recipient = requiredStableString(
+  const recipient = normalizeDemosNativeAddress(requiredStableString(
     params,
     "recipient",
     "pay-dem recipient",
-  );
+  ));
+  if (recipient === null) {
+    throw new DacsError(
+      "pay-dem recipient must be a 32-byte hex native Demos address",
+    );
+  }
   const amount = requiredStableString(params, "amount", "pay-dem amount");
   const defaultNetwork = typeof defaultNetworkOrFence === "string"
     ? defaultNetworkOrFence
@@ -614,13 +623,11 @@ export async function payDemSettleCore(
 
   if (recovery !== undefined) {
     const canonicalPayer = normalizeDemosNativeAddress(payer);
-    const canonicalPayee = normalizeDemosNativeAddress(recipient);
     const chainId = network ?? "demos";
     if (
       canonicalPayer === null ||
-      canonicalPayee === null ||
       recovery.payer !== canonicalPayer ||
-      recovery.payee !== canonicalPayee ||
+      recovery.payee !== recipient ||
       recovery.network !== chainId ||
       recovery.amountOs !== amountOs.toString()
     ) {
@@ -633,7 +640,7 @@ export async function payDemSettleCore(
   executionAuthority.assertCapability(client);
   await effectFence?.assertCurrent();
   const response = await transfer({
-    to: recipient,
+    to: `0x${recipient}`,
     amountOs,
     ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
     ...(recovery === undefined ? {} : { recovery }),
