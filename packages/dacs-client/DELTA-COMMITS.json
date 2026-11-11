@@ -4399,5 +4399,16 @@
       "packages/dacs-client/scripts/delta-map.mjs",
       "packages/dacs-client/scripts/delta-provenance.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs"
+    ]
   }
 ]

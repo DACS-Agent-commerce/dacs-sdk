@@ -1165,6 +1165,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | c5f91f14575651303e144ec91570d7db728034e1 |
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | f948151165e3ba48272216e650df2f9bc3c20480 |
 | | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` | 1b83d2a67290fc5fb683667e993dbf498ecaf269 |
+| WF | delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | b4d690799d4ea3e95f16278a542759e6f59f15ce |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | 14cb1447457b9203e63d5a18e8a58da5d36784e6 |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9 |
 | WF | Report a lost acknowledgement record after a successful send as eb_ack_not_persisted | Git commit selector a66660e64790f27c86c47cc1c39e69b236784086 |
 | | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | c6a536f8fee883abd654907537ce728a0245155b |
 | | `packages/dacs-client/src/wallet/effect-history.mjs:1` | 52c03f2dddbee806d14b94b223fc2fac459e7bc6 |
@@ -3711,6 +3715,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
