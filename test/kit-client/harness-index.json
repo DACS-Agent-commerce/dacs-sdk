@@ -64,6 +64,7 @@
     "current": {
       "step": "plan",
       "code": "agreement_context_held",
+      "failureClass": "SellerUnavailableError",
       "layer": "response-auth",
       "counters": {
         "context": 1,

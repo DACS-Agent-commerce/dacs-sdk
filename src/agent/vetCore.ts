@@ -2369,7 +2369,7 @@ async function runVetStep(
     const detail = error instanceof Error && error.message
       ? `: ${error.message}`
       : "";
-    throw new DacsError(`Vet ${step} step failed${detail}`);
+    throw new DacsError(`Vet ${step} step failed${detail}`, { cause: error });
   }
 }
 
