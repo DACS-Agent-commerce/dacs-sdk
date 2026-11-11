@@ -7148,6 +7148,17 @@
           "after": "1319c19e69704a0a4294a5a62d5e83eec182b4c4"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the request signer doc comment with and without evidence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
+          "after": "1eaa3e419dc2d124c78fbc916d0cef0ae99f6f4c"
+        }
+      ]
     }
   ]
 }
