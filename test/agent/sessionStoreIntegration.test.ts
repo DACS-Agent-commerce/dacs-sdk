@@ -8,8 +8,9 @@ import {
   type SettleResult,
 } from "../../src/agent/runSessionCore.js";
 import { payDemSettle } from "../../src/rails/payDem.js";
-import { createIdempotencyStore } from "../../src/rails/idempotency.js";
+import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
+import { registerResumeSeam } from "../support/restartableSettlement.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import { isListing, isSettlementEvidence } from "../../src/artifacts/validators.js";
@@ -143,7 +144,7 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
     authenticateRecoveredArtifact: () => true,
     sessionStore: store,
   };
-  return { deps, listingRef, kv, settleCalls };
+  return { deps: registerResumeSeam(deps), listingRef, kv, settleCalls };
 }
 
 test.each(["fresh", "recovered"].flatMap((mode) =>
@@ -871,7 +872,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const a = await makeDeps(store, { kv, settle });
     const b = await makeDeps(store, { kv, settle });
 
-    const firstRun = runSessionCore(a.listingRef, terms, a.deps, "job-1");
+    const firstRun = runSessionCore(a.listingRef, terms, a.deps);
     await inSettle; // A has persisted intent and is paused inside the payment.
     await expect(
       runSessionCore(b.listingRef, terms, b.deps, "job-1"),
@@ -1174,7 +1175,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const before = await store.load("job-1");
       const beforeEvidence = structuredClone([...kv]);
       const missingJournal = new Error("prepared-transfer journal missing");
-      const railStore = createIdempotencyStore();
+      const railStore = createIdempotencyStore(createInMemorySettlementLog());
       const once = vi.spyOn(railStore, "once");
       let broadcasts = 0;
       const audit = payDemSettle({ address: payer, settle: async () => {
@@ -1258,7 +1259,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     });
     await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("checkpoint crash");
-    const railStore = createIdempotencyStore();
+    const railStore = createIdempotencyStore(createInMemorySettlementLog());
     await railStore.once("pay-dem:job-1:0", {
       bindingVersion: "1", railId: "pay-dem", jobId: "job-1", phaseIndex: 0, phase: "pay-dem",
       amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer, payee,
@@ -1352,7 +1353,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       transfers += 1;
       return { ok: true, execution: "executed", txHash: "cd".repeat(32), chainId: "demos", payer, payee,
         blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs };
-    } });
+    } }, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) });
     const first = await makeDeps(store, { kv, settle,
       anchor: async (name, value) => {
         if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor unavailable");
@@ -1796,12 +1797,11 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
 
   test("migrates authenticated pre-store evidence before receipts and never rebuilds it if deleted", async () => {
     const kv = new Map<string, Record<string, unknown>>();
-    const original = await makeDeps(undefined, { kv });
+    const original = await makeDeps(undefined, { kv, newJobId: () => "job-evidence-migration" });
     const completed = await runSessionCore(
       original.listingRef,
       terms,
       original.deps,
-      "job-evidence-migration",
     );
     expect(original.settleCalls.n).toBe(1);
 
@@ -1888,6 +1888,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const kv = new Map<string, Record<string, unknown>>();
       const original = await makeDeps(undefined, {
         kv,
+        newJobId: () => jobId,
         settle: async (req) => ({
           ok: false,
           txHash: "",
@@ -1897,7 +1898,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         }),
       });
       await expect(
-        runSessionCore(original.listingRef, terms, original.deps, jobId),
+        runSessionCore(original.listingRef, terms, original.deps),
       ).resolves.toMatchObject({ outcome: "failed" });
 
       const store = createInMemorySessionStore();
@@ -1950,13 +1951,13 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     const original = await makeDeps(undefined, {
       kv,
+      newJobId: () => "job-failure-evidence-migration",
       settle: definitiveFailure,
     });
     const failed = await runSessionCore(
       original.listingRef,
       terms,
       original.deps,
-      "job-failure-evidence-migration",
     );
     expect(failed.outcome).toBe("failed");
 

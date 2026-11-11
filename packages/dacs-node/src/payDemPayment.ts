@@ -12,6 +12,7 @@ import {
   type SettlementEffectFence,
   type WalletSpendAuthorityDependenciesV1,
   type WalletSpendAuthorityV1,
+  type WalletSpendPolicyV1,
   type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationClaimV1,
   type WalletSpendReservationV1,
@@ -42,6 +43,7 @@ const HASH_RE = /^[0-9a-f]{64}$/;
 const ADDRESS_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const INTEGER_RE = /^[1-9][0-9]*$/;
 const PREPARED_CHECKPOINT = "pay-dem-prepared-transfer";
+const WALLET_POLICY_MISMATCH = "pay-dem-wallet-policy-mismatch";
 
 function exactOwnRecoveryData(
   value: unknown,
@@ -348,8 +350,21 @@ function recoveryContext(
   });
 }
 
+/**
+ * A reservation names the wallet in the policy's own spelling, and recovery
+ * keeps the spelling it was stored under. Returns that spelling when it
+ * canonically identifies the payer, or null when the policy names another wallet.
+ */
+function policyWalletSpelling(
+  policy: Readonly<WalletSpendPolicyV1>,
+  payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+): string | null {
+  return canonicalAddress(policy.wallet) === payment.payer ? policy.wallet : null;
+}
+
 function walletReservation(
   payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+  wallet: string,
 ): Readonly<WalletSpendReservationV1> {
   const maximumFee = BigInt(payment.maxTotalDebitOs) - BigInt(payment.amountOs);
   return Object.freeze({
@@ -362,9 +377,7 @@ function walletReservation(
     settlementBindingHash: payment.orderLocalBindingHash,
     railId: payment.railId,
     railDefinitionHash: payment.railDescriptorHash,
-    // Wallet policies name the Demos wallet as the adapter reports it
-    // (`0x`-prefixed); the payment input keeps the bare canonical hex.
-    wallet: `0x${payment.payer}`,
+    wallet,
     chainId: payment.network,
     payee: payment.payee,
     finality: Object.freeze({ model: "bft-final" }),
@@ -461,7 +474,11 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
       const rawPayment = database.loadEffectInput("payment", effectId);
       if (rawPayment === undefined) return false;
       const payment = capturePaymentInput(rawPayment);
-      if (canonicalize(walletReservation(payment)) !== canonicalize(reservation)) {
+      // The stored reservation keeps the spelling it was reserved under; only
+      // its canonical identity is checked against the payer.
+      if (canonicalAddress(reservation.wallet) !== payment.payer ||
+          canonicalize(walletReservation(payment, reservation.wallet)) !==
+            canonicalize(reservation)) {
         return false;
       }
       const checkpoint = database.loadEffectCheckpoint(
@@ -833,7 +850,9 @@ export function createDacsPayDemBuyerPaymentTrackV1(
       async execute({ input, fence }) {
         const payment = capturePaymentInput(input);
         await fence.assertCurrent();
-        const reservation = walletReservation(payment);
+        const wallet = policyWalletSpelling(walletSpendAuthority.policy, payment);
+        if (wallet === null) return control(WALLET_POLICY_MISMATCH);
+        const reservation = walletReservation(payment, wallet);
         let claim: Extract<WalletSpendReservationClaimV1, { status: "reserved" }> |
           undefined;
         let claimFailure: DacsLiveEffectExecutionControlV1 | undefined;
@@ -935,7 +954,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           if (!plainObject(raw) || raw.execution !== "executed") {
             throw new DacsPayDemBuyerPaymentError("pay-dem-chain-execution-unconfirmed");
           }
-          const { execution: _execution, ...settlementData } = raw;
+          const { execution: _execution, message: _message, ...settlementData } = raw;
           settlement = captureSettlement(settlementData, payment);
           await claim!.permit.settle(walletSettlement(payment, settlement));
           await options.publishNotice({
@@ -957,6 +976,13 @@ export function createDacsPayDemBuyerPaymentTrackV1(
       },
       async reconcile({ input, fence }) {
         const payment = capturePaymentInput(input);
+        const wallet = policyWalletSpelling(walletSpendAuthority.policy, payment);
+        if (wallet === null) {
+          return Object.freeze({
+            status: "operator-action" as const,
+            reasonCode: WALLET_POLICY_MISMATCH,
+          });
+        }
         const checkpoint = database.loadEffectCheckpoint(
           "payment",
           fence.effectId,
@@ -972,7 +998,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           fence,
         });
         const captured = captureChainReconciliation(reconciled, payment);
-        const reservation = walletReservation(payment);
+        const reservation = walletReservation(payment, wallet);
         if (captured.status === "completed") {
           try {
             await walletSpendAuthority.reconcile(

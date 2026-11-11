@@ -1,4 +1,4 @@
-# SDK #301: PostgreSQL wallet authority direction
+# PostgreSQL wallet authority direction
 
 Status: decided SDK implementation direction. This is not provider/topology
 approval, deployment evidence, D1 ratification or a Standard change.
@@ -114,7 +114,7 @@ operation writers. A generated V2 token must never be accepted by a V1 endpoint.
 
 ## Claim boundary
 
-This PR governs generated service-payment debits and the rail network-fee debits
+This authority governs generated service-payment debits and the rail network-fee debits
 attached to those payments. Setup and funded-doctor disposable-wallet actions,
 plus unrelated Demos storage/anchor fees, are outside this authority claim.
 They retain their existing explicit consent and limit controls.

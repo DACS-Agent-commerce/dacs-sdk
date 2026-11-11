@@ -24,6 +24,13 @@ asset policies. Each asset policy sets:
 - lifetime cumulative and per-counterparty limits; and
 - an optional authenticated operator-approval threshold.
 
+The wallet is a 20-byte (EVM) or 32-byte (Demos) hex address, with or without
+the `0x` prefix and in any letter case. The authority stores and hashes it as
+`0x` and lowercase hex, so every spelling of one wallet shares one lineage, one
+budget and one policy hash, and `canonicalWalletSpendWalletV1()` returns that
+form. A policy naming anything else is refused when the authority is created.
+A reservation keeps the spelling it was reserved under.
+
 Service amounts are exact: `expectedAmount` and `maximumAmount` must match.
 Network fees retain both an estimate and a hard ceiling. Mixed-asset EVM
 payments use one service debit for the token and one network-fee debit for the
@@ -67,8 +74,11 @@ rollback-resistant across actor backup/restore. It:
   budget.
 
 Filesystem and custom stores that do not explicitly implement a lineage
-selector keep the historical wallet/chain/policy-id scope, so an SDK upgrade
-continues to address their existing journal. The PostgreSQL store explicitly
+selector use the wallet/chain/policy-id scope, with the wallet written in its
+canonical form (`0x` followed by lowercase hex), so every spelling of one
+wallet addresses the same journal. A journal that an earlier SDK wrote under
+another spelling of the wallet (without `0x`, in uppercase, or with a label)
+is not found under that scope. The PostgreSQL store explicitly
 selects canonical wallet+chain lineage. Moving an existing journal to
 PostgreSQL requires the authenticated operator-only legacy import described in
 `wallet-budget-authority-design.md`; creating an empty lineage is not migration.

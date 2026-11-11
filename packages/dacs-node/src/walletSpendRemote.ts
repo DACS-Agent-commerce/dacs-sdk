@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
 import {
+  canonicalWalletSpendWalletV1,
+  captureWalletSpendPolicyV1,
   resumeWalletSpendAuthorityOperationV1,
   validateWalletSpendAuthorityOperationV1,
   type WalletSpendAuthorityReplayV1,
@@ -21,6 +23,7 @@ import {
 } from "./walletSpendOperationRetention.js";
 import {
   dacsWalletSpendLineageKeyV1,
+  dacsWalletSpendPolicyHashV1,
   isDacsWalletSpendContinuityAuthorityV2,
   verifyDacsWalletSpendContinuityReceiptV1,
   type DacsWalletSpendContinuityAuthorityV2,
@@ -415,8 +418,9 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
   if (token.length < 32 || token.length > 4_096 || /[\0\r\n]/.test(token)) {
     throw new DacsWalletSpendRemoteError("wallet-spend-authority-token-invalid");
   }
-  const policy = Object.freeze(JSON.parse(canonicalize(input.policy)) as WalletSpendPolicyV1);
-  const policyHash = sha256Hex(`dacs-wallet-spend-policy:v1:${canonicalize(policy)}`);
+  const policy = captureWalletSpendPolicyV1(input.policy);
+  const policyHash = dacsWalletSpendPolicyHashV1(policy);
+  const requestWallet = input.policy.wallet;
   let latestRevision = -1;
 
   const send = async (operation: RemoteOperation, payload: unknown): Promise<unknown> => {
@@ -425,7 +429,7 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
       protocolVersion: "1",
       operationId,
       policyHash,
-      wallet: policy.wallet,
+      wallet: requestWallet,
       chainId: policy.chainId,
       operation,
       payload,
@@ -559,7 +563,8 @@ export async function createDacsRemoteWalletSpendAuthorityV1(input: Readonly<{
       const result = await send("inspect", {});
       const status = remoteStatus(result);
       if (status.revision !== latestRevision || status.policyHash !== policyHash ||
-          status.wallet !== policy.wallet || status.chainId !== policy.chainId ||
+          canonicalWalletSpendWalletV1(status.wallet) !== policy.wallet ||
+          status.chainId !== policy.chainId ||
           status.policyId !== policy.policyId) {
         throw new DacsWalletSpendRemoteError("wallet-spend-authority-status-invalid");
       }
@@ -604,9 +609,10 @@ export async function createDacsRemoteWalletSpendAuthorityV2(input: Readonly<{
   if (token.length < 32 || token.length > 4_096 || /[\0\r\n]/.test(token)) {
     throw new DacsWalletSpendRemoteError("wallet-spend-authority-token-invalid");
   }
-  const policy = Object.freeze(JSON.parse(canonicalize(input.policy)) as WalletSpendPolicyV1);
-  const policyHash = sha256Hex(`dacs-wallet-spend-policy:v1:${canonicalize(policy)}`);
+  const policy = captureWalletSpendPolicyV1(input.policy);
+  const policyHash = dacsWalletSpendPolicyHashV1(policy);
   const lineageKey = dacsWalletSpendLineageKeyV1(policy.wallet, policy.chainId);
+  const requestWallet = input.policy.wallet;
   const pin = Object.freeze({
     authorityId: input.authorityId,
     epoch: input.epoch,
@@ -651,10 +657,10 @@ export async function createDacsRemoteWalletSpendAuthorityV2(input: Readonly<{
     const request: RemoteRequestV2 = {
       protocolVersion: "2", operationId, requestHashVersion: "1", clientNonce,
       authorityId: input.authorityId, epoch: input.epoch, lineageKey, policyHash,
-      wallet: policy.wallet, chainId: policy.chainId, operation, payload,
+      wallet: requestWallet, chainId: policy.chainId, operation, payload,
     };
     const requestHash = sha256Hex(canonicalize(request));
-    const expected = { operationId, requestHash, clientNonce };
+    const expected ={ operationId, requestHash, clientNonce };
     const resolveExactOperation = async (): Promise<unknown> => {
       const query = new URL(`v2/wallet-spend/operations/${operationId}`, endpoint);
       query.searchParams.set("requestHash", requestHash);
@@ -775,7 +781,8 @@ export async function createDacsRemoteWalletSpendAuthorityV2(input: Readonly<{
       const result = await send("inspect", {});
       const status = remoteStatus(result);
       if (status.revision !== latestRevision || status.policyHash !== policyHash ||
-          status.wallet !== policy.wallet || status.chainId !== policy.chainId ||
+          canonicalWalletSpendWalletV1(status.wallet) !== policy.wallet ||
+          status.chainId !== policy.chainId ||
           status.policyId !== policy.policyId) {
         throw new DacsWalletSpendRemoteError("wallet-spend-authority-status-invalid");
       }
@@ -806,8 +813,9 @@ function captureRequest(value: unknown): RemoteRequestV1 {
     "operation", "payload",
   ]) || value.protocolVersion !== "1" || typeof value.operationId !== "string" ||
       !UUID_RE.test(value.operationId) || typeof value.policyHash !== "string" ||
-      !HASH_RE.test(value.policyHash) || typeof value.wallet !== "string" ||
-      value.wallet.length === 0 || typeof value.chainId !== "string" ||
+      !HASH_RE.test(value.policyHash) ||
+      canonicalWalletSpendWalletV1(value.wallet) === null ||
+      typeof value.chainId !== "string" ||
       value.chainId.length === 0 || ![
         "reserve", "current", "begin", "settle", "reconcile", "inspect",
       ].includes(value.operation as string) || !plainObject(value.payload)) {
@@ -831,7 +839,8 @@ function captureRequestV2(value: unknown): RemoteRequestV2 {
       value.epoch.trim() !== value.epoch || value.epoch.normalize("NFC") !== value.epoch ||
       typeof value.lineageKey !== "string" || !HASH_RE.test(value.lineageKey) ||
       typeof value.policyHash !== "string" || !HASH_RE.test(value.policyHash) ||
-      typeof value.wallet !== "string" || value.wallet.length === 0 ||
+      typeof value.wallet !== "string" ||
+      canonicalWalletSpendWalletV1(value.wallet) === null ||
       typeof value.chainId !== "string" || value.chainId.length === 0 ||
       !["reserve", "current", "begin", "settle", "reconcile", "inspect"]
         .includes(value.operation as string) || !plainObject(value.payload) ||
@@ -862,7 +871,10 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
    * A PostgreSQL authority resolver must bind roleId/operationId/requestHash
    * to the state store operation callback and use one stable service owner
    * identity. The resolver is called again before any retained response is
-   * disclosed.
+   * disclosed. `scope.wallet` arrives in the spelling the client configured,
+   * while the returned authority's `policy.wallet` is canonical (`0x` followed
+   * by lowercase hex), so look the wallet up by its canonical form
+   * (`canonicalWalletSpendWalletV1`), not by comparing the two strings.
    */
   resolveAuthority(scope: Readonly<{
     roleId: string;
@@ -889,7 +901,8 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
       policyHash: body.policyHash,
     });
     if (authority === null || authority.policyHash !== body.policyHash ||
-        authority.policy.wallet !== body.wallet || authority.policy.chainId !== body.chainId) {
+        authority.policy.wallet !== canonicalWalletSpendWalletV1(body.wallet) ||
+        authority.policy.chainId !== body.chainId) {
       throw new DacsWalletSpendRemoteError("wallet-spend-authority-lineage-unavailable");
     }
     return authority;
@@ -1156,6 +1169,12 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
 /** V2-only funded service boundary with required current-head attestation. */
 export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
   authenticate(token: string): Promise<string | null> | string | null;
+  /**
+   * `scope.wallet` arrives in the spelling the client configured, while the
+   * returned authority's policy wallet is canonical (`0x` followed by
+   * lowercase hex), so look the wallet up by its canonical form
+   * (`canonicalWalletSpendWalletV1`), not by comparing the two strings.
+   */
   resolveAuthority(scope: Readonly<{
     roleId: string;
     operationId: string;
@@ -1184,7 +1203,7 @@ export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
     });
     if (!isDacsWalletSpendContinuityAuthorityV2(resolved) ||
         resolved.authority.policyHash !== body.policyHash ||
-        resolved.authority.policy.wallet !== body.wallet ||
+        resolved.authority.policy.wallet !== canonicalWalletSpendWalletV1(body.wallet) ||
         resolved.authority.policy.chainId !== body.chainId) {
       throw new DacsWalletSpendRemoteError("wallet-spend-authority-lineage-unavailable");
     }
