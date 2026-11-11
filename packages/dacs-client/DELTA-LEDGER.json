@@ -6722,6 +6722,22 @@
           "after": "1210a631918cb1b11824b80770e1497c52738180"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 keep the fixed reason when a chain reader rejects with a blank message",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a",
+          "after": "cc5ad24e6ee994d77dc2e31b0f501c3871a2b6bd"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4",
+          "after": "df9ebeb4b87b00371834e4b356649f812e06c510"
+        }
+      ]
     }
   ]
 }
