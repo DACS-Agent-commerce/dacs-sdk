@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DacsError } from "../../src/errors.js";
+import { settlementBridgeTraits } from "../../src/rails/idempotency.js";
 import {
   PayDemIncludedNonceVisibilityError,
   createPayDemRail,
+  payDemSettle,
 } from "../../src/rails/payDem.js";
 import {
   createPayDemFundedRail,
@@ -1214,6 +1216,23 @@ describe("createPayDemRail nonce coordination", () => {
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/do not bind the requested native transfer/);
     expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+});
+
+describe("payDemSettle bridge registration", () => {
+  const declared = async (config: { journalPreparedTransfer?: () => Promise<void> }) => {
+    const rail = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret", ...config });
+    return settlementBridgeTraits(payDemSettle(rail));
+  };
+
+  it("payDemSettle declares whether the rail it wraps has a prepared-transfer journal", async () => {
+    expect(await declared({ journalPreparedTransfer: async () => undefined })).toEqual({ journaled: true });
+    expect(await declared({})).toEqual({ journaled: false });
+  });
+
+  it("payDemSettle over a hand-built rail declares nothing", () => {
+    const handBuilt = { address: WALLET, settle: vi.fn() };
+    expect(settlementBridgeTraits(payDemSettle(handBuilt))).toEqual({});
   });
 });
 
