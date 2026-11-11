@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createSellerTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { durableFixture } from './helpers/durable-state-fixture.mjs';
 import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 
