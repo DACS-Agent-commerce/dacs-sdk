@@ -1234,6 +1234,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | 8b03bdb1392424fc58763afdabd38e9a28a82598 |
 | | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 3048034aa3b7af377e090e62be3f1173c1f06ee0 |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 8dcb7f15daa80e2e2abf272b6ce867d06f40101f |
+| WF | fix(wallet): check that no package export reaches the reservation module | Git commit selector fce7c509715ce94ee9153eaad2efe11d27bdef23 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 5fe427a4c2f7d293a9a1b925e381a4e24346af95 |
 | WF | delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 89db1bf53f2e62853119805060587931c6b7078f |
 | | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 04faef5ff305e1763bfe712d51c396fedd2a7fb3 |
@@ -3900,6 +3902,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` |
 | delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` |
 | delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| fce7c509715ce94ee9153eaad2efe11d27bdef23 | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/DELTA-MAP.md:1` |
