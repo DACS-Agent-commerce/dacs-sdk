@@ -9,7 +9,8 @@ import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { world, JOBS } from './helpers/d5-http-fixture.mjs';
-import { createSellerTransportStore, sellerTransportEffect } from '../src/dacs/seller-transport-auth.mjs';
+import { sellerTransportEffect } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { createSellerContextAdmission, releaseSellerContextHolds, parsePolicyLedger, withContextHolds, heldPolicyBudget } from '../src/devnet-demo/operator-approval.mjs';
 import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs';
 

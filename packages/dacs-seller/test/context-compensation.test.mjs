@@ -7,7 +7,8 @@ import {dirname} from 'node:path';
 import {readFile} from 'node:fs/promises';
 import {identityBundleHash} from '@kynesyslabs/dacs';
 import {world,JOBS,exchange,presentContext} from './helpers/d5-http-fixture.mjs';
-import {createSellerTransportStore,createSellerTransportClientAuth,SELLER_CONTEXT_PATH,sellerContextScopeHash} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportClientAuth,SELLER_CONTEXT_PATH,sellerContextScopeHash} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
 import {createSellerContextRoute} from '../src/dacs/seller-context-route.mjs';
 import {createSellerContextAdmission,releaseSellerContextHolds,parsePolicyLedger,withContextHolds,heldPolicyBudget} from '../src/devnet-demo/operator-approval.mjs';
 const limits={maxStartsPerHour:100,maxStartsPerBuyerPerHour:100};
@@ -105,7 +106,7 @@ for(const mode of ['complete','retry','noEffect','pending','uncertain'])test(`co
  if(keep)assert.equal(rows(w,'peer_effects')[0].state,mode);
 });
 for(const buyerLimit of [false,true])test(`${buyerLimit?'buyer':'global'} start-limit refusal preserves a prior completed nonce`,async t=>{
- const w=await world(t,{maxRecords:1,limits:{maxStartsPerHour:buyerLimit?10:1,maxStartsPerBuyerPerHour:buyerLimit?1:10}});
+ const w=await world(t,{maxRecords:1,maxJobs:2,limits:{maxStartsPerHour:buyerLimit?10:1,maxStartsPerBuyerPerHour:buyerLimit?1:10}});
  await exchange(w.handler,await w.wire());w.advance(60000);
  const next=await w.wire({jobId:JOBS[1]}),p=w.auth.readRequest(next.header),body=JSON.parse(next.text);
  await assert.rejects(w.route.reserve(p,body,w.store),{code:buyerLimit?'buyer_unpaid_start_limit':'unpaid_start_limit'});

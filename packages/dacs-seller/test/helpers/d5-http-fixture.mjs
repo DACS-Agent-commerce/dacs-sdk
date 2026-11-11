@@ -1,3 +1,4 @@
+import { withFixtureProfile } from './wire-authority-fixture.mjs';
 import { fixtureListing } from '../fixtures/listings.mjs';
 import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { purchaseSupport } from '../../src/dacs/listing.mjs';
@@ -15,7 +16,8 @@ import {join} from 'node:path';
 import {PassThrough} from 'node:stream';
 import {canonicalize,identityBundleHash,sha256Hex} from '@kynesyslabs/dacs';
 // The handler, the context route and the transport come only from the package root, as a host composes them.
-const {createSellerHttpHandler,createSellerContextRoute,createSellerTransportStore,createSellerTransportServerAuth,createSellerTransportClientAuth}=await import('../../src/index.mjs');
+const {createSellerHttpHandler,createSellerContextRoute,createSellerTransportServerAuth,createSellerTransportClientAuth}=await import('../../src/index.mjs');
+const {createSellerTransportStore}=await import('./bound-transport-store.mjs');
 const {SELLER_CONTEXT_LIMITS}=await import('../../src/dacs/seller-context-route.mjs');
 const {SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../../src/dacs/seller-transport-auth.mjs');
 const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX','01ARZ3NDEKTSV4RRFFQ69G5FAY','01ARZ3NDEKTSV4RRFFQ69G5FAZ'];
@@ -28,10 +30,10 @@ function exchange(handler,{text='{}',header,url=SELLER_CONTEXT_PATH,headers={},m
 }
 // A present context answer; as recover it reads back and verifies both Vet records.
 const presentContext=async body=>({disposition:'present',value:{scope:body.scope,input:{jobId:body.scope.jobId}}});
-async function world(t,{fixture=null,limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},knownJob=null,maxNoncesPerBuyerPerWindow=120,releaseFails=false,releaseWrites=null,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=presentContext,...http}={}){
+async function world(t,{fixture=null,limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxJobs=maxRecords,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},knownJob=null,maxNoncesPerBuyerPerWindow=120,releaseFails=false,releaseWrites=null,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=presentContext,...http}={}){
  const dir=await mkdtemp(join(tmpdir(),'d5-wire-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=T;
  const seller=fixture?.seller??key(),buyer=fixture?.buyer??key(),other=fixture?.other??key(),listing=fixture?.listing??fixtureListing({...seller,signBytes:seller.sign},{now:T}),pin=listingPin(listing),support=purchaseSupport(listing);
- const path=join(dir,'transport.sqlite'),store=createSellerTransportStore({path,maxRecords,maxChallenges,maxContextRecords,contextSessionState,contextStartLimits:limits,maxNoncesPerBuyerPerWindow,now:()=>time});t.after(()=>store.close());
+ const path=join(dir,'transport.sqlite'),store=withFixtureProfile(createSellerTransportStore({path,maxRecords,maxJobs,maxChallenges,maxContextRecords,contextSessionState,contextStartLimits:limits,maxNoncesPerBuyerPerWindow,now:()=>time}));t.after(()=>store.close());
  const auth=createSellerTransportServerAuth({sellerSigner:seller,listingPin:pin,store,now:()=>time});let holds=0,writes=0,logs=0,releases=0;
  const route=createSellerContextRoute({admitPresentation:async({jobId,bundle})=>admittedSession({jobId,bundle,bundleHash:identityBundleHash(bundle),seller:seller.claim,listingPin:pin}),listing,resolveBuyer:async (body,options)=>{writes++;return perform(body,options)},assertBuyerAccess,knownJob,now:()=>time,limits,recover,resumable,writable,
   admitWrites:async input=>{holds++;return admitWrites?admitWrites(input):null},releaseWrites:async input=>{releases++;if(releaseFails)throw new Error('release fixture failure');return releaseWrites?.(input)}});

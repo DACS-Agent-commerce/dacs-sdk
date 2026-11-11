@@ -10,7 +10,8 @@ import DatabaseSync from 'better-sqlite3';
 import {canonicalize,identityBundleHash,sha256Hex} from '@kynesyslabs/dacs';
 const {createSellerHttpHandler}=await import('../src/dacs/seller-http.mjs');
 const {createSellerContextRoute,SELLER_CONTEXT_LIMITS}=await import('../src/dacs/seller-context-route.mjs');
-const {createSellerTransportStore,createSellerTransportServerAuth,createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.mjs');
+const {createSellerTransportServerAuth,createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.mjs');
+const {createSellerTransportStore}=await import('./helpers/bound-transport-store.mjs');
 import {JOBS,T,key,bundleFor,exchange,presentContext,world} from './helpers/d5-http-fixture.mjs';
 
 test('transport job capacity is independent of live nonce capacity, with completed jobs retained', async t => {
@@ -229,7 +230,7 @@ test('B17 retries and unknown-job state reads retain bounded nonce answers witho
 test('B18 completed expired nonces free capacity after restart while old effect answers remain',async t=>{
  const requestLifetimeMs=30000,nonceWindowMs=60000,w=await world(t,{maxRecords:1,recover:presentContext}),first=await w.wire(),firstAnswer=await exchange(w.handler,first);
  assert.equal(firstAnswer.status,200);w.advance(requestLifetimeMs+1);
- const reopened=createSellerTransportStore({path:w.path,maxRecords:1,maxContextRecords:10000,now:w.now});t.after(()=>reopened.close());
+ const reopened=createSellerTransportStore({path:w.path,maxRecords:1,maxJobs:10000,maxContextRecords:10000,now:w.now});t.after(()=>reopened.close());
  const early=await w.wire({actor:w.other,jobId:JOBS[1]});
  // Request expiry does not end the retained nonce's full rate window.
  await assert.rejects(w.route.reserve(w.auth.readRequest(early.header),JSON.parse(early.text),reopened),{code:'peer_store_capacity'});
@@ -299,7 +300,7 @@ test('B25 a consumed presentation cannot authorize a new scope even after the st
 test('B26 legacy completed nonces keep the maximum request lifetime before reclamation',async t=>{
  const w=await world(t,{maxRecords:1});await exchange(w.handler,await w.wire());
  const db=new DatabaseSync(w.path);db.exec('DELETE FROM peer_nonce_retention');db.close();
- const reopened=createSellerTransportStore({path:w.path,maxRecords:1,maxContextRecords:10000,now:w.now});t.after(()=>reopened.close());
+ const reopened=createSellerTransportStore({path:w.path,maxRecords:1,maxJobs:10000,maxContextRecords:10000,now:w.now});t.after(()=>reopened.close());
  let input=await w.wire({actor:w.other,jobId:JOBS[1]});await assert.rejects(w.route.reserve(w.auth.readRequest(input.header),JSON.parse(input.text),reopened),{code:'peer_store_capacity'});
  w.advance(60000);input=await w.wire({actor:w.other,jobId:JOBS[2]});assert.equal((await w.route.reserve(w.auth.readRequest(input.header),JSON.parse(input.text),reopened)).disposition,'perform');assert.equal(nonceCount(w),1);
 });

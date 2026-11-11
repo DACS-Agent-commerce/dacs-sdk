@@ -521,7 +521,8 @@ under the 4,096-character header limit.
 whether the proof was unused; the verifier awaits it. `createExplicitResumeLedger()`
 keeps claims in process memory until they expire by the latest `time` it has
 been given (so overlapping verifications on different clocks cannot release a
-claim another still treats as live) and refuses past 4,096 live ones; it does not survive a restart, so a proof can verify again after one until
+claim another still treats as live), throws `wire_input_invalid` for an `expiresAt`
+or `time` that is not an unsigned integer, and refuses past 4,096 live ones; it does not survive a restart, so a proof can verify again after one until
 its `expiresAt` (at most 60 s). A host that must keep one-use across a restart
 supplies a durable ledger. The proof never starts an effect by itself: the
 request that carries it still passes `checkWireRequest` and the journal.
@@ -764,7 +765,11 @@ exactly the profile of every message for that purchase (`assertPurchaseProfile`;
   purchase); a request is never signed without a kept tuple. It signs the
   `expiresAt` the payload carries: the 30 s signer lifetime is applied by
   `signWireRequest` and `signWireResponse`, so a host that calls
-  `signWireEnvelope` directly must bound `expiresAt` itself.
+  `signWireEnvelope` directly must bound `expiresAt` itself. It also verifies
+  the signature its signer returns under the key the receiver will use (the
+  delegated session key, else the buyer's key for a request or the seller's for
+  a response), and throws `peer_signature_invalid` instead of returning a header
+  that would be refused.
 
 With one revision defined, a message naming any other revision is unknown.
 When a later SDK defines another revision, a party that selected or kept

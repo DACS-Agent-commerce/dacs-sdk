@@ -11,20 +11,21 @@ import {seller,buyer,JOB,NOW} from './protocol-fixture.mjs';
 import {fixtureListing,fixtureIdentityBundle} from '../fixtures/listings.mjs';
 import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
-import {createSellerTransportStore} from '../../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportStore} from './bound-transport-store.mjs';
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import {createNativePaymentEvidenceConsumer} from '../../src/dacs/native-payment-evidence-consumer.mjs';
 // `ledger` is a function returning the challenge ledger the agent uses; by default one transport store lives as long as the fixture.
 // `vetMode` selects the records and capability the fixture builds: the TP-1 G3
 // orchestrator mode has the seller verify its own record (default: counterparty).
 export const ORCHESTRATOR_MODE='tp1-g3-orchestrator';
-export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,ledger=null,vetMode}={}){
+export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,ledger=null,publicEndpoint=null,vetMode}={}){
  const dir=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=NOW;const signed=[];const contexts=new Map();
  let store=null,generations=0;const storeDirectory=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-ledger-'));t.after(()=>rm(storeDirectory,{recursive:true,force:true}));
  const openStore=()=>store=createSellerTransportStore({path:join(storeDirectory,'transport.sqlite'),now:()=>time,generation:'TEST-generation-'+ ++generations});
  if(ledger===null){openStore();t.after(()=>store.close());}
  const unreachable=()=>{throw new Error('TEST external effect');};
  const {signature,...listingDraft}=fixtureListing(seller,{now:NOW});
+ if(publicEndpoint!==null)listingDraft.seller.publicEndpoint=publicEndpoint;
  if(buyerRequirement!==null)listingDraft.buyerRequirement=structuredClone(buyerRequirement);
  if(expectedSizeBytes===null)delete listingDraft.offering.deliverable.expectedSizeBytes;
  else listingDraft.offering.deliverable.expectedSizeBytes=expectedSizeBytes;
