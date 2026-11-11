@@ -1205,6 +1205,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | d7936b2ba890b2431ce8681de72fe572ed1119b4 |
 | | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | 10beba68fcc095df465df8e74e5e0e27fe8dd251 |
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | beb390b8c98523aeaa14210e43c207be82bf4696 |
+| WF | delta(client): WF record the merged public API test after carrying the held part up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | f5bea631bd02f0505bde239e10be38970474caf6 |
 
 ## Complete commit and file inventory
 
@@ -3795,6 +3797,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 let an effect pass share its fence with the transport and re-pin the release manifest | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` |
 | fix(client): D11 let an effect pass share its fence with the transport and re-pin the release manifest | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` |
 | fix(client): D11 let an effect pass share its fence with the transport and re-pin the release manifest | `scripts/release-policy.json:1` |
+| delta(client): WF record the merged public API test after carrying the held part up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged public API test after carrying the held part up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged public API test after carrying the held part up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged public API test after carrying the held part up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged public API test after carrying the held part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
