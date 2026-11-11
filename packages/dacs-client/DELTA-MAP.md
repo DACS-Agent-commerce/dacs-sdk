@@ -1190,6 +1190,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | c5f91f14575651303e144ec91570d7db728034e1 |
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | f948151165e3ba48272216e650df2f9bc3c20480 |
 | | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` | 1b83d2a67290fc5fb683667e993dbf498ecaf269 |
+| WF | delta(client): WF record the package-contents blob merged with the dispatch history | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | fa141114c1adc59dfed04b1e17830e8f2cfc866f |
 
 ## Complete commit and file inventory
 
@@ -3773,6 +3775,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` |
 | delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
 | delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

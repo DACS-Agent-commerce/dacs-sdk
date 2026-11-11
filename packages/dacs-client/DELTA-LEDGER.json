@@ -6916,6 +6916,17 @@
           "after": "1b83d2a67290fc5fb683667e993dbf498ecaf269"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the package-contents blob merged with the dispatch history",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "fa141114c1adc59dfed04b1e17830e8f2cfc866f",
+          "after": "fa141114c1adc59dfed04b1e17830e8f2cfc866f"
+        }
+      ]
     }
   ]
 }
