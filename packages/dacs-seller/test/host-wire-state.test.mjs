@@ -30,7 +30,8 @@ import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall, isBoundedCallTimeout } from '../src/dacs/bounded-call.mjs';
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportStore as createUnboundTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 
 const HOST_URL = new URL('../src/host.mjs', import.meta.url);
 const PACKAGE_DIRECTORY = fileURLToPath(new URL('../', import.meta.url));
@@ -307,8 +308,9 @@ test('host start releases the open slots of a finished session once, starts with
   await (await f.start()).close();
   const finished = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) }), live = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 2) });
   const withCapacity = (work) => {
-    const store = createSellerTransportStore({ path: f.path(STORE_FILE) });
-    try { return work(createPurchaseCapacity({ store, now: () => NOW, sessionState: () => null }), sellerStoreInternals(store)); } finally { store.close(); }
+    const store = createUnboundTransportStore({ path: f.path(STORE_FILE) });
+    const internals = sellerStoreInternals(store);
+    try { return work(createPurchaseCapacity({ store, now: () => NOW, sessionState: internals.sessionState }), internals); } finally { store.close(); }
   };
   withCapacity((capacity, { transaction }) => {
     for (const id of [finished, live]) transaction(() => capacity.allocateWithin({ jobId: id, buyer: claim('buyer'), seller: claim('seller'), listingPin: { listingId: 'host-listing', version: 1, contentHash: derive('listing') } }));

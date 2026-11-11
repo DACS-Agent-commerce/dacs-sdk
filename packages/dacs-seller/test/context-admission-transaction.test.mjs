@@ -87,7 +87,7 @@ function world(t, config = {}) {
     store = createSellerTransportStore({ path, generation: `test-generation-${++control.generation}`, now: () => control.clock, ready: () => control.ready,
       maxContextRecords: options.maxContextRecords, maxJobs: options.maxJobs, contextRecords: options.contextRecords, contextSessionState: options.contextSessionState, wireOperationView: options.wireOperationView, contextStartLimits: options.contextStartLimits });
     internals = sellerStoreInternals(store);
-    capacity = createPurchaseCapacity({ store, now: () => control.clock, maxRecords: options.maxRecords ?? 10000, sessionState: () => null });
+    capacity = createPurchaseCapacity({ store, now: () => control.clock, maxRecords: options.maxRecords ?? 10000, sessionState: internals.sessionState });
     admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
       inspectContextOutcome: jobId => (control.inspect ? control.inspect(jobId) : publishedView(jobId)), completeWire: options.completeWire ?? doubleCompleteWire,
@@ -1567,7 +1567,7 @@ test('R06 sweep retires current old-context holders without count-only subtracti
   terminal = false; w.reopen();
   assert.equal(w.internals.admissionCounts().contextRecords, 0);
   const foreign = accountingInput(job(0x11), '/dacs/v1/agreements/proposals', `did:demos:agent:${hash('foreign')}`).payload;
-  assert.throws(() => w.store.reserve(foreign, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+  assert.throws(() => w.store.reserve(foreign, {}, { keepProfile: PROFILE }), { code: 'context_session_terminal', status: 409 });
 });
 
 test('R20 accounting adopts a detached tuple without another insert or timestamp change', async t => {
@@ -1699,7 +1699,10 @@ test('refused admission intent rolls retirement back across restart', async t =>
   assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
   w.reopen(); assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
   w.control.ready = true; terminal = false;
-  await assert.rejects(w.admission.begin(w.prepare(0x33).input), { code: 'peer_job_capacity', status: 503 });
+  const replacement = w.prepare(0x33);
+  await w.admission.begin(replacement.input);
+  assert.equal(w.row(replacement.input.jobId).state, 'admitted');
+  assert.equal(w.db.prepare('SELECT state FROM kit_terminal_closures WHERE jobId = ?').get(p.input.jobId).state, 'finalised');
 });
 
 test('intent commit cuts preserve atomic ownership across restart', async t => {
@@ -2009,10 +2012,11 @@ test('a retired completed job refuses a fresh context admission after restart', 
   assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(completedJob).job_retired, 1);
   assert.equal(ownerRow(w, completedJob).closed, 0);
   session = null; w.reopen();
-  const { input } = w.prepare();
-  await assert.rejects(w.admission.begin(input), { code: 'context_job_closed', status: 409 });
+  const before = workSnapshot(w), challenges = w.db.prepare('SELECT COUNT(*) AS n FROM kit_challenges').get().n;
+  assert.throws(() => w.prepare(), { code: 'context_session_terminal', status: 409 });
   assert.equal(w.row(completedJob), null);
   assert.equal(w.calls.reserve, 0);
   assert.equal(w.calls.wire, 0);
-  assert.equal(w.store.challenges.retained(input.nonce).failure.code, 'context_job_closed');
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_challenges').get().n, challenges);
+  assert.deepEqual(workSnapshot(w), before);
 });

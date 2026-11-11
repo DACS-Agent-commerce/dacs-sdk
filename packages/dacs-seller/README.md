@@ -56,16 +56,35 @@ budget. A purchase allocation holds 17 units for each of the context, proposals,
 commitments and payments routes (68 units, or 85 when commitments/signature is
 enabled), and admission allots one only while the whole allotment is free. A
 successful context completion returns only the context slot; an aborted start, a
-failed or non-validated context and a terminal DACS-5 session (checked once at
-startup) return every open slot. Returned units never reduce what has been
-charged. The host composes a reservation coordinator: one
+failed or non-validated context and a terminal DACS-5 session return every open
+slot. Returned units never reduce what has been charged. The host composes a
+reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
 accounting and recording the reservation result. The routes do not yet reserve
 through the coordinator. Admission and accounting accept capacity through their
 internal ports.
 The routes do not yet reserve through these units, so the host's readiness does
-not read them: signed routes reserve through the store's accounting, and the
-periodic terminal cleanup comes with the routes that use the units.
+not read them: signed routes reserve through the store's accounting, terminal
+allocation cleanup runs at startup and when a store reader observes a terminal
+session, and the periodic terminal cleanup comes with the routes that use the units.
+
+The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
+the old store's checks, startup cleanup and the coordinator) is kept as a durable,
+insert-only terminal closure for the job, together with the release of its open
+slots. It commits with the work that saw it or, when that work is refused, fails or
+is rolled back (the `classify` dry run included), in a transaction of its own before
+the answer leaves. A failed write keeps its error and the observation stays
+pending, so no later transaction or request passes it. A closure answers terminal
+after a restart whatever the port then says; an unknown, nonterminal or
+asynchronous answer creates none. The coordinator refuses a request for a closed job
+`context_session_terminal` (409) after inspecting its operation and before any
+accounting, unless that operation already completed under the request's binding. After the
+terminal check, the coordinator runs the synchronous, read-only gates registered
+with `addPreAccountingGate` in registration order. Completed operations bypass both checks. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+is the one synchronous check for other callers, and the purchase capacity must be
+built on a store before any reader runs. These observation writes are counted apart
+from the challenge, admission and reservation writes, which a refusal still leaves
+untouched.
 
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';

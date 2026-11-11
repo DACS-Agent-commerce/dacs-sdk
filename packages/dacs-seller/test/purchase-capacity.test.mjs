@@ -3,10 +3,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
 import { canonicalize, generateCanonicalJobId, identityBundleHash } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, completeWireEffect, inspectWireOperation, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { privateModule } from './helpers/private-module.mjs';
@@ -40,27 +41,28 @@ const view = {
   completed: binding => ({ state: 'completed', binding, outcome: { status: 200, text: '{}' } }),
 };
 
-let createPurchaseCapacity, createContextAdmissionTransaction, createReservationCoordinator, createSellerTransportStore, sellerStoreInternals, SellerTransportError, importFailure;
+let createPurchaseCapacity, createContextAdmissionTransaction, createReservationCoordinator, createSellerTransportStore, sellerStoreInternals, SellerTransportError, TERMINAL_CONTEXT_STATES, importFailure;
 try {
   ({ createPurchaseCapacity } = await import('../src/dacs/seller-purchase-capacity.mjs'));
   ({ createReservationCoordinator } = await import('../src/dacs/seller-reservation-accounting.mjs'));
   ({ createContextAdmissionTransaction } = await import('../src/dacs/seller-admission-transaction.mjs'));
-  ({ SellerTransportError, createSellerTransportStore, sellerStoreInternals } = await import('../src/dacs/seller-transport-auth.mjs'));
+  ({ SellerTransportError, TERMINAL_CONTEXT_STATES, createSellerTransportStore, sellerStoreInternals } = await import('../src/dacs/seller-transport-auth.mjs'));
 } catch (error) { importFailure = error; }
 
 // One store, its capacity and its admission transaction on one clock. `reopen()` is a restart: the old handle closes and the
 // durable rows are all that remains. `maxRecords` may change at a restart.
-function world(t, { maxRecords = 1000, commitOnSignature = false, sessionState = () => null } = {}) {
+function world(t, { maxRecords = 1000, commitOnSignature = false, sessionState = () => null, store: storeOptions = {} } = {}) {
   assert.ifError(importFailure);
   const directory = mkdtempSync(join(tmpdir(), 'TEST-purchase-capacity-')), path = join(directory, 'transport.sqlite');
   const control = { clock: T0, ready: true, state: sessionState, inspect: () => view.none, generation: 0, spent: 0 };
-  const holds = new Set(), w = { directory, control, holds };
+  const holds = new Set(), w = { directory, path, control, holds };
   function open(limit) {
     w.store?.close();
     w.store = createSellerTransportStore({ path, now: () => control.clock, generation: `TEST-generation-${++control.generation}`,
-      ready: () => control.ready && w.capacity?.fitsNewPurchase() === true });
+      wireOperationView: target => control.operation?.(control.payloads?.get(wireOperationId(target)) ?? target) ?? view.none,
+      ready: () => control.ready && w.capacity?.fitsNewPurchase() === true, contextSessionState: input => control.state(input), ...storeOptions });
     w.internals = sellerStoreInternals(w.store);
-    w.capacity = createPurchaseCapacity({ store: w.store, now: () => control.clock, maxRecords: limit, commitOnSignature, sessionState: input => control.state(input) });
+    w.capacity = createPurchaseCapacity({ store: w.store, now: () => control.clock, maxRecords: limit, commitOnSignature, sessionState: w.internals.sessionState });
     w.admission = createContextAdmissionTransaction({ store: w.store, capacity: w.capacity, now: () => control.clock, ready: () => control.ready,
       policy: { async reserve({ hold }) { holds.add(hold); return null; }, async release({ hold }) { holds.delete(hold); } },
       effectEvidence: async record => [record.vetAddresses.buyer, record.vetAddresses.seller].map(address => ({ address, kind: 'no-intent' })),
@@ -323,7 +325,11 @@ test('terminal cleanup trusts only synchronous terminal state', async t => {
     fulfilled: () => Promise.resolve('finalised') };
   const w = world(t, { maxRecords: 500 }), p = w.purchase(), allocation = w.allocate(p); w.charge(p.jobId, PATHS.context, 1, allocation.allocationId);
   const before = stable(w.report());
-  for (const [name, answer] of Object.entries(answers)) { w.control.state = answer; w.capacity.releaseTerminalAllocations(); assert.equal(w.current(p.jobId).state, 'live', name); }
+  for (const [name, answer] of Object.entries(answers)) {
+    w.control.state = answer;
+    w.capacity.releaseTerminalAllocations();
+    assert.equal(w.current(p.jobId).state, 'live', name);
+  }
   await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(unhandled, []); assert.deepEqual(stable(w.report()), before);
   w.control.state = ({ jobId }) => (jobId === p.jobId ? 'finalised' : null);
   w.capacity.releaseTerminalAllocations(); const released = stable(w.report());
@@ -472,8 +478,8 @@ test('capacity-exact-parties-and-fixed-allotment', t => {
 });
 
 async function accountedPurchase(t, maxRecords = FOUR) {
-  const f = await accountingFixture(t);
-  const capacity = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords, sessionState: () => null });
+  const f = await accountingFixture(t, { leaveCapacityToTest: true });
+  const capacity = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords, sessionState: sellerStoreInternals(f.store()).sessionState });
   const within = sellerStoreInternals(f.store()).transaction;
   const purchase = f.payload();
   const allocation = within(() => capacity.allocateWithin(purchase));
@@ -497,7 +503,7 @@ test('accounted purchase spending preserves its allocation and exhausts only its
   assert.equal(f.rows().length, UNITS);
   const before = stable(capacity.capacityReport());
   f.reopen();
-  const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: () => null });
+  const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: sellerStoreInternals(f.store()).sessionState });
   assert.deepEqual(stable(reopened.capacityReport()), before);
 });
 
@@ -528,7 +534,7 @@ test('journal refusal and result uncertainty keep the committed purchase unit af
     assert.equal(f.rows()[0].state, resultFailure ? 'reserving' : 'refused');
     assert.equal(f.rows()[0].allocationId, allocation.allocationId);
     const before = stable(capacity.capacityReport()); f.reopen();
-    const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: () => null });
+    const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: sellerStoreInternals(f.store()).sessionState });
     assert.deepEqual(stable(reopened.capacityReport()), before);
   });
 });
@@ -558,12 +564,13 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 const rejects = (promise, code, status) => assert.rejects(promise, error => error.code === code && (status === undefined || error.status === status));
 const operationOf = jobId => wireOperationId({ seller: fixture.SELLER.claim, jobId, path: PATHS.proposals });
 
-async function coordination(t, { maxRecords = 1000 } = {}) {
-  const f = await fixture.accountingFixture(t), w = { f, inspections: 0, limit: maxRecords };
+async function coordination(t, { maxRecords = 1000 } = {}, storeOptions = {}) {
+  const control = { state: () => null };
+  const f = await fixture.accountingFixture(t, { leaveCapacityToTest: true, contextSessionState: input => control.state(input), ...storeOptions }), w = { f, control, inspections: 0, limit: maxRecords };
   w.build = () => {
     const store = f.store();
     w.internals = sellerStoreInternals(store);
-    w.capacity = createPurchaseCapacity({ store, now: f.now, maxRecords: w.limit, sessionState: () => null });
+    w.capacity = createPurchaseCapacity({ store, now: f.now, maxRecords: w.limit, sessionState: w.internals.sessionState });
     w.coordinator = createReservationCoordinator({ accounting: store.reservationAccounting, capacity: w.capacity,
       inspectOperation: target => { w.inspections++; return inspectWireOperation(f.journal, target); } });
   };
@@ -588,13 +595,14 @@ function paused(input, outcome = () => input.checked.reserve()) {
 
 // The coordinator over a world's accounting, capacity and admission transaction; `control.operation` answers the next inspection.
 function withCoordinator(w) {
-  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none;
+  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none; w.control.payloads = new Map();
   w.coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity: w.capacity, admissionTransaction: w.admission,
     inspectOperation: target => { w.inspections++; return w.control.operation(target); } });
   w.contextInput = (p, path = PATHS.context) => {
     const payload = { version: '1', kind: 'request', method: 'POST', path, bodyHash: hash('{}'), jobId: p.jobId, buyer: p.input.buyer, seller: SELLER, listingPin: PIN,
       agreementHash: hash('agreement'), nonce: hash(`nonce-${++w.nonces}`).slice(0, 32), expiresAt: w.control.clock + 30000, profile: PROFILE };
     const operationId = wireOperationId(payload);
+    w.control.payloads.set(operationId, payload);
     return { checked: { reserve: async () => Object.freeze({ state: 'new', operationId, attempt: 0, leaseUntil: w.control.clock + 300000 }) },
       payload, route: path, operationId, newJob: false, contextStart: true, paymentTx: null, keepProfile: PROFILE, retainedWork: true };
   };
@@ -731,12 +739,12 @@ test('reservations for different operations do not block each other', async t =>
   owner.open(); assert.equal((await first).state, 'new');
 });
 
-test('with the shipped guard off, the coordinator refuses before inspection and writes nothing', () => {
+test('the coordinator and terminal observer refuse without writes when the guard is off', () => {
   const probe = fileURLToPath(new URL('./helpers/coordinator-guard-off-probe.mjs', import.meta.url));
   const kept = (process.env.NODE_OPTIONS ?? '').split(' ').filter(option => option !== '' && !option.includes('kit-guard-fixture.mjs')).join(' ');
   const child = spawnSync(process.execPath, [probe], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: kept } });
   assert.equal(child.status, 0, child.stderr);
-  assert.deepEqual(JSON.parse(child.stdout), { code: 'kit_operation_guard_off', written: 0, portCalls: 0 });
+  assert.deepEqual(JSON.parse(child.stdout), { code: 'kit_operation_guard_off', written: 0, portCalls: 0, terminalSession: 'kit_operation_guard_off', observed: 'finalised', closures: 0 });
 });
 
 test('with `maxRecords` small and `free` 0, then again after the 60,000 ms buyer window has moved, 100 fresh requests from 100 distinct buyers each refuse `peer_store_capacity` and leave every count at its pre-request value, also after two restarts', async t => {
@@ -820,7 +828,8 @@ test('reservation-exhaustion-record-failure-keeps-the-refusal-as-cause', async t
   assert.equal((await w.reserve(await w.request({}, { newJob: true }))).state, 'new');
   const cut = new Error('TEST exhaustion record failed');
   const failing = createReservationCoordinator({ accounting: w.f.store().reservationAccounting, inspectOperation: target => inspectWireOperation(w.f.journal, target),
-    capacity: { classify: input => w.capacity.classify(input), recordExhaustion: () => { throw cut; } } });
+    capacity: { classify: input => w.capacity.classify(input), recordExhaustion: () => { throw cut; }, terminalSession: jobId => w.capacity.terminalSession(jobId),
+      flushTerminalObservations: () => w.capacity.flushTerminalObservations() } });
   for (let refusal = 0; refusal < 2; refusal++) {
     await assert.rejects(failing.reserveCoordinated(await w.request()), error => error === cut && error.cause?.code === 'peer_store_capacity' && error.cause.status === 503);
   }
@@ -858,14 +867,14 @@ test('reservation-mutex-owner-crash-reclassification', async t => {
       import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
       import { openWireRequestJournal, inspectWireOperation, wireOperationBinding, wireRequestHash } from '@kynesyslabs/dacs/wire';
       import { journalStore, reserveEffect } from ${JSON.stringify(new URL('../../../dist/wire/journal.js', import.meta.url).href)};
-      import { createSellerTransportStore } from ${JSON.stringify(new URL('../src/dacs/seller-transport-auth.mjs', import.meta.url).href)};
+      import { createSellerTransportStore, sellerStoreInternals } from ${JSON.stringify(new URL('../src/dacs/seller-transport-auth.mjs', import.meta.url).href)};
       import { createPurchaseCapacity } from ${JSON.stringify(new URL('../src/dacs/seller-purchase-capacity.mjs', import.meta.url).href)};
       import { createReservationCoordinator } from ${JSON.stringify(new URL('../src/dacs/seller-reservation-accounting.mjs', import.meta.url).href)};
       const { path, directory, payload, at, journaled } = JSON.parse(process.argv[1]);
       const now = () => at;
       const journal = openWireRequestJournal(directory, { clock: now, leaseMs: 300000 });
       const store = createSellerTransportStore({ path, now, wireOperationView: target => inspectWireOperation(journal, target) });
-      const capacity = createPurchaseCapacity({ store, now, sessionState: () => null });
+      const capacity = createPurchaseCapacity({ store, now, sessionState: sellerStoreInternals(store).sessionState });
       const coordinator = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
       const checked = { reserve: async () => {
         if (journaled) reserveEffect(journalStore(journal), {
@@ -930,4 +939,406 @@ test('reservation-lock-map-cleanup', async t => {
   owner.open(); await first; await Promise.all(waiters); await settle();
   assert.equal(of(operationOf(fixture.JOB)).filter(kind => kind === 'delete').length, 1, 'removed once, after the last waiter');
   assert.equal(of(operationOf(fixture.JOB)).at(-1), 'delete');
+});
+
+// The terminal closure, the gate list and the observation adapter. Closure and release are the store's metadata, counted apart
+// from the work's own writes. Worlds here have a real store, capacity and admission transaction; the source is `control.state`.
+const TERMINAL_NAMES = [...TERMINAL_CONTEXT_STATES];
+const ALL_ROUTES = [PATHS.context, PATHS.proposals, PATHS.commitments, PATHS.commitmentSignature, PATHS.payments];
+const SESSION_ANSWERS = {
+  null: () => null, nonterminal: () => 'negotiating', 'agent stage': () => 'proposal-open', throwing: () => { throw new Error('TEST port down'); },
+  'fulfilled promise': () => Promise.resolve('finalised'), 'rejected promise': () => Promise.reject(new Error('TEST late failure')),
+  'rejecting thenable': () => ({ then(_, reject) { reject(new Error('TEST thenable failure')); } }),
+  'throwing then getter': () => ({ get then() { throw new Error('TEST then getter'); } }),
+};
+const unavailableAnswer = label => !['null', 'nonterminal', 'agent stage'].includes(label);
+const SESSION_UNAVAILABLE = { code: 'session_admission_unavailable', status: 503 };
+const CLOSURES_SQL = 'SELECT jobId, state, source FROM kit_terminal_closures ORDER BY jobId';
+const closures = w => w.db().prepare(CLOSURES_SQL).all().map(row => ({ ...row }));
+// A second connection sees only what has committed.
+const durableClosures = w => {
+  const reader = new Database(w.path, { readonly: true });
+  try { return reader.prepare(CLOSURES_SQL).all().map(row => ({ ...row })); } finally { reader.close(); }
+};
+const closureOf = (jobId, state = 'finalised', source = 'session-observer') => [{ jobId, state, source }];
+const onlyJob = (jobId, answer) => input => (input.jobId === jobId ? answer(input) : null);
+const failWrites = (w, table, event, message) => w.db().exec(`CREATE TRIGGER TEST_cut BEFORE ${event} ON ${table} BEGIN SELECT RAISE(ABORT, '${message}'); END`);
+const healWrites = w => w.db().exec('DROP TRIGGER TEST_cut');
+const spentState = w => ({ used: w.report().used, files: readdirSync(w.directory).sort() });
+const watchUnhandled = t => { const seen = [], listener = reason => seen.push(reason); process.on('unhandledRejection', listener); t.after(() => process.off('unhandledRejection', listener)); return seen; };
+
+// A world whose job `p` has its K1 admission and allocation, with the coordinator over its admission transaction.
+async function coordinated(t, options = {}) {
+  const w = withCoordinator(world(t, { maxRecords: 500, commitOnSignature: true, ...options })), p = w.prepare();
+  await w.begin(p);
+  return { w, p };
+}
+// One request on `route` for `p`; the context route runs under the admission transaction's job lease.
+const attemptRoute = (w, p, route, input = w.contextInput(p, route)) => (route === PATHS.context
+  ? w.admission.reserveContext(p.jobId, lease => w.coordinator.reserveCoordinated(input, { jobLease: lease }))
+  : w.coordinator.reserveCoordinated(input));
+function countedRequest(w, p, route) {
+  const calls = { reserve: 0 }, input = w.contextInput(p, route), reserve = input.checked.reserve;
+  input.checked.reserve = async () => { calls.reserve++; return reserve(); };
+  return { input, calls };
+}
+const restart = w => { w.reopen(); withCoordinator(w); };
+
+test('terminal closures and allocation releases survive restarts for every terminal state', async t => {
+  const unhandled = watchUnhandled(t), answers = Object.values(SESSION_ANSWERS);
+  for (const [index, name] of TERMINAL_NAMES.entries()) {
+    const w = world(t, { maxRecords: 500 }), p = w.purchase(), allocation = w.allocate(p); w.charge(p.jobId, PATHS.context, 1, allocation.allocationId);
+    let reads = 0; w.control.state = () => { reads++; return name; };
+    assert.deepEqual(closures(w), []);
+    w.capacity.releaseTerminalAllocations();
+    assert.deepEqual(closures(w), closureOf(p.jobId, name, 'cleanup'), name);
+    assert.equal(w.current(p.jobId).state, 'released'); assert.deepEqual(figures(w.report()), { used: 1, allotted: 0, free: 499 });
+    const settled = stable(w.report()), readsAfterClosure = reads;
+    w.capacity.releaseTerminalAllocations();
+    assert.deepEqual(w.internals.terminalSession(p.jobId), { terminal: true, state: name });
+    assert.deepEqual(stable(w.report()), settled); assert.equal(closures(w).length, 1); assert.equal(reads, readsAfterClosure, 'a closure answers without the port');
+    for (const answer of [answers[index % answers.length], answers[(index + 3) % answers.length]]) {
+      w.control.state = answer; w.reopen();
+      assert.deepEqual(w.internals.terminalSession(p.jobId), { terminal: true, state: name }); w.capacity.releaseTerminalAllocations();
+      assert.deepEqual(closures(w), closureOf(p.jobId, name, 'cleanup')); assert.deepEqual(stable(w.report()), settled);
+    }
+  }
+  const settledRow = world(t, { maxRecords: 500 }), q = settledRow.prepare();
+  await settledRow.admission.begin(q.input); await (await settledRow.reserveContext(q.jobId)).complete(success(q.jobId));
+  assert.equal(settledRow.admissionRow(q.jobId).contextOutcome, 'success');
+  settledRow.control.state = () => 'finalised'; settledRow.capacity.releaseTerminalAllocations();
+  settledRow.control.state = () => null; settledRow.reopen();
+  assert.deepEqual(settledRow.internals.terminalSession(q.jobId), { terminal: true, state: 'finalised' }); assert.equal(settledRow.admissionRow(q.jobId).contextOutcome, 'success');
+  for (const [label, answer] of Object.entries(SESSION_ANSWERS)) {
+    const w = world(t, { maxRecords: 500 }), p = w.purchase(); w.allocate(p); w.control.state = answer;
+    for (let restarts = 0; restarts < 2; restarts++) {
+      w.reopen();
+      if (unavailableAnswer(label)) {
+        assert.throws(() => w.internals.terminalSession(p.jobId), SESSION_UNAVAILABLE, label);
+        w.capacity.releaseTerminalAllocations();
+      } else {
+        assert.deepEqual(w.internals.terminalSession(p.jobId), { terminal: false, state: null }, label);
+        w.capacity.releaseTerminalAllocations();
+      }
+    }
+    await settle(); assert.deepEqual(durableClosures(w), [], label); assert.equal(w.current(p.jobId).state, 'live', label);
+  }
+  assert.deepEqual(unhandled, []);
+});
+
+test('closure and allocation release commit together across crash cuts', t => {
+  for (const cut of ['before', 'after']) {
+    const w = world(t, { maxRecords: 500 }), p = w.purchase(), live = w.allocate(p); w.control.state = () => 'finalised';
+    w.failCommit(cut);
+    assert.throws(() => w.capacity.releaseTerminalAllocations(), undefined, cut);
+    w.reopen();
+    if (cut === 'before') {
+      assert.deepEqual(durableClosures(w), []); assert.deepEqual(w.current(p.jobId), live);
+      w.capacity.releaseTerminalAllocations();
+    }
+    assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'finalised', 'cleanup'), cut); assert.equal(w.current(p.jobId).state, 'released', cut);
+    assert.equal(w.db().prepare('SELECT COUNT(*) AS n FROM kit_terminal_closures').get().n, 1);
+  }
+});
+
+test('terminal sessions refuse new effects while exact completed operations remain replayable', async t => {
+  for (const route of ALL_ROUTES) for (const mode of ['closed', 'effect-path']) {
+    const { w, p } = await coordinated(t), label = `${route} ${mode}`;
+    w.control.state = onlyJob(p.jobId, () => 'aborted-by-other');
+    if (mode === 'closed') { w.capacity.releaseTerminalAllocations(); assert.equal(w.current(p.jobId).state, 'released', label); } else assert.equal(w.current(p.jobId).state, 'live', label);
+    const { input, calls } = countedRequest(w, p, route), before = spentState(w);
+    await rejects(attemptRoute(w, p, route, input), 'context_session_terminal', 409);
+    assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'aborted-by-other', mode === 'closed' ? 'cleanup' : 'effect-path'), label);
+    assert.equal(w.current(p.jobId).state, 'released', label); assert.deepEqual(spentState(w), before, label);
+    assert.equal(calls.reserve, 0, label); assert.equal(w.inspections, 1, label);
+    for (const restarted of [false, true]) {
+      if (restarted) { w.control.state = () => null; restart(w); }
+      for (let again = 0; again < 3; again++) await rejects(attemptRoute(w, p, route), 'context_session_terminal', 409);
+      assert.deepEqual(spentState(w), before, label); assert.equal(closures(w).length, 1, label);
+    }
+  }
+  const polled = await coordinated(t);
+  assert.equal((await polled.w.coordinatedContext(polled.p)).effect.state, 'new');
+  polled.w.control.state = onlyJob(polled.p.jobId, () => 'finalised');
+  const opened = spentState(polled.w); polled.w.livePending();
+  await rejects(polled.w.coordinatedContext(polled.p), 'context_session_terminal', 409);
+  polled.w.control.clock += 300001; polled.w.control.operation = () => view.ended;
+  await rejects(polled.w.coordinatedContext(polled.p), 'context_session_terminal', 409);
+  assert.deepEqual(spentState(polled.w), opened);
+  const replayed = await coordinated(t); let observed = 0;
+  await attemptRoute(replayed.w, replayed.p, PATHS.proposals);
+  replayed.w.control.state = () => { observed++; return 'finalised'; };
+  replayed.w.control.operation = target => view.completed(wireOperationBinding(target));
+  assert.equal((await attemptRoute(replayed.w, replayed.p, PATHS.proposals)).state, 'new');
+  assert.equal(observed, 1, 'accounting revalidates the retained operation through the store');
+  assert.deepEqual(closures(replayed.w), closureOf(replayed.p.jobId));
+  for (const [label, answer] of Object.entries(SESSION_ANSWERS)) {
+    const control = await coordinated(t); control.w.control.state = onlyJob(control.p.jobId, answer);
+    if (unavailableAnswer(label)) await assert.rejects(attemptRoute(control.w, control.p, PATHS.proposals), SESSION_UNAVAILABLE, label);
+    else assert.equal((await attemptRoute(control.w, control.p, PATHS.proposals)).state, 'new', label);
+    assert.equal(control.w.report().used, unavailableAnswer(label) ? 0 : 1, label); assert.deepEqual(closures(control.w), [], label);
+  }
+});
+
+test('terminal checks and registered gates run before accounting under the operation mutex', async t => {
+  const ordered = await coordinated(t), log = [], seen = [];
+  ordered.w.control.operation = () => { log.push('inspect'); return view.none; };
+  ordered.w.control.state = onlyJob(ordered.p.jobId, () => { log.push('terminal'); return null; });
+  ordered.w.coordinator.addPreAccountingGate(input => { log.push('first gate'); seen.push(input); return null; });
+  ordered.w.coordinator.addPreAccountingGate(() => { log.push('second gate'); return null; });
+  const input = ordered.w.contextInput(ordered.p, PATHS.proposals);
+  assert.equal((await attemptRoute(ordered.w, ordered.p, PATHS.proposals, input)).state, 'new');
+  assert.deepEqual(log, ['inspect', 'terminal', 'first gate', 'second gate', 'terminal']);
+  assert.deepEqual(seen.map(({ route, jobId, payload, inspection }) => ({ route, jobId, payload, inspection })), [{ route: PATHS.proposals, jobId: ordered.p.jobId, payload: input.payload, inspection: view.none }]);
+
+  const refusing = await coordinated(t); let later = 0;
+  refusing.w.coordinator.addPreAccountingGate(() => ({ code: 'TEST_gate_refused', status: 422 }));
+  refusing.w.coordinator.addPreAccountingGate(() => { later++; return null; });
+  const untouched = { spent: spentState(refusing.w), ready: refusing.w.capacity.fitsNewPurchase(), report: stable(refusing.w.report()) }, { input: refused, calls } = countedRequest(refusing.w, refusing.p, PATHS.proposals);
+  await rejects(attemptRoute(refusing.w, refusing.p, PATHS.proposals, refused), 'TEST_gate_refused', 422);
+  assert.deepEqual({ spent: spentState(refusing.w), ready: refusing.w.capacity.fitsNewPurchase(), report: stable(refusing.w.report()) }, untouched);
+  assert.equal(later, 0); assert.equal(calls.reserve, 0);
+
+  const thrown = await coordinated(t), cut = new Error('TEST gate threw'), before = spentState(thrown.w);
+  thrown.w.coordinator.addPreAccountingGate(() => { throw cut; });
+  await assert.rejects(attemptRoute(thrown.w, thrown.p, PATHS.proposals), error => error === cut);
+  assert.deepEqual(spentState(thrown.w), before);
+
+  const replay = await coordinated(t); let gated = 0, read = 0;
+  await attemptRoute(replay.w, replay.p, PATHS.proposals);
+  replay.w.coordinator.addPreAccountingGate(() => { gated++; return { code: 'TEST_gate_refused', status: 422 }; });
+  replay.w.control.state = () => { read++; return 'finalised'; }; replay.w.control.operation = target => view.completed(wireOperationBinding(target));
+  assert.equal((await attemptRoute(replay.w, replay.p, PATHS.proposals)).state, 'new'); assert.deepEqual({ gated, read }, { gated: 0, read: 1 });
+  replay.w.control.operation = target => ({ ...view.completed(wireOperationBinding(target)), binding: hash('another binding') });
+  await rejects(attemptRoute(replay.w, replay.p, PATHS.proposals), 'context_session_terminal', 409);
+  assert.equal(gated, 0, 'a foreign binding takes no bypass, and the terminal check precedes every gate');
+
+  const failed = await coordinated(t); failed.w.control.state = onlyJob(failed.p.jobId, () => 'finalised');
+  failWrites(failed.w, 'kit_terminal_closures', 'INSERT', 'TEST closure write cut');
+  const intact = spentState(failed.w), allocationState = () => failed.w.db().prepare('SELECT state FROM kit_allocations').get().state;
+  await assert.rejects(attemptRoute(failed.w, failed.p, PATHS.proposals), /TEST closure write cut/);
+  assert.deepEqual(spentState(failed.w), intact); assert.equal(allocationState(), 'live');
+  healWrites(failed.w); failed.w.control.state = () => null;
+  await rejects(attemptRoute(failed.w, failed.p, PATHS.proposals), 'context_session_terminal', 409);
+  assert.deepEqual(durableClosures(failed.w), closureOf(failed.p.jobId, 'finalised', 'effect-path')); assert.equal(failed.w.current(failed.p.jobId).state, 'released');
+  await rejects(attemptRoute(failed.w, failed.p, PATHS.payments), 'context_session_terminal', 409); assert.equal(closures(failed.w).length, 1);
+
+  const crowd = await coordinated(t); crowd.w.control.state = onlyJob(crowd.p.jobId, () => 'vet-failed');
+  const outcomes = await Promise.allSettled([PATHS.proposals, PATHS.proposals, PATHS.commitments, PATHS.payments].map(route => attemptRoute(crowd.w, crowd.p, route)));
+  assert.deepEqual(outcomes.map(outcome => outcome.reason?.code), Array(4).fill('context_session_terminal'));
+  assert.equal(durableClosures(crowd.w).length, 1); assert.equal(crowd.w.report().used, 0);
+});
+
+test('terminal-gate-shape-and-thenable-refusals', async t => {
+  const unhandled = watchUnhandled(t), { w, p } = await coordinated(t);
+  for (const notGate of ['gate', null, {}, undefined]) assert.throws(() => w.coordinator.addPreAccountingGate(notGate), TypeError);
+  const answers = { 'a Promise': () => Promise.resolve(null), 'a rejecting Promise': () => Promise.reject(new Error('TEST gate rejected')), 'a thenable': () => ({ then() {} }),
+    'no status': () => ({ code: 'TEST_no_status' }), 'a text status': () => ({ code: 'TEST_status', status: 'refused' }), 'a success status': () => ({ code: 'TEST_ok', status: 200 }),
+    'a bare string': () => 'refuse', undefined: () => undefined };
+  for (const [label, answer] of Object.entries(answers)) {
+    withCoordinator(w); w.coordinator.addPreAccountingGate(answer);
+    const before = spentState(w);
+    await assert.rejects(attemptRoute(w, p, PATHS.proposals), TypeError, label);
+    assert.deepEqual(spentState(w), before, label);
+  }
+  await settle(); assert.deepEqual(unhandled, []); assert.equal(w.report().used, 0);
+});
+
+// OLD is a reclaimable challenge row of a terminal session that holds an allocation, with the challenge table full.
+const oldSession = (t, options = {}) => {
+  const w = world(t, { maxRecords: 200, store: { maxChallenges: 1, ...options } }), jobId = job(1);
+  w.store.challenges.issue({ jobId, buyer: BUYER }, hash('scope')); w.allocate(w.purchase(1));
+  w.control.clock += 2 * 3600000; w.control.state = onlyJob(jobId, () => 'finalised');
+  return w;
+};
+const challengeRows = w => w.db().prepare('SELECT jobId FROM kit_challenges ORDER BY jobId').all().map(row => row.jobId);
+const issueFor = (w, index) => w.store.challenges.issue({ jobId: job(index), buyer: BUYER }, hash('scope'));
+const fillContextRecords = w => w.db().prepare("INSERT INTO kit_context_admissions VALUES (?, ?, ?, 'running', 1, '{}')").run(job(0xaa), BUYER, T0);
+const workCounts = w => ['kit_job_bindings', 'kit_reservations'].map(table => w.db().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
+
+test('issuance and reclamation preserve terminal observations across request rollback', async t => {
+  const unhandled = watchUnhandled(t);
+  const cases = {
+    'a successful transaction': { run: w => issueFor(w, 2), rows: [job(2)] },
+    'a terminal refusal': { run: w => issueFor(w, 1), rejects: error => error.code === 'context_session_terminal' && error.status === 409, rows: [job(1)] },
+    'a later capacity refusal': { options: { maxContextRecords: 1 }, setup: fillContextRecords, run: w => issueFor(w, 2), rejects: error => error.code === 'peer_context_capacity', rows: [job(1)] },
+    'a thrown failure': { setup: w => failWrites(w, 'kit_challenges', 'DELETE', 'TEST challenge delete cut'), heal: true, run: w => issueFor(w, 2), rejects: /TEST challenge delete cut/, rows: [job(1)] },
+    'a deliberate rollback': { run: w => w.internals.transaction(() => w.internals.sessionState({ jobId: job(1) }), true), rows: [job(1)] },
+  };
+  for (const [name, { options, setup, heal, run, rejects: expected, rows }] of Object.entries(cases)) {
+    const w = oldSession(t, options), counts = workCounts(w), execs = [];
+    setup?.(w);
+    const db = w.db(), exec = db.exec.bind(db);
+    t.mock.method(db, 'exec', sql => { execs.push({ sql, nested: /^BEGIN/.test(sql) && db.inTransaction }); return exec(sql); });
+    try { if (expected) await assert.rejects(async () => run(w), expected, name); else run(w); } finally { db.exec.mock.restore(); }
+    assert.deepEqual(durableClosures(w), closureOf(job(1)), name); assert.equal(w.current(job(1)).state, 'released', name);
+    assert.deepEqual(challengeRows(w), rows, name); assert.ok(execs.every(({ nested }) => !nested), `${name}: no nested transaction`);
+    if (heal) healWrites(w);
+    assert.deepEqual(workCounts(w), counts, name);
+    const settled = w.current(job(1));
+    for (let reopened = 0; reopened < 2; reopened++) {
+      w.control.state = () => null; w.reopen();
+      assert.deepEqual(w.internals.terminalSession(job(1)), { terminal: true, state: 'finalised' }, name);
+      w.capacity.releaseTerminalAllocations(); assert.deepEqual(w.current(job(1)), settled, name); assert.equal(durableClosures(w).length, 1, name);
+    }
+  }
+  const flushing = oldSession(t); failWrites(flushing, 'kit_terminal_closures', 'INSERT', 'TEST flush cut');
+  await assert.rejects(async () => issueFor(flushing, 1), error => /TEST flush cut/.test(error.message) && error.cause?.code === 'context_session_terminal');
+  // Raw reads: a transaction would hit the barrier the pending observation puts in front of every later one.
+  assert.deepEqual(durableClosures(flushing), []); assert.equal(flushing.db().prepare('SELECT state FROM kit_allocations').get().state, 'live');
+  healWrites(flushing);
+  assert.equal(issueFor(flushing, 2).sessionNonce.length, 64); assert.deepEqual(durableClosures(flushing), closureOf(job(1)));
+  await rejects(Promise.resolve().then(() => issueFor(flushing, 1)), 'context_session_terminal', 409); assert.equal(durableClosures(flushing).length, 1);
+  for (const [label, answer] of Object.entries(SESSION_ANSWERS)) {
+    const quiet = world(t, { maxRecords: 200 }); quiet.control.state = answer;
+    if (unavailableAnswer(label)) assert.throws(() => issueFor(quiet, 1), SESSION_UNAVAILABLE, label);
+    else assert.equal(issueFor(quiet, 1).sessionNonce.length, 64, label);
+    assert.deepEqual(durableClosures(quiet), [], label);
+  }
+  await settle(); assert.deepEqual(unhandled, []);
+});
+
+// Each retiring reader of the session state observes through the same adapter, on every active path.
+const TERMINAL_REFUSAL = error => error.code === 'context_session_terminal' && error.status === 409;
+const proposalOf = (f, jobId) => f.payload({ jobId });
+const reserveProposal = (f, jobId) => f.store().reserve(proposalOf(f, jobId), {}, { keepProfile: FIXTURE_PROFILE });
+const contextOf = (f, jobId) => [f.payload({ path: PATHS.context, jobId }), { scope: { jobId } }];
+const reserveContext = (f, jobId) => f.store().reserve(...contextOf(f, jobId), { admit: () => fixture.T0 });
+const retiringReaders = {
+  'a new proposal': { run: f => assert.throws(() => reserveProposal(f, fixture.JOB), TERMINAL_REFUSAL) },
+  'the classify dry run': { run: f => assert.throws(() => f.store().classify(proposalOf(f, fixture.JOB), {}, { keepProfile: FIXTURE_PROFILE }), TERMINAL_REFUSAL) },
+  'the context step': { run: f => assert.throws(() => reserveContext(f, fixture.JOB), TERMINAL_REFUSAL) },
+  assertPending: { before: f => reserveProposal(f, fixture.JOB), run: (f, held) => assert.throws(() => f.store().assertPending(held), TERMINAL_REFUSAL) },
+  claim: { before: f => { f.store().finish(reserveProposal(f, fixture.JOB), 503, '{}'); return reserveProposal(f, fixture.JOB); },
+    run: (f, held) => assert.throws(() => f.store().claim(held, proposalOf(f, fixture.JOB)), { code: 'seller_unavailable', status: 503 }) },
+  resume: { before: f => { f.store().finish(reserveContext(f, fixture.JOB), 503, '{}'); return reserveContext(f, fixture.JOB); },
+    run: (f, held) => assert.throws(() => f.store().resume(held, contextOf(f, fixture.JOB)[0]), TERMINAL_REFUSAL) },
+  'context reclamation': { before: f => { f.store().finish(reserveContext(f, fixture.JOB), 200, '{}'); f.setTime(fixture.T0 + 7200000); }, run: f => { reserveContext(f, fixture.JOB2); }, maxContextRecords: 1 },
+  'job reclamation': { before: f => { f.store().finish(reserveProposal(f, fixture.JOB), 200, '{}'); f.setTime(fixture.T0 + 7200000); }, run: f => { reserveProposal(f, fixture.JOB2); }, maxJobs: 1 },
+};
+
+test('all terminal readers and classify preserve their observations', async t => {
+  for (const [name, { before, run, ...limits }] of Object.entries(retiringReaders)) {
+    const w = await coordination(t, {}, limits); w.allocate(fixture.JOB);
+    const held = before?.(w.f);
+    w.control.state = onlyJob(fixture.JOB, () => 'finalised');
+    run(w.f, held);
+    const closed = new Database(w.f.path, { readonly: true });
+    try { assert.deepEqual(closed.prepare(CLOSURES_SQL).all().map(row => ({ ...row })), closureOf(fixture.JOB), name); } finally { closed.close(); }
+    assert.equal(w.internals.transaction(() => w.capacity.allocationWithin(fixture.JOB)).state, 'released', name);
+    w.control.state = () => null; w.reopen();
+    assert.deepEqual(w.internals.terminalSession(fixture.JOB), { terminal: true, state: 'finalised' }, name);
+  }
+});
+
+test('terminal-observer-rollback-flush-crash-cuts', t => {
+  const refusal = w => assert.throws(() => issueFor(w, 1), /TEST flush cut/);
+  for (const [name, attempt] of Object.entries({
+    'a refused issuance': refusal,
+    'a deliberate rollback': w => assert.throws(() => w.internals.transaction(() => w.internals.sessionState({ jobId: job(1) }), true), /TEST flush cut/),
+  })) {
+    const w = oldSession(t), live = w.current(job(1));
+    failWrites(w, 'kit_terminal_closures', 'INSERT', 'TEST flush cut');
+    attempt(w);
+    w.reopen();
+    assert.deepEqual(durableClosures(w), [], `${name}: the answer never escaped before the flush`); assert.deepEqual(w.current(job(1)), live); assert.deepEqual(challengeRows(w), [job(1)]);
+    healWrites(w);
+    assert.throws(() => issueFor(w, 1), { code: 'context_session_terminal' }); assert.deepEqual(durableClosures(w), closureOf(job(1)), name);
+  }
+  for (const cut of ['before', 'after']) {
+    const w = oldSession(t); w.failCommit(cut);
+    assert.throws(() => issueFor(w, 1)); w.reopen();
+    assert.deepEqual(durableClosures(w), cut === 'after' ? closureOf(job(1)) : [], cut);
+    assert.equal(w.current(job(1)).state, cut === 'after' ? 'released' : 'live', cut);
+  }
+});
+
+test('terminal-pending-flush-barrier', async t => {
+  const { w, p } = await coordinated(t); let reads = 0;
+  w.control.state = onlyJob(p.jobId, () => { reads++; return 'finalised'; });
+  failWrites(w, 'kit_terminal_closures', 'INSERT', 'TEST pending cut');
+  assert.throws(() => w.internals.terminalSession(p.jobId), /TEST pending cut/);
+  assert.throws(() => w.internals.flushTerminalObservations(), /TEST pending cut/);
+  assert.throws(() => w.internals.transaction(() => 'work'), /TEST pending cut/, 'a pending observation blocks later transactions');
+  const { input, calls } = countedRequest(w, p, PATHS.proposals), before = spentState(w);
+  let inspections = 0;
+  w.control.operation = () => { inspections++; return view.none; };
+  await assert.rejects(w.coordinator.reserveCoordinated(input), /TEST pending cut/);
+  assert.equal(inspections, 0, 'pending metadata blocks operation inspection');
+  assert.deepEqual(spentState(w), before); assert.equal(calls.reserve, 0); assert.deepEqual(durableClosures(w), []);
+  healWrites(w); w.control.state = () => null;
+  w.internals.flushTerminalObservations();
+  assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'finalised', 'effect-path')); assert.equal(w.current(p.jobId).state, 'released');
+  assert.equal(w.internals.transaction(() => 'work'), 'work'); assert.equal(reads, 1, 'the retry read no port'); assert.equal(closures(w).length, 1);
+});
+
+test('terminal-observation-clock-fault', t => {
+  const w = world(t, { maxRecords: 500 }), p = w.purchase(); w.allocate(p); w.control.state = () => 'finalised';
+  for (const clock of [Number.NaN, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    w.control.clock = clock;
+    assert.throws(() => w.internals.terminalSession(p.jobId), error => error.code === 'peer_clock_invalid' && error.status === 503, String(clock));
+    assert.deepEqual(durableClosures(w), [], String(clock)); assert.equal(w.db().prepare('SELECT state FROM kit_allocations').get().state, 'live');
+  }
+  w.control.clock = T0; w.control.state = () => null;
+  w.internals.flushTerminalObservations();
+  assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'finalised', 'effect-path'), 'the observation was retained, never lost or malformed');
+});
+
+test('terminal-store-capacity-binding', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'TEST-terminal-binding-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  let reads = 0;
+  const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite'), now: () => T0, contextSessionState: () => { reads++; return null; } });
+  t.after(() => store.close());
+  const internals = sellerStoreInternals(store), before = internals.db.prepare('SELECT total_changes() AS n').get().n;
+  for (const call of [() => internals.sessionState({ jobId: job(1) }), () => internals.terminalSession(job(1)), () => internals.flushTerminalObservations(),
+    () => store.challenges.issue({ jobId: job(1), buyer: BUYER }, hash('scope'))]) assert.throws(call, TypeError);
+  assert.equal(reads, 0, 'no source read before the binding'); assert.equal(internals.db.prepare('SELECT total_changes() AS n').get().n, before);
+  for (const notCleanup of ['cleanup', null, {}]) assert.throws(() => internals.bindTerminalCleanup(notCleanup), TypeError);
+  assert.throws(() => createPurchaseCapacity({ store, now: () => T0, sessionState: () => null }), TypeError, 'a different source is refused');
+  createPurchaseCapacity({ store, now: () => T0, sessionState: internals.sessionState });
+  assert.throws(() => createPurchaseCapacity({ store, now: () => T0, sessionState: internals.sessionState }), TypeError, 'the cleanup binds once');
+  assert.throws(() => internals.bindTerminalCleanup(() => {}), TypeError);
+  assert.equal(internals.sessionState({ jobId: job(1) }), null); assert.equal(reads, 1);
+});
+
+test('terminal-store-capacity-binding an asynchronous cleanup rolls the closure back', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'TEST-terminal-async-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite'), now: () => T0, contextSessionState: () => 'finalised' });
+  t.after(() => store.close());
+  const internals = sellerStoreInternals(store); internals.bindTerminalCleanup(async () => {});
+  assert.throws(() => internals.sessionState({ jobId: job(1) }), TypeError);
+  assert.equal(internals.db.prepare('SELECT COUNT(*) AS n FROM kit_terminal_closures').get().n, 0);
+});
+
+test('terminal-session-open-transaction', t => {
+  const w = world(t, { maxRecords: 500 }), p = w.purchase(); w.allocate(p);
+  let reads = 0; w.control.state = onlyJob(p.jobId, () => { reads++; return 'finalised'; });
+  const execs = [], db = w.db(), exec = db.exec.bind(db);
+  t.mock.method(db, 'exec', sql => { execs.push(sql); return exec(sql); });
+  assert.equal(w.internals.transaction(() => { assert.throws(() => w.internals.terminalSession(p.jobId), TypeError); return 'inside'; }), 'inside');
+  assert.equal(reads, 0, 'no source read'); assert.deepEqual(execs, ['BEGIN IMMEDIATE', 'COMMIT']);
+  assert.deepEqual(durableClosures(w), []);
+  db.exec.mock.restore();
+  // The in-transaction reader observes instead: the closure and release commit with the work, or right after a refusal.
+  assert.equal(w.internals.transaction(() => w.internals.sessionState({ jobId: p.jobId })), 'finalised');
+  assert.deepEqual(durableClosures(w), closureOf(p.jobId)); assert.equal(w.current(p.jobId).state, 'released');
+  const refused = world(t, { maxRecords: 500 }), q = refused.purchase(); refused.allocate(q); refused.control.state = () => 'vet-failed';
+  assert.throws(() => refused.internals.transaction(() => { refused.internals.sessionState({ jobId: q.jobId }); throw new Error('TEST refusal'); }), /TEST refusal/);
+  assert.deepEqual(durableClosures(refused), closureOf(q.jobId, 'vet-failed')); assert.equal(refused.current(q.jobId).state, 'released');
+  assert.throws(() => refused.internals.transaction(() => Promise.resolve('late')), TypeError);
+});
+
+test('terminal-reader-installation-audit', () => {
+  const root = new URL('../src/', import.meta.url), sources = new Map();
+  for (const file of readdirSync(root, { recursive: true })) if (file.endsWith('.mjs')) sources.set(file, readFileSync(new URL(file, root), 'utf8'));
+  const callers = pattern => [...sources].filter(([, text]) => pattern.test(text)).map(([file]) => file);
+  assert.deepEqual(callers(/\breadSellerSessionState\(readSessionState,/), ['dacs/seller-transport-auth.mjs'], 'the raw port is read in one place');
+  assert.equal(sources.get('dacs/seller-transport-auth.mjs').match(/\breadSellerSessionState\(readSessionState,/g).length, 1);
+  assert.deepEqual(callers(/\bcontextSessionState\(/), ['dacs/seller-transport-auth.mjs'], 'the host calls no port itself');
+  const store = sources.get('dacs/seller-transport-auth.mjs');
+  for (const line of store.split('\n').filter(text => text.includes('TERMINAL_CONTEXT_STATES.has('))) {
+    assert.ok(/contextSessionState\(|readSessionStateWithin\(|\bstate\b/.test(line), `a terminal check reads through the adapter: ${line.trim()}`);
+  }
+  assert.equal(store.match(/createSellerChallengeLedger\(\{[^}]*sessionState: contextSessionState/g)?.length, 1, 'the ledger is given the adapter');
+  assert.ok(sources.get('host.mjs').includes('sessionState: sellerStoreInternals(store).sessionState'), 'the capacity is given the store\'s adapter');
 });
