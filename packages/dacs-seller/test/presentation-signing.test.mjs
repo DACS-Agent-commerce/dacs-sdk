@@ -227,6 +227,13 @@ test('a receipt with unexpected list fields is refused',async t=>{
  f.config.wallet.reconcilePresentationSignature=async()=>reply({...outcome(),extra:[{}]});
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);
 });
+for(const [name,repeated] of [['a signed receipt that repeats its status',outcome=>`{"status":"signed",${JSON.stringify(outcome).slice(1)}`],
+ ['an unsigned receipt that repeats its status',outcome=>{const identity={...outcome};delete identity.signature;return `{"status":"signed",${JSON.stringify({...identity,status:'unsigned'}).slice(1)}`;}]])test(`${name} stays indeterminate and never signs again`,async t=>{
+ const f=await sessionFixture(t),outcome=retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
+ f.config.wallet.reconcilePresentationSignature=async()=>Buffer.from(repeated(outcome()));
+ await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);
+ assert.equal((await f.row()).presentation.signing.state,'pending');
+});
 test('a malformed retained signature entry fails with a clear indeterminate error',async t=>{
  const f=await sessionFixture(t);await f.run();await f.provider.state.update(JOB,row=>{row.presentation.bundle.presentation.signatures=[null];return row;});
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);
