@@ -118,3 +118,22 @@ test('networkIdentity observes afresh on every call and a later mismatch makes t
   await assert.rejects(reader.getAddressNonce(WALLET), mismatch);
   assert.deepEqual(node.requests, ['getBlockByNumber']);
 });
+
+test('a read still open when another read gets a marked answer is refused too', async () => {
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const node = fakeNode({ answer: async (call) => {
+    if (call.message === 'getAddressNonce') {
+      await held;
+      return 3;
+    }
+    if (call.message === 'getAddressInfo') return nodeAnswer({ balance: '5' }, SIMULATED);
+    return undefined;
+  } });
+  const reader = node.reader();
+  const open = reader.getAddressNonce(WALLET);
+  while (!node.requests.includes('getAddressNonce')) await new Promise((resolve) => setImmediate(resolve));
+  await assert.rejects(reader.getAddressBalance(WALLET), mismatch);
+  release();
+  await assert.rejects(open, mismatch);
+});

@@ -6700,6 +6700,17 @@
       "delta": "WF",
       "subject": "delta(client): WF name the commit of the simulated-answer fix in the ledger",
       "files": []
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test a public reader read left open across a marked answer",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-first-read.test.mjs",
+          "before": "94ca4ccfe1e9665a7c5a8492b2e269e9826cfac4",
+          "after": "bb916bc970fc5e7dba074ae95e9edf98b84137d0"
+        }
+      ]
     }
   ]
 }
