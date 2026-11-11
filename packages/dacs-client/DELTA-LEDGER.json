@@ -7226,6 +7226,17 @@
           "after": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test after carrying the exports test fix up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8",
+          "after": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8"
+        }
+      ]
     }
   ]
 }

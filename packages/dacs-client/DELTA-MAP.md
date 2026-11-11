@@ -1256,6 +1256,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 705b9c4c787df1e2a6b646fc4f3d596354b4aea9 |
 | WF | delta(client): WF record the merged public API test after carrying the signer part up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74 |
+| WF | delta(client): WF record the merged signer reservation test after carrying the exports test fix up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8 |
 
 ## Complete commit and file inventory
 
@@ -3946,6 +3948,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
