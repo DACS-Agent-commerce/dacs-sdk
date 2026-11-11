@@ -158,8 +158,14 @@ describe("code ownership", () => {
   });
 });
 
-// The release suite is run either through its npm script or by `node --test` over the release test glob.
-const RELEASE_SUITE = /npm run release:(?:qualification:)?test(?![:\w-])|node --test\b(?:[^\n]|\\\n)*test\/scripts\/release-\*\.test\.mjs/u;
+// The release suite is run either through its npm script or by `node --test` over the release test glob. Words may be
+// separated by any run of spaces, tabs or backslash-continued line breaks, and Node options may come before `--test`.
+const GAP = String.raw`(?:[ \t]|\\\n)+`;
+const RELEASE_SUITE = new RegExp(
+  String.raw`npm${GAP}run${GAP}release:(?:qualification:)?test(?![:\w-])` +
+    String.raw`|node${GAP}(?:-\S+${GAP})*--test\b(?:[^\n]|\\\n)*test\/scripts\/release-\*\.test\.mjs`,
+  "u",
+);
 const CLEAN_TREE_AND_BUILDS = [
   "test ! -e dist", "test ! -e packages/dacs-node/dist", "test ! -e packages/create-dacs-agent/dist",
   "npm run build", "npm run host:build", "npm run generator:build",
@@ -195,6 +201,15 @@ describe("every workflow", () => {
     const continued = "node --test --test-concurrency=1 \\\n  test/scripts/release-*.test.mjs";
     const callers = releaseSuiteCallers({ "continued.yml": jobRunning(continued) });
     expect(callers.map((caller) => caller.name)).toEqual(["continued.yml:check"]);
+  });
+
+  it("a release test glob run with Node options before --test, or extra spaces, is a release-suite caller", () => {
+    const callers = releaseSuiteCallers({
+      "options.yml": jobRunning("node --no-warnings --test test/scripts/release-*.test.mjs"),
+      "spaces.yml": jobRunning("node  --test   test/scripts/release-*.test.mjs"),
+      "npm.yml": jobRunning("npm  run release:test"),
+    });
+    expect(callers.map((caller) => caller.name)).toEqual(["options.yml:check", "spaces.yml:check", "npm.yml:check"]);
   });
 
   it("release:test:native and a single named release test file are not release-suite callers", () => {
