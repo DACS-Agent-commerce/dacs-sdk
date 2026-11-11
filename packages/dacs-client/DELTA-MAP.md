@@ -3805,7 +3805,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/src/wallet/effect-history.mjs:1` |
 | fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/test/effect-history.test.mjs:1` |
 | delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/scripts/check-hold.mjs:1` |
@@ -3815,6 +3814,10 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/HOLD.json:1` |
+| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-MAP.md:1` |
