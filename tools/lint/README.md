@@ -61,11 +61,20 @@ In a migrated file the check refuses:
 - `category` beside `code` on `DacsError`, because the table decides the category;
 - any other class that extends `DacsError` and neither takes a catalog code nor declares its own `code`;
 - `new WireError`, `new RawJsonAdmissionError`, `new AnchorWaitError`, and a call without a code to the `fail()` helper declared in `src/wire/validate.ts` or the `reject()` helper declared in `src/canonical/rawJson.ts`, in a file that declares or imports it. A function of the same name that is not that helper, such as a Promise executor's `reject`, is not checked. Their codes stay outside the catalog;
-- a plain `Error`, `TypeError`, `RangeError` or `SyntaxError` throw that is not listed under `retainedPlainThrows`.
+- a plain `Error`, `TypeError`, `RangeError` or `SyntaxError` thrown with or without `new` that is not listed under `retainedPlainThrows`.
+
+A class imported under another name (`import { DacsError as SDKError }`) is checked as the class it stands for, and the messages name that class.
 
 A retained throw is listed with its path, the throw written as it is in the file, and the reason it stays, for example a programmer assertion that no caller can reach. The check also fails when a listed throw has no reason or no longer exists, or when a migrated path does not exist.
 
 Classes are found by name: every top-level class under `src/` that extends `DacsError`, directly or through other classes. The check reads the syntax only. It cannot tell whether a plain throw reaches a caller, so a listed throw is a judgement for the reviewer.
+
+What it does not see:
+
+- a class reached through a namespace import (`errors.DacsError`) or a local alias (`const E = DacsError`);
+- a class declared inside a function or block;
+- a plain error that is built in one statement and thrown in another (`const e = new Error("x"); throw e;`), or passed to a Promise's `reject`;
+- a plain error thrown through a name or member other than the bare `Error`, `TypeError`, `RangeError` or `SyntaxError` (`globalThis.Error`).
 
 ## What's left out
 

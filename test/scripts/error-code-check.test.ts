@@ -186,6 +186,51 @@ describe("error code check", () => {
     ]);
   });
 
+  it("checks a class imported under another name as the class it stands for", () => {
+    const imports = [
+      'import { DacsError as SDKError, SubstrateError as Chain } from "./errors.js";',
+      'import { NotImplementedError as Missing } from "./other.js";',
+    ];
+    const extra = { "src/other.ts": "export class NotImplementedError extends DacsError {}" };
+    expect(problemsOf([...imports,
+      'export const a = new SDKError("x", { code: "schema.invalid_field" });',
+      'export const b = new Chain("x", { code: "net.timeout" });',
+    ].join("\n"), { extra })).toEqual([
+      'src/migrated.ts:4: SubstrateError is substrate but "net.timeout" is transient in the catalog',
+    ]);
+    expect(problemsOf([...imports,
+      'export const a = new SDKError("missing code");',
+      'export const b = new SDKError("x", { code: "net.timeout", category: "permanent" });',
+      'export const c = new Missing("feature");',
+    ].join("\n"), { extra })).toEqual([
+      "src/migrated.ts:3: DacsError must be given a catalog code written as a string literal",
+      "src/migrated.ts:4: DacsError takes its category from the catalog; remove `category` beside `code`",
+      "src/migrated.ts:5: NotImplementedError cannot carry a catalog code; throw a coded DacsError instead",
+    ]);
+  });
+
+  it("checks an owned class imported under another name", () => {
+    const owned = {
+      "src/wire.ts": "export class WireError extends DacsError { constructor(readonly code: string) { super(code); } }",
+      "src/raw.ts": "export class RawJsonAdmissionError extends DacsError { constructor(m: string, readonly code: string) { super(m); } }",
+      "src/anchor.ts": "export class AnchorWaitError extends DacsError { constructor(readonly code: string) { super(code); } }",
+    };
+    const imports = 'import { WireError as Wire, RawJsonAdmissionError as Raw, AnchorWaitError as Wait } from "./all.js";';
+    expect(problemsOf([imports, 'export const a = [new Wire("bad"), new Raw("m", "bad"), new Wait("late")];'].join("\n"), { extra: owned })).toEqual([]);
+    expect(problemsOf([imports, "export const a = [new Wire(), new Raw(\"m\"), new Wait()];"].join("\n"), { extra: owned })).toEqual([
+      "src/migrated.ts:2: WireError needs a code argument",
+      "src/migrated.ts:2: RawJsonAdmissionError needs a code argument",
+      "src/migrated.ts:2: AnchorWaitError needs a code argument",
+    ]);
+  });
+
+  it("does not take a local name for the class it shadows when the import renames another class", () => {
+    expect(problemsOf([
+      'import { Unrelated as DacsError } from "./other.js";',
+      'export const a = new DacsError("x");',
+    ].join("\n"))).toEqual([]);
+  });
+
   it("checks a helper call only where the name is the real helper", () => {
     const declareReject = 'function reject(stage: string, code: string): never { throw new DacsError(stage, { code: "net.timeout" }); }';
     const rawJson = (...lines: string[]) => ({ migrated: ["src/canonical/rawJson.ts"], extra: { "src/canonical/rawJson.ts": [declareReject, ...lines].join("\n") } });
@@ -218,6 +263,29 @@ describe("error code check", () => {
     expect(problemsOf(source, { retained: [
       { path: "src/migrated.ts", throw: 'new Error("unreachable")', reason: "the branch is closed by the switch above" },
       { path: "src/migrated.ts", throw: 'new TypeError("x")', reason: "programmer assertion" },
+    ] })).toEqual([]);
+  });
+
+  it("refuses a plain error thrown without new unless it is retained", () => {
+    const source = [
+      'export function a() { throw Error("plain error"); }',
+      'export function b() { throw TypeError("x"); }',
+      'export function c() { throw RangeError("x"); }',
+      'export function d() { throw SyntaxError("x"); }',
+      'export function e() { throw makeError("x"); }',
+      'export function f() { return Error("returned, not thrown"); }',
+    ].join("\n");
+    expect(problemsOf(source)).toEqual([
+      "src/migrated.ts:1: plain Error throw; throw a coded DacsError, or list it in retainedPlainThrows with a reason",
+      "src/migrated.ts:2: plain TypeError throw; throw a coded DacsError, or list it in retainedPlainThrows with a reason",
+      "src/migrated.ts:3: plain RangeError throw; throw a coded DacsError, or list it in retainedPlainThrows with a reason",
+      "src/migrated.ts:4: plain SyntaxError throw; throw a coded DacsError, or list it in retainedPlainThrows with a reason",
+    ]);
+    expect(problemsOf(source, { retained: [
+      { path: "src/migrated.ts", throw: 'Error("plain error")', reason: "closed by the switch above" },
+      { path: "src/migrated.ts", throw: 'TypeError("x")', reason: "programmer assertion" },
+      { path: "src/migrated.ts", throw: 'RangeError("x")', reason: "programmer assertion" },
+      { path: "src/migrated.ts", throw: 'SyntaxError("x")', reason: "programmer assertion" },
     ] })).toEqual([]);
   });
 

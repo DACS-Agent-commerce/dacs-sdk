@@ -96,20 +96,29 @@ export function findErrorClasses(repoRoot) {
 
 const collapseSpace = (text) => text.replace(/\s+/g, " ");
 
+/** The named imports of a file: the local name, the name it has in the imported file, and that file's path. */
+function namedImports(path, source) {
+  const imports = [];
+  for (const statement of source.statements) {
+    const bindings = ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) ? statement.importClause?.namedBindings : undefined;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    const from = posix.join(posix.dirname(path), statement.moduleSpecifier.text).replace(/\.js$/, ".ts");
+    for (const { name, propertyName } of bindings.elements) imports.push({ local: name.text, original: (propertyName ?? name).text, from });
+  }
+  return imports;
+}
+
 /** The names that stand for an owned-code helper in a file: its top-level declaration, or an import of it from the declaring file. */
-function helperNames(path, source) {
+function helperNames(path, source, imports) {
   const names = new Map();
   const helperNamed = (name) => (Object.hasOwn(OWNED_HELPERS, name) ? OWNED_HELPERS[name] : undefined);
   for (const statement of source.statements) {
     const declared = ts.isFunctionDeclaration(statement) && statement.name ? helperNamed(statement.name.text) : undefined;
     if (declared?.file === path) names.set(statement.name.text, declared);
-    const bindings = ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) ? statement.importClause?.namedBindings : undefined;
-    if (!bindings || !ts.isNamedImports(bindings)) continue;
-    const from = posix.join(posix.dirname(path), statement.moduleSpecifier.text).replace(/\.js$/, ".ts");
-    for (const { name, propertyName } of bindings.elements) {
-      const helper = helperNamed((propertyName ?? name).text);
-      if (helper?.file === from) names.set(name.text, helper);
-    }
+  }
+  for (const { local, original, from } of imports) {
+    const helper = helperNamed(original);
+    if (helper?.file === from) names.set(local, helper);
   }
   return names;
 }
@@ -121,6 +130,7 @@ function ownedCodeProblem(args, position) {
 
 function checkFile(path, text, { codes, classes, retained, matched }) {
   const source = parse(path, text);
+  const imports = namedImports(path, source);
   const problems = [];
   const report = (node, message) => problems.push(`${path}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: ${message}`);
 
@@ -141,7 +151,9 @@ function checkFile(path, text, { codes, classes, retained, matched }) {
     if (name === BASE_CLASS && property("category")) report(node, `${name} takes its category from the catalog; remove \`category\` beside \`code\``);
   };
 
-  const checkConstruction = (node, name) => {
+  /** A construction is checked as the class its name stands for, and messages name that class. */
+  const checkConstruction = (node, local) => {
+    const name = imports.find((entry) => entry.local === local)?.original ?? local;
     const kind = classes.get(name);
     if (kind === "closed") report(node, `${name} cannot carry a catalog code; throw a coded ${BASE_CLASS} instead`);
     else if (kind === "owned" && ownedCodeProblem(node.arguments, OWNED_CONSTRUCTORS[name] ?? 0)) report(node, `${name} needs a code argument`);
@@ -150,13 +162,13 @@ function checkFile(path, text, { codes, classes, retained, matched }) {
 
   const checkThrow = (node) => {
     const thrown = unwrap(node.expression);
-    if (!ts.isNewExpression(thrown) || !ts.isIdentifier(thrown.expression) || !PLAIN_ERRORS.includes(thrown.expression.text)) return;
+    if (!(ts.isNewExpression(thrown) || ts.isCallExpression(thrown)) || !ts.isIdentifier(thrown.expression) || !PLAIN_ERRORS.includes(thrown.expression.text)) return;
     const key = `${path}\n${collapseSpace(thrown.getText(source))}`;
     if (retained.has(key)) matched.add(key);
     else report(node, `plain ${thrown.expression.text} throw; throw a coded ${BASE_CLASS}, or list it in retainedPlainThrows with a reason`);
   };
 
-  const helpers = helperNames(path, source);
+  const helpers = helperNames(path, source, imports);
   /** `shadowed` holds the parameter names of the functions around the node; a parameter named like a helper is not the helper. */
   const visit = (node, shadowed) => {
     if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) checkConstruction(node, node.expression.text);
