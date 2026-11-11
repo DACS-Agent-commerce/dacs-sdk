@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
+import type { SettleRequest, SettleResult } from "../../src/rails/settlementTypes.js";
 import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
 import {
   createIdempotencyStore,
