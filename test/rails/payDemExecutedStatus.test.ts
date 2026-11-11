@@ -120,7 +120,7 @@ const NOT_OK = {
   txHash: TX_HASH,
   chainId: "demos",
   payer: WALLET,
-  payee: RECIPIENT,
+  payee: PAYEE_HEX,
 };
 
 beforeEach(() => {
@@ -231,7 +231,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
       txHash: TX_HASH,
       chainId: "demos",
       payer: WALLET,
-      payee: RECIPIENT,
+      payee: PAYEE_HEX,
       finality: { model: "bft-final" },
       blockNumber: BLOCK,
       txRefKind: "demos",

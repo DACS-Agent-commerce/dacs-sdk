@@ -2,7 +2,7 @@
 const PR_ID = /^P\d+[a-z]?\d?[a-z]?$/;
 export const CASE_IDS = ['K12-H1', 'K12-H2', 'K12-H3', 'K12-H4-wire', 'K12-H4-host', 'K12-H5', 'K12-H6a', 'K12-H6b', 'K12-H7'];
 const ENTRY_MEMBERS = ['id', 'today', 'target', 'owner', 'flippedBy'];
-const CURRENT_MEMBERS = ['step', 'code', 'layer', 'counters', 'updatedBy'];
+const CURRENT_MEMBERS = ['step', 'code', 'failureClass', 'layer', 'counters', 'updatedBy'];
 const H7 = 'K12-H7';
 
 const extraMembers = (value, allowed) => Object.keys(value).filter((key) => !allowed.includes(key));
@@ -15,6 +15,7 @@ function currentProblems(entry) {
   const problems = extraMembers(current, CURRENT_MEMBERS).map((key) => `${H7} current has unknown member ${key}`);
   if (!current.step || !current.layer) problems.push(`${H7} current names its step and layer`);
   if (current.code !== null && typeof current.code !== 'string') problems.push(`${H7} current code is a string or null`);
+  if (!current.failureClass) problems.push(`${H7} current names the error class of its failed context exchange`);
   if (!PR_ID.test(current.updatedBy ?? '')) problems.push(`${H7} current names the PR that last updated it`);
   const counters = Object.entries(current.counters ?? {});
   if (counters.length === 0 || !counters.every(([, count]) => isCount(count))) problems.push(`${H7} current counters are non-negative integers`);
