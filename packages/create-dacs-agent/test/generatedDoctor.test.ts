@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
@@ -49,6 +50,12 @@ beforeAll(async () => {
     rails: "pay-dem",
     install: false,
   });
+  // The generated agent sits in a temporary folder, so link the workspace's installed packages for it to resolve.
+  await symlink(
+    fileURLToPath(new URL("../../../node_modules", import.meta.url)),
+    join(projectDirectory, "agent", "node_modules"),
+    "dir",
+  );
 
   vi.doMock("@kynesyslabs/dacs", () => ({
     RAIL_REGISTRY_INDEX_ADDRESS: "registry-index",
