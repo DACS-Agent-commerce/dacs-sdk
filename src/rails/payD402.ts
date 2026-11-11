@@ -1,5 +1,6 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { CounterpartyError, DacsError } from "../errors.js";
+import { createDemosClient } from "./demosClient.js";
 
 /**
  * pay-d402 settlement rail — the D402 HTTP-402 protocol on Demos (SR-4).
@@ -258,7 +259,7 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
   const { Demos } = demosSdk;
   const { D402Client } = d402;
 
-  const demos = new Demos();
+  const demos = createDemosClient(Demos);
   await demos.connect(config.rpc);
   await demos.connectWallet(config.secret);
   const client = new D402Client(demos) as unknown as D402ClientLike;
