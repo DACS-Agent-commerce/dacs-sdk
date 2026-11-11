@@ -12,6 +12,15 @@ test('wire authentication signs the kept job and purchase profile', async (t) =>
   assert.deepEqual(w.state.signs, [Buffer.from(DACS_SELLER_HTTP_DOMAINS.request + canonicalize(signed.payload))]);
 });
 
+test('wire authentication refuses every route that needs commitment evidence before signing, because it takes none', async (t) => {
+  const w = await world(t);
+  const { payments, bundleRequest, bundleCountersignature, bundleBuyerCopy } = DACS_SELLER_HTTP_PATHS;
+  for (const path of [payments, bundleRequest, bundleCountersignature, bundleBuyerCopy]) {
+    await assert.rejects(request(w, path), { code: 'continuation_commitment_invalid' }, path);
+  }
+  assert.equal(w.state.signs.length, 0);
+});
+
 test('wire authentication refuses another job before signing', async (t) => {
   const w = await world(t);
   await assert.rejects(w.auth.request(DACS_SELLER_HTTP_PATHS.state, { jobId: 'other-job' }, '{"jobId":"other-job"}'), { code: 'peer_job_mismatch' });
