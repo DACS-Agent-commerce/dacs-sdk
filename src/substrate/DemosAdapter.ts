@@ -1887,17 +1887,23 @@ export class DemosAdapter implements SubstrateAdapter {
     // unresolved with what it last read, instead of as a plain timeout.
     let transportFailures = 0;
     let recognisedAnswer = false;
+    // The last account-nonce read for an unknown write got a transport-failure
+    // answer: no information, so the wait polls on and the deadline is
+    // unresolved, never a plain timeout.
+    let nonceUnread = false;
     let accountNonce: number | undefined;
     let lastBlock: number | undefined;
     const deadlineFailure = (): AnchorWaitError | undefined =>
-      transportFailures > 0 && !recognisedAnswer
+      transportFailures > 0 && (!recognisedAnswer || nonceUnread)
         ? this.unresolvedWrite(
           ctx,
           txRef,
           signedNonce,
           lastBlock,
-          `the node gave no answer before the deadline, only transport ` +
-            `failures: ${transportFailures}; account nonce ` +
+          (recognisedAnswer
+            ? `the node's account nonce could not be read before the deadline, `
+            : `the node gave no answer before the deadline, `) +
+            `only transport failures: ${transportFailures}; account nonce ` +
             `${accountNonce ?? "not readable"}`,
         )
         : undefined;
@@ -2032,7 +2038,13 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       if (signedNonce !== undefined && broadcastSettledBeforeRead &&
           status?.state === "unknown" && row?.status === "none") {
-        await this.stopUnknownWrite(txRef, ctx, signedNonce);
+        nonceUnread =
+          (await this.stopUnknownWrite(txRef, ctx, signedNonce, deadlineFailure)) ===
+            "transport-failure";
+        if (nonceUnread) {
+          transportFailures += 1;
+          lastBlock = await this.readLastBlock(ctx);
+        }
       }
       if (
         broadcast?.state === "accepted" &&
@@ -2080,14 +2092,17 @@ export class DemosAdapter implements SubstrateAdapter {
    * row. The account nonce is read first and the hash again after it, so a
    * write that reaches a block between the two reads is seen rather than
    * reported unknown. Returns, and the caller keeps polling, when a read threw
-   * or the second hash read shows the node now knows the write.
+   * or the second hash read shows the node now knows the write. Returns
+   * `transport-failure` when the nonce read got the SDK's transport-failure
+   * answer: no information, so the caller counts it and keeps polling.
    * @throws AnchorWaitError `demos-write-unresolved` in every other case.
    */
   private async stopUnknownWrite(
     txRef: string,
     ctx: AnchorContext,
     signedNonce: number,
-  ): Promise<void> {
+    deadlineFailure?: () => AnchorWaitError | undefined,
+  ): Promise<"transport-failure" | undefined> {
     let nonceAnswer: unknown;
     try {
       // demos.getAddressNonce turns any answer it cannot read into 0.
@@ -2097,11 +2112,13 @@ export class DemosAdapter implements SubstrateAdapter {
           address: this.#demos.getAddress(),
         }),
         "account nonce read",
+        deadlineFailure,
       );
     } catch (error) {
       if (error instanceof AnchorWaitError) throw error;
-      return;
+      return undefined;
     }
+    if (isDemosTransportFailure(nonceAnswer)) return "transport-failure";
     const accountNonce = plainNonNegativeInteger(nonceAnswer);
     if (accountNonce === undefined) {
       throw this.unresolvedWrite(
@@ -2114,7 +2131,7 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     const recheck = await this.readWriteOutcome(txRef, ctx);
     if (recheck.status?.state !== "unknown" || recheck.row?.status !== "none") {
-      return;
+      return undefined;
     }
     throw this.unresolvedWrite(
       ctx,

@@ -292,7 +292,6 @@ describe("Demos write outcome from recorded testnet answers", () => {
   it.each([
     ["a bare string", () => readOnly.returned.getAddressInfoMalformedAddress],
     ["an unknown-message object", () => sameBlock.unknownMessage],
-    ["the SDK transport-failure value", sdkTransportFailure],
   ])("fails closed on %s as the account nonce", async (_label, nonceAnswer) => {
     const { write, rounds } = pending;
     const { adapter } = scriptedAdapter({
@@ -428,6 +427,46 @@ describe("Demos write outcome from recorded testnet answers", () => {
     expect(await reconcile(adapter, lease)).toBeUndefined();
 
     expect(stages(lease)).toEqual(["canonical-failed"]);
+    expect(broadcast).not.toHaveBeenCalled();
+    await lease.release();
+  });
+
+  it("a transport failure on the nonce read then a confirmed row ends confirmed", async () => {
+    const { write, rounds } = pending;
+    const { adapter, reads, broadcast } = scriptedAdapter({
+      reads: [pending.neverSeen.B1, rounds.C],
+      nonces: [await sdkTransportFailure()],
+      lastBlock: rounds.B36.getLastBlockNumber,
+      block: blockListing(74_920, write.hash),
+      accountNonce: rounds.C.getAddressNonce,
+    });
+    const lease = await journalledTransfer(write);
+
+    expect(await reconcile(adapter, lease)).toBeUndefined();
+
+    expect(stages(lease)).toEqual(["canonical-confirmed"]);
+    expect(reads.filter((read) => read === "getAddressNonce")).toHaveLength(1);
+    expect(broadcast).not.toHaveBeenCalled();
+    await lease.release();
+  });
+
+  it("transport failures on the nonce read until the deadline end demos-write-unresolved", async () => {
+    const { write, rounds } = pending;
+    const { adapter, reads, broadcast } = scriptedAdapter({
+      reads: [pending.neverSeen.B1],
+      nonces: [await sdkTransportFailure()],
+      lastBlock: rounds.B36.getLastBlockNumber,
+    });
+    const lease = await journalledTransfer(write);
+
+    const error = expectUnresolved(await reconcile(adapter, lease), write);
+    expect(error.message).toContain("account nonce could not be read");
+    expect(error.message).toContain("account nonce not readable");
+    expect(error.message).toContain(`last block ${rounds.B36.getLastBlockNumber}`);
+    const failures = Number(/only transport failures: (\d+)/.exec(error.message)?.[1]);
+    expect(failures).toBeGreaterThan(1);
+    expect(failures).toBe(reads.filter((read) => read === "getAddressNonce").length);
+    expect(stages(lease)).toEqual(["broadcast-intent"]);
     expect(broadcast).not.toHaveBeenCalled();
     await lease.release();
   });
