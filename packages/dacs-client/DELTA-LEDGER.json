@@ -6707,6 +6707,17 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF P52a record the merged public-api test blob of two parallel records",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "bc21687c587a7c19ff028dd178b1e25c819f0afe",
+          "after": "bc21687c587a7c19ff028dd178b1e25c819f0afe"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "fix(client): refuse a public reader result once an answer is marked simulated",
       "sha": "1b1d5ff04ac41277bba8a9fb6c26e67b1851be42",
       "files": [
