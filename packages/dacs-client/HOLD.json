@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "6287e63c1ca0c99f45aae8038d93e04ef7eed28e"
+        "blob": "a0949f17dd1c22abe2772e903dbbf231cf9d7187"
       },
       "DELTA-LEDGER.json": {
-        "blob": "8cb73fc5d410b1a6c38d095111e7b3bb64b34973"
+        "blob": "bbfcdc948cbbabefad289c16c0b32849e8f8b82a"
       },
       "DELTA-MAP.md": {
-        "blob": "fafa9c0403a2464b1f95296793275e76d4aadcf3"
+        "blob": "b5f10779cde40f0629d4e10d98e2adc255c73595"
       },
       "DELTA-NOTES.md": {
-        "blob": "99896f36cc6629bace61b758b8acd291329b2564"
+        "blob": "d434f7c8b0f3eec4f43db904ff983e9240c2c6d5"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "776d79fee6f489a41fdd3262149ce4b8fe3cfbfb"
+        "blob": "32c3838ba35661f67ceae7bd8ac0ce8a35583865"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1030,11 +1030,11 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "3cf26bb42ef091a7655e35e1a659680a1b59bc5b"
+        "blob": "f41d78dbc8648afec62dd45c0710f36647770db3"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "3866bdb92efd40a0f1bdcf4cdb6585b64c91420e"
+        "blob": "1c7d14d6ff9410f30096fd23781ba3fa41c0628c"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1269,6 +1269,9 @@
       },
       "src/signatures.mjs": {
         "blob": "ea2845c8b7caf1b411be2e29a70005a94e4218c0"
+      },
+      "src/substrate/demos.mjs": {
+        "blob": "1210a631918cb1b11824b80770e1497c52738180"
       },
       "src/switch-files.mjs": {
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
@@ -1642,6 +1645,12 @@
       "test/helpers/public-composition-world.mjs": {
         "blob": "6671b70cf3fad1b68f2e4085c67352d4102a04d4"
       },
+      "test/helpers/public-demos-reader-node.mjs": {
+        "blob": "d96f4f1c7bf7ac0e485b8cc0f366eb778f561cd5"
+      },
+      "test/helpers/public-demos-reader-purchase.mjs": {
+        "blob": "a128c6978a07bd5f9b8d1e3ed72898565fe31533"
+      },
       "test/helpers/public-sr2-projection-flow.mjs": {
         "blob": "808721834f1b1bc10178322f7f9c1ec2ef51cba8"
       },
@@ -1862,10 +1871,10 @@
         "blob": "da57bb91604b30e2b60a4edb7011a473fd9e5d3a"
       },
       "test/package-contents.test.mjs": {
-        "blob": "9b3fac5c0509ab6f0e5401c7d76700814a73842d"
+        "blob": "2cc98f9293fb88da1db38152d03b8cfa1861195b"
       },
       "test/packed-consumer.test.mjs": {
-        "blob": "8a0d5f40a09ba49a79011580142ef137bc9db113"
+        "blob": "8e433835a01a81de01ea3a4d6f377270905ae434"
       },
       "test/passive-observation.test.mjs": {
         "blob": "cf4497afe1bd896a8d18a55993bb8b38f4896c16"
@@ -1883,10 +1892,28 @@
         "blob": "f83e3553639f67784ef7eb8c68a902ba2aa543a6"
       },
       "test/public-api.test.mjs": {
-        "blob": "7cf6b00589e4818b4fbd876ab327421a6e90cfba"
+        "blob": "f5bea631bd02f0505bde239e10be38970474caf6"
       },
       "test/public-composition.test.mjs": {
         "blob": "a1a3b50c91d405fc00d7a92fc7ff75de650d1a32"
+      },
+      "test/public-demos-reader-construction.test.mjs": {
+        "blob": "c9bb95cb0d3ce5b24fb1f43015bc828db1d995c0"
+      },
+      "test/public-demos-reader-consumers.test.mjs": {
+        "blob": "1abbf24badfff4341a1746a121e70079bb27105e"
+      },
+      "test/public-demos-reader-errors.test.mjs": {
+        "blob": "1b8071e6367724b5b4ca7120b5a9effc7280f6a5"
+      },
+      "test/public-demos-reader-first-read.test.mjs": {
+        "blob": "bb916bc970fc5e7dba074ae95e9edf98b84137d0"
+      },
+      "test/public-demos-reader-purchase-observation.test.mjs": {
+        "blob": "402f6c02881cd173bda5b8b974d481122072251f"
+      },
+      "test/public-demos-reader-surface.test.mjs": {
+        "blob": "042048f96e210c436f14068e67636a078e46e8ca"
       },
       "test/public-guidance.test.mjs": {
         "blob": "46737251b71eda167149709f7ac8ddb004411861"
