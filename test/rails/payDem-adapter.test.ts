@@ -1329,6 +1329,84 @@ describe("pay-dem waits for the node's nonce read before signing the next paymen
     await expect(pay(rail)).resolves.toMatchObject({ ok: true });
     expect(signAndReadOrder()).toEqual(["sign", "read", "sign", "read"]);
   });
+
+  // The signer takes the node's account nonce read plus one, as Demos does.
+  // A nonce read that reaches a nonce moves the node's read up to it.
+  function signFromNodeRead(node: { nonce: number }) {
+    const signed: number[] = [];
+    sdk.transfer.mockImplementation(async (to: string, amountOs: bigint) => {
+      signed.push(node.nonce + 1);
+      return {
+        hash: TX_HASH,
+        content: {
+          nonce: node.nonce + 1, type: "native", from: WALLET, to, amount: amountOs.toString(),
+          data: ["native", { nativeOperation: "send", args: [to, amountOs.toString()] }],
+        },
+      };
+    });
+    sdk.waitForNonce.mockImplementation(async (_address: string, nonce: number) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      node.nonce = Math.max(node.nonce, nonce);
+      return nonce;
+    });
+    return signed;
+  }
+
+  it("signs a nonce once when two payments start while the read still lags", async () => {
+    const node = { nonce: 6 };
+    const signed = signFromNodeRead(node);
+    const rpc = "https://two-at-once.test";
+    sdk.waitForNonce.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    await expect(pay(await lagRail(rpc))).resolves.toMatchObject({ ok: true, execution: "executed" });
+    sdk.confirm.mockClear();
+    sdk.broadcast.mockClear();
+
+    const journal = vi.fn(async () => undefined);
+    const [second, third] = await Promise.allSettled([
+      pay(await lagRail(rpc, journal)),
+      pay(await lagRail(rpc, journal)),
+    ]);
+    expect(signed).toEqual([7, 8]);
+    expect(second).toMatchObject({ status: "fulfilled", value: { ok: true, execution: "executed" } });
+    expect(third).toMatchObject({
+      status: "rejected",
+      reason: { category: "transient", message: expect.stringMatching(/nothing was signed or broadcast/) },
+    });
+    expect(sdk.confirm).toHaveBeenCalledTimes(1);
+    expect(journal).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("signs a payment started after the last one's nonce read finished", async () => {
+    const node = { nonce: 6 };
+    const signed = signFromNodeRead(node);
+    const rpc = "https://one-after-another.test";
+    sdk.waitForNonce.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    await expect(pay(await lagRail(rpc))).resolves.toMatchObject({ ok: true, execution: "executed" });
+
+    await expect(pay(await lagRail(rpc))).resolves.toMatchObject({ ok: true, execution: "executed" });
+    await expect(pay(await lagRail(rpc))).resolves.toMatchObject({ ok: true, execution: "executed" });
+    expect(signed).toEqual([7, 8, 9]);
+  });
+
+  it("keeps a higher unread nonce when a later read reaches only a lower one", async () => {
+    const node = { nonce: 6 };
+    const signed = signFromNodeRead(node);
+    const rail = await lagRail("https://lower-read.test");
+    sdk.waitForNonce.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    await expect(pay(rail)).resolves.toMatchObject({ ok: true });
+
+    // The next payment is signed from a node further behind, and its own
+    // read reaches only that lower nonce.
+    node.nonce = 4;
+    sdk.waitForNonce.mockResolvedValueOnce(7);
+    await expect(pay(rail)).resolves.toMatchObject({ ok: true });
+    expect(signed).toEqual([7, 5]);
+    sdk.waitForNonce.mockClear();
+
+    await pay(rail);
+    expect(sdk.waitForNonce).toHaveBeenNthCalledWith(1, WALLET, 7);
+  });
 });
 
 describe("payDemSettle bridge registration", () => {
