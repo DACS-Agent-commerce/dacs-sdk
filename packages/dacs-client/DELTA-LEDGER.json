@@ -6711,6 +6711,17 @@
           "after": "bb916bc970fc5e7dba074ae95e9edf98b84137d0"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF document the refusal of a marked answer in the public reader",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/substrate/demos.mjs",
+          "before": "3ac12a3aecade25cda81b6a3c0065cdaafeda6c9",
+          "after": "1210a631918cb1b11824b80770e1497c52738180"
+        }
+      ]
     }
   ]
 }

@@ -25,7 +25,8 @@ const NO_SOURCE_REASON = 'native source evidence unavailable from public reader'
  * networkIdentity, getAddressNonce, observePurchaseTransfer, observeTransfer,
  * getTransaction and findTransferAtNonce. Each returns and throws what the
  * client's reader does, except that a read on a chain other than the pinned
- * one throws OperationError `network_identity_mismatch`, and
+ * one, or one whose answer is marked simulated, throws OperationError
+ * `network_identity_mismatch`, and
  * observePurchaseTransfer reports an included transfer as unavailable: this
  * reader keeps no signed native source, so it cannot settle a native purchase.
  *
