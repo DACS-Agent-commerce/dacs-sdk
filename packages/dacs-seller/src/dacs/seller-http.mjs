@@ -9,8 +9,11 @@
 // With the `wire` option, every route but the challenge and the context step opens
 // each request and signs each answer through `./wire` (seller-wire-requests.mjs). Each
 // effect route reserves its operation in the wire request journal and ends every attempt
-// with endWireAttempt; the read routes reserve nowhere. The challenge and the context step
-// keep the old server auth and the transport store's journal.
+// with endWireAttempt; the read routes reserve nowhere.
+// With `context` and `wire` together the challenge is on the wire too (`context.challengeOnWire`),
+// before any Agreement and with no journal. The context step keeps the old server auth and the
+// transport store's journal, and so does the challenge of a handler composed without `wire`.
+// Each request has one authenticator, chosen by its route.
 import { completeWireEffect, inspectWireOperation, WireError, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { UNCERTAIN, paymentTxHash, transportOutcome } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
@@ -25,6 +28,8 @@ import { requestNonceKey } from './seller-reservation-accounting.mjs';
 const MAX_BODY = 64 * 1024;
 const MAX_RESPONSE_LIST = 256;
 const SETTLEMENT_CREDIT_TIMEOUT_MS = 10000;
+// A refusal whose string `cause` names what the buyer can act on carries it in its answer.
+const CAUSE_ANSWERED_REFUSALS = new Set(['context_challenge_failed', 'seller_stopped']);
 // The longest client deadline `boundedCall` accepts (Node's timers hold at most 2^31 - 1 ms).
 const MAX_CLIENT_TIMEOUT_MS = 2 ** 31 - 1;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
@@ -170,6 +175,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   if (authentication && (authentication.seller !== agent.claim || canonicalize(authentication.listingPin) !== canonicalize(agent.listingPin))) throw new Error('seller transport identity must match the independently configured agent');
   if (authentication?.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
   if (context !== null && (!authentication || context?.path !== SELLER_CONTEXT_PATH || context?.challengePath !== SELLER_CONTEXT_CHALLENGE_PATH || typeof authentication.store?.classify !== 'function' || !['challenge', 'reserve', 'perform', 'settled', 'reconcile'].every((name) => typeof context[name] === 'function'))) throw new Error('the seller context route needs the authenticated transport and its admission');
+  if (wire !== null && context !== null && (typeof wire.stopped !== 'function' || typeof context.challengeOnWire !== 'function')) throw new TypeError('the wire challenge route needs the host\'s stop predicate (wire.stopped) and the context route\'s challengeOnWire');
   if (publicSignedCreates !== null && typeof publicSignedCreates !== 'function') throw new Error('publicSignedCreates must be the seller\'s signed CREATE pointer function');
   // DACS_BUYER_CHAIN_READBACK=on: a successful commit or payment answer (the
   // only answers the buyer takes pointers from) also names the seller's
@@ -314,6 +320,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       // and encoded aliases cannot evade the path authenticated by the peer.
       const contextChallenge = context !== null && req.url === SELLER_CONTEXT_CHALLENGE_PATH;
       const contextStep = context !== null && req.url === SELLER_CONTEXT_PATH;
+      const wireChallenge = wireAuth !== null && contextChallenge;
       const route = contextChallenge ? () => {} : contextStep ? (_agent, body) => context.perform(body) : routes[req.url];
       if (!route) return await send(res, 404, { error: 'not_found' }, null, { close: true });
       wired = wire !== null && WIRE_ROUTE_PATHS.includes(req.url);
@@ -326,6 +333,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       let admitted;
       if (authentication) {
+        if (wireChallenge) {
+          const answer = await context.challengeOnWire(wire, { header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (opened) => { request = opened; wiredRequests.add(opened); } });
+          await assertCreditHeld(request.jobId);
+          return await send(res, 200, answer, request, { text: wireAuth.encode(JSON.stringify(answer)) });
+        }
         if (wired) {
           admitted = await wireAuth.open({ header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (opened) => { request = opened; wiredRequests.add(opened); } });
           ({ body } = admitted);
@@ -436,7 +448,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       // refusal to store an unsignable answer does; any other error leaves the effect uncertain.
       const refusal = (error instanceof SellerTransportError || error instanceof WireError) && (beforeEffect || error.code === 'outgoing_body_rejected');
       // A refusal the agent settled inside its fence is answered as settled.
-      const outcome = fenced ?? (refusal ? { status: error.status, value: { error: error.code, message: error.message, ...(error.code === 'context_challenge_failed' && typeof error.cause === 'string' ? { cause: error.cause } : {}) } }
+      const outcome = fenced ?? (refusal ? { status: error.status, value: { error: error.code, message: error.message, ...(CAUSE_ANSWERED_REFUSALS.has(error.code) && typeof error.cause === 'string' ? { cause: error.cause } : {}) } }
         : transportOutcome(req.url, { error }, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId, body), resumed: reservation?.resumed === true }));
       const { status, value: answer } = outcome;
       if (authentication && reservation?.disposition === 'perform' && !settled) {
