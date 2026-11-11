@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { SettleResult } from "../../src/agent/runSessionCore.js";
+import type { SettleResult } from "../../src/rails/settlementTypes.js";
 import {
   TERMINAL_INCLUDED,
   payDemSettleCore,
