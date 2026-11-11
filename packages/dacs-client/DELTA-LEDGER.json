@@ -6955,6 +6955,17 @@
           "after": "d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF name the packed contents test without a plan abbreviation",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "fa141114c1adc59dfed04b1e17830e8f2cfc866f",
+          "after": "e159d0cb9ca487ba30500a5a3da40ea5bfab4b32"
+        }
+      ]
     }
   ]
 }
