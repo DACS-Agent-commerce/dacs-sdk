@@ -1,7 +1,7 @@
 // The harness ships nowhere and runs only where the client can: static checks of the package file lists and of the CI workflow.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -31,7 +31,9 @@ test("P06 off state: no package's files list reaches test/kit-client or the runn
     assert.deepEqual(HARNESS_PATHS.filter((path) => entryReaches(entry, path)), [], `root files entry ${entry}`);
   }
   // A package's entries are relative to its own directory, so only a parent-relative or harness-named entry could reach the harness.
-  for (const path of ['packages/dacs-seller/package.json', 'packages/dacs-client/package.json']) {
+  const manifests = readdirSync(new URL('../../packages/', import.meta.url)).map((name) => `packages/${name}/package.json`);
+  assert.notEqual(manifests.length, 0, 'the packages directory lists no packages');
+  for (const path of manifests) {
     assert.deepEqual(packageFiles(path).filter((entry) => entry.includes('..') || entry.includes('kit-client')), [], path);
   }
 });
