@@ -10,9 +10,11 @@ const DIAGNOSTIC_CODES = new Set([
   'conflict', 'binding-changed', 'indeterminate', 'invalid', 'buyer_access_closed',
   'not-pending', 'not-authorized', 'journal-capacity', 'journal-busy',
   'seller_vet_receipt_invalid', 'seller_presentation_indeterminate',
+  'data_directory_unsafe', 'data_directory_parent_missing', 'seller_identity_unavailable',
 ]);
 const CONTEXT_VALUES = Object.freeze({
   role: ['buyer', 'seller'],
+  detail: ['owner-permissions', 'not-private', 'not-canonical'],
   operation: ['release', 'deletion'],
   category: ['transient', 'permanent', 'counterparty', 'substrate'],
   writerCause: ['conflict', 'binding-changed', 'denied', 'rejected', 'indeterminate', 'invalid', 'closed', 'not-pending', 'capacity', 'busy', 'failed'],

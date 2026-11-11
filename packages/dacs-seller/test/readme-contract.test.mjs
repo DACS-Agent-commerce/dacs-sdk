@@ -59,6 +59,10 @@ test('the README does not claim the host checks the data directory ancestors', (
   assert.match(readme, /host\s+checks only the data directory itself/);
 });
 
+test('the README says the old-domain client helper does not reach the routes the wire opens', () => {
+  assert.match(readme, /request signed under the old domain is refused, so\s+`createSellerTransportClientAuth` does not reach these routes/);
+});
+
 test('the inline payload bound matches the storage CREATE cap the host enforces', () => {
   // seller-agent.mjs:197 refuses a native Listing whose expectedSizeBytes
   // exceeds MAX_STORAGE_ARTIFACT_BYTES (wallet-transactions.mjs:15), and

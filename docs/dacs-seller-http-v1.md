@@ -521,7 +521,8 @@ under the 4,096-character header limit.
 whether the proof was unused; the verifier awaits it. `createExplicitResumeLedger()`
 keeps claims in process memory until they expire by the latest `time` it has
 been given (so overlapping verifications on different clocks cannot release a
-claim another still treats as live) and refuses past 4,096 live ones; it does not survive a restart, so a proof can verify again after one until
+claim another still treats as live), throws `wire_input_invalid` for an `expiresAt`
+or `time` that is not an unsigned integer, and refuses past 4,096 live ones; it does not survive a restart, so a proof can verify again after one until
 its `expiresAt` (at most 60 s). A host that must keep one-use across a restart
 supplies a durable ledger. The proof never starts an effect by itself: the
 request that carries it still passes `checkWireRequest` and the journal.

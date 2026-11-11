@@ -12,6 +12,7 @@ import {
   type X402BuyerSettlementDisclosure,
   type X402BuyerSettlementIntent,
 } from "./x402BuyerSettlement.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const HASH_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -223,15 +224,6 @@ function exactRecord(
         descriptor.value === undefined) return null;
   }
   return value;
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function safeInteger(value: unknown, positive = false): number | null {

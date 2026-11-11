@@ -38,6 +38,7 @@ import {
   type TerminalBundleAuthority,
   type VerifiedTerminalBundleParty,
 } from "./terminalBundleFinalization.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 
@@ -202,14 +203,6 @@ function canonicalSnapshot<T>(value: T, label: string): T {
     if (error instanceof DacsError) throw error;
     throw new DacsError(`${label} must contain exact canonical JSON data`, { cause: error });
   }
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const entry of Object.values(value)) deepFreeze(entry);
-    Object.freeze(value);
-  }
-  return value;
 }
 
 function validListingRef(value: unknown): value is ListingRef {

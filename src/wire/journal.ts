@@ -24,7 +24,8 @@ import { sha256Hex } from "../canonical/hash.js";
 import { canonicalize } from "../canonical/jcs.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from "./routes.js";
-import { admitWireJson, deepFreeze, fail, hasKeys, isClaim, isHash, isRecord, isUint, ownedFields, uncurry, type JsonRecord } from "./validate.js";
+import { admitWireJson, fail, hasKeys, isClaim, isHash, isRecord, isUint, ownedFields, uncurry, type JsonRecord } from "./validate.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** The outcome an effect handler answered with: what a repeat of its operation is answered with again. */
 export interface WireEffectOutcome {

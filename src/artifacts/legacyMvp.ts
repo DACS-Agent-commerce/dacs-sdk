@@ -1,7 +1,7 @@
 /**
  * Explicit compatibility boundary for artifacts emitted by early dacs-sdk MVP
- * releases before DACS-Standard#308 / Standard PR #310 reconciled the §14
- * oracle with the normative reference shapes.
+ * releases, written before the §14 oracle carried the normative reference
+ * shapes.
  *
  * These types are READ/RESUME compatibility only. New protocol surfaces MUST
  * use `AttestationRef`, `ChainTxRef`, `SettlementEvidence`, and the bundle types

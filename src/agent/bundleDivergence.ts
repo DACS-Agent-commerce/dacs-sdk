@@ -6,21 +6,22 @@
  *
  *  - incompatible type-aware outcome/fault meaning; OR
  *  - a `phaseSummary` entry (keyed by its stable `index`) present in ONE copy but
- *    not the other — per DACS-Standard#224 / §10.4.3, presence-mismatch IS a
+ *    not the other — per §10.4.3, presence-mismatch IS a
  *    divergence (a copy asserting a phase the other denies is a contradiction;
  *    the earlier terminal-phase carve-out was dropped); OR
  *  - a shared `phaseSummary` index whose `kind`/`outcome`/`errorClass` differ.
  *
  * Fault pairs compare `faultedParty` plus outcome class; legacy pairs perspective-flip the
- * counterparty copy before comparison; mixed pairs require the absolute fault to belong to the
+ * counterparty copy before comparison, or agree when the absolute parties each copy can blame
+ * overlap; mixed pairs require the absolute fault to belong to the
  * legacy implied set. Advisory-only differences (finalisedAt skew, one-sided ratingRefs,
  * anchoredByRole, amendment ordering) are NOT divergence — they're excluded by
  * only comparing outcome + per-phase outcome/errorClass, so a party can't force a
  * spurious "disputed" classification by perturbing one.
  *
- * Both call sites MUST use this one function; a second, subtly-different copy is
- * exactly the drift #224 was raised to close (by-index here, not by-position, so
- * a reordered-but-equal phase set doesn't false-positive).
+ * Both call sites MUST use this one function so they cannot drift apart. It
+ * compares by index, not by position, so a reordered-but-equal phase set doesn't
+ * false-positive.
  */
 
 import type { FaultedParty } from "../artifacts/types.js";
@@ -63,7 +64,20 @@ function phasesByIndex(bundle: DivergenceBundle): Map<number, Record<string, unk
   return out;
 }
 
-/** Do two bundle copies canonically diverge (§10.4.3, #224)? */
+/**
+ * Can both role-relative copies blame the same absolute party? In a three-party session two
+ * `aborted-by-other` copies from opposite anchors each blame "anyone but me", and agree when
+ * they meet at the orchestrator.
+ */
+function impliedFaultSetsIntersect(a: DivergenceBundle, b: DivergenceBundle): boolean {
+  const bImplied = legacyImpliedFaultSet(b as Record<string, unknown>);
+  for (const party of legacyImpliedFaultSet(a as Record<string, unknown>)) {
+    if (bImplied.has(party)) return true;
+  }
+  return false;
+}
+
+/** Do two bundle copies canonically diverge (§10.4.3)? */
 export function bundlesDiverge(a: DivergenceBundle, b: DivergenceBundle): boolean {
   const aClass = bundleOutcomeClass(a.outcome);
   const bClass = bundleOutcomeClass(b.outcome);
@@ -109,13 +123,15 @@ export function bundlesDiverge(a: DivergenceBundle, b: DivergenceBundle): boolea
       (a.anchoredByRole === "buyer" && b.anchoredByRole === "seller") ||
       (a.anchoredByRole === "seller" && b.anchoredByRole === "buyer");
     const reconciledB = oppositeAnchors ? perspectiveFlip(b.outcome) : b.outcome;
-    if (a.outcome !== reconciledB) return true;
+    if (a.outcome !== reconciledB && !(oppositeAnchors && impliedFaultSetsIntersect(a, b))) {
+      return true;
+    }
   }
 
   const ai = phasesByIndex(a);
   const bi = phasesByIndex(b);
   if (!ai || !bi) return true;
-  // Presence-mismatch IS divergence (#224): the size check catches a phase in `b`
+  // Presence-mismatch IS divergence: the size check catches a phase in `b`
   // that `a` lacks; the `!pb` check inside the loop catches the reverse.
   if (ai.size !== bi.size) return true;
   for (const [idx, pa] of ai) {

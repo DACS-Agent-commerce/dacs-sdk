@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  createPayDemRail,
-  createPayDemSellerObserver,
-} from "../../src/index.js";
+import { createPayDemSellerObserver } from "../../src/index.js";
 import { DemosAdapter } from "../../src/substrate/index.js";
 import {
+  createPayDemFundedRail,
   executePayDemFundedRun,
   recordPayDemFundedRunOutcome,
 } from "./pay-dem-funded-run.js";
@@ -43,6 +41,7 @@ const LIVE_ENV = Object.freeze(REQUIRED_ENV.reduce<Record<
 const missing = REQUIRED_ENV.filter((key) => !LIVE_ENV[key]);
 const MAX_TEST_TRANSFER_OS = 1_000_000_000n;
 const MAX_TEST_TOTAL_DEBIT_OS = 3_000_000_000n;
+const LIVE_TEST_TIMEOUT_MS = 360_000;
 
 function requireCondition(condition: unknown, code: string): asserts condition {
   if (!condition) throw new Error(`pay-dem-live:${code}`);
@@ -132,7 +131,7 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
         network: "demos",
       },
       async (_marker, journalPreparedTransfer) => {
-        const rail = await createPayDemRail({
+        const rail = await createPayDemFundedRail({
           rpc,
           secret: buyerSecret,
           network: "demos",
@@ -185,5 +184,5 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
     await expect(
       observer.observeDemosTransfer(settlement.txHash),
     ).resolves.toEqual(first);
-  }, 180_000);
+  }, LIVE_TEST_TIMEOUT_MS);
 });

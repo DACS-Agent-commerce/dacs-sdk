@@ -1,5 +1,7 @@
 // Required buyer-state DDL. Apply to a new database before constructing stores.
 // Hosts own migrations and must retain every constraint when extending it.
+// operations.job_id holds a protocol purchase's job id (NULL for purchases
+// without one); its unique index reserves the id, so it must be kept.
 export const PURCHASE_STATE_SCHEMA = `CREATE TABLE IF NOT EXISTS accounts (
      id TEXT PRIMARY KEY,
      auth_issuer TEXT NOT NULL,
@@ -36,8 +38,10 @@ CREATE TABLE IF NOT EXISTS operations (
      expires_at TEXT NOT NULL,
      created_at TEXT NOT NULL,
      updated_at TEXT NOT NULL,
+     job_id TEXT,
      UNIQUE (account_id, kind, idempotency_key)
    );
+CREATE UNIQUE INDEX IF NOT EXISTS operations_job_id_unique ON operations(job_id);
 CREATE INDEX IF NOT EXISTS operations_by_subject ON operations(account_id, kind, subject_id);
 CREATE INDEX IF NOT EXISTS operations_by_account ON operations(account_id, created_at);
 CREATE TABLE IF NOT EXISTS operation_events (

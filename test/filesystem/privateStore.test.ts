@@ -7,12 +7,13 @@ import {
   readFile,
   rm,
   symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   atomicWritePrivateFile,
@@ -29,7 +30,22 @@ async function temporaryRoot(): Promise<string> {
   return root;
 }
 
+/**
+ * Starts a read under fake timers and runs the event loop until the read
+ * settles or schedules its first retry delay.
+ */
+async function startRead(path: string) {
+  const state = { settled: false };
+  const reading = readPrivateFile(path);
+  reading.then(() => { state.settled = true; }, () => { state.settled = true; });
+  while (!state.settled && vi.getTimerCount() === 0) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  return { reading, state };
+}
+
 afterEach(async () => {
+  vi.useRealTimers();
   for (const root of roots.splice(0)) {
     await chmod(root, 0o700).catch(() => undefined);
     await rm(root, { recursive: true, force: true });
@@ -118,5 +134,141 @@ describe("private durable filesystem boundary", () => {
       .rejects.toThrow(/hard links/);
     expect(await readFile(path, "utf8")).toBe("admitted");
     expect(await readFile(retainedAlias, "utf8")).toBe("admitted");
+  });
+});
+
+// exclusiveWritePrivateFile commits with link(temporary, path) and then removes
+// the temporary name, so a complete file briefly has exactly two links.
+describe("reads during an exclusive publication", () => {
+  test("readPrivateFile admits concurrent publications that finish within its 315 ms retry budget", async () => {
+    const root = await temporaryRoot();
+    const store = await preparePrivateStoreDirectory(join(root, "store"));
+    let current = { path: join(store, "publication-0.json"), text: "" };
+    let publishing = true;
+    let admittedReads = 0;
+    const refusals: string[] = [];
+    const readUntilPublished = async () => {
+      while (publishing) {
+        const target = current;
+        try {
+          const text = await readPrivateFile(target.path);
+          admittedReads += 1;
+          if (text !== target.text) refusals.push(`partial read of ${target.path}`);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") refusals.push(String(error));
+        }
+      }
+    };
+    const readers = Array.from({ length: 3 }, readUntilPublished);
+    try {
+      for (let index = 0; index < 100; index += 1) {
+        current = { path: join(store, `publication-${index}.json`), text: `publication ${index}` };
+        await exclusiveWritePrivateFile(current.path, current.text);
+      }
+    } finally {
+      publishing = false;
+      await Promise.all(readers);
+    }
+
+    expect(refusals.length, refusals[0]).toBe(0);
+    expect(admittedReads).toBeGreaterThan(0);
+  });
+
+  test("re-reads a two-link file once its second name is removed during the wait", async () => {
+    const root = await temporaryRoot();
+    const store = await preparePrivateStoreDirectory(join(root, "store"));
+    const path = join(store, "binding.json");
+    const temporaryName = join(store, ".binding.json.publishing.tmp");
+    await exclusiveWritePrivateFile(path, "published");
+    await link(path, temporaryName);
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+
+    const { reading, state } = await startRead(path);
+    expect(state.settled).toBe(false);
+    await unlink(temporaryName);
+    await vi.runAllTimersAsync();
+
+    await expect(reading).resolves.toBe("published");
+  });
+
+  test("refuses a file that keeps two links after its 315 ms retry budget", async () => {
+    const root = await temporaryRoot();
+    const store = await preparePrivateStoreDirectory(join(root, "store"));
+    const path = join(store, "binding.json");
+    await exclusiveWritePrivateFile(path, "published");
+    await link(path, join(store, "retained-alias.json"));
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    const started = Date.now();
+
+    const { reading, state } = await startRead(path);
+    while (!state.settled) {
+      if (vi.getTimerCount() > 0) await vi.runOnlyPendingTimersAsync();
+      else await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    await expect(reading).rejects.toThrow(
+      `regular file has 2 hard links; exactly one is required: ${path}`,
+    );
+    const waitedMs = Date.now() - started;
+    expect(waitedMs).toBe(315);
+  });
+
+  test("refuses a two-link file with an unsafe mode without waiting", async () => {
+    const root = await temporaryRoot();
+    const store = await preparePrivateStoreDirectory(join(root, "store"));
+    const path = join(store, "binding.json");
+    await exclusiveWritePrivateFile(path, "published");
+    await link(path, join(store, "retained-alias.json"));
+    await chmod(path, 0o620);
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    const started = Date.now();
+
+    const { reading, state } = await startRead(path);
+
+    expect(state.settled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(Date.now() - started).toBe(0);
+    await expect(reading).rejects.toThrow(/group\/world writable/);
+  });
+
+  test("refuses a file with three links without waiting", async () => {
+    const root = await temporaryRoot();
+    const store = await preparePrivateStoreDirectory(join(root, "store"));
+    const path = join(store, "binding.json");
+    await exclusiveWritePrivateFile(path, "published");
+    await link(path, join(store, "first-alias.json"));
+    await link(path, join(store, "second-alias.json"));
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+
+    const { reading, state } = await startRead(path);
+
+    expect(state.settled).toBe(true);
+    await expect(reading).rejects.toThrow(/has 3 hard links/);
+  });
+
+  test("refuses missing, symlinked, non-regular and group-writable paths without waiting", async () => {
+    const root = await temporaryRoot();
+    const store = await preparePrivateStoreDirectory(join(root, "store"));
+    const admitted = join(store, "admitted.json");
+    await exclusiveWritePrivateFile(admitted, "published");
+    const symlinked = join(store, "symlinked.json");
+    await symlink(admitted, symlinked);
+    const directory = join(store, "directory");
+    await mkdir(directory, { mode: 0o700 });
+    const groupWritable = join(store, "group-writable.json");
+    await writeFile(groupWritable, "published", { mode: 0o600 });
+    await chmod(groupWritable, 0o620);
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+
+    for (const [path, refusal] of [
+      [join(store, "missing.json"), { code: "ENOENT" }],
+      [symlinked, { message: expect.stringMatching(/symbolic link/) }],
+      [directory, { message: expect.stringMatching(/not a regular file/) }],
+      [groupWritable, { message: expect.stringMatching(/group\/world writable/) }],
+    ] as const) {
+      const { reading, state } = await startRead(path);
+      expect(state.settled, path).toBe(true);
+      await expect(reading).rejects.toMatchObject(refusal);
+    }
   });
 });

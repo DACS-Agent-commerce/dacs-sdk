@@ -178,7 +178,7 @@ export function demosTransactionContentDifferencePaths(
       if (
         signedHasTxHash !== canonicalHasTxHash ||
         (signedHasTxHash &&
-          (canonicalEdit.txhash !== expectedTxRef ||
+          ((canonicalEdit.txhash !== "" && canonicalEdit.txhash !== expectedTxRef) ||
             (signedEdit.txhash !== "" && signedEdit.txhash !== expectedTxRef)))
       ) {
         differences.push(`content.gcr_edits[${index}].txhash`);

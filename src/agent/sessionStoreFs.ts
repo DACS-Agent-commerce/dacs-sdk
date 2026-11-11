@@ -32,7 +32,7 @@ import {
 } from "./sessionStore.js";
 
 /**
- * Atomic-filesystem {@link SessionStore} (#55) — a durable, restart-safe backend
+ * Atomic-filesystem {@link SessionStore} — a durable, restart-safe backend
  * for a single host. Each session is one JSON file written via temp-file +
  * `rename` (atomic on POSIX); a per-session lock file serialises read-modify-write
  * so compare-and-set and lease semantics hold across concurrent workers/processes;
@@ -66,7 +66,7 @@ export interface FsSessionStoreOptions {
   dir: string;
   /**
    * Age (ms) after which a lock file left behind by a hard-crashed process is
-   * treated as stale and reclaimed, so a session isn't blocked forever (#67).
+   * treated as stale and reclaimed, so a session isn't blocked forever.
    * Defaults to {@link DEFAULT_LOCK_STALE_MS}.
    */
   lockStaleMs?: number;
@@ -134,7 +134,7 @@ export async function createFsSessionStore(
     }
     // Check the schema version BEFORE the field shape: a newer writer may use a
     // shape this version doesn't understand, and that is `unsupported`, not
-    // `corrupt` (#67 — never conflate the two).
+    // `corrupt` (never conflate the two).
     if (
       typeof parsed !== "object" ||
       parsed === null ||
@@ -664,7 +664,7 @@ export async function createFsSessionStore(
         const loaded = await readSession(input.jobId);
         // Fail closed: surface corrupt/unsupported distinctly — NEVER collapse
         // them into `not-found`, which would let a caller silently reset a
-        // session whose state can't be trusted (#67).
+        // session whose state can't be trusted.
         if (loaded.status === "missing") return { ok: false, reason: "not-found" };
         if (loaded.status === "corrupt") return { ok: false, reason: "corrupt" };
         if (loaded.status === "unsupported") return { ok: false, reason: "unsupported" };
@@ -672,10 +672,10 @@ export async function createFsSessionStore(
         if (record.revision !== input.expectedRevision) {
           return { ok: false, reason: "revision-mismatch", record };
         }
-        // A live lease held by a DIFFERENT owner blocks the transition (#67).
+        // A live lease held by a DIFFERENT owner blocks the transition.
         // Default to the REAL clock (not record.updatedAt): a stale timestamp
         // never advances past expiresAt, so an already-expired lease would read
-        // as still-held and a legitimate takeover be wrongly rejected (#67).
+        // as still-held and a legitimate takeover be wrongly rejected.
         const leaseNow = input.now ?? Date.now();
         if (record.lease && record.lease.expiresAt > leaseNow && input.owner !== record.lease.owner) {
           return { ok: false, reason: "lease-held", record };
@@ -751,7 +751,7 @@ export async function createFsSessionStore(
     },
 
     async acquireLease({ jobId, owner, ttlMs, now = Date.now() }) {
-      // Same clock/TTL discipline as the in-memory store (#67): an epoch-zero
+      // Same clock/TTL discipline as the in-memory store: an epoch-zero
       // default silently voids lease mutual exclusion on the money path.
       if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
         throw new DacsError(`acquireLease ttlMs must be a positive number, got ${ttlMs}`);

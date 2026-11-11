@@ -275,6 +275,17 @@ for(const name of ['TimeoutError','Error'])test(`native commitment recovery reta
  assert.equal(out.cause.cause,cause);assert.equal(settled,false);assert.equal(f.local.writes.length,0);
 });
 
+test('read-only commitment recovery with proven unsigned absence holds and never signs or publishes',async t=>{
+ const f=await commitmentFixture(t),{agent}=await f.prepare(),read=f.native.readRetained,publish=f.native.publish;let signs=0,publishes=0;
+ f.native.readRetained=async input=>{const out=await read(input);return out.status==='absent'?provenUnsignedAbsence('TEST no seller-signed intent'):out;};
+ f.native.publish=async(...args)=>{publishes++;return publish(...args);};
+ f.config.signer.sign=()=>{signs++;throw new Error('TEST read-only signer called');};
+ const request=commitmentRequest(agent,core.contentHash(f.controls.agreement.artifact)),body={jobId:JOB},rawBody=Buffer.from(JSON.stringify(body));
+ const answer=await agent.reconcileTransport({request,body,rawBody,readOnly:true});
+ assert.equal(answer.disposition,'indeterminate');
+ assert.equal(f.local.writes.length,0);assert.equal(publishes,0);assert.equal(signs,0);
+});
+
 test('an uncertain signature commitment without an Agreement never takes the ordinary path',async t=>{
  const f=await commitmentFixture(t,{early:true}),{agent}=await f.prepare(),read=f.native.readRetained;
  f.native.readRetained=async input=>{const out=await read(input);return out.status==='absent'?provenUnsignedAbsence('TEST no seller-signed intent'):out;};

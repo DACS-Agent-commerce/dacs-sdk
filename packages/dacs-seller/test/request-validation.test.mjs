@@ -187,6 +187,8 @@ for(const [label,write,artifact,reason='artifact'] of [
   ['a Deliverable with no Agreement hash (D-7)',{artifactKind:'Deliverable'},{agreementHash:undefined},'artifact-structure'],
   ['a Deliverable produced by the buyer (D-8)',{artifactKind:'Deliverable'},{producer:buyer}],
   ['a Deliverable with an extra member (A-1)',{artifactKind:'Deliverable'},{TEST:'extra'},'artifact-structure'],
+  ['a Deliverable for another job that is also structurally invalid',{artifactKind:'Deliverable'},{jobId:JOBS[1],agreementHash:undefined}],
+  ['a Vet record for another job that is also structurally invalid',{artifactKind:'CompositeVerificationRecord'},{jobId:JOBS[1],recordVersion:'invalid'}],
   ['payment evidence naming a payee (A-1)',payment,{payee:buyer}],
   ['failed payment evidence (A-1)',payment,{outcome:'failure'},'artifact-structure'],
   ['delivery evidence for another deliverable',{artifactKind:'SettlementEvidence',phase:'deliver-storage-program'},{deliverableAnchor:{kind:'storage-program',locator:`dacs4:deliverable:${JOBS[1]}`}}],

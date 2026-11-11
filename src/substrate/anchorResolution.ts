@@ -1,6 +1,6 @@
 /**
  * Typed result of resolving a logical program NAME to its storage address for a
- * given writer (#58 / #70). The physical address folds in the writer's create-
+ * given writer. The physical address folds in the writer's create-
  * time nonce, so it can't be recomputed — the name must be resolved through the
  * node's name index. This type keeps a transient lookup failure DISTINCT from a
  * genuine absence, so a substrate hiccup is never read as "the program was never

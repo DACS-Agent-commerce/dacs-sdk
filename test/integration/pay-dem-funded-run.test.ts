@@ -49,12 +49,79 @@ function preparedTransfer(
     amountOs: input.amountOs,
     denomination: "os",
     maxTotalDebitOs: input.maxTotalDebitOs,
+    confirmedTotalDebitOs: input.maxTotalDebitOs,
+    confirmedRecordFeeOs: "1000000000",
     network: "demos",
     ...overrides,
   };
 }
 
 describe("pay-DEM funded-run adapter", () => {
+  it.each([
+    { total: "1", fee: "0" },
+    { total: "1000000001", fee: "2000000000" },
+  ])("retains total debit $total and independent declared fee $fee", async ({ total, fee }) => {
+    const input = await fixture();
+    const prepared = Object.assign(preparedTransfer(input), {
+      confirmedTotalDebitOs: total,
+      confirmedRecordFeeOs: fee,
+    });
+    const { marker } = await executePayDemFundedRun(input, async (_armed, journal) => {
+      await journal(prepared);
+    });
+    await expect(readPayDemFundedPreparedTransfer(marker)).resolves.toEqual(prepared);
+  });
+
+  it.each([
+    { confirmedTotalDebitOs: "0" },
+    { confirmedTotalDebitOs: "-1" },
+    { confirmedTotalDebitOs: "01" },
+    { confirmedTotalDebitOs: "1.5" },
+    { confirmedTotalDebitOs: 1 },
+    { confirmedTotalDebitOs: "1000000002" },
+    { confirmedRecordFeeOs: "-1" },
+    { confirmedRecordFeeOs: "01" },
+    { confirmedRecordFeeOs: "1.5" },
+    { confirmedRecordFeeOs: 0 },
+    { unexpected: "field" },
+  ])("rejects invalid prepared debit fields %j before submission", async (changes) => {
+    const input = { ...(await fixture()), amountOs: "2" };
+    const submitted = vi.fn();
+    await expect(executePayDemFundedRun(input, async (_armed, journal) => {
+      await journal(Object.assign(preparedTransfer(input), changes));
+      submitted();
+    })).rejects.toMatchObject({
+      message: expect.stringMatching(/effect-ambiguous-do-not-rerun/),
+      cause: expect.objectContaining({ message: "pay-dem-live:prepared-transfer-invalid" }),
+    });
+    expect(submitted).not.toHaveBeenCalled();
+  });
+
+  it("rejects a confirmed total below the transfer amount before submission", async () => {
+    const input = { ...(await fixture()), amountOs: "2" };
+    const submitted = vi.fn();
+    await expect(executePayDemFundedRun(input, async (_armed, journal) => {
+      await journal(Object.assign(preparedTransfer(input), { confirmedTotalDebitOs: "1" }));
+      submitted();
+    })).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
+    expect(submitted).not.toHaveBeenCalled();
+  });
+
+  it.each(["confirmedTotalDebitOs", "confirmedRecordFeeOs"])(
+    "rejects a missing %s before submission",
+    async (field) => {
+      const input = await fixture();
+      const prepared = preparedTransfer(input);
+      Reflect.deleteProperty(prepared, field);
+      const submitted = vi.fn();
+      await expect(executePayDemFundedRun(input, async (_armed, journal) => {
+        await journal(prepared);
+        submitted();
+      })).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
+      expect(submitted).not.toHaveBeenCalled();
+    },
+  );
+
   it("persists the transfer and maximum debit in the intent before invoking the effect", async () => {
     const input = await fixture();
     const effect = vi.fn(async () => "submitted");

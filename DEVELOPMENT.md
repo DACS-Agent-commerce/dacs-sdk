@@ -37,23 +37,38 @@ Doctor CLI rules:
 
 ## Layout
 
+Which folders may import which is set out in [ARCHITECTURE.md](./ARCHITECTURE.md).
+
 ```
 src/
-  agent/             createAgent + the 5-stage runSession / verifyBundle / reputation
+  agent/             createAgent, the Agent lifecycle (vet, negotiate, settle, fulfil, verify) and reputation
   artifacts/         spine artifact types, validators, separator registry
-  canonical/         JCS + sha256 content hashing, stor- addressing
+  canonical/         JCS + sha256 content hashing, stor- addressing, raw JSON admission
+  commerce/          fixed-price protocols (x402, pay-dem, offline), x402 coordinator
   crypto/            signing seam + domain separators
-  rails/             settlement rails (x402, evm-erc20)
+  discovery/         Listing binding resolution and indexes
+  filesystem/        private-permission file store helper
+  identity/          Demos CCI identity records and claims
+  negotiate/         RFQ channel messages and admission
+  rails/             settlement rails: x402 (buyer and seller paywall), evm-erc20, pay-dem,
+                     pay-d402, AP2 (with Stripe), Solana SPL, alternative payment,
+                     wallet spend authority, idempotency stores
   registry/          recipe / rail steward registries
+  seller/            seller side: agreement responses, payment intake, receipts,
+                     bundle finalization
+  wire/              dacs-seller-http/v1 wire definitions and the TP-1 profile
   cli/               read-only doctor/preflight helpers
   bin/               executable entrypoints
   substrate/         the SubstrateAdapter seam + the single DemosAdapter
-  errors.ts          DacsError
-  index.ts           public entry — the agent API + rails/registry subpaths
-test/
-  agent/ artifacts/ rails/ registry/ canonical/ crypto/ substrate/   unit tests
-  conformance/       §14 golden-vector harness (some areas still it.todo)
-  integration/       live node smoke + on-chain e2e (gated on creds)
+  errors.ts          DacsError and its fault categories
+  index.ts           public entry point (subpaths: see "exports" in package.json)
+packages/
+  dacs-node/         Node.js host contracts and adapters (SQLite, Postgres)
+  dacs-client/       buyer purchase services (private, not published)
+  dacs-seller/       self-hosted seller kit with test authorities (private, not published)
+  create-dacs-agent/ project generator
+test/                one folder per src/ area, plus conformance/, integration/,
+                     e2e/, package-consumer/ and scripts/
 scripts/
   sync-vectors.mjs   clone/checkout DACS-Standard at the pinned ref into vendor/
 ```

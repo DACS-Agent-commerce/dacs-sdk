@@ -30,7 +30,7 @@ import {
  * (the core of Agent.discover). Refs are caller-supplied — a marketplace crawl
  * needs an indexer the deterministic substrate doesn't provide.
  *
- * Signature verification is load-bearing (#41): a listing drives negotiation,
+ * Signature verification is load-bearing: a listing drives negotiation,
  * vetting, rail/recipient selection and ultimately payment, so a forged or
  * tampered listing that reaches discovery output can steer real money. Every
  * listing is therefore verified before it is returned, and anything that fails
@@ -320,7 +320,7 @@ export async function discoverListings(
   if (!capturedDeps.verify && !capturedDeps.trustListings) {
     throw new DacsError(
       "discoverListings requires deps.verify or an explicit deps.trustListings: true opt-out — " +
-        "returning unverified listings lets a forged listing drive negotiation and payment (#41)",
+        "returning unverified listings lets a forged listing drive negotiation and payment",
     );
   }
   if (typeof readAnchor !== "function" || nodeTypes.isProxy(readAnchor)) {

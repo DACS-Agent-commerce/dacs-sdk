@@ -15,8 +15,8 @@ import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
 import { OperationError } from './operations.mjs';
 import { isPrivateDirectory } from './private-directory.mjs';
 
-const SELLER_KEY_FORMAT = 'dacs-seller-key/v1';
-const SELLER_KEY_ALGORITHM = 'ed25519';
+export const SELLER_KEY_FORMAT = 'dacs-seller-key/v1';
+export const SELLER_KEY_ALGORITHM = 'ed25519';
 const SELLER_KEY_RECORD_FIELDS = ['algorithm', 'format', 'mnemonic'];
 const SELLER_KEY_SECRET_NAME = 'dacs-seller-key';
 const CLAIM_PREFIX = 'did:demos:agent:';
@@ -71,7 +71,8 @@ function assertKeyLocation(filePath, dataDirectory) {
   }
 }
 
-async function loadKeyFile(filePath) {
+/** Loads the seller key file through the custody loader; returns the live loader (the caller destroys it) or throws SellerKeyError `seller_key_unavailable`. */
+export async function loadKeyFile(filePath) {
   let loader;
   try {
     loader = await loadDacsSecretV1({ name: SELLER_KEY_SECRET_NAME, mode: 'live-demos', filePath });

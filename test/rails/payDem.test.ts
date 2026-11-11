@@ -78,7 +78,41 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     expect(res.finality).toEqual({ model: "bft-final" });
     expect(res.txRefKind).toBe("demos");
     expect(res.blockNumber).toBe(4242);
-    expect(client.sent).toEqual({ to: RECIPIENT, amountOs: 1_500_000_000n });
+    expect(client.sent).toEqual({ to: `0x${RECIPIENT}`, amountOs: 1_500_000_000n });
+  });
+
+  test.each([
+    ["bare lowercase", RECIPIENT],
+    ["0x lowercase", `0x${RECIPIENT}`],
+    ["bare upper case", RECIPIENT.toUpperCase()],
+    ["0x upper case", `0x${RECIPIENT.toUpperCase()}`],
+  ])("sends a %s recipient as a lowercase 0x address and reports one payee", async (
+    _form,
+    recipient,
+  ) => {
+    const client = fakeClient();
+    const res = await payDemSettleCore(params({ recipient }), client);
+    expect(client.sent?.to).toBe(`0x${RECIPIENT}`);
+    expect(res.payee).toBe(RECIPIENT);
+  });
+
+  test.each([
+    ["63 hex digits", RECIPIENT.slice(1)],
+    ["65 hex digits", `${RECIPIENT}a`],
+    ["non-hex text", "g".repeat(64)],
+    ["an empty string", ""],
+  ])("refuses a recipient of %s before any transfer, broadcast or journal write", async (
+    _form,
+    recipient,
+  ) => {
+    const client = fakeClient();
+    const journal = vi.fn(async () => undefined);
+    await expect(payDemSettleCore(
+      params({ recipient, journalPreparedTransfer: journal }),
+      client,
+    )).rejects.toThrow(/pay-dem recipient/);
+    expect(client.sent).toBeUndefined();
+    expect(journal).not.toHaveBeenCalled();
   });
 
   test("checks the recovery generation immediately before native transfer", async () => {
@@ -147,7 +181,24 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     await expect(payDemSettleCore(params({ recovery: recovery() }), client))
       .resolves.toMatchObject({ ok: true, txHash: TX_HASH });
     expect(client.sent).toEqual({
-      to: RECIPIENT,
+      to: `0x${RECIPIENT}`,
+      amountOs: 1_500_000_000n,
+      recovery: recovery(),
+    });
+  });
+
+  test.each([
+    `0x${RECIPIENT}`,
+    RECIPIENT.toUpperCase(),
+    `0x${RECIPIENT.toUpperCase()}`,
+  ])("binds a recovery context to the recipient given as %s", async (recipient) => {
+    const client = fakeClient();
+    await expect(payDemSettleCore(
+      params({ recipient, recovery: recovery() }),
+      client,
+    )).resolves.toMatchObject({ ok: true, payee: RECIPIENT });
+    expect(client.sent).toEqual({
+      to: `0x${RECIPIENT}`,
       amountOs: 1_500_000_000n,
       recovery: recovery(),
     });
@@ -169,7 +220,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       );
       expect(res.ok).toBe(true);
       expect(res.chainId).toBe("demos");
-      expect(client.sent).toEqual({ to: RECIPIENT, amountOs: 1_500_000_000n });
+      expect(client.sent).toEqual({ to: `0x${RECIPIENT}`, amountOs: 1_500_000_000n });
     },
   );
 
@@ -253,6 +304,17 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       /invalid OS base-unit amount/,
     );
   });
+
+  test.each(["0x10", "0X10", "0b1", "0o7", "+16", "-16", "016", "00", "1e3", "1_000"])(
+    "rejects the non-canonical OS amount %j before transfer",
+    async (amount) => {
+      const client = fakeClient();
+      await expect(payDemSettleCore(params({ amount }), client)).rejects.toThrow(
+        /invalid OS base-unit amount/,
+      );
+      expect(client.sent).toBeUndefined();
+    },
+  );
 
   test("rejects a non-positive amount", async () => {
     await expect(payDemSettleCore(params({ amount: "0" }), fakeClient())).rejects.toThrow(
@@ -1327,13 +1389,13 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   test("transfers to the agreement's payee (derived intrinsically from the claim)", async () => {
     const client = fakeClient();
     await settleWith(client)(req());
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test("the request payee determines the destination with NO configured recipient", async () => {
     const client = fakeClient();
     await settleWith(client, { network: "demos" })(req());
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test("normalizes a same-address Demos DID request binding and returns it verbatim", async () => {
@@ -1341,7 +1403,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const result = await settleWith(client, { network: "demos" })(
       req({ expectedPayee: PAYEE_CLAIM }),
     );
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
     expect(result.payee).toBe(PAYEE_CLAIM);
   });
 
@@ -1389,14 +1451,14 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   test("an equivalent claim form (0x / bare hex) matches the same address", async () => {
     const client = fakeClient();
     await settleWith(client, { recipient: `0x${SELLER_HEX}` })(req());
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test("the DACS-1 Demos cci-xm profile resolves intrinsically", async () => {
     const client = fakeClient();
     const claim = `cci-xm:demos:testnet:0x${SELLER_HEX}?region=uk`;
     await settleWith(client, { recipient: `0x${SELLER_HEX}` })(req({ payee: claim }));
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test("canonical Demos DID parameters do not change the settlement identity", async () => {
@@ -1405,7 +1467,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     await settleWith(client, { recipient: `0x${SELLER_HEX}` })(
       req({ payee: claim }),
     );
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test.each([

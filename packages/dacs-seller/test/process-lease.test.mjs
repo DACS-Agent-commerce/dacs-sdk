@@ -219,6 +219,55 @@ test('takeLease refuses an unsafe holders directory, an existing lease file or a
   assert.throws(() => takeLease(join(open, 'TEST-file')), { code: 'seller_state_directory_unsafe' });
 });
 
+test('a fault while taking a lease removes the file it created, and the next takeLease works', async t => {
+  const dir = await directory(t);
+  faultOnce(t, 'fchmodSync');
+  assert.throws(() => takeLease(dir), { code: 'EIO', message: 'TEST injected fchmodSync fault' });
+  assert.deepEqual(await readdir(join(dir, 'holders')), []);
+  assert.equal(takeLease(dir), PROCESS_LEASE_ID);
+  assert.equal(leaseState(dir, PROCESS_LEASE_ID), 'held');
+});
+
+test('a fault reading the new lease file\'s identity removes the file, and the next takeLease works', async t => {
+  const dir = await directory(t);
+  faultOnce(t, 'fstatSync');
+  assert.throws(() => takeLease(dir), { code: 'EIO', message: 'TEST injected fstatSync fault' });
+  assert.deepEqual(await readdir(join(dir, 'holders')), []);
+  assert.equal(takeLease(dir), PROCESS_LEASE_ID);
+  assert.equal(leaseState(dir, PROCESS_LEASE_ID), 'held');
+});
+
+test('a fault checking the new lease file at its path removes the file, and the next takeLease works', async t => {
+  const dir = await directory(t), path = join(dir, 'holders', `${PROCESS_LEASE_ID}.sqlite`);
+  faultOnce(t, 'lstatSync', file => file === path);
+  assert.throws(() => takeLease(dir), { code: 'EIO', message: 'TEST injected lstatSync fault' });
+  assert.deepEqual(await readdir(join(dir, 'holders')), []);
+  assert.equal(takeLease(dir), PROCESS_LEASE_ID);
+});
+
+test('a failed takeLease keeps its own error when the identity read, the close and the removal all fail', async t => {
+  const dir = await directory(t);
+  faultOnce(t, 'fstatSync');
+  faultOnce(t, 'closeSync');
+  faultOnce(t, 'unlinkSync');
+  assert.throws(() => takeLease(dir), { message: 'TEST injected fstatSync fault' });
+});
+
+test('a failed takeLease keeps its own error when closing the descriptor also fails', async t => {
+  const dir = await directory(t);
+  faultOnce(t, 'fchmodSync');
+  faultOnce(t, 'closeSync');
+  assert.throws(() => takeLease(dir), { message: 'TEST injected fchmodSync fault' });
+  assert.deepEqual(await readdir(join(dir, 'holders')), []);
+});
+
+test('a failed takeLease leaves a file that replaced its own at the lease path', async t => {
+  const dir = await directory(t), path = join(dir, 'holders', `${PROCESS_LEASE_ID}.sqlite`);
+  faultOnce(t, 'fchmodSync', () => { fs.unlinkSync(path); fs.writeFileSync(path, 'TEST other file', { mode: 0o600 }); return true; });
+  assert.throws(() => takeLease(dir), { code: 'EIO' });
+  assert.equal(await readFile(path, 'utf8'), 'TEST other file');
+});
+
 const isFile = fd => fs.fstatSync(fd).isFile(), isDirectory = fd => fs.fstatSync(fd).isDirectory();
 for (const [name, fault] of [['temporary sync', ['fsyncSync', isFile]], ['link', ['linkSync']], ['directory sync', ['fsyncSync', isDirectory]]]) {
   test(`a fault at ${name} leaves no published lock, and the next acquire works`, async t => {

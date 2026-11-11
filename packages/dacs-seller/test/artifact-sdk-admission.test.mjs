@@ -9,9 +9,14 @@ import {createDevnetPurchasedReportProducer} from '../src/devnet-demo/deliverabl
 async function world(kind='Listing',options={}){
  const f=await anchorFixture({artifactKinds:[kind]});
  f.source.binding=async()=>({disposition:'included'});f.source.observeBinding=async()=>({});
- f.controls.request=async request=>{const signed=await signSdkCreate(request.transaction,options);const backend=readbackFixture({signedTransaction:signed,observedAt:1800000000000});for(const edit of backend.state.tx.content.gcr_edits)edit.txhash=signed.hash;Object.assign(f.controls.reader,backend.adapter);await f.journal.put('demo/wallet/sdk',{stage:'broadcast-started',hash:signed.hash,signedTransaction:signed});return {success:true,data:{hash:signed.hash}};};return f;
+ f.controls.request=async request=>{const signed=await signSdkCreate(request.transaction,options);const backend=readbackFixture({signedTransaction:signed,observedAt:1800000000000});for(const edit of backend.state.tx.content.gcr_edits)edit.txhash=options.storedEditHash==='empty'?'':signed.hash;Object.assign(f.controls.reader,backend.adapter);await f.journal.put('demo/wallet/sdk',{stage:'broadcast-started',hash:signed.hash,signedTransaction:signed});return {success:true,data:{hash:signed.hash}};};return f;
 }
 function listing(extra){const pipeline=fixtureListing(seller).pipeline;pipeline[2].parameters.extra=extra;return {logicalAddress:'dacs1:listing:fixture-report:1',artifact:fixtureListing(seller,{pipeline}),artifactKind:'Listing'};}
+for(const storedEditHash of ['empty','transaction'])test('Listing publication and receipt verification accept '+storedEditHash+' stored edit hashes',async()=>{
+ const f=await world('Listing',{storedEditHash}),input=listing(0),result=await f.open().publish(input);
+ assert.equal(result.status,'present');
+ assert.equal(await f.open().verifyReceipt({...input,receipt:result.receipt,signedProjection:result.signedProjection,fresh:true}),'valid');
+});
 for(const [name,extra,accepted] of [ ['list control',Array(3968).fill(0),true],['list edge',Array(3969).fill(0),false],['list max',Array(4096).fill(0),false],... [21,22,24].map(depth=>{let extra=0;for(let i=0;i<depth;i++)extra={nested:extra};return ['depth '+depth,extra,depth===21];})])test('SDK-shaped admission '+name,async()=>{
  const f=await world(),input=listing(extra);
  if(accepted){const result=await f.open().publish(input);assert.equal(result.status,'present');assert.equal(await f.open().verifyReceipt({...input,receipt:result.receipt,signedProjection:result.signedProjection,fresh:true}),'valid');}

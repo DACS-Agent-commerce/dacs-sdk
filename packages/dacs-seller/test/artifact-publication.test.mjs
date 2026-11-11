@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sha256Hex, contentHash, canonicalize, finalityCommitmentAddress } from '@kynesyslabs/dacs';
+import { sha256Hex, contentHash, canonicalize, finalityCommitmentAddress, signComponentArtifact, FINALITY_COMMITMENT_SEPARATOR } from '@kynesyslabs/dacs';
 import { anchorFixture, signSdkCreate } from './helpers/anchor-isolated-fixture.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
-import { seller, JOB, protocolFixture } from './helpers/protocol-fixture.mjs';
+import { seller, buyer, JOB, protocolFixture } from './helpers/protocol-fixture.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { createDevnetPurchasedReportProducer } from '../src/devnet-demo/deliverable.mjs';
 
@@ -107,6 +107,31 @@ test('accepted signed CREATE publishes, reopens, verifies receipts and preserves
   const changed=structuredClone(retained);changed.content.data[1].metadata.artifactBinding.jobId=JOB.slice(0,-1)+'B';changed.hash=sha256Hex(JSON.stringify(changed.content));changed.signature.data=`0x${seller.signBytes(Buffer.from(changed.hash)).toString('hex')}`;
   assert.equal(await reopened.verifyReceipt({...input,receipt:{...result.receipt,transactionRef:{...result.receipt.transactionRef,value:changed.hash}},signedProjection:changed,fresh:true}),'invalid');
   assert.equal((await reopened.publish(input)).status,'present');assert.equal(f.captured.length,1);assert.equal(contentHash(backend.native.data),result.receipt.contentHash);
+});
+
+test('a changed record for an address whose CREATE was signed is a conflict and signs nothing more',async()=>{
+  const f=await anchorFixture(),logicalAddress=finalityCommitmentAddress(JOB),otherJob='01J8N4YV7YVYQ4DB7M8T4C7W0B';
+  // The wallet signs and journals the CREATE, then its answer is lost: the outcome stays ambiguous.
+  f.controls.request=async request=>{
+    const signed=await signSdkCreate(request.transaction);
+    await f.sourceJournal.put('TEST signed',{stage:'submitted',hash:signed.hash,signedTransaction:signed});
+    return {success:false,error:{code:'TEST answer lost'}};
+  };
+  await f.publish(f.open(),JOB);
+  const retained=structuredClone([...f.journal.rows.values()][0]);
+  assert.equal(retained.stage,'issued');
+  await assert.rejects(f.open().publish({logicalAddress,artifact:await f.artifact(otherJob),artifactKind:'FinalityCommitmentRecord'}),{code:'conflict'});
+  assert.equal(f.captured.length,1);assert.deepEqual([...f.journal.rows.values()][0],retained);
+});
+
+test('a changed verifier for an address whose attempt signed nothing is a conflict and asks the wallet no more',async()=>{
+  const f=await anchorFixture(),logicalAddress=finalityCommitmentAddress(JOB);
+  await f.publish(f.open(),JOB);
+  const retained=structuredClone([...f.journal.rows.values()][0]);
+  assert.equal(retained.stage,'unsigned');
+  const artifact=await signComponentArtifact({finalityCommitmentVersion:'1',jobId:JOB,agreementHash:'a'.repeat(64),listingRef:{listingId:'TEST-publication',version:1,contentHash:'b'.repeat(64)},parties:[buyer.claim,seller.claim],pattern:'fixed-price',createdAt:1800000000000},FINALITY_COMMITMENT_SEPARATOR,{signer:buyer.claim,algorithm:'ed25519',sign:buyer.signBytes});
+  await assert.rejects(f.open().publish({logicalAddress,artifact,artifactKind:'FinalityCommitmentRecord',verifier:buyer.claim}),{code:'conflict'});
+  assert.equal(f.captured.length,1);assert.deepEqual([...f.journal.rows.values()][0],retained);
 });
 
 for (const extra of [undefined, NaN, new Date(0), () => true]) test(`projection admission rejects converted JSON value ${String(extra)}`, async () => {

@@ -103,6 +103,23 @@ describe("publish environment evidence validation", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  // A re-run is started by someone other than the original dispatcher; the
+  // triggering actor is the one GitHub leaves out of the approvers.
+  it.each([
+    ["the triggering actor is the sole reviewer", "maintainer", "another-maintainer", false],
+    ["only the original actor is the sole reviewer", "another-maintainer", "maintainer", true],
+  ])("prefers the triggering actor over the original actor when %s", (_name, triggeringActor, actor, passes) => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-publish-actor-")); const input = join(root, "environment.json"); const policy = join(root, "policies.json");
+    try {
+      writeFileSync(input, JSON.stringify(environment()));
+      writeFileSync(policy, JSON.stringify(policies()));
+      const result = spawnSync(process.execPath, ["scripts/check-publish-environment.mjs", input, policy],
+        { encoding: "utf8", env: { ...process.env, GITHUB_TRIGGERING_ACTOR: triggeringActor, GITHUB_ACTOR: actor } });
+      expect(result.status === 0, result.stdout + result.stderr).toBe(passes);
+      if (!passes) expect(result.stdout).toContain("cannot approve");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   // Node runs a module by its real path, so a linked path to the guard must
   // still execute it. Otherwise the CLI check is skipped and the guard exits 0
   // without reading the environment: the gate fails open.

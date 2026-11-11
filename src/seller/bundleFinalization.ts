@@ -343,7 +343,7 @@ export interface SellerBundleFinalizationProvider {
     | SellerBundleVerificationDisposition;
   /**
    * Authenticate the retained VPC-2 invocation tuple. This boundary is
-   * mandatory and fail-closed while DACS-Standard #331 defines normative
+   * mandatory because the DACS Standard does not yet define normative
    * provenance for the complementary (counterparty-owned) requirement.
    */
   verifyVetRequirementProvenance: (input: {
@@ -1690,15 +1690,6 @@ function resolvedArtifact(
     throw new DacsError(`${subject} did not resolve to a JSON artifact`);
   }
   return value.artifact;
-}
-
-function requirementRefsByKind(
-  requirements: ReadonlyMap<string, SellerBundleDependencyRequirement>,
-  kind: SellerBundleDependencyKind,
-): AttestationRef[] {
-  return [...requirements.values()]
-    .filter((requirement) => requirement.kinds.includes(kind))
-    .flatMap((requirement) => requirement.refs);
 }
 
 function roleParty(
@@ -3731,7 +3722,7 @@ function retainSellerBundleProvider(
     throw new DacsError("Listing/session IdentityBundle linkage verifier is unavailable");
   }
   if (typeof verifyVetRequirementProvenance !== "function") {
-    throw new DacsError("Vet requirement provenance verifier is unavailable (#331)");
+    throw new DacsError("Vet requirement provenance verifier is unavailable");
   }
   if (
     [

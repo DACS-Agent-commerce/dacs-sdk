@@ -155,10 +155,12 @@ async function expectPostgresError(
   expect((caught as Error).message).toMatch(message);
 }
 
+const WALLET = `0x${"7a".repeat(20)}`;
+
 const policy = (policyId = "postgres-policy"): WalletSpendPolicyV1 => ({
   policyVersion: "1",
   policyId,
-  wallet: "wallet-postgres",
+  wallet: WALLET,
   chainId: "chain-postgres",
   maximumConcurrentEffects: 2,
   maximumRetainedReservations: 10,
@@ -186,7 +188,7 @@ function reservation(id: string): WalletSpendReservationV1 {
     settlementBindingHash: "b".repeat(64),
     railId: "rail-postgres",
     railDefinitionHash: "c".repeat(64),
-    wallet: "wallet-postgres",
+    wallet: WALLET,
     chainId: "chain-postgres",
     payee: "payee-postgres",
     finality: { model: "final" },

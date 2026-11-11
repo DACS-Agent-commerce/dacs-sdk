@@ -40,6 +40,7 @@ import {
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
 import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
+import { declareSettlementBridge } from "../../src/rails/idempotency.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
@@ -617,6 +618,87 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     ).resolves.toMatchObject({ status: "valid" });
   });
 
+  const publicAgent = () => {
+    const { adapter, store } = memAdapter();
+    const agent = buildAgent(adapter as never, {
+      demosRpc: "mem",
+      wallet: "x",
+      identity: { agentId: buyerDid, bundle: buyerIdentity },
+      listingValidationDeps: listingValidationDeps(),
+    });
+    return { agent, store };
+  };
+  const PAY_DEM_TERMS = { ...TERMS, price: { ...TERMS.price, rail: "pay-dem" } };
+
+  test("the public runSession hands a resume to an SDK bridge and refuses any other function", async () => {
+    const { agent, store } = publicAgent();
+    const ref = await anchorListing(store);
+    const seen: Array<boolean | undefined> = [];
+    const refuse = async (req: { recoveryOnly?: boolean }) => {
+      seen.push(req.recoveryOnly);
+      throw new Error("no recorded settlement; refusing a fresh payment");
+    };
+    const settle = async () => { throw new Error("settle must not run on a resume"); };
+    const options = { terms: TERMS, jobId: "job-public-resume", settle };
+
+    await expect(agent.runSession(ref, { ...options, resumeSettlement: declareSettlementBridge(refuse) as never }))
+      .rejects.toThrow(/no recorded settlement/);
+    expect(seen).toEqual([true]);
+
+    const unregistered = async (req: { recoveryOnly?: boolean }) => refuse(req);
+    await expect(agent.runSession(ref, { ...options, resumeSettlement: unregistered as never }))
+      .rejects.toThrow(/built by an SDK settle bridge/);
+    expect(seen).toEqual([true]);
+  });
+
+  test("the public runSession refuses a pay-dem session whose bridge has no prepared-transfer journal", async () => {
+    const { agent, store } = publicAgent();
+    const ref = await anchorListing(store);
+    let calls = 0;
+    const resume = async () => { calls += 1; throw new Error("unused"); };
+    const options = { terms: PAY_DEM_TERMS, jobId: "job-public-journal", settle: resume };
+    await expect(agent.runSession(ref, { ...options, resumeSettlement: declareSettlementBridge(resume, { journaled: false }) as never }))
+      .rejects.toThrow(/requires a rail built with journalPreparedTransfer/);
+    expect(calls).toBe(0);
+  });
+
+  test("public Agent settle-only journal refusal survives wrappers and reconstruction", async () => {
+    const { agent, store } = publicAgent();
+    const ref = await anchorListing(store);
+    let calls = 0;
+    const rebuildSettle = () => declareSettlementBridge(async () => { calls += 1; throw new Error("unused"); }, { journaled: false });
+    for (const rail of ["pay-dem", "demos-native:DEM"]) {
+      for (let restart = 0; restart < 2; restart += 1) {
+        const terms = { ...TERMS, price: { ...TERMS.price, rail } };
+        await expect(agent.runSession(ref, { terms, settle: rebuildSettle() as never }))
+          .rejects.toThrow(/requires a rail built with journalPreparedTransfer; nothing was anchored or paid/);
+      }
+    }
+    expect(calls).toBe(0);
+    expect([...store.keys()].filter((address) => address.includes("agreement"))).toEqual([]);
+  });
+
+  test("fresh-process recovery preserves registration through descriptor, Agent and dependency wrappers", async () => {
+    const { agent, store } = publicAgent();
+    const ref = await anchorListing(store);
+    const seen: Array<boolean | undefined> = [];
+    const rebuildBridge = () => declareSettlementBridge(async (req: { recoveryOnly?: boolean }) => {
+      seen.push(req.recoveryOnly);
+      throw new Error("no recorded settlement; refusing a fresh payment");
+    }, { journaled: true });
+    const settle = async () => { throw new Error("settle must not run on a resume"); };
+
+    for (let restart = 0; restart < 2; restart += 1) {
+      await expect(agent.runSession(ref, {
+        terms: TERMS,
+        jobId: "job-fresh-process",
+        settle,
+        resumeSettlement: rebuildBridge() as never,
+      })).rejects.toThrow(/no recorded settlement/);
+    }
+    expect(seen).toEqual([true, true]);
+  });
+
   test("a completed public retry authenticates the exact legacy one-sided bundle", async () => {
     const { adapter, store } = memAdapter();
     const ref = await anchorListing(store);
@@ -638,14 +720,10 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       };
     };
 
-    const first = await agent.runSession(ref, {
-      jobId: "completed-bundle-retry",
-      terms: TERMS,
-      settle,
-    });
+    const first = await agent.runSession(ref, { terms: TERMS, settle });
     await expect(
       agent.runSession(ref, {
-        jobId: "completed-bundle-retry",
+        jobId: first.jobId,
         terms: TERMS,
         settle,
       }),
@@ -660,7 +738,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     store.set(first.bundleRef, bundle);
     await expect(
       agent.runSession(ref, {
-        jobId: "completed-bundle-retry",
+        jobId: first.jobId,
         terms: TERMS,
         settle,
       }),
@@ -854,8 +932,10 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         listingValidationDeps: listingValidationDeps(() => Date.now()),
       });
       let settleCalls = 0;
-      const settle = async () => {
+      let jobId = "";
+      const settle = async (req: { jobId: string }) => {
         settleCalls += 1;
+        jobId = req.jobId;
         return {
           ok: true,
           txHash: "0xpaid-once",
@@ -866,7 +946,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       };
 
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { terms: TERMS, settle }),
       ).rejects.toThrow(/simulated process failure/);
       expect(settleCalls).toBe(1);
       // Fresh writes now bind the configured identity to the actual signer.
@@ -882,14 +962,14 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         "same address, substituted Listing bytes",
       );
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId, terms: TERMS, settle }),
       ).rejects.toThrow(/signed Listing pin/i);
       expect(settleCalls).toBe(1);
       expect(getPublicKey).toHaveBeenCalledTimes(1);
       store.set(ref, originalListing);
 
-      const agreementAddress = "stor:dacs3:agreement:job-expiry";
-      const evidenceAddress = "stor:dacs4:evidence:job-expiry";
+      const agreementAddress = `stor:dacs3:agreement:${jobId}`;
+      const evidenceAddress = `stor:dacs4:evidence:${jobId}`;
       const agreement = structuredClone(store.get(agreementAddress)!);
       const evidence = structuredClone(store.get(evidenceAddress)!);
       expect(typeof agreement.signature).toBe("string");
@@ -899,7 +979,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
 
       getPublicKey.mockResolvedValueOnce(Uint8Array.from(sellerPublicKey));
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId, terms: TERMS, settle }),
       ).rejects.toThrow(/cryptographic Agreement authentication/i);
       expect(settleCalls).toBe(1);
       expect(getPublicKey).toHaveBeenCalledTimes(2);
@@ -910,7 +990,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         signature: `${agreementSignature.startsWith("0") ? "1" : "0"}${agreementSignature.slice(1)}`,
       });
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId, terms: TERMS, settle }),
       ).rejects.toThrow(/cryptographic Agreement authentication/i);
       expect(settleCalls).toBe(1);
       expect(getPublicKey).toHaveBeenCalledTimes(3);
@@ -925,7 +1005,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
         },
       });
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
+        agent.runSession(ref, { jobId, terms: TERMS, settle }),
       ).rejects.toThrow(/cryptographic SettlementEvidence authentication/i);
       expect(settleCalls).toBe(1);
       // One key lookup serves both Agreement and evidence checks in this run.
@@ -933,8 +1013,8 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
       store.set(evidenceAddress, evidence);
 
       await expect(
-        agent.runSession(ref, { jobId: "job-expiry", terms: TERMS, settle }),
-      ).resolves.toMatchObject({ outcome: "completed", jobId: "job-expiry" });
+        agent.runSession(ref, { jobId, terms: TERMS, settle }),
+      ).resolves.toMatchObject({ outcome: "completed", jobId });
       expect(settleCalls).toBe(1);
       expect(getPublicKey).toHaveBeenCalledTimes(5);
 
@@ -1026,7 +1106,6 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     await expect(
       agent.runSession(ref, {
         terms: TERMS,
-        jobId: "public-vet-finality",
         listingValidationDeps: listingValidationDeps(),
         vet: async ({ jobId, evaluatedParty }): Promise<VetProduction> => {
           const record: CompositeVerificationRecord = {

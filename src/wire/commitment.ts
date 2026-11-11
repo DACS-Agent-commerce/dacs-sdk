@@ -30,9 +30,10 @@ import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { assertTp1Binding, type Tp1Binding } from "./profile.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
-  admitWireJson, cloneJson, deepFreeze, fail, hasKeys, isAdmittedValue, isClaim, isHash, isListingPin, isRecord, isUint, ownedArtifact, ownedBytes,
+  admitWireJson, cloneJson, fail, hasKeys, isAdmittedValue, isClaim, isHash, isListingPin, isRecord, isUint, ownedArtifact, ownedBytes,
   sameCanonical, verifyEd25519, type JsonRecord, type ListingPin,
 } from "./validate.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** The most bytes one commitment or Agreement document may have (the response body bound). */
 export const MAX_WIRE_ARTIFACT_BYTES = DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes;

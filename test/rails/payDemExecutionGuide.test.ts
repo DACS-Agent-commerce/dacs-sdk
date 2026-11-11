@@ -26,6 +26,14 @@ describe("the pay-dem execution guide", () => {
     expect(packageJson.default.files).toContain("docs/pay-dem-execution.md");
   });
 
+  it("is on the release allow-list for the core package", () => {
+    const policy = JSON.parse(
+      readFileSync(new URL("../../scripts/release-policy.json", import.meta.url), "utf8"),
+    ) as { packages: { name: string; allow: string[] }[] };
+    const core = policy.packages.find(p => p.name === "@kynesyslabs/dacs");
+    expect(core?.allow).toContain("docs/pay-dem-execution.md");
+  });
+
   it("does not treat a confirmed record without the transfer's edits as execution", () => {
     // The node applies a native transaction with absent or empty gcr_edits as
     // a successful no-op and still records it `confirmed`.

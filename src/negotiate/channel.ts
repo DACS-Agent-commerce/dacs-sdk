@@ -4,6 +4,7 @@ import type { VerificationDecision } from "../artifacts/types.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** DACS-3 §8.3.3 v0.x closed channel-message type set. */
 export type ChannelMessageType =
@@ -17,7 +18,7 @@ export type ChannelMessageType =
 
 /**
  * Substrate-independent DACS-3 channel envelope. The signature stays generic
- * until DACS-Standard#349 resolves the normative signature container and byte
+ * until the DACS Standard defines the normative signature container and byte
  * representation used by current Demos L2PS.
  */
 export interface ChannelMessage<TBody = unknown, TSignature = unknown> {
@@ -50,8 +51,9 @@ export interface ChannelMessageSigningInput<TBody = unknown> {
 
 /**
  * Exact owned material handed to the substrate-specific signature verifier.
- * No signed-byte framing is imposed here: #349 must resolve raw-digest versus
- * lowercase-hex digest framing before the SDK can expose one as normative.
+ * No signed-byte framing is imposed here: the DACS Standard does not yet say
+ * whether the raw digest or its lowercase hex is signed, so the SDK exposes
+ * neither as normative.
  */
 export interface ChannelMessageSignatureVerificationInput<
   TBody = unknown,
@@ -147,22 +149,6 @@ function isSafeTime(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    seen.has(value as object) ||
-    Object.isFrozen(value)
-  ) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as DataRecord)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-}
-
 function failure(
   decision: Exclude<VerificationDecision, "pass">,
   reason: string,
@@ -246,8 +232,8 @@ function unsignedEnvelope<TBody, TSignature>(
 
 /**
  * Validate and own a producer envelope, then expose the exact canonical digest
- * that a substrate-specific signer must frame after DACS-Standard#349 is
- * resolved. This function intentionally returns no guessed `signedBytes`.
+ * that a substrate-specific signer must frame once the DACS Standard defines
+ * that framing. This function intentionally returns no guessed `signedBytes`.
  */
 export function prepareChannelMessageSigningInput<TBody = unknown>(
   candidate: unknown,

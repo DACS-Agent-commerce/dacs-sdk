@@ -27,6 +27,8 @@ const anchor={writer:seller,vetMode:config.vetMode,hasIntent:async address=>Bool
  const result={status:'present',artifact,receipt};data.records[logicalAddress]=result;data.creates.push(logicalAddress);data.closing=false;save();return result;
 }};
 const partyPath=join(directory,'party.sqlite'),partyBase=openPartyVetStore({path:partyPath,mode:existsSync(partyPath)?'open':'create'}),transport=createSellerTransportStore({path:join(directory,'transport.sqlite'),now:()=>config.time});
+// Each invocation follows a terminated child, so run the host's lost-owner recovery before readback.
+transport.challenges.closeLostValidations();transport.recoverLostContextReservations();
 function emitCut(){throw Object.assign(new Error('TEST committed process cut'),{code:'indeterminate'});}
 const partyStore={...partyBase,update:async(key,change)=>{
  const row=await partyBase.update(key,change);

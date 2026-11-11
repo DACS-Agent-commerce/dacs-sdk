@@ -118,13 +118,16 @@ export interface ExplicitResumeLedger {
  * A ledger in process memory. It forgets a claim only once the proof has
  * expired by the latest `time` any caller has passed it, so a caller whose clock
  * is behind cannot use a proof another caller's clock has already released; it
- * returns false for a proof already expired by that clock. It refuses with `explicit_resume_ledger_full` (503) at `MAX_EXPLICIT_RESUME_CLAIMS`.
+ * returns false for a proof already expired by that clock. It throws
+ * `wire_input_invalid` (500) for an `expiresAt` or `time` that is not an unsigned
+ * integer, and refuses with `explicit_resume_ledger_full` (503) at `MAX_EXPLICIT_RESUME_CLAIMS`.
  */
 export function createExplicitResumeLedger(): ExplicitResumeLedger {
   const claims = new Map<string, number>();
   let horizon = 0;
   return {
     claim(key, expiresAt, time) {
+      if (!isUint(expiresAt) || !isUint(time)) return fail("wire_input_invalid", 500);
       horizon = Math.max(horizon, time);
       for (const [held, until] of claims) if (until <= horizon) claims.delete(held);
       if (expiresAt <= horizon || claims.has(key)) return false;

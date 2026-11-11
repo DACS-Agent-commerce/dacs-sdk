@@ -1294,12 +1294,12 @@ test('challenge-issuance-refuses-a-session-state-that-cannot-be-read', (t) => {
     issue: (w) => w.issue(),
     issueForOperator: (w) => w.ledger.issueForOperator({ jobId: job('one'), buyer: BUYER }),
   };
-  const unguarded = (error) => error.code !== 'kit_operation_guard_off';
+  const unavailable = (error) => error.code === 'session_admission_unavailable' && error.status === 503;
   for (const [entry, issue] of Object.entries(entries)) for (const [name, [reader, expected]] of Object.entries(readers)) {
     const label = `${entry} ${name}`;
     const w = world(t);
     w.control.sessionState = reader;
-    w.quiet(() => assert.throws(() => issue(w), (error) => unguarded(error) && (expected instanceof RegExp ? expected.test(error.message) : error instanceof expected), label));
+    w.quiet(() => assert.throws(() => issue(w), (error) => unavailable(error) && (expected instanceof RegExp ? expected.test(error.cause?.message) : error.cause instanceof expected), label));
     assert.deepEqual(w.rows(), [], label);
     assert.equal(w.control.countReads, 0, `${label} refuses at step 7, before the counts`);
 
@@ -1307,9 +1307,9 @@ test('challenge-issuance-refuses-a-session-state-that-cannot-be-read', (t) => {
     w.control.sessionState = () => null;
     const first = issue(w);
     w.control.sessionState = reader;
-    w.quiet(() => assert.throws(() => issue(w), unguarded, `${label} reuse`));
+    w.quiet(() => assert.throws(() => issue(w), unavailable, `${label} reuse`));
     w.reopen('generation-two');
-    w.quiet(() => assert.throws(() => issue(w), unguarded, `${label} reuse after restart`));
+    w.quiet(() => assert.throws(() => issue(w), unavailable, `${label} reuse after restart`));
     assert.deepEqual(w.rows().map((row) => row.nonce), [first.sessionNonce], label);
   }
 });

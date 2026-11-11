@@ -24,7 +24,7 @@
 //    CORE §11.1.2(3), both participants are configured for this exact
 //    corrective profile (the Standard commit and the complete tuple). An answer
 //    with any other member (a `listingStatus` too) is refused.
-//    It is asked only after the agent's own challenge ledger (CORE SN-1..SN-4,
+//    It is asked only after the kit's one challenge ledger (CORE SN-1..SN-4,
 //    DACS-1 §6.3.2) found the bundle's sessionNonce issued by this seller for
 //    this job and buyer, and consumed it for this attempt, and after the
 //    agent's own revocation check found the Listing not revoked.

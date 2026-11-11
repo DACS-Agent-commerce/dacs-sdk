@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { ed25519Verify, publicKeyFromRaw } from "../../src/crypto/ed25519.js";
 import {
@@ -225,6 +225,17 @@ describe("DACS-1 DCR / DACS-2 DGCR authenticated domain boundary", () => {
     expect(verdict.semanticClaims).toEqual([]);
     expect(verdict.originalRefs).toEqual(["web2:domain:Agent.Example"]);
     expect(verdict.semanticPresentedBy).toBeUndefined();
+  });
+
+  test("an artifact holding a byte array is refused before authentication", async () => {
+    const vector = fixture.vectors.find(
+      (candidate) => candidate.name === "legacy-mixed-case-ascii-read",
+    )!;
+    const authenticateArtifact = vi.fn(authenticate(vector.artifact));
+    const artifact = { ...vector.artifact.unsigned, extra: { bytes: new Uint8Array([1]) } };
+    const verdict = await readAuthenticatedDomainClaims(artifact, { authenticateArtifact });
+    expect(verdict.diagnostic.code).toBe("artifact-malformed");
+    expect(authenticateArtifact).not.toHaveBeenCalled();
   });
 
   test("mutation after capture cannot change authenticated semantic output", async () => {

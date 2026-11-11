@@ -13,7 +13,6 @@ import {
   ed25519Sign,
   ed25519Verify,
   FINALITY_COMMITMENT_SEPARATOR,
-  LEGACY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
   isAnchorReceipt,
   isAgreementCommitmentRecord,
@@ -24,7 +23,6 @@ import {
   privateKeyFromSeed,
   publicKeyFromSeed,
   rawPublicKey,
-  readLegacyFixedPriceAgreementCommitment,
   signComponentArtifact,
   signFixedPriceAgreement,
   sha256Hex,
@@ -32,7 +30,6 @@ import {
   type AgreementArtifact,
   type AnchoredAgreementCommitment,
   type AnchoredFinalityCommitment,
-  type AnchoredLegacyCommitment,
   type CommitmentRecord,
   type ComponentSignature,
   type ProtocolAnchorReceipt,
@@ -304,45 +301,6 @@ function anchored(
       writeTxHash: "c".repeat(64),
     },
     anchorReceipt: receipt,
-  };
-}
-
-function anchoredLegacy(
-  record: CommitmentRecord,
-  legacySignature: ComponentSignature,
-  overrides: Partial<ProtocolAnchorReceipt> = {},
-): AnchoredLegacyCommitment {
-  const nativeAddress = "stor-legacy-commitment";
-  return {
-    record,
-    legacySignature,
-    nativeAddress,
-    anchorTxRef: {
-      kind: "storage-program",
-      address: nativeAddress,
-      writeTxHash: "d".repeat(64),
-    },
-    anchorReceipt: {
-      receiptVersion: "1",
-      substrate: "demos:testnet",
-      finalityProfile: "demos-bft-final",
-      logicalAddress: `dacs3:commit:${record.jobId}`,
-      nativeAddress,
-      contentHash: contentHash(record as unknown as Record<string, unknown>),
-      transactionRef: { kind: "demos", value: "legacy-commitment-write-tx" },
-      writer: "historical-demos-writer",
-      nonce: "9",
-      state: "finalized",
-      observationDisposition: "established",
-      observedAt: record.committedAt + 1_000,
-      blockRef: {
-        id: "legacy-block-90",
-        height: "90",
-        timestamp: record.committedAt,
-      },
-      evidence: { kind: "demos-finality-proof", value: "legacy-proof-90" },
-      ...overrides,
-    },
   };
 }
 
@@ -727,7 +685,7 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
     ).rejects.toThrow(/outcome is ambiguous; resolve before any retry/);
   });
 
-  test("does not replace a legacy, malformed, or differently-bound existing record", async () => {
+  test("does not replace an old-format, malformed, or differently-bound existing record", async () => {
     const fixture = await agreementFixture();
     let submits = 0;
     const legacy = {
@@ -752,159 +710,8 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
         }),
         verifySignature,
       ),
-    ).rejects.toThrow(/legacy commitment.*malformed/);
+    ).rejects.toThrow(/malformed or not a finality commitment/);
     expect(submits).toBe(0);
-  });
-
-  test("authenticates exact historical legacy records through a read-only path", async () => {
-    const base = await agreementFixture();
-    const { signatures: _signatures, ...legacyDraft } = structuredClone(
-      base.agreement,
-    );
-    legacyDraft.jobId = "legacy-job-2026-07-14";
-    const agreementBytes = signedBytes(
-      "dacs-agreement:v1:",
-      contentHash(legacyDraft as unknown as Record<string, unknown>),
-    );
-    const agreement = {
-      ...legacyDraft,
-      signatures: [
-        {
-          party: BUYER,
-          algorithm: "ed25519" as const,
-          value: Buffer.from(
-            ed25519Sign(agreementBytes, privateKeyFromSeed(BUYER_SEED)),
-          ).toString("base64url"),
-        },
-        {
-          party: SELLER,
-          algorithm: "ed25519" as const,
-          value: Buffer.from(
-            ed25519Sign(agreementBytes, privateKeyFromSeed(SELLER_SEED)),
-          ).toString("base64url"),
-        },
-      ],
-    } as AgreementArtifact;
-    const fixture = { ...base, agreement };
-    const commitInput = commitmentInput(fixture);
-    const {
-      createdAt: _createdAt,
-      commitmentSigner: _commitmentSigner,
-      ...readInput
-    } = commitInput;
-    const record: CommitmentRecord = {
-      dacsVersion: "1",
-      jobId: agreement.jobId,
-      agreementHash: contentHash(
-        agreement as unknown as Record<string, unknown>,
-      ),
-      listingRef: { ...agreement.listingRef },
-      parties: [BUYER, SELLER],
-      pattern: "fixed-price",
-      committedAt: COMMITTED_AT,
-    };
-    const signature = await buildComponentSignature(
-      record,
-      LEGACY_COMMITMENT_SEPARATOR,
-      {
-        algorithm: "ed25519",
-        signer: ORCHESTRATOR,
-        sign: (bytes) =>
-          ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED)),
-      },
-    );
-    let submits = 0;
-    const result = await readLegacyFixedPriceAgreementCommitment(
-      readInput,
-      provider({
-        present: anchoredLegacy(record, signature),
-        onSubmit: () => (submits += 1),
-      }),
-      verifySignature,
-    );
-    expect(result).toMatchObject({
-      recordKind: "legacy",
-      resumed: true,
-      logicalAddress: `dacs3:commit:${record.jobId}`,
-      committedAt: COMMITTED_AT,
-      record,
-      legacySignature: signature,
-    });
-    expect(submits).toBe(0);
-
-    let callbacks = 0;
-    await expect(
-      commitFixedPriceAgreement(
-        commitInput,
-        {
-          ...provider(),
-          resolve: async () => {
-            callbacks += 1;
-            return { disposition: "absent" } as const;
-          },
-        },
-        (request) => {
-          callbacks += 1;
-          return verifySignature(request);
-        },
-      ),
-    ).rejects.toThrow(/canonical uppercase ULID/);
-    expect(callbacks).toBe(0);
-
-    const wrongDomain = await buildComponentSignature(
-      record,
-      FINALITY_COMMITMENT_SEPARATOR,
-      {
-        algorithm: "ed25519",
-        signer: ORCHESTRATOR,
-        sign: (bytes) =>
-          ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED)),
-      },
-    );
-    await expect(
-      readLegacyFixedPriceAgreementCommitment(
-        readInput,
-        provider({ present: anchoredLegacy(record, wrongDomain) }),
-        verifySignature,
-      ),
-    ).rejects.toThrow(/legacy-commitment signature is not verified/);
-
-    await expect(
-      readLegacyFixedPriceAgreementCommitment(
-        readInput,
-        provider({
-          present: anchoredLegacy(record, signature, {
-            blockRef: {
-              id: "legacy-block-91",
-              height: "91",
-              timestamp: COMMITTED_AT + 1,
-            },
-          }),
-        }),
-        verifySignature,
-      ),
-    ).rejects.toThrow(/committedAt does not match authenticated anchor time/);
-
-    const wrongBinding = { ...record, agreementHash: "f".repeat(64) };
-    const wrongBindingSignature = await buildComponentSignature(
-      wrongBinding,
-      LEGACY_COMMITMENT_SEPARATOR,
-      {
-        algorithm: "ed25519",
-        signer: ORCHESTRATOR,
-        sign: (bytes) =>
-          ed25519Sign(bytes, privateKeyFromSeed(ORCHESTRATOR_SEED)),
-      },
-    );
-    await expect(
-      readLegacyFixedPriceAgreementCommitment(
-        readInput,
-        provider({
-          present: anchoredLegacy(wrongBinding, wrongBindingSignature),
-        }),
-        verifySignature,
-      ),
-    ).rejects.toThrow(/binds different authenticated session content/);
   });
 
   test("rejects non-final, indeterminate, or mismatched receipt bindings", async () => {

@@ -243,7 +243,7 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     // it fails at once instead of waiting. Distinct nested keys are supported.
     if (outer.has(key)) fail('journal-reentrant', 'this context already holds this wallet lane; reentrant locking is unsupported');
     const token = randomBytes(16).toString('hex');
-    const deadline = performance.now() + lockTimeoutMs;
+    const deadline = Date.now() + lockTimeoutMs;
     for (;;) {
       let acquired = false;
       try {
@@ -261,8 +261,8 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
         });
       } catch (error) { if (error.code !== 'journal-busy') throw error; }
       if (acquired) break;
-      if (performance.now() >= deadline) fail('journal-busy', 'the wallet lane is held by another holder; no work was started');
-      await sleep(Math.min(pollMs, Math.max(1, deadline - performance.now())));
+      if (Date.now() >= deadline) fail('journal-busy', 'the wallet lane is held by another holder; no work was started');
+      await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
     }
     active += 1;
     let outcome;
@@ -271,9 +271,9 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     // release leaves the lane held (fail closed) and is reported to the caller.
     try {
       const removed = tx('BEGIN IMMEDIATE', () => db.prepare('DELETE FROM locks WHERE key = ? AND token = ?').run(key, token).changes);
-      if (removed !== 1) fail('journal-fenced', 'the wallet lane lock was removed while held; results must be reconciled by readback', outcome.error ? { cause: outcome.error } : undefined);
+      if (removed !== 1) fail('journal-fenced', 'the wallet lane lock was removed while held; results must be reconciled by readback', 'error' in outcome ? { cause: outcome.error } : undefined);
     } finally { active -= 1; }
-    if (outcome.error) throw outcome.error;
+    if ('error' in outcome) throw outcome.error;
     return outcome.value;
   }
 

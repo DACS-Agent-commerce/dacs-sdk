@@ -309,6 +309,16 @@ for (const write of [false, true]) probe(`README store-first ${write ? 'write' :
       cwd: new URL('..', import.meta.url), encoding: 'utf8', timeout: 30000 });
     assert.equal(result.status, 0, result.stderr);
   });
+probe('README host contract: createIdempotent writes jobId to the job_id column', ['createIdempotent', 'job_id'], t => {
+  const { db } = database(t);
+  db.prepare('INSERT INTO accounts(id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)')
+    .run('TEST-buyer', 'TEST', 'TEST-buyer', new Date(NOW).toISOString());
+  const store = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => NOW });
+  const { operation } = store.createIdempotent({ accountId: 'TEST-buyer', kind: 'purchase', idempotencyKey: 'TEST',
+    request: {}, status: 'agreement_pending', terms: {}, termsHash: IDENTITY, expiresAt: new Date(NOW + 3600000).toISOString(),
+    jobId: 'TEST-job' });
+  assert.equal(db.prepare('SELECT job_id FROM operations WHERE id=?').get(operation.id).job_id, 'TEST-job');
+});
 probe('README required schema table exactly matches the exported schema', [], t => {
   const { db } = database(t);
   const expected = db.prepare("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all()

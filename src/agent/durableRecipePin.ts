@@ -51,6 +51,7 @@ import {
   type SessionLeaseToken,
   type SessionRecord,
 } from "./fencedSessionStore.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** Stable location of one ClaimRequirement inside the session's requirement. */
 export type DurableRecipeRequirementPath =
@@ -342,17 +343,6 @@ function captureJsonValue(
 
 function captureJson<T>(value: T, label: string): T {
   return captureJsonValue(value, label) as T;
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function canonicalEqual(left: unknown, right: unknown): boolean {

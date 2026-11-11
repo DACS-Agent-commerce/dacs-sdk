@@ -58,7 +58,7 @@ import {
 } from "./sessionStore.js";
 
 /**
- * Atomic-filesystem generation-fenced {@link FencedSessionStoreV2} (#55) — a durable, restart-safe backend
+ * Atomic-filesystem generation-fenced {@link FencedSessionStoreV2} — a durable, restart-safe backend
  * for a single host. Each session is one JSON file written via temp-file +
  * `rename` (atomic on POSIX); a per-session lock file serialises read-modify-write
  * so compare-and-set and lease semantics hold across concurrent workers/processes;
@@ -149,7 +149,7 @@ export interface FsFencedSessionStoreOptions {
   dir: string;
   /**
    * Age (ms) after which a lock file left behind by a hard-crashed process is
-   * treated as stale and reclaimed, so a session isn't blocked forever (#67).
+   * treated as stale and reclaimed, so a session isn't blocked forever.
    * Defaults to {@link DEFAULT_LOCK_STALE_MS}.
    */
   lockStaleMs?: number;
@@ -282,7 +282,7 @@ export async function createFsFencedSessionStore(
     }
     // Check the schema version BEFORE the field shape: a newer writer may use a
     // shape this version doesn't understand, and that is `unsupported`, not
-    // `corrupt` (#67 — never conflate the two).
+    // `corrupt` (never conflate the two).
     if (
       typeof parsed !== "object" ||
       parsed === null ||
@@ -1088,7 +1088,7 @@ export async function createFsFencedSessionStore(
         const loaded = await readSession(input.jobId);
         // Fail closed: surface corrupt/unsupported distinctly — NEVER collapse
         // them into `not-found`, which would let a caller silently reset a
-        // session whose state can't be trusted (#67).
+        // session whose state can't be trusted.
         if (loaded.status === "missing") return { ok: false, reason: "not-found" };
         if (loaded.status === "corrupt") return { ok: false, reason: "corrupt" };
         if (loaded.status === "unsupported") return { ok: false, reason: "unsupported" };

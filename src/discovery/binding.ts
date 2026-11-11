@@ -1,5 +1,5 @@
 /**
- * Published logical→native anchor binding (#54, DACS-1 §6.3.4 point (c)).
+ * Published logical→native anchor binding (DACS-1 §6.3.4 point (c)).
  *
  * On a WRITE-INPUT-MAPPING substrate — Demos, where the native StorageProgram
  * address folds in the deployer address and the per-write transaction nonce — the
@@ -127,7 +127,7 @@ export function resolveBinding(
 
 /**
  * Resolve the LATEST published version slot of a versioned logical artifact (a
- * listing), owner-bound. Version-aware lookup is required by #29/#46: each
+ * listing), owner-bound. Version-aware lookup is required because each
  * version is independently anchored and prior versions MUST remain readable, so
  * "latest" is a selection over the index — never an overwrite of a shared
  * address. If the newest known published slot is tombstoned, this fails closed

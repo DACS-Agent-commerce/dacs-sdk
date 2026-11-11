@@ -46,7 +46,7 @@
     "today": "the kit's server-side transport auth accepts an old-domain signed request",
     "target": "refused; the wire domain only",
     "owner": "P11a1a",
-    "flippedBy": null
+    "flippedBy": "P11a1a"
   },
   {
     "id": "K12-H6b",
@@ -64,6 +64,7 @@
     "current": {
       "step": "plan",
       "code": "agreement_context_held",
+      "failureClass": "SellerUnavailableError",
       "layer": "response-auth",
       "counters": {
         "context": 1,

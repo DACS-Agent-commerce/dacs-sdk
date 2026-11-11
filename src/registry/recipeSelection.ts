@@ -26,6 +26,7 @@ import type {
   RecipeDescriptor,
   RecipeSelector,
 } from "./types.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** Stable DACS-2 v0.x recipe-registry index address. */
 export const RECIPE_REGISTRY_INDEX_ADDRESS = "dacs2:registry:v0.1" as const;
@@ -261,18 +262,6 @@ function exactOwnDataKeys(
   } catch {
     return false;
   }
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function immutableSnapshot<T>(value: T, label: string): T {

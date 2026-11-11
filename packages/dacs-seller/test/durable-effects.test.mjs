@@ -77,26 +77,6 @@ test('a thousand competing settlement claims keep a constant-size row and credit
   f.store.close();
 });
 
-test('a first valid attempt survives restart and only it is admitted', async t => {
-  const f = await durableFixture(t); f.store.issueChallenge('TEST nonce', { jobId: JOB });
-  const first = { presentationHash: 'a'.repeat(64) };
-  assert.equal(f.store.attemptChallenge('TEST nonce', first).attempt, null); f.store.close();
-  const again = await f.reopen(); assert.deepEqual(again.attemptChallenge('TEST nonce', { presentationHash: 'b'.repeat(64) }).attempt, first);
-  assert.throws(() => again.admitChallenge('TEST nonce', 'b'.repeat(64))); again.admitChallenge('TEST nonce', first.presentationHash); again.close();
-});
-// CORE SN-4: a malformed first attempt consumes its nonce before it is refused.
-for (const [label, attempt] of [
-  ['null', null], ['an array', [{ presentationHash: 'a'.repeat(64) }]], ['without a hash', {}], ['with an array hash', { presentationHash: [] }],
-  ['with a non-hex hash', { presentationHash: 'A'.repeat(64) }], ['with a field JSON cannot hold', { presentationHash: 'a'.repeat(64), TEST: 1n }],
-  ['whose JSON form is null', { presentationHash: 'a'.repeat(64), toJSON: () => null }],
-]) test(`a first attempt ${label} is refused, consumes its nonce across restart and is never admitted`, async t => {
-  const f = await durableFixture(t); f.store.issueChallenge('TEST nonce', { jobId: JOB });
-  assert.throws(() => f.store.attemptChallenge('TEST nonce', attempt), e => e.code === 'seller_challenge_attempt_invalid'); f.store.close();
-  const again = await f.reopen(), later = { presentationHash: 'b'.repeat(64) };
-  assert.notEqual(again.attemptChallenge('TEST nonce', later).attempt, null);
-  for (const hash of [later.presentationHash, null, undefined]) assert.throws(() => again.admitChallenge('TEST nonce', hash), e => e.code === 'seller_state_corrupt');
-  again.close();
-});
 
 test('signature bytes persist once and a failed signer remains retryable under the fence', async t => {
   let fail = false, count = 0;
@@ -310,7 +290,7 @@ for (const lateAnswer of [false, true]) test(`an unanswered anchor write release
   assert.equal(writes, 1); assert.equal(reads, 1); assert.equal(authorizations, 1);
   again.close();
 });
-test('reconciling one job reads only its own anchors among other jobs, signatures and challenges', async t => {
+test('reconciling one job reads only its own anchors among other jobs and signatures', async t => {
   const f = await durableFixture(t), anchors = localAnchor({ now: () => NOW }), read = anchors.read, addresses = [];
   for (const jobId of [JOB, otherJob, thirdJob]) {
     const address = `TEST-anchor-${jobId}`;
@@ -318,7 +298,6 @@ test('reconciling one job reads only its own anchors among other jobs, signature
       await f.store.anchor({ jobId, logicalAddress: address, artifact, anchors, authorize: sellerAuthorization(address, artifact) });
       f.store.signOnce(`TEST-signature-${jobId}`, Buffer.from(jobId));
     });
-    f.store.issueChallenge(`TEST nonce ${jobId}`, { jobId });
   }
   anchors.read = (address, options) => { addresses.push(address); return read(address, options); };
   assert.deepEqual(await f.store.reconcileJob(JOB, anchors), { status: 'reconciled', outcomes: [{ address: logicalAddress, status: 'present-authenticated' }] });

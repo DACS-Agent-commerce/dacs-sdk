@@ -227,8 +227,9 @@ it("catches a rejected async receipt lookup without an unhandled rejection", asy
 });
 
 it("caught receipt lookup failures keep a child process alive", () => {
-  const child = spawnSync(process.execPath, [resolve("node_modules/vitest/vitest.mjs"), "run", "test/wire/artifact-admission.test.ts",
-    "-t", "catches a rejected async receipt lookup"], { cwd: process.cwd(), encoding: "utf8" });
+  const repoRoot = resolve(import.meta.dirname, "../..");
+  const child = spawnSync(process.execPath, [resolve(repoRoot, "node_modules/vitest/vitest.mjs"), "run", "test/wire/artifact-admission.test.ts",
+    "-t", "catches a rejected async receipt lookup"], { cwd: repoRoot, encoding: "utf8" });
   expect(child.status, child.stdout + child.stderr).toBe(0);
 });
 

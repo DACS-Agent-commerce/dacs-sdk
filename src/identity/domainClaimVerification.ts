@@ -5,6 +5,8 @@ import {
   canonicalizeNativeDomainHostname,
   isCanonicalDomainHostname,
 } from "./domainHost.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
+import { containsArrayBufferView } from "../internal/arrayBufferView.js";
 
 const HEX_32 = /^[0-9a-f]{64}$/;
 const HEX_64 = /^[0-9a-f]{128}$/;
@@ -181,17 +183,6 @@ function diagnostic(
   return Object.freeze({ code, message });
 }
 
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-}
-
 function freezeResult<T extends AuthenticatedDomainClaimRead>(value: T): T {
   return deepFreeze(value);
 }
@@ -250,6 +241,8 @@ function cloneArtifact(value: unknown): DomainClaimArtifactLike | null {
     ) {
       return null;
     }
+    // Bytes would stay writable after the freeze; the artifact is JSON data.
+    if (containsArrayBufferView(cloned)) return null;
     return deepFreeze(cloned);
   } catch {
     return null;

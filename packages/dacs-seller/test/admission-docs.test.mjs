@@ -2,6 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync,readFileSync}from'node:fs';
 const readme=()=>readFileSync(new URL('../README.md',import.meta.url),'utf8');
+test("SOURCES.md names the CLI's port source and states its deltas",()=>{
+ const text=readFileSync(new URL('../SOURCES.md',import.meta.url),'utf8');
+ assert.match(text,/d6f0e16/);assert.match(text,/http-mcp\/src\/devnet-demo\/operator\.mjs/);
+ assert.match(text,/121[–-]149/);assert.match(text,/155[–-]165/);assert.match(text,/adapted port/);
+ assert.match(text,/closed.*seller\.json/);assert.match(text,/canonical.*director/i);
+});
 test('source-only quickstart uses modules available before package activation',async()=>{
  if(existsSync(new URL('../package.json',import.meta.url)))return;
  const text=readme();assert.doesNotMatch(text,/from ['"]@kynesyslabs\/dacs-seller['"]/);assert.doesNotMatch(text,/workspace package is marked `private`/);assert.match(text,/\.\/src\/index\.mjs/);assert.equal(typeof(await import('../src/index.mjs')).startSellerHost,'function');assert.equal(typeof(await import('../src/devnet-demo/buyer-access.mjs')).createOperatorBuyerAccess,'function');

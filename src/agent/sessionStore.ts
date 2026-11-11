@@ -1,7 +1,7 @@
 import { DacsError } from "../errors.js";
 
 /**
- * Durable session store / checkpoint API (#55) — the reusable lifecycle
+ * Durable session store / checkpoint API — the reusable lifecycle
  * persistence surface for restart-safe buyer and seller services.
  *
  * `runSessionCore` treats on-chain anchors as phase state, so it can only resume
@@ -11,7 +11,7 @@ import { DacsError } from "../errors.js";
  * for that state — the durable substrate that sits BETWEEN irreversible or
  * externally-visible steps, before all evidence is anchored.
  *
- * It complements the rail-level at-most-once guarantee (#43): #43 stops a single
+ * It complements the rail-level at-most-once guarantee, which stops a single
  * rail double-submitting; this store gives the orchestrator a durable
  * write-ahead intent → outcome checkpoint, compare-and-set phase transitions, a
  * worker lease, and anti-replay hash binding, so a crash/restart/second-worker
@@ -290,7 +290,7 @@ export interface TransitionInput {
   /**
    * The worker asserting this transition. If the session has a LIVE lease held by
    * a DIFFERENT owner, the transition is rejected (`lease-held`) — a guarded phase
-   * can only be advanced by the lease owner (#67). Omit only for unguarded writes.
+   * can only be advanced by the lease owner. Omit only for unguarded writes.
    */
   owner?: string;
   phase?: SessionPhase;
@@ -380,7 +380,7 @@ export function createInMemorySessionStore(): SessionStore {
       }
       // Anti-replay: reserve the agreement hash BEFORE persisting, and REJECT if
       // it's already owned by a different session — a reused agreement hash across
-      // sessions is a replay and must never silently overwrite ownership (#67).
+      // sessions is a replay and must never silently overwrite ownership.
       if (agreementHash) {
         const existing = hashBindings.get(agreementHash);
         if (existing && existing.jobId !== jobId) {
@@ -424,11 +424,11 @@ export function createInMemorySessionStore(): SessionStore {
       if (record.revision !== input.expectedRevision) {
         return { ok: false, reason: "revision-mismatch", record: clone(record) };
       }
-      // A live lease held by a DIFFERENT owner blocks the transition (#67) — a
+      // A live lease held by a DIFFERENT owner blocks the transition — a
       // guarded phase can only be advanced by the worker that holds the lease.
       // Default to the REAL clock (not record.updatedAt): a stale timestamp never
       // advances past the lease's expiresAt, so an already-expired lease would be
-      // read as still-held and a legitimate takeover wrongly rejected (#67).
+      // read as still-held and a legitimate takeover wrongly rejected.
       const leaseNow = input.now ?? Date.now();
       if (record.lease && record.lease.expiresAt > leaseNow && input.owner !== record.lease.owner) {
         return { ok: false, reason: "lease-held", record: clone(record) };
@@ -497,7 +497,7 @@ export function createInMemorySessionStore(): SessionStore {
 
     async acquireLease({ jobId, owner, ttlMs, now = Date.now() }) {
       // An epoch-zero clock would make every lease instantly expired, silently
-      // voiding the mutual-exclusion guarantee that guards the money path (#67)
+      // voiding the mutual-exclusion guarantee that guards the money path
       // — so the default is the REAL clock, and the TTL must be a positive span.
       if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
         throw new DacsError(`acquireLease ttlMs must be a positive number, got ${ttlMs}`);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { canonicalize } from '@kynesyslabs/dacs';
+import { canonicalize, contentHash, isListing } from '@kynesyslabs/dacs';
 import { SellerAgentError, buildReport, canonicalSignature, proposalTimeProblem } from '../src/dacs/seller-agent.mjs';
 import { canonicalSignature as anchorSignature } from '../src/dacs/fixture-anchors.mjs';
 import { proposalTimeProblem as timeProblem } from '../src/dacs/seller-proposal-time.mjs';
@@ -46,6 +46,13 @@ test('report refuses a mismatched or malformed Listing', async () => {
   for (const listing of [null, {}, { ...input.listing, offering: { ...input.listing.offering, title: 'substituted' } }]) {
     assert.throws(() => buildReport({ ...input, listing }), { code: 'listing_invalid' });
   }
+});
+test('report refuses a Listing signed by a signer the seller does not claim, though its content hash matches the pin', async () => {
+  const input = await protocolFixture();
+  const listing = { ...input.listing, signature: { ...input.listing.signature, signer: `did:demos:agent:${'b'.repeat(64)}` } };
+  assert.equal(contentHash(listing), input.agreement.listingRef.contentHash);
+  assert.equal(isListing(listing), false);
+  assert.throws(() => buildReport({ ...input, listing }), { code: 'listing_invalid' });
 });
 test('report refuses an Agreement whose Listing pin names another ID or version', async () => {
   const input = await protocolFixture();

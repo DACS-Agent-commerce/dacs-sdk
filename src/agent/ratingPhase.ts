@@ -27,6 +27,7 @@ import {
 } from "../identity/claimReference.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import type { DurablePublishedRating } from "./durableRatingPublication.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export type RatingPartyRole = "buyer" | "seller";
 
@@ -327,16 +328,6 @@ export interface CompleteRatingPhaseDeps {
 
 const ROLE_ORDER: readonly RatingPartyRole[] = ["buyer", "seller"];
 const HASH = /^[0-9a-f]{64}$/;
-
-function deepFreeze<T>(value: T): Readonly<T> {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return Object.freeze(value);
-}
 
 function exactKeys(
   value: Record<string, unknown>,

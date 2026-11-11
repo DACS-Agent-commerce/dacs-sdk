@@ -19,12 +19,19 @@ function responseBudget(path) {
   return /\/-\/npm\/v1\/security\//.test(path) ? NPM_AUDIT_MAX_BYTES : NPM_METADATA_MAX_BYTES;
 }
 
+// Every byte that can appear outside a string in valid JSON: whitespace, structure,
+// and the characters of numbers and of true, false and null.
+const JSON_BYTES_OUTSIDE_STRINGS = new Set(Buffer.from('\t\n\r []{},:"+-.0123456789truefalsnE'));
+
 // Count tokens, not parsed objects: npm can consume multiple roots and duplicate
-// keys. Syntax remains npm's responsibility. State survives every chunk boundary.
+// keys. Syntax remains npm's responsibility, except that counting stops at the
+// first byte no JSON text can hold outside a string: npm refuses the body there,
+// and a binary download is not JSON. State survives every chunk boundary.
 function jsonScanner() {
   const containers = [];
-  let entries = 0, string = false, escaped = false;
+  let entries = 0, string = false, escaped = false, notJson = false;
   return bytes => {
+    if (notJson) return;
     for (const byte of bytes) {
       if (string) {
         if (escaped) escaped = false;
@@ -32,6 +39,7 @@ function jsonScanner() {
         else if (byte === 34) string = false;
         continue;
       }
+      if (!JSON_BYTES_OUTSIDE_STRINGS.has(byte)) { notJson = true; return; }
       if (byte === 32 || byte === 9 || byte === 10 || byte === 13 || byte === 58) continue;
       if (byte === 93 || byte === 125) { containers.pop(); continue; }
       const parent = containers[containers.length - 1];
@@ -102,7 +110,9 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
     const request = transport.request;
     transport.request = function (...args) {
       const pending = request.apply(this, args), emit = pending.emit;
-      pending.setHeader("accept-encoding", "identity");
+      // Headers already written (Expect: 100-continue, raw header array) cannot change;
+      // an encoded reply is still refused when it arrives.
+      if (!pending.headersSent) pending.setHeader("accept-encoding", "identity");
       let failed = false, timer, deadline, response;
       // Admission can outlive the request (its body may already be read), so the
       // deadline and request failures cancel admission directly.

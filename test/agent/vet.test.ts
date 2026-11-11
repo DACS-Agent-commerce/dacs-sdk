@@ -28,6 +28,7 @@ import {
   type VetOperationCheckpoint,
   type VetRequest,
 } from "../../src/index.js";
+import { DacsError } from "../../src/errors.js";
 
 const VERIFIER_SEED = new Uint8Array(32).fill(7);
 const VERIFIER =
@@ -1365,6 +1366,36 @@ describe("vetCore current DACS-2 producer", () => {
     const recovered = await vetCore(request, deps);
     expect(recovered.record.overallDecision).toBe("pass");
     expect(authorityCalls).toBe(1);
+  });
+
+  test("keeps the store error as the cause when an operation step fails", async () => {
+    const store: FinalizedStore = new Map();
+    const deps = baseDeps(store);
+    const storeError = Object.assign(new Error("store is busy"), {
+      code: "STORE_BUSY",
+    });
+    deps.operationStore = {
+      ...deps.operationStore!,
+      runOnce: async () => {
+        throw storeError;
+      },
+    };
+    const request: VetRequest = {
+      jobId: "job-vet-step-store-error",
+      subject: "domain:alice.example",
+      bundleHash: BUNDLE_HASH,
+      requirement: requirement("domain"),
+      recipe: await authenticatedRecipe(),
+    };
+
+    const failure = await vetCore(request, deps).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(DacsError);
+    expect((failure as DacsError).message).toMatch(/step failed: store is busy/);
+    expect((failure as DacsError).cause).toBe(storeError);
   });
 
   test("fences concurrent callers across method, signing, and anchoring", async () => {

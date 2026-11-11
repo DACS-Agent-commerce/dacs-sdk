@@ -10,6 +10,7 @@ import {
   x402Eip3009Nonce,
   type SellerPaymentClaim,
 } from "../seller/paymentIntake.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** Framework-neutral subset required by `@x402/core`'s HTTP adapter. */
 export interface X402PaywallHttpAdapter {
@@ -247,7 +248,7 @@ export interface X402PaywallAuthorizationContext {
 export interface X402PaywallFulfilmentContext<TAuthorization = unknown> {
   jobId: string;
   phaseIndex: number;
-  /** Stable transport key. #120 still derives its canonical fulfilment id from its retained permit. */
+  /** Stable transport key. Fulfilment still derives its canonical fulfilment id from its retained permit. */
   idempotencyKey: string;
   payer: string;
   request: X402PaywallHttpAdapter;
@@ -255,7 +256,7 @@ export interface X402PaywallFulfilmentContext<TAuthorization = unknown> {
   paymentRequirements: Readonly<X402PaywallPaymentRequirements>;
   paymentClaim: Extract<SellerPaymentClaim, { kind: "pay-x402" }>;
   settlement: X402PaywallSettlementResult & { success: true };
-  /** Opaque result of the mandatory post-settlement #119 authorization gate. */
+  /** Opaque result of the mandatory post-settlement payment-intake authorization gate. */
   authorization: Readonly<TAuthorization>;
 }
 
@@ -338,12 +339,12 @@ export interface X402PaywallCoreDeps<TAuthorization = unknown, T = unknown> {
   reconcileSettlement(
     intent: Readonly<X402PaywallSettlementIntent>,
   ): Promise<X402PaywallSettlementReconciliation>;
-  /** Call #119 here. Only `authorized` may reach the delivery callback. */
+  /** Run payment-intake authorization here. Only `authorized` may reach the delivery callback. */
   authorizePayment(
     context: Readonly<X402PaywallAuthorizationContext>,
   ): Promise<X402PaywallPaymentAuthorization<TAuthorization>>;
   /**
-   * Call #120/#121 here using the authorization retained by #119's store.
+   * Run seller fulfilment here using the authorization retained by the payment-intake store.
    * Implementations MUST be idempotent for the supplied stable key: a client
    * may retry after settlement while delivery reconciliation is still pending.
    */
@@ -443,7 +444,7 @@ function validAmount(amount: string): boolean {
   }
 }
 
-/** Stable transport replay key; it is not #120's authorization-bound fulfilment id. */
+/** Stable transport replay key; it is not the authorization-bound fulfilment id. */
 export function x402PaywallFulfilmentKey(input: {
   jobId: string;
   phaseIndex: number;
@@ -869,20 +870,6 @@ function verifySuccessfulSettlement(
 
 function exactData(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(left, right);
-}
-
-function deepFreeze<T>(value: T): Readonly<T> {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    // structuredClone already gave us an owned byte view. V8 refuses to freeze
-    // non-empty typed arrays; no external reference can mutate this copy while
-    // the core validates and returns it.
-    if (ArrayBuffer.isView(value)) return value;
-    Object.freeze(value);
-    for (const child of Object.values(value as Record<string, unknown>)) {
-      deepFreeze(child);
-    }
-  }
-  return value;
 }
 
 function ownedFrozen<T>(value: T): Readonly<T> | null {

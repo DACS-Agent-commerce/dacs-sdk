@@ -955,6 +955,55 @@ describe("durable seller bundle coordinator v2", () => {
     });
   });
 
+  test.each((["core", "signer"] as const).flatMap((step) =>
+    [undefined, null, 0, "", false, 0n, NaN, new Error("renewal failed")].map((reason) => ({ step, reason })),
+  ))("stops the $step after a heartbeat rejection with $reason", async ({ step, reason }) => {
+    vi.useFakeTimers();
+    try {
+      const harness = await createHarness("pure");
+      const store = createInMemoryFencedSessionStore();
+      await seedCompletedDelivery(store, harness.binding);
+      let renewalsUntilFailure = 0;
+      const observedStore = wrapStore(store, {
+        renewLease: async (input) => {
+          if (renewalsUntilFailure > 0 && --renewalsUntilFailure === 0) throw reason;
+          return store.renewLease(input);
+        },
+      });
+      if (step === "core") {
+        const core = finalizeCoreMock.getMockImplementation()!;
+        finalizeCoreMock.mockImplementationOnce(async (...args) => {
+          renewalsUntilFailure = 1;
+          await vi.advanceTimersByTimeAsync(668);
+          return core(...args);
+        });
+      } else {
+        const sign = harness.input.seller.signer;
+        if (typeof sign !== "function") throw new Error("signer missing");
+        harness.input.seller.signer = async (...args) => {
+          renewalsUntilFailure = 2;
+          await vi.advanceTimersByTimeAsync(668);
+          return sign(...args);
+        };
+      }
+      await expect(finalizeCompletedSellerBundleDurable(
+        harness.input, harness.provider, durability(observedStore),
+      )).rejects.toBe(reason);
+      const loaded = await store.load(JOB_ID);
+      expect(loaded.status).toBe("ok");
+      if (loaded.status !== "ok") throw new Error("session missing");
+      expect(loaded.record.phase).not.toBe("seller:finalised");
+      if (step === "signer") {
+        expect(loaded.record.checkpoints.some((entry) =>
+          entry.key === sellerBundleFinalizationCheckpointKey.signature("seller") && entry.stage === "outcome",
+        )).toBe(false);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("keeps the generation lease alive while the core performs long authenticated reads", async () => {
     vi.useFakeTimers();
     try {

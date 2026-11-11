@@ -1,0 +1,26 @@
+{
+  "description": "Parts of src/, lowest first. A file may import its own part and any part listed above it, never one listed below. Exact files win over suffixes, and suffixes over folders; the longest matching folder wins. See ARCHITECTURE.md.",
+  "units": [
+    { "name": "errors", "layer": "kernel", "files": ["src/errors.ts", "src/version.ts"] },
+    { "name": "internal", "layer": "kernel", "folders": ["src/internal/"] },
+    { "name": "canonical", "layer": "kernel", "folders": ["src/canonical/"] },
+    { "name": "crypto", "layer": "kernel", "folders": ["src/crypto/"] },
+    { "name": "artifacts", "layer": "model", "folders": ["src/artifacts/"] },
+    { "name": "substrate-port", "layer": "ports", "files": ["src/substrate/SubstrateAdapter.ts"] },
+    { "name": "identity", "layer": "protocol", "folders": ["src/identity/"] },
+    { "name": "discovery", "layer": "protocol", "folders": ["src/discovery/"] },
+    { "name": "negotiate", "layer": "protocol", "folders": ["src/negotiate/"] },
+    { "name": "rails", "layer": "protocol", "folders": ["src/rails/"] },
+    { "name": "registry", "layer": "protocol", "folders": ["src/registry/"] },
+    { "name": "agent", "layer": "protocol", "folders": ["src/agent/"] },
+    { "name": "seller", "layer": "protocol", "folders": ["src/seller/"] },
+    { "name": "filesystem", "layer": "adapters", "folders": ["src/filesystem/"] },
+    { "name": "substrate", "layer": "adapters", "folders": ["src/substrate/"] },
+    { "name": "file-stores", "layer": "adapters", "suffix": "Fs.ts" },
+    { "name": "wire", "layer": "adapters", "folders": ["src/wire/"] },
+    { "name": "commerce", "layer": "api", "folders": ["src/commerce/"] },
+    { "name": "agent-api", "layer": "api", "files": ["src/agent/Agent.ts", "src/agent/index.ts"] },
+    { "name": "root", "layer": "api", "files": ["src/index.ts"] },
+    { "name": "cli", "layer": "apps", "folders": ["src/cli/", "src/bin/"] }
+  ]
+}

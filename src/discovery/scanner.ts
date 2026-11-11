@@ -1,5 +1,5 @@
 /**
- * Incremental anchor scanner (#54). Enumerates DACS-related anchors from a
+ * Incremental anchor scanner. Enumerates DACS-related anchors from a
  * substrate's write history, page by page, with an OPAQUE resume cursor — the
  * discovery primitive a Directory or catalog builds its index from, instead of
  * re-deriving addresses or scraping prose.

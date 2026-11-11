@@ -18,6 +18,7 @@ import type {
   AgreementSigner,
   UnsignedAgreementArtifact,
 } from "./fixedPrice.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const ROLE_ORDER = Object.freeze(["buyer", "seller"] as const);
 const ALGORITHMS: ReadonlySet<string> = new Set(COMPONENT_SIGNATURE_ALGORITHMS);
@@ -197,12 +198,6 @@ function captureData(
   } finally {
     ancestors.delete(value);
   }
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
-  for (const child of Object.values(value as DataRecord)) deepFreeze(child);
-  return Object.freeze(value);
 }
 
 function snapshot<T>(value: T, subject: string): T {

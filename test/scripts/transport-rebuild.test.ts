@@ -33,6 +33,17 @@ describe("raw-token admission", () => {
     expect(await read("[".repeat(129) + "]".repeat(129))).toBeInstanceOf(Buffer);
     await expect(read("[".repeat(130) + "]".repeat(130))).rejects.toMatchObject({ code: "ELIMIT" });
   });
+  it("passes a large non-JSON body made of bracket bytes", async () => {
+    const bytes = Buffer.concat([Buffer.from("PK\x03\x04"), Buffer.alloc(4 * 1024 * 1024, "[")]);
+    expect(bytes.equals(await readBoundedResponse(response([bytes]), 64 * 1024 * 1024))).toBe(true);
+  });
+  it("stops counting at the first byte that cannot appear outside a JSON string", async () => {
+    const bytes = Buffer.from("[0]\n<" + deep);
+    expect(await readBoundedResponse(response([bytes]), 1024)).toEqual(bytes);
+  });
+  it("keeps counting across a string that holds bytes JSON allows only inside strings", async () => {
+    await expect(read('["<\\u0000\x01"]\n' + deep)).rejects.toMatchObject({ code: "ELIMIT" });
+  });
   it("carries strings and escaped delimiters over one-byte chunks", async () => {
     const bytes = Buffer.from(JSON.stringify({ 'a"\\': ['[,{', '\\"', "é"] }) + "\n{}");
     expect(await readBoundedResponse(response([...bytes].map(byte => Buffer.from([byte]))), 1024)).toEqual(bytes);

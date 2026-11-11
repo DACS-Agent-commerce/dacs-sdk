@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   canonicalize,
@@ -325,6 +325,35 @@ async function harness(options: {
 }
 
 describe("durable seller fixed-price agreement proposal responder", () => {
+  test.each([undefined, null, 0, "", false, 0n, NaN, new Error("renewal failed")])("stops after a heartbeat rejection with %s", async (reason) => {
+    vi.useFakeTimers();
+    try {
+      const h = await harness();
+      const renew = h.store.renewLease.bind(h.store);
+      let rejectRenewal = false;
+      vi.spyOn(h.store, "renewLease").mockImplementation(async (input) => {
+        if (rejectRenewal) { rejectRenewal = false; throw reason; }
+        return renew(input);
+      });
+      const sign = h.request.input.seller.sign;
+      h.request.input.seller.sign = async (...args) => {
+        rejectRenewal = true;
+        await vi.advanceTimersByTimeAsync(40_000);
+        return sign(...args);
+      };
+      await expect(respondToFixedPriceAgreementProposalDurable(h.request.input, h.durability)).resolves.toMatchObject({ disposition: "indeterminate", stage: "seller-signature" });
+      const loaded = await h.store.load(JOB_ID);
+      expect(loaded.status).toBe("ok");
+      if (loaded.status !== "ok") throw new Error("session missing");
+      expect(loaded.record.checkpoints.some((entry) =>
+        entry.key === durableSellerFixedPriceAgreementCheckpointKey.sellerSignature && entry.stage === "outcome",
+      )).toBe(false);
+      expect(h.state.calls.publication).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   test("is exposed identically from root and seller public surfaces", () => {
     expect(sellerRespond).toBe(respondToFixedPriceAgreementProposalDurable);
   });

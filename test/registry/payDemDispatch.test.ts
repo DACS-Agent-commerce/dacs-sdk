@@ -22,9 +22,12 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
   evmErc20Settle: mocks.evmErc20Settle,
 }));
 
-import type {
-  SettlementBinding,
-  SettlementIdempotencyStore,
+import {
+  isSettlementBridge,
+  declareSettlementBridge,
+  settlementBridgeTraits,
+  type SettlementBinding,
+  type SettlementIdempotencyStore,
 } from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
@@ -350,6 +353,21 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     );
   });
 
+  test("the descriptor wrapper carries the registration and declared traits of the executor it binds", async () => {
+    mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle: vi.fn() });
+    const descriptor = await authenticatedDefinition();
+    const dispatch = async (executor: (req: never) => Promise<never>) => {
+      mocks.payDemSettle.mockReturnValue(executor);
+      return settleFromRail(descriptor, { demosRpc: "https://demos.example", demosSecret: "test-secret" });
+    };
+    const unused = async (): Promise<never> => { throw new Error("unused"); };
+
+    const unjournaled = await dispatch(declareSettlementBridge(async () => unused(), { journaled: false }));
+    expect(settlementBridgeTraits(unjournaled)).toEqual({ journaled: false });
+    expect(settlementBridgeTraits(await dispatch(declareSettlementBridge(async () => unused())))).toEqual({});
+    expect(isSettlementBridge(await dispatch(async () => unused()))).toBe(false);
+  });
+
   test("captures recovery authorities before the optional peer connects", async () => {
     let finishConnect!: (rail: unknown) => void;
     mocks.createPayDemRail.mockReturnValue(new Promise((resolve) => {
@@ -364,6 +382,16 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         return null;
       }
       get lookupCalls() { return this.#lookupCalls; }
+      #recoverCalls: string[] = [];
+      async recover(
+        key: string,
+        _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
+        submit: Parameters<SettlementIdempotencyStore["once"]>[2],
+      ) {
+        this.#recoverCalls.push(key);
+        return runStoreSubmit(submit);
+      }
+      get recoverCalls() { return this.#recoverCalls; }
       async once(
         key: string,
         _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
@@ -405,6 +433,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       settlementFinality: "bft-final" as const,
     }));
     firstStore.readOutcome = vi.fn(async () => { throw new Error("mutated lookup"); });
+    firstStore.recover = vi.fn(async () => { throw new Error("mutated recover"); });
     options.payDem!.maxTotalDebitOs = 20n;
     options.payDem!.journalPreparedTransfer = secondJournal;
     options.payDem!.settlementStore = secondStore;
@@ -464,6 +493,11 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     )).resolves.toBeNull();
     expect(firstStore.lookupCalls).toEqual(["demos-native:DEM:job-1:4"]);
     expect(firstStore.readOutcome).not.toHaveBeenCalled();
+    await expect(capturedRecovery.store!.recover!(
+      "demos-native:DEM:job-1:4", storeBinding("demos-native:DEM", "job-1", 4), async () => submitted,
+    )).resolves.toEqual(submitted);
+    expect(firstStore.recoverCalls).toEqual(["demos-native:DEM:job-1:4"]);
+    expect(firstStore.recover).not.toHaveBeenCalled();
     await capturedRecovery.reconcile!({} as never);
     expect(firstReconcile).toHaveBeenCalledTimes(1);
     expect(secondReconcile).not.toHaveBeenCalled();
@@ -514,6 +548,8 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       .resolves.toEqual(outcome);
     expect(poison).not.toHaveBeenCalled();
     expect(store.keys).toEqual(["rail:job:4"]);
+    // A store without recover() is forwarded without one, so pay-dem refuses its recovery requests.
+    expect("recover" in captured).toBe(false);
   });
 
   test("retains a class store receiver across restart-style dispatch reconstruction", async () => {

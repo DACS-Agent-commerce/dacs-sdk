@@ -1,6 +1,7 @@
 // Environment configuration. Every live dependency is optional and reported as
 // explicitly unconfigured rather than silently replaced by a fixture.
 import { join } from 'node:path';
+import { PURCHASE_LIMITS } from './purchase-limits.mjs';
 import { SwitchFileError, loadSwitchFiles } from './switch-files.mjs';
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);

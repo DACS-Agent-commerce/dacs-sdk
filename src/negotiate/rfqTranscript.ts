@@ -23,6 +23,7 @@ import {
   type RfqTurnBody,
 } from "./rfq.js";
 import type { VerifiedListingInput } from "./fixedPrice.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export interface VerifiedRfqTranscript<TSignature = unknown> {
   transcriptVersion: "1";
@@ -96,22 +97,6 @@ const DECISIONS: ReadonlySet<string> = new Set<VerificationDecision>([
   "indeterminate",
   "error",
 ]);
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    seen.has(value as object) ||
-    Object.isFrozen(value)
-  ) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as DataRecord)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-}
 
 function exact(left: unknown, right: unknown): boolean {
   return canonicalize(left) === canonicalize(right);
@@ -212,7 +197,8 @@ function transcriptBindsSession<TSignature>(
 /**
  * Verify and own the complete private transcript behind an accepted RFQ.
  * This is deliberately a `VerifiedRfqTranscript`, not the underspecified
- * normative `ChannelTranscript` signature/encryption wire from #351.
+ * normative `ChannelTranscript` signature/encryption wire, which the DACS
+ * Standard does not yet fully define.
  */
 export async function prepareRfqTranscript<TSignature = unknown>(
   callerInput: PrepareRfqTranscriptInput<TSignature>,
@@ -352,7 +338,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
 
 /**
  * Enforce the Listing's disclosure policy before any injected encrypted
- * publisher is invoked. Consent evidence stays opaque until #351 defines its
+ * publisher is invoked. Consent evidence stays opaque until the DACS Standard defines its
  * wire format, but every member's evidence must authenticate as `pass`.
  */
 export async function planRfqTranscriptDisclosure<TSignature = unknown>(

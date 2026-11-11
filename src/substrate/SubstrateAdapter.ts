@@ -50,7 +50,7 @@ export interface AnchorRef {
   address: string;
   /** Substrate transaction reference for the write, if available. */
   txRef?: string;
-  /** The completion level actually reached (#57). */
+  /** The completion level actually reached. */
   completion?: AnchorCompletion;
   /** Block/ledger height the write was included at, when observed. */
   blockNumber?: number;
@@ -96,7 +96,7 @@ export interface DemosWriteEvidence {
 }
 
 /**
- * How far an anchor write was confirmed before returning (#57). Node acceptance
+ * How far an anchor write was confirmed before returning. Node acceptance
  * is not the same as inclusion, and inclusion is not the same as read visibility.
  */
 export type AnchorCompletion = "accepted" | "included" | "read-visible";
@@ -237,7 +237,7 @@ export interface SubstrateAdapter {
    */
   anchor(name: string, value: object): Promise<AnchorReceipt>;
   /**
-   * SR-2 — anchor and wait for an explicit completion level (#57). Same-wallet
+   * SR-2 — anchor and wait for an explicit completion level. Same-wallet
    * writes are serialized through the configured durable chain+wallet journal
    * across adapter instances and processes. The lane remains fenced through
    * authenticated canonical inclusion and exact native readback.
@@ -272,7 +272,7 @@ export interface SubstrateAdapter {
   scanOwnAnchorsByNamePrefix(prefix: string): Promise<OwnedAnchorScan>;
   /**
    * SR-2 — the storage address a name would anchor to for THIS writer, without
-   * writing. NOT third-party derivable (#58 / DACS-Standard #242): the physical
+   * writing. NOT third-party derivable: the physical
    * address folds in the writer's account nonce at create time, so a reader that
    * doesn't know that nonce must resolve by program name through the node's name
    * index instead of precomputing an address.
@@ -288,7 +288,7 @@ export interface SubstrateAdapter {
    * Returns a TYPED {@link AnchorResolution}: `present` (owned by the writer),
    * `absent` (readable candidates, none the writer's), or `indeterminate` (the
    * lookup itself failed) — so a transient substrate failure is never mistaken
-   * for "never created" (#70).
+   * for "never created".
    */
   resolveAnchorByName(
     name: string,

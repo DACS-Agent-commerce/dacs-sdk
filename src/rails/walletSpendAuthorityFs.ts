@@ -40,19 +40,6 @@ export interface FsWalletSpendStateStoreOptionsV1 {
   lockPollMs?: number;
 }
 
-interface StoredEnvelopeV1 {
-  formatVersion: typeof STORE_FORMAT_VERSION;
-  scope: string;
-  state: Readonly<WalletSpendStateV1>;
-  mac: string;
-}
-
-interface InitializationMarkerV1 {
-  markerVersion: typeof STORE_FORMAT_VERSION;
-  scope: string;
-  mac: string;
-}
-
 interface LockOwnerV1 {
   pid: number;
   hostname: string;
@@ -548,51 +535,54 @@ export async function createFsWalletSpendStateStoreV1(
     scope: string,
     owner: LockMutationGateOwnerV1,
   ): Promise<void> {
-    const path = mutationGatePath(scope);
-    const observedOwner = await readLockOwner(path);
-    if (observedOwner?.pid === owner.pid &&
-        observedOwner.hostname === owner.hostname &&
-        observedOwner.token === owner.token &&
-        observedOwner.createdAt === owner.createdAt) {
-      const observed = await lstat(path);
-      const quarantine = mutationQuarantinePath(scope);
-      try {
-        await rename(path, quarantine);
-        await syncDirectory(locksDirectory);
-      } catch (error) {
-        if (nestedErrorCode(error) !== "ENOENT") throw error;
-      }
-      try {
-        const moved = await lstat(quarantine);
-        const movedOwner = await readLockOwner(quarantine);
-        if (moved.dev !== observed.dev || moved.ino !== observed.ino ||
-            !sameLockOwner(movedOwner, observedOwner)) {
-          throw new DacsError("wallet spend mutation gate changed during release");
+    let released = false;
+    try {
+      const path = mutationGatePath(scope);
+      const observedOwner = await readLockOwner(path);
+      if (observedOwner?.pid === owner.pid &&
+          observedOwner.hostname === owner.hostname &&
+          observedOwner.token === owner.token &&
+          observedOwner.createdAt === owner.createdAt) {
+        const quarantine = mutationQuarantinePath(scope);
+        try {
+          const observed = await lstat(path);
+          try {
+            await rename(path, quarantine);
+            await syncDirectory(locksDirectory);
+          } catch (error) {
+            if (nestedErrorCode(error) !== "ENOENT") throw error;
+          }
+          const moved = await lstat(quarantine);
+          const movedOwner = await readLockOwner(quarantine);
+          if (moved.dev !== observed.dev || moved.ino !== observed.ino ||
+              !sameLockOwner(movedOwner, observedOwner)) {
+            throw new DacsError("wallet spend mutation gate changed during release");
+          }
+          await removeCoordinationPath(quarantine);
+          await syncDirectory(locksDirectory);
+          return;
+        } catch (error) {
+          if (nestedErrorCode(error) !== "ENOENT") throw error;
         }
-        await removeCoordinationPath(quarantine);
-        await syncDirectory(locksDirectory);
-        return;
-      } catch (error) {
-        if (nestedErrorCode(error) !== "ENOENT") throw error;
+      }
+    } finally {
+      // A stale observer can move our gate before or after inspection.
+      const prefix = mutationQuarantinePrefix(scope);
+      for (const name of (await readdir(locksDirectory)).filter((item) =>
+        item.startsWith(prefix) && item.endsWith(".quarantine"))) {
+        const quarantine = join(locksDirectory, name);
+        const quarantinedOwner = await readLockOwner(quarantine);
+        if (quarantinedOwner?.pid === owner.pid &&
+            quarantinedOwner.hostname === owner.hostname &&
+            quarantinedOwner.token === owner.token &&
+            quarantinedOwner.createdAt === owner.createdAt) {
+          await removeCoordinationPath(quarantine);
+          await syncDirectory(locksDirectory);
+          released = true;
+        }
       }
     }
-
-    // Recover only this exact gate if an older participant already moved it.
-    const prefix = mutationQuarantinePrefix(scope);
-    for (const name of (await readdir(locksDirectory)).filter((item) =>
-      item.startsWith(prefix) && item.endsWith(".quarantine"))) {
-      const quarantine = join(locksDirectory, name);
-      const quarantinedOwner = await readLockOwner(quarantine);
-      if (quarantinedOwner?.pid === owner.pid &&
-          quarantinedOwner.hostname === owner.hostname &&
-          quarantinedOwner.token === owner.token &&
-          quarantinedOwner.createdAt === owner.createdAt) {
-        await removeCoordinationPath(quarantine);
-        await syncDirectory(locksDirectory);
-        return;
-      }
-    }
-    throw new DacsError("wallet spend mutation gate ownership was lost");
+    if (!released) throw new DacsError("wallet spend mutation gate ownership was lost");
   }
 
   async function acquireMutationGate(
@@ -748,15 +738,15 @@ export async function createFsWalletSpendStateStoreV1(
   ): Promise<void> {
     const observedOwner = await readLockOwner(path);
     if (sameLockOwner(observedOwner, owner)) {
-      const observed = await lstat(path);
       const released = releasedLockPath(scope, owner.token);
       try {
-        await rename(path, released);
-        await syncDirectory(locksDirectory);
-      } catch (error) {
-        if (nestedErrorCode(error) !== "ENOENT") throw error;
-      }
-      try {
+        const observed = await lstat(path);
+        try {
+          await rename(path, released);
+          await syncDirectory(locksDirectory);
+        } catch (error) {
+          if (nestedErrorCode(error) !== "ENOENT") throw error;
+        }
         const moved = await lstat(released);
         const movedOwner = await readLockOwner(released);
         if (moved.dev !== observed.dev || moved.ino !== observed.ino ||

@@ -9,6 +9,7 @@ import {
 } from "../../src/rails/walletSpendAuthority.js";
 import { createFsWalletSpendStateStoreV1 } from "../../src/rails/walletSpendAuthorityFs.js";
 
+const CHILD_WALLET = `0x${"2b".repeat(20)}`;
 const wait = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -27,7 +28,7 @@ it.skipIf(process.env.DACS_WALLET_SPEND_CHILD !== "1")(
     const policy: WalletSpendPolicyV1 = {
       policyVersion: "1",
       policyId: "child-policy",
-      wallet: "child-wallet",
+      wallet: CHILD_WALLET,
       chainId: "demos:testnet",
       maximumConcurrentEffects: 1,
       maximumRetainedReservations: 10,
@@ -61,7 +62,7 @@ it.skipIf(process.env.DACS_WALLET_SPEND_CHILD !== "1")(
       settlementBindingHash: "c".repeat(64),
       railId: "pay-dem",
       railDefinitionHash: "b".repeat(64),
-      wallet: "child-wallet",
+      wallet: CHILD_WALLET,
       chainId: "demos:testnet",
       payee: "seller",
       finality: { model: "bft-final" },

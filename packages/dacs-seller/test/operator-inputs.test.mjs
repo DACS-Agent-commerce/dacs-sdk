@@ -154,6 +154,23 @@ test('a verified payment reading projects the transaction it verified; an absent
   const unpaid = await resolve(JOB); assert.equal(unpaid.paymentObserved, false); assert.equal(unpaid.paymentTxRef, null);
 });
 
+test('a verified payment reading whose paymentTxRef changes between reads projects the value it validated', async () => {
+  const w = await purchaseWorld(); let reads = 0;
+  const staleRef = { ...PAYMENT_TX_REF, txHash: 'A'.repeat(64) };
+  const resolve = sellerRecordsPurchaseResolver({ ...w.options, observePayment: query => ({ disposition: 'verified', jobId: query.jobId, agreementHash: query.agreementHash, observedAt: query.observedAt,
+    get paymentTxRef() { reads++; return reads === 1 ? { ...PAYMENT_TX_REF } : staleRef; } }) });
+  const projection = await resolve(JOB);
+  assert.equal(reads, 1); assert.equal(projection.paymentObserved, true); assert.deepEqual(projection.paymentTxRef, PAYMENT_TX_REF);
+});
+
+test('a verified payment reading whose transaction members change between reads projects the value it validated', async () => {
+  const w = await purchaseWorld(); let reads = 0;
+  const resolve = sellerRecordsPurchaseResolver({ ...w.options, observePayment: query => ({ disposition: 'verified', jobId: query.jobId, agreementHash: query.agreementHash, observedAt: query.observedAt,
+    paymentTxRef: { kind: 'demos', blockNumber: PAYMENT_TX_REF.blockNumber, get txHash() { reads++; return reads === 1 ? PAYMENT_TX_REF.txHash : 'A'.repeat(64); } } }) });
+  const projection = await resolve(JOB);
+  assert.equal(reads, 1); assert.equal(projection.paymentObserved, true); assert.deepEqual(projection.paymentTxRef, PAYMENT_TX_REF);
+});
+
 for (const [label, paymentTxRef] of [['no transaction', undefined], ['a null transaction', null], ['an upper-case hash', { ...PAYMENT_TX_REF, txHash: 'A'.repeat(64) }],
   ['a negative block', { ...PAYMENT_TX_REF, blockNumber: -1 }], ['a fractional block', { ...PAYMENT_TX_REF, blockNumber: 1.5 }], ['an extra member', { ...PAYMENT_TX_REF, TEST: 'extra' }],
   ['another kind', { ...PAYMENT_TX_REF, kind: 'TEST' }]]) test(`a verified payment reading with ${label} is indeterminate`, async () => {

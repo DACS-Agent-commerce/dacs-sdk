@@ -2,7 +2,7 @@ import type { AnchorBinding, BindingIndex } from "./binding.js";
 import { normalizedBindingOwner } from "./owner.js";
 
 /**
- * Typed read-with-verification over the published binding (#54). This is the
+ * Typed read-with-verification over the published binding. This is the
  * discipline the binding module's header states as a MUST: resolution is
  * discovery, not trust, so a consumer that dereferences a resolved native address
  * MUST verify the record itself before trusting it. This surface makes that the

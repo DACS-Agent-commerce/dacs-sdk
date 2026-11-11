@@ -16,8 +16,9 @@ import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfi
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_HTTP_V1, isReadRoute } from "./routes.js";
 import {
   admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, isRecord, isUint,
-  lacksProfile, ownedArtifact, ownedBytes, ownedConfig, deepFreeze, ownedFields, uncurry, sameCanonical, verifyEd25519, withCanonicalClaims, type JsonRecord, type ListingPin, type WireSigner,
+  lacksProfile, ownedArtifact, ownedBytes, ownedConfig, ownedFields, uncurry, sameCanonical, verifyEd25519, withCanonicalClaims, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export const DACS_SELLER_DISCOVERY_FORMAT = "dacs-seller-discovery/v1";
 

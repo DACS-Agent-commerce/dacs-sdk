@@ -6,7 +6,6 @@ import {
   createX402Rail,
   dacsX402AuthorizationNonce,
   termsMatch,
-  verifyDacsX402AuthorizationNonce,
   x402Settle,
   x402SettleCore,
   type X402ClientLike,
@@ -35,29 +34,6 @@ describe("DACS EIP-3009 session binding", () => {
     for (const [jobId, phaseIndex, expected] of vectors) {
       expect(await dacsX402AuthorizationNonce({ jobId, phaseIndex })).toBe(expected);
     }
-  });
-
-  test("classifies matching, mismatching and malformed presented nonces", async () => {
-    const input = { jobId: "practice-dacs-0001", phaseIndex: 3 };
-    const expected = "0x2fc3598e85489ed2fb4d2bf9f4eb5cc8dd6998eec89645d64450f9630240e1ff";
-    expect(await verifyDacsX402AuthorizationNonce(
-      input,
-      expected,
-    )).toBe("present-and-matches");
-    expect(await verifyDacsX402AuthorizationNonce(
-      { ...input, phaseIndex: 4 },
-      expected,
-    )).toBe("present-and-mismatches");
-    expect(await verifyDacsX402AuthorizationNonce(
-      input,
-      `0x${"0".repeat(64)}`,
-    )).toBe("present-and-mismatches");
-    expect(await verifyDacsX402AuthorizationNonce(
-      input,
-      `0x${"0".repeat(62)}`,
-    )).toBe("malformed");
-    expect(await verifyDacsX402AuthorizationNonce(input, "0".repeat(64))).toBe("malformed");
-    expect(await verifyDacsX402AuthorizationNonce(input, `0x${"A".repeat(64)}`)).toBe("malformed");
   });
 
   test("the three normative retry cases retain the same derived nonce", async () => {

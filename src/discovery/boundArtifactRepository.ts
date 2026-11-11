@@ -225,7 +225,7 @@ async function writeResult(
 
 /**
  * Compose immutable anchoring, explicit binding publication, and independent
- * binding-based reads into one supported public seam (#58). This deliberately
+ * binding-based reads into one supported public seam. This deliberately
  * requires a publisher: the SDK cannot infer authority to mutate a deployment's
  * well-known index or catalog.
  */

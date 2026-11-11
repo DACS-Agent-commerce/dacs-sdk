@@ -1995,7 +1995,7 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     f.provider.verifyVetRequirementProvenance = undefined as never;
 
     await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
-      /Vet requirement provenance verifier is unavailable \(#331\)/,
+      /Vet requirement provenance verifier is unavailable/,
     );
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });

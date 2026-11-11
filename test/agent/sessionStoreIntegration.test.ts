@@ -10,6 +10,7 @@ import {
 import { payDemSettle } from "../../src/rails/payDem.js";
 import { createIdempotencyStore } from "../../src/rails/idempotency.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
+import { registerResumeSeam } from "../support/restartableSettlement.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import { isListing, isSettlementEvidence } from "../../src/artifacts/validators.js";
@@ -143,7 +144,7 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
     authenticateRecoveredArtifact: () => true,
     sessionStore: store,
   };
-  return { deps, listingRef, kv, settleCalls };
+  return { deps: registerResumeSeam(deps), listingRef, kv, settleCalls };
 }
 
 test.each(["fresh", "recovered"].flatMap((mode) =>
@@ -871,7 +872,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const a = await makeDeps(store, { kv, settle });
     const b = await makeDeps(store, { kv, settle });
 
-    const firstRun = runSessionCore(a.listingRef, terms, a.deps, "job-1");
+    const firstRun = runSessionCore(a.listingRef, terms, a.deps);
     await inSettle; // A has persisted intent and is paused inside the payment.
     await expect(
       runSessionCore(b.listingRef, terms, b.deps, "job-1"),
@@ -1796,12 +1797,11 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
 
   test("migrates authenticated pre-store evidence before receipts and never rebuilds it if deleted", async () => {
     const kv = new Map<string, Record<string, unknown>>();
-    const original = await makeDeps(undefined, { kv });
+    const original = await makeDeps(undefined, { kv, newJobId: () => "job-evidence-migration" });
     const completed = await runSessionCore(
       original.listingRef,
       terms,
       original.deps,
-      "job-evidence-migration",
     );
     expect(original.settleCalls.n).toBe(1);
 
@@ -1888,6 +1888,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const kv = new Map<string, Record<string, unknown>>();
       const original = await makeDeps(undefined, {
         kv,
+        newJobId: () => jobId,
         settle: async (req) => ({
           ok: false,
           txHash: "",
@@ -1897,7 +1898,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         }),
       });
       await expect(
-        runSessionCore(original.listingRef, terms, original.deps, jobId),
+        runSessionCore(original.listingRef, terms, original.deps),
       ).resolves.toMatchObject({ outcome: "failed" });
 
       const store = createInMemorySessionStore();
@@ -1950,13 +1951,13 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     const original = await makeDeps(undefined, {
       kv,
+      newJobId: () => "job-failure-evidence-migration",
       settle: definitiveFailure,
     });
     const failed = await runSessionCore(
       original.listingRef,
       terms,
       original.deps,
-      "job-failure-evidence-migration",
     );
     expect(failed.outcome).toBe("failed");
 
@@ -2234,6 +2235,41 @@ test("refuses a well-formed Demos failure proof on an x402 settlement", async ()
   const x402Terms = { ...terms, price: { ...terms.price, amount: "1" } };
   await expect(runSessionCore(other.listingRef, x402Terms, other.deps))
     .rejects.toThrow(/does not bind the payment amount and rail/);
+});
+
+test.each([undefined, null, 0, "", false, 0n, NaN, new Error("renewal failed")])("stops native publication after a heartbeat rejection with %s", async (reason) => {
+  const f = await nativeAuditFixture();
+  vi.useFakeTimers();
+  try {
+    const acquire = f.store.acquireLease.bind(f.store);
+    let rejectRenewal = false;
+    vi.spyOn(f.store, "acquireLease").mockImplementation(async (input) => {
+      if (rejectRenewal) { rejectRenewal = false; throw reason; }
+      return acquire(input);
+    });
+    const resumed = await makeDeps(f.store, { kv: f.kv, resumeSettlement: async () => f.success,
+      anchor: async (name, value) => {
+        if (name === sessionAnchorName.evidence("job-1")) {
+          rejectRenewal = true;
+          await vi.advanceTimersByTimeAsync(20_000);
+        }
+        const ref = `stor:${name}`;
+        f.kv.set(ref, value as Record<string, unknown>);
+        return ref;
+      },
+    });
+    await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+      .rejects.toBe(reason);
+    expect(resumed.settleCalls.n).toBe(0);
+    const loaded = await f.store.load("job-1");
+    expect(loaded.status).toBe("ok");
+    if (loaded.status !== "ok") throw new Error("session missing");
+    expect(loaded.record.phase).not.toBe("completed");
+    expect(loaded.record.receipts.some((receipt) => receipt.kind === "bundle")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("renews the native session fence while evidence publication waits", async () => {

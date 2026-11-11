@@ -37,6 +37,7 @@ import type {
   RecipeSelector,
   VerificationMethod,
 } from "./types.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export interface RegistryResolveDeps {
   /** Read the anchored registry document at its address/name. */
@@ -289,18 +290,6 @@ export type AuthenticatedRecipeDescriptor = RecipeDescriptor & {
   signature: ComponentSignature;
   readonly [authenticatedRecipeDescriptorBrand]: true;
 };
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null &&

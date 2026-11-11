@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { peerCacheFixture } from "./reference-cache-fixtures.js";
 import { sri } from "./npm-archive-fixtures.js";
 
+const repoRoot = resolve(import.meta.dirname, "../..");
 const scratch: string[] = [];
 afterEach(() => scratch.splice(0).forEach(path => rmSync(path, { recursive: true, force: true })));
 const candidates = ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"];
@@ -30,7 +31,7 @@ it.each([false, true])("writes the real dependency policy after peer re-resoluti
   }
   const report = join(project, "policy.json");
   const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
-    project, registry, report, project, "1.0.0"], { encoding: "utf8", timeout: 60_000,
+    project, registry, report, project, "1.0.0"], { cwd: repoRoot, encoding: "utf8", timeout: 60_000,
     env: { ...process.env, npm_config_cache: input.metadataCache, npm_config_registry: registry } });
   expect(result.status, result.stderr).toBe(0);
   const policy = JSON.parse(readFileSync(report, "utf8"));
