@@ -1,4 +1,4 @@
-import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import type { SettleRequest, SettleResult } from "./settlementTypes.js";
 import { CounterpartyError, DacsError } from "../errors.js";
 import { createDemosClient } from "./demosClient.js";
 
