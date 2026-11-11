@@ -3610,6 +3610,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the merged wire purchase transport and refresh package pins | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): keep the unimported wire adapter out of the package and let the ledger gate see deleted files | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/package.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 | delta(client): refresh the generated map and package pins for the wire package fix | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): ship the wire authentication module the purchase protocol imports | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/package.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
