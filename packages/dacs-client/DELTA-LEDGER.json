@@ -6612,6 +6612,32 @@
           "after": "6841b7b79dece95e51c8b46abf549d0370fb4789"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P52a admit purchases only on the engines range, Node 22.22.2 to 22.x and 24.15.0 to 24.x",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public-admission.mjs",
+          "before": "3f31bdea587a0f038d5a8fcc892b053dbd129fff",
+          "after": "675152fb86dd45b1b58a2ce24d19d946780cc770"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
+          "before": "9cdd17e0eceae6b901b2c075823c6dce714496c9",
+          "after": "e84121241791b080837b9e2fbff8161aa1936889"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2",
+          "after": "fcab22c19cf83506883a5e2ad08e0f0d89658134"
+        },
+        {
+          "path": "packages/dacs-client/test/runtime-floor.test.mjs",
+          "before": "6c920248367b799050ce5f473574a6a9ca927f1e",
+          "after": "c8133057b9b84685e1227cbb72fd1e1e8467f6ef"
+        }
+      ]
     }
   ]
 }
