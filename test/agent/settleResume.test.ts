@@ -5,8 +5,8 @@ import {
   runSessionCore,
   sessionAnchorName,
   type SessionDeps,
-  type SettleResult,
 } from "../../src/agent/runSessionCore.js";
+import type { SettleResult } from "../../src/rails/settlementTypes.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { IdentityBundle } from "../../src/artifacts/types.js";
 import { registerResumeSeam } from "../support/restartableSettlement.js";
