@@ -1262,7 +1262,7 @@ describe("pay-dem waits for the node's nonce read before signing the next paymen
 
   it("keeps the bridge's stored settlement unchanged when the post-inclusion nonce read rejects", async () => {
     sdk.waitForNonce.mockRejectedValue(new Error("nonce read failed"));
-    const settle = payDemSettle(await lagRail("https://bridge-lag.test"));
+    const settle = payDemSettle(await lagRail("https://bridge-lag.test"), {}, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     const result = await settle({
       rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
