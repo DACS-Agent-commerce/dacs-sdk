@@ -56,6 +56,27 @@ for (const [name, { args, request }] of Object.entries(READS)) {
     assert.deepEqual(node.requests, ['getBlockByNumber']);
   });
 
+  if (request) {
+    test(`${name} returns nothing when its own answer is marked simulated after the identity check passed, and the next read checks again`, async () => {
+      let marked = false;
+      const node = fakeNode({ answer: (call) => {
+        if (!marked || call.data?.blockNumber === 0) return readAnswers(call);
+        if (call.path) return jsonResponse({ success: true, data: { title: 'TEST' }, owner: WALLET, programName: 'TEST' }, SIMULATED);
+        return nodeAnswer(readAnswers(call), SIMULATED);
+      } });
+      const reader = node.reader();
+      await reader.getAddressNonce(WALLET);
+      marked = true;
+      node.requests.length = 0;
+      await assert.rejects(reader[name](...args), (error) => mismatch(error) && error.details.mode === 'simulated-fixture');
+      assert.deepEqual(node.requests, [request]);
+      assert.equal(reader.evidenceMode, 'simulated-fixture');
+      node.requests.length = 0;
+      await assert.rejects(reader[name](...args), mismatch);
+      assert.deepEqual(node.requests, ['getBlockByNumber'], 'the next read checks the chain before its own request');
+    });
+  }
+
   test(`${name} refuses a chain that reports no identity, keeping the reader's invalid error and sending no request of its own`, async () => {
     const node = fakeNode({ answer: (call) => (call.message === 'getBlockByNumber' ? null : readAnswers(call)) });
     await assert.rejects(node.reader()[name](...args), (error) => error instanceof OutboundError && error.kind === 'invalid');

@@ -5,7 +5,8 @@
 // Every read first needs the chain identity pinned for testnet. The first
 // read observes the configured RPC's identity afresh and refuses a simulated
 // or different chain before making its own request. Once a check succeeds,
-// later reads rely on it. A check that fails is never shared: a read that was
+// later reads rely on it, but none returns a result once an answer has been
+// marked simulated. A check that fails is never shared: a read that was
 // waiting on it makes its own. networkIdentity always observes afresh, and a
 // mismatch it sees makes the next read check again.
 import { createDemosChainReader } from '../dacs/chain.mjs';
@@ -73,6 +74,19 @@ export function createDemosPublicChainReader({ rpcUrl, network, pinnedIdentity, 
     }
   }
 
+  // A simulation marker on any answer turns the reader's mode for good, so a
+  // result that arrives after it is not returned and the next read checks again.
+  async function pinnedRead(signal, read) {
+    await requirePinnedIdentity(signal);
+    const result = await read();
+    if (reader.evidenceMode !== PUBLIC_MODE) {
+      pinChecked = false;
+      throw new OperationError('network_identity_mismatch', 'the configured Demos RPC marked an answer as simulated after the chain was checked; the result was not returned',
+        { network: TESTNET, pinned: reader.pinnedIdentity, mode: reader.evidenceMode });
+    }
+    return result;
+  }
+
   return Object.freeze({
     network: reader.network,
     pinnedIdentity: reader.pinnedIdentity,
@@ -81,39 +95,17 @@ export function createDemosPublicChainReader({ rpcUrl, network, pinnedIdentity, 
     get evidenceMode() {
       return reader.evidenceMode;
     },
-    readStorageProgram: async (locator) => {
-      await requirePinnedIdentity();
-      return reader.readStorageProgram(locator);
-    },
-    getAddressBalance: async (address, options) => {
-      await requirePinnedIdentity();
-      return reader.getAddressBalance(address, options);
-    },
-    getTransactionFees: async () => {
-      await requirePinnedIdentity();
-      return reader.getTransactionFees();
-    },
+    readStorageProgram: (locator) => pinnedRead(undefined, () => reader.readStorageProgram(locator)),
+    getAddressBalance: (address, options) => pinnedRead(undefined, () => reader.getAddressBalance(address, options)),
+    getTransactionFees: () => pinnedRead(undefined, () => reader.getTransactionFees()),
     networkIdentity: (options) => observePinnedIdentity(options?.signal),
-    getAddressNonce: async (address) => {
-      await requirePinnedIdentity();
-      return reader.getAddressNonce(address);
-    },
-    observePurchaseTransfer: async (hash, options) => {
-      await requirePinnedIdentity(options?.signal);
+    getAddressNonce: (address) => pinnedRead(undefined, () => reader.getAddressNonce(address)),
+    observePurchaseTransfer: (hash, options) => pinnedRead(options?.signal, async () => {
       const observation = await reader.observeTransfer(hash, options);
       return observation.status === 'included' ? { status: 'unavailable', reason: NO_SOURCE_REASON } : observation;
-    },
-    observeTransfer: async (hash, options) => {
-      await requirePinnedIdentity(options?.signal);
-      return reader.observeTransfer(hash, options);
-    },
-    getTransaction: async (hash, options) => {
-      await requirePinnedIdentity(options?.signal);
-      return reader.getTransaction(hash, options);
-    },
-    findTransferAtNonce: async (address, nonce, options) => {
-      await requirePinnedIdentity(options?.signal);
-      return reader.findTransferAtNonce(address, nonce, options);
-    },
+    }),
+    observeTransfer: (hash, options) => pinnedRead(options?.signal, () => reader.observeTransfer(hash, options)),
+    getTransaction: (hash, options) => pinnedRead(options?.signal, () => reader.getTransaction(hash, options)),
+    findTransferAtNonce: (address, nonce, options) => pinnedRead(options?.signal, () => reader.findTransferAtNonce(address, nonce, options)),
   });
 }

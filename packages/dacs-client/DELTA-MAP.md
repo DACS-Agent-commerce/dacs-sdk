@@ -1143,6 +1143,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` | 4f4db2f55ef80d013e7d6d90323f7603b91d10c9 |
 | | `packages/dacs-client/test/public-demos-reader-purchase-observation.test.mjs:1` | 402f6c02881cd173bda5b8b974d481122072251f |
 | | `packages/dacs-client/test/public-demos-reader-surface.test.mjs:1` | 042048f96e210c436f14068e67636a078e46e8ca |
+| WF | fix(client): refuse a public reader result once an answer is marked simulated | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/substrate/demos.mjs:1` | 3ac12a3aecade25cda81b6a3c0065cdaafeda6c9 |
+| | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` | 94ca4ccfe1e9665a7c5a8492b2e269e9826cfac4 |
 
 ## Complete commit and file inventory
 
@@ -3613,6 +3616,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-purchase-observation.test.mjs:1` |
 | delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-surface.test.mjs:1` |
 | delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `scripts/release-policy.json:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/HOLD.json:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/src/substrate/demos.mjs:1` |
+| fix(client): refuse a public reader result once an answer is marked simulated | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` |
 
 ## Original moved files
 

@@ -6678,6 +6678,22 @@
           "after": "042048f96e210c436f14068e67636a078e46e8ca"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): refuse a public reader result once an answer is marked simulated",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/substrate/demos.mjs",
+          "before": "bda7c603b0ec336b8d633c1a2976098b6277b389",
+          "after": "3ac12a3aecade25cda81b6a3c0065cdaafeda6c9"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-first-read.test.mjs",
+          "before": "4f4db2f55ef80d013e7d6d90323f7603b91d10c9",
+          "after": "94ca4ccfe1e9665a7c5a8492b2e269e9826cfac4"
+        }
+      ]
     }
   ]
 }
