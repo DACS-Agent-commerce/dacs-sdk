@@ -304,8 +304,7 @@ test('documented local packing builds core before skipping pack lifecycle script
   assert.ok(install >= 0 && build > install && pack > build, 'fresh clones build dist before packing core');
 });
 
-
-test("no EB test double or authority fixture is in the client's files or exports", t => {
+test("no test double or authority fixture is in the client's files or exports", t => {
   const { app, run } = installPackedPair(t);
   writeFileSync(join(app, 'eb-contents.mjs'), `
     import assert from 'node:assert/strict';

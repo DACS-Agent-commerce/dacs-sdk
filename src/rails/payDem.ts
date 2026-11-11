@@ -1,12 +1,13 @@
 import { types as nodeTypes } from "node:util";
 
-import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
+import { hasDefinitiveDemosFailure } from "../agent/settlementFailure.js";
 import { createPayDemExecutionAuthority } from "./payDemExecutionAuthority.js";
 import type {
+  DemosFailedRecordProof,
   SettleRequest,
   SettleResult,
   SettlementRecoveryAttempt,
-} from "../agent/runSessionCore.js";
+} from "./settlementTypes.js";
 import { baseUnits } from "../canonical/index.js";
 import {
   snapshotCanonicalJsonRead,
