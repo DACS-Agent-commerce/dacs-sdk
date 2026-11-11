@@ -1961,7 +1961,10 @@ export class DemosAdapter implements SubstrateAdapter {
       const roundTransportFailures = answers
         .filter((answer) => answer === "transport-failure").length;
       transportFailures += roundTransportFailures;
-      if (answers.some((answer) => answer !== undefined && answer !== "transport-failure")) {
+      // Only an answer that says something counts: a status other than a
+      // transport failure, or a row. A missing row (`none`) decides nothing.
+      if ((status !== undefined && status.state !== "transport-failure") ||
+          (row !== undefined && row.status !== "transport-failure" && row.status !== "none")) {
         recognisedAnswer = true;
       }
       if (roundTransportFailures > 0 && !recognisedAnswer) {

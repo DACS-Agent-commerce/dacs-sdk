@@ -431,6 +431,25 @@ describe("Demos write outcome from recorded testnet answers", () => {
     await lease.release();
   });
 
+  it("status transport failures beside a missing row until the deadline end demos-write-unresolved", async () => {
+    const { write, rounds } = pending;
+    const { adapter, reads, broadcast } = scriptedAdapter({
+      reads: [{ getTransactionStatus: await sdkTransportFailure(), getTxByHash: rounds.B1.getTxByHash }],
+      nonces: [rounds.B36.getAddressNonce],
+      lastBlock: rounds.B36.getLastBlockNumber,
+    });
+    const lease = await journalledTransfer(write);
+
+    const error = expectUnresolved(await reconcile(adapter, lease), write);
+    expect(error.message).toContain(`account nonce ${rounds.B36.getAddressNonce}`);
+    const failures = Number(/only transport failures: (\d+)/.exec(error.message)?.[1]);
+    expect(failures).toBeGreaterThan(1);
+    expect(failures).toBe(reads.filter((read) => read === "getAddressNonce").length);
+    expect(stages(lease)).toEqual(["broadcast-intent"]);
+    expect(broadcast).not.toHaveBeenCalled();
+    await lease.release();
+  });
+
   it("a transport failure on the nonce read then a confirmed row ends confirmed", async () => {
     const { write, rounds } = pending;
     const { adapter, reads, broadcast } = scriptedAdapter({
