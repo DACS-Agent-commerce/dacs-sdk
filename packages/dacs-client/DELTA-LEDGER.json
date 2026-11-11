@@ -6805,6 +6805,17 @@
           "after": "f0a35af9f949550e02b20ae2f72dc75067e588d8"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged package-contents blob after carrying base/main up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "05f66cefe8444a029f7c26d602c25b6ea25b9202",
+          "after": "05f66cefe8444a029f7c26d602c25b6ea25b9202"
+        }
+      ]
     }
   ]
 }

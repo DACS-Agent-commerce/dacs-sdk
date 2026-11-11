@@ -1168,6 +1168,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 2afc55221675d0f677f5553f81c02acbe47e7c87 |
 | | `packages/dacs-client/test/effect-history.test.mjs:1` | 0eed8f24b66d3497b4f9c0ef23c6847ad56fb770 |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | f0a35af9f949550e02b20ae2f72dc75067e588d8 |
+| WF | delta(client): WF record the merged package-contents blob after carrying base/main up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 05f66cefe8444a029f7c26d602c25b6ea25b9202 |
 
 ## Complete commit and file inventory
 
@@ -3700,6 +3702,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF key each dispatch history record by its pass and state and release the actor fence only when its operation ends | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
 | delta(client): WF key each dispatch history record by its pass and state and release the actor fence only when its operation ends | `packages/dacs-client/test/effect-history.test.mjs:1` |
 | delta(client): WF key each dispatch history record by its pass and state and release the actor fence only when its operation ends | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF record the merged package-contents blob after carrying base/main up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged package-contents blob after carrying base/main up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged package-contents blob after carrying base/main up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged package-contents blob after carrying base/main up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged package-contents blob after carrying base/main up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
