@@ -6812,8 +6812,24 @@
       "files": [
         {
           "path": "packages/dacs-client/test/package-contents.test.mjs",
-          "before": "f0a35af9f949550e02b20ae2f72dc75067e588d8",
+          "before": "05f66cefe8444a029f7c26d602c25b6ea25b9202",
           "after": "05f66cefe8444a029f7c26d602c25b6ea25b9202"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): require a string artifact hash in the dispatch history",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "b5e0e3ca4da2cfa9f69cbf46d2b2881f80f6f29a"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": "0eed8f24b66d3497b4f9c0ef23c6847ad56fb770",
+          "after": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
         }
       ]
     }

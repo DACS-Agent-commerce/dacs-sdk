@@ -1170,6 +1170,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | f0a35af9f949550e02b20ae2f72dc75067e588d8 |
 | WF | delta(client): WF record the merged package-contents blob after carrying base/main up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 05f66cefe8444a029f7c26d602c25b6ea25b9202 |
+| WF | fix(client): require a string artifact hash in the dispatch history | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | b5e0e3ca4da2cfa9f69cbf46d2b2881f80f6f29a |
+| | `packages/dacs-client/test/effect-history.test.mjs:1` | d7894853a7aa7c21b1b993b37d74642856ce1e4c |
 
 ## Complete commit and file inventory
 
@@ -3717,6 +3720,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): record the merged package-contents change as the last delta record | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): record the merged package-contents change as the last delta record | `packages/dacs-client/HOLD.json:1` |
 | fix(client): record the merged package-contents change as the last delta record | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/HOLD.json:1` |
+| fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/src/wallet/effect-history.mjs:1` |
+| fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/test/effect-history.test.mjs:1` |
 
 ## Original moved files
 
