@@ -7351,6 +7351,17 @@
           "after": "be72001c276437177160b6a87ce365b7a24d3504"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test on the payment part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        }
+      ]
     }
   ]
 }

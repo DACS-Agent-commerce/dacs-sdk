@@ -1282,6 +1282,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs:1` | 9eeb7d5e566a2ad64e4eef0ab2a317abd92fa64a |
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | 0c4803853e13c363d12b241e1d5657501538152c |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | be72001c276437177160b6a87ce365b7a24d3504 |
+| WF | delta(client): WF record the merged signer reservation test on the payment part | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 7847531f56abbd0395a47518e4dac00cbda6f1e0 |
 
 ## Complete commit and file inventory
 
@@ -4021,6 +4023,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF rebuild the payment-evidence adapter on the signer reservation record | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` |
 | delta(client): WF rebuild the payment-evidence adapter on the signer reservation record | `packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs:1` |
 | delta(client): WF rebuild the payment-evidence adapter on the signer reservation record | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): WF record the merged signer reservation test on the payment part | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged signer reservation test on the payment part | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged signer reservation test on the payment part | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged signer reservation test on the payment part | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged signer reservation test on the payment part | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
