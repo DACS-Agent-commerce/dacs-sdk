@@ -5,7 +5,13 @@ import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
 import { OperationError } from '../client-errors.mjs';
 const CLAIM = /^did:demos:agent:[0-9a-f]{64}$/;
 
-/** Returns a wire request signer and async response verifier using the kept job and current admission. It takes no commitment evidence, so it signs only the routes up to the commitment (proposals, state, context, context challenge, commitments and commitment signature). The payment routes, the bundle routes and the buyer's bundle copy need that evidence and are refused with continuation_commitment_invalid before the signer is called; a read of an already committed purchase is signed as a read of a new one. Rejects with wire errors or profile_not_admitted; malformed configuration throws TypeError, and a missing delegation throws OperationError(seller_delegation_unavailable). No transport is invoked. `request` takes an optional `{ signal }` deadline: once it aborts, the session signer is not called and a late signature is dropped. */
+/**
+ * Returns a wire request signer and async response verifier using the kept job and current admission.
+ * It takes no commitment evidence, so it signs only the routes up to the commitment (proposals, state, context, context challenge, commitments and commitment signature).
+ * The payment routes, the bundle routes and the buyer's bundle copy need that evidence and are refused with continuation_commitment_invalid before the signer is called; a read of an already committed purchase is signed as a read of a new one.
+ * Rejects with wire errors or profile_not_admitted; malformed configuration throws TypeError, and a missing delegation throws OperationError(seller_delegation_unavailable). No transport is invoked.
+ * `request` takes an optional `{ signal }` deadline: once it aborts, the session signer is not called and a late signature is dropped.
+ */
 export function createSellerWireAuthentication({ admission, sessionSigner, delegation, seller, publicEndpoint, endpointProof, job, now = () => Date.now() }) {
   if (!admission?.binding || typeof admission.currentLocal !== 'function') throw new TypeError('admission_required');
   if (!CLAIM.test(sessionSigner?.claim) || typeof sessionSigner?.sign !== 'function' || !CLAIM.test(seller)
