@@ -7144,23 +7144,6 @@
     },
     {
       "delta": "WF",
-      "sha": "9552cf74c2bf1dd739eee1dd1315b7bb7ef46e8c",
-      "subject": "fix(client): state which seller routes the wire request signer can sign",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
-          "before": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5",
-          "after": "948a90f0c28e84d88cdb098baf69478d0bc4286f"
-        },
-        {
-          "path": "packages/dacs-client/test/wire-authentication.test.mjs",
-          "before": "c105cadb85dac6be089bcfd69e053dae8aacdecb",
-          "after": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF record the merged public-admission blob of two parallel records",
       "compact": true,
       "files": [
@@ -7180,6 +7163,23 @@
           "path": "packages/dacs-client/src/public-admission.mjs",
           "before": "8c0c6666bc10a902c9459f67953ebcd3fdcc13e0",
           "after": "8c0c6666bc10a902c9459f67953ebcd3fdcc13e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "9552cf74c2bf1dd739eee1dd1315b7bb7ef46e8c",
+      "subject": "fix(client): state which seller routes the wire request signer can sign",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5",
+          "after": "948a90f0c28e84d88cdb098baf69478d0bc4286f"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-authentication.test.mjs",
+          "before": "c105cadb85dac6be089bcfd69e053dae8aacdecb",
+          "after": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
         }
       ]
     }
