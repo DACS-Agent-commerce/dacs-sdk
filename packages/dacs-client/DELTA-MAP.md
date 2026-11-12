@@ -1245,6 +1245,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/public-admission.mjs:1`: 675152fb86dd45b1b58a2ce24d19d946780cc770 | |
 | WF | delta(client): WF record the merged public-admission blob of the wire purchase transport | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/public-admission.mjs:1`: 8c0c6666bc10a902c9459f67953ebcd3fdcc13e0 | |
+| WF | delta(client): WF drive the client-minted capability test through the request record | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/seller-response-classification.test.mjs:1` | e2495f7ef3e210d2e0ca67278568bb29d7bc7da6 |
 
 ## Complete commit and file inventory
 
@@ -3834,6 +3836,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): end the seller request deadlines ledger with a source change | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): end the continuing routes ledger with a source change | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): end the response classification ledger with a source change | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF drive the client-minted capability test through the request record | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/test/seller-response-classification.test.mjs:1` |
 
 ## Original moved files
 
