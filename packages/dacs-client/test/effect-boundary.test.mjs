@@ -243,7 +243,7 @@ test("crash cuts before persistence, after persistence, after dispatch intent an
     const w = await boundaryWorld(t);
     cutAppend(w, state, { after });
     const artifact = { ...w.op, artifactHash: digestBytes(signedBytes) };
-    await assert.rejects(w.run());
+    await assert.rejects(w.run(), state === 'dispatch-acknowledged' ? code('eb_ack_not_persisted') : undefined);
     w.reopen();
     assert.deepEqual(await states(w, artifact), retained);
     if (state === 'signed' && !after) await w.run();
@@ -254,18 +254,20 @@ test("crash cuts before persistence, after persistence, after dispatch intent an
   }
 });
 
-test("a failed acknowledgement write after a successful send reports eb_ack_not_persisted with the send result and the write failure as its cause", async t => {
-  const w = await boundaryWorld(t), failure = Object.assign(new Error('TEST-disk-failed'), { code: 'EIO' });
-  const artifact = await w.sign();
-  cutAppend(w, 'dispatch-acknowledged', { error: failure });
-  cutAppend(w, 'dispatch-unknown', { error: failure });
-  await assert.rejects(w.send(artifact), error => error.code === 'eb_ack_not_persisted' && error.details?.result === 'TEST-ack'
-    && error.cause.code === 'eb_persist_failed' && error.cause.cause === failure && !/nothing was transmitted/.test(error.message));
-  assert.equal(w.sent.length, 1); assert.equal(w.held, false);
-  w.reopen();
-  assert.deepEqual(await states(w, artifact), ['signed', 'dispatch-started']);
-  await assert.rejects(w.send(artifact), code('eb_readback_required'));
-  assert.equal(w.sent.length, 1);
+test("a failed acknowledgement write after a successful send reports eb_ack_not_persisted with the send result and the write failure as its cause, whether or not the unknown record is written", async t => {
+  for (const unknownWritten of [true, false]) {
+    const w = await boundaryWorld(t), failure = Object.assign(new Error('TEST-disk-failed'), { code: 'EIO' });
+    const artifact = await w.sign();
+    cutAppend(w, 'dispatch-acknowledged', { error: failure });
+    if (!unknownWritten) cutAppend(w, 'dispatch-unknown', { error: failure });
+    await assert.rejects(w.send(artifact), error => error.code === 'eb_ack_not_persisted' && error.details?.result === 'TEST-ack'
+      && error.cause.code === 'eb_persist_failed' && error.cause.cause === failure && !/nothing was transmitted/.test(error.message));
+    assert.equal(w.sent.length, 1); assert.equal(w.held, false);
+    w.reopen();
+    assert.deepEqual(await states(w, artifact), unknownWritten ? ['signed', 'dispatch-started', 'dispatch-unknown'] : ['signed', 'dispatch-started']);
+    await assert.rejects(w.send(artifact), code('eb_readback_required'));
+    assert.equal(w.sent.length, 1);
+  }
 });
 
 test("a failed send still refuses with the send's own error and a lost unknown record does not replace it", async t => {

@@ -7036,6 +7036,17 @@
           "after": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test a lost acknowledgement write with and without its unknown record",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "0fd2ace1a4dae5ef01f51650072be5662066a04f"
+        }
+      ]
     }
   ]
 }
