@@ -321,9 +321,9 @@ describe("build-test long suites (.github/workflows/ci.yml)", () => {
   });
 
   // The demosdk 4.0.18 checks moved to the daily demosdk-compat workflow (test/scripts/demosdk-pin-drift.test.ts).
-  it("installs no other demosdk version in any build-test job", () => {
+  it("installs no exact demosdk version in any build-test job", () => {
     for (const job of [MAIN, SHARD]) {
-      expect((job.steps ?? []).some((s) => (s.run ?? "").includes("@kynesyslabs/demosdk@"))).toBe(false);
+      expect((job.steps ?? []).some((s) => /@kynesyslabs\/demosdk@\d/.test(s.run ?? ""))).toBe(false);
     }
   });
 

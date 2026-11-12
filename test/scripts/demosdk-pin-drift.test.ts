@@ -182,7 +182,8 @@ describe("where the pinned demosdk step runs", () => {
   it("is not in ci.yml", () => {
     const steps = Object.values(ci.jobs).flatMap((job) => job.steps ?? []);
     expect(steps.some((step) => step.name === PIN_STEP)).toBe(false);
-    expect(steps.some((step) => (step.run ?? "").includes("@kynesyslabs/demosdk@"))).toBe(false);
+    // An exact-version install (the package smoke's caret range is the consumer's own install, not a pin).
+    expect(steps.some((step) => /@kynesyslabs\/demosdk@\d/.test(step.run ?? ""))).toBe(false);
   });
 
   it("is the last step of its own unconditional compatibility job, which builds the host kit first", () => {
