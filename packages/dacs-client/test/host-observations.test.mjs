@@ -1023,3 +1023,29 @@ for (const method of ['portalOperation', 'portalEvidence']) {
     });
   }
 }
+
+for (const [label, reason] of [['Error', new Error('transaction reader failed')], ['undefined', undefined], ['null', null], ['zero', 0], ['empty string', ''], ['false', false]]) {
+  test(`transaction body read rejected with ${label} remains retryable`, async t => {
+    const w = world(t, { ...INCLUDED }), readBody = w.chain.getTransaction;
+    const before = w.coordinates.get(w.op.id);
+    w.chain.getTransaction = async () => { throw new Error('transaction reader failed'); };
+    assert.equal((await w.verify()).verification.outcome, 'chain_unavailable');
+    const control = w.coordinates.get(w.op.id).observation;
+    w.chain.getTransaction = async () => { throw reason; };
+    const result = await w.verify(), stored = w.coordinates.get(w.op.id);
+    assert.equal(result.verification.outcome, 'chain_unavailable');
+    assert.match(result.verification.reason, /^transaction body unavailable: /);
+    assert.deepEqual(stored.observation, control);
+    assert.deepEqual(result.operation, w.op);
+    assert.deepEqual(w.ops.get(w.op.accountId, w.op.id), w.op);
+    assert.equal(stored.reportedTxHash, before.reportedTxHash);
+    assert.equal(stored.expectedNonce, before.expectedNonce);
+    assert.equal(stored.nonceFence, before.nonceFence);
+    assert.ok(!stored.verifiedAt);
+    assert.equal(w.consumed(), 0);
+    w.chain.getTransaction = readBody;
+    assert.equal((await w.verify()).verification.outcome, 'verified');
+    assert.equal((await w.verify()).verification.outcome, 'verified');
+    assert.equal(w.consumed(), 1);
+  });
+}
