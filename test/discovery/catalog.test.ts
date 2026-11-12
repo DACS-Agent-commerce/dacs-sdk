@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -622,6 +626,83 @@ describe("createCatalogBindingIndex (DACS-1 §6.3.6 catalog client)", () => {
     await expect(index.resolve(LOGICAL_ADDRESS, OWNER)).resolves.toEqual({
       status: "indeterminate",
       reason: "catalog binding changed between bounded validation scans",
+    });
+  });
+});
+
+describe("catalog summary text bounds count NFC scalar values (DACS-1 §6.3.4)", () => {
+  const { vectors } = JSON.parse(
+    readFileSync(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        "../fixtures/standard-next/listing-string-length-v0.1.json",
+      ),
+      "utf8",
+    ),
+  ) as {
+    vectors: Array<{
+      name: string;
+      field: string;
+      expected: "pass" | "fail";
+      value: string;
+    }>;
+  };
+  // Summaries carry no description; every other vector field reaches a catalog
+  // bound. Decomposed vectors arrive composed, see the NFC test at the end.
+  const reachable = vectors.filter((v) => v.field !== "description");
+  const withText = (field: string, value: string) =>
+    field === "displayName"
+      ? summary({ seller: { primaryClaim: SELLER, displayName: value } })
+      : field === "title"
+        ? summary({ offering: { title: value, category: "data.weather", tags: ["weather"] } })
+        : summary({ offering: { title: "Weather data", category: "data.weather", tags: [value] } });
+  const query = (row: CatalogListingSummary) =>
+    queryListingCatalog(catalogConfig(async () => jsonResponse({ listings: [row] })));
+
+  test("replays the ten Standard vectors that reach a catalog bound", () => {
+    expect(reachable.map((v) => v.name)).toHaveLength(10);
+  });
+
+  for (const vector of reachable) {
+    test(`${vector.expected === "pass" ? "admits" : "rejects"} ${vector.name}`, async () => {
+      await expect(query(withText(vector.field, vector.value))).resolves.toMatchObject(
+        vector.expected === "pass"
+          ? { status: "ok" }
+          : { status: "indeterminate", reason: expect.stringContaining("malformed") },
+      );
+    });
+  }
+
+  // Not Standard vectors: a pure supplementary-plane title at and over the bound.
+  test("admits a 200-character title of supplementary-plane characters", async () => {
+    await expect(query(withText("title", "\u{1F600}".repeat(200)))).resolves.toMatchObject({ status: "ok" });
+  });
+  test("rejects a 201-character title of supplementary-plane characters", async () => {
+    await expect(query(withText("title", "\u{1F600}".repeat(201)))).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringContaining("malformed"),
+    });
+  });
+
+  // Scalar values, not graphemes: one visible character, three scalar values each.
+  test("admits 66 ZWJ emoji sequences in a title (198 scalars)", async () => {
+    await expect(query(withText("title", "\u{1F469}\u200D\u{1F4BB}".repeat(66)))).resolves.toMatchObject({ status: "ok" });
+  });
+  test("rejects 67 ZWJ emoji sequences in a title (201 scalars)", async () => {
+    await expect(query(withText("title", "\u{1F469}\u200D\u{1F4BB}".repeat(67)))).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringContaining("malformed"),
+    });
+  });
+
+  // The page is owned through snapshotCanonicalJsonRead, which applies CF-1 NFC once
+  // before validation, so decomposed wire text reaches the bound already composed.
+  // The bound therefore sees canonically equivalent spellings as the same length.
+  test("measures decomposed wire text by its NFC length", async () => {
+    await expect(query(withText("title", "e\u0301".repeat(200)))).resolves.toMatchObject({ status: "ok" });
+    await expect(query(withText("title", "e\u0301".repeat(201)))).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringContaining("malformed"),
     });
   });
 });

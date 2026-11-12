@@ -68,6 +68,9 @@ describe("5c27c28 upstream findings retained under #191", () => {
     // Selected rows change the evaluated package count. After the checked
     // inventory projection above, every remaining finding stays exact.
     extracted.engine.scan.evaluatedPackages = recorded.securityGate.findings.engine.scan.evaluatedPackages;
+    // The recorded log reports EBADENGINE, not npm ci's later lock sync failure.
+    expect(extracted.engine.lockSyncFailed).toBe(false);
+    delete extracted.engine.lockSyncFailed;
     expect(extracted).toEqual(recorded.securityGate.findings);
   });
 

@@ -21,11 +21,11 @@ export const SELLER_SEED_BYTE = 2;
 const BUYER_SEED_BYTE = 1;
 const MNEMONIC_PATTERN = /^TEST mnemonic seed (\d+)$/;
 
-// The seller's own floor is Node 20.19, but custody refuses below K14's 22.13 (test 20-9 sets its own
-// versions). Elsewhere the fixtures report a supported version, so Node 20 CI legs can open keys.
-const SUPPORTED_TEST_VERSION = 'v22.13.0';
-const [runtimeMajor, runtimeMinor] = /^v(\d+)\.(\d+)\./.exec(process.version)?.slice(1).map(Number) ?? [0, 0];
-if (!((runtimeMajor === 22 && runtimeMinor >= 13) || (runtimeMajor === 23 && runtimeMinor >= 4) || runtimeMajor >= 24)) {
+// Custody refuses Node outside ^22.22.2 || ^24.15.0 (the runtime refusal test sets its own versions).
+// Elsewhere the fixtures report a supported version, so keys open when the suite runs on another Node.
+const SUPPORTED_TEST_VERSION = 'v22.22.2';
+const [runtimeMajor, runtimeMinor, runtimePatch] = /^v(\d+)\.(\d+)\.(\d+)/.exec(process.version)?.slice(1).map(Number) ?? [0, 0, 0];
+if (!((runtimeMajor === 22 && (runtimeMinor > 22 || (runtimeMinor === 22 && runtimePatch >= 2))) || (runtimeMajor === 24 && runtimeMinor >= 15))) {
   Object.defineProperty(process, 'version', { value: SUPPORTED_TEST_VERSION, configurable: true });
 }
 

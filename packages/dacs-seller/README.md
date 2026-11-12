@@ -23,7 +23,7 @@ needs the `contextSessionState` capability described below.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
-The repository's `engines` require Node.js `^20.19.0 || >=22.12.0`; the
+The repository's `engines` require Node.js `^22.22.2 || ^24.15.0`; the
 durable stores use the native `better-sqlite3` module. Use the same version of
 `@kynesyslabs/dacs` as this kit.
 The private package uses a core tarball built from the same checkout.
@@ -51,6 +51,41 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
+The host's optional `maxRecords` (default 10,000) is the permanent reservation
+budget. A purchase allocation holds 17 units for each of the context, proposals,
+commitments and payments routes (68 units, or 85 when commitments/signature is
+enabled), and admission allots one only while the whole allotment is free. A
+successful context completion returns only the context slot; an aborted start, a
+failed or non-validated context and a terminal DACS-5 session return every open
+slot. Returned units never reduce what has been charged. The host composes a
+reservation coordinator: one
+in-process mutex per operation covers journal inspection, capacity classification,
+accounting and recording the reservation result. The routes do not yet reserve
+through the coordinator. Admission and accounting accept capacity through their
+internal ports.
+The routes do not yet reserve through these units, so the host's readiness does
+not read them: signed routes reserve through the store's accounting, terminal
+allocation cleanup runs at startup and when a store reader observes a terminal
+session, and the periodic terminal cleanup comes with the routes that use the units.
+
+The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
+the old store's checks, startup cleanup and the coordinator) is kept as a durable,
+insert-only terminal closure for the job, together with the release of its open
+slots. It commits with the work that saw it or, when that work is refused, fails or
+is rolled back (the `classify` dry run included), in a transaction of its own before
+the answer leaves. A failed write keeps its error and the observation stays
+pending, so no later transaction or request passes it. A closure answers terminal
+after a restart whatever the port then says; an unknown, nonterminal or
+asynchronous answer creates none. The coordinator refuses a request for a closed job
+`context_session_terminal` (409) after inspecting its operation and before any
+accounting, unless that operation already completed under the request's binding. After the
+terminal check, the coordinator runs the synchronous, read-only gates registered
+with `addPreAccountingGate` in registration order. Completed operations bypass both checks. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+is the one synchronous check for other callers, and the purchase capacity must be
+built on a store before any reader runs. These observation writes are counted apart
+from the challenge, admission and reservation writes, which a refusal still leaves
+untouched.
+
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
@@ -70,6 +105,7 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
+  maxRecords: 10000,     // optional permanent reservation budget; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
@@ -863,7 +899,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
 
 ### Seller key custody
 
-`openSellerKey` (`src/seller-key.mjs`; Node ^22.13.0 or >=23.4.0) loads the
+`openSellerKey` (`src/seller-key.mjs`; Node ^22.22.2 or ^24.15.0) loads the
 seller key only through `loadDacsSecretV1`, from one file in the exactly-0700
 data directory holding `{ format: "dacs-seller-key/v1", algorithm: "ed25519",
 mnemonic }`, and zeroes every copy it owns. It signs only through three roles:
