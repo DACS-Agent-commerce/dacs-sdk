@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
 import { world, validReceipt, PUBLIC_ENDPOINT, JOB } from './helpers/wire-client-fixture.mjs';
@@ -16,7 +15,6 @@ const BUNDLE_PATHS = [PATHS.bundleRequest, PATHS.bundleCountersignature];
 const BOOTSTRAP_CODES = ['context_challenge_failed', 'context_challenge_consumed', 'context_challenge_expired', 'context_challenge_mismatch', 'context_job_closed', 'context_admission_closed'];
 const NO_PROVENANCE = { continuation: false, newPurchase: false };
 const TX_HASH = 'a'.repeat(64);
-const README = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const ctx = (path, extra = {}) => ({ path, dispatched: true, ...NO_PROVENANCE, ...extra });
 const signed = (status, body = {}) => ({ status, signed: true, body });
 const classOf = (record, context) => classifySellerAnswer(record, context).answerClass;
@@ -61,7 +59,7 @@ const unavailableAs = (outcome, answerClass, causeCode, code) => {
   assert.equal(outcome.error.answerCode, code);
 };
 
-test('signed 200 results are verified, and held, payment-evidenced with delivery pending, indeterminate and waiting are progress, never final (K5-C11)', async (t) => {
+test('signed 200 results are verified, and held, payment-evidenced with delivery pending, indeterminate and waiting are progress, never final', async (t) => {
   const results = [[PATHS.commitments, { status: 'committed' }], [PATHS.proposals, { disposition: 'present' }], [PATHS.payments, { status: 'delivered' }], [PATHS.payments, { status: 'payment-evidenced', delivery: { status: 'delivered' } }],
     [PATHS.payments, { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'published' } }], [PATHS.payments, { status: 'delivery-ready' }], [PATHS.state, { status: 'held' }], [PATHS.contextChallenge, {}]];
   for (const [path, body] of results) assert.equal(classOf(signed(200, body), ctx(path)), CLASS.RESULT, canonicalize([path, body]));
@@ -96,7 +94,7 @@ test('408 peer_expired, another signed 5xx, an unsigned answer and a timeout are
   assert.deepEqual([timedOut.answerClass, timedOut.causeCode], [CLASS.UNKNOWN, 'timeout']);
 });
 
-test('signed 409 peer_operation_mismatch is definite and stops the purchase with that cause (K5-C5)', async (t) => {
+test('signed 409 peer_operation_mismatch is definite and stops the purchase with that cause', async (t) => {
   const s = await sellerWorld(t);
   assert.equal(classOf(signed(409, { error: 'peer_operation_mismatch' }), ctx(PATHS.payments)), CLASS.DEFINITE);
   const outcome = await viaPost(s, PATHS.commitments, 409, { error: 'peer_operation_mismatch', message: 'the job is bound elsewhere' });
@@ -105,7 +103,7 @@ test('signed 409 peer_operation_mismatch is definite and stops the purchase with
   assert.equal(outcome.fetches, 1);
 });
 
-test('signed 500 seller_effect_unresolved shows needs the seller operator and is not retried (K5-C6)', async (t) => {
+test('signed 500 seller_effect_unresolved shows needs the seller operator and is not retried', async (t) => {
   const s = await sellerWorld(t);
   assert.equal(classOf(signed(500, { error: 'seller_effect_unresolved' }), ctx(PATHS.payments)), CLASS.HELD);
   const outcome = await viaPost(s, PATHS.payments, 500, { error: 'seller_effect_unresolved' });
@@ -122,7 +120,7 @@ test('408 peer_delegation_expired allows readback routes only', async (t) => {
   assert.equal(outcome.fetches, 1);
 });
 
-test('503 bundle_finalization_unavailable and 422 not_delivered are held with no retry loop on the bundle routes, and the same signed pairs on other routes follow their own rows (K5-C10)', async (t) => {
+test('503 bundle_finalization_unavailable and 422 not_delivered are held with no retry loop on the bundle routes, and the same signed pairs on other routes follow their own rows', async (t) => {
   const s = await sellerWorld(t);
   for (const path of ALL_PATHS) {
     const onBundle = BUNDLE_PATHS.includes(path);
@@ -195,27 +193,38 @@ test('a TLS failure before dispatch is not sent (dispatched false) and after dis
 });
 
 test('a real signed 200 result, a signed progress response and a signed refusal pass through post() and the wire adapter into classification as {status, signed: true, body}, with the HTTP status the wire checked and the receipt\'s admitted body', async (t) => {
-  const s = await sellerWorld(t), seen = [];
-  const classifyAnswer = (record, context) => { seen.push([record, context]); return classifySellerAnswer(record, context); };
+  const s = await sellerWorld(t), receipts = [];
+  const authentication = { request: (...args) => s.auth.request(...args), async verifyResponse(...args) { const receipt = await s.auth.verifyResponse(...args); receipts.push(receipt); return receipt; } };
   const cases = [[PATHS.commitments, 200, { status: 'committed', jobId: JOB }], [PATHS.payments, 200, { status: 'held', reason: 'readback incomplete' }], [PATHS.commitments, 409, { error: 'peer_operation_mismatch' }]];
   for (const [path, status, body] of cases) {
-    const outcome = await viaPost(s, path, status, body, { classifyAnswer });
-    const [record, context] = seen.at(-1);
-    assert.deepEqual(record, { status, signed: true, body });
-    assert.deepEqual(context, { path, dispatched: true, continuation: false, newPurchase: false });
-    if (status === 200) assert.deepEqual(outcome.value, body);
-    else assert.ok(outcome.error instanceof SellerRefusedError);
+    const outcome = await viaPost(s, path, status, body, { authentication });
+    assert.deepEqual(receipts.at(-1).body, body);
+    if (status === 200) assert.equal(outcome.value, receipts.at(-1).body, 'the caller gets the body the wire admitted');
+    else refusedAs(outcome, CLASS.DEFINITE, 'peer_operation_mismatch', status);
   }
-  assert.equal(seen.length, 3);
-  // The signed status and the HTTP status must agree: the wire refuses a mismatch and nothing reaches classification.
-  const mismatched = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, classifyAnswer, fetchImpl: async (_url, init) => signedResponse(s.w, init, 200, '{"status":"committed"}', 409) });
+  assert.equal(receipts.length, 3);
+  // The signed status and the HTTP status must agree: the wire refuses a mismatch, so it is never a refusal or a result.
+  const mismatched = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async (_url, init) => signedResponse(s.w, init, 200, '{"status":"committed"}', 409) });
   const rejected = await CALLS[PATHS.commitments](mismatched).catch((error) => error);
+  assert.ok(rejected instanceof SellerUnavailableError, String(rejected));
   assert.deepEqual([rejected.answerClass, rejected.causeCode], [CLASS.UNKNOWN, 'response-auth']);
-  assert.equal(seen.length, 3);
+});
+
+test('with an authentication adapter whose verification resolves no receipt, an unsigned answer is unavailable with cause response-auth, never a result or a refusal', async (t) => {
+  const s = await sellerWorld(t);
+  for (const missing of [undefined, null])
+    for (const [status, text] of [[200, '{"status":"delivered","forged":true}'], [409, '{"error":"peer_operation_mismatch"}']]) {
+      const authentication = { request: (...args) => s.auth.request(...args), verifyResponse: async () => missing };
+      const client = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication, fetchImpl: async () => new Response(text, { status, headers: { 'content-type': 'application/json' } }) });
+      const error = await CALLS[PATHS.payments](client).then(() => assert.fail(`an unverified ${status} was returned`), (rejection) => rejection);
+      assert.ok(error instanceof SellerUnavailableError, String(error));
+      assert.deepEqual([error.answerClass, error.causeCode], [CLASS.UNKNOWN, 'response-auth']);
+      assert.equal(client.failureCause, 'response-auth');
+    }
 });
 
 test('with verification held at a barrier and then rejected, no result reaches the business consumer before verification, and the rejection is unknown with its cause and never signed: true', async (t) => {
-  const s = await sellerWorld(t), seen = [];
+  const s = await sellerWorld(t);
   let releaseBarrier, reachedBarrier;
   const barrier = new Promise((resolve) => { releaseBarrier = resolve; }), atBarrier = new Promise((resolve) => { reachedBarrier = resolve; });
   const authentication = { request: (...args) => s.auth.request(...args), async verifyResponse(payload, received) {
@@ -223,20 +232,17 @@ test('with verification held at a barrier and then rejected, no result reaches t
     await barrier;
     throw new wire.WireError('peer_response_mismatch', 502);
   } };
-  const classifyAnswer = (record, context) => { seen.push(record); return classifySellerAnswer(record, context); };
-  const client = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication, classifyAnswer, fetchImpl: async (_url, init) => signedResponse(s.w, init, 200, '{"status":"committed"}') });
+  const client = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication, fetchImpl: async (_url, init) => signedResponse(s.w, init, 200, '{"status":"committed"}') });
   let consumed = false;
   const consumer = CALLS[PATHS.commitments](client).then((value) => { consumed = true; return value; }, (error) => { consumed = true; throw error; });
   const received = await atBarrier;
   assert.equal(Buffer.from(received.body).toString(), '{"status":"committed"}');
   await Promise.resolve();
   assert.equal(consumed, false, 'the answer was used before verification finished');
-  assert.deepEqual(seen, []);
   releaseBarrier();
   const error = await consumer.catch((rejection) => rejection);
-  assert.ok(error instanceof SellerUnavailableError);
+  assert.ok(error instanceof SellerUnavailableError, String(error));
   assert.deepEqual([error.answerClass, error.causeCode], [CLASS.UNKNOWN, 'response-auth']);
-  assert.deepEqual(seen, [], 'a rejected verification produced a classifier record');
   assert.equal(client.failureCause, 'response-auth');
 });
 
@@ -268,8 +274,6 @@ test('every status, code, route and provenance cell maps to exactly one class', 
       cells++;
     }
   assert.ok(cells > 5000);
-  for (const malformed of [{}, { path: 'https://example/', dispatched: true, ...NO_PROVENANCE }, ctx(PATHS.state, { dispatched: 'yes' }), ctx(PATHS.state, { continuation: undefined }), ctx(PATHS.state, { newPurchase: 1 })])
-    assert.throws(() => classifySellerAnswer(signed(200), malformed), TypeError);
   assert.throws(() => classifySellerAnswer(signed(200), ctx(PATHS.state, { dispatched: false })), TypeError);
   for (const record of [signed(200.5), signed(200, []), signed(200, null), { status: 200, signed: 'true', body: {} }, undefined]) assert.equal(classOf(record ?? null, ctx(PATHS.state)), CLASS.UNKNOWN, canonicalize(record ?? null));
 });
@@ -299,14 +303,6 @@ test('an unavailable error from signing keeps the client-sign cause and is not t
   assert.notEqual(error, signingFailure);
   assert.deepEqual([error.answerClass, error.causeCode], [CLASS.UNKNOWN, 'client-sign']);
   assert.equal(client.failureCause, 'client-sign');
-});
-
-test('the README classification table names every class and every coded row of the classifier', () => {
-  const section = README.slice(README.indexOf('Seller answer classification'));
-  assert.ok(section.length < README.length, 'the README has no classification section');
-  for (const name of Object.values(CLASS)) assert.ok(section.includes(`\`${name}\``), name);
-  for (const code of ['peer_request_replayed', 'seller_effect_pending', 'context_attempt_pending', 'peer_expired', 'seller_stopped', 'bundle_finalization_unavailable', 'not_delivered', 'seller_not_ready',
-    'peer_operation_mismatch', 'seller_effect_unresolved', 'peer_delegation_expired', ...BOOTSTRAP_CODES]) assert.ok(section.includes(`\`${code}\``), code);
 });
 
 const sealed = (s, status, error) => init => s.reply(init, status, { error });

@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "35cdae8393b9d18277947a0dc16c5a69c6155e52"
+        "blob": "98601c53b540634bd42dd8162f4e081312278a23"
       },
       "DELTA-LEDGER.json": {
-        "blob": "4425e7cdec73926d4b876458e6078e13d6dd0f16"
+        "blob": "bb796426777e83430d41865e18f10e734b64e994"
       },
       "DELTA-MAP.md": {
-        "blob": "042da97dcbfd2b2141e36f57feff164afce2ac97"
+        "blob": "7acced1563c555de8909199bc2a706101ad62e28"
       },
       "DELTA-NOTES.md": {
-        "blob": "0ff7539a8bae03d08bbe31e6c570991ef7e34958"
+        "blob": "d9527e723bd7a6a29c25d43c020410c2c8304c99"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "9759e6f71349bc86378699b88cc0f8afabd890e4"
+        "blob": "7a74ec2df2d18c0ece2f77860d034ad4821ba919"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "3abf851068dea44ac72bbe2ca2e95ffab468f126"
+        "blob": "b00fa5e575356bae70eb4ba84e82f3fa0971dc79"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1175,10 +1175,10 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "f80404d442afea5c691c15c3b729ec10ea9bf319"
+        "blob": "2d406c3de227b1365694f2b3eaea2f7e0c18ab20"
       },
       "src/dacs/seller-response-class.mjs": {
-        "blob": "8ca70e7f5d3217388527c8dcab289193b2848780"
+        "blob": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
       },
       "src/dacs/seller-session-lifecycle.mjs": {
         "blob": "86fd5777a41c76183f2b3383898400469bdc60b3"
@@ -1940,7 +1940,7 @@
         "blob": "6c920248367b799050ce5f473574a6a9ca927f1e"
       },
       "test/seller-response-classification.test.mjs": {
-        "blob": "71d7482308110c72059754e79f8929e55debe1c3"
+        "blob": "60d3849d0f82b3eea964a03c1919306f56d4960b"
       },
       "test/seller-session-delegation-job-id.test.mjs": {
         "blob": "b0777e30c7cf6efedd45f3b645329057b18025e5"
