@@ -7929,6 +7929,17 @@
           "after": "6ca61271e2daf5de7781479b88a971723597cc10"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF drive the client-minted capability test through the request record",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "60d3849d0f82b3eea964a03c1919306f56d4960b",
+          "after": "e2495f7ef3e210d2e0ca67278568bb29d7bc7da6"
+        }
+      ]
     }
   ]
 }
