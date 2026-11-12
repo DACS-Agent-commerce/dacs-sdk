@@ -1,4 +1,4 @@
-import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import type { SettleRequest, SettleResult } from "./settlementTypes.js";
 import { sha256Hex } from "../canonical/index.js";
 import { types as nodeTypes } from "node:util";
 import { CounterpartyError, DacsError } from "../errors.js";
