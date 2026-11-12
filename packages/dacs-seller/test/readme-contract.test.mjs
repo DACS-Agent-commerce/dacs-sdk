@@ -41,8 +41,7 @@ test('the absence proof is a contract for an operator-supplied anchor, not the u
 test('the runtime requirement matches the repository engines and the sqlite module the code imports', () => {
   // The durable stores import better-sqlite3 (seller-durable-state.mjs:10,
   // seller-transport-auth.mjs:8, payment-evidence-wallet-journal.mjs:85,
-  // party-vet-store.mjs:21), not node:sqlite, and CI runs the seller suite on
-  // Node 20.19.
+  // party-vet-store.mjs:21), not node:sqlite.
   assert.ok(readme.includes(rootPackage.engines.node), `the README states the engines range ${rootPackage.engines.node}`);
   assert.doesNotMatch(readme, /node:sqlite/);
   assert.match(readme, /better-sqlite3/);

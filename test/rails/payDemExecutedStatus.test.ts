@@ -33,6 +33,7 @@ const sdk = vi.hoisted(() => ({
 
 vi.mock("@kynesyslabs/demosdk/websdk", () => ({
   Demos: class MockDemos {
+    _doPost = vi.fn();
     readonly tx = { confirm: sdk.confirm };
     readonly broadcast = sdk.broadcast;
     readonly connect = sdk.connect;

@@ -136,8 +136,9 @@ export function loadPinnedLibnpmpublish({
   pinned = PINNED_ACCEPTANCE_NPM_VERSION,
 } = {}) {
   const fail = (detail, cause) => {
-    throw new Error(`exact local publisher requires the pinned npm ${pinned} (install it with ` +
-      `\`npm install --global npm@${pinned}\`): ${detail}`, { cause });
+    throw new Error(`exact local publisher requires the pinned npm ${pinned} (install it in its own prefix with ` +
+      `\`npm install --global --prefix <dir> --ignore-scripts npm@${pinned}\`, then put <dir>/bin first on PATH ` +
+      `and set npm_config_prefix=<dir>): ${detail}`, { cause });
   };
   let version;
   let root;
