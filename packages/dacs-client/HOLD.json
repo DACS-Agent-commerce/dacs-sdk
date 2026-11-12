@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "80db69aaa136813357798f3ed46fc895c6dd2525"
+        "blob": "0b712711e1644cfdbd39e8e8343c00549c4c8778"
       },
       "DELTA-LEDGER.json": {
-        "blob": "fdb3bdc386ed7f4c8065cca5b1cf0eedd240dd31"
+        "blob": "c7b755b518486e397f7c4792ebf536953a48b819"
       },
       "DELTA-MAP.md": {
-        "blob": "1b088cf6fd44f2e2aa2d2bc3decdf864aa6e24e7"
+        "blob": "f184369c08a3218d4b0f7d2c0b969ef68c5a083c"
       },
       "DELTA-NOTES.md": {
         "blob": "6ddc1437b7319b09a2f67b4187ba9b995c45a03c"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "fa6f51bf57a132cdc86cda657f17573975e8132c"
+        "blob": "85ab0ad9fcf88ad7ba826f9dfb8ded8fab9f2ee2"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "05aecddde57e93c2e7e90572e5757fef722946e6"
+        "blob": "26c60cdb0e5ffb7e16a87236831ef6c3e2452633"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1250,7 +1250,7 @@
         "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a"
+        "blob": "aebbb2f2a8cbd4ed3c053e258097bb40f879ed45"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1784,7 +1784,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/host-observations.test.mjs": {
-        "blob": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4"
+        "blob": "340d541daecd3e501767c1cf341ea1e7c2c1683f"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
