@@ -7612,6 +7612,23 @@
           "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged response classification rebuild in the stored request bytes client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "2d406c3de227b1365694f2b3eaea2f7e0c18ab20",
+          "after": "2d406c3de227b1365694f2b3eaea2f7e0c18ab20"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "60d3849d0f82b3eea964a03c1919306f56d4960b",
+          "after": "60d3849d0f82b3eea964a03c1919306f56d4960b"
+        }
+      ]
     }
   ]
 }
