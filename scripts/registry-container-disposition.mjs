@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { basename, dirname, join, posix, resolve } from "node:path";
+import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectAuditVersions } from "./check-npm-advisories.mjs";
 import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
@@ -1468,20 +1468,20 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
   } catch (error) { return { exitCode: 3, message: String(error) }; }
 }
 
-// The file a path names once its directory links are followed: the real parent
-// directory plus the file name, which is what removing the path deletes. A
-// parent that does not exist yet is compared as written.
-function fileIdentity(path) {
-  const parent = dirname(resolve(path));
-  let realParent = parent;
-  try { realParent = realpathSync(parent); } catch { /* not created yet: nothing links through it */ }
-  return join(realParent, basename(path));
-}
-
 // Removes a previous report before its inputs are read, so a failed repeat
-// leaves no stale result; an output naming an input is refused first.
+// leaves no stale result. The output is looked at as the operating system
+// resolves it, without following a final link (removing a link deletes only the
+// link), and refused when it is the same file as an input, however either path
+// is spelled.
 function invalidateReport(output, inputs) {
-  if (inputs.some(input => fileIdentity(input) === fileIdentity(output))) throw new Error("evidence input and output must differ");
+  let existing;
+  try { existing = lstatSync(output, { bigint: true }); } catch { existing = null; }
+  if (existing !== null && inputs.some(input => {
+    try {
+      const evidence = statSync(input, { bigint: true });
+      return evidence.dev === existing.dev && evidence.ino === existing.ino;
+    } catch { return false; }
+  })) throw new Error("evidence input and output must differ");
   rmSync(output, { force: true });
 }
 

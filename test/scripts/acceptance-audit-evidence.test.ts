@@ -327,7 +327,7 @@ describe("audit policy CLI", () => {
       expect(cli("--audit-policy", input, lock, baselineFile).status).not.toBe(0);
       expect(readFileSync(baselineFile)).toEqual(bytes);
     } finally {
-      writeFileSync(baselineFile, bytes);
+      if (!existsSync(baselineFile) || !readFileSync(baselineFile).equals(bytes)) writeFileSync(baselineFile, bytes);
     }
   });
 
@@ -341,6 +341,34 @@ describe("audit policy CLI", () => {
     const bytes = readFileSync(input, "utf8");
     expect(cli("--audit-policy", input, lock, join(link, "audit.json")).status).not.toBe(0);
     expect(readFileSync(input, "utf8")).toBe(bytes);
+  });
+
+  it("refuses an output that reaches an input through a directory link and a parent step without deleting it", () => {
+    const root = scratch(), work = join(root, "work"), elsewhere = join(root, "elsewhere"), real = join(elsewhere, "real");
+    mkdirSync(work);
+    mkdirSync(elsewhere);
+    mkdirSync(real);
+    symlinkSync(real, join(work, "link"));
+    const input = join(elsewhere, "audit.json"), lock = join(elsewhere, "lock.json");
+    writeFileSync(input, JSON.stringify(auditReport({})));
+    writeFileSync(lock, JSON.stringify(auditLock({})));
+    const bytes = readFileSync(input, "utf8");
+    const result = cli("--audit-policy", input, lock, `${join(work, "link")}/../audit.json`);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("evidence input and output must differ");
+    expect(readFileSync(input, "utf8")).toBe(bytes);
+  });
+
+  it("refuses an output naming the target of a linked input without deleting it", () => {
+    const root = scratch(), target = join(root, "npm-audit.json"), input = join(root, "audit-link.json"), lock = join(root, "lock.json");
+    writeFileSync(target, JSON.stringify(auditReport({})));
+    writeFileSync(lock, JSON.stringify(auditLock({})));
+    symlinkSync(target, input);
+    const bytes = readFileSync(target, "utf8");
+    const result = cli("--audit-policy", input, lock, target);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("evidence input and output must differ");
+    expect(readFileSync(target, "utf8")).toBe(bytes);
   });
 
   it("names its arguments when one is missing", () => {
