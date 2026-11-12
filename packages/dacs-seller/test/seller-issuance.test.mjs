@@ -128,3 +128,20 @@ test('a start still refuses a bound ledger whose last line is torn but not a con
  await assert.rejects(start(directory,openJournal),/ledger/i);
  assert.equal(await readFile(ledgerPath(directory),'utf8'),`${kept}${tail}`);
 });
+
+test('an async journal opener refuses the first start and saves no binding',async t=>{
+ const directory=await stateDirectory(t),asyncOpener=journalOpener();
+ await assert.rejects(start(directory,async(request)=>asyncOpener(request)),/journal opener must return/);
+ await assert.rejects(readFile(join(directory,'evidence','seller-issuance-journals.json')),{code:'ENOENT'});
+ assert.equal((await start(directory,journalOpener())).length,3);
+});
+
+test('an opener that ignores expectedJournalId and returns another journal refuses the start and closes it',async t=>{
+ const directory=await stateDirectory(t),openJournal=journalOpener();
+ await start(directory,openJournal);
+ const closed=[];
+ const swapping=({path})=>({journalId:'f'.repeat(32),close(){closed.push(path);}});
+ await assert.rejects(start(directory,swapping),/does not match the bound journal/);
+ assert.equal(closed.length,1);
+ assert.equal((await start(directory,openJournal)).length,3);
+});
