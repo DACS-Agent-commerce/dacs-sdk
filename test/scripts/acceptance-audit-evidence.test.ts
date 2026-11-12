@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -315,6 +315,32 @@ describe("audit policy CLI", () => {
     const bytes = readFileSync(join(root, name), "utf8");
     expect(cli("--audit-policy", input, lock, join(root, ".", name)).status).not.toBe(0);
     expect(readFileSync(join(root, name), "utf8")).toBe(bytes);
+  });
+
+  it("refuses an output that is the committed audit baseline without deleting it", () => {
+    const root = scratch(), input = join(root, "audit.json"), lock = join(root, "lock.json");
+    const baselineFile = join(repoRoot, "scripts/registry-container-audit-baseline.json");
+    const bytes = readFileSync(baselineFile);
+    writeFileSync(input, JSON.stringify(auditReport({})));
+    writeFileSync(lock, JSON.stringify(auditLock({})));
+    try {
+      expect(cli("--audit-policy", input, lock, baselineFile).status).not.toBe(0);
+      expect(readFileSync(baselineFile)).toEqual(bytes);
+    } finally {
+      writeFileSync(baselineFile, bytes);
+    }
+  });
+
+  it("refuses an output that reaches an input through a directory link without deleting it", () => {
+    const root = scratch(), real = join(root, "real"), link = join(root, "link");
+    mkdirSync(real);
+    symlinkSync(real, link);
+    const input = join(real, "audit.json"), lock = join(real, "lock.json");
+    writeFileSync(input, JSON.stringify(auditReport({})));
+    writeFileSync(lock, JSON.stringify(auditLock({})));
+    const bytes = readFileSync(input, "utf8");
+    expect(cli("--audit-policy", input, lock, join(link, "audit.json")).status).not.toBe(0);
+    expect(readFileSync(input, "utf8")).toBe(bytes);
   });
 
   it("names its arguments when one is missing", () => {

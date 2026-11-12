@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, posix, resolve } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectAuditVersions } from "./check-npm-advisories.mjs";
 import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
@@ -1468,10 +1468,20 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
   } catch (error) { return { exitCode: 3, message: String(error) }; }
 }
 
+// The file a path names once its directory links are followed: the real parent
+// directory plus the file name, which is what removing the path deletes. A
+// parent that does not exist yet is compared as written.
+function fileIdentity(path) {
+  const parent = dirname(resolve(path));
+  let realParent = parent;
+  try { realParent = realpathSync(parent); } catch { /* not created yet: nothing links through it */ }
+  return join(realParent, basename(path));
+}
+
 // Removes a previous report before its inputs are read, so a failed repeat
 // leaves no stale result; an output naming an input is refused first.
 function invalidateReport(output, inputs) {
-  if (inputs.some(input => resolve(input) === resolve(output))) throw new Error("evidence input and output must differ");
+  if (inputs.some(input => fileIdentity(input) === fileIdentity(output))) throw new Error("evidence input and output must differ");
   rmSync(output, { force: true });
 }
 
@@ -1495,7 +1505,7 @@ if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.u
     if (!auditPath || !lockPath || !output) {
       throw new Error("usage: --audit-policy <npm-audit.json> <generated-package-lock.json> <output>");
     }
-    invalidateReport(output, [auditPath, lockPath]);
+    invalidateReport(output, [auditPath, lockPath, fileURLToPath(baselinePath)]);
     const audit = JSON.parse(readRequiredEvidence(auditPath));
     let lock = null;
     try { lock = JSON.parse(readEvidence(lockPath)); } catch { /* missing or unreadable: applicability is unevaluated */ }
