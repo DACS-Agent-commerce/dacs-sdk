@@ -26,6 +26,20 @@ describe("publish environment evidence bounds", () => {
       expect(result.stdout).not.toContain("Complete owner step 1");
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 30_000);
+  // A line that starts with `::` in a step log is read as a workflow command, so
+  // text taken from the input or its path must not reach stderr with a raw newline.
+  it.each(["file content", "file name"])("prints a single stderr line when the %s holds a newline and a workflow command", kind => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-publish-escape-")); const policy = join(root, "policies.json");
+    const input = join(root, kind === "file name" ? "environment\n::error::forged.json" : "environment.json");
+    try {
+      writeFileSync(policy, JSON.stringify(policies()));
+      if (kind === "file content") writeFileSync(input, "ab\n::error::forged");
+      const result = spawnSync(process.execPath, ["scripts/check-publish-environment.mjs", input, policy], { encoding: "utf8" });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr.trimEnd().split(/\r?\n/)).toHaveLength(1);
+      expect(result.stderr).toContain("::error::forged");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
   it.each(["rules", "reviewers", "policies"])("bounds decoded %s collections", kind => {
     const env = environment(); const policy = policies();
     const rule = env.protection_rules[0]; if (!rule) throw new Error("missing fixture protection rule");
