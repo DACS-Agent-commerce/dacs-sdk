@@ -1,12 +1,6 @@
 import { DacsError } from "../errors.js";
 import { readBoundedDemosJson } from "../rails/demosRpc.js";
 
-/** Expected network: the genesis hash, with an optional genesis-declared id. */
-export interface ExpectedDemosChainIdentity {
-  genesisHash: string;
-  chainId?: string | null;
-}
-
 /** Resolved network identity; genesis reads cannot report genesis data or id. */
 export interface DemosChainIdentity {
   chainId: string | null;

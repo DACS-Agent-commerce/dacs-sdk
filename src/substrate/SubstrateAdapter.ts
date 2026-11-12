@@ -1,6 +1,11 @@
-import type { ExpectedDemosChainIdentity } from "./demosChainIdentity.js";
 import type { AnchorResolution, OwnedAnchorScan } from "./anchorResolution.js";
 import type { DemosWriteJournal } from "./demosWriteJournal.js";
+
+/** Expected network: the genesis hash, with an optional genesis-declared id. */
+export interface ExpectedDemosChainIdentity {
+  genesisHash: string;
+  chainId?: string | null;
+}
 
 /** Configuration for the optional Demos-backed adapter. */
 export interface DemosAdapterConfig {

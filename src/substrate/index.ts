@@ -11,6 +11,7 @@ export type {
   AnchorWriteOnceOptions,
   DemosAdapterConfig,
   DemosWriteEvidence,
+  ExpectedDemosChainIdentity,
   ProxyFetchRequest,
   ProxyFetchResult,
   ResolvedIdentity,
@@ -66,4 +67,4 @@ export type {
 } from "./anchorResolution.js";
 export { classifyAnchorResolution } from "./anchorResolution.js";
 
-export { DemosChainIdentityError, type DemosChainIdentity, type ExpectedDemosChainIdentity } from "./demosChainIdentity.js";
+export { DemosChainIdentityError, type DemosChainIdentity } from "./demosChainIdentity.js";
