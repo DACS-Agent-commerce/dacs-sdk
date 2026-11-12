@@ -23,7 +23,7 @@ needs the `contextSessionState` capability described below.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
-The repository's `engines` require Node.js `^20.19.0 || >=22.12.0`; the
+The repository's `engines` require Node.js `^22.22.2 || ^24.15.0`; the
 durable stores use the native `better-sqlite3` module. Use the same version of
 `@kynesyslabs/dacs` as this kit.
 The private package uses a core tarball built from the same checkout.
@@ -899,7 +899,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
 
 ### Seller key custody
 
-`openSellerKey` (`src/seller-key.mjs`; Node ^22.13.0 or >=23.4.0) loads the
+`openSellerKey` (`src/seller-key.mjs`; Node ^22.22.2 or ^24.15.0) loads the
 seller key only through `loadDacsSecretV1`, from one file in the exactly-0700
 data directory holding `{ format: "dacs-seller-key/v1", algorithm: "ed25519",
 mnemonic }`, and zeroes every copy it owns. It signs only through three roles:

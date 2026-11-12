@@ -241,7 +241,7 @@ describe("every workflow", () => {
     expect(callers.map((caller) => caller.name)).toContain("package-artifact.yml:release-packages");
     expect(callers.map((caller) => caller.name)).toContain("publish-prerelease-gated.yml:verify");
     const legs = readWorkflow(join(workflowsDirectory, "package-artifact.yml")).jobs["release-packages"]?.strategy?.matrix?.["node-version"];
-    expect(legs).toEqual(["20.19.0", "22.21.1"]);
+    expect(legs).toEqual(["22.22.2", "24.15.0"]);
   });
 
   it("in every workflow, each step that runs the kit's tests is `npm run seller:test` and none runs an inline node command over `packages/dacs-seller/test/*`; `ci.yml` holds exactly one such step; no kit test asserts the removed inline command in a workflow text", () => {
