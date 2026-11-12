@@ -47,17 +47,12 @@ include `networkFeeOs`, a canonical non-negative integer OS string. Session
 checkpoints retain this fee across restart; the evidence's payment amount
 continues to describe the agreed transfer amount.
 
-Session recovery also reauthenticates every saved native-payment success through
-`resumeSettlement`, including older inclusion-only checkpoints and previously
-anchored success evidence. Wire that seam to the durable `payDemSettle` recovery
-path and retain the original signed-transfer journal. A bound failed record may
-replace an old successful rail checkpoint lacking execution authentication with
-permanent failure for the same transaction. Fresh native success and a
-successful audit durably mark execution authentication; a later contradictory
-failure is refused. A renewable session lease spans native recheck and evidence
-publication, and a lost lease or changed revision aborts completion. Already
-signed success evidence that contradicts execution is refused; the SDK does not
-rewrite it or complete the session. Absent, indeterminate or conflicting
+A recovery request reauthenticates every saved native-payment success through
+the durable `payDemSettle` bridge. Keep the original signed-transfer journal. A
+bound failed record may replace an old successful rail checkpoint lacking
+execution authentication with permanent failure for the same transaction. Fresh
+native success and a successful audit durably mark execution authentication; a
+later contradictory failure is refused. Absent, indeterminate or conflicting
 observations withhold success and never authorize a replacement debit. The
 original fee metadata is retained after a successful audit, and every subsequent
 restart authenticates execution again.
@@ -95,31 +90,28 @@ during audit.
 
 ## Recovering a pay-dem purchase after a restart
 
-This recipe requires a prepared-transfer journal: `runSession` refuses a pay-dem
-session whose `settle` or `resumeSettlement` bridge was built over a rail without
-`journalPreparedTransfer`, whatever rail id the terms carry. The SDK ships
-`createFsDemosWriteJournal` but no ready-made hook, so write the few lines that
-put each prepared transfer into your journal. The check sees only that a hook
-exists; a hook that records nothing passes it, and a rail you built by hand
-declares nothing and is not refused.
+This recipe requires a prepared-transfer journal. Build the rail with
+`journalPreparedTransfer`. The SDK ships `createFsDemosWriteJournal` but no
+ready-made hook, so write the few lines that put each prepared transfer into
+your journal before it is broadcast. The SDK does not check the hook: a rail
+built without it, or with a hook that records nothing, leaves the recipe no hash
+to read.
 
-`runSession` always sets `recoveryOnly` on `resumeSettlement`. When the log holds
-no outcome and the session saved no transaction hash, the bridge refuses instead
-of paying, because the transfer may already have been sent. To finish such a
-purchase, resume the job and wrap the bridge with `withRecoveredAttempts`, which
-adds the hash you read from the prepared-transfer journal to the recovery
-request and keeps the bridge's registration, so `runSession` still accepts it:
+Settle a restarted purchase by calling the bridge with the request the purchase
+first sent and `recoveryOnly: true`. When the log holds no outcome and no
+transaction hash is supplied, the bridge refuses instead of paying, because the
+transfer may already have been sent. To finish such a purchase, wrap the bridge
+with `withRecoveredAttempts`, which adds the hash you read from the
+prepared-transfer journal to the recovery request:
 
 ```ts
-const resumeSettlement = withRecoveredAttempts(bridge, async (req) =>
+const recoverSettlement = withRecoveredAttempts(bridge, async (req) =>
   (await readPreparedTransfers(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0)))
     .map((prepared) => ({ txHash: prepared.txHash, chainId: network, ok: false })));
-await agent.runSession(ref, { terms, settle: bridge, resumeSettlement, sessionStore, jobId });
+const result = await recoverSettlement({ ...firstRequest, recoveryOnly: true });
 ```
 
-A function you write yourself as `resumeSettlement` is refused before any
-payment; only the bridges the SDK returns, or `withRecoveredAttempts` around one,
-are accepted. The wrapper only adds history. A request that already carries
+The wrapper only adds history. A request that already carries
 history, or is not a recovery request, passes through unchanged, and the bridge
 still decides from the chain whether the payment landed.
 
@@ -148,10 +140,6 @@ In order:
    agreed amount since the Agreement was anchored. If you find one, finish
    outside the SDK (deliver or refund). If it is provably absent, use a new job
    id.
-
-If the session store itself refuses to read a transaction-hash binding as
-corrupt, for example after a crash left its file with two links, the recipe stays
-refused and pays nothing. Repair the store, then run the recipe again.
 
 `evmErc20Settle` and `x402Settle` never read the history that
 `withRecoveredAttempts` supplies, and with no outcome in the log a recovery is
