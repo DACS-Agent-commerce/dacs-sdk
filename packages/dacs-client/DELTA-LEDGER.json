@@ -6809,6 +6809,32 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF merge the source-read transport helper into the source-read world fixture",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-crash-child.mjs",
+          "before": "7c8a4c6aed3fa1972facb04dac75ae9fcec13db9",
+          "after": "df503bf02fa05bb270f3917138d7b46423ebd704"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-transport.mjs",
+          "before": "1cf670f33c82826d75e6c58edfcb89b9531906d6",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-world.mjs",
+          "before": "84e7b1a92a3ba4082e775ba1aa4671958168a027",
+          "after": "d99dfa33ba877ff2fdcefcce104abe9cf9727e88"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "4734c66eb0b25db13d505cc6cc9df63f4237d09c",
+          "after": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P21a2ab expose the held seller composition and packed wallet",
       "files": [
         {
@@ -7360,6 +7386,17 @@
           "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
           "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
           "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that reserve repeats an unfinished retirement while its finishing write keeps failing",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-retirement.test.mjs",
+          "before": null,
+          "after": "6175c0421d58d74bf403ee1150a32c750011c455"
         }
       ]
     }
