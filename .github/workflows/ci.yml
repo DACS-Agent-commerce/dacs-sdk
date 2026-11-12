@@ -188,7 +188,7 @@ jobs:
         run: node --test test/scripts/release-workflow.test.mjs
 
       - name: Test the shard split
-        run: node --test test/scripts/ci-shards.test.mjs
+        run: npm run ci:test
 
       - name: Check that every seller and client test file (and each test of a split file) is in exactly one shard
         run: node scripts/ci-shards.mjs check
