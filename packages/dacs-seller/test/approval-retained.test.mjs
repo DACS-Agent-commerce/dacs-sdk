@@ -5,6 +5,8 @@ import { existsSync,readFileSync,statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash,randomUUID } from 'node:crypto';
+import { fork } from 'node:child_process';
+import { once } from 'node:events';
 import { address,seller,buyer,pin,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor } from './helpers/d5-policy-fixtures.mjs';
 const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,heldPolicyBudget,serializedPolicy }=await import('../src/devnet-demo/operator-approval.mjs');
 
@@ -171,9 +173,19 @@ test('retained.prepare refuses a request kind other than SettlementEvidence, and
  await rejectsWith(approval.retained.reopen(prepared.ledgerId),'approval_reservation_unavailable');
 });
 
-test('two processes settling the same ledgerId through the policy lock produce one completion line',async t=>{
- const fixture=await ledgerFixture(t),first=fixture.compose(fixture.restart()),second=fixture.compose(fixture.restart()),prepared=await first.retained.prepare(evidence());
- await Promise.all([first.retained.settle(bindingOf(prepared),'spent'),second.retained.settle(bindingOf(prepared),'spent')]);
+test('two processes settling the same ledgerId through the policy lock produce one completion line',{timeout:15_000},async t=>{
+ const fixture=await ledgerFixture(t),parent=fixture.compose(fixture.restart()),prepared=await parent.retained.prepare(evidence());
+ const child=fork(new URL('./helpers/approval-settle-worker.mjs',import.meta.url),[],{stdio:['ignore','ignore','pipe','ipc']});
+ t.after(async()=>{if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill('SIGKILL');await exited;}});
+ const reading=once(child,'message');child.send({evidencePath:fixture.evidencePath,maxTotalOs:fixture.maxTotalOs,...bindingOf(prepared)});
+ assert.deepEqual((await reading)[0],{type:'reading'});
+ // The child holds the policy lock between its ledger read and its completion line.
+ await rejectsWith(parent.retained.settle(bindingOf(prepared),'spent'),'seller_state_locked');
+ assert.deepEqual(await completions(fixture.evidencePath,prepared.ledgerId),[]);
+ const result=once(child,'message'),exited=once(child,'exit');child.send({type:'continue'});
+ assert.deepEqual((await result)[0],{type:'result'});assert.equal((await exited)[0],0);
+ assert.equal((await completions(fixture.evidencePath,prepared.ledgerId)).length,1);
+ await parent.retained.settle(bindingOf(prepared),'spent');
  assert.equal((await completions(fixture.evidencePath,prepared.ledgerId)).length,1);
 });
 
