@@ -34,7 +34,26 @@ function assertIndeterminate(label, answer, reason) {
   assert.match(answer.reason, reason);
 }
 
-for (const label of Object.keys(OPERATIONS)) test(`a native delivery ${label} that never settles answers indeterminate at the deadline`, async t => {
+const SUBMITS = ['submit', 'guarded submit'];
+const READ_ONLY = Object.keys(OPERATIONS).filter(label => !SUBMITS.includes(label));
+
+for (const label of SUBMITS) test(`a native delivery ${label} that outlasts the deadline is not answered early`, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const accepted = { status: 'accepted', reconciliationId: 'TEST-late-create' };
+  let finish;
+  const capability = capabilityWhere(label, () => new Promise(resolve => { finish = () => resolve(accepted); }));
+  let answer;
+  const pending = OPERATIONS[label].call(capability).then(value => { answer = value; });
+  await setImmediate();
+  t.mock.timers.tick(DEADLINE_MS * 2);
+  await setImmediate();
+  assert.equal(answer, undefined);
+  finish();
+  await pending;
+  assert.equal(answer, accepted);
+});
+
+for (const label of READ_ONLY) test(`a native delivery ${label} that never settles answers indeterminate at the deadline`, async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const capability = capabilityWhere(label, () => new Promise(() => {}));
   let answer;
