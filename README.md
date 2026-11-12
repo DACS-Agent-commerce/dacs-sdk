@@ -299,8 +299,9 @@ The snippet stops before payment. The purchase runs in the role-separated
 coordinators, each over its own durable store; see
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
 A buyer on that path supplies its identity as the `buyer` claim reference in the
-order it passes to `startOrder`, and the buyer host checks that it equals the
-host's own authority.
+order it passes to `startOrder`. The coordinator checks that it is a canonical
+claim reference and differs from the seller; the application must make sure it
+is the buyer's own identity.
 
 Once the purchase has produced a finalized bundle, anyone can verify it, and
 `getReputation` reads reputation from bundle references. `bundleRef` is the

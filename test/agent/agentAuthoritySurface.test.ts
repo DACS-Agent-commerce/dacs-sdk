@@ -154,7 +154,7 @@ describe("Agent wallet-authority boundary", () => {
       demosRpc: "https://rpc.example",
       identity: { agentId: PRIMARY, bundle: structuredClone(BUYER_IDENTITY) },
     } as Parameters<typeof createAgent>[0])).rejects.toThrow(
-      /AgentConfig\.identity\.bundle is no longer read/,
+      /AgentConfig\.identity\.bundle is not an Agent option/,
     );
     expect(connect).not.toHaveBeenCalled();
   });
@@ -166,7 +166,7 @@ describe("Agent wallet-authority boundary", () => {
       demosRpc: "https://rpc.example",
       identity: { agentId: PRIMARY, verifyPresentation: () => true },
     } as Parameters<typeof createAgent>[0])).rejects.toThrow(
-      /AgentConfig\.identity\.verifyPresentation is no longer read/,
+      /AgentConfig\.identity\.verifyPresentation is not an Agent option/,
     );
     expect(connect).not.toHaveBeenCalled();
   });

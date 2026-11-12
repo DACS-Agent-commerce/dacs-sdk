@@ -952,7 +952,7 @@ function captureAgentIdentityConfig(
 const UNREAD_AGENT_IDENTITY_KEYS = ["bundle", "verifyPresentation"] as const;
 
 /**
- * Refuse a construction key that the Agent no longer reads, rather than
+ * Refuse a construction key that the Agent does not read, rather than
  * dropping it silently.
  */
 function refuseReplacedAgentConfig(config: AgentConfig): void {
@@ -961,7 +961,7 @@ function refuseReplacedAgentConfig(config: AgentConfig): void {
     for (const key of UNREAD_AGENT_IDENTITY_KEYS) {
       const label = `AgentConfig.identity.${key}`;
       if (stableAgentData(identity, key, label) !== undefined) {
-        throw new DacsError(`${label} is no longer read by the Agent; remove it`);
+        throw new DacsError(`${label} is not an Agent option; remove it`);
       }
     }
   }
