@@ -5,8 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { DEVNET_NODE2_BLOCK_LAYOUT, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE } from '../src/wallet/devnet-native-transport.mjs';
 import { createWorld, JOB_IDS } from './helpers/native-create-world.mjs';
-import { deferred, jsonResponse, MIB, ok, sizedReply, sourceReadWorld } from './helpers/source-read-world.mjs';
-import { sourceReadTransport } from './helpers/source-read-transport.mjs';
+import { deferred, jsonResponse, MIB, ok, sizedReply, sourceReadTransport, sourceReadWorld } from './helpers/source-read-world.mjs';
 const { openDurableWalletJournal } = await import('../src/wallet/durable-journal.mjs');
 
 const CHAIN = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;

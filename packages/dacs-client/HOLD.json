@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "b02fc0b8d98a1e9ef53cd28cbe80e5aafc57b086"
+        "blob": "65b4060a7b9e2a58d100d526ccf60ef433838e4c"
       },
       "DELTA-LEDGER.json": {
-        "blob": "fd7994aee682e0d0729ccfc0d3dec3a3cdc154f7"
+        "blob": "32500c5fd7444323b7026b2894f11dcc9a4f3e40"
       },
       "DELTA-MAP.md": {
-        "blob": "fa59823dbeeb4de5955286ce9bfe2edc7e6f2f10"
+        "blob": "fd7d795e7a18b71fa739fa969724ddd62d68b02f"
       },
       "DELTA-NOTES.md": {
-        "blob": "fd2c5bd8ca8daaf00d506dad103bd2b401bf622a"
+        "blob": "0c8f96da8cd408010d0c1f23d840a45ae0c4a436"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "e72129b4a3ff256243aa409de8d2da5f9c142489"
+        "blob": "5a4c35f377a82a6c0cf348cbb5fa400baa89e49e"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1052,7 +1052,7 @@
         "blob": "eed33b7b83034ba0e364c4b8d09de0b5261b133e"
       },
       "scripts/delta-continuity.test.mjs": {
-        "blob": "ada92a9e928b640e60d4646ddd242ba50022ba11"
+        "blob": "81626f32cdd4170631a50320a60b77e20498216d"
       },
       "scripts/delta-frontier.test.mjs": {
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
@@ -1061,7 +1061,7 @@
         "blob": "65d4159d1902788181ba63abc1d87e53b13aa341"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
+        "blob": "31d6f1b4c4ab7ec9c5ad6d9b391ce79a4b17dba7"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1757,13 +1757,10 @@
         "blob": "fe1c4055b77e3a13b3cf24492a645f08fb2b190b"
       },
       "test/helpers/source-read-crash-child.mjs": {
-        "blob": "7c8a4c6aed3fa1972facb04dac75ae9fcec13db9"
-      },
-      "test/helpers/source-read-transport.mjs": {
-        "blob": "1cf670f33c82826d75e6c58edfcb89b9531906d6"
+        "blob": "df503bf02fa05bb270f3917138d7b46423ebd704"
       },
       "test/helpers/source-read-world.mjs": {
-        "blob": "84e7b1a92a3ba4082e775ba1aa4671958168a027"
+        "blob": "d99dfa33ba877ff2fdcefcce104abe9cf9727e88"
       },
       "test/helpers/sqlite-engine-floor.mjs": {
         "blob": "eac4f2e9c7337c76fb7478050fc95c617f5fb999"
@@ -1865,7 +1862,7 @@
         "blob": "9cdd17e0eceae6b901b2c075823c6dce714496c9"
       },
       "test/node-wallet-source-reads.test.mjs": {
-        "blob": "4734c66eb0b25db13d505cc6cc9df63f4237d09c"
+        "blob": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
       },
       "test/operator-approval-request-bytes.test.mjs": {
         "blob": "da57bb91604b30e2b60a4edb7011a473fd9e5d3a"
