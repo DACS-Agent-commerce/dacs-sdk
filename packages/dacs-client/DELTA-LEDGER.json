@@ -7352,29 +7352,28 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF record the exact-byte buyer seller client after the merge and refresh package pins",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
-          "before": "b88097dc5621acb7affa393aade0133f1c873923",
-          "after": "b88097dc5621acb7affa393aade0133f1c873923"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the merged response bytes client and refresh package pins",
+      "subject": "delta(client): WF verify seller answers on their exact bytes and classify them",
       "compact": true,
       "files": [
         {
           "path": "packages/dacs-client/src/dacs/seller-http.mjs",
           "before": "b88097dc5621acb7affa393aade0133f1c873923",
-          "after": "b88097dc5621acb7affa393aade0133f1c873923"
+          "after": "73af84a387f7c2145ee9ee1e35275e0622fd7d4c"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": "8ca70e7f5d3217388527c8dcab289193b2848780",
+          "after": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
         },
         {
           "path": "packages/dacs-client/src/index.mjs",
           "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
           "after": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "6982df671d7d2040341fd534d075b1225fc000f6",
+          "after": "501e8eefddad1bd2c38e6e35efd87178e03fedba"
         }
       ]
     },
@@ -7616,6 +7615,23 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged response classification rebuild in the stored request bytes client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "2d406c3de227b1365694f2b3eaea2f7e0c18ab20",
+          "after": "2d406c3de227b1365694f2b3eaea2f7e0c18ab20"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "60d3849d0f82b3eea964a03c1919306f56d4960b",
+          "after": "60d3849d0f82b3eea964a03c1919306f56d4960b"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF add bounded retries and absolute request deadlines",
       "compact": true,
       "files": [
@@ -7827,6 +7843,23 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged response classification rebuild in the authenticated retries client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "671a9686ba54d03ab0ef0ac6e8205b78505c272a",
+          "after": "671a9686ba54d03ab0ef0ac6e8205b78505c272a"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "b63568fc8eac39716c34f9ad72918f8ec4f9e2bb",
+          "after": "b63568fc8eac39716c34f9ad72918f8ec4f9e2bb"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the request signer doc comment in the authenticated request retries",
       "files": [
         {
@@ -7976,6 +8009,18 @@
     {"delta":"WF","subject":"delta(client): WF P13c2 delete the client's old seller transport module","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-transport-auth.mjs","before":"cbbff1c08f2b7986c2a55298652234a1b1b6b606","after":null},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"abd69a0abe22de61c02df544371d1baa542b0c15","after":"8c32f5d5d67d96b10c78979703a6b2670fe97295"},{"path":"packages/dacs-client/test/helpers/devnet-live-composition-app.mjs","before":"77d601dbc4ed3c41f5def9397d2960e41f9dbff6","after":"4e78a320bd26fff966f5605da7f3b6dcc0f1e346"},{"path":"packages/dacs-client/test/helpers/entry-point-closure.mjs","before":null,"after":"44000e70295255c1e0af5a5183060835df1fd7bc"},{"path":"packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs","before":"2f963c44c336dd77647d12ced651a9df7bc4b9e4","after":"754a7e898ef18b3d6fa45fbf9141e9e8107304b7"},{"path":"packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs","before":"163637c51827c8cf0c5b04979d0ad008a24b6bfb","after":"806ce664bc89af4199f6ab81b5c72bc2e80d47bd"},{"path":"packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs","before":"a95ef03f4a7088ebf2d776b544529efa9af3bd3b","after":"f6938c73a9a3bd7f38c9b2a891fa22ead94d925e"},{"path":"packages/dacs-client/test/helpers/source-demo-seller.mjs","before":"3ebe27b3481988b9dedeaabec489c44e791a2891","after":"878d1917d335b2a94d1164ed07d2e1b3a4f4048f"},{"path":"packages/dacs-client/test/helpers/start-intent.mjs","before":"f0228e036f7f82a8087caf1c5883419ee18c8491","after":"b401cf5c221e9285f73a923cf90c1a0a291b3f35"},{"path":"packages/dacs-client/test/old-domain-sources.test.mjs","before":null,"after":"a8ccc8f4759f908cabb11fb0aff27f3290e40a74"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"225f7dbfb61729f33863364013e7dca7d31335a2","after":"a83648f5f7606440c1cf56de620e2f3794f6049a"}]},
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged response classification rebuild in the recorded suspension client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "40664e4d65a3766cd0ff4544f5364ff2a063cbc9",
+          "after": "40664e4d65a3766cd0ff4544f5364ff2a063cbc9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "fix(client): ignore a seller stop for an attempt a newer one replaced",
       "sha": "5f1cbcdb4498a6475f546ac7e383f46763b990e6",
       "files": [
@@ -8065,6 +8110,29 @@
       ]
     },
     {"delta":"WF","subject":"delta(client): WF record the merged blobs after the seller handler and suspension merge","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"f6492ec9771611dd72c96e94107384db860ca748","after":"f6492ec9771611dd72c96e94107384db860ca748"},{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"6cffccaa66097ec40d1558133aeab80f8dd3991f","after":"6cffccaa66097ec40d1558133aeab80f8dd3991f"},{"path":"packages/dacs-client/src/dacs/seller-wire-authentication.mjs","before":"6ca61271e2daf5de7781479b88a971723597cc10","after":"6ca61271e2daf5de7781479b88a971723597cc10"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"92bbbdf84d3a0ab730d38daad03632c68e087d12","after":"92bbbdf84d3a0ab730d38daad03632c68e087d12"}]},
-    {"delta":"WF","subject":"delta(client): WF count the demos entry point in the packed closure helper after the merge","compact":true,"files":[{"path":"packages/dacs-client/test/helpers/entry-point-closure.mjs","before":"44000e70295255c1e0af5a5183060835df1fd7bc","after":"2f2c2f648bb095b7812aeac6523ae8cc22602bd8"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"25d796340d239be5de80a55c42ad7bce48755f5e","after":"25d796340d239be5de80a55c42ad7bce48755f5e"}]}
+    {"delta":"WF","subject":"delta(client): WF count the demos entry point in the packed closure helper after the merge","compact":true,"files":[{"path":"packages/dacs-client/test/helpers/entry-point-closure.mjs","before":"44000e70295255c1e0af5a5183060835df1fd7bc","after":"2f2c2f648bb095b7812aeac6523ae8cc22602bd8"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"25d796340d239be5de80a55c42ad7bce48755f5e","after":"25d796340d239be5de80a55c42ad7bce48755f5e"}]},
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test the authenticated loopback seller endpoint and record the merged client blobs",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f6492ec9771611dd72c96e94107384db860ca748",
+          "after": "f6492ec9771611dd72c96e94107384db860ca748"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "393500db3b5729d7cc113576d2c41fbc240ed9a6",
+          "after": "393500db3b5729d7cc113576d2c41fbc240ed9a6"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-public-endpoint.test.mjs",
+          "before": "52cc90dab2b22da0b8d05f5efca4388b6ec167d3",
+          "after": "97f99b5f286658c793fe6cb44de12ff39951dab7"
+        }
+      ]
+    },
+    {"delta":"WF","subject":"delta(client): WF record the merged seller transport blob after the base sync","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"c2a23d02278639657358480a74e9e933492b0832","after":"c2a23d02278639657358480a74e9e933492b0832"}]}
   ]
 }
