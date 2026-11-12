@@ -169,6 +169,12 @@ rails are refused before a submission claim or native effect. The custom
 integration contract below describes independent native integrations and the
 dacs-node buyer payment track.
 
+Construct the bridge with a caller-supplied `SettlementIdempotencyStore` backed
+by a durable, atomic `SettlementLog`. Its intent claim must be durable before
+the rail submits a transfer. `payDemSettle` and `settleFromRail` refuse to
+construct the bridge without a store; the SDK has no in-memory default. They
+cannot check that the supplied store is durable, so that is the caller's job.
+
 Custom `PayDemRail` implementations return `PayDemRailResult`. A successful
 fresh result must carry `execution: "executed"`, attesting that the rail read
 the transaction record and checked literal `confirmed` status, signed hash,
