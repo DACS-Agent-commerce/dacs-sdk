@@ -128,7 +128,7 @@ async function makeAdapter(rpc: string) {
     }),
   );
   raw.nodeCall = vi.fn(async () => ({ state: "pending" }));
-  raw.getTxByHash = vi.fn(async () => ({ status: "pending", blockNumber: null }));
+  raw.getTxByHash = vi.fn(async () => null);
   return { adapter, puts };
 }
 
