@@ -170,6 +170,20 @@ test('a CREATE signed over the domain-separated message is kept when the journal
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
 });
 
+test('a kept CREATE signed over the domain-separated message is still the same evidence when the journal is reopened with the same chain id', async (t) => {
+  const w = wallet(t);
+  let journal = w.open({ signatureChainId: '7' });
+  w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
+  w.faults.broadcast.push('throw');
+  await assert.rejects(journal.anchorEvidence(w.input()), /TEST node unreachable/);
+  journal.close();
+  journal = w.open({ signatureChainId: '7' });
+  t.after(() => journal.close());
+  const [first] = w.calls.signed;
+  assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'submitted', txHash: first }, 'the kept bytes are sent again, not refused as other evidence');
+  assert.equal(w.calls.sign, 1, 'signed once');
+});
+
 test('a CREATE signed over any other message than the bare hash or the configured chain-bound form is refused', async (t) => {
   const w = wallet(t), journal = w.open({ signatureChainId: '7' });
   t.after(() => journal.close());
