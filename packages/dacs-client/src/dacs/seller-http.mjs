@@ -5,11 +5,11 @@
 // unauthenticated fixture callers remain supported. Supplying an
 // authentication adapter enables signed peer requests, independently signed
 // seller responses and a durable intent journal.
-// In that mode every answer is verified on its exact received bytes and then
-// classified (seller-response-class.mjs). Only an authenticated definite
-// refusal or failed bootstrap becomes SellerRefusedError; unsigned, malformed,
-// interrupted, ambiguous, held, suspended or readback-only answers are
-// unavailable, with their class and cause kept.
+// In that mode an answer is classified (seller-response-class.mjs) only after
+// the wire verified its exact received bytes. Only a definite refusal or failed
+// bootstrap becomes SellerRefusedError; unsigned, malformed, interrupted,
+// ambiguous, held, suspended or readback-only answers are unavailable, with
+// their class and cause kept.
 import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
@@ -129,13 +129,13 @@ export const sellerEndpointOrigin = (url, authenticated = false) => parseSellerE
 
 /**
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
- * classifyAnswer is the injectable K5 classifier; the default is the real one. requestRecords is the adapter's durable
- * record store (`start(path, body)` returns `{text, stored, continuation, newPurchase, check(), finish(answerClass, answerCode)}`;
- * `stored: true` identifies a durably recorded effect attempt, while reads use false,
- * and `failure(error)` records a refusal). Authenticated calls with stored attempts retry unknown dispatches twice; all other calls send once. A suspended answer is recorded and never retried.
+ * requestRecords is the adapter's durable record store (`start(path, body)` returns
+ * `{text, stored, continuation, newPurchase, check(), finish(answerClass, answerCode)}`; `stored: true` identifies a durably
+ * recorded effect attempt, while reads use false, and `failure(error)` records a refusal). Authenticated calls with
+ * stored attempts retry unknown dispatches twice; all other calls send once. A suspended answer is recorded and never retried.
  * clock supplies `now()` and `sleep(ms)` so a test injects time.
  */
-export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer, requestRecords, clock = SELLER_CLOCK }) {
+export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, requestRecords, clock = SELLER_CLOCK }) {
   const base = parseSellerEndpoint(url, Boolean(authentication));
   const origin = base.origin;
   const prefix = base.pathname.replace(/\/$/, '');
@@ -223,19 +223,18 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       const answerBytes = Buffer.concat(chunks);
       // Unsigned 429/404/415/503 answers cannot authenticate their status.
       // Verify first: these failures stay response-auth, including signer fallback 503.
-      const receipt = authentication
-        ? await settleOnAbort(authentication.verifyResponse(signed.payload, { header: response.headers.get(DACS_SELLER_HTTP_HEADER), status: response.status, body: answerBytes }), signal)
-        : null;
-      const answer = receipt ? receipt.body : admitRawJson(answerBytes, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes });
+      const answer = authentication
+        ? (await settleOnAbort(authentication.verifyResponse(signed.payload, { header: response.headers.get(DACS_SELLER_HTTP_HEADER), status: response.status, body: answerBytes }), signal)).body
+        : admitRawJson(answerBytes, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes });
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');
       // The record exists only here, after the wire verified the exact bytes: the HTTP status it checked and the body it admitted.
-      if (receipt) {
+      if (authentication) {
         phase = 'classified';
         // Provenance and request kind come only from the adapter's own record of this request, never from the answer or a caller.
-        const verdict = classifyAnswer({ status: response.status, signed: true, body: receipt.body }, { path, dispatched: true, continuation: attempt?.continuation ?? false, newPurchase: attempt?.newPurchase ?? false });
-        return { body: answerOrError(verdict, receipt.body, response.status), answerClass: verdict.answerClass };
+        const verdict = classifySellerAnswer({ status: response.status, signed: true, body: answer }, { path, dispatched: true, continuation: attempt?.continuation ?? false, newPurchase: attempt?.newPurchase ?? false });
+        return { body: answerOrError(verdict, answer, response.status), answerClass: verdict.answerClass };
       }
       if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
       if (!response.ok) throw new Error('seller did not return success');
