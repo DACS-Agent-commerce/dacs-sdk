@@ -8090,6 +8090,29 @@
           "after": "c3f5dac05fd2af76c65238f819d636869f7919fb"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF drive the client-minted capability test through the request record",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "60d3849d0f82b3eea964a03c1919306f56d4960b",
+          "after": "e2495f7ef3e210d2e0ca67278568bb29d7bc7da6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged seller response classification test blob of the stored request bytes fixes",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "35f0ac9deae8e0b1c8c1a3057fe8dad6da32a55d",
+          "after": "35f0ac9deae8e0b1c8c1a3057fe8dad6da32a55d"
+        }
+      ]
     }
   ]
 }
