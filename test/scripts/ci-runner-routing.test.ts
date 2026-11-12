@@ -296,28 +296,27 @@ function legsRunning(name: string, event: string): string[] {
   return [...new Set(entries.map((entry) => entry["node-version"]))].sort();
 }
 
-describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", () => {
+describe("build-test long suites (.github/workflows/ci.yml)", () => {
   const suites = [
     "Test seller internal primitives and journals",
     "Test (unit + conformance harness)",
     "Test durable RFQ filesystem record-size boundaries",
   ];
 
-  it("runs the long suites on both legs except the node 24 leg of a pull request", () => {
+  // Until 2026-11-12 pull requests skipped these on node 24, and a node 24 failure reached phase0-completion that way.
+  it("runs the long suites on both legs for every event, pull requests included", () => {
     for (const name of suites) {
-      expect(legsRunning(name, "pull_request")).toEqual(["22"]);
-      for (const event of ["push", "merge_group"]) expect(legsRunning(name, event)).toEqual(["22", "24"]);
+      for (const event of EVENTS) expect(legsRunning(name, event), `${name} ${event}`).toEqual(["22", "24"]);
     }
   });
 
   // The legs come from the matrix itself, so pinning a leg (say "22" to "22.22.2") can't leave a suite running on no
   // pull request leg while the literal cases above still pass.
-  it("runs each long suite on at least one matrix leg of a pull request, and on every leg otherwise", () => {
+  it("runs each long suite on every matrix leg", () => {
     expect(MAIN_LEGS.length).toBeGreaterThan(1);
     expect(shards.NODE_LEGS).toEqual(MAIN_LEGS);
     for (const name of suites) {
-      expect(legsRunning(name, "pull_request").length).toBeGreaterThan(0);
-      for (const event of ["push", "merge_group"]) expect(legsRunning(name, event)).toEqual([...MAIN_LEGS].sort());
+      for (const event of EVENTS) expect(legsRunning(name, event)).toEqual([...MAIN_LEGS].sort());
     }
     const demosdk = "Typecheck and test against demosdk 4.0.18";
     for (const event of ["push", "merge_group"]) expect(legsRunning(demosdk, event).length).toBeGreaterThan(0);
@@ -338,24 +337,18 @@ describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", (
 });
 
 describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", () => {
-  // Before the split every leg prepared the locked seller consumer; the seller shards now prepare it, and
-  // build-test-main prepares it on a leg where no seller shard runs (node 24 on a pull request).
-  it("prepares the locked seller consumer on every leg of every event, in main only where no seller shard runs", () => {
+  // Before the split every leg prepared the locked seller consumer. The seller shards now prepare it, and since seller
+  // shards run on every leg of every event (2026-11-12), build-test-main no longer needs its own copy of the step.
+  it("prepares the locked seller consumer on every leg of every event, in the seller shards only", () => {
     const name = "Prepare locked seller consumer";
-    const main = (MAIN.steps ?? []).find((s) => s.name === name);
     const shard = (SHARD.steps ?? []).find((s) => s.name === name);
-    expect(main).toBeDefined();
+    expect((MAIN.steps ?? []).find((s) => s.name === name)).toBeUndefined();
     expect(shard).toBeDefined();
-    expect(main?.run).toBe(shard?.run);
     for (const event of EVENTS) {
       const sellerLegs = (shards.plan(event) as Entry[]).filter((entry) => holds(shard?.if, { matrix: entry, github: { event_name: event } }))
         .map((entry) => entry["node-version"]);
-      const mainLegs = MAIN_LEGS.filter((node) => holds(main?.if, { matrix: { "node-version": node }, github: { event_name: event } }));
-      expect(mainLegs.filter((node) => sellerLegs.includes(node)), event).toEqual([]);
-      expect([...new Set([...sellerLegs, ...mainLegs])].sort(), event).toEqual([...MAIN_LEGS].sort());
+      expect([...new Set(sellerLegs)].sort(), event).toEqual([...MAIN_LEGS].sort());
     }
-    const steps = (MAIN.steps ?? []).map((s) => s.run);
-    expect(steps.indexOf("npm run host:build")).toBeLessThan(steps.indexOf(main?.run));
   });
 
   it("routes build-test-main exactly like build-test", () => {
@@ -389,9 +382,9 @@ describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", 
   it("plans every shard of each suite wherever the suite runs, and only there", () => {
     expect(shards.checkPlan()).toEqual([]);
     expect(shards.plan("pull_request").map((e: Entry) => `${e["node-version"]} ${e.part}`)).toEqual([
-      "22 seller-1", "22 seller-2", "22 client-1", "22 client-2",
+      "22 seller-1", "22 seller-2", "22 client-1", "22 client-2", "22 client-3", "22 client-4", "24 seller-1", "24 seller-2",
     ]);
-    expect(shards.plan("push")).toHaveLength(6);
+    for (const event of EVENTS) expect(shards.plan(event)).toHaveLength(8);
   });
 
   it("keeps the required check names on build-test-result only, one job per leg that needs every build-test job", () => {
@@ -471,11 +464,13 @@ describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", 
     it("puts every file in exactly one shard, including files with no recorded weight", () => {
       const files = ["a.test.mjs", "b.test.mjs", "new-1.test.mjs", "new-2.test.mjs", "new-3.test.mjs", ...Object.keys(shards.WEIGHTS.client)];
       for (const suite of ["seller", "client"]) {
-        const parts: string[][] = shards.assign(suite, files);
+        // checkPartition also requires each of the suite's SPLIT_FILES to be present (here unsplit: a whole file).
+        const all = [...files, ...shards.SPLIT_FILES[suite].filter((file: string) => !files.includes(file))];
+        const parts: string[][] = shards.assign(suite, all);
         expect(parts).toHaveLength(shards.SHARDS[suite]);
-        expect(parts.flat().sort()).toEqual([...files].sort());
-        expect(shards.checkPartition(suite, files).failures).toEqual([]);
-        parts.forEach((list, index) => expect(shards.shardFiles(suite, files, index + 1)).toEqual(list));
+        expect(parts.flat().sort()).toEqual([...all].sort());
+        expect(shards.checkPartition(suite, all).failures).toEqual([]);
+        parts.forEach((list, index) => expect(shards.shardFiles(suite, all, index + 1)).toEqual(list));
       }
     });
 

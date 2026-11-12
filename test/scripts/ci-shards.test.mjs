@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
-  SHARDS, SPLIT_FILES, WEIGHTS, assign, assignUnits, checkPartition, clientDir, clientFiles, plan, splitTests,
+  EVENTS, SHARDS, SPLIT_FILES, WEIGHTS, assign, assignUnits, checkPartition, checkPlan, clientDir, clientFiles, plan, splitTests,
 } from "../../scripts/ci-shards.mjs";
 import { exactPattern, listTests, runSome } from "../../scripts/ci-test-names.mjs";
 
@@ -93,8 +93,14 @@ test("seller files are never split, and assign keeps its file-list shape", () =>
   assert.deepEqual(lists.flat().sort(), ["x.test.mjs", "y.test.mjs", "z.test.mjs"]);
 });
 
+test("plans the same shards for every event ci.yml runs on, and refuses any other event", () => {
+  assert.deepEqual(checkPlan(), []);
+  for (const event of EVENTS) assert.deepEqual(plan(event), plan("push"), event);
+  for (const event of ["pull_request_target", "schedule", "", undefined]) assert.throws(() => plan(event), /unknown event/);
+});
+
 test("this checkout: the plan has every client shard on node 22 and the split covers every test once", async () => {
-  for (const event of ["pull_request", "push", "merge_group"]) {
+  for (const event of EVENTS) {
     const client = plan(event).filter((entry) => entry.suite === "client");
     assert.deepEqual(client.map((entry) => `${entry["node-version"]} ${entry.shard}`),
       Array.from({ length: SHARDS.client }, (_, i) => `22 ${i + 1}/${SHARDS.client}`), event);

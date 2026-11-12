@@ -306,18 +306,23 @@ export const TEST_WEIGHTS = {
 
 // Which Node legs run each suite. client: node 22 only. seller: both legs on every event (until 2026-11-12 a pull request
 // ran it on node 22 only, and a node 24 seller failure reached phase0-completion that way: run 43176322373).
-export function suiteRuns(suite, node, event) {
+export function suiteRuns(suite, node) {
   if (suite === "client") return node === "22";
   if (suite === "seller") return NODE_LEGS.includes(node);
   throw new Error(`unknown suite ${suite}`);
 }
 
 /** The shard job's matrix entries for one event: one per (Node leg, suite, shard) that runs. */
+// The events ci.yml runs on. The plan is the same for each; an unknown event (a new trigger or a typo) is refused rather
+// than silently planned.
+export const EVENTS = ["pull_request", "push", "merge_group", "workflow_dispatch"];
+
 export function plan(event) {
+  if (!EVENTS.includes(event)) throw new Error(`unknown event ${event}: expected one of ${EVENTS.join(", ")}`);
   const include = [];
   for (const node of NODE_LEGS) {
     for (const [suite, count] of Object.entries(SHARDS)) {
-      if (!suiteRuns(suite, node, event)) continue;
+      if (!suiteRuns(suite, node)) continue;
       for (let index = 1; index <= count; index += 1) {
         include.push({ "node-version": node, part: `${suite}-${index}`, suite, shard: `${index}/${count}` });
       }
@@ -457,13 +462,13 @@ export function checkPartition(suite, files, split = {}) {
 /** Failures (empty when complete): wherever a suite runs, the plan has each of its shards exactly once. */
 export function checkPlan() {
   const failures = [];
-  for (const event of ["pull_request", "push", "merge_group", "workflow_dispatch"]) {
+  for (const event of EVENTS) {
     const entries = plan(event);
     for (const node of NODE_LEGS) {
       for (const [suite, count] of Object.entries(SHARDS)) {
         const shards = entries.filter((entry) => entry["node-version"] === node && entry.suite === suite)
           .map((entry) => entry.shard).sort();
-        const want = suiteRuns(suite, node, event) ? Array.from({ length: count }, (_, i) => `${i + 1}/${count}`) : [];
+        const want = suiteRuns(suite, node) ? Array.from({ length: count }, (_, i) => `${i + 1}/${count}`) : [];
         if (JSON.stringify(shards) !== JSON.stringify(want)) failures.push(`plan ${event} node ${node} ${suite}: ${shards.join(",") || "none"}, expected ${want.join(",") || "none"}`);
       }
     }
