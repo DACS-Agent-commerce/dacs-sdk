@@ -8126,6 +8126,18 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged purchases blob of two parallel records",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "1426fa081a61f904773ce02cb38d9c7184851839",
+          "after": "1426fa081a61f904773ce02cb38d9c7184851839"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "fix(client): ignore a seller stop for an attempt a newer one replaced",
       "sha": "5f1cbcdb4498a6475f546ac7e383f46763b990e6",
       "files": [
