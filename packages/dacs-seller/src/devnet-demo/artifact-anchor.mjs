@@ -222,15 +222,16 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   const signedNothing=async(address,row)=>(await snapshot()).classify(address,row)==='unsigned';
 
   async function accountNonceSnapshot() {
+    let response;
     try {
-      const response=boundedResolutionValue(await resolveWithDeadline(limits=>sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]},limits),NONCE_READ_LIMITS),
+      response=boundedResolutionValue(await resolveWithDeadline(limits=>sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]},limits),NONCE_READ_LIMITS),
         {...NONCE_READ_LIMITS,maxValues:64,maxDepth:8,maxListEntries:16});
-      const snapshot=nonceAnswer(response?.response);
-      if(!rpcEnvelope(response,200,null) || snapshot.nonce===null) fail('indeterminate','seller nonce is unavailable');
-      return snapshot;
     } catch(cause) {
       throw Object.assign(new Error(`seller nonce read failed or exceeded its deadline: ${cause.message}`,{cause}),{code:'indeterminate'});
     }
+    const snapshot=nonceAnswer(response?.response);
+    if(!rpcEnvelope(response,200,null) || snapshot.nonce===null) fail('indeterminate','seller nonce is unavailable');
+    return snapshot;
   }
   const accountNonce=async()=>(await accountNonceSnapshot()).nonce;
   async function liveSourceRows() {

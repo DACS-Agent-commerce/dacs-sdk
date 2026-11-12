@@ -57,6 +57,14 @@ test('a nonce reply larger than its byte cap refuses before the wallet is asked'
 });
 
 // A caller's signed projection is bounded and JSON before it is hashed or read (rvd r4 D-4).
+test('a nonce reply that is not a usable nonce is reported as unavailable, not as a failed or late read',async()=>{
+  const f=await anchorFixture();f.source.readRpc=async()=>({result:200,response:{nonce:'TEST-not-a-number',blockHeight:1},require_reply:false,extra:null});
+  await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate'&&error.message==='seller nonce is unavailable'&&error.cause===undefined);assert.equal(f.captured.length,0);
+});
+test('a nonce read that throws is reported as a failed or late read with its cause',async()=>{
+  const f=await anchorFixture(),cause=new Error('TEST node unreachable');f.source.readRpc=async()=>{throw cause;};
+  await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate'&&/failed or exceeded its deadline: TEST node unreachable/.test(error.message)&&error.cause===cause);assert.equal(f.captured.length,0);
+});
 test('verifyReceipt refuses a caller projection larger than one signed CREATE, or not JSON, before any read',async()=>{
   const f=await anchorFixture(),anchor=f.open(),artifact=await f.artifact(JOB);let reads=0;
   f.controls.reader.verifyReceipt=async()=>{reads++;return 'valid';};
