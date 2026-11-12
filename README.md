@@ -37,14 +37,14 @@ Self-declared identity (+ one verified claim) · fixed-price negotiation · **x4
 
 The role-separated fixed-price coordinators cover all five lifecycle stages.
 A buyer and a seller run in separate processes, each over its own durable
-store. After a restart, the x402 buyer settlement step (`advanceX402BuyerSettlement`)
-first reconciles an attempt that has no recorded outcome against the chain, and
+store. After a restart, the buyer's payment job, built on
+`advanceX402BuyerSettlement`, first reconciles an attempt that has no recorded outcome against the chain, and
 submits again only once that read shows the payment authorization unused. See
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
 
 The exported `SignedArtifact`, `buildSignedArtifact()` and
 `verifySignedArtifact()` symbols are legacy raw-hex compatibility surfaces used
-by `Agent.runSession()`, which still ships, and by historical readers. New producers
+by `Agent.runSession()` and by historical readers. New producers
 and readers must use `ComponentSignedArtifact`,
 `buildComponentSignedArtifact()` and `verifyComponentSignature()`.
 
@@ -559,7 +559,7 @@ action.
 `createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
 hook. A caller can omit it, but a purchase that must finish after a restart needs
 the journal it fills (see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
-Only `Agent.runSession()`, which still ships, refuses a pay-dem bridge built over
+Only `Agent.runSession()` refuses a pay-dem bridge built over
 a rail without it.
 Without the hook the low-level rail provides only in-process hash-first
 observation. Across a

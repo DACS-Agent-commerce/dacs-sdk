@@ -55,8 +55,8 @@ a recorded outcome that it has not itself authenticated. Keep the original
 signed-transfer journal. Absent, indeterminate or conflicting observations
 withhold success and never authorize a replacement debit.
 
-The bridge keeps no durable mark of that authentication. `Agent.runSession`, which
-still ships, does, in its own session store: a fresh native success and a
+The bridge keeps no durable mark of that authentication. `Agent.runSession`
+does, in its own session store: a fresh native success and a
 successful audit mark the saved outcome execution-authenticated. A bound failed
 record may replace a saved successful checkpoint that lacks the mark with a
 permanent failure for the same transaction, but not one that has it. The saved fee
@@ -100,7 +100,7 @@ This recipe requires a prepared-transfer journal. Build the rail with
 ready-made hook, so write the few lines that put each prepared transfer into
 your journal before it is broadcast. `payDemSettle` does not check the hook: a
 rail built without it, or with a hook that records nothing, leaves the recipe no
-hash to read. Only `Agent.runSession`, which still ships, refuses a pay-dem
+hash to read. Only `Agent.runSession` refuses a pay-dem
 bridge built over a rail without `journalPreparedTransfer`.
 
 Settle a restarted purchase by calling the bridge with the request the purchase
