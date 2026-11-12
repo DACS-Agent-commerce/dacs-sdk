@@ -1179,6 +1179,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/wire-authentication.test.mjs:1` | b349f17995247e1105a92d00a42d0ea8d3f9ec88 |
 | WF | delta(client): WF record the merged public-admission blob of two parallel records | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/public-admission.mjs:1` | 675152fb86dd45b1b58a2ce24d19d946780cc770 |
+| WF | delta(client): WF record the merged public-admission blob of the wire purchase transport | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/public-admission.mjs:1` | 8c0c6666bc10a902c9459f67953ebcd3fdcc13e0 |
 
 ## Complete commit and file inventory
 
@@ -3714,6 +3716,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the merged request signer route limit in the wire purchase transport and refresh package pins | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): end the delta ledger with a source or test change | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF record the merged public-admission blob of two parallel records | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the merged public-admission blob of the wire purchase transport | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

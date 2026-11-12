@@ -7170,6 +7170,18 @@
           "after": "675152fb86dd45b1b58a2ce24d19d946780cc770"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public-admission blob of the wire purchase transport",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public-admission.mjs",
+          "before": "8c0c6666bc10a902c9459f67953ebcd3fdcc13e0",
+          "after": "8c0c6666bc10a902c9459f67953ebcd3fdcc13e0"
+        }
+      ]
     }
   ]
 }
