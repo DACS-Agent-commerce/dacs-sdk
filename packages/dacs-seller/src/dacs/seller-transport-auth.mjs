@@ -11,7 +11,7 @@ import { isTp1WireProfile, wireOperationBinding } from '@kynesyslabs/dacs/wire';
 import { createSellerChallengeLedger } from './seller-challenge-ledger.mjs';
 import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
-import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { assertKitOperationAdmitted, kitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { createReservationAccounting } from './seller-reservation-accounting.mjs';
 
 export const SELLER_TRANSPORT_HEADER = 'x-dacs-seller-peer';
@@ -242,6 +242,8 @@ const CONTEXT_ADMISSIONS = `CREATE TABLE IF NOT EXISTS peer_context_admissions (
 // Read-only membership test for the challenge ledger; nothing may add to it.
 export const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
 const CHALLENGE_RATE_WINDOW_MS = 3600000;
+const CLOSURE_SOURCES = new Set(['cleanup', 'effect-path', 'session-observer']);
+const NOT_TERMINAL = Object.freeze({ terminal: false, state: null });
 const storeInternals = new WeakMap();
 const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserves definite nonce answers.
 // Only expired completed/no-effect nonces are reclaimable; unknown and pending effects stay fenced.
@@ -272,7 +274,8 @@ const SELLER_CONTEXT_START_LIMITS = Object.freeze({ maxStartsPerHour: 12, maxSta
 /**
  * Opens the private transport journal and the one challenge ledger on its SQLite handle.
  * `generation` names this process (drawn after the seller state lock), `ready` and `stopped` are
- * synchronous booleans, `contextSessionState({ jobId })` is synchronous (DACS-5 name or unknown), and
+ * synchronous booleans, `contextSessionState({ jobId })` is the host's raw synchronous port (DACS-5 name or unknown) that only this
+ * store reads, through the one observation adapter (`sellerStoreInternals(store).sessionState`), and
  * `contextStartLimits` are the route's own unpaid-start limits, which the ledger enforces too.
  * `contextRecords` is the counter step 4 of reservation accounting reads; it defaults to the union of the
  * retained context records (old admissions and K1 rows, intent rows included), and only tests replace it.
@@ -282,12 +285,12 @@ const SELLER_CONTEXT_START_LIMITS = Object.freeze({ maxStartsPerHour: 12, maxSta
  * Returns the store, whose `challenges` is the ledger; `recoverLostContextReservations()` runs only
  * while the caller holds the seller state lock. Throws on an unusable option or storage.
  */
-export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null,
+export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState: readSessionState = () => null,
   contextStartLimits = SELLER_CONTEXT_START_LIMITS, generation = randomBytes(16).toString('hex'), ready = () => true, stopped = () => false,
   maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), contextRecords, wireOperationView = () => null, retainsUnfinishedWork = () => true }) {
   if (typeof path !== 'string' || !isAbsolute(path) || !uint(maxRecords) || maxRecords === 0) throw new Error('a persistent absolute path and positive store capacity are required');
   if (!uint(maxJobs) || maxJobs === 0) throw new Error('positive job capacity required');
-  if (!uint(maxChallenges) || maxChallenges === 0 || typeof contextSessionState !== 'function') throw new Error('positive challenge capacity and seller session-state reader required');
+  if (!uint(maxChallenges) || maxChallenges === 0 || typeof readSessionState !== 'function') throw new Error('positive challenge capacity and seller session-state reader required');
   if (typeof wireOperationView !== 'function' || typeof retainsUnfinishedWork !== 'function') throw new Error('wire operation and unfinished work readers must be functions');
   if (!uint(maxContextRecords) || maxContextRecords === 0) throw new Error('positive context capacity required');
   if (![maxNoncesPerBuyerPerWindow, nonceWindowMs].every(n => uint(n) && n > 0)) throw new Error('positive nonce limits required');
@@ -325,18 +328,97 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE INDEX IF NOT EXISTS kit_reservations_buyer_at ON kit_reservations(buyer, at);
     CREATE INDEX IF NOT EXISTS kit_reservations_job ON kit_reservations(jobId);
     CREATE TABLE IF NOT EXISTS kit_payment_transactions (tx TEXT PRIMARY KEY, jobId TEXT NOT NULL, operationId TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS kit_terminal_closures (jobId TEXT PRIMARY KEY, state TEXT NOT NULL, observedAt INTEGER NOT NULL,
+      source TEXT NOT NULL CHECK (source IN ('cleanup', 'effect-path', 'session-observer')));
     CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);
     CREATE INDEX IF NOT EXISTS peer_transactions_job ON peer_transactions(job);
     CREATE INDEX IF NOT EXISTS peer_nonces_effect ON peer_nonces(effect);`);
-  // rollback: always roll back (classify's read-only run of reserve).
-  function transaction(fn, rollback = false) {
+  // rollback: always roll back (classify's read-only run of reserve). A result that is a Promise or thenable rolls back too.
+  function immediate(fn, rollback = false) {
     db.exec('BEGIN IMMEDIATE');
-    try { const result = fn(); db.exec(rollback ? 'ROLLBACK' : 'COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; }
+    try {
+      const result = fn();
+      if (typeof result?.then === 'function') { void Promise.resolve(result).then(undefined, () => {}); throw new TypeError('a store transaction is synchronous'); }
+      db.exec(rollback ? 'ROLLBACK' : 'COMMIT');
+      return result;
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  // The terminal observer: every DACS-5 state any reader sees goes through `contextSessionState`. A terminal name waits in
+  // `pending` until `closeTerminalWithin`, the one writer of a closure, records it with the capacity's cleanup: in the commit of the work
+  // that saw it, otherwise in a transaction of its own after that work rolled back, before the answer or error leaves.
+  const pending = new Map();
+  const closureOf = db.prepare('SELECT state FROM kit_terminal_closures WHERE jobId = ?');
+  let cleanupWithin = null;
+  function requireBoundCleanup() {
+    if (cleanupWithin === null) throw new TypeError('the terminal cleanup is not bound: construct the purchase capacity on this store first');
+  }
+  function closeTerminalWithin(jobId, state, source) {
+    requireBoundCleanup();
+    if (!db.inTransaction) throw new TypeError('a terminal closure is recorded in the store transaction');
+    if (!TERMINAL_CONTEXT_STATES.has(state) || !CLOSURE_SOURCES.has(source)) throw new TypeError('a closure needs a terminal state and a known source');
+    const at = now();
+    if (!uint(at)) fail('peer_clock_invalid', 503);
+    db.prepare('INSERT OR IGNORE INTO kit_terminal_closures VALUES (?, ?, ?, ?)').run(jobId, state, at, source);
+    const cleaned = cleanupWithin(jobId);
+    if (typeof cleaned?.then === 'function') { void Promise.resolve(cleaned).then(undefined, () => {}); throw new TypeError('the terminal cleanup is synchronous'); }
+  }
+  const flushWithin = () => { for (const [jobId, { state, source }] of pending) closeTerminalWithin(jobId, state, source); };
+  function flushPending() {
+    if (pending.size === 0) return;
+    immediate(flushWithin);
+    pending.clear();
+  }
+  // A failed flush keeps its own error, with the refused work's error as its cause, and the observations stay pending.
+  function flushAfterRefusal(refusal) {
+    try { flushPending(); } catch (failure) {
+      if (failure !== refusal && failure instanceof Error && failure.cause === undefined) failure.cause = refusal;
+      throw failure;
+    }
+  }
+  function transaction(fn, rollback = false) {
+    if (!db.inTransaction) flushPending();
+    let result;
+    try { result = immediate(() => { const value = fn(); if (!rollback) flushWithin(); return value; }, rollback); } catch (error) { flushAfterRefusal(error); throw error; }
+    if (rollback) flushPending(); else pending.clear();
+    return result;
+  }
+  // Only a synchronous string or an explicit null answers; a throw, a Promise or any other value refuses unavailable 503 with its cause.
+  const readPort = jobId => readSellerSessionState(readSessionState, jobId);
+  // The job's closure answers first, then an observation still pending, then the port. Outside a transaction a terminal name is written
+  // before this returns; inside one it is written by the transaction. `cleanup` re-runs the release for a job that already has a closure.
+  function contextSessionState({ jobId }, source = 'session-observer') {
+    requireBoundCleanup();
+    const closed = closureOf.get(jobId)?.state ?? null;
+    const state = closed ?? pending.get(jobId)?.state ?? readPort(jobId);
+    if (TERMINAL_CONTEXT_STATES.has(state) && !pending.has(jobId) && (closed === null || source === 'cleanup') && kitOperationAdmitted()) pending.set(jobId, { state, source });
+    if (!db.inTransaction) flushPending();
+    return state;
+  }
+  function terminalSession(jobId) {
+    assertKitOperationAdmitted('terminalSession');
+    if (db.inTransaction) throw new TypeError('terminalSession runs outside a store transaction');
+    const state = contextSessionState({ jobId }, 'effect-path');
+    return TERMINAL_CONTEXT_STATES.has(state) ? Object.freeze({ terminal: true, state }) : NOT_TERMINAL;
+  }
+  function flushTerminalObservations() {
+    requireBoundCleanup();
+    if (db.inTransaction) throw new TypeError('terminal observations are flushed outside a store transaction');
+    flushPending();
+  }
+  function bindTerminalCleanup(cleanup) {
+    if (typeof cleanup !== 'function' || cleanupWithin !== null) throw new TypeError('the terminal cleanup is a function, bound once');
+    cleanupWithin = cleanup;
   }
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
-  const readSessionStateWithin = jobId => readSellerSessionState(contextSessionState, jobId);
-  const terminalForReclamation = jobId => { try { return TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(jobId)); } catch { return false; } };
+  const readSessionStateWithin = jobId => contextSessionState({ jobId });
+  // Reclamation keeps a row whose session cannot be read; the observer's own failures still propagate.
+  const terminalForReclamation = jobId => {
+    try { return TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(jobId)); } catch (error) {
+      if (error?.code !== 'session_admission_unavailable' || error.status !== 503) throw error;
+      return false;
+    }
+  };
   // A purchase's TP-1 tuple, as the canonical text kept for its job.
   const purchaseProfileText = (profile) => {
     if (!isTp1WireProfile(profile)) fail('tp1_purchase_profile_mismatch', 500);
@@ -579,7 +661,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       starts: starts(since), buyerStarts: buyer => starts(since, buyer) };
   }
   const { maxStartsPerHour, maxStartsPerBuyerPerHour } = contextStartLimits;
-  const ledger = createSellerChallengeLedger({ db, transaction, now, generation, ready, stopped, sessionState: ({ jobId }) => readSessionStateWithin(jobId), admissionCounts: input => {
+  const ledger = createSellerChallengeLedger({ db, transaction, now, generation, ready, stopped, sessionState: contextSessionState, admissionCounts: input => {
       retireSlotsWithin(now(), undefined, { capacity: true, jobs: [] }); return admissionCounts(input);
     },
     limits: { maxChallenges, maxContextRecords, maxPerHour: maxStartsPerHour, maxPerBuyerPerHour: maxStartsPerBuyerPerHour, maxStartsPerHour, maxStartsPerBuyerPerHour } });
@@ -782,7 +864,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       return result;
     },
     // Read-only reserve: 'start' for new work, 'known' for journaled answers;
-    // conflicts throw reserve's refusal. No mutations run; the transaction rolls back.
+    // conflicts throw reserve's refusal. No request work is written and the transaction rolls back; a terminal session state it
+    // observed is still committed in a transaction of its own before this returns.
     classify(p, body, { journaledOnly = false, admit = () => 0, keepProfile } = {}) {
       return this.reserve(p, body, { journaledOnly, admit, dryRun: true, keepProfile }).disposition === 'perform' ? 'start' : 'known';
     },
@@ -793,19 +876,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       return text === null ? null : JSON.parse(text);
     },
     // Whether the job's seller context session has ended (the policy `assertPending` and `claim` apply to proposal work);
-    // it reads only the session reader, so it holds whichever tables accounted the job. An unreadable source is never "not
-    // terminal": a throw, a thenable or a non-null non-string answer is refused `session_admission_unavailable` 503 with its
-    // cause, and only an explicit null reads as no session.
+    // it reads only the session reader (through the observation adapter), so it holds whichever tables accounted the job. An
+    // unreadable source is never "not terminal": a throw, a thenable or a non-null non-string answer is refused
+    // `session_admission_unavailable` 503 with its cause, and only an explicit null reads as no session.
     sessionTerminal(jobId) {
       requireJobId(jobId);
-      const unavailable = (cause) => new SellerTransportError('session_admission_unavailable', 503, { cause });
-      let state;
-      try { state = contextSessionState({ jobId }); } catch (cause) { throw unavailable(cause); }
-      if (state === null) return false;
-      if (typeof state === 'string') return TERMINAL_CONTEXT_STATES.has(state);
-      // A rejected answer is observed so it cannot surface later; no eventual value is used.
-      try { if (typeof state?.then === 'function') state.then(undefined, () => {}); } catch { /* the refusal below is the answer */ }
-      throw unavailable(new TypeError('the seller session reader answered a non-string state'));
+      return TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId }));
     },
     // The context step's pre-Agreement admission record for a job, or null:
     // {jobId, buyer, seller, listingPin, scopeHash, effect, admittedAt}.
@@ -952,15 +1028,23 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     close: () => db.close(),
     journaledOnlyReserve: true,
   };
-  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }) }));
+  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }),
+    terminalSession, sessionState: contextSessionState, bindTerminalCleanup, flushTerminalObservations }));
   return store;
 }
 
 /**
- * The one SQLite owner behind a registered store: `{ db, transaction, challenges, admissionCounts, limits, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin }`
- * (`limits`: the context-record and unpaid-start limits the ledger enforces at issue), for the seller's own admission modules, which run
- * their reads and writes in that store's immediate transactions. It hands out the raw handle: only code that owns the store holds it.
- * Throws a TypeError for anything else.
+ * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, limits,
+ * terminalSession, sessionState, bindTerminalCleanup, flushTerminalObservations }`, where `limits` are the context-record and unpaid-start
+ * limits the ledger enforces at issue. `sessionState({ jobId }, source)` is the one observation adapter: it answers a job's closure, else the
+ * port's synchronous DACS-5 name or null, and keeps a terminal name (the closure and the capacity's release) with the work that saw it or,
+ * when that work is refused, fails or rolls back, in a transaction of its own before the answer leaves. `terminalSession(jobId)` is the
+ * synchronous check for purchase work: `{ terminal, state }`, with the closure committed before a terminal answer; it throws a
+ * TypeError inside a transaction and the persistence error when a closure cannot be written. `flushTerminalObservations()` commits the
+ * observations a failed write left pending. `bindTerminalCleanup(fn)` is called once, by the purchase capacity; the adapter throws a
+ * TypeError until then.
+ * For the seller's own admission modules, which run their reads and writes in that store's immediate transactions; it is not a
+ * public export and grants no wire or lease authority. Throws a TypeError for anything else.
  */
 export function sellerStoreInternals(store) {
   const internals = typeof store === 'object' && store !== null ? storeInternals.get(store) : undefined;
