@@ -18,7 +18,7 @@
 // never `applied`; only successful execution is `applied`.
 //
 // createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
-//   readAccountNonce, readTransactionState, now, readTimeoutMs }):
+//   readAccountNonce, readTransactionState, now, readTimeoutMs, signatureChainId }):
 //  - path: absolute path of the journal's SQLite file (created 0600 when
 //    missing), in a directory owned by this user that no one else can write,
 //    reached through no symbolic link and no ancestor others can write (a
@@ -38,7 +38,9 @@
 //    at input.logicalAddress, with `to` and the operation's storageAddress the
 //    address the writer, the program name and the nonce derive, from the
 //    writer's address (`from` and `from_ed25519_address`), with the writer's
-//    Ed25519 signature over the hash as 0x and lower-case hex. Its amount is 0,
+//    Ed25519 signature as 0x and lower-case hex, over the hash or, when
+//    signatureChainId is set, over `demos-tx:v1:<signatureChainId>:<hash>`
+//    (transaction-signature.mjs). Its amount is 0,
 //    its ACL public and its storage on-chain; its node fee and execution edits
 //    are exactly those demosdk 4.0.16 sign writes (`transaction_fee`: network
 //    and rpc fee, no additional fee or rpc address; `gcr_edits`: the storage fee
@@ -57,6 +59,9 @@
 //    transaction index (including failed transactions) on the same chain.
 //    Its coverage must reach the nonce snapshot's blockHeight. A bare nonce
 //    or an unfenced absence keeps the original signed CREATE alive.
+//  - signatureChainId: the node's chain id as a decimal string, from the seller's
+//    own network configuration. Left out, only a signature over the bare hash is
+//    accepted; a value that is not a decimal string is refused (TypeError).
 //  Each read, signCreate and broadcast is given readTimeoutMs (default 10 s) to
 //  settle, and is passed { signal } to stop at the deadline. A signCreate that
 //  does not (wallet_sign_timeout) keeps nothing and frees the journal; a
@@ -90,7 +95,8 @@ import { dirname, isAbsolute } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { setTimeout as delay } from 'node:timers/promises';
 import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
-import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
+import { addressForClaim } from './demos-claims.mjs';
+import { assertSignatureChainId, verifyTransactionSignature } from './transaction-signature.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
 
@@ -171,7 +177,7 @@ function permitted(authorize) {
   if (typeof answer?.then === 'function') answer.then(undefined, () => {});
   if (answer !== true) throw Object.assign(new Error(`the wallet effect is no longer authorized${answer instanceof Error ? `: ${reason(answer)}` : ''}`), { code: 'wallet_not_authorized' });
 }
-function signedCreateProblem(answer, input) {
+function signedCreateProblem(answer, input, signatureChainId) {
   let signed;
   try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
   const content = signed?.content, op = content?.data?.[1];
@@ -190,7 +196,7 @@ function signedCreateProblem(answer, input) {
       || metadata.contentHash !== input.receiptContentHash || metadata.envelopeHash !== sha256Hex(canonicalize(input.artifact))
       || bindingProblem(metadata, input)) return `is not this ${input.artifactKind === 'Deliverable' ? 'Deliverable' : 'evidence'}'s storage CREATE`;
   if (content.from !== from || content.from_ed25519_address !== from || signed.signature.type !== 'ed25519' || typeof signed.signature.data !== 'string'
-      || !SIGNATURE.test(signed.signature.data) || !verifyDemosSignature({ address: from, message: answer.txHash, signature: signed.signature.data })) return 'is not signed by the writer';
+      || !SIGNATURE.test(signed.signature.data) || !verifyTransactionSignature({ address: from, hash: answer.txHash, signature: signed.signature.data, signatureChainId })) return 'is not signed by the writer';
   const storageAddress = deriveStorageAddress(from, programName, answer.nonce, '');
   if (content.to !== storageAddress || op.storageAddress !== storageAddress) return `is not at the storage address its writer, name and nonce derive (${storageAddress})`;
   if (nonceOf(content.timestamp, 0) === null) return 'has no valid timestamp';
@@ -224,7 +230,8 @@ function assertPrivateDirectory(directory) {
  * readSignedProjection, journalId and close. Throws TypeError for an unusable
  * option, path or file.
  */
-export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000 } = {}) {
+export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000, signatureChainId } = {}) {
+  assertSignatureChainId(signatureChainId);
   if (!TABLE_NAME.test(table)) throw new TypeError('the wallet journal table must be named for its kind of artifact');
   if (typeof path !== 'string' || !isAbsolute(path)) throw new TypeError('the wallet journal path must be absolute');
   if (typeof signCreate !== 'function' || typeof broadcast !== 'function' || typeof now !== 'function') throw new TypeError('the wallet journal needs signCreate, broadcast and now functions');
@@ -303,7 +310,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   const keptFor = (input) => {
     if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const kept = rows(input.logicalAddress);
-    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
+    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input, signatureChainId))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     const live = kept.find((row) => row.superseded_at === null);
     return { live: live ? { signedTransaction: live.signed_transaction, txHash: live.tx_hash, nonce: Number(live.nonce) } : null, highestNonce: kept.length ? Number(kept.at(-1).nonce) : 0 };
   };
@@ -366,7 +373,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
         () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
       if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || Buffer.byteLength(answer.signedTransaction, 'utf8') > MAX_SIGNED_TRANSACTION_BYTES
           || typeof answer.txHash !== 'string' || !TX_HASH.test(answer.txHash) || nonceOf(answer.nonce, 1) === null) throw Object.assign(new Error('signCreate answered no signed transaction, hash and nonce'), { code: 'wallet_sign_invalid' });
-      const problem = signedCreateProblem(answer, input);
+      const problem = signedCreateProblem(answer, input, signatureChainId);
       if (problem) throw Object.assign(new Error(`signCreate's signed transaction ${problem}`), { code: 'wallet_sign_invalid' });
       // A new signature must be able to land where the kept ones cannot.
       if (answer.nonce <= highestNonce) throw Object.assign(new Error(`signCreate answered nonce ${answer.nonce}, not above the kept nonce ${highestNonce}`), { code: 'wallet_sign_invalid' });

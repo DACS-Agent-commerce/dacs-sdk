@@ -43,6 +43,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-wire-requests.mjs': { effect: {  }, pure: ['createWireContext', 'openWireRequest', 'wireAuthenticator'] },
   'src/dacs/session-admission.mjs': { effect: {  }, pure: ['hasPresenceOnlyClaim', 'identityPresentationValid', 'isOrchestratorVetMode', 'listingRevocationProblem', 'readAdmissionCapability', 'sellerBundleProblem', 'sellerRecordVerifier', 'sellerSessionPresentationProblem', 'sessionAdmissionConfig', 'sessionAdmissionProblem', 'vetAnchorReceiptProblem', 'vetRecordProblem'] },
   'src/dacs/signing-gate-bind.mjs': { effect: {  }, pure: ['bindWhenNoSigningGate'] },
+  'src/dacs/transaction-signature.mjs': { effect: {  }, pure: ['assertSignatureChainId', 'verifyTransactionSignature'] },
   'src/dacs/wallet-transactions.mjs': { effect: {  }, pure: ['assertStorageJsonDepth', 'buildStorageProgramCreatePayload', 'deriveStorageAddress'] },
   'src/devnet-demo/agreement-context.mjs': { effect: { createDevnetDemoAgreementContextProvider: ['createDevnetDemoAgreementContextProvider'] }, pure: [] },
   'src/devnet-demo/approval-ledger-append.mjs': { effect: {  }, pure: ['appendApprovalLedgerLine', 'syncApprovalLedger'] },
