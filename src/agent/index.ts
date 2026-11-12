@@ -29,8 +29,6 @@ export {
   type SignatureCheck,
   type Reputation,
   type ReputationExclusion,
-  type RunSessionOptions,
-  type SessionListingInput,
 } from "./Agent.js";
 export {
   verifyBundleCore,
