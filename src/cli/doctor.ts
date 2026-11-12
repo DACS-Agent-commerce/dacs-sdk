@@ -164,9 +164,8 @@ export function rpcSensitiveNeedles(rpc?: string): string[] {
 }
 
 /**
- * Drop Unicode control and format characters (C0/C1, direction controls, zero-width
- * characters) and the line and paragraph separators U+2028 and U+2029 from text that
- * comes from a node reply. No exceptions.
+ * Drop control, format, line-separator and paragraph-separator characters (Unicode
+ * categories Cc, Cf, Zl and Zp) from text that comes from a node reply.
  */
 function stripControlChars(text: string): string {
   return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "");
