@@ -75,7 +75,7 @@ Global done-for-every-task: unit tests pass; the 5 `DACS-Standard` validators st
   - `createAgent({ identity, demosRpc, wallet?, bindings? })` (wallet and binding publisher optional for read-only consumers)
   - seller: `publishListing(spec)` → discriminated binding-publication receipt
   - buyer/Directory: `readListing(logicalAddress)`, `enumerateListings(sellerId)`, legacy `discover(refs)`
-  - buyer: `runSession(authenticatedListing | listingRef)` → result + anchored bundle
+  - buyer: the fixed-price coordinators (see `docs/fixed-price-x402-coordinator.md`) → settled purchase + anchored bundle
   - anyone: `verifyBundle(ref)`, `getReputation(primaryClaim)`
 - *Done when:* `index.ts` exports only these; the rest is internal.
 
