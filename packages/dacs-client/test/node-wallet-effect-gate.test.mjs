@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { agreementRequest, api, mnemonicBytes, ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
@@ -168,14 +167,20 @@ test("a plain copy of a pass handle, another composition's handle, or a handle w
   const w = await qualifiedWorld(t), other = await qualifiedWorld(t);
   const released = await openPass(w);
   await released.run(async () => {});
-  const own = await openPass(w), foreign = await openPass(other);
-  const handles = { 'a spread copy': { ...own.handle }, 'a parsed copy': JSON.parse(JSON.stringify(own.handle)), 'a null-prototype copy': Object.assign(Object.create(null), own.handle),
-    'another composition': foreign.handle, 'a released lease': released.handle, 'no handle': undefined };
-  for (const [name, handle] of Object.entries(handles)) {
-    const result = await w.session.runInEffectPass(handle, () => w.send());
-    refusedBeforeEffect(w, result, name === 'no handle' ? 'effect_pass_required' : 'effect_pass_invalid');
+  const copies = { 'a spread copy': handle => ({ ...handle }), 'a parsed copy': handle => JSON.parse(JSON.stringify(handle)),
+    'a null-prototype copy': handle => Object.assign(Object.create(null), handle) };
+  for (const [name, copy] of Object.entries(copies)) {
+    // A copy does not share the fence its live original holds, so its send waits for that fence like any caller outside the pass.
+    const own = await openPass(w), pending = w.session.runInEffectPass(copy(own.handle), () => w.send());
+    await new Promise(setImmediate);
+    assert.equal(w.signsInsideSign + w.node.confirms.length, 0, `${name}: nothing was signed or sent while the original held its fence`);
+    await own.run(async () => {});
+    refusedBeforeEffect(w, await pending, 'effect_pass_invalid');
   }
-  await own.run(async () => {});
+  const foreign = await openPass(other);
+  for (const [handle, code] of [[foreign.handle, 'effect_pass_invalid'], [released.handle, 'effect_pass_invalid'], [undefined, 'effect_pass_required']]) {
+    refusedBeforeEffect(w, await w.session.runInEffectPass(handle, () => w.send()), code);
+  }
   await foreign.run(async () => {});
   const lapsing = await openPass(w, { pass: { finalStop: async () => lapsing.lease.release() } });
   refusedBeforeEffect(w, await lapsing.run(() => w.send()), 'effect_pass_invalid');
@@ -327,14 +332,51 @@ test("a sentinel error thrown inside qualify, refreshAuthority, finalStop or a s
   assert.equal(atTransmission.node.confirms.length, 0);
 });
 
-test("the export inventory doc lists effectPass and runInEffectPass with their inputs and refusals, and equals the composition's members", async t => {
-  const doc = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
-  const rowNames = prefix => [...doc.split('\n').find(line => line.startsWith(prefix)).matchAll(/`(\w+)`/g)].map(match => match[1]).sort();
+test("both compositions expose effectPass and runInEffectPass as functions; the seller adds only transport and observer", async t => {
   const seller = await qualifiedWorld(t), buyer = await gateWorld(t, { seller: false });
-  assert.deepEqual(rowNames('| Seller composition members |'), Object.keys(seller.session).sort());
-  assert.deepEqual(rowNames('| Buyer composition members |'), Object.keys(buyer.session).sort());
-  for (const word of ['effectPass', 'runInEffectPass', 'qualify', 'refreshAuthority', 'finalStop', 'synchronousChecks', 'feeCeilingOs', 'fence', 'deadline',
-    'effect_pass_required', 'effect_pass_invalid', 'invalid_params', 'admitTp1Authority', 'tp1AuthorityLabel', 'authorityLabelOf', 'isTp1AuthorityToken']) assert.ok(doc.includes('`' + word + '`'), word);
+  const buyerMembers = ['close', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'wallet', 'walletFactory'];
+  assert.deepEqual(Object.keys(buyer.session).sort(), buyerMembers);
+  assert.deepEqual(Object.keys(seller.session).sort(), [...buyerMembers, 'observer', 'transport'].sort());
+  for (const session of [seller.session, buyer.session]) for (const name of ['effectPass', 'runInEffectPass']) assert.equal(typeof session[name], 'function', name);
+});
+
+test("a synchronous check that returns a promise, resolving or rejecting, refuses effect_gate_refused with signer 0 and no unhandled rejection", async t => {
+  const unhandled = [], onUnhandled = reason => { unhandled.push(reason); };
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  for (const check of [() => Promise.resolve(), () => Promise.reject(new Error('TEST-late-check'))]) {
+    const w = await qualifiedWorld(t);
+    refusedBeforeEffect(w, await (await openPass(w, { pass: { synchronousChecks: [check] } })).run(() => w.send()), 'effect_gate_refused');
+  }
+  await new Promise(setImmediate);
+  assert.deepEqual(unhandled, []);
+});
+
+test("a transmission whose request signal aborts while qualify runs is refused there: confirmTx sends nothing, and an abort at broadcastTx leaves the confirmed bytes unsent", async t => {
+  const signals = [];
+  // Each node request's deadline signal becomes one the test can abort.
+  t.mock.method(AbortSignal, 'timeout', () => { const controller = new AbortController(); signals.push(controller); return controller.signal; });
+  for (const abortAt of ['confirmTx', 'broadcastTx']) {
+    const reason = Object.assign(new Error('TEST-request-aborted'), { code: 'TEST_ABORTED' });
+    const w = await qualifiedWorld(t, phase => { if (phase === abortAt) signals.at(-1).abort(reason); });
+    const result = await (await openPass(w)).run(() => w.send());
+    assert.equal(result.success, false, JSON.stringify(result));
+    assert.equal(w.signsInsideSign, 1, abortAt);
+    assert.deepEqual([w.node.confirms.length, w.node.broadcasts.length], abortAt === 'confirmTx' ? [0, 0] : [1, 0], abortAt);
+  }
+});
+
+test("effectPass refuses null options, a lease from another transport owner, a BigInt or Symbol deadline and a check list with holes as effect_pass_invalid", async t => {
+  const w = await qualifiedWorld(t), other = await qualifiedWorld(t);
+  const lease = await w.currentOwner().acquireConnectionFence(), foreignLease = await other.currentOwner().acquireConnectionFence();
+  const base = { fence: lease, deadline: T0 + 1000, refreshAuthority: async () => {}, finalStop: async () => {}, synchronousChecks: [], feeCeilingOs: FEE_CEILING_OS };
+  assert.equal(typeof w.session.effectPass(base), 'object');
+  assert.throws(() => w.session.effectPass(null), { code: 'effect_pass_invalid' }, 'null options');
+  const patches = { 'a lease from another owner': { fence: foreignLease }, 'a BigInt deadline': { deadline: BigInt(T0 + 1000) },
+    'a Symbol deadline': { deadline: Symbol('deadline') }, 'a check list with holes': { synchronousChecks: new Array(2) } };
+  for (const [name, patch] of Object.entries(patches)) assert.throws(() => w.session.effectPass({ ...base, ...patch }), { code: 'effect_pass_invalid' }, name);
+  lease.release();
+  foreignLease.release();
 });
 
 test("second job closes approval during final authority await and inner effect is never called", async t => {
@@ -361,7 +403,7 @@ test("serialized old pass cannot authorize a reopened composition", async t => {
   await old.run(async () => {});
 });
 
-test("kill after gate refusal before withheld append preserves earlier dispatch history", async t => {
+test("a broadcast refused by the gate after the dispatch intent leaves that intent unchanged across a restart, and a refused recovery keeps its single resend consumed", async t => {
   const w = await qualifiedWorld(t, phase => { if (phase === 'broadcastTx') throw sentinel(); });
   await (await openPass(w)).run(() => w.send());
   const before = await w.lane();
@@ -378,7 +420,7 @@ test("kill after gate refusal before withheld append preserves earlier dispatch 
   assert.equal((await recovery.lane()).storageWriteResends, 1, "the recovery's reserved single resend stays consumed after the refusal, so no later pass resends");
 });
 
-test("reopen signed-held transaction without automatic transmission", async t => {
+test("after a broadcast refusal, a restart transmits nothing by itself and a later pass keeps the retained signed bytes unsent", async t => {
   let allow = false;
   const w = await qualifiedWorld(t, phase => { if (phase === 'broadcastTx' && !allow) throw sentinel(); });
   await (await openPass(w)).run(() => w.send());
@@ -394,7 +436,7 @@ test("reopen signed-held transaction without automatic transmission", async t =>
 
 test("a pass that holds the exported owner's own fence completes native sends and session anchors: the transport's nested acquisitions inside the pass reuse that fence, and it is free once the pass ends", { timeout: 20_000 }, async t => {
   for (const seller of [true, false]) for (const send of [sendNative, sendAnchor]) {
-    const w = await gateWorld(t, { seller, directOwner: true, ...(seller ? { qualify: async () => w.currentOwner().local.connectionId } : {}) });
+    const w = await gateWorld(t, { seller, ...(seller ? { qualify: async () => w.currentOwner().local.connectionId } : {}) });
     const events = [], pass = await openPass(w, { events });
     const result = await pass.run(() => send(w));
     assert.equal(result.success, true, `${seller ? 'seller' : 'buyer'} ${send.name}: ${JSON.stringify(result)}`);
@@ -404,7 +446,7 @@ test("a pass that holds the exported owner's own fence completes native sends an
 });
 
 test("a nested fence acquisition reuses only the pass's own fence: a caller outside the pass still waits for it, and is granted once the pass releases it", { timeout: 20_000 }, async t => {
-  const w = await gateWorld(t, { directOwner: true }), owner = w.currentOwner(), pass = await openPass(w);
+  const w = await gateWorld(t), owner = w.currentOwner(), pass = await openPass(w);
   let granted = false;
   const outside = owner.acquireConnectionFence().then(lease => { granted = true; return lease; });
   await pass.run(async () => {

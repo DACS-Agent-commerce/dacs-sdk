@@ -213,7 +213,7 @@ export function tp1AuthorityLabel(binding) {
 
 /**
  * Resolves a frozen, registered token {label} once the wire's binding check passes for `binding` on `currentLocal()` within 10 s and the
- * connection is unchanged afterwards. Rejects tp1_binding_required (a missing binding or reader), the wire's K7 codes, tp1_local_binding_changed or
+ * connection is unchanged afterwards. Rejects tp1_binding_required (a missing binding or reader), the wire's binding refusal codes, tp1_local_binding_changed or
  * tp1_authority_timeout (cause kept). A token is not current authority: every effect still runs its own checks.
  */
 export async function admitTp1Authority({ binding, currentLocal } = {}) {
@@ -302,13 +302,15 @@ const executeStageOf = body => {
 function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired }) {
   const scope = new AsyncLocalStorage(), passes = new WeakMap();
   const liveFence = fence => { try { return liveLeases.has(fence) && fence.context === owner.getContext(); } catch { return false; } };
-  const effectPass = ({ fence, deadline, refreshAuthority, finalStop, synchronousChecks, feeCeilingOs } = {}) => {
-    const remainingMs = deadline - clock.now();
-    if (!liveFence(fence) || ![refreshAuthority, finalStop].every(step => typeof step === 'function') || !Array.isArray(synchronousChecks)
-      || !synchronousChecks.every(check => typeof check === 'function') || typeof deadline !== 'number' || !(remainingMs > 0 && remainingMs <= AUTHORITY_READ_DEADLINE_MS)
-      || typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs)) fail('effect_pass_invalid');
+  const effectPass = options => {
+    const { fence, deadline, refreshAuthority, finalStop, synchronousChecks, feeCeilingOs } = options ?? {};
+    // Array.from turns a hole into undefined, which the function check below refuses.
+    const checks = Array.isArray(synchronousChecks) ? Array.from(synchronousChecks) : [undefined];
+    const remainingMs = typeof deadline === 'number' ? deadline - clock.now() : NaN;
+    if (!liveFence(fence) || ![refreshAuthority, finalStop, ...checks].every(step => typeof step === 'function')
+      || !(remainingMs > 0 && remainingMs <= AUTHORITY_READ_DEADLINE_MS) || typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs)) fail('effect_pass_invalid');
     const handle = Object.freeze({});
-    passes.set(handle, Object.freeze({ fence, deadline, refreshAuthority, finalStop, synchronousChecks: Object.freeze([...synchronousChecks]), feeCeilingOs }));
+    passes.set(handle, Object.freeze({ fence, deadline, refreshAuthority, finalStop, synchronousChecks: Object.freeze(checks), feeCeilingOs }));
     return handle;
   };
   const runInEffectPass = (handle, work) => {
@@ -465,7 +467,8 @@ function createBindingRelay(transport) {
 const checkConstruction = admitPublicFactory(options => ({ options }), { purchase: true });
 
 /**
- * Returns a Promise for `{wallet, walletFactory({anchorJournal}), internalCauseOf(envelope), close()}`. `wallet.request` is wrapped by the admission wrapper and the four
+ * Returns a Promise for `{wallet, walletFactory({anchorJournal}), internalCauseOf(envelope), effectPass(pass), runInEffectPass(handle, work), close()}`.
+ * `effectPass` and `runInEffectPass` are the effect gate's host contract (see `createEffectGate`); a buyer may sign and send without a pass. `wallet.request` is wrapped by the admission wrapper and the four
  * passive methods keep their signatures. `walletFactory` is synchronous and returns another view of the same wallet that records anchors in the
  * selected caller-owned journal. `internalCauseOf` returns the error a failed request's envelope was closed over (its `cause` chain holds the original
  * failure, which the public envelope never carries), or undefined. Before the SDK's inner transaction signature the session checks that the signed message
@@ -473,7 +476,7 @@ const checkConstruction = admitPublicFactory(options => ({ options }), { purchas
  * fails `payload_mismatch` and nothing is signed. A general `sign` request for a transaction-hash-shaped message (bare or signatureDomain-prefixed
  * SHA-256 hex) also fails `payload_mismatch`, because that signature would be a valid transaction signature. `close()` locks the wallet and closes its transport; the host closes its owner and journal.
  * Options: `{admission, owner, journal, key, approve, clock}`; `key` is the UTF-8 mnemonic as a Uint8Array, and it and every copy of it are zero-filled
- * on every outcome. Rejects with TypeError(admission_required | admission_input_untrusted), OperationError(runtime_unsupported | invalid_mnemonic |
+ * on every outcome. Rejects with TypeError(admission_required | admission_input_untrusted), OperationError(runtime_unsupported | invalid_mnemonic | invalid_params (any `qualify`) |
  * node_wallet_sdk_unreviewed | node_wallet_sdk_preloaded | transport errors), or the SDK session's own refusal.
  */
 export function createNodeWalletSession(options = {}) {
@@ -498,19 +501,22 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
 }
 
 /**
- * Returns a Promise for `{wallet, walletFactory, transport, observer, paymentEvidenceAdapter, internalCauseOf, close}`: the session of `createNodeWalletSession` over a seller transport.
+ * Returns a Promise for `{wallet, walletFactory, transport, observer, paymentEvidenceAdapter, internalCauseOf, effectPass, runInEffectPass, close}`: the session
+ * of `createNodeWalletSession` over a seller transport.
  * `transport` is the registered held facade of `createHeldTransportFacade`; `observer` is `createNodeObserver({owner, clock})` over the same owner, with no fence.
  * `paymentEvidenceAdapter` is `{signCreate(input, {signal})}`, an active member under the hold: it signs one payment-evidence storage CREATE on the signer
  * reservation, inside the caller's effect pass, and sends nothing (see `node-payment-evidence-adapter.mjs`).
- * Options are those of `createNodeWalletSession` plus `publications: {settlementPublication, deliveryPublication, demoArtifactPublication}` and the required
- * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed). A confirmation by another sender, or of a Listing CREATE,
- * is answered `true` without calling it; every other seller confirmation calls it once, and `false` or a throw (kept as `cause`) refuses `approval_required`.
+ * Options are those of `createNodeWalletSession` plus `publications: {settlementPublication, deliveryPublication, demoArtifactPublication}`, the required
+ * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed), and the optional `qualify({phase, signal})` the effect gate awaits
+ * first. A confirmation by another sender, or of a Listing CREATE, is answered `true` without calling the policy; every other seller confirmation calls it once,
+ * and `false` or a throw (kept as `cause`) refuses `approval_required`. Every signature and execute transmission needs a current effect pass (`effect_pass_required`).
  * Also requires `stateOwnership` `{directory, held()}`, the host's proof that it holds the state lock for the directory containing `journal`. Before it
  * returns, the composition removes the lock rows of dead holders from `journal` and retires every signer reservation that has no signed bytes. It also requires
  * `paymentEvidenceApproval` `{prepare, open, reopen, confirm, settle}`, the kit's approval ledger for payment-evidence CREATEs; `open` and `settle` serve the
  * signer reservation.
- * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value, the transport's own refusal of the publications,
- * `state_ownership_required` (cause kept when the proof itself failed) without a valid proof, and `invalid_params` when a ledger member is not a function.
+ * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value, OperationError(invalid_params) for a `qualify`
+ * that is not a function, the transport's own refusal of the publications, `state_ownership_required` (cause kept when the proof itself failed) without a
+ * valid proof, and `invalid_params` when a ledger member is not a function.
  */
 export function createNodeSellerComposition(options = {}) {
   return buildNodeComposition(options, true);

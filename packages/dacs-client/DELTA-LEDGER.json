@@ -7006,8 +7006,33 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF record the merged public API test after carrying the held part up",
+      "subject": "delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner",
       "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "d7936b2ba890b2431ce8681de72fe572ed1119b4",
+          "after": "24cc435cbbd3e319a867bfb0d1759014dd077272"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "10beba68fcc095df465df8e74e5e0e27fe8dd251",
+          "after": "d4a27b230ade392782c331f6100640e1c5742baf"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-authority-token.test.mjs",
+          "before": "59ec4a406d02df29293034d44d466202fd68dde1",
+          "after": "87f4ce20d1db5d2b032876da56d94c263b421a5f"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "beb390b8c98523aeaa14210e43c207be82bf4696",
+          "after": "757b60148d789e59fc2db8b9350176f6fd859ce8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "d3bf2b1e65c8736ccd0c09fe42c1e5c11b0bce49",
+          "after": "e79fd458fc4120e07f82142805d6e01f93513019"
+        },
         {
           "path": "packages/dacs-client/test/public-api.test.mjs",
           "before": "f5bea631bd02f0505bde239e10be38970474caf6",

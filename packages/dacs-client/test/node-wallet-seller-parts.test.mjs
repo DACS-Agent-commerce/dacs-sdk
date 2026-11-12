@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { api, agreementRequest, mnemonicBytes, setPurchaseAdmission, world } from './helpers/tp1-node-fixture.mjs';
-import { inPass, reentrantOwner, sellerPublications as publications } from './helpers/effect-gate-world.mjs';
+import { inPass, sellerPublications as publications } from './helpers/effect-gate-world.mjs';
 import { confirmThroughFacade, listingCreate, retainAcceptedCreate, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
 import { createWorld } from './helpers/native-create-world.mjs';
 import { recordingApproval } from './helpers/payment-evidence-approval-double.mjs';
@@ -21,7 +21,7 @@ const PASSIVE = ['pins', 'transportBinding', 'journal', 'settlementPublication',
 const PHASES = ['bind', 'signature', 'release', 'broadcast', 'TEST-unknown'];
 async function seller(t, options = {}) {
   assert.equal(typeof api.createNodeSellerComposition, 'function');
-  return world(t, { ownerWrap: reentrantOwner, ...options, createSession: api.createNodeSellerComposition,
+  return world(t, { ...options, createSession: api.createNodeSellerComposition,
     sessionOptions: { approveConfirmedWrite: null, publications: publications(), ...options.sessionOptions } });
 }
 
