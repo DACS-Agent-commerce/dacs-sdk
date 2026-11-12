@@ -304,12 +304,11 @@ export const TEST_WEIGHTS = {
   },
 };
 
-// Which Node legs run each suite. client: node 22 only.
-// seller: both legs, except that a pull request runs it on node 22 only; the node 24 leg runs it on pushes and in
-// the merge queue.
+// Which Node legs run each suite. client: node 22 only. seller: both legs on every event (until 2026-11-12 a pull request
+// ran it on node 22 only, and a node 24 seller failure reached phase0-completion that way: run 43176322373).
 export function suiteRuns(suite, node, event) {
   if (suite === "client") return node === "22";
-  if (suite === "seller") return node === "22" || event !== "pull_request";
+  if (suite === "seller") return NODE_LEGS.includes(node);
   throw new Error(`unknown suite ${suite}`);
 }
 
