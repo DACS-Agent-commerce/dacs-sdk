@@ -47,15 +47,20 @@ include `networkFeeOs`, a canonical non-negative integer OS string. Session
 checkpoints retain this fee across restart; the evidence's payment amount
 continues to describe the agreed transfer amount.
 
-A recovery request reauthenticates every saved native-payment success through
-the durable `payDemSettle` bridge. Keep the original signed-transfer journal. A
-bound failed record may replace an old successful rail checkpoint lacking
-execution authentication with permanent failure for the same transaction. Fresh
-native success and a successful audit durably mark execution authentication; a
-later contradictory failure is refused. Absent, indeterminate or conflicting
-observations withhold success and never authorize a replacement debit. The
-original fee metadata is retained after a successful audit, and every subsequent
-restart authenticates execution again.
+The durable `payDemSettle` bridge reauthenticates a recorded native-payment
+success after every restart: it calls the `reconcile` function you built it with,
+and refuses a recorded success that the reconciliation contradicts, including a
+permanent failure for the same transaction. Built without `reconcile`, it refuses
+a recorded outcome that it has not itself authenticated. Keep the original
+signed-transfer journal. Absent, indeterminate or conflicting observations
+withhold success and never authorize a replacement debit.
+
+The bridge keeps no durable mark of that authentication. `Agent.runSession`
+does, in its own session store: a fresh native success and a
+successful audit mark the saved outcome execution-authenticated. A bound failed
+record may replace a saved successful checkpoint that lacks the mark with a
+permanent failure for the same transaction, but not one that has it. The saved fee
+metadata is retained after a successful audit.
 
 For a request carrying `priorAttempts`, `payDemSettle` performs only this audit;
 it never calls the submit-capable idempotency claim, even if the rail log has
@@ -93,9 +98,10 @@ during audit.
 This recipe requires a prepared-transfer journal. Build the rail with
 `journalPreparedTransfer`. The SDK ships `createFsDemosWriteJournal` but no
 ready-made hook, so write the few lines that put each prepared transfer into
-your journal before it is broadcast. The SDK does not check the hook: a rail
-built without it, or with a hook that records nothing, leaves the recipe no hash
-to read.
+your journal before it is broadcast. `payDemSettle` does not check the hook: a
+rail built without it, or with a hook that records nothing, leaves the recipe no
+hash to read. Only `Agent.runSession` refuses a pay-dem
+bridge built over a rail without `journalPreparedTransfer`.
 
 Settle a restarted purchase by calling the bridge with the request the purchase
 first sent and `recoveryOnly: true`. When the log holds no outcome and no
@@ -142,13 +148,14 @@ In order:
    id.
 
 `evmErc20Settle` and `x402Settle` never read the history that
-`withRecoveredAttempts` supplies, and with no outcome in the log a recovery is
-refused whether or not history is supplied. A refused ERC-20 or x402 purchase has
-no SDK recipe and stays unfinished. Before you re-buy under a new job id, check
-the chain by hand: for x402, the state of the job's EIP-3009 authorization on the
-token contract; for ERC-20, the buyer address's token-transfer history and any
-transaction hash recorded for the job. If the payment is found, finish outside
-the SDK; if it is provably absent, use a new job id.
+`withRecoveredAttempts` supplies. Built without a `reconcile` option, they refuse
+a recovery that finds no outcome in the log, whether or not history is supplied.
+A refused ERC-20 or x402 purchase has no SDK recipe and stays unfinished. Before
+you re-buy under a new job id, check the chain by hand: for x402, the state of the
+job's EIP-3009 authorization on the token contract; for ERC-20, the buyer
+address's token-transfer history and any transaction hash your application
+recorded for the job. If the payment is found, finish outside the SDK; if it is
+provably absent, use a new job id.
 
 ## Custom native clients
 
