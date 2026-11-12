@@ -111,7 +111,7 @@ test('B15 a failed release cannot turn a definite context answer into an uncerta
 test('B16 a resume conflict releases its new unused hold and never calls the provider',async t=>{
  const w=await world(t),input=await w.wire(),request=w.auth.readRequest(input.header),before=w.effects();
  assert.equal(await w.route.resume({effectKey:'a'.repeat(64)},request,{resume(){throw new Error('fixture conflict')}},{writes:1}),null);
- assert.equal(w.effects().holds,before.holds);assert.equal(w.effects().releases,before.releases);assert.equal(w.effects().writes,0);assert.deepEqual(w.effects().counts,before.counts);
+ assert.equal(w.effects().holds,before.holds);assert.equal(w.effects().releases,before.releases+1,'only the previous hold is released, before the journal is asked');assert.equal(w.effects().writes,0);assert.deepEqual(w.effects().counts,before.counts);
 });
 
 async function signed(w,body,{actor=w.buyer,url=SELLER_CONTEXT_PATH}={}){
