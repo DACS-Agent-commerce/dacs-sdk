@@ -7022,6 +7022,18 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged public-admission blob of two parallel records",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public-admission.mjs",
+          "before": "675152fb86dd45b1b58a2ce24d19d946780cc770",
+          "after": "675152fb86dd45b1b58a2ce24d19d946780cc770"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "sha": "9552cf74c2bf1dd739eee1dd1315b7bb7ef46e8c",
       "subject": "fix(client): state which seller routes the wire request signer can sign",
       "files": [
@@ -7034,18 +7046,6 @@
           "path": "packages/dacs-client/test/wire-authentication.test.mjs",
           "before": "c105cadb85dac6be089bcfd69e053dae8aacdecb",
           "after": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the merged public-admission blob of two parallel records",
-      "compact": true,
-      "files": [
-        {
-          "path": "packages/dacs-client/src/public-admission.mjs",
-          "before": "675152fb86dd45b1b58a2ce24d19d946780cc770",
-          "after": "675152fb86dd45b1b58a2ce24d19d946780cc770"
         }
       ]
     }
