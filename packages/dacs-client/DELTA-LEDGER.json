@@ -7290,6 +7290,17 @@
           "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that reserve repeats an unfinished retirement while its finishing write keeps failing",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-retirement.test.mjs",
+          "before": null,
+          "after": "6175c0421d58d74bf403ee1150a32c750011c455"
+        }
+      ]
     }
   ]
 }
