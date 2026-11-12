@@ -12,7 +12,7 @@ import {railSteward} from './helpers/rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './helpers/session-admission-fixture.mjs';
 import {buildUnsignedIdentityBundle,attachIdentityPresentation} from '../src/dacs/listing.mjs';
 import {listingPin} from '../src/dacs/purchase-protocol.mjs';
-import {createSellerTransportStore} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
 import {admittedSession} from './helpers/challenge-api.mjs';
 function fixture(t){
  const dir=mkdtempSync(join(tmpdir(),'TEST-agent-construction-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));

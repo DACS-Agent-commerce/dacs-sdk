@@ -129,7 +129,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
         }
       }
     });
-    config.walletAgreement = { sourceCapability, rpcUrl: w.local.endpoint, journal, bridgeFor: () => ({}) };
+    config.walletAgreement = { sourceCapability, rpcUrl: w.local.endpoint, journal, bridgeFor: () => ({}), network: 'testnet' };
     config.nativeAgreementPayment = sourceCapability;
     config.nativePaymentEvidence = createNativePaymentEvidenceConsumer({ rpcUrl: w.local.endpoint, sourceCapability });
     Object.assign(terms.protocol, {

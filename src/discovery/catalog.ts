@@ -4,7 +4,10 @@ import {
   listingAddress,
 } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
-import { isRevocationBinding } from "../artifacts/validators.js";
+import {
+  isRevocationBinding,
+  listingTextLength,
+} from "../artifacts/validators.js";
 import type { ClaimRef, RevocationBinding } from "../artifacts/types.js";
 import {
   isCanonicalClaimReference,
@@ -166,7 +169,7 @@ function isSeller(
     isRecord(value) &&
     isCanonicalClaimReference(primaryClaim) &&
     isCanonicalString(value.displayName) &&
-    value.displayName.length <= 200
+    listingTextLength(value.displayName) <= 200
   );
 }
 
@@ -176,13 +179,13 @@ function isOffering(
   return (
     isRecord(value) &&
     isCanonicalString(value.title) &&
-    value.title.length <= 200 &&
+    listingTextLength(value.title) <= 200 &&
     isCanonicalString(value.category) &&
     value.category.split(".").every((segment) => segment.length > 0) &&
     Array.isArray(value.tags) &&
     value.tags.length <= 16 &&
     value.tags.every(
-      (tag) => isCanonicalString(tag) && tag.length <= 32,
+      (tag) => isCanonicalString(tag) && listingTextLength(tag) <= 32,
     )
   );
 }

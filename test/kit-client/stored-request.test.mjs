@@ -2,10 +2,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { storedWorld, PATHS, nonce, sameBodies } from '../../packages/dacs-client/test/helpers/stored-request-fixture.mjs';
-import { JOB, sellerTransportPair } from './fixtures.mjs';
+import { bindPurchaseCapacity } from '../../packages/dacs-seller/test/helpers/bound-transport-store.mjs';
+import { JOB, T0, sellerTransportPair } from './fixtures.mjs';
 
 test("a retry after a lost response re-signs the stored bytes with a fresh nonce and expiry, accepts the seller's completed answer, and the seller performs one effect", async (t) => {
   const s = await storedWorld(t), { store } = await sellerTransportPair(t);
+  // The host builds the store with its purchase capacity; a store without one refuses every reservation.
+  bindPurchaseCapacity(store, () => T0);
   let effects = 0, lost = true;
   const respond = async (init) => {
     // The real kit's durable reservation store is the idempotent effect boundary.

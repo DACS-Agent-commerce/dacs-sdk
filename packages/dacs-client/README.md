@@ -16,7 +16,7 @@ npm install /tmp/dacs-artifacts/kynesyslabs-dacs-0.1.0-alpha.0.tgz /tmp/dacs-art
 
 All three artifacts must come from the same reviewed SDK revision. Release-set admission requires coordinated artifact, lifecycle, SBOM and publication checks; `private: true` prevents publication until that happens.
 
-Both public entry points require Node ^22.13.0 or >=23.4.0. The root does not load SQLite during import. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal and its format/version constants. Source paths are private.
+Every public entry point requires Node ^22.13.0 or >=23.4.0. The root does not load SQLite during import. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal and its format/version constants. Source paths are private.
 
 The client depends on `@kynesyslabs/dacs-node` (the exact same release), `@kynesyslabs/demosdk` (`^4.0.16`) and `@scure/bip39` (exact). The Node wallet session loads demosdk's websdk through an internal loading module that is not a package export and that the root import never reaches. It imports `@kynesyslabs/dacs-node/demos-loader`, which registers the SDK's package-scoped resolver for demosdk's one extensionless directory import, and then registers a reviewed load transform. The transform removes demosdk's own diagnostic output on the signing paths by replacing only these statements with an empty statement on the same line: GCRGeneration.js lines 173, 246, 249, 250 and demosclass.js lines 719, 1547 (demosdk 4.0.16), or GCRGeneration.js lines 178, 302, 305, 306 and demosclass.js lines 738, 1775, 1781 (demosdk 4.0.18). It first checks the source's SHA-256 against a reviewed table, then each listed line against its recorded text, then the output's SHA-256 against its recorded digest, and refuses any other source shape with `node_wallet_sdk_unreviewed`. Nothing assigns `console`, `process.stdout` or `process.stderr`. Host rule: build the composition before any other import of `@kynesyslabs/demosdk/websdk` in the process; a module imported earlier never passes through the transform, so loading refuses `node_wallet_sdk_preloaded`.
 
@@ -50,6 +50,8 @@ The admission option: `admission: { binding, currentLocal }` is required by the 
 
 Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
 
+`prepareTerms` does not return `terms.jobId`; the create path adds it.
+
 Passive: `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`
 
 ### createPurchaseService
@@ -70,6 +72,14 @@ Passive: none
 - `purchaseNext`, `protocolView` and `PURCHASE_STATUS_HELP` read the hold constant on every call or read: historical held text while held, the full text once admitted.
 - `OFFLINE_AGREEMENT_MODE` and `DEVNET_NATIVE_COMMITMENT_MARKER` are constants. `isOfflineWalletAgreement` returns a boolean; `deriveStorageAddress` returns text and throws `TypeError` for a non-text owner.
 - Every other export states its own contract in its doc comment. Failures are the exported error classes (`OperationError`, `NotWiredError`, `OutboundError`, the seller and wallet errors), which keep their cause. No export hands out a fixture identity, a simulation header or an unqualified chain reader.
+
+## Public Demos chain reader
+
+`@kynesyslabs/dacs-client/substrate/demos` exports only `createDemosPublicChainReader({rpcUrl, network, pinnedIdentity, timeoutMs, fetchImpl})`. It accepts only `network: 'testnet'` with the 64-hex chain identity pinned for testnet, and otherwise throws `OperationError` `invalid_configuration`. It holds no key and cannot sign or send.
+
+The returned frozen object has nine reads: `readStorageProgram`, `getAddressBalance`, `getTransactionFees`, `networkIdentity`, `getAddressNonce`, `observePurchaseTransfer`, `observeTransfer`, `getTransaction` and `findTransferAtNonce`. It also carries `network`, `pinnedIdentity`, `rpcOrigin`, `observer` and `evidenceMode`. Pass it unchanged as `chain` to `createPurchaseService` and `createListingVerifier` when no native Agreement transport is composed; with one, pass that transport's own `chainReader()` instead.
+
+The first read checks the RPC's chain identity before its own request, and refuses a simulated or different chain with `OperationError` `network_identity_mismatch`. Later reads rely on a successful check, but a read whose answer is marked simulated throws the same error instead of returning it and the next read checks again; a failed check is not reused. Each read otherwise returns and throws what the client's internal reader does, and honours the caller's `signal` where it takes one. `observePurchaseTransfer` reports an included transfer as `{status: 'unavailable', reason: 'native source evidence unavailable from public reader'}`, because this reader keeps no signed native source; a native purchase read through it stays unresolved.
 
 ## Node wallet session
 
@@ -161,6 +171,8 @@ Use main and TEMP only; detach all other schemas before a package transaction. A
 
 The required schema objects are supplied by `PURCHASE_STATE_SCHEMA`; the application owns initialization and migrations.
 
+The `job_id` column of `operations` and its unique index `operations_job_id_unique` reserve each protocol purchase's job id when the host's `createIdempotent` writes it to `job_id`; keep both when extending the schema (purchases without a protocol job store NULL). `createPurchaseService` generates the id inside the create transaction and passes it to `createIdempotent` as jobId. Construction refuses with code schema_migration_required when `operations` has no `job_id` column or no unique index on `job_id` alone; a partial unique index does not count. The reservation also depends on the host's `createIdempotent` writing jobId to `job_id` in the same insert as the terms, which the package cannot check; it must throw an `OperationError` with code job_id_collision when the index refuses the id. The service then retries with a new id, at most 3 attempts, and otherwise fails with code job_id_unavailable having written nothing.
+
 | Kind | Name |
 | --- | --- |
 | table | `accounts` |
@@ -170,6 +182,7 @@ The required schema objects are supplied by `PURCHASE_STATE_SCHEMA`; the applica
 | table | `approvals` |
 | table | `write_coordinates` |
 | table | `wallet_nonce_consumptions` |
+| index | `operations_job_id_unique` |
 | index | `operations_by_subject` |
 | index | `operations_by_account` |
 | index | `write_coordinates_by_sender` |

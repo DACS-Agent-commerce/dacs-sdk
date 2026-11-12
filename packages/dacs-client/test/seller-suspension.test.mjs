@@ -151,6 +151,22 @@ test('a signed seller_stopped is recorded on the latest row when another flow mo
   assert.equal(s.record(P).lastClass, 'suspended'); assert.equal(s.record(P).attempts, 1); assert.equal(s.fetches.length, 1);
 });
 
+test('a signed seller_stopped for an attempt that a newer attempt on the route has replaced records no suspension and leaves the newer record alone', async t => {
+  for (const newerClass of ['result', 'unknown']) {
+    const s = await storedWorld(t); let newer;
+    const respond = init => {
+      const row = s.p.get().state.protocol, older = row.sellerRequests[P];
+      newer = { ...older, attemptId: `TEST-newer-${newerClass}`, attempts: older.attempts + 1, lastClass: newerClass };
+      s.patch({ stage: 'payment-evidenced', sellerRequests: { ...row.sellerRequests, [P]: newer } });
+      return s.reply(init, 503, { error: 'seller_stopped' });
+    };
+    await assert.rejects(s.client({ respond }).propose(bodyFor(P)), error => isSuspended(error) && error.cause === undefined);
+    assert.equal(suspension(s), undefined);
+    assert.deepEqual(s.record(P), newer);
+    assert.equal(s.p.get().state.protocol.stage, 'payment-evidenced'); assert.equal(s.fetches.length, 1);
+  }
+});
+
 test('a signed seller_stopped for a purchase that ended during the request records nothing and still suspends the call', async t => {
   const s = await storedWorld(t);
   const respond = init => { s.patch({}, 'cancelled'); return s.reply(init, 503, { error: 'seller_stopped' }); };

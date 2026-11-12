@@ -129,6 +129,27 @@ export function legacyImpliedFaultSet(
   return new Set();
 }
 
+/**
+ * Is the reconciled job an orchestrator fault? True when the authoritative copy is an absolute
+ * fault bundle naming the orchestrator, or when both role-relative copies are legacy and the
+ * absolute parties they can both blame are exactly the orchestrator. Otherwise false, including
+ * when a copy is missing or either copy is an absolute fault bundle.
+ */
+export function pairHasOrchestratorFault(
+  authoritative: AnyAttestationBundle,
+  selfCopy?: AnyAttestationBundle,
+  counterpartyCopy?: AnyAttestationBundle,
+): boolean {
+  if (isAbsoluteFaultBundle(authoritative) &&
+    authoritative.faultedParty === "orchestrator") return true;
+  if (!selfCopy || !counterpartyCopy || isAbsoluteFaultBundle(selfCopy) ||
+    isAbsoluteFaultBundle(counterpartyCopy)) return false;
+  const left = legacyImpliedFaultSet(selfCopy);
+  const right = legacyImpliedFaultSet(counterpartyCopy);
+  const common = [...left].filter((role) => right.has(role));
+  return common.length === 1 && common[0] === "orchestrator";
+}
+
 export function roleRelativeOutcome(
   outcomeClass: BundleOutcomeClass,
   faultedParty: FaultedParty,

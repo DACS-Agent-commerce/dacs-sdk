@@ -69,7 +69,7 @@ export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required',
 // admission did not admit (or could not answer for) kept nothing either.
 // A payment claim other than the one whose work the agent retains
 // (seller_native_evidence_conflict) is refused before anything of it runs, and
-// so is a payment whose transaction hash is not a string (payment_tx_hash_invalid).
+// so is a payment whose transaction hash is not 64 hexadecimal digits (payment_tx_hash_invalid).
 const NO_EFFECT_ERRORS = new Set(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_agreement_invalid', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'seller_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', 'payment_tx_hash_invalid', ...SELLER_PRE_EFFECT_REFUSALS]);
 const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
@@ -177,7 +177,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // when the seller durably admitted exactly that context request for the job.
 // What the agent needs of the kit's one challenge ledger (the transport store's `challenges`).
 const CHALLENGE_LEDGER_METHODS = Object.freeze(['issueForOperator', 'attempt', 'accept', 'recordFailed', 'retained', 'jobBinding']);
-export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
+export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
   assertKitOperationAdmitted('createSellerAgent');
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
@@ -316,7 +316,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     finally { clearTimeout(timer); }
   };
   const pin = listingPin(listing);
-  const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin, maxJobs }) : null;
+  const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin, maxJobs, jobSlotReleased }) : null;
   let closed=false;
   const requireOpen=()=>{if(closed)throw new SellerAgentError('seller_closed','the seller agent is closed',503);};
   try {
@@ -2260,6 +2260,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // intent, a contribution or a commitment): the transport then never
     // releases its proposal effect. Synchronous and read only.
     retainsProposalWork: (jobId) => proposalWork(jobId),
+    // Whether an attempt on this route that ended without a stored answer left
+    // work a retry must finish: a commitment write with no read-back yet or, for
+    // a payment claim, any payment this seller recorded for the job (a recorded
+    // payment is finished only by its stored answer). The transport then never
+    // retires the job on that attempt. Synchronous and read only.
+    retainsUnfinishedWork: ({ jobId, path }) => {
+      const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      return Boolean((session?.commitCreatedAt && !session.commitment && !session.signatureCommitmentHeld) ||
+        (path === '/dacs/v1/payments' && (session?.payment || session?.paymentWork || session?.nativeEvidenceWork || durable?.settlementBoundTo(jobId))));
+    },
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
     // For the host that holds the seller state lock: releases the job lock rows
     // of holders that are gone and returns [{ job, owner, reason }]; undefined

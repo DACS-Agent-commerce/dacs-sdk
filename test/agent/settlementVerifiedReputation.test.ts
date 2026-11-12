@@ -529,6 +529,79 @@ describe("deriveSettlementVerifiedReputation", () => {
     )).bundleCount).toBe(1);
   });
 
+  describe("legacy three-party copies from opposite anchors", () => {
+    function legacyThreeParty(
+      jobLabel: string,
+      outcome: AnyAttestationBundle["outcome"],
+      settlementEvidence: AttestationRef[],
+      agreementValue: AgreementArtifact,
+      role: "buyer" | "seller",
+    ): AnyAttestationBundle {
+      const {
+        faultBundleVersion: _faultVersion,
+        faultedParty: _faultedParty,
+        ...fields
+      } = bundle(jobLabel, outcome, settlementEvidence, agreementValue, role) as
+        AnyAttestationBundle & { faultBundleVersion?: "1"; faultedParty?: string };
+      return {
+        ...fields,
+        bundleVersion: "1" as const,
+        parties: [
+          ...fields.parties,
+          { role: "orchestrator", bundleHash: H("5"), primaryClaim: ORCHESTRATOR },
+        ],
+      } as unknown as AnyAttestationBundle;
+    }
+
+    async function scoreWithCompletedJob(
+      scoredParty: string,
+      scoredRole: "buyer" | "seller",
+      buyerOutcome: AnyAttestationBundle["outcome"],
+      sellerOutcome: AnyAttestationBundle["outcome"],
+    ) {
+      const paid = paymentEvidence("done", 1_100, H("a"));
+      const failed = failureEvidence("pair-failure");
+      const doneAgreement = agreement("done");
+      const failedAgreement = agreement("pair-failure");
+      const authority = deps([paid, failed], [doneAgreement, failedAgreement]);
+      authority.authenticateBundle = async () => ({
+        disposition: "verified",
+        partyRole: scoredRole,
+        fullySigned: true,
+      });
+      const completed = bundle("done", "completed", [evidenceRef(paid)], doneAgreement, scoredRole);
+      return deriveSettlementVerifiedReputation(scoredParty, [
+        input(completed),
+        ...pairedInputs(
+          legacyThreeParty("pair-failure", buyerOutcome, [evidenceRef(failed)], failedAgreement, "buyer"),
+          legacyThreeParty("pair-failure", sellerOutcome, [evidenceRef(failed)], failedAgreement, "seller"),
+        ),
+      ], WINDOW, authority);
+    }
+
+    test("a shared fault set of only the orchestrator is neutral for the buyer and the seller", async () => {
+      for (const [party, role] of [[PARTY, "buyer"], [SELLER, "seller"]] as const) {
+        const derived = await scoreWithCompletedJob(
+          party, role, "aborted-by-other", "aborted-by-other",
+        );
+        expect(derived).toMatchObject({
+          bundleCount: 2,
+          metrics: { completionRate: 1, counterpartyFaultRate: 0 },
+        });
+      }
+    });
+
+    test("a shared fault set that includes the seller is still scored against the buyer's counterparty", async () => {
+      const derived = await scoreWithCompletedJob(
+        PARTY, "buyer", "failed-counterparty", "failed-perm",
+      );
+      expect(derived).toMatchObject({
+        bundleCount: 2,
+        metrics: { completionRate: 0.5, counterpartyFaultRate: 0.5 },
+      });
+    });
+  });
+
   test("RSV rejection removes a failing job without creating fault", async () => {
     const bad = paymentEvidence("bad");
     const good = paymentEvidence("good", 1_101, H("b"));

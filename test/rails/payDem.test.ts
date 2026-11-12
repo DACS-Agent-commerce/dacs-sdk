@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { SettleResult } from "../../src/agent/runSessionCore.js";
+import type { SettleResult } from "../../src/rails/settlementTypes.js";
 import {
   TERMINAL_INCLUDED,
   payDemSettleCore,
@@ -78,7 +78,41 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     expect(res.finality).toEqual({ model: "bft-final" });
     expect(res.txRefKind).toBe("demos");
     expect(res.blockNumber).toBe(4242);
-    expect(client.sent).toEqual({ to: RECIPIENT, amountOs: 1_500_000_000n });
+    expect(client.sent).toEqual({ to: `0x${RECIPIENT}`, amountOs: 1_500_000_000n });
+  });
+
+  test.each([
+    ["bare lowercase", RECIPIENT],
+    ["0x lowercase", `0x${RECIPIENT}`],
+    ["bare upper case", RECIPIENT.toUpperCase()],
+    ["0x upper case", `0x${RECIPIENT.toUpperCase()}`],
+  ])("sends a %s recipient as a lowercase 0x address and reports one payee", async (
+    _form,
+    recipient,
+  ) => {
+    const client = fakeClient();
+    const res = await payDemSettleCore(params({ recipient }), client);
+    expect(client.sent?.to).toBe(`0x${RECIPIENT}`);
+    expect(res.payee).toBe(RECIPIENT);
+  });
+
+  test.each([
+    ["63 hex digits", RECIPIENT.slice(1)],
+    ["65 hex digits", `${RECIPIENT}a`],
+    ["non-hex text", "g".repeat(64)],
+    ["an empty string", ""],
+  ])("refuses a recipient of %s before any transfer, broadcast or journal write", async (
+    _form,
+    recipient,
+  ) => {
+    const client = fakeClient();
+    const journal = vi.fn(async () => undefined);
+    await expect(payDemSettleCore(
+      params({ recipient, journalPreparedTransfer: journal }),
+      client,
+    )).rejects.toThrow(/pay-dem recipient/);
+    expect(client.sent).toBeUndefined();
+    expect(journal).not.toHaveBeenCalled();
   });
 
   test("checks the recovery generation immediately before native transfer", async () => {
@@ -147,7 +181,24 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     await expect(payDemSettleCore(params({ recovery: recovery() }), client))
       .resolves.toMatchObject({ ok: true, txHash: TX_HASH });
     expect(client.sent).toEqual({
-      to: RECIPIENT,
+      to: `0x${RECIPIENT}`,
+      amountOs: 1_500_000_000n,
+      recovery: recovery(),
+    });
+  });
+
+  test.each([
+    `0x${RECIPIENT}`,
+    RECIPIENT.toUpperCase(),
+    `0x${RECIPIENT.toUpperCase()}`,
+  ])("binds a recovery context to the recipient given as %s", async (recipient) => {
+    const client = fakeClient();
+    await expect(payDemSettleCore(
+      params({ recipient, recovery: recovery() }),
+      client,
+    )).resolves.toMatchObject({ ok: true, payee: RECIPIENT });
+    expect(client.sent).toEqual({
+      to: `0x${RECIPIENT}`,
       amountOs: 1_500_000_000n,
       recovery: recovery(),
     });
@@ -169,7 +220,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
       );
       expect(res.ok).toBe(true);
       expect(res.chainId).toBe("demos");
-      expect(client.sent).toEqual({ to: RECIPIENT, amountOs: 1_500_000_000n });
+      expect(client.sent).toEqual({ to: `0x${RECIPIENT}`, amountOs: 1_500_000_000n });
     },
   );
 
@@ -549,12 +600,19 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   const PAYEE_CLAIM = `did:demos:agent:${SELLER_HEX}`;
   const OTHER_HEX = "b2".repeat(32);
 
+  test("refuses construction without a caller-supplied store", () => {
+    const settle = vi.fn();
+    expect(() => payDemSettle({ address: PAYER, settle }, {}, {} as never))
+      .toThrow(/requires a caller-supplied durable store/);
+    expect(settle).not.toHaveBeenCalled();
+  });
+
   const settleWith = (
     client: ReturnType<typeof fakeClient>,
     cfg: { recipient?: string; network?: string } = { recipient: PAYEE_CLAIM, network: "demos" },
   ) => {
     const rail: PayDemRail = { address: PAYER, settle: (p) => payDemSettleCore(p, client) };
-    return payDemSettle(rail, cfg);
+    return payDemSettle(rail, cfg, { store: createIdempotencyStore(createInMemorySettlementLog()) });
   };
   const req = (over: Record<string, unknown> = {}) => ({
     rail: "pay-dem",
@@ -623,7 +681,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         return payDemSettleCore(params, client);
       },
     };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
     const first = await settle(req());
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.finality)).toBe(true);
@@ -675,7 +733,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         return payDemSettleCore(params, client);
       },
     };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await expect(settle(req())).resolves.toMatchObject({
       ok: false,
@@ -789,12 +847,12 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       settle: vi.fn(async (params) => payDemSettleCore(params, client)),
     };
 
-    await expect(payDemSettle(rail, { network: "demos" })(req({ phase: "deliver" })))
+    await expect(payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) })(req({ phase: "deliver" })))
       .rejects.toThrow(/requires phase "pay-dem", got "deliver"/);
     await expect(payDemSettle(rail, {
       network: "demos",
       railId: "demos-native:DEM",
-    })(req({ rail: "pay-dem" })))
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) })(req({ rail: "pay-dem" })))
       .rejects.toThrow(/request rail "pay-dem" does not match authenticated descriptor/);
     expect(rail.settle).not.toHaveBeenCalled();
   });
@@ -1253,7 +1311,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       network: "demos",
       railId: "demos-native:DEM",
       phaseIndex: 6,
-    });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await expect(settle(req({
       rail: "demos-native:DEM",
@@ -1272,7 +1330,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       settle: vi.fn(),
     };
 
-    await expect(payDemSettle(rail)(req({ amount: "0" })))
+    await expect(payDemSettle(rail, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) })(req({ amount: "0" })))
       .rejects.toThrow(/amount must be > 0/);
     expect(rail.settle).not.toHaveBeenCalled();
   });
@@ -1287,7 +1345,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         return payDemSettleCore(input, client);
       },
     };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await settle(req({ rail: "demos-native:DEM", jobId: "job-7", phaseIndex: 2 }));
 
@@ -1338,13 +1396,13 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   test("transfers to the agreement's payee (derived intrinsically from the claim)", async () => {
     const client = fakeClient();
     await settleWith(client)(req());
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test("the request payee determines the destination with NO configured recipient", async () => {
     const client = fakeClient();
     await settleWith(client, { network: "demos" })(req());
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test("normalizes a same-address Demos DID request binding and returns it verbatim", async () => {
@@ -1352,7 +1410,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     const result = await settleWith(client, { network: "demos" })(
       req({ expectedPayee: PAYEE_CLAIM }),
     );
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
     expect(result.payee).toBe(PAYEE_CLAIM);
   });
 
@@ -1400,14 +1458,14 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   test("an equivalent claim form (0x / bare hex) matches the same address", async () => {
     const client = fakeClient();
     await settleWith(client, { recipient: `0x${SELLER_HEX}` })(req());
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test("the DACS-1 Demos cci-xm profile resolves intrinsically", async () => {
     const client = fakeClient();
     const claim = `cci-xm:demos:testnet:0x${SELLER_HEX}?region=uk`;
     await settleWith(client, { recipient: `0x${SELLER_HEX}` })(req({ payee: claim }));
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test("canonical Demos DID parameters do not change the settlement identity", async () => {
@@ -1416,7 +1474,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     await settleWith(client, { recipient: `0x${SELLER_HEX}` })(
       req({ payee: claim }),
     );
-    expect(client.sent!.to).toBe(SELLER_HEX);
+    expect(client.sent!.to).toBe(`0x${SELLER_HEX}`);
   });
 
   test.each([
