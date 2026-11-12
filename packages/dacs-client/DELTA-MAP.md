@@ -3706,6 +3706,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D39 remove the unused guarded SQLite module | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): D39 remove the unused guarded SQLite module | `packages/dacs-client/src/util/guarded-sqlite.mjs` (deleted) |
 | delta(client): D39 remove the unused guarded SQLite module | `packages/dacs-client/test/guarded-sqlite.test.mjs` (deleted) |
+| test(client): D39 expect the deleted guarded SQLite helper to be absent in the callback history check | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| test(client): D39 expect the deleted guarded SQLite helper to be absent in the callback history check | `packages/dacs-client/DELTA-MAP.md:1` |
+| test(client): D39 expect the deleted guarded SQLite helper to be absent in the callback history check | `packages/dacs-client/HOLD.json:1` |
+| test(client): D39 expect the deleted guarded SQLite helper to be absent in the callback history check | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| test(client): D39 expect the deleted guarded SQLite helper to be absent in the callback history check | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 

@@ -26,17 +26,26 @@ function checkCallbackHistory(dir) {
   assert.match(notes, /SQL callbacks remain allowed inside a leased transaction/);
   const lease = changes.find(change => change.subject === replacement);
   assert.ok(lease, 'the write-lease implementation must retain its own delta record');
-  // The committed tree keeps the write-lease source and test blobs; the two
-  // retired commits contribute historical evidence, not runtime code.
+  // The committed tree keeps the write-lease source and test blobs, except for
+  // a file that a later record deletes: that file must be gone. The two
+  // retired commits contribute historical evidence, not runtime code, and are
+  // compared with the lease's recorded blob.
+  const later = changes.slice(changes.indexOf(lease) + 1);
   for (const file of lease.files) {
-    const committed = execFileSync('git', ['-C', dir, 'rev-parse', `HEAD:${file.path}`], { encoding: 'utf8' }).trim();
-    assert.equal(committed, file.after, `${file.path} must retain the write-lease implementation`);
+    const deleted = later.some(change => change.files.some(entry => entry.path === file.path && entry.after === null));
+    if (deleted) {
+      const probe = spawnSync('git', ['-C', dir, 'cat-file', '-e', `HEAD:${file.path}`], { encoding: 'utf8' });
+      assert.notEqual(probe.status, 0, `${file.path} is deleted by a later record and must be absent`);
+    } else {
+      const committed = execFileSync('git', ['-C', dir, 'rev-parse', `HEAD:${file.path}`], { encoding: 'utf8' }).trim();
+      assert.equal(committed, file.after, `${file.path} must retain the write-lease implementation`);
+    }
     for (const subject of retired) {
       const record = changes.find(change => change.subject === subject);
       assert.ok(record, `the superseded commit must remain recorded: ${subject}`);
       const retiredFile = record.files.find(entry => entry.path === file.path);
       assert.ok(retiredFile, `${subject} must record ${file.path}`);
-      assert.notEqual(retiredFile.after, committed);
+      assert.notEqual(retiredFile.after, file.after);
     }
   }
 }
