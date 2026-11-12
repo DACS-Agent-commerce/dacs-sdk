@@ -34,8 +34,7 @@ import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
 import {
   bundleArtifactType,
   bundleArtifactTypeRank,
-  isAbsoluteFaultBundle,
-  legacyImpliedFaultSet,
+  pairHasOrchestratorFault,
   scoredBundleOutcome,
 } from "./bundleSemantics.js";
 import type {
@@ -552,21 +551,6 @@ function pickSameRole(copies: AcceptedCopy[]): AcceptedCopy | null {
   if (fullySignedForms.length !== 1) return null;
   return fullySignedForms[0]!.filter((copy) => copy.fullySigned)
     .sort((a, b) => a.canonicalBundle.localeCompare(b.canonicalBundle))[0]!;
-}
-
-function pairHasOrchestratorFault(
-  authoritative: AnyAttestationBundle,
-  selfCopy?: AnyAttestationBundle,
-  counterpartyCopy?: AnyAttestationBundle,
-): boolean {
-  if (isAbsoluteFaultBundle(authoritative) &&
-    authoritative.faultedParty === "orchestrator") return true;
-  if (!selfCopy || !counterpartyCopy || isAbsoluteFaultBundle(selfCopy) ||
-    isAbsoluteFaultBundle(counterpartyCopy)) return false;
-  const left = legacyImpliedFaultSet(selfCopy);
-  const right = legacyImpliedFaultSet(counterpartyCopy);
-  const common = [...left].filter((role) => right.has(role));
-  return common.length === 1 && common[0] === "orchestrator";
 }
 
 function canonicalBundleRefCompare(a: AttestationRef, b: AttestationRef): number {

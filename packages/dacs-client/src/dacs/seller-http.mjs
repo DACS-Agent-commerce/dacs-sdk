@@ -113,6 +113,20 @@ function answerOrError(verdict, answer, status) {
   throw new SellerUnavailableError(code === SELLER_EFFECT_UNRESOLVED ? SELLER_OPERATOR_MESSAGE : UNAVAILABLE_ANSWER_MESSAGE, statusCause(status), verdict);
 }
 
+/** Parses a seller endpoint: a public https origin when the calls are authenticated, otherwise a loopback one, in both cases without credentials, query or fragment. Throws for any other endpoint. */
+function parseSellerEndpoint(url, authenticated) {
+  const endpoint = String(url);
+  const base = new URL(endpoint.replace(/\/$/, ''));
+  const signedPublicEndpoint = authenticated && isPublicEndpoint(endpoint);
+  if (!signedPublicEndpoint && (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash)) {
+    throw new Error('seller agent endpoint must be a public https origin given a wire authentication, or loopback, without credentials, query or fragment');
+  }
+  return base;
+}
+
+/** The origin a seller endpoint is reached at, accepted under the same rule as `createSellerAgentClient` (public https only when `authenticated`). Throws for any other endpoint. */
+export const sellerEndpointOrigin = (url, authenticated = false) => parseSellerEndpoint(url, authenticated).origin;
+
 /**
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
  * classifyAnswer is the injectable K5 classifier; the default is the real one. requestRecords is the adapter's durable
@@ -122,12 +136,7 @@ function answerOrError(verdict, answer, status) {
  * clock supplies `now()` and `sleep(ms)` so a test injects time.
  */
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer, requestRecords, clock = SELLER_CLOCK }) {
-  const endpoint = String(url);
-  const base = new URL(endpoint.replace(/\/$/, ''));
-  const signedPublicEndpoint = authentication && isPublicEndpoint(endpoint);
-  if (!signedPublicEndpoint && (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash)) {
-    throw new Error('seller agent endpoint must be a public https origin given a wire authentication, or loopback, without credentials, query or fragment');
-  }
+  const base = parseSellerEndpoint(url, Boolean(authentication));
   const origin = base.origin;
   const prefix = base.pathname.replace(/\/$/, '');
 

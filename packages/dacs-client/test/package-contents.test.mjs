@@ -22,12 +22,13 @@ function entryPointClosure() {
   visit('src/index.mjs');
   visit('src/wallet/durable-journal.mjs');
   visit('src/wallet/node-wallet-session.mjs');
+  visit('src/substrate/demos.mjs');
   return [...files].sort();
 }
 
-// The quiet hook is registered by URL, so no import reaches it; the three entry points determine the rest of the closure.
+// The quiet hook is registered by URL, so no import reaches it; the four entry points determine the rest of the closure.
 const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs'];
-test('npm pack ships the three entry points, their reviewed import closure and the quiet loading hook', t => {
+test('npm pack ships the four entry points, their reviewed import closure and the quiet loading hook', t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-pack-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const path of ['src', 'package.json', 'README.md', 'LICENSE']) {

@@ -66,14 +66,16 @@ wallets and a new run id. Marker outcomes are write-once only through this
 helper, remain owner-editable files, and are diagnostics rather than settlement
 or DACS proof.
 
-For normal, non-funded use, `createPayDemRail`'s
-`journalPreparedTransfer` hook is optional. Omitting it does not make an
+For direct, non-funded use of the rail, `createPayDemRail`'s
+`journalPreparedTransfer` hook is optional (`runSession` refuses a pay-dem
+session over a rail without it). Omitting it does not make an
 individual call retry; the rail still submits once and observes inclusion by its
 precomputed canonical hash. It does mean the low-level rail has no durable
 hash/nonce recovery record after process loss. Cross-process at-most-once use
-must wrap it with `payDemSettle` and a durable `SettlementIdempotencyStore`, and
+must wrap it with `payDemSettle` and supply a durable `SettlementIdempotencyStore`, and
 read-only reconciliation needs an application-owned durable journal or
-equivalent rail record. The default settlement store is process-local.
+equivalent rail record. The bridge refuses construction without a supplied
+settlement store.
 The `settleFromRail` convenience path exposes these dependencies through its
 `payDem` options. Calls made through `payDemSettle` also attach the exact rail,
 job, phase index, derived settlement key, network, payer, payee and OS amount to
