@@ -30,7 +30,7 @@ export function checkCatalogObservation(value, checkedAt) {
 // read that no longer verifies evicts the entry. Directory, revocation,
 // validity and source admission are checked on every call.
 export function createListingVerifier({ directory, chain, now = () => Date.now(), cacheImmutable = false, observeBinding = null }) {
-  const immutable=createImmutableReadbacks({ now });
+  const immutable=createImmutableReadbacks();
   async function verify({ listingId, version, seller, purchaseId, fresh = false }) {
     if (!directory) throw new NotConfiguredError('DACS directory (DACS_DIRECTORY_ORIGIN)');
     if (!chain) throw new NotConfiguredError('Demos chain RPC (DACS_CHAIN_RPC_URL)');

@@ -55,9 +55,9 @@ for (const jump of [-60_000, 60_000]) {
       let elapsed = 0, wall = 1_000;
       const create = loadFunction(`packages/${port}/src/util/immutable-readbacks.mjs`, 'createImmutableReadbacks', {
         IMMUTABLE_READBACK_TTL_MS: 10, MAX_IMMUTABLE_READBACK_ENTRIES: 10_000,
-        canonicalize: JSON.stringify, sha256Hex: value => value,
+        canonicalize: JSON.stringify, sha256Hex: value => value, Date: { now: () => wall },
       });
-      const cache = create({ ttlMs: 10, now: () => wall, monotonicNow: () => elapsed });
+      const cache = create({ ttlMs: 10, monotonicNow: () => elapsed });
       const input = { purchaseId: 'clock', locator: 'test', contentHash: 'test', scope: {} };
       cache.put(input, { value: 1 });
       elapsed = 1; wall += jump;

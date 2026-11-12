@@ -8,7 +8,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 // persisted, and a cached proof never authorizes a write or a resend.
 export const IMMUTABLE_READBACK_TTL_MS = 60000;
 
-export function createImmutableReadbacks({ limit = 256, ttlMs = IMMUTABLE_READBACK_TTL_MS, now = () => Date.now(), monotonicNow = () => performance.now() } = {}) {
+export function createImmutableReadbacks({ limit = 256, ttlMs = IMMUTABLE_READBACK_TTL_MS, monotonicNow = () => performance.now() } = {}) {
   if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new TypeError('immutable readback reuse needs a positive TTL');
   const entries = new Map();
   const key = ({ purchaseId, locator, contentHash, scope }) => canonicalize([purchaseId ?? null, locator, contentHash, sha256Hex(canonicalize(scope))]);
@@ -23,7 +23,7 @@ export function createImmutableReadbacks({ limit = 256, ttlMs = IMMUTABLE_READBA
       const id = key(input);
       entries.delete(id);
       if (entries.size >= limit) entries.delete(entries.keys().next().value);
-      entries.set(id, { value: structuredClone(value), at: now(), monotonicAt: monotonicNow() });
+      entries.set(id, { value: structuredClone(value), monotonicAt: monotonicNow() });
     },
     delete(input) { entries.delete(key(input)); },
   };
