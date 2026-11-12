@@ -67,8 +67,7 @@ helper, remain owner-editable files, and are diagnostics rather than settlement
 or DACS proof.
 
 For direct, non-funded use of the rail, `createPayDemRail`'s
-`journalPreparedTransfer` hook is optional (`runSession` refuses a pay-dem
-session over a rail without it). Omitting it does not make an
+`journalPreparedTransfer` hook is optional. Omitting it does not make an
 individual call retry; the rail still submits once and observes inclusion by its
 precomputed canonical hash. It does mean the low-level rail has no durable
 hash/nonce recovery record after process loss. Cross-process at-most-once use
