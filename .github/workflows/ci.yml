@@ -750,6 +750,8 @@ jobs:
   buyer-minimum-runtime:
     runs-on: ubuntu-latest
     strategy:
+      # One failing Node leg must not cancel the other: each leg is its own engine-floor result.
+      fail-fast: false
       matrix:
         node-version: ["22.22.2", "24"]
     steps:
