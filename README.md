@@ -767,8 +767,8 @@ it returns no Listings or diagnostics, and the caller retries its unchanged
 
 See **[examples/hello-world.ts](./examples/hello-world.ts)** for publishing a Listing and admitting it from
 its logical address. For the purchase itself, see
-[docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md); [docs/live-e2e.md](./docs/live-e2e.md)
-runs the funded two-agent flow end to end.
+[docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md). In a checkout of the repository,
+`npm run test:live` runs the funded two-agent flow end to end.
 
 ### AP2 reference integration (optional)
 
