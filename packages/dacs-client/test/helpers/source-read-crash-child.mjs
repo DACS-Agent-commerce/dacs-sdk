@@ -3,7 +3,7 @@
 // and waits to be killed. No network, no keys.
 import { openDurableWalletJournal } from '../../src/wallet/durable-journal.mjs';
 import { queuedOwner } from './queued-owner.mjs';
-import { sourceReadTransport } from './source-read-transport.mjs';
+import { sourceReadTransport } from './source-read-world.mjs';
 
 const journal = openDurableWalletJournal({ path: process.env.SOURCE_READ_JOURNAL_PATH, mode: 'open' });
 const owner = queuedOwner({ fetchImpl: () => { process.send({ event: 'reading' }); return new Promise(() => {}); } });

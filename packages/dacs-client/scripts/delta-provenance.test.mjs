@@ -281,7 +281,9 @@ test('the ledger gate refuses each fault in a PR\'s own delta records, one table
  assert.ok(wfRecords.length>0,'this PR records its changes under WF');
  for(const record of wfRecords)for(const file of record.files){
   const newest=changes.findLast(other=>other.files.some(entry=>entry.path===file.path)).files.find(entry=>entry.path===file.path).after;
-  assert.equal(execFileSync('git',['-C',root,'rev-parse',`HEAD:${file.path}`],{encoding:'utf8'}).trim(),newest,`${file.path} is recorded at its committed blob`);
+  // A path whose newest record deletes it must be absent at HEAD.
+  const row=execFileSync('git',['-C',root,'ls-tree','HEAD','--',file.path],{encoding:'utf8'}).trim();
+  assert.equal(row?row.split(/\s/)[2]:null,newest,`${file.path} is recorded at its committed blob`);
  }
  for(const fault of LEDGER_FAULTS){
   const dir=scratch(t),file=join(dir,control[1]),data=JSON.parse(readFileSync(file,'utf8'));
