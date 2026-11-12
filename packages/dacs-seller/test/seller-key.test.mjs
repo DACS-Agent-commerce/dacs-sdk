@@ -208,24 +208,24 @@ test('the symlinked-directory case keeps its link in its own folder and removes 
   assert.equal(existsSync(links), false, 'the link folder is gone after the case and its cleanup');
 });
 
-test('a runtime below 22.13 or in 23.0–23.3 refuses runtime_unsupported before the key file is opened', async (t) => {
-  for (const version of ['v20.19.0', 'v22.12.0', 'v23.0.0', 'v23.3.0']) {
+test('a runtime outside ^22.22.2 || ^24.15.0 refuses runtime_unsupported before the key file is opened', async (t) => {
+  for (const version of ['v20.19.0', 'v22.13.0', 'v22.22.1', 'v23.4.0', 'v24.14.0', 'v25.0.0', 'v26.0.0']) {
     loaderSpy.reset();
     const refusal = await withProcessVersion(version, () => refusalOf(() => openSellerKey(openOptions(keyFixture(t)))));
     assert.deepEqual({ code: refusal?.code, details: refusal?.details }, { code: 'runtime_unsupported', details: version });
     assert.equal(loaderSpy.calls.length, 0, `${version}: no file was opened`);
   }
-  for (const version of ['v22.13.0', 'v23.4.0', 'v24.0.0']) {
+  for (const version of ['v22.22.2', 'v22.23.0', 'v24.15.0']) {
     const key = await withProcessVersion(version, () => openSellerKey(openOptions(keyFixture(t))));
     assert.equal(key.claim, SELLER.claim, `${version} is admitted`);
     key.close();
   }
 });
 
-test('on a Node 20 runtime the key fixtures report a supported version, so keys open on the seller\'s Node 20 CI leg', () => {
+test('on a runtime outside the custody range the key fixtures report a supported version, so keys open', () => {
   const fixtureUrl = new URL('./helpers/seller-key-fixture.mjs', import.meta.url).href;
   const script = `
-    Object.defineProperty(process, 'version', { value: 'v20.19.0', configurable: true });
+    Object.defineProperty(process, 'version', { value: 'v22.22.1', configurable: true });
     const fixture = await import(${JSON.stringify(fixtureUrl)});
     const { openSellerKey } = await fixture.importSellerKey();
     const cleanups = [];
