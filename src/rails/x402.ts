@@ -1,14 +1,13 @@
-import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import type { SettleRequest, SettleResult } from "./settlementTypes.js";
 import { sha256Hex } from "../canonical/index.js";
 import { types as nodeTypes } from "node:util";
-import { CounterpartyError } from "../errors.js";
+import { CounterpartyError, DacsError } from "../errors.js";
 import type {
   PaymentPayloadResult,
   PaymentRequirements,
   SchemeNetworkClient,
 } from "@x402/core/types";
 import {
-  createIdempotencyStore,
   declareSettlementBridge,
   settleThroughStore,
   settlementKey,
@@ -881,9 +880,12 @@ export function x402Settle(
     asset: string;
     phaseIndex?: number;
   },
-  opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
+  opts: { store: SettlementIdempotencyStore; reconcile?: SettlementReconcile },
 ): (req: SettleRequest) => Promise<SettleResult> {
-  const store = opts.store ?? createIdempotencyStore();
+  const store = opts?.store;
+  if (store === undefined) {
+    throw new DacsError("x402 settlement requires a caller-supplied durable store");
+  }
   const paywallUrl = paywall.url;
   const network = paywall.network;
   const recipientEvm = paywall.recipientEvm;
@@ -939,9 +941,8 @@ export function x402Settle(
         jobId,
         phaseIndex,
       }, effectFence);
-    // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
-    // idempotency store (in-process default; inject a durable one for cross-process
-    // crash-safety). NOTE: a reconciled resubmit does not rebuild the x402
+    // At-most-once per (railId, jobId, phaseIndex) uses the caller's durable
+    // settlement store. NOTE: a reconciled resubmit does not rebuild the x402
     // authorization/session binding (SB-3) by itself. A durable recovery may
     // replay only when `reconcile` returns an authorization bound to this exact
     // deterministic EIP-3009 nonce; absence alone still fails closed.
