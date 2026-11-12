@@ -375,7 +375,8 @@ test('mode-like environment variables and a request member leave the host in the
  for(const sent of [withMember,withProposalMember,request])assert.equal((await f.client(host,sent).propose(sent)).disposition,'complete');
 });
 test('a Listing member naming another Vet mode leaves the host in the kit Vet mode',async t=>{
- const f=await fixture(t),{signature,...draft}=f.listing;
+ const f=await fixture(t),draft={...f.listing};
+ delete draft.signature;
  const listing=await core.signComponentArtifact({...draft,vetMode:'counterparty'},core.ARTIFACT_SEPARATORS.Listing,{signer:seller.claim,algorithm:'ed25519',sign:seller.signBytes});
  // An agent in another mode than the host's kit DEM context cannot be created, so a started host is in the kit mode.
  await f.start({listing});
