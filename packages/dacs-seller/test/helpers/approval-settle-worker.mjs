@@ -3,6 +3,10 @@ import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { once } from 'node:events';
 import { address, seller, sourceBinding, artifactAuthority, pin, deliveredHashFor, T0 } from './d5-policy-fixtures.mjs';
+import { installNoNetworkTrap } from './no-network-trap.mjs';
+
+// A network call here throws inside the worker, which then exits non-zero and fails the parent test.
+installNoNetworkTrap();
 
 const [input] = await once(process, 'message');
 const readFile = fs.readFile; let paused = false;
