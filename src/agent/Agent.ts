@@ -6,22 +6,15 @@ import type {
   AttestationRef,
   ChainTxRef,
   BundleParty,
-  CompositeVerificationRecord,
   IdentityBundle,
   ListingDraft,
-  ListingPin,
 } from "../artifacts/types.js";
-import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import { verifyComponentSignature } from "../artifacts/signatures.js";
 import {
   isAnyAttestationBundle,
   isAgreementArtifact,
   isAnchorReceipt,
   isAttestationRef,
   isChainTxRef,
-  isIdentityBundle,
-  isLegacyMvpListing,
-  isListing,
   readListingArtifact,
 } from "../artifacts/validators.js";
 import {
@@ -35,10 +28,7 @@ import {
 import {
   ed25519Verify,
   publicKeyFromRaw,
-  signedBytes,
-  type DomainSeparator,
 } from "../crypto/index.js";
-import { isLegacyMvpAttestationBundle } from "../artifacts/legacyMvp.js";
 import {
   createBoundArtifactRepository,
   type AnchorHistoryPageFetcher,
@@ -65,41 +55,32 @@ import {
   type CciTlsnSessionContext,
   type ClassifyCciTlsnDeps,
 } from "../identity/index.js";
-import { generateCanonicalJobId, isCanonicalJobId } from "../negotiate/jobId.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import type {
   DemosWriteEvidence,
   SubstrateAdapter,
 } from "../substrate/SubstrateAdapter.js";
 import {
-  runSessionCore,
   legacyMvpSessionAnchorName,
-  type SessionDeps,
-  type SessionResult,
-  type SessionTerms,
-  type SessionVetRequest,
 } from "./runSessionCore.js";
-import type { SettleRequest, SettleResult } from "../rails/settlementTypes.js";
 import {
   validateListingArtifact,
   type ListingValidationDeps,
   type ListingRailAuthorityInput,
   type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
-import type { StrictCompositeVerification } from "./compositeVerification.js";
 import {
   partyVetWithNativeCciTlsnCore,
   type PartyVetDeps,
   type PartyVetNativeCciTlsnQualifierInput,
   type PartyVetWithNativeCciTlsnProduction,
   type PartyVetWithNativeCciTlsnRequest,
-  type VetProduction,
 } from "./vetCore.js";
 import {
   publishListingCore,
   type PublishListingResult,
 } from "./publishListingCore.js";
 import {
-  authenticateReadableListingArtifact,
   discoverListings,
   type DiscoveredListing,
 } from "./discover.js";
@@ -116,14 +97,9 @@ import {
   type ReputationExclusion,
 } from "./reputation.js";
 import {
-  buildSignedArtifact,
-  verifySignedArtifact,
   type Signer,
   type Verifier,
 } from "./signedArtifact.js";
-import {
-  attestationBundleHash,
-} from "./twoSidedBundle.js";
 import {
   verifySettlementEvidence,
   type EvidenceContext,
@@ -138,13 +114,11 @@ import {
 import {
   enumerateListingsForSeller,
   readListingByLogicalAddress,
-  type AuthenticatedListing,
   type EnumerateListingsOptions,
   type ListingEnumerationResult,
   type ListingReadResult,
 } from "./listingDiscovery.js";
 import type { DemosWriteJournal } from "../substrate/demosWriteJournal.js";
-import { inheritSettlementBridge } from "../rails/idempotency.js";
 
 export type {
   SignatureCheck,
@@ -398,78 +372,6 @@ function demosIdentityLookup(subject: string): Readonly<{
 const ed25519RawVerify: Verifier = (bytes, signature, publicKey) =>
   ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey));
 
-export interface RunSessionOptions {
-  /** The agreed fixed-price terms (rail must be offered by the listing). */
-  terms: SessionTerms;
-  /** Executes payment on the chosen rail (e.g. an x402 rail). */
-  settle: (req: SettleRequest) => Promise<SettleResult>;
-  /**
-   * Runtime destination the buyer instructs the selected rail to pay and records
-   * in its buyer-signed legacy Agreement extension. Required when that address
-   * is in a different namespace from the seller claim (for example an EVM
-   * recipient associated with a seller DID). Defaults to the seller claim only
-   * for same-namespace rails. This option is not seller-authenticated payout
-   * negotiation; use a PayeeBoundAgreementDocument for PB-1 binding.
-   */
-  expectedSettlementPayee?: string;
-  /**
-   * Optional Vet step: verify the seller before paying (e.g. resolveRecipe +
-   * vetCore). Returns a finalized VetProduction; the session aborts before
-   * settlement unless the decision is `pass`. Omit to skip vetting.
-   */
-  vet?: (request: SessionVetRequest) => Promise<VetProduction>;
-  /** Required with `vet`; normally calls verifyCompositeVerificationRecord. */
-  verifyVetRecord?: (
-    record: Readonly<CompositeVerificationRecord>,
-    request: Readonly<SessionVetRequest>,
-  ) => Promise<StrictCompositeVerification>;
-  /**
-   * Required with `vet`. Independently resolves and cryptographically
-   * authenticates the exact finalized VPC-3 record/ref/receipt binding on both
-   * first production and resume; a shape-valid receipt is not sufficient.
-   */
-  authenticateVetFinality?: NonNullable<
-    SessionDeps["authenticateVetFinality"]
-  >;
-  /**
-   * Resume an interrupted session by passing the prior run's jobId. Anchored
-   * artifacts are reused. With no settled outcome on record, the resume never
-   * calls `settle`, with or without `sessionStore` or an earlier Agreement anchor:
-   * it calls `resumeSettlement`, and is refused without one. That recovery-only
-   * seam must reconcile through durable rail state and never start a fresh payment,
-   * since a job id alone
-   * cannot show whether the interrupted run paid. Omit for a new session.
-   */
-  jobId?: string;
-  /** Optional durable buyer-session lifecycle store used for restart recovery. */
-  sessionStore?: import("./sessionStore.js").SessionStore;
-  /**
-   * Reconcile a previously claimed payment whose durable session record still
-   * has only an intent or ambiguous outcome. Must use the same rail idempotency
-   * key and reconcile every ordered `req.priorAttempts` entry before returning.
-   * It is also called instead of `settle` on a resume without a recorded settled
-   * outcome, even when no session record or Agreement anchor exists.
-   * Every request has `recoveryOnly` set: it must never take a fresh claim.
-   * Must be a function an SDK settle bridge returned; any other function is
-   * refused before a payment is made.
-   */
-  resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
-  /**
-   * Low-level DACS-1 reader dependencies. The SDK always executes the
-   * normative `validateListingArtifact` algorithm; callers cannot substitute a
-   * fabricated `verified` result. Overrides the agent-wide dependencies.
-   */
-  listingValidationDeps?: ListingValidationDeps;
-}
-
-/**
- * Prefer an authenticated logical-read result so the session pins the exact
- * signed content selected by the buyer across its pre-payment re-read. A native
- * string ref remains supported for callers that obtained it through another
- * trusted, already-pinned flow.
- */
-export type SessionListingInput = string | AuthenticatedListing;
-
 export interface AgentConfig {
   /** Demos node RPC URL. */
   demosRpc: string;
@@ -482,20 +384,13 @@ export interface AgentConfig {
   /** Durable wallet/write authority required by Demos write methods. */
   demosWriteJournal?: DemosWriteJournal;
   /**
-   * Local identity authority. Session-capable agents must provide the exact
-   * DACS-1 bundle whose presentation is authenticated by `verifyPresentation`
-   * (or an explicitly configured listing-validation fallback); the SDK
-   * computes every session party hash from these bytes rather than `agentId`.
+   * Local identity of this agent. `agentId` is checked to be a string; the
+   * Agent does not sign, hash or authenticate anything with it. A buyer on the
+   * fixed-price coordinator path is identified by the `buyer` claim reference of
+   * the order it passes to `startOrder`, not by this option.
    */
   identity?: {
     agentId?: string;
-    bundle?: IdentityBundle;
-    /**
-     * Authenticate this agent's exact DACS-1 bundle presentation before any
-     * session effect. Keep this authority independent from seller Listing
-     * validation when the two identities use different keys or claim methods.
-     */
-    verifyPresentation?: ListingValidationDeps["verifyIdentityPresentation"];
   };
   /**
    * DACS-1 §6.3.1 / CORE §B.1: explicit Ed25519 resolver for canonical
@@ -998,17 +893,6 @@ export interface Agent {
    */
   discover(listingRefs: string[]): Promise<DiscoveredListing[]>;
   /**
-   * @deprecated Buyer-only legacy settlement runner. Its result is explicitly
-   * marked `legacy-mvp-settlement-only` and `commerceComplete: false`; it does
-   * not run seller fulfilment, delivery evidence, or two-sided DACS-5
-   * finalisation. New production integrations use the role-separated
-   * fixed-price commerce coordinators.
-   */
-  runSession(
-    listing: SessionListingInput,
-    opts: RunSessionOptions,
-  ): Promise<SessionResult>;
-  /**
    * Anyone: derive reputation for a primary claim from its bundles. The bundle
    * refs are caller-supplied (enumerating a claim's bundles is an indexer
    * concern, not the substrate's); invalid refs, bundles that fail strict
@@ -1057,45 +941,30 @@ function captureAgentIdentityConfig(
     "agentId",
     "AgentConfig.identity.agentId",
   );
-  const bundle = stableAgentData(
-    value,
-    "bundle",
-    "AgentConfig.identity.bundle",
-  );
-  const verifyPresentation = stableAgentMethod<
-    NonNullable<AgentConfig["identity"]>["verifyPresentation"]
-  >(
-    value,
-    "verifyPresentation",
-    "AgentConfig.identity.verifyPresentation",
-    true,
-  );
   if (agentId !== undefined && typeof agentId !== "string") {
     throw new DacsError("AgentConfig.identity.agentId must be a string");
   }
-  const retainedBundle = bundle === undefined
-    ? undefined
-    : snapshotCanonicalJson(
-        bundle,
-        "AgentConfig.identity.bundle",
-      );
-  if (retainedBundle !== undefined && !isIdentityBundle(retainedBundle)) {
-    throw new DacsError(
-      "AgentConfig.identity.bundle must be a normative DACS-1 IdentityBundle",
-    );
-  }
   return Object.freeze({
     ...(agentId === undefined ? {} : { agentId }),
-    ...(retainedBundle === undefined ? {} : { bundle: retainedBundle }),
-    ...(verifyPresentation === undefined ? {} : { verifyPresentation }),
   });
 }
 
+const UNREAD_AGENT_IDENTITY_KEYS = ["bundle", "verifyPresentation"] as const;
+
 /**
- * Refuse a construction key that an unreleased revision used and the Agent no
- * longer reads, rather than dropping it silently.
+ * Refuse a construction key that the Agent does not read, rather than
+ * dropping it silently.
  */
 function refuseReplacedAgentConfig(config: AgentConfig): void {
+  const identity = stableAgentData(config, "identity", "AgentConfig.identity");
+  if (identity !== null && typeof identity === "object") {
+    for (const key of UNREAD_AGENT_IDENTITY_KEYS) {
+      const label = `AgentConfig.identity.${key}`;
+      if (stableAgentData(identity, key, label) !== undefined) {
+        throw new DacsError(`${label} is not an Agent option; remove it`);
+      }
+    }
+  }
   if (
     stableAgentData(
       config,
@@ -1397,45 +1266,6 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
   ) {
     throw new DacsError("AgentConfig.identity.agentId must be a string");
   }
-  const identityBundleInput =
-    identity === undefined
-      ? undefined
-      : stableAgentData(identity, "bundle", "AgentConfig.identity.bundle");
-  const configuredBuyerIdentityBundle =
-    identityBundleInput === undefined
-      ? undefined
-      : snapshotCanonicalJson(
-          identityBundleInput,
-          "AgentConfig.identity.bundle",
-        );
-  if (
-    configuredBuyerIdentityBundle !== undefined &&
-    !isIdentityBundle(configuredBuyerIdentityBundle)
-  ) {
-    throw new DacsError(
-      "AgentConfig.identity.bundle must be a normative DACS-1 IdentityBundle",
-    );
-  }
-  if (
-    configuredBuyerIdentityBundle !== undefined &&
-    configuredBuyerId !== undefined &&
-    configuredBuyerIdentityBundle.presentedBy !== configuredBuyerId
-  ) {
-    throw new DacsError(
-      "AgentConfig.identity.bundle.presentedBy must equal AgentConfig.identity.agentId",
-    );
-  }
-  const configuredBuyerIdentityPresentationVerifier =
-    identity === undefined
-      ? undefined
-      : stableAgentMethod<
-          NonNullable<AgentConfig["identity"]>["verifyPresentation"]
-        >(
-          identity,
-          "verifyPresentation",
-          "AgentConfig.identity.verifyPresentation",
-          true,
-        );
   const resolveCanonicalSigningKey = async (
     claim: string,
   ): Promise<Uint8Array | null> => {
@@ -2361,484 +2191,6 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         resolvePublicKey: resolveCanonicalSigningKeyForRead,
         validateListing: listingValidator(configuredListingValidationDeps),
       });
-    },
-
-    async runSession(
-      listingInput: SessionListingInput,
-      opts: RunSessionOptions,
-    ): Promise<SessionResult> {
-      if (!hasWallet) {
-        throw new Error("runSession requires createAgent({ wallet })");
-      }
-      if (opts === null || typeof opts !== "object" || nodeTypes.isProxy(opts)) {
-        throw new DacsError("Agent.runSession options must be stable data");
-      }
-      const inputTerms = stableAgentData(opts, "terms", "Agent.runSession terms");
-      const inputJobId = stableAgentData(opts, "jobId", "Agent.runSession jobId");
-      const inputExpectedSettlementPayee = stableAgentData(
-        opts,
-        "expectedSettlementPayee",
-        "Agent.runSession expectedSettlementPayee",
-      );
-      // The isolating wrapper is a new function: carry the bridge registration over.
-      const settle = inheritSettlementBridge(
-        stableAgentData(opts, "settle", "Agent.runSession settle"),
-        stableAgentMethod<RunSessionOptions["settle"]>(
-          opts,
-          "settle",
-          "Agent.runSession settle",
-        ),
-      );
-      const vet = stableAgentMethod<RunSessionOptions["vet"]>(
-        opts,
-        "vet",
-        "Agent.runSession vet",
-        true,
-      );
-      const verifyVetRecord = stableAgentMethod<RunSessionOptions["verifyVetRecord"]>(
-        opts,
-        "verifyVetRecord",
-        "Agent.runSession verifyVetRecord",
-        true,
-      );
-      const authenticateVetFinality = stableAgentMethod<
-        RunSessionOptions["authenticateVetFinality"]
-      >(
-        opts,
-        "authenticateVetFinality",
-        "Agent.runSession authenticateVetFinality",
-        true,
-      );
-      const isolatedResume = stableAgentMethod<
-        RunSessionOptions["resumeSettlement"]
-      >(
-        opts,
-        "resumeSettlement",
-        "Agent.runSession resumeSettlement",
-        true,
-      );
-      const resumeSettlement = isolatedResume === undefined
-        ? undefined
-        : inheritSettlementBridge(
-            stableAgentData(opts, "resumeSettlement", "Agent.runSession resumeSettlement"),
-            isolatedResume,
-          );
-      const sessionListingValidationDeps = captureAgentListingValidationDeps(
-        stableAgentData(
-          opts,
-          "listingValidationDeps",
-          "Agent.runSession listingValidationDeps",
-        ),
-        "Agent.runSession listingValidationDeps",
-      );
-      const sessionStore = stableAgentData(
-        opts,
-        "sessionStore",
-        "Agent.runSession sessionStore",
-      ) as RunSessionOptions["sessionStore"];
-      const options = snapshotCanonicalJson(
-        {
-          terms: inputTerms,
-          ...(inputJobId !== undefined ? { jobId: inputJobId } : {}),
-          ...(inputExpectedSettlementPayee !== undefined
-            ? { expectedSettlementPayee: inputExpectedSettlementPayee }
-            : {}),
-        },
-        "Agent.runSession options",
-      ) as {
-        terms: SessionTerms;
-        jobId?: string;
-        expectedSettlementPayee?: string;
-      };
-      const buyerId = configuredBuyerId;
-      if (!buyerId) {
-        throw new Error(
-          "runSession requires createAgent({ identity: { agentId } })",
-        );
-      }
-      const buyerIdentityBundle = configuredBuyerIdentityBundle;
-      if (!buyerIdentityBundle) {
-        throw new DacsError(
-          "runSession requires createAgent({ identity: { agentId, bundle } })",
-        );
-      }
-      const buyerIdentityPresentationVerifier =
-        configuredBuyerIdentityPresentationVerifier ??
-        sessionListingValidationDeps?.verifyIdentityPresentation ??
-        configuredListingValidationDeps?.verifyIdentityPresentation;
-      if (!buyerIdentityPresentationVerifier) {
-        throw new DacsError(
-          "runSession requires a configured DACS-1 identity presentation verifier",
-        );
-      }
-      if (
-        buyerId.normalize("NFC") !== buyerId ||
-        buyerId.trim() !== buyerId ||
-        /[\u0000-\u001f\u007f]/.test(buyerId) ||
-        parseCanonicalClaimReference(buyerId) === null
-      ) {
-        throw new DacsError(
-          "runSession buyer identity must use exact CORE B.1 CF-2 ClaimReference bytes",
-        );
-      }
-      if (
-        canonicalDemosAgentPublicKey(buyerId) === null &&
-        !resolveIdentitySigningPublicKey
-      ) {
-        throw new DacsError(
-          "runSession buyer identity uses an unsupported identity method; " +
-            "configure AgentConfig.resolveIdentitySigningPublicKey",
-        );
-      }
-      // Both fresh writes and recovery authenticate as this identity. Resolve
-      // and bind it lazily at the first signature/authentication operation, then
-      // retain one owned key snapshot for the rest of this run.
-      let buyerSigningPublicKeyPromise: Promise<Uint8Array> | undefined;
-      const buyerSigningPublicKey = (): Promise<Uint8Array> => {
-        buyerSigningPublicKeyPromise ??= requireConnectedSigner(
-          buyerId,
-          "runSession buyer identity",
-        );
-        return buyerSigningPublicKeyPromise;
-      };
-      const signAsBuyer = async (bytes: Uint8Array): Promise<Uint8Array> => {
-        await buyerSigningPublicKey();
-        return sign(bytes);
-      };
-      const verifyBuyerComponentArtifact = async (
-        raw: Record<string, unknown>,
-        separator: DomainSeparator,
-        buyerClaim: string,
-      ): Promise<boolean> => {
-        if (!sameCanonicalClaimIdentity(buyerClaim, buyerId)) return false;
-        const publicKey = await buyerSigningPublicKey();
-        const verdict = await verifyComponentSignature(raw, separator, {
-          isSignerAuthorized: (_artifact, signature) =>
-            signature.algorithm === "ed25519" &&
-            sameCanonicalClaimIdentity(signature.signer, buyerClaim),
-          resolvePublicKey: (signature) =>
-            sameCanonicalClaimIdentity(signature.signer, buyerClaim)
-              ? publicKey
-              : null,
-          verify: ({ signedBytes: bytes, signature, publicKey }) => {
-            const signatureBytes = Uint8Array.from(
-              Buffer.from(signature.value, "base64url"),
-            );
-            return signatureBytes.length === 64
-              ? ed25519RawVerify(bytes, signatureBytes, publicKey)
-              : false;
-          },
-        });
-        return verdict.status === "valid";
-      };
-      let listingRef: string;
-      let expectedContentHash: string | null = null;
-      let expectedListingPin: ListingPin | undefined;
-      if (typeof listingInput === "string") {
-        listingRef = listingInput;
-      } else {
-        let selectedValue: unknown;
-        try {
-          selectedValue = structuredClone(listingInput);
-        } catch (error) {
-          throw new DacsError(
-            "runSession Listing selection could not be snapshotted",
-            { cause: error },
-          );
-        }
-        if (
-          typeof selectedValue !== "object" ||
-          selectedValue === null ||
-          Array.isArray(selectedValue) ||
-          !("listing" in selectedValue)
-        ) {
-          throw new DacsError(
-            "runSession requires an internally consistent authenticated Listing selection",
-          );
-        }
-        const selected = selectedValue as AuthenticatedListing;
-        let selectedSeller: string;
-        let selectedListingId: string;
-        let selectedVersion: number;
-        if (
-          selected.compatibility === "normative" &&
-          selected.status === "verified" &&
-          isListing(selected.listing)
-        ) {
-          selectedSeller = selected.listing.seller.identity.presentedBy;
-          selectedListingId = selected.listing.listingId;
-          selectedVersion = selected.listing.listingVersion;
-        } else if (
-          selected.compatibility === "legacy-mvp" &&
-          selected.status === "authenticated" &&
-          isLegacyMvpListing(selected.listing) &&
-          !Object.prototype.hasOwnProperty.call(selected.listing, "signature") &&
-          !Object.prototype.hasOwnProperty.call(selected.listing, "signatures")
-        ) {
-          selectedSeller = selected.listing.agentId;
-          selectedListingId = selected.listing.serviceId;
-          selectedVersion = selected.listing.listingVersion ?? 1;
-        } else {
-          throw new DacsError(
-            "runSession requires an internally consistent authenticated Listing selection",
-          );
-        }
-        let selectedHash: string;
-        try {
-          selectedHash = contentHash(
-            selected.listing as unknown as Record<string, unknown>,
-          );
-        } catch (error) {
-          throw new DacsError("runSession Listing selection is not canonical", {
-            cause: error,
-          });
-        }
-        if (
-          typeof selected.ref !== "string" ||
-          selected.ref.trim().length === 0 ||
-          typeof selected.contentHash !== "string" ||
-          !/^[0-9a-f]{64}$/.test(selected.contentHash) ||
-          selectedHash !== selected.contentHash ||
-          typeof selected.listingPin !== "object" ||
-          selected.listingPin === null ||
-          selected.listingPin.listingId !== selectedListingId ||
-          selected.listingPin.version !== selectedVersion ||
-          selected.listingPin.contentHash !== selected.contentHash ||
-          !Number.isSafeInteger(selected.version) ||
-          selected.version !== selectedVersion ||
-          listingAddress(
-            selectedSeller,
-            selectedListingId,
-            selectedVersion,
-          ) !== selected.logicalAddress
-        ) {
-          throw new DacsError(
-            "runSession requires an internally consistent authenticated Listing selection",
-          );
-        }
-        listingRef = selected.ref;
-        expectedContentHash = selected.contentHash;
-        expectedListingPin = structuredClone(selected.listingPin);
-      }
-      return runSessionCore(
-        listingRef,
-        options.terms,
-        {
-          buyerId,
-          buyerIdentityBundle,
-          authenticateBuyerIdentityBundle: ({ bundle, signedBytes: bytes }) =>
-            buyerIdentityPresentationVerifier({ bundle, signedBytes: bytes }),
-          readListing: (ref) => publicReads.readAnchor(ref),
-          // Temporary reduced-MVP agreement writer. It does not produce DACS-3
-          // AgreementSignature[] and is deliberately not coerced into a
-          // ComponentSignature envelope here.
-          sign: (artifact, separator) =>
-            buildSignedArtifact(
-              artifact,
-              separator as DomainSeparator,
-              signAsBuyer,
-            ),
-          signBytes: signAsBuyer,
-          // Do not move to payment or the next artifact after mere node
-          // acceptance. The current phase must be canonical and readable.
-          anchor: async (name, value) =>
-            (
-              await anchoring.anchorAndWait(name, value, {
-                completion: "read-visible",
-              })
-            ).address,
-          // Resume resolves BY NAME (owner = this agent), failing closed on an
-          // indeterminate lookup rather than re-anchoring/re-settling.
-          resolveAnchor: async (name) => {
-            const r = await publicReads.resolveAnchorByName(
-              name,
-              publicReads.getAddress(),
-            );
-            if (r.status === "indeterminate") return { status: "indeterminate", reason: r.reason };
-            if (r.status === "absent") return { status: "absent" };
-            const value = await publicReads.readAnchor(r.address);
-            return value
-              ? { status: "present", ref: r.address, value }
-              : { status: "indeterminate", reason: "resolved address was not readable" };
-          },
-          // Verify the listing against the key in its own agentId before
-          // vetting or settlement, so the money path only runs on a verified
-          // listing (and runSessionCore's listing-verification requirement
-          // is met).
-          verifyListing: async (raw, sellerClaim) => {
-            if (expectedContentHash !== null) {
-              try {
-                if (contentHash(raw) !== expectedContentHash) return false;
-              } catch {
-                return false;
-              }
-            }
-            // Authenticate the exact Listing independently of its current
-            // wall-clock validity. runSessionCore applies that admission policy:
-            // fresh sessions must be in-window, while an expired recovery must
-            // first prove an exact signed Agreement and authenticated successful
-            // SettlementEvidence before this callback is reached.
-            const verified = await authenticateReadableListingArtifact(raw, {
-              verify: ed25519RawVerify,
-              resolvePublicKey: resolveCanonicalSigningKeyForRead,
-            });
-            if (!verified) return false;
-            const advertisedSeller =
-              verified.compatibility === "normative"
-                ? verified.listing.seller.identity.presentedBy
-                : verified.listing.agentId;
-            return sameCanonicalClaimIdentity(advertisedSeller, sellerClaim);
-          },
-          authenticateRecoveredAgreement: async (raw, buyerClaim) => {
-            if (
-              !sameCanonicalClaimIdentity(buyerClaim, buyerId) ||
-              Object.prototype.hasOwnProperty.call(raw, "signatures") ||
-              typeof raw.signature !== "string" ||
-              !/^[0-9a-f]{128}$/.test(raw.signature)
-            ) {
-              return false;
-            }
-            const publicKey = await buyerSigningPublicKey();
-            return verifySignedArtifact(
-              raw,
-              ARTIFACT_SEPARATORS.AgreementDocument,
-              publicKey,
-              ed25519RawVerify,
-            );
-          },
-          authenticateRecoveredSettlementEvidence: async (
-            raw,
-            buyerClaim,
-          ) =>
-            verifyBuyerComponentArtifact(
-              raw,
-              ARTIFACT_SEPARATORS.SettlementEvidence,
-              buyerClaim,
-            ),
-          authenticateRecoveredArtifact: async (
-            raw,
-            separator,
-            buyerClaim,
-          ) => {
-            if (!sameCanonicalClaimIdentity(buyerClaim, buyerId)) return false;
-            if (separator === ARTIFACT_SEPARATORS.AgreementDocument) {
-              if (
-                Object.prototype.hasOwnProperty.call(raw, "signatures") ||
-                typeof raw.signature !== "string" ||
-                !/^[0-9a-f]{128}$/.test(raw.signature)
-              ) {
-                return false;
-              }
-              return verifySignedArtifact(
-                raw,
-                ARTIFACT_SEPARATORS.AgreementDocument,
-                await buyerSigningPublicKey(),
-                ed25519RawVerify,
-              );
-            }
-            if (
-              separator === ARTIFACT_SEPARATORS.SettlementEvidence ||
-              separator === ARTIFACT_SEPARATORS.CompositeVerificationRecord
-            ) {
-              return verifyBuyerComponentArtifact(
-                raw,
-                separator as DomainSeparator,
-                buyerClaim,
-              );
-            }
-            if (separator === ARTIFACT_SEPARATORS.AttestationBundle) {
-              if (
-                !isLegacyMvpAttestationBundle(raw) ||
-                raw.anchoredByRole !== "buyer" ||
-                Object.prototype.hasOwnProperty.call(raw, "signature") ||
-                raw.parties.length !== 1 ||
-                raw.parties[0]?.role !== "buyer" ||
-                !sameCanonicalClaimIdentity(
-                  raw.parties[0]?.primaryClaim,
-                  buyerClaim,
-                )
-              ) {
-                return false;
-              }
-              const requiredRootKeys = new Set([
-                "bundleVersion",
-                "jobId",
-                "outcome",
-                "anchoredByRole",
-                "listingRef",
-                "agreementRef",
-                "parties",
-                "phaseSummary",
-                "vetRecords",
-                "settlementEvidence",
-                "recipeRegistryVersion",
-                "railRegistryVersion",
-                "finalisedAt",
-                "signatures",
-              ]);
-              if (
-                Object.keys(raw).length !== requiredRootKeys.size ||
-                Object.keys(raw).some((key) => !requiredRootKeys.has(key))
-              ) {
-                return false;
-              }
-              const signatures = Array.isArray(raw.signatures)
-                ? raw.signatures
-                : [];
-              if (signatures.length !== 1) return false;
-              const signature = signatures[0];
-              if (
-                signature === undefined ||
-                !sameCanonicalClaimIdentity(signature.party, buyerClaim) ||
-                signature.algorithm !== "ed25519" ||
-                typeof signature.value !== "string" ||
-                Object.keys(signature).length !== 3 ||
-                !Object.prototype.hasOwnProperty.call(signature, "party") ||
-                !Object.prototype.hasOwnProperty.call(signature, "algorithm") ||
-                !Object.prototype.hasOwnProperty.call(signature, "value") ||
-                !/^[A-Za-z0-9_-]{86}$/.test(signature.value)
-              ) {
-                return false;
-              }
-              const bytes = Uint8Array.from(
-                Buffer.from(signature.value, "base64url"),
-              );
-              if (
-                bytes.length !== 64 ||
-                Buffer.from(bytes).toString("base64url") !== signature.value
-              ) {
-                return false;
-              }
-              return ed25519RawVerify(
-                signedBytes(
-                  ARTIFACT_SEPARATORS.AttestationBundle,
-                  attestationBundleHash(
-                    raw as unknown as AnyAttestationBundle,
-                  ),
-                ),
-                bytes,
-                await buyerSigningPublicKey(),
-              );
-            }
-            return false;
-          },
-          settle,
-          expectedSettlementPayee: options.expectedSettlementPayee,
-          resumeSettlement,
-          vet,
-          newJobId: () => generateCanonicalJobId(),
-          validateListing: listingValidator(
-            sessionListingValidationDeps ?? configuredListingValidationDeps,
-          ),
-          verifyVetRecord,
-          authenticateVetFinality,
-          ...(expectedListingPin ? { expectedListingPin } : {}),
-          now: () => new Date().toISOString(),
-          nowMs: () => Date.now(),
-          sessionStore,
-        },
-        options.jobId,
-      );
     },
 
     async getReputation(
