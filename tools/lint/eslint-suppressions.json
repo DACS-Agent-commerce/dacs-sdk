@@ -125,11 +125,6 @@
       "count": 2
     }
   },
-  "packages/dacs-client/test/guarded-sqlite.test.mjs": {
-    "no-unused-vars": {
-      "count": 3
-    }
-  },
   "packages/dacs-client/test/helpers/commitment-node-junk.mjs": {
     "no-unused-vars": {
       "count": 1

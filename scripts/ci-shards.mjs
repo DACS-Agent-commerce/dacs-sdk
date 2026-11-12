@@ -185,7 +185,6 @@ export const WEIGHTS = {
     "test/durable-journal-rejections.test.mjs": 1,
     "test/engine-floor-portability.test.mjs": 1,
     "test/fetch-abort-settle.test.mjs": 1,
-    "test/guarded-sqlite.test.mjs": 1,
     "test/host-observations.test.mjs": 29,
     "test/ingress-admission.test.mjs": 1,
     "test/intent-canonical-depth.test.mjs": 1,
