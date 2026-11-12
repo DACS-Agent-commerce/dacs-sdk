@@ -51,10 +51,13 @@ async function publishFile(path,text,{replace=false}={}){
   await syncDirectory(dirname(path));
 }
 // Why an opener's result is not a usable journal, or null when it is: a plain object (a promise
-// from an async opener is not one) whose journalId is a string equal to expectedJournalId when one was passed.
+// from an async opener is not one) whose journalId is one the binding can hold (the binding reader's own
+// check) and equals expectedJournalId when one was passed.
 const journalRefusal=(value,expectedJournalId)=>{
   if(value===null||typeof value!=='object'||Object.getPrototypeOf(value)!==Object.prototype||typeof value.journalId!=='string')
     return 'the journal opener must return a plain object with a string journalId synchronously';
+  if(!sellerIssuanceJournalIds(Object.fromEntries(SELLER_ISSUANCE_JOURNALS.map(name=>[name,value.journalId]))))
+    return 'the journalId must be 32 lowercase hex characters';
   if(expectedJournalId!==undefined&&value.journalId!==expectedJournalId)return 'the opened journal does not match the bound journal';
   return null;
 };

@@ -136,6 +136,15 @@ test('an async journal opener refuses the first start and saves no binding',asyn
  assert.equal((await start(directory,journalOpener())).length,3);
 });
 
+for(const [label,journalId] of [['a non-hex id','journal-0'],['an uppercase hex id','A'.repeat(32)]])
+test(`an opener returning ${label} refuses the first start, closes it and saves no binding`,async t=>{
+ const directory=await stateDirectory(t),closed=[];
+ await assert.rejects(start(directory,({path})=>({journalId,close(){closed.push(path);}})),/journalId must be 32 lowercase hex/);
+ assert.equal(closed.length,1);
+ await assert.rejects(readFile(join(directory,'evidence','seller-issuance-journals.json')),{code:'ENOENT'});
+ assert.equal((await start(directory,journalOpener())).length,3);
+});
+
 test('an opener that ignores expectedJournalId and returns another journal refuses the start and closes it',async t=>{
  const directory=await stateDirectory(t),openJournal=journalOpener();
  await start(directory,openJournal);
