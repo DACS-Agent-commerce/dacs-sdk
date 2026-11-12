@@ -765,7 +765,10 @@ it returns no Listings or diagnostics, and the caller retries its unchanged
 `retryCursor`. `invalid-seller` and `invalid-options` are caller errors;
 `historyPageSize`, when supplied, must be an integer from 1 through 100.
 
-See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
+See **[examples/hello-world.ts](./examples/hello-world.ts)** for publishing a Listing and admitting it from
+its logical address. For the purchase itself, see
+[docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md); [docs/live-e2e.md](./docs/live-e2e.md)
+runs the funded two-agent flow end to end.
 
 ### AP2 reference integration (optional)
 
