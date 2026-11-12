@@ -329,10 +329,11 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   // Read-side projection only: status, portal evidence and readback show an
   // approval as expired once either the service clock or the wall clock has
-  // reached its expiry. Nothing is saved, and actions keep using
-  // expireIfNeeded with the service clock alone. When a host injects a stale
-  // clock the two can disagree: reads say expired while approve and pay still
-  // go ahead. The read side fails closed.
+  // reached its expiry. Nothing is saved. The wall clock is read directly, as
+  // for handoff expiry, so an injected clock cannot hold an elapsed approval
+  // open in a read. Approve and pay still decide with expireIfNeeded, which
+  // uses the service clock alone. With a stale injected clock a read can
+  // report expired while the approval can still be approved and paid.
   function projectExpiry(operation) {
     return approvalElapsed(operation) || approvalElapsed(operation, Date.now()) ? { ...operation, status: 'expired' } : operation;
   }

@@ -6813,6 +6813,22 @@
           "after": "583d6115c7df3e00f7ae35ec3a69a0f38d943027"
         }
       ]
+    },
+    {
+      "delta": "D37",
+      "subject": "delta(client): D37 say that a read and an action can disagree under a stale clock",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "3f4cdf6d4b097234428b540e0b3bde4a3688edab",
+          "after": "0763f1fa7289764702c38cfafe1143575cc210d8"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d",
+          "after": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d"
+        }
+      ]
     }
   ]
 }
