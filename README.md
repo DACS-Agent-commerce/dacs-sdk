@@ -44,7 +44,7 @@ submits again only once that read shows the payment authorization unused. See
 
 The exported `SignedArtifact`, `buildSignedArtifact()` and
 `verifySignedArtifact()` symbols are legacy raw-hex compatibility surfaces used
-by `Agent.runSession()` and by historical readers. New producers
+by historical readers. New producers
 and readers must use `ComponentSignedArtifact`,
 `buildComponentSignedArtifact()` and `verifyComponentSignature()`.
 
@@ -276,17 +276,7 @@ const buyer = await createAgent({
   demosWriteJournal: await createFsDemosWriteJournal({
     dir: join(dacsStateDir, "buyer-demos-writes"),
   }),
-  identity: {
-    agentId: buyerId,
-    // The exact authenticated DACS-1 bundle is hashed into the Agreement and
-    // terminal bundle. A bare agent id is not an identity commitment.
-    bundle: buyerIdentityBundle,
-    // Presentation authentication is deliberately bundle-scoped so the same
-    // identity bundle can be reused. Session replay resistance is separate:
-    // its exact bundle hash is committed inside each signed Agreement.
-    verifyPresentation: ({ bundle, signedBytes }) =>
-      verifyBuyerIdentityPresentation(bundle, signedBytes),
-  },
+  identity: { agentId: buyerId },
   bindings: { index: bindings },
 });
 
@@ -308,6 +298,10 @@ const firstPage = await buyer.enumerateListings(agentId);
 The snippet stops before payment. The purchase runs in the role-separated
 coordinators, each over its own durable store; see
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
+A buyer on that path supplies its identity as the `buyer` claim reference in the
+order it passes to `startOrder`. The coordinator checks that it is a canonical
+claim reference and differs from the seller; the application must make sure it
+is the buyer's own identity.
 
 Once the purchase has produced a finalized bundle, anyone can verify it, and
 `getReputation` reads reputation from bundle references. `bundleRef` is the
@@ -559,8 +553,8 @@ action.
 `createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
 hook. A caller can omit it, but a purchase that must finish after a restart needs
 the journal it fills (see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
-Only `Agent.runSession()` refuses a pay-dem bridge built over
-a rail without it.
+Only the older session runner (`runSessionCore`) refuses a pay-dem bridge built
+over a rail without it.
 Without the hook the low-level rail provides only in-process hash-first
 observation. Across a
 process restart, at-most-once settlement requires `payDemSettle` with a
