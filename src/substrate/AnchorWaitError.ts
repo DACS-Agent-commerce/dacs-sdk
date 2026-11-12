@@ -9,7 +9,7 @@ import type {
  * from the receipt without parsing a message or blindly rebroadcasting it.
  */
 export class AnchorWaitError extends SubstrateError {
-  readonly code: AnchorWaitFailureCode;
+  override readonly code: AnchorWaitFailureCode;
   readonly receipt: AnchorAttemptReceipt;
 
   constructor(

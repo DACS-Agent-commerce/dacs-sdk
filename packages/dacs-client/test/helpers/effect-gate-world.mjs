@@ -13,56 +13,48 @@ export const sellerPublications = () => ({
 });
 
 /**
- * Wraps a transport owner for tests. While `reuseFence(true)` is set, a nested acquisition returns a
- * lease over the same context that releases nothing: it models the owning pass handing its fence to
- * the nested steps. `acquisitions()` counts every acquisition made through the wrapper;
- * `replaceLocal(local)` makes currentLocal() report another connection.
+ * Returns the exported transport owner with two test views over it: `replaceLocal(local)` makes currentLocal() report another
+ * connection, and `acquisitions()` counts fence acquisitions. Every acquisition is the real owner's own, fence sharing included.
  */
-export function reentrantOwner(owner) {
-  let reuse = false, acquisitions = 0, replaced = null;
+function observedOwner(owner) {
+  let replaced = null, acquisitions = 0;
   return {
     ...owner,
     currentLocal: () => replaced ?? owner.currentLocal(),
     replaceLocal(local) { replaced = local; },
-    reuseFence(on) { reuse = on; },
     acquisitions: () => acquisitions,
-    async acquireConnectionFence(...args) {
-      acquisitions += 1;
-      return reuse ? Object.freeze({ context: owner.getContext(), release() {} }) : owner.acquireConnectionFence(...args);
-    },
+    acquireConnectionFence(...args) { acquisitions += 1; return owner.acquireConnectionFence(...args); },
   };
 }
 
 /**
- * The scripted world for gate tests: a seller (default) or buyer composition whose owner is
- * reentrantOwner, spied at the inner signature. `currentOwner()` is the current composition's owner;
- * `clock` is the composition's mutable clock; `qualify` is installed on a seller. With `directOwner` the composition runs on
- * the exported owner itself, with no wrapper.
+ * The scripted world for gate tests: a seller (default) or buyer composition on the exported transport owner, spied at the
+ * inner signature. `currentOwner()` is the current composition's owner; `clock` is the composition's mutable clock;
+ * `qualify` is installed on a seller.
  */
-export async function gateWorld(t, { seller = true, qualify, directOwner = false, sessionOptions = {}, journalWrap } = {}) {
+export async function gateWorld(t, { seller = true, qualify, sessionOptions = {}, journalWrap } = {}) {
   const clock = { now: () => T0 };
   let owner;
   const w = await spiedWorld(t, {
     createSession: seller ? api.createNodeSellerComposition : api.createNodeWalletSession,
-    ownerWrap: raw => { owner = directOwner ? raw : reentrantOwner(raw); return owner; }, journalWrap,
+    ownerWrap: raw => { owner = observedOwner(raw); return owner; }, journalWrap,
     sessionOptions: { clock, ...(seller ? { approveConfirmedWrite: null, publications: sellerPublications(), ...(qualify ? { qualify } : {}) } : {}), ...sessionOptions },
   });
   return Object.assign(w, { clock, currentOwner: () => owner });
 }
 
 /**
- * Opens an effect pass the way an owning EB pass does: it takes the owner's fence, registers the pass
- * and releases the fence when `run(work)` ends, whatever work does. `events` records every default
- * step as `<step>:<phase>`; `pass` overrides any member of the registered pass.
+ * Opens an effect pass the way its host does: it takes the owner's fence, registers the pass and releases the fence when
+ * `run(work)` ends, whatever work does. `events` records every default step as `<step>:<phase>`; `pass` overrides any
+ * member of the registered pass.
  */
 export async function openPass(w, { pass = {}, events = [] } = {}) {
   const owner = w.currentOwner?.() ?? w.owner, lease = await owner.acquireConnectionFence();
-  owner.reuseFence?.(true);
   const step = name => ({ phase }) => { events.push(`${name}:${phase}`); };
   const handle = w.session.effectPass({ fence: lease, deadline: w.clock.now() + PASS_WINDOW_MS, refreshAuthority: step('authority'),
     finalStop: step('stop'), synchronousChecks: [step('sync')], feeCeilingOs: FEE_CEILING_OS, ...pass });
   const run = async work => {
-    try { return await w.session.runInEffectPass(handle, work); } finally { owner.reuseFence?.(false); lease.release(); }
+    try { return await w.session.runInEffectPass(handle, work); } finally { lease.release(); }
   };
   return { handle, lease, events, run };
 }

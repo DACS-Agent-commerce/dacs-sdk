@@ -22,7 +22,7 @@ const typedArraySet = Uint8ArrayIntrinsic.prototype.set;
 export class RawJsonAdmissionError extends DacsError {
   constructor(
     readonly stage: RawJsonAdmissionStage,
-    readonly code: string,
+    override readonly code: string,
   ) {
     super(`raw JSON ${stage}: ${code}`);
     this.name = "RawJsonAdmissionError";
