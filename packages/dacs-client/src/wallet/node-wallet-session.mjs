@@ -11,7 +11,7 @@ import { canonicalize } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
 import { admitPublicFactory } from '../public-admission.mjs';
-import { createDevnetAgreementTransport } from './devnet-native-transport.mjs';
+import { createDevnetAgreementTransport, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from './devnet-native-transport.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
@@ -272,7 +272,9 @@ export async function createNodeWalletSession(options = {}) {
     const attempts = new AsyncLocalStorage(), selectedJournal = new AsyncLocalStorage();
     const fetchImpl = (...args) => { const attempt = attempts.getStore(); if (attempt) attempt.dispatched = true; return owner.fetchImpl(...args); };
     transport = createDevnetAgreementTransport({ expected, transportOwner: owner, journal, fetchImpl, now: () => clock.now(),
-      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation } });
+      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation },
+      blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
+      blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH });
     const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const stamps = createRpcStampSource(clock);
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));

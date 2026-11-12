@@ -6786,6 +6786,54 @@
           "after": "aebbb2f2a8cbd4ed3c053e258097bb40f879ed45"
         }
       ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 accept the reviewed testnet block layout",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "75913557cd68e57668189f8fcc33ca674bebd7e0"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "4ba56c73af306778fef8531dd80bf48404d581b6",
+          "after": "2780fc9823cc2f5641992981217c13c94b3bdbcb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": null,
+          "after": "329b22f692f1e31f0ce48e0020d57f4b5e88ec4f"
+        }
+      ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 move the block-two observation to its own capture",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "75913557cd68e57668189f8fcc33ca674bebd7e0",
+          "after": "553cb843ac22399e425a0bfbb334500e869caecb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "329b22f692f1e31f0ce48e0020d57f4b5e88ec4f",
+          "after": "ed5ca3d48021e4df8e372307148c25e68e1765b8"
+        }
+      ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 state the block-two pin without a capture path",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "553cb843ac22399e425a0bfbb334500e869caecb",
+          "after": "172c0e6ab561cdb1ddf4efe9e6eddb9b24fdef6f"
+        }
+      ]
     }
   ]
 }
