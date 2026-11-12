@@ -30,15 +30,15 @@ export const DEFAULT_WEIGHT = 30;
 export const DEFAULT_TEST_WEIGHT = 60;
 
 // Client files whose tests are spread over the shards one by one. delta-provenance re-checks the whole delta history
-// in most of its 27 tests, so as one file it ran 50 minutes in a single job (run 43184843344).
+// in most of its 27 tests, so as one file it took about 50 minutes in a single job.
 export const SPLIT_FILES = { seller: [], client: ["scripts/delta-provenance.test.mjs"] };
 
-// Seconds per file on the hosted runner. client: from run 43184843344 (PR 1282, 2026-11-12), the time between consecutive
-// "[client-tests] <file>" lines in its client-2 job. seller: from one build-test (node 22) job of the one-job layout,
-// which ran one process for all files, so per-file
-// times come from timing each file alone on a test machine, scaled to add up to that job's seller step, with
-// seller-host-native-delivery.test.mjs set to the time it ran on its own in that log. The weights only balance the
-// shards; a missing or stale entry never drops a file (see check).
+// Seconds per file on the hosted runner. The weights only balance the shards; a missing or stale entry never drops a
+// file (see check).
+// - client: the time between consecutive "[client-tests] <file>" lines in a client shard job's log.
+// - seller: the old one-job layout ran all seller files in one process, so each file was timed alone on a test machine
+//   and the times scaled to add up to that job's seller step. seller-host-native-delivery.test.mjs is set to the time
+//   it ran on its own in that job's log.
 export const WEIGHTS = {
   seller: {
     "admission-docs.test.mjs": 1,
@@ -304,19 +304,19 @@ export const TEST_WEIGHTS = {
   },
 };
 
-// Which Node legs run each suite. client: node 22 only. seller: both legs on every event (until 2026-11-12 a pull request
-// ran it on node 22 only, and a node 24 seller failure reached phase0-completion that way: run 43176322373).
+// Which Node legs run each suite. client: node 22 only. seller: both legs on every event, pull requests included, so a
+// node 24 seller failure shows before the merge.
 export function suiteRuns(suite, node) {
   if (suite === "client") return node === "22";
   if (suite === "seller") return NODE_LEGS.includes(node);
   throw new Error(`unknown suite ${suite}`);
 }
 
-/** The shard job's matrix entries for one event: one per (Node leg, suite, shard) that runs. */
 // The events ci.yml runs on. The plan is the same for each; an unknown event (a new trigger or a typo) is refused rather
 // than silently planned.
 export const EVENTS = ["pull_request", "push", "merge_group", "workflow_dispatch"];
 
+/** The shard job's matrix entries for one event: one per (Node leg, suite, shard) that runs. */
 export function plan(event) {
   if (!EVENTS.includes(event)) throw new Error(`unknown event ${event}: expected one of ${EVENTS.join(", ")}`);
   const include = [];

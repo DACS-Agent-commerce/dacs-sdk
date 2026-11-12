@@ -303,7 +303,7 @@ describe("build-test long suites (.github/workflows/ci.yml)", () => {
     "Test durable RFQ filesystem record-size boundaries",
   ];
 
-  // Until 2026-11-12 pull requests skipped these on node 24, and a node 24 failure reached phase0-completion that way.
+  // Pull requests run these on node 24 too, so a node 24 failure shows before the merge.
   it("runs the long suites on both legs for every event, pull requests included", () => {
     for (const name of suites) {
       for (const event of EVENTS) expect(legsRunning(name, event), `${name} ${event}`).toEqual(["22", "24"]);
@@ -338,7 +338,7 @@ describe("build-test long suites (.github/workflows/ci.yml)", () => {
 
 describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", () => {
   // Before the split every leg prepared the locked seller consumer. The seller shards now prepare it, and since seller
-  // shards run on every leg of every event (2026-11-12), build-test-main no longer needs its own copy of the step.
+  // shards run on every leg of every event, build-test-main no longer needs its own copy of the step.
   it("prepares the locked seller consumer on every leg of every event, in the seller shards only", () => {
     const name = "Prepare locked seller consumer";
     const shard = (SHARD.steps ?? []).find((s) => s.name === name);
