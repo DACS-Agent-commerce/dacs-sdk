@@ -8003,6 +8003,18 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged response classification rebuild in the recorded suspension client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "40664e4d65a3766cd0ff4544f5364ff2a063cbc9",
+          "after": "40664e4d65a3766cd0ff4544f5364ff2a063cbc9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "fix(client): ignore a seller stop for an attempt a newer one replaced",
       "sha": "5f1cbcdb4498a6475f546ac7e383f46763b990e6",
       "files": [
