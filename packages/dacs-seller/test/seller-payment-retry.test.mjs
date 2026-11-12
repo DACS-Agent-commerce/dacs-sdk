@@ -18,7 +18,7 @@ import * as transport from '../src/index.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { transportOutcome } from '../src/dacs/seller-agent.mjs';
 const seller={...transport,...listingApi,agreementInput,listingPin,createSellerTransportStore};
-import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 
 let walletSequence=60;
 function key() { const w=testWallet(walletSequence++);return {...w,sign:w.signBytes,signWallet:message=>'0x'+w.signBytes(Buffer.from(message)).toString('hex')}; }
@@ -45,12 +45,17 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => proposalCalls === 0 ? null : retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
     retainsPaymentClaim:()=>false, assertSettlementCredit: () => {},
-    submitPayment: async (body) => { calls.push(body.txHash); return structuredClone(answers[Math.min(calls.length - 1, answers.length - 1)]); },
+    submitPayment: async (body) => {
+      calls.push(body.txHash);
+      const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
+      if (answer === THROW) throw new Error('TEST the claim outcome is unknown');
+      return structuredClone(answer);
+    },
     // An explicit reconciliation-capable double: it runs the command again and classifies the answer as a first run does.
-    reconcileTransport: async ({ body, transport }) => {
+    reconcileTransport: async ({ request, body, transport }) => {
       transport.claim();
-      const answer = await (transport.path === '/dacs/v1/payments' ? facade.submitPayment(body) : facade.receiveProposal(body));
-      const outcome = transportOutcome(transport.path, { answer }, { retained: false });
+      const answer = await (request.path === '/dacs/v1/payments' ? facade.submitPayment(body) : facade.receiveProposal(body));
+      const outcome = transportOutcome(request.path, { answer }, { retained: false });
       await transport.settle(outcome);
       return outcome;
     } };
@@ -71,11 +76,9 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   const pay = async (body = claim) => { try { return await client.submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
   // The open attempt's lease ends: the next request recovers it.
   const lapse = () => { time += LEASE_MS; };
-  return { calls, claim, pay, lapse, proposalCalls: () => proposalCalls,
+  return { calls, claim, pay, lapse, wire, proposalCalls: () => proposalCalls,
     propose: () => client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) };
 }
-
-const PENDING = { error: 'seller_unavailable', status: undefined };
 
 test('a payment answered indeterminate before the evidence checkpoint ends null, and the next request is recover; with a reconciliation-capable agent double the same claim and a corrected claim reach intake again', async (t) => {
   const w = await world(t, [{ status: 'indeterminate', reason: 'demos-pending' }, DELIVERED]);
@@ -89,38 +92,60 @@ test('a payment answered indeterminate before the evidence checkpoint ends null,
   assert.deepEqual(corrected.calls, ['b2'.repeat(32), corrected.claim.txHash]);
 });
 
-test('work the agent retains (proposal waiting, payment held, payment evidenced with delivery pending) leaves the attempt open: pending within the lease, recover after it', async (t) => {
-  const held = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
-  const heldPayment = await world(t, [held, held, DELIVERED]);
-  assert.deepEqual(await heldPayment.pay(), held);
-  assert.deepEqual(await heldPayment.pay(), PENDING, 'inside the lease the open attempt is pending');
-  heldPayment.lapse();
-  assert.deepEqual(await heldPayment.pay(), held, 'after the lease the agent reconciles: the readback is still absent');
-  heldPayment.lapse();
-  assert.deepEqual(await heldPayment.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
-  assert.deepEqual(await heldPayment.pay({ ...heldPayment.claim, txHash: `0x${heldPayment.claim.txHash}` }), DELIVERED, 'the completed delivery is put to the agent again with the other claim');
-  assert.equal(heldPayment.calls.length, 4);
+const HELD = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
+
+test('a held answer is recovered by the next request on a fresh nonce, without waiting for a lease', async (t) => {
+  const w = await world(t, [HELD, HELD, DELIVERED]);
+  assert.deepEqual(await w.pay(), HELD);
+  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), HELD, 'the same transaction in its other form reads back again');
+  assert.deepEqual(await w.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
+  assert.deepEqual(await w.pay(), DELIVERED);
+  assert.equal(w.calls.length, 4, 'every request reached the agent, and the delivered claim is put to the agent again');
+});
+
+// The journal allows 16 superseded attempts, meant for crashes; a normal "not final yet" answer must never spend one.
+const HELD_POLLS = 20;
+const journalOf = (w) => inspectWireOperation(w.wire.journal, { seller: fixtureSeller.claim, jobId: JOB, path: '/dacs/v1/payments' });
+
+test('a payment held twenty times is answered by the agent each time and then delivered, without spending crash attempts', async (t) => {
+  const w = await world(t, [...Array(HELD_POLLS).fill(HELD), DELIVERED]);
+  for (let poll = 0; poll < HELD_POLLS; poll++) assert.deepEqual(await w.pay(), HELD, `poll ${poll}`);
+  const view = journalOf(w);
+  assert.deepEqual([view.state, view.attempt, view.superseded], ['ended', HELD_POLLS - 1, 0], 'every held poll ended its attempt cleanly');
+  assert.deepEqual(await w.pay(), DELIVERED);
+  assert.equal(w.calls.length, HELD_POLLS + 1, 'the agent saw every poll');
+});
+
+test('an uncertain payment answer keeps its attempt open until the lease, then the next request recovers', async (t) => {
+  const w = await world(t, [THROW, DELIVERED]);
+  assert.deepEqual(await w.pay(), { error: 'seller_unavailable', status: undefined });
+  assert.equal(journalOf(w).state, 'pending', 'an unsettled attempt is not ended by the host');
+  assert.deepEqual(await w.pay(), { error: 'seller_unavailable', status: undefined }, 'inside the lease the open attempt is pending');
+  w.lapse();
+  assert.deepEqual(await w.pay(), DELIVERED, 'the lease ran out; the next request recovers');
+  assert.equal(journalOf(w).state, 'completed');
+});
+
+test('evidenced payment with a delivery not done yet is retried until the delivery is final', async (t) => {
   const pending = [
     { status: 'payment-evidenced', delivery: { status: 'held', reason: 'delivery readback absent' } },
     { status: 'payment-evidenced', delivery: 'held-missing-consumed-v2-fulfilment-and-Vet-audit' },
     { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'held-readback-only' } },
   ];
-  const evidenced = await world(t, [...pending, DELIVERED]);
-  for (const answer of pending) {
-    assert.deepEqual(await evidenced.pay(), answer);
-    evidenced.lapse();
-  }
-  assert.deepEqual(await evidenced.pay(), DELIVERED);
-  assert.deepEqual(await evidenced.pay(), DELIVERED);
-  assert.equal(evidenced.calls.length, 5);
-  const waiting = await world(t, [], { proposalAnswers: [{ disposition: 'waiting', stage: 'lease', reason: 'TEST another worker holds the lease' }, { disposition: 'complete', contribution: null }] });
-  assert.equal(waiting.proposalCalls(), 1);
-  assert.equal((await waiting.propose().catch((error) => error.code)), 'seller_unavailable', 'the waiting proposal is pending inside the lease');
-  waiting.lapse();
-  assert.equal((await waiting.propose()).disposition, 'complete');
-  assert.equal(waiting.proposalCalls(), 2);
-  assert.equal((await waiting.propose()).disposition, 'complete');
-  assert.equal(waiting.proposalCalls(), 2, 'only the completed proposal is stored');
+  const w = await world(t, [...pending, DELIVERED]);
+  for (const answer of pending) assert.deepEqual(await w.pay(), answer, 'each poll recovers at once');
+  assert.deepEqual(await w.pay(), DELIVERED);
+  assert.deepEqual(await w.pay(), DELIVERED);
+  assert.equal(w.calls.length, 5);
+});
+
+test('a waiting proposal keeps its HTTP retry slot until the durable responder completes', async (t) => {
+  const w = await world(t, [], { proposalAnswers: [{ disposition: 'waiting', stage: 'lease', reason: 'TEST another worker holds the lease' }, { disposition: 'complete', contribution: null }] });
+  assert.equal(w.proposalCalls(), 1);
+  assert.equal((await w.propose()).disposition, 'complete', 'the waiting proposal recovers at once');
+  assert.equal(w.proposalCalls(), 2);
+  assert.equal((await w.propose()).disposition, 'complete');
+  assert.equal(w.proposalCalls(), 2, 'only the completed proposal is stored');
 });
 
 // Only payment claims and durable proposals resume through reconciliation.

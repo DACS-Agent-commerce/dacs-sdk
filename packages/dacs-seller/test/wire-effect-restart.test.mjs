@@ -30,7 +30,7 @@ test('a cut between the agent\'s durable write and completion (host reopened ove
   assert.equal(w.agent.calls.reconciled, 1);
 });
 
-test('NEW-C1-null-lost-reply', async t => {
+test('a null end whose reply was lost keeps its binding across a restart, and the same binding recovers at once', async t => {
   const w = await world(t), job = await proposeJob(w, 'null-lost-reply');
   w.agent.answer = () => { throw new SellerAgentError('peer_job_capacity', 'TEST no work was done', 503); };
   const refused = await job.post();
@@ -49,7 +49,7 @@ test('NEW-C1-null-lost-reply', async t => {
   assert.equal(w.agent.calls.reconciled, reconciledBefore + 1);
 });
 
-test('NEW-C1-end-only', async t => {
+test('a host cut between the end record and the outcome file answers the exact stored bytes after a restart, with no agent run', async t => {
   const w = await world(t), job = await proposeJob(w, 'end-only');
   const first = await job.post();
   assert.equal(first.status, 200);
@@ -64,7 +64,7 @@ test('NEW-C1-end-only', async t => {
   assert.equal(w.effects(), calls, 'no agent ran');
 });
 
-test('NEW-C1-signing-failure', async t => {
+test('a completed answer that cannot be signed keeps its stored outcome across a restart, never a refusal or a null end', async t => {
   const w = await world(t), job = await proposeJob(w, 'signing-failure');
   const first = await job.post();
   assert.equal(first.status, 200);

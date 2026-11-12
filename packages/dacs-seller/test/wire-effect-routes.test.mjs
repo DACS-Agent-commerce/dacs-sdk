@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import DatabaseSync from 'better-sqlite3';
 import { NO_EFFECT_ERRORS, SellerAgentError, transportOutcome } from '../src/dacs/seller-agent.mjs';
-import { NOW } from './helpers/protocol-fixture.mjs';
-import { BUYER as WORLD_BUYER, PIN as WORLD_PIN, SELLER as WORLD_SELLER, continuingWorld, derive, identityBody, jobFor, proposalFor, proposeJob, world as routeWorld } from './helpers/wire-routes-world.mjs';
-import { sha256Hex } from '@kynesyslabs/dacs';
+import { NOW, testWallet } from './helpers/protocol-fixture.mjs';
+import { BUYER as WORLD_BUYER, LISTING, PIN as WORLD_PIN, SELLER as WORLD_SELLER, continuingWorld, derive, identityBody, jobFor, proposalFor, proposeJob, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
+import { canonicalize, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
+import { fixtureIdentityBundle } from './fixtures/listings.mjs';
+import { agreementInput } from '../src/dacs/purchase-protocol.mjs';
+import { wireBuyer } from './helpers/wire-buyer.mjs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
@@ -300,8 +303,8 @@ const accountingRows = (w) => {
   try { return db.prepare('SELECT state, code FROM kit_reservations ORDER BY rowid').all(); } finally { db.close(); }
 };
 
-test('A16 a new proposal runs the agent once and completes its attempt with the exact answer text after the agent\'s durable write', async t => {
-  const w = await routeWorld(t), job = await proposeJob(w, 'a16-new');
+test('a new proposal runs the agent once and completes its attempt with the exact answer text after the agent\'s durable write', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 'new-proposal');
   let filesAtWrite = null;
   w.agent.onWork = () => { filesAtWrite = w.journalFiles().length; };
   const first = await job.post();
@@ -359,7 +362,7 @@ for (const route of ['commitments', 'commitmentSignature']) {
 }
 
 for (const route of ['proposals', 'commitments', 'commitmentSignature', 'payments', 'bundleRequest', 'bundleCountersignature']) {
-  test(`A12 a recover attempt asks the agent to reconcile before any route effect, on ${PATHS[route]}`, async t => {
+  test(`a recover attempt asks the agent to reconcile before any route effect, on ${PATHS[route]}`, async t => {
     const w = route === 'proposals' ? await routeWorld(t) : await continuingWorld(t);
     const job = route === 'proposals' ? await proposeJob(w, 'a12') : null;
     const send = () => job ? job.post() : w.request(PATHS[route]);
@@ -374,13 +377,13 @@ for (const route of ['proposals', 'commitments', 'commitmentSignature', 'payment
   });
 }
 
-test('A12 a reconciliation answer maps to the attempt: present completes, no-effect ends null, retry stays open, anything else stays open and uncertain', async t => {
+test('a reconciliation answer maps to the attempt: present completes, no-effect and progress end null, anything else stays open', async t => {
   const reconciling = (disposition) => async ({ transport }) => {
     transport.claim();
-    if (disposition !== 'unsettled') await transport.settle({ disposition, status: 200, value: { disposition: 'complete', contribution: { signed: true } }, settle: true });
+    if (disposition !== 'unsettled') await transport.settle({ disposition, status: 200, value: { disposition: 'complete', contribution: { signed: true } }, settle: true, retry: disposition === 'retry', noEffect: disposition === 'no-effect' });
   };
-  for (const [disposition, status, nextAnswer] of [['present', 200, 200], ['no-effect', 200, 200], ['retry', 200, 'seller_effect_pending'], ['unsettled', 503, 'seller_effect_pending']]) {
-    const w = await routeWorld(t), job = await proposeJob(w, `a12-${disposition}`);
+  for (const [disposition, status, nextAnswer] of [['present', 200, 200], ['no-effect', 200, 200], ['retry', 200, 200], ['unsettled', 503, 'seller_effect_pending']]) {
+    const w = await routeWorld(t), job = await proposeJob(w, `reconcile-${disposition}`);
     await leaveOpen(w, () => job.post());
     lapse(w);
     w.agent.reconcileTransport = reconciling(disposition);
@@ -388,8 +391,7 @@ test('A12 a reconciliation answer maps to the attempt: present completes, no-eff
     assert.equal(answered.status, status, disposition);
     const files = w.journalFiles().length;
     const next = await job.post();
-    if (nextAnswer === 200) assert.equal(next.status, 200, `${disposition}: ${disposition === 'present' ? 'completed' : 'the null end lets the next request recover at once'}`);
-    else assert.equal(next.body.error, nextAnswer, `${disposition}: the attempt is still open`);
+    if (nextAnswer === 200) assert.equal(next.status, 200, `${disposition}: ${disposition === 'present' ? 'completed' : 'the null end lets the next request recover at once'}`);    else assert.equal(next.body.error, nextAnswer, `${disposition}: the attempt is still open`);
     if (disposition === 'present') assert.equal(w.journalFiles().length, files + 1, 'a completed replay adds only its nonce key');
   }
 });
@@ -430,7 +432,7 @@ test('every no-effect code, one unlisted SellerAgentError and a plain Error × p
   assert.equal((await rejected.post()).status, 200, 'the null end: the next request recovers at once');
 });
 
-test('every no-effect code and a plain Error on commitments and payments keep the proposal rule: a listed refusal ends null, anything else stays open', async t => {
+test('every no-effect code and a plain Error on commitments and payments keep the proposal rule: a listed refusal ends null (on retained payment work as progress), anything else stays open', async t => {
   for (const [code, error, answer] of [['peer_job_capacity', new SellerAgentError('peer_job_capacity', 'TEST', 503), 'peer_job_capacity'], ['plain', new Error('TEST plain'), 'operation_uncertain']]) {
     const w = await continuingWorld(t);
     w.agent.answer = () => { throw error; };
@@ -444,9 +446,9 @@ test('every no-effect code and a plain Error on commitments and payments keep th
     payments.agent.submitPayment = async () => { throw failure; };
     const answered = await payments.request(PATHS.payments);
     assert.equal(answered.body.error, listed ? 'rail_unavailable' : 'operation_uncertain', `payments retained ${retained} listed ${listed}`);
-    payments.state.time += listed && !retained ? 0 : payments.leaseMs - 1;
+    payments.state.time += listed ? 0 : payments.leaseMs - 1;
     const next = await payments.request(PATHS.payments);
-    assert.equal(next.body.error === 'seller_effect_pending', !(listed && !retained), 'a null end recovers at once; an open attempt is pending');
+    assert.equal(next.body.error === 'seller_effect_pending', !listed, 'a null end recovers at once; an open attempt is pending');
   }
 });
 
@@ -553,7 +555,7 @@ test('a completion the journal refuses as superseded answers signed 503 operatio
   assert.equal((await job.post()).text, successor.text, 'the successor\'s outcome stands');
 });
 
-test('A14 a request whose host-retained binding changed is peer_job_conflict 409 while open, after completion and after a restart; the agent is not called', async t => {
+test('a request whose host-retained binding changed is peer_job_conflict 409 while open, after completion and after a restart; the agent is not called', async t => {
   const w = await routeWorld(t), job = await proposeJob(w, 't10');
   const other = await proposalFor(job.jobId, NOW + 1000);
   const mismatched = () => w.post(PATHS.proposals, other.body, { jobId: job.jobId, agreementHash: other.agreementHash });
@@ -573,7 +575,7 @@ test('A14 a request whose host-retained binding changed is peer_job_conflict 409
   }
 });
 
-test('A15 sixteen lapsed attempts then seller_effect_unresolved 500 on every later request, recorded in the accounting row, with no automatic reset; the state route still answers', async t => {
+test('sixteen lapsed attempts end in seller_effect_unresolved on every later request: 500, recorded in the accounting row, with no automatic reset; the state route still answers', async t => {
   const w = await routeWorld(t, { leaseMs: SHORT_LEASE_MS }), job = await proposeJob(w, 't11');
   w.agent.answer = plainFailure;
   w.agent.reconcileTransport = async () => {};
@@ -688,7 +690,7 @@ test('settlement-credit hook {throws, rejects asynchronously, suspended, passes 
   }
 });
 
-test('NEW-C1-awaited-settlement', async t => {
+test('the agent\'s settlement is awaited before the answer is written', async t => {
   const w = await routeWorld(t), job = await proposeJob(w, 'awaited-settlement');
   const order = [], unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
@@ -715,7 +717,7 @@ test('NEW-C1-awaited-settlement', async t => {
   assert.deepEqual(unhandled, []);
 });
 
-test('NEW-C1-route-slot-return: a completed proposal and commitment return only their own slot; an open attempt returns none', async t => {
+test('a completed proposal and commitment return only their own slot; an open attempt returns none', async t => {
   const w = await routeWorld(t);
   // The wire context is frozen: the host's retained-purchase check reads this capacity, which holds a live allocation on these two routes.
   w.handle.wireOverrides = { capacity: { retainedAllocated: ({ route }) => [PATHS.proposals, PATHS.commitments].includes(route) } };
@@ -752,4 +754,109 @@ test('with the guard off, a directly composed handler answers kit_operation_guar
     try { createSellerHttpHandler({}); console.log('constructed'); } catch (error) { console.log(error.code); }`;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { env: { ...process.env, NODE_OPTIONS: options.join(' ') }, encoding: 'utf8' });
   assert.equal(child.stdout.trim(), 'kit_operation_guard_off', child.stderr);
+});
+
+// The completions the completion port recorded: only a final outcome is recorded, and only it returns a route slot.
+const completions = (w) => {
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try { return db.prepare('SELECT route, attempt, status, cleanup FROM kit_ordinary_completions ORDER BY rowid').all(); } finally { db.close(); }
+};
+const operationOf = (w, jobId, path) => inspectWireOperation(w.handle.wire.journal, { seller: WORLD_SELLER.claim, jobId, path });
+const HELD = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
+const DELIVERED = { status: 'payment-evidenced', delivery: { status: 'delivered' } };
+// A recovery that answers as the agent's reconciliation classifies a retained answer.
+const reconcilingWith = (path, resultFor) => async (input) => {
+  input.transport.claim();
+  const outcome = transportOutcome(path, await resultFor(input), { retained: true, recovering: true });
+  if (outcome.settle) await input.transport.settle(outcome);
+};
+
+test('an effect route reserves through the coordinator and ends through the completion port', async t => {
+  const w = await routeWorld(t), done = await proposeJob(w, 'port-outcome'), refused = await proposeJob(w, 'port-null');
+  const { reservations } = w.handle.wire, coordinated = reservations.reserveCoordinated, inputs = [];
+  reservations.reserveCoordinated = (input, ...rest) => { inputs.push(input); return coordinated(input, ...rest); };
+  assert.equal((await done.post()).status, 200);
+  assert.deepEqual(completions(w), [{ route: PATHS.proposals, attempt: 0, status: 200, cleanup: 'route' }], 'the final answer ended through the completion port');
+  w.agent.answer = () => { throw new SellerAgentError('peer_job_capacity', 'TEST nothing was done', 503); };
+  assert.equal((await refused.post()).body.error, 'peer_job_capacity');
+  assert.equal(operationOf(w, refused.jobId, PATHS.proposals).state, 'ended', 'the proven no-effect answer ended its attempt with null');
+  assert.equal(completions(w).length, 1, 'a null end records no completion');
+  assert.deepEqual(inputs.map((input) => [input.payload.jobId, input.retainedWork, input.paymentTx]), [[done.jobId, false, null], [refused.jobId, false, null]]);
+});
+
+test('a waiting proposal polled twenty times recovers each time and completes once', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 'waiting-polls');
+  const waiting = { disposition: 'waiting', stage: 'lease', reason: 'TEST the durable responder is still working' };
+  w.agent.answer = () => waiting;
+  let polls = 0;
+  w.agent.reconcileTransport = reconcilingWith(PATHS.proposals, () => { w.agent.calls.reconciled++; return { answer: ++polls < 20 ? waiting : { disposition: 'complete', contribution: { signed: true } } }; });
+  assert.equal((await job.post()).body.disposition, 'waiting');
+  for (let poll = 1; poll < 20; poll++) {
+    const answered = await job.post();
+    assert.deepEqual({ status: answered.status, disposition: answered.body.disposition }, { status: 200, disposition: 'waiting' }, `poll ${poll}: recovered at once, never seller_effect_pending`);
+    assert.equal(w.agent.calls.reconciled, poll, `poll ${poll}: the agent reconciled first`);
+    const { state, attempt, superseded } = operationOf(w, job.jobId, PATHS.proposals);
+    assert.deepEqual({ state, attempt, superseded }, { state: 'ended', attempt: poll, superseded: 0 }, `poll ${poll}: ended without an outcome and superseded nothing`);
+  }
+  assert.deepEqual(completions(w), [], 'no outcome yet, so no route slot was returned');
+  const final = await job.post();
+  assert.equal(final.body.disposition, 'complete');
+  assert.equal((await job.post()).text, final.text, 'the final answer is the stored outcome');
+  assert.deepEqual({ proposals: w.agent.calls.proposals, reconciled: w.agent.calls.reconciled }, { proposals: 1, reconciled: 20 }, 'one route effect, then only reconciliation');
+  assert.deepEqual(completions(w), [{ route: PATHS.proposals, attempt: 20, status: 200, cleanup: 'route' }], 'completed once, with its slot returned once');
+});
+
+test('a held payment recovers after one clean restart and completes once without a second charge', async t => {
+  const w = await continuingWorld(t);
+  let intake = 0, recovered = 0;
+  w.agent.submitPayment = async () => { intake++; return HELD; };
+  w.agent.reconcileTransport = reconcilingWith(PATHS.payments, () => ({ answer: ++recovered < 2 ? HELD : DELIVERED }));
+  const { reservations } = w.handle.wire, coordinated = reservations.reserveCoordinated, claims = [];
+  reservations.reserveCoordinated = (input, ...rest) => { claims.push(input.paymentTx); return coordinated(input, ...rest); };
+  assert.deepEqual((await w.request(PATHS.payments)).body, HELD);
+  assert.deepEqual((await w.request(PATHS.payments)).body, HELD, 'the next request recovered at once and the agent reconciled');
+  assert.deepEqual(claims, [w.bodyFor(PATHS.payments).txHash, w.bodyFor(PATHS.payments).txHash], 'the coordinator reserves under the payment transaction');
+  assert.equal(completions(w).filter((row) => row.route === PATHS.payments).length, 0, 'a held payment keeps its route slot');
+  w.reopen();
+  assert.deepEqual((await w.request(PATHS.payments)).body, DELIVERED, 'after the restart the next request recovers at once and delivers');
+  assert.deepEqual({ intake, recovered }, { intake: 1, recovered: 2 }, 'payment intake ran once: no second charge');
+  assert.deepEqual(completions(w).filter((row) => row.route === PATHS.payments), [{ route: PATHS.payments, attempt: 2, status: 200, cleanup: 'route' }], 'completed once');
+});
+
+test('two buyers racing for one job: the first committed claim wins and the other is refused with nothing created or charged', async t => {
+  const w = await routeWorld(t), jobId = jobFor('two-buyers'), rivalWallet = testWallet(41);
+  const first = await proposalFor(jobId);
+  // The rival's own proposal for the same job, signed by the rival as its buyer.
+  const base = agreementInput({ jobId, listing: LISTING, buyerBundle: fixtureIdentityBundle(rivalWallet, NOW), generatedAt: NOW });
+  const plan = createFixedPriceAgreementSigningPlan(deriveFixedPriceAgreement({ ...base, buyer: { ...base.buyer, vetRecordRef: vetRef(jobId, rivalWallet) }, seller: { ...base.seller, vetRecordRef: vetRef(jobId, WORLD_SELLER) } }));
+  const buyerContribution = await createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: rivalWallet.claim, algorithm: 'ed25519', sign: rivalWallet.signBytes });
+  const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: sha256Hex(canonicalize(material)) };
+  const rivalBody = { proposal, transportIdentity: { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: rivalWallet.claim, seller: WORLD_SELLER.claim, proposalHash: proposal.proposalHash }, buyerIdentityBundle: base.buyer.identityBundle };
+  const rival = await wireBuyer({ buyer: { claim: rivalWallet.claim, sign: rivalWallet.signBytes }, seller: WORLD_SELLER, listingPin: WORLD_PIN, clock: w.clock });
+  const rivalSigned = await rival.signRequest(PATHS.proposals, rivalBody, { jobId, agreementHash: plan.agreementHash });
+  const answers = await Promise.all([w.post(PATHS.proposals, first.body, { jobId, agreementHash: first.agreementHash }), w.send(PATHS.proposals, rivalSigned)]);
+  const claims = [WORLD_BUYER.claim, rivalWallet.claim], won = answers.findIndex((answer) => answer.status === 200), loser = answers[1 - won];
+  assert.notEqual(won, -1, 'the first committed claim wins');
+  assert.ok(loser.status >= 400 && loser.status < 500 && loser.signed, `the other is refused definitely: ${loser.status} ${loser.body.error}`);
+  assert.equal(w.agent.calls.proposals, 1, 'the agent ran for the winner only');
+  assert.equal(w.agent.transportAgreementOf(jobId).parties.find((party) => party.role === 'buyer').primaryClaim, claims[won], 'the job is the winner\'s');
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try {
+    assert.deepEqual(db.prepare('SELECT state FROM kit_reservations WHERE buyer = ? AND state != ?').all(claims[1 - won], 'refused'), [], 'nothing was reserved for the other buyer');
+    assert.equal(db.prepare('SELECT count(*) AS n FROM kit_payment_transactions').get().n, 0, 'nothing was charged');
+  } finally { db.close(); }
+  assert.deepEqual(completions(w), [{ route: PATHS.proposals, attempt: 0, status: 200, cleanup: 'route' }], 'one operation completed, for the winner');
+});
+
+test('a recovered payment under a changed claim is held and runs no intake', async t => {
+  const w = await continuingWorld(t), first = w.bodyFor(PATHS.payments);
+  let intake = 0;
+  w.agent.submitPayment = async () => { intake++; return HELD; };
+  // As the agent's reconciliation does, a claim other than the one whose work it retains is held as a context mismatch before anything runs.
+  w.agent.reconcileTransport = reconcilingWith(PATHS.payments, ({ body }) => body.txHash === first.txHash ? { answer: HELD } : { held: 'seller_payment_context_mismatch' });
+  assert.deepEqual((await w.request(PATHS.payments)).body, HELD);
+  const changed = await w.post(PATHS.payments, { ...first, txHash: derive('changed-payment') }, { jobId: w.jobId, agreementHash: w.agreementHash });
+  assert.deepEqual({ status: changed.status, error: changed.body.error, signed: changed.signed }, { status: 503, error: 'operation_uncertain', signed: true }, 'the changed claim is held');
+  assert.equal(intake, 1, 'no intake ran for the changed claim');
+  assert.equal(completions(w).filter((row) => row.route === PATHS.payments).length, 0, 'nothing was completed');
 });
