@@ -73,7 +73,7 @@ const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
 // One journal for every seller route; its lease must exceed the 240 s context step.
 const KIT_JOURNAL_LEASE_MS = 300000;
-// The permanent reservation budget of the wire accounting rows.
+// The reservation budget of the wire accounting rows that still count.
 const DEFAULT_MAX_RECORDS = 10000;
 const JOURNAL_DIRECTORY = 'wire-journal';
 const TRANSPORT_STORE_FILE = join('transport', 'transport.sqlite');
