@@ -6615,6 +6615,116 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/substrate/demos.mjs",
+          "before": null,
+          "after": "bda7c603b0ec336b8d633c1a2976098b6277b389"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/public-demos-reader-node.mjs",
+          "before": null,
+          "after": "d96f4f1c7bf7ac0e485b8cc0f366eb778f561cd5"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/public-demos-reader-purchase.mjs",
+          "before": null,
+          "after": "a128c6978a07bd5f9b8d1e3ed72898565fe31533"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "9b3fac5c0509ab6f0e5401c7d76700814a73842d",
+          "after": "2cc98f9293fb88da1db38152d03b8cfa1861195b"
+        },
+        {
+          "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+          "before": "8a0d5f40a09ba49a79011580142ef137bc9db113",
+          "after": "8e433835a01a81de01ea3a4d6f377270905ae434"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2",
+          "after": "864ac07cb6e9d025adb5a776d41143bd139a801f"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-construction.test.mjs",
+          "before": null,
+          "after": "c9bb95cb0d3ce5b24fb1f43015bc828db1d995c0"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-consumers.test.mjs",
+          "before": null,
+          "after": "1abbf24badfff4341a1746a121e70079bb27105e"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-errors.test.mjs",
+          "before": null,
+          "after": "1b8071e6367724b5b4ca7120b5a9effc7280f6a5"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-first-read.test.mjs",
+          "before": null,
+          "after": "4f4db2f55ef80d013e7d6d90323f7603b91d10c9"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-purchase-observation.test.mjs",
+          "before": null,
+          "after": "402f6c02881cd173bda5b8b974d481122072251f"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-surface.test.mjs",
+          "before": null,
+          "after": "042048f96e210c436f14068e67636a078e46e8ca"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): refuse a public reader result once an answer is marked simulated",
+      "sha": "1b1d5ff04ac41277bba8a9fb6c26e67b1851be42",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/substrate/demos.mjs",
+          "before": "bda7c603b0ec336b8d633c1a2976098b6277b389",
+          "after": "3ac12a3aecade25cda81b6a3c0065cdaafeda6c9"
+        },
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-first-read.test.mjs",
+          "before": "4f4db2f55ef80d013e7d6d90323f7603b91d10c9",
+          "after": "94ca4ccfe1e9665a7c5a8492b2e269e9826cfac4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF name the commit of the simulated-answer fix in the ledger",
+      "files": []
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test a public reader read left open across a marked answer",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-demos-reader-first-read.test.mjs",
+          "before": "94ca4ccfe1e9665a7c5a8492b2e269e9826cfac4",
+          "after": "bb916bc970fc5e7dba074ae95e9edf98b84137d0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF document the refusal of a marked answer in the public reader",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/substrate/demos.mjs",
+          "before": "3ac12a3aecade25cda81b6a3c0065cdaafeda6c9",
+          "after": "1210a631918cb1b11824b80770e1497c52738180"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P21a2aa add the fence-free observer and bounded source reads",
       "files": [
         {
@@ -6683,6 +6793,43 @@
           "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
           "before": "dc910b5daebea851fa7dda232bce86bf82ca6115",
           "after": "4734c66eb0b25db13d505cc6cc9df63f4237d09c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying base/main up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "fd6d1efda44695f2e160927a08b0ba7295cdced6",
+          "after": "fd6d1efda44695f2e160927a08b0ba7295cdced6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF merge the source-read transport helper into the source-read world fixture",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-crash-child.mjs",
+          "before": "7c8a4c6aed3fa1972facb04dac75ae9fcec13db9",
+          "after": "df503bf02fa05bb270f3917138d7b46423ebd704"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-transport.mjs",
+          "before": "1cf670f33c82826d75e6c58edfcb89b9531906d6",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-world.mjs",
+          "before": "84e7b1a92a3ba4082e775ba1aa4671958168a027",
+          "after": "d99dfa33ba877ff2fdcefcce104abe9cf9727e88"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "4734c66eb0b25db13d505cc6cc9df63f4237d09c",
+          "after": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
         }
       ]
     },
@@ -6781,6 +6928,17 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying the fence part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72",
+          "after": "1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token",
       "files": [
         {
@@ -6843,6 +7001,17 @@
           "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
           "before": "b6c87c9639a25759561443cf9014e3e0f402bf94",
           "after": "beb390b8c98523aeaa14210e43c207be82bf4696"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying the held part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "f5bea631bd02f0505bde239e10be38970474caf6",
+          "after": "f5bea631bd02f0505bde239e10be38970474caf6"
         }
       ]
     },
@@ -7063,6 +7232,17 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying the signer part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74",
+          "after": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit",
       "files": [
         {
@@ -7074,6 +7254,40 @@
           "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
           "before": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9",
           "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(wallet): check that no package export reaches the reservation module",
+      "sha": "fce7c509715ce94ee9153eaad2efe11d27bdef23",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f",
+          "after": "5fe427a4c2f7d293a9a1b925e381a4e24346af95"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test after carrying the exports test fix up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8",
+          "after": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test on the retire commit put part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
         }
       ]
     },
@@ -7161,6 +7375,28 @@
           "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
           "before": "be72001c276437177160b6a87ce365b7a24d3504",
           "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test on the payment part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that reserve repeats an unfinished retirement while its finishing write keeps failing",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-retirement.test.mjs",
+          "before": null,
+          "after": "6175c0421d58d74bf403ee1150a32c750011c455"
         }
       ]
     },
