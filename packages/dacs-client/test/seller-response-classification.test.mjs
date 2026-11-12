@@ -335,11 +335,10 @@ test('a verified 503 seller_not_ready answering a request the adapter establishe
 });
 
 test('the identical signed 503 seller_not_ready status and body answering a request whose context says it carried a client-minted capability is unknown, retried later with the stored bytes, and never proof of no prior work', async (t) => {
-  const s = await storedWorld(t, { accepted: false });
-  // P13d owns real capability minting; this exercises the request-context leg through post() and real wire verification.
-  const withCapability = (record, context) => classifySellerAnswer(record, { ...context, continuation: true });
-  await assert.rejects(s.client({ classifyAnswer: withCapability, respond: sealed(s, 503, 'seller_not_ready') }).request(PATHS.context, bodyFor(PATHS.context)), e => e.answerClass === 'unknown');
-  sameBodies(s.fetches); assert.equal(s.record(PATHS.context).clearAttempts, 0);
+  const s = await storedWorld(t, { accepted: false }); const records = s.records();
+  const withCapability = { ...records, start: (path, body) => ({ ...records.start(path, body), continuation: true }) };
+  await assert.rejects(s.client({ requestRecords: withCapability, respond: sealed(s, 503, 'seller_not_ready') }).request(PATHS.context, bodyFor(PATHS.context)), e => e.answerClass === 'unknown');
+  sameBodies(s.fetches); assert.equal(s.record(PATHS.context).attempts, s.fetches.length); assert.equal(s.record(PATHS.context).clearAttempts, 0);
 });
 
 test("a capability claim or a new-purchase claim in the response body, or a caller-supplied flag, never changes the class: provenance and request kind come only from the adapter's own request record", async (t) => {
