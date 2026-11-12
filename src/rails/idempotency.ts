@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
 import { hasDefinitiveDemosFailure } from "../agent/settlementFailure.js";
-import type { SettleResult } from "../agent/runSessionCore.js";
+import type { SettleResult } from "./settlementTypes.js";
 import {
   canonicalize,
   sha256Hex,

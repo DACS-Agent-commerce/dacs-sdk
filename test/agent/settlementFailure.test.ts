@@ -5,11 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createPayDemExecutionAuthority } from "../../src/rails/payDemExecutionAuthority.js";
 import { payDemSettle, payDemSettleCore } from "../../src/rails/payDem.js";
 
-import type { SettleResult } from "../../src/agent/runSessionCore.js";
-import {
-  hasDefinitiveDemosFailure,
-  type DemosFailedRecordProof,
-} from "../../src/agent/settlementFailure.js";
+import type { DemosFailedRecordProof, SettleResult } from "../../src/rails/settlementTypes.js";
+import { hasDefinitiveDemosFailure } from "../../src/agent/settlementFailure.js";
 import {
   demosAddressFromClaim,
   normalizeDemosNativeAddress,
