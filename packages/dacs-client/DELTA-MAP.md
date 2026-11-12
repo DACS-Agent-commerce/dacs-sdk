@@ -3670,6 +3670,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/README.md:1` |
 | delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/src/substrate/demos.mjs:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
