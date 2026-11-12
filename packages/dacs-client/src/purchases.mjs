@@ -323,13 +323,19 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return operation;
   }
 
-  function approvalElapsed(operation) {
-    return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now();
+  function approvalElapsed(operation, at = now()) {
+    return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= at;
   }
 
-  // Diagnostic reads project expiry without persisting the action transition.
+  // Read-side projection only: status, portal evidence and readback show an
+  // approval as expired once either the service clock or the wall clock has
+  // reached its expiry. Nothing is saved. The wall clock is read directly, as
+  // for handoff expiry, so an injected clock cannot hold an elapsed approval
+  // open in a read. Approve and pay still decide with expireIfNeeded, which
+  // uses the service clock alone. With a stale injected clock a read can
+  // report expired while the approval can still be approved and paid.
   function projectExpiry(operation) {
-    return approvalElapsed(operation) ? { ...operation, status: 'expired' } : operation;
+    return approvalElapsed(operation) || approvalElapsed(operation, Date.now()) ? { ...operation, status: 'expired' } : operation;
   }
 
   function selectWallet(accountId, requested) {
