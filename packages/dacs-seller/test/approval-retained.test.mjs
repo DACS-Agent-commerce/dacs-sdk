@@ -187,10 +187,21 @@ test('two processes settling the same ledgerId through the policy lock produce o
  await rejectsWith(parent.retained.settle(bindingOf(prepared),'spent'),'seller_state_locked');
  assert.deepEqual(await completions(fixture.evidencePath,prepared.ledgerId),[]);
  const result=once(child,'message'),exited=once(child,'exit');child.send({type:'continue'});
- assert.deepEqual((await result)[0],{type:'result'});assert.equal((await exited)[0],0);
+ assert.deepEqual((await result)[0],{type:'result',networkCalls:[]});assert.equal((await exited)[0],0);
  assert.equal((await completions(fixture.evidencePath,prepared.ledgerId)).length,1);
  await parent.retained.settle(bindingOf(prepared),'spent');
  assert.equal((await completions(fixture.evidencePath,prepared.ledgerId)).length,1);
+});
+
+test('the settle worker reports a network call that the code it runs swallowed',{timeout:15_000},async t=>{
+ const fixture=await ledgerFixture(t),parent=fixture.compose(fixture.restart()),prepared=await parent.retained.prepare(evidence());
+ const child=fork(new URL('./helpers/approval-settle-worker.mjs',import.meta.url),[],{execArgv:['--import',new URL('./helpers/swallowed-fetch-preload.mjs',import.meta.url).href],stdio:['ignore','ignore','pipe','ipc']});
+ t.after(async()=>{if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill('SIGKILL');await exited;}});
+ const reading=once(child,'message');child.send({evidencePath:fixture.evidencePath,maxTotalOs:fixture.maxTotalOs,...bindingOf(prepared)});
+ assert.deepEqual((await reading)[0],{type:'reading'});
+ const result=once(child,'message'),exited=once(child,'exit');child.send({type:'continue'});
+ const [message]=await result;assert.equal(message.type,'result');
+ assert.ok(message.networkCalls.length>0&&message.networkCalls.every(name=>name==='fetch'),'the swallowed fetch is reported');assert.equal((await exited)[0],0);
 });
 
 test('first retained.prepare through real composeSellerApproval and the real ledger completes with exactly one policy-lock acquisition; an independent ledger operation then completes',async t=>{
