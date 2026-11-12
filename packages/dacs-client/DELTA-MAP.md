@@ -1195,14 +1195,14 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/public-api.test.mjs:1` | d54a02c9580fe133738ec19c3ec19b323be0a66c |
 | WF | delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` | da2946d04f52ac899dfd805ec55b02ddcb3213da |
+| WF | delta(client): WF record the merged public API test after carrying the fence part up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72 |
 | D11 | fix(client): D11 keep seller identity and packed runtime checks stable | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | acaa5486c9fafb7d178aa37f16d517d80919fa47 |
 | | `packages/dacs-client/test/helpers/fresh-node-child.mjs:1` | c5b141ceb517de732d91608ba14b679ba5ee53fd |
 | | `packages/dacs-client/test/node-wallet-fresh-child.test.mjs:1` | 396b4f470820de6aa77cce86839ce5a287b31ccd |
 | | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | fc9f5943d11b41eed2ded177c8e0982f1a5e0360 |
 | | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | 116879d4872c10a8d0c65ad5bb3cada05e5052aa |
-| WF | delta(client): WF record the merged public API test after carrying the fence part up | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/public-api.test.mjs:1` | 1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72 |
 | WF | delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/tp1-authority-label.mjs:1` | a60b854660f4dbcb427d6ffe918c1974faaa1d0a |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 1561f9d46da0be7ddfa2f45a3ca5d5d52bac82fe |
@@ -1296,6 +1296,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 7847531f56abbd0395a47518e4dac00cbda6f1e0 |
 | WF | delta(client): WF test that reserve repeats an unfinished retirement while its finishing write keeps failing | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/node-signer-retirement.test.mjs:1` | 6175c0421d58d74bf403ee1150a32c750011c455 |
+| WF | delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 52730e2159bc80c6265d505e401c89810c3d1a80 |
+| | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | d0e4b92a51189b36931096c70db47ffcf44d42c6 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74 |
 | WF | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | b9340992077b4fd90675cb50762e57f5abc0c558 |
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | 8336e5393f66bcf9184b1b22b44911a9a1a32fbc |
@@ -4085,6 +4089,16 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` |
 | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` |
+| fix(client): end the delta ledger with a source or test change | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): end the delta ledger with a source or test change | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): end the delta ledger with a source or test change | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): end the delta ledger with a source or test change | `packages/dacs-client/HOLD.json:1` |
+| fix(client): end the delta ledger with a source or test change | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
