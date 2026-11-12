@@ -8102,6 +8102,28 @@
           "after": "52cc90dab2b22da0b8d05f5efca4388b6ec167d3"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test the authenticated loopback seller endpoint and record the merged client blobs",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f6492ec9771611dd72c96e94107384db860ca748",
+          "after": "f6492ec9771611dd72c96e94107384db860ca748"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "393500db3b5729d7cc113576d2c41fbc240ed9a6",
+          "after": "393500db3b5729d7cc113576d2c41fbc240ed9a6"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-public-endpoint.test.mjs",
+          "before": "52cc90dab2b22da0b8d05f5efca4388b6ec167d3",
+          "after": "97f99b5f286658c793fe6cb44de12ff39951dab7"
+        }
+      ]
     }
   ]
 }

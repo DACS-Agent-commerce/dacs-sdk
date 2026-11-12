@@ -49,6 +49,12 @@ test('a loopback endpoint without a wire authentication is still accepted', () =
   assert.doesNotThrow(() => createSellerAgentClient({ url: 'http://127.0.0.1:19001', fetchImpl: failIfCalled([]) }));
 });
 
+test('a loopback endpoint with a wire authentication is still accepted at its own origin', async (t) => {
+  const w = await world(t);
+  const client = createSellerAgentClient({ url: 'http://127.0.0.1:19001/', authentication: w.auth, fetchImpl: failIfCalled([]) });
+  assert.equal(client.origin, 'http://127.0.0.1:19001');
+});
+
 for (const [name, endpoint] of [
   ['plain http', 'http://seller.example.com'],
   ['credentials', 'https://user:secret@seller.example.com'],
