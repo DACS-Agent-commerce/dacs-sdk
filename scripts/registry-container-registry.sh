@@ -113,7 +113,7 @@ start_registry() {
   stage=registry-start
   docker buildx version >/dev/null || return
   registry_image=verdaccio/verdaccio@sha256:fcb86134563534e2f634752e6c6c3edcdb78242ec16578c73ce39d1dadbaa801
-  consumer_image=node:20.19.1-bookworm-slim@sha256:83e53269616ca1b22cf7533e5db4e2f1a0c24a8e818b21691d6d4a69ec9e2c6d
+  consumer_image=node:22.22.2-bookworm-slim@sha256:f3a68cf41a855d227d1b0ab832bed9749469ef38cf4f58182fb8c893bc462383
   run_logged "$registry_log" pull_bounded --quiet "$registry_image" || return
   run_logged "$registry_log" pull_bounded --quiet "$consumer_image" || return
   network_started=1

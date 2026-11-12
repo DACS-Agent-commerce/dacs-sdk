@@ -1,8 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { SettleRequest, SettlementRecoveryAttempt } from "../../src/agent/runSessionCore.js";
+import type { SettleRequest, SettlementRecoveryAttempt } from "../../src/rails/settlementTypes.js";
 import * as canonicalSnapshot from "../../src/canonical/snapshot.js";
-import { createIdempotencyStore } from "../../src/rails/idempotency.js";
+import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import {
   payDemSettle,
   type PayDemSettlementReconcile,
@@ -31,7 +31,7 @@ const failed = () => ({
 });
 
 function fixture(reconcile?: PayDemSettlementReconcile) {
-  const store = createIdempotencyStore();
+  const store = createIdempotencyStore(createInMemorySettlementLog());
   const once = vi.spyOn(store, "once");
   const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
   const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
@@ -222,7 +222,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
       return result;
     });
     const reconcile = vi.fn(async () => failed());
-    const store = createIdempotencyStore();
+    const store = createIdempotencyStore(createInMemorySettlementLog());
     const once = vi.spyOn(store, "once");
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
     const { priorAttempts: _history, ...fresh } = request();

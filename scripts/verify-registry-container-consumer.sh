@@ -206,7 +206,11 @@ run_bounded docker run --rm --name "$consumer_container-install" --init \
       chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work || true
     }
     trap restore_host_ownership EXIT
-    npm install --global --ignore-scripts npm@11.19.0
+    # Installing over the image npm while it runs fails midway on Node 22.22.2;
+    # the pinned client gets its own prefix, first on PATH.
+    npm install --global --prefix /tmp/npm --ignore-scripts npm@11.19.0
+    export PATH="/tmp/npm/bin:$PATH"
+    test "$(npm --version)" = 11.19.0
     npm create "dacs-agent@$DACS_PACKAGE_VERSION" one-click-agent -- \
       --yes \
       --mode "$DACS_GENERATED_MODE" \

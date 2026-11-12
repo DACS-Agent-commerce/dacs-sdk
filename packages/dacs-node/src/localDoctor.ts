@@ -64,9 +64,9 @@ function supportedNode(version: string): boolean {
   const major = Number(match[1]);
   const minor = Number(match[2]);
   const patch = Number(match[3]);
-  if (major === 20) return minor > 19 || (minor === 19 && patch >= 0);
-  if (major === 22) return minor > 12 || (minor === 12 && patch >= 0);
-  return major > 22;
+  if (major === 22) return minor > 22 || (minor === 22 && patch >= 2);
+  if (major === 24) return minor >= 15;
+  return false;
 }
 
 function demosAuthority(value: unknown): value is string {

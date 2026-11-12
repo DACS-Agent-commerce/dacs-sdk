@@ -66,13 +66,16 @@ artifact `dacs-registry-container-275d856a1bbea2de6f666c069878277b23544ff1`:
   dependency spec must be a version, range, tag or `npm:` alias.
 - `engineViolations`: 16 non-optional packages of the sigstore 5 chain
   (demosdk → sigstore → @sigstore/sign → make-fetch-happen → ...) require
-  Node `^22.22.2 || ^24.15.0 || >=26.0.0`, below the generated project's
-  Node 20 floor. `--engine-strict` reports only the first. The disposition
+  Node `^22.22.2 || ^24.15.0 || >=26.0.0`, which that run's Node 20 consumer
+  container did not meet. `--engine-strict` reports only the first. The disposition
   lists them all from the generated lock: it tests every non-optional
   package's `engines.node` and `engines.npm` against the consumer
   container's recorded Node and npm versions, as npm's EBADENGINE check does.
   (`npm ci --no-engine-strict` cannot: npm 11 fails its package.json/lock
-  sync check on the nested Git `avsc`.) A range the scan cannot evaluate, or
+  sync check on the nested Git `avsc`.) With no engine violation,
+  `npm ci --engine-strict` passes its engine check and then fails that sync
+  check (EUSAGE); the disposition reads this as a passed engine check only
+  when the scan also lists no violation. A range the scan cannot evaluate, or
   missing versions, leaves the scan incomplete, which blocks.
 - `lockSbomProblems` / `physicalSbomProblems`: the exact `npm sbom`
   ESBOMPROBLEMS lines for that tree (the Git `avsc`, and peer ranges of
@@ -188,14 +191,18 @@ location, integrity and engine range identify each engine exception.
 | `@tufjs/models@5.0.2 at node_modules/@tufjs/models` | The packed consumer selects demosdk 4.0.16 -> sigstore ^5.0.0 chain; the newer release of this package (@sigstore/sign went from 5.0.0 to 5.1.0, the others are patch releases) keeps the same Node 22.22.2 or newer engine range as the older entry, so the exception is added for the new version and the older entry stays until it is no longer reported. A compatible parent-major change belongs in a separate consumer dependency change. |
 | `sigstore@5.0.1 at node_modules/sigstore` | The packed consumer selects demosdk 4.0.16 -> sigstore ^5.0.0 chain; the newer release of this package (@sigstore/sign went from 5.0.0 to 5.1.0, the others are patch releases) keeps the same Node 22.22.2 or newer engine range as the older entry, so the exception is added for the new version and the older entry stays until it is no longer reported. A compatible parent-major change belongs in a separate consumer dependency change. |
 | `tuf-js@6.0.2 at node_modules/tuf-js` | The packed consumer selects demosdk 4.0.16 -> sigstore ^5.0.0 chain; the newer release of this package (@sigstore/sign went from 5.0.0 to 5.1.0, the others are patch releases) keeps the same Node 22.22.2 or newer engine range as the older entry, so the exception is added for the new version and the older entry stays until it is no longer reported. A compatible parent-major change belongs in a separate consumer dependency change. |
+| `minipass-fetch@6.0.1 at node_modules/minipass-fetch` | The packed consumer selects demosdk 4.0.16 -> sigstore ^5.0.0 -> @sigstore/sign ^5 -> make-fetch-happen ^16 -> minipass-fetch ^6.0.0. The 6.0.1 patch release declares the same Node 22.22.2 or newer engine range as the recorded 6.0.0, so pinning 6.0.0 does not restore Node 20 support; the exception is added for the new version and the older entry stays until it is no longer reported. A compatible parent-major change belongs in a separate consumer dependency change. |
 | `GHSA-3g3m-2fjr-6pw4` | Newly published medium-severity notice for glob (>= 9.0.0, <= 14.0.1; fixed in 14.0.2), reported by the consumer audit as a transitive finding. Not a direct dependency of the consumer; a direct high or critical result would still block. Reachability is not assessed here. Remove the entry when the parent range that selects glob moves to a fixed release. |
 | `GHSA-g3hv-75wg-m249` | Newly published medium-severity notice for minimatch (>= 7.0.0, < 11.0.1; fixed in 11.0.1), reported by the consumer audit as a transitive finding. Not a direct dependency of the consumer; a direct high or critical result would still block. Reachability is not assessed here. Remove the entry when the parent range that selects minimatch moves to a fixed release. |
 | `GHSA-4qx8-w7c3-pj3p` | The transitive path is demosdk 4.0.16 -> @coral-xyz/anchor 0.32.1 -> toml ^3.0.0 (3.0.0). Many array-of-tables headers cause quadratic parsing work. The corrected toml 5.0.1 is outside the selected parent range; the parent must change before this entry can be removed. |
 | `GHSA-9j65-hcg3-gc64` | The same transitive Anchor/toml 3.0.0 path permits quadratic parsing work on long dotted keys or table paths. The corrected toml 5.0.1 is outside Anchor's ^3.0.0 range; retain the notice until the parent changes. |
 | `GHSA-9qmh-m7c6-f92p` | The same transitive Anchor/toml 3.0.0 path permits excessive CPU use for long integer literals. The corrected toml 5.0.1 is outside Anchor's ^3.0.0 range; retain the notice until the parent changes. |
+| `GHSA-h895-cgqg-jf52` | Listed high-severity notice for toml (<= 5.0.0; fixed in 5.0.1): parsing a crafted TOML document can write to `Object.prototype`. The path is the same transitive demosdk 4.0.16 -> @coral-xyz/anchor 0.32.1 -> toml ^3.0.0 (3.0.0) recorded above; the fix is outside Anchor's ^3.0.0 range. No SDK source imports Anchor or parses TOML. Not a direct dependency of the consumer; a direct high or critical result would still block. Retain the notice until the parent changes. |
 | `GHSA-mrhx-c7xc-m3w5` | The transitive path is @x402/core 2.15.0 -> zod ^3.24.2 (3.25.76). Oversized constrained collections can exhaust memory. The corrected zod 4.6.6 is outside the selected parent range; a compatible x402 parent update is required. Direct high/critical results remain blocking. |
 
 The seven newer sigstore-chain engine entries and the two newer audit IDs were reported by the clean registry consumer job at https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/41941378864/job/126968852052 (failed 2026-11-05T00:47:34Z, head 67f5c99888b0731bf9bb38e7c05d5b6e368cfff4), whose log lists each package with its location, integrity and engine range. The JSON records no separate source block for them.
+
+The `minipass-fetch@6.0.1` engine entry and `GHSA-h895-cgqg-jf52` were reported by the clean registry consumer job at https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/42990767480/job/130422803688 (failed 2026-11-11T09:01:09Z, head 39b36e30bb3a657d11ee1776593b155c4a023403), whose log lists the engine entry with its location, integrity and engine range, and the new audit ID.
 
 A major-version override would replace dependencies outside their parents'
 declared contracts. That needs a separate consumer dependency change and its

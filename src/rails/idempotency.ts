@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { types as nodeTypes } from "node:util";
 
 import { hasDefinitiveDemosFailure } from "../agent/settlementFailure.js";
-import type { SettleResult } from "../agent/runSessionCore.js";
+import type { SettleResult } from "./settlementTypes.js";
 import {
   canonicalize,
   sha256Hex,
@@ -889,11 +889,14 @@ export function inheritSettlementBridge<T extends object>(from: unknown, to: T):
     : to;
 }
 
-/** A generation-fenced idempotency store over a durable-capable log. */
+/** A generation-fenced idempotency store over a caller-supplied settlement log. */
 export function createIdempotencyStore(
-  log: SettlementLog = createInMemorySettlementLog(),
+  log: SettlementLog,
   options: Readonly<SettlementIdempotencyStoreOptions> = {},
 ): SettlementIdempotencyStore {
+  if (log === undefined) {
+    throw new DacsError("createIdempotencyStore requires a caller-supplied settlement log");
+  }
   const policy = storeOptions(options);
   const durable = captureSettlementLog(log);
   const inflight = new Map<string, Readonly<{
