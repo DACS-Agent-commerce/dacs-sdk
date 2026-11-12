@@ -370,10 +370,10 @@
         "blob": "55a1e356497a0e6b4b88ef133f9bdb6e90582894"
       },
       "DELTA-MAP.md": {
-        "blob": "e997950641b51930d2667111657b6069672fd224"
+        "blob": "425f30fb6368f91f5974a6e3a5f86c06f5febce4"
       },
       "DELTA-NOTES.md": {
-        "blob": "ff7d8c28241c1064cef93b1c9afc16bb4bf2326c"
+        "blob": "4d850fc224a01a25fa65cd8933403b87e546e4be"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "e219f6e02d95a586b30554ccd75775763e704fd0"
+        "blob": "f4ee28d29bae453af3852564475b50fb7085e4c0"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
