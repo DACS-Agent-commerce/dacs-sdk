@@ -312,21 +312,29 @@ const rail = await createX402Rail({
 // `durableSettlementLog` is your application's durable `SettlementLog`
 // (see the settlement store notes below); the bridge refuses to start without a store.
 const settlementStore = createIdempotencyStore(durableSettlementLog);
+// `url`, `network` and `recipientEvm` are the paywall's coordinates from the
+// listing and the rail descriptor; `evmPrivateKey` is the buyer's EVM key.
 // `asset` is the on-chain token id (ERC-20 contract) the 402 must advertise —
 // the §4.1 guard compares against it, not the Price.asset symbol.
 const settle = x402Settle(rail, { url, network, recipientEvm, asset }, { store: settlementStore });
 
-// The purchase runs in the buyer coordinator
+// The purchase itself runs in the buyer coordinator
 // (`createFixedPriceX402BuyerCoordinator`, see
-// docs/fixed-price-x402-coordinator.md). Register an `agreement` operation
-// built on `advanceFixedPriceAgreementDurable` and a `payment` operation that
-// calls `settle` with the order's request. A restarted worker runs the same
-// operations again over the same durable stores.
+// docs/fixed-price-x402-coordinator.md), not in this snippet. Its `payment`
+// operation calls `settle` with a `SettleRequest`, and its `agreement`
+// operation is built on `advanceFixedPriceAgreementDurable`. A restarted worker
+// runs the same operations again over the same durable stores.
+```
 
-// anyone — verify the bundle's structure, signatures, referenced artifacts,
-// and (through the configured callbacks above) every normative vet closure and
-// SettlementEvidence record. `bundleRef` is the reference of the finalized
-// bundle the purchase produced.
+Once the purchase has produced a finalized bundle, anyone can verify it, and
+`getReputation` reads reputation from bundle references. `bundleRef` is the
+reference of that finalized bundle, `primaryClaim` is the claim reference the
+reputation is about, and `bundleRefs` is the list of bundle references to read:
+
+```ts
+// Verify the bundle's structure, signatures, referenced artifacts, and (through
+// the callbacks configured on the Agent) every normative vet closure and
+// SettlementEvidence record.
 const verdict = await buyer.verifyBundle(bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```

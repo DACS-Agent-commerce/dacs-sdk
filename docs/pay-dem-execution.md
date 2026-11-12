@@ -147,7 +147,7 @@ refused whether or not history is supplied. A refused ERC-20 or x402 purchase ha
 no SDK recipe and stays unfinished. Before you re-buy under a new job id, check
 the chain by hand: for x402, the state of the job's EIP-3009 authorization on the
 token contract; for ERC-20, the buyer address's token-transfer history and any
-transaction hash bound to the session. If the payment is found, finish outside
+transaction hash recorded for the job. If the payment is found, finish outside
 the SDK; if it is provably absent, use a new job id.
 
 ## Custom native clients

@@ -1,5 +1,5 @@
 /**
- * DACS SDK — hello-world (T5)
+ * DACS SDK — hello-world
  *
  * The start of the fixed-price lifecycle through the public API only:
  *   seller publishes a listing  →  buyer resolves/authenticates its logical address.
@@ -28,7 +28,6 @@ import {
   createInMemoryBindingStore,
   ed25519Verify,
   publicKeyFromRaw,
-  vetCore,
   type IdentityBundle,
 } from "../src/index.js";
 
