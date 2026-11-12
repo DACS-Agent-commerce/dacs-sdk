@@ -276,17 +276,7 @@ const buyer = await createAgent({
   demosWriteJournal: await createFsDemosWriteJournal({
     dir: join(dacsStateDir, "buyer-demos-writes"),
   }),
-  identity: {
-    agentId: buyerId,
-    // The exact authenticated DACS-1 bundle is hashed into the Agreement and
-    // terminal bundle. A bare agent id is not an identity commitment.
-    bundle: buyerIdentityBundle,
-    // Presentation authentication is deliberately bundle-scoped so the same
-    // identity bundle can be reused. Session replay resistance is separate:
-    // its exact bundle hash is committed inside each signed Agreement.
-    verifyPresentation: ({ bundle, signedBytes }) =>
-      verifyBuyerIdentityPresentation(bundle, signedBytes),
-  },
+  identity: { agentId: buyerId },
   bindings: { index: bindings },
 });
 
@@ -308,6 +298,9 @@ const firstPage = await buyer.enumerateListings(agentId);
 The snippet stops before payment. The purchase runs in the role-separated
 coordinators, each over its own durable store; see
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
+A buyer on that path supplies its identity as the `buyer` claim reference in the
+order it passes to `startOrder`, and the buyer host checks that it equals the
+host's own authority.
 
 Once the purchase has produced a finalized bundle, anyone can verify it, and
 `getReputation` reads reputation from bundle references. `bundleRef` is the

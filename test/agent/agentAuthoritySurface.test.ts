@@ -122,21 +122,15 @@ describe("Agent wallet-authority boundary", () => {
     expect(Reflect.get(agent, "raw")).toBeUndefined();
   });
 
-  it("snapshots nested identity authority before connected construction awaits", async () => {
+  it("snapshots nested identity config before connected construction awaits", async () => {
     vi.spyOn(Demos.prototype, "connect").mockResolvedValue(undefined as never);
-    const identity = {
-      agentId: PRIMARY,
-      bundle: structuredClone(BUYER_IDENTITY),
-      verifyPresentation: vi.fn(() => true),
-    };
+    const identity: { agentId: unknown } = { agentId: PRIMARY };
     const pending = createAgent({
       demosRpc: "https://rpc.example",
-      identity,
+      identity: identity as { agentId: string },
     });
 
-    identity.bundle.presentedBy =
-      "did:demos:agent:2222222222222222222222222222222222222222222222222222222222222222";
-    identity.verifyPresentation = vi.fn(() => false);
+    identity.agentId = 42;
 
     await expect(pending).resolves.toBeDefined();
   });

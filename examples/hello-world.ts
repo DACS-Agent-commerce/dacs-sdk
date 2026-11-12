@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     demosRpc: env("DEMOS_RPC"),
     wallet: env("SELLER_WALLET"),
     demosWriteJournal: sellerWriteJournal,
-    identity: { agentId: env("SELLER_DID"), bundle: sellerIdentity },
+    identity: { agentId: env("SELLER_DID") },
     bindings: { index: bindings, publisher: bindings },
   });
 
