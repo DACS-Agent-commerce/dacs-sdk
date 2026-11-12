@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   registry-container-consumer:
-    name: clean registry consumer (Node 20 / Docker)
+    name: clean registry consumer (Node 22.22.2 / Docker)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -35,7 +35,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20.19.1"
+          node-version: "22.22.2"
 
       - name: Pin acceptance npm client
         run: |
