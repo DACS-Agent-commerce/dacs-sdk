@@ -44,7 +44,7 @@ jobs:
 
   build-test:
     # The node 22 leg can run on the project's own one-job runners (label dacs-pool) for our own pull requests only
-    # (one pool job per node 22 shard, plus build-test-main's node 22 job: 5 on a pull request),
+    # (one pool job per node 22 shard, plus build-test-main's node 22 job: 7 on a pull request),
     # when ALL of these hold:
     #   - the repository variable SDK_SELF_HOSTED is 'on';
     #   - the event is pull_request and the head branch is in this repository;
@@ -185,7 +185,10 @@ jobs:
       - name: Test release workflow wiring
         run: node --test test/scripts/release-workflow.test.mjs
 
-      - name: Check that every seller and client test file is in exactly one shard
+      - name: Test the shard split
+        run: node --test test/scripts/ci-shards.test.mjs
+
+      - name: Check that every seller and client test file (and each test of a split file) is in exactly one shard
         run: node scripts/ci-shards.mjs check
 
       - name: Sync DACS-Standard conformance vectors
