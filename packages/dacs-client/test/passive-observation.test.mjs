@@ -437,6 +437,22 @@ for (const wait of ['source-read lock', 'connection fence']) {
     assert.equal(next.value?.sourceDisposition, 'included');
   });
 }
+// An abort that lands a few microtasks after the fence is granted must not
+// leave the fence held, whichever step it lands in.
+test('a passive read aborted just as the connection fence is granted releases the fence', async t => {
+  for (let turns = 0; turns < 20; turns++) {
+    const controller = new AbortController(), reason = new Error(`TEST-stop-${turns}`);
+    const w = await memoryWorld(t);
+    const read = passive(w, HASH, { signal: controller.signal }).then(() => null, error => error);
+    for (let i = 0; i < turns; i++) await Promise.resolve();
+    controller.abort(reason);
+    const error = await read; await flush();
+    assert.ok(error === null || error === reason, `turn ${turns}`);
+    assert.equal(w.fences.acquired, w.fences.released, `turn ${turns}`); assert.equal(w.held(), false, `turn ${turns}`);
+    assert.equal((await settledWithin(passive(w), 500)).value?.sourceDisposition, 'included');
+    await w.source.close();
+  }
+});
 test('close settles a passive read that is still waiting for the source-read lock', async t => {
   const { w, outcome, free } = await readBehind(t, 'source-read lock');
   assert.notEqual(await settledWithin(w.source.close()), 'stalled');

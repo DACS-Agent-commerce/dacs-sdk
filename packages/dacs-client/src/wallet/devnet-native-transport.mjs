@@ -470,9 +470,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // Ends a wait for a lock or a connection fence with the abort reason as soon
   // as `signal` aborts. `wait` receives a function to call when the grant
   // arrives; an abort after that no longer ends the wait, so granted work runs
-  // to completion. The wait itself keeps polling in the background until the
-  // grant comes or its own limit runs out. Once the wait is aborted, no work
-  // runs, and a lock or fence granted after the abort is released without any.
+  // to completion. After an abort the wait itself stays pending in the
+  // background until the lock or fence is granted. No work runs after the
+  // abort, and a lock or fence granted after it is released without any.
   function untilAborted(signal, wait) {
     signal.throwIfAborted();
     return new Promise((resolve, reject) => {
@@ -484,8 +484,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   }
   const lockUnlessAborted = (signal, key, work) => untilAborted(signal, granted =>
     journal.withWalletLock(key, () => { granted(); signal.throwIfAborted(); return work(); }));
-  const fenceUnlessAborted = (signal, address) => untilAborted(signal, () =>
+  const fenceUnlessAborted = (signal, address) => untilAborted(signal, granted =>
     Promise.resolve().then(() => transportOwner.acquireConnectionFence({ address })).then(f => {
+      granted();
       if (!signal.aborted) return f;
       // The caller already has the abort reason; a failed release has no one to report to.
       Promise.resolve().then(() => f?.release?.()).catch(() => {});
@@ -962,8 +963,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // waits for reads that are running. An abort or the deadline ends a wait for
   // the source-read lock or the connection fence at once. After that, no read
   // runs, and a lock or fence granted after the abort is released without a
-  // read. close() does not wait for the lock wait, which keeps polling until
-  // the lock is granted or the journal's lock timeout runs out.
+  // read. close() does not wait for an ended lock or fence wait, which stays
+  // pending until the lock or fence is granted.
   async function observePassiveTransfer(hash, options={}) {
     if(typeof hash!=='string' || !HASH.test(hash)) fail('invalid_params','a canonical native transaction hash is required');
     const stop=AbortSignal.any([closing.signal,...(options.signal?[options.signal]:[])]);

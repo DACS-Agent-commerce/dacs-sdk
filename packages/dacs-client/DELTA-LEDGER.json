@@ -6639,6 +6639,22 @@
           "after": "330883bdd1e897b9d630a6fdb21d8fd61b05871f"
         }
       ]
+    },
+    {
+      "delta": "D38",
+      "subject": "delta(client): D38 release a connection fence granted just before an abort",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "330883bdd1e897b9d630a6fdb21d8fd61b05871f",
+          "after": "aaa4e6e61e0b041c6ceb9a63f4ce6cd2e3421d2f"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "2a6f47ebfb1788974642eb560643ceeaad52b2bf",
+          "after": "4b2d301177a3d336f1976f1bafaae1fc00e98c70"
+        }
+      ]
     }
   ]
 }
