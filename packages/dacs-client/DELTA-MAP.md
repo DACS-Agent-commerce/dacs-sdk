@@ -1171,6 +1171,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | fix(client): state which seller routes the wire request signer can sign | Git commit selector 9552cf74c2bf1dd739eee1dd1315b7bb7ef46e8c |
 | | `packages/dacs-client/src/dacs/seller-wire-authentication.mjs:1` | 948a90f0c28e84d88cdb098baf69478d0bc4286f |
 | | `packages/dacs-client/test/wire-authentication.test.mjs:1` | b349f17995247e1105a92d00a42d0ea8d3f9ec88 |
+| WF | delta(client): WF record the merged public-admission blob of two parallel records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/public-admission.mjs:1` | 675152fb86dd45b1b58a2ce24d19d946780cc770 |
 
 ## Complete commit and file inventory
 
@@ -3695,6 +3697,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): refresh the generated map and package pins for the wire package fix | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | 9552cf74c2bf1dd739eee1dd1315b7bb7ef46e8c | `packages/dacs-client/src/dacs/seller-wire-authentication.mjs:1`<br>`packages/dacs-client/test/wire-authentication.test.mjs:1` |
 | delta(client): WF record the seller request signer route limit and refresh package pins | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the merged public-admission blob of two parallel records | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

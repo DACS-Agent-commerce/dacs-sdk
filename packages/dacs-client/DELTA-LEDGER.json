@@ -7036,6 +7036,18 @@
           "after": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public-admission blob of two parallel records",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public-admission.mjs",
+          "before": "675152fb86dd45b1b58a2ce24d19d946780cc770",
+          "after": "675152fb86dd45b1b58a2ce24d19d946780cc770"
+        }
+      ]
     }
   ]
 }
