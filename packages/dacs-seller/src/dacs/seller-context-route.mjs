@@ -103,9 +103,10 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     throw new TypeError('the seller context route needs a supported Listing, its context provider, buyer access, write admission and positive limits');
   }
   const seller = listing.seller.identity.presentedBy, pin = listingPin(listing);
+  // Resolves true when the hold is released, false (after logging) when the release failed.
   const release=async(jobId,hold)=>{
-    try { await releaseWrites({jobId,hold}); }
-    catch(error) { log(`context hold release failed: ${jobId} ${hold} ${String(error?.code??'error').slice(0,64)}\n`); }
+    try { await releaseWrites({jobId,hold}); return true; }
+    catch(error) { log(`context hold release failed: ${jobId} ${hold} ${String(error?.code??'error').slice(0,64)}\n`); return false; }
   };
   async function admitOwned(reservation,request,store,writes) {
     const {jobId}=request,effect=reservation.effectKey,resumed=reservation.resumed===true;
@@ -304,14 +305,16 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       try { cut = await resumable(structuredClone(body)); } catch { return null; }
       return Number.isSafeInteger(cut?.writes) && cut.writes > 0 && cut.writes <= VET_WRITES ? { disposition: 'resume', writes: cut.writes } : null;
     },
-    // Reserve the new journal owner before taking its hold, then release the previous owner's exact hold.
+    // Release the previous owner's exact hold while the journal still names that owner, so a failed
+    // release leaves the step as it was and a later resume names the same hold. Then reserve the new
+    // journal owner and take its hold.
     resume: async(reservation,request,store,{writes})=>{
       requireJobId(request?.jobId);
       if(typeof store?.resume!=='function')return null;
       try { await checkPolicy(request); } catch { return null; }
+      if(!await release(request.jobId,`${reservation.effectKey}:${reservation.owner}`))return null;
       let resumed;
       try { resumed=store.resume(reservation,request); } catch { return null; }
-      await release(request.jobId,`${reservation.effectKey}:${reservation.owner}`);
       return admitOwned(resumed,request,store,writes);
     },
   });
