@@ -31,6 +31,10 @@ const describeCause = (error) => ({ code: String(error?.code ?? error?.name ?? '
 const unwithdrawnStarts = (records, artifactHash) => records.filter((record) => record.artifactHash === artifactHash && record.state.endsWith('-started')
   && !records.some((other) => other.state === record.state.replace('-started', '-withheld') && other.of === record.seq));
 
+// The artifact's confirmation is established by its own acknowledgement, or by a readback that found that confirm transmission (an `observed` record whose `of` is a `confirm-started` record of the artifact).
+const confirmationEstablished = (records, artifactHash) => records.some((record) => record.artifactHash === artifactHash && (record.state === 'confirm-acknowledged'
+  || (record.state === 'observed' && records.some((started) => started.seq === record.of && started.state === 'confirm-started' && started.artifactHash === artifactHash))));
+
 // A pass's job class and private current-authorization check come only from jobPassContext, never from a request.
 const contexts = new WeakSet();
 const brand = (context) => { contexts.add(context); return Object.freeze(context); };
@@ -136,7 +140,8 @@ function assertStage(stage) {
  * - `dispatchPass(held, innerSend, { stage })` runs EB8 to EB9 for the bytes `signPass(held)` returned; resolves the send's answer.
  * - `pass(op, innerSign, innerSend, { stage, context })` is both under one fence; resolves `{ bytes, answer }`.
  * - `signerFor(held, inner)` is a wire signer that runs EB5r's final tail inside `sign`.
- * - `recordObserved(op, stage, result)` records a readback that found the stage's transmission.
+ * - `recordObserved(op, stage, result)` records a readback that found the stage's transmission; for 'confirm' it
+ *   counts as the acknowledgement a broadcast requires.
  * - `replaceConnection(replace, capability)` replaces the connection under the fence and bumps `connectionGeneration()`.
  */
 export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilingOs = null, history, clock }) {
@@ -267,8 +272,10 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     await checkNotStopped(deadline);
     recheckNow(pass, op);
     const produced = retained === null ? innerSign() : null;
-    const bytes = retained?.bytes ?? await produced;
-    if (!(bytes instanceof Uint8Array) || bytes.length === 0 || bytes.length > MAX_SIGNED_BYTES) throw refuse('eb_signed_bytes_invalid', `the signer must return 1 to ${MAX_SIGNED_BYTES} bytes`);
+    const signed = retained?.bytes ?? await produced;
+    if (!(signed instanceof Uint8Array) || signed.length === 0 || signed.length > MAX_SIGNED_BYTES) throw refuse('eb_signed_bytes_invalid', `the signer must return 1 to ${MAX_SIGNED_BYTES} bytes`);
+    // The pass keeps its own copy: the signer may still hold the array it returned, and the hash, the record and every transmission must use the same bytes.
+    const bytes = Uint8Array.from(signed);
     const artifactHash = retained?.artifactHash ?? hashOf(bytes);
     if (retained === null) {
       const approval = pass.approvalRevision === null ? {} : { approval: pass.approvalRevision };
@@ -286,7 +293,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
       throw refusal;
     }
     pass.sealed = { bytes, artifactHash };
-    return { bytes, artifactHash };
+    return { bytes: Uint8Array.from(bytes), artifactHash };
   }
 
   function signPass(op, innerSign, { context } = {}) {
@@ -301,7 +308,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     const records = await history.read(op.lane);
     assertLanePin(records);
     if (!KINDS[op.kind].mayResend && unwithdrawnStarts(records, artifactHash).some((record) => record.state === `${stage}-started`)) throw refuse('lane_readback_only', `${stage} may already have reached transport`);
-    if (stage === 'broadcast' && !records.some((record) => record.artifactHash === artifactHash && record.state === 'confirm-acknowledged')) throw refuse('confirm_not_acknowledged', 'broadcast follows an acknowledged confirmation');
+    if (stage === 'broadcast' && !confirmationEstablished(records, artifactHash)) throw refuse('confirm_not_acknowledged', 'broadcast follows an acknowledged confirmation');
     const intent = await history.append(op.lane, { state: `${stage}-started`, ...base(op, artifactHash) });
     if (!intent.created) throw refuse('lane_readback_only', `${stage} intent was already recorded by an earlier run`);
     const of = intent.record.seq;
@@ -314,7 +321,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
       throw refusal;
     }
     let answer;
-    try { answer = await innerSend(bytes); } catch (error) {
+    try { answer = await innerSend(Uint8Array.from(bytes)); } catch (error) {
       // A missing record leaves `-started`, which already means "possibly sent", so the send's own error is what the caller gets.
       await history.append(op.lane, { state: `${stage}-unknown`, ...base(op, artifactHash), of, cause: describeCause(error) }).catch(() => {});
       throw error;
