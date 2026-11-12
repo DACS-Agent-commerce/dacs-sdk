@@ -488,7 +488,7 @@ async function main(args) {
     for (const failure of planFailures) console.error(`[ci-shards] FAIL ${failure}`);
     let failed = planFailures.length > 0;
     for (const [suite, files, baseDir] of [["seller", sellerFiles(), null], ["client", await clientFiles(), clientDir]]) {
-      let split = {};
+      let split;
       try {
         split = baseDir === null ? {} : splitTests(suite, files, baseDir);
       } catch (error) {

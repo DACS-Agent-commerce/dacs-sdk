@@ -55,11 +55,15 @@ export const exactPattern = (name) => `^${name.replace(/[\\^$.*+?()[\]{}|/]/g, "
  */
 export function runSome(file, all, given, { cwd, env = process.env, args = [] } = {}) {
   const out = mkdtempSync(join(tmpdir(), "ci-test-names-"));
+  // A node --test process started under another node --test run (NODE_TEST_CONTEXT set) reports to that parent and
+  // ignores its own reporters, so the record of what ran would never be written.
+  const childEnv = { ...env };
+  delete childEnv.NODE_TEST_CONTEXT;
   try {
     const skip = all.filter((name) => !given.includes(name)).map((name) => `--test-skip-pattern=${exactPattern(name)}`);
     const result = spawnSync(process.execPath, ["--test", ...args, ...skip, "--test-reporter=tap", "--test-reporter-destination=stdout",
       `--test-reporter=${fileURLToPath(self)}`, `--test-reporter-destination=${join(out, "ran.jsonl")}`, file],
-    { cwd, env, encoding: "utf8", maxBuffer: 16 << 20 });
+    { cwd, env: childEnv, encoding: "utf8", maxBuffer: 16 << 20 });
     let ran;
     try {
       ran = readFileSync(join(out, "ran.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line).name);

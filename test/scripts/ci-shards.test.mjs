@@ -82,7 +82,8 @@ test("assignUnits puts every whole file and every test of a split file in exactl
     else assert.equal(entry.tests, null);
   }
   assert.deepEqual(assignUnits("client", files, split), shards, "the same input gives the same split");
-  assert.deepEqual(checkPartition("client", files, split).failures, []);
+  // These made-up files are not this checkout's client files, so only the real SPLIT_FILES entry is reported missing.
+  assert.deepEqual(checkPartition("client", files, split).failures.filter((f) => !/listed in SPLIT_FILES/.test(f)), []);
 });
 
 test("seller files are never split, and assign keeps its file-list shape", () => {
