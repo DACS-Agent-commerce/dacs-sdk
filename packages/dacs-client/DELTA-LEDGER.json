@@ -7352,29 +7352,28 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF record the exact-byte buyer seller client after the merge and refresh package pins",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
-          "before": "b88097dc5621acb7affa393aade0133f1c873923",
-          "after": "b88097dc5621acb7affa393aade0133f1c873923"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the merged response bytes client and refresh package pins",
+      "subject": "delta(client): WF verify seller answers on their exact bytes and classify them",
       "compact": true,
       "files": [
         {
           "path": "packages/dacs-client/src/dacs/seller-http.mjs",
           "before": "b88097dc5621acb7affa393aade0133f1c873923",
-          "after": "b88097dc5621acb7affa393aade0133f1c873923"
+          "after": "73af84a387f7c2145ee9ee1e35275e0622fd7d4c"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": "8ca70e7f5d3217388527c8dcab289193b2848780",
+          "after": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
         },
         {
           "path": "packages/dacs-client/src/index.mjs",
           "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
           "after": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "6982df671d7d2040341fd534d075b1225fc000f6",
+          "after": "501e8eefddad1bd2c38e6e35efd87178e03fedba"
         }
       ]
     },
@@ -7611,6 +7610,23 @@
           "path": "packages/dacs-client/src/dacs/seller-http.mjs",
           "before": "f80404d442afea5c691c15c3b729ec10ea9bf319",
           "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged response classification rebuild in the stored request bytes client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "2d406c3de227b1365694f2b3eaea2f7e0c18ab20",
+          "after": "2d406c3de227b1365694f2b3eaea2f7e0c18ab20"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "60d3849d0f82b3eea964a03c1919306f56d4960b",
+          "after": "60d3849d0f82b3eea964a03c1919306f56d4960b"
         }
       ]
     },
