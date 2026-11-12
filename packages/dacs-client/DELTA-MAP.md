@@ -3791,6 +3791,9 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P52a record the merged public-api test blob of two parallel records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF record the merged public-admission blob of two parallel records | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF record the merged public-admission blob of the wire purchase transport | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): end the wire purchase transport ledger with a source change | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): end the seller request deadlines ledger with a source change | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): end the continuing routes ledger with a source change | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
