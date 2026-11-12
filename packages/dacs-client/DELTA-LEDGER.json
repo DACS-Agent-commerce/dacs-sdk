@@ -6896,6 +6896,17 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying the fence part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72",
+          "after": "1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72"
+        }
+      ]
+    },
+    {
       "delta": "D11",
       "subject": "fix(client): D11 keep seller identity and packed runtime checks stable",
       "files": [
@@ -6923,17 +6934,6 @@
           "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
           "before": "7b598204121d8e58bb55c3b4225ee5cdd05be0c5",
           "after": "116879d4872c10a8d0c65ad5bb3cada05e5052aa"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the merged public API test after carrying the fence part up",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/public-api.test.mjs",
-          "before": "1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72",
-          "after": "1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72"
         }
       ]
     },
@@ -7324,6 +7324,27 @@
           "path": "packages/dacs-client/test/node-signer-retirement.test.mjs",
           "before": null,
           "after": "6175c0421d58d74bf403ee1150a32c750011c455"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "52730e2159bc80c6265d505e401c89810c3d1a80",
+          "after": "52730e2159bc80c6265d505e401c89810c3d1a80"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "d0e4b92a51189b36931096c70db47ffcf44d42c6",
+          "after": "d0e4b92a51189b36931096c70db47ffcf44d42c6"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74",
+          "after": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74"
         }
       ]
     },
