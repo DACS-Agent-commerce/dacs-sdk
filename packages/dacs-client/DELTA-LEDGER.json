@@ -7180,17 +7180,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF wrap the request signer doc comment in lines",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
-          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
-          "after": "1319c19e69704a0a4294a5a62d5e83eec182b4c4"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF P52a admit purchases only on the engines range, Node 22.22.2 to 22.x and 24.15.0 to 24.x",
       "files": [
         {
@@ -7247,6 +7236,17 @@
           "path": "packages/dacs-client/src/public-admission.mjs",
           "before": "8c0c6666bc10a902c9459f67953ebcd3fdcc13e0",
           "after": "8c0c6666bc10a902c9459f67953ebcd3fdcc13e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF wrap the request signer doc comment in lines",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "8cbb7ca70b4463e4d2815c2662e047d8a0d38dd2",
+          "after": "1319c19e69704a0a4294a5a62d5e83eec182b4c4"
         }
       ]
     }
