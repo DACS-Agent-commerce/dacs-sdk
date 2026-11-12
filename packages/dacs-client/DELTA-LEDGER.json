@@ -6843,6 +6843,32 @@
           "after": "bc36e9f0477613f54e57b1a94424971e42e5c6e1"
         }
       ]
+    },
+    {
+      "delta": "D35",
+      "subject": "delta(client): D35 use the monotonic clock for the seller client deadline and drop the unused readback cache clock option",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/buyer-chain-readback.mjs",
+          "before": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2",
+          "after": "4f30e654375d06c846337e216487a88e15e56066"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+          "before": "9a0967034f9bad78b2c03836343926dce0a537f6",
+          "after": "43a29d02665781c4315ac877f81ee04856a6f3a8"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/verification.mjs",
+          "before": "de51f5bc8faf3b14b707783e03bc8e303fb44ca5",
+          "after": "d974b1b11cd188f5f7246bcba42ce541c5873a01"
+        },
+        {
+          "path": "packages/dacs-client/src/util/immutable-readbacks.mjs",
+          "before": "7c5ee6fcbcf3cefa0045385a375a74004452c527",
+          "after": "47ed22a28fcaaa1e32a0e5e2bd4fe0ded6000d6b"
+        }
+      ]
     }
   ]
 }

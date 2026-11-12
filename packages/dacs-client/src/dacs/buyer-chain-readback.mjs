@@ -95,7 +95,7 @@ export function createBuyerChainReadback({ sourceCapability, now = () => Date.no
   const adapter = reader ?? createDemosSr2Adapter({ rpcUrl: sourceCapability.pins.endpoint, sourceCapability, now,
     journal: { ...createInMemoryDemosSr2Journal(), put: async () => { throw new Error('the buyer chain reader is read-only'); } } });
   if (typeof adapter?.read !== 'function' || typeof adapter.verifyReceipt !== 'function') throw new TypeError('an SR-2 reader with read and verifyReceipt is required');
-  const immutable = createImmutableReadbacks({ now });
+  const immutable = createImmutableReadbacks();
 
   // The expected writer is the verified Listing's seller key and nothing else.
   function writerFor(listing, seller) {

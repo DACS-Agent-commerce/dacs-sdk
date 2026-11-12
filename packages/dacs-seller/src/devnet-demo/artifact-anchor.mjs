@@ -197,7 +197,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // Listing has no purchase, so its entry is keyed by locator and content hash
   // alone and lives only for the TTL, never for the whole process. `fresh`
   // reads skip reuse, and a fresh read that does not verify evicts the entry.
-  const immutable=createImmutableReadbacks({now});
+  const immutable=createImmutableReadbacks();
   const cachedKinds=new Set(['Listing','CompositeVerificationRecord','FinalityCommitmentRecord']);
   const cacheScope=(input,projection,receipt)=>({purchaseId:input.artifact.jobId ?? null,locator:input.logicalAddress,contentHash:input.receiptContentHash,scope:{input,projection,receipt,binding:sourceCapability.transportBinding}});
   const kinds=new Set(sourceCapability.demoArtifactPublication.artifactKinds);
