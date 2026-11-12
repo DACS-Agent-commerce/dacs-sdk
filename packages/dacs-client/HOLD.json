@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "d858928ac964dc9444a53a73c87af8bf8f5f25f4"
+        "blob": "07aba78377944a4ce1d6b2d740d17cf21d57ae1c"
       },
       "DELTA-LEDGER.json": {
-        "blob": "9e7002972e1ecdfae3c08767312c5b1572a63d41"
+        "blob": "a2544e033e5336f70db0e96b9e531d25a51a0672"
       },
       "DELTA-MAP.md": {
-        "blob": "127a48f8c078c4ea3605d801206ca568f6beb077"
+        "blob": "71924e55fb23696860b8df39e8d7371851e87933"
       },
       "DELTA-NOTES.md": {
-        "blob": "6e6a0d744a03b74a3c25285dc29df2ba86068105"
+        "blob": "552c79760561626aa37fba57133abe6bd15c7024"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "25d68df50c9c5f5d1a1adf33658ca41f2ab8db2d"
+        "blob": "dcbff5477ad70955e4fc599555a2310f53a9efd4"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "7d8657ef0dae65401559e41f31a7466a9c7bb465"
+        "blob": "d29940d8e84b6e6e9ac9d4d0966c4e0ea59745f3"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1541,7 +1541,7 @@
         "blob": "c35e7affc754a58a39a4dfc983733fed171cbb21"
       },
       "test/helpers/effect-gate-world.mjs": {
-        "blob": "d4a27b230ade392782c331f6100640e1c5742baf"
+        "blob": "b9340992077b4fd90675cb50762e57f5abc0c558"
       },
       "test/helpers/embedded-wallet-fixtures.mjs": {
         "blob": "c8083057ae6b2a507d5cf009b2d2b54a153f6bc4"
@@ -1835,7 +1835,7 @@
         "blob": "667a5a229acef659479dfc36e8f72c01538a22a9"
       },
       "test/node-wallet-effect-gate.test.mjs": {
-        "blob": "757b60148d789e59fc2db8b9350176f6fd859ce8"
+        "blob": "8336e5393f66bcf9184b1b22b44911a9a1a32fbc"
       },
       "test/node-wallet-final-content.test.mjs": {
         "blob": "17e556eaaa8199a80b20fa91c1563ef50fbb85b9"

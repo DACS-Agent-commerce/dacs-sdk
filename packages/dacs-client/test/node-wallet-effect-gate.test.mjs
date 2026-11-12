@@ -81,7 +81,7 @@ test("after SDK preparation one gate pass runs optional qualify, then its fresh 
 test("a barrier inside qualify flips the hold or replaces currentLocal: a refusal at the signature leaves signer 0; a refusal at transmission transmits 0, keeps the signed bytes and reports not_dispatched", async t => {
   const flips = {
     hold: { code: 'profile_not_admitted', flip: () => setPurchaseAdmission('held') },
-    local: { code: 'tp1_local_binding_changed', flip: w => w.currentOwner().replaceLocal({ ...w.currentOwner().local, connectionId: 'TEST-replaced' }) },
+    local: { code: 'tp1_local_binding_changed', flip: w => w.replaceLocal({ ...w.currentOwner().local, connectionId: 'TEST-replaced' }) },
   };
   for (const [change, { code, flip }] of Object.entries(flips)) {
     const atSignature = await qualifiedWorld(t, phase => { if (phase === 'sign') flip(atSignature); });
@@ -203,12 +203,16 @@ test("no request field, environment variable or per-call option adds, removes or
 });
 
 test("inside a pass, RPC-authentication header signatures reuse its fence lease and are not gated, and the gate acquires no fence", async t => {
-  const events = [], buyer = await gateWorld(t, { seller: false });
-  await (await openPass(buyer, { events })).run(async () => assert.equal((await buyer.send()).success, true));
-  const inside = buyer.currentOwner().acquisitions();
-  const plain = await gateWorld(t, { seller: false });
-  assert.equal((await plain.send()).success, true);
-  assert.equal(inside, plain.currentOwner().acquisitions() + 1, "the pass's own acquisition is the only extra one: the gate and the nested steps acquire none beyond the plain flow");
+  const events = [], buyer = await gateWorld(t, { seller: false }), owner = buyer.currentOwner(), pass = await openPass(buyer, { events });
+  // Queued behind the pass's lease: a fence the gate or a nested step took for itself would queue behind this one, and the send would not finish.
+  let granted = false;
+  const outside = owner.acquireConnectionFence().then(lease => { granted = true; return lease; });
+  await pass.run(async () => {
+    assert.equal((await buyer.send()).success, true);
+    await new Promise(setImmediate);
+    assert.equal(granted, false, 'no nested release freed the pass fence');
+  });
+  (await outside).release();
   assert.deepEqual(events.filter(event => event.startsWith('authority:')), PHASES.map(phase => `authority:${phase}`));
   assert.ok(buyer.innerSigns.length > 1 && buyer.signsInsideSign === 1, 'authentication signatures ran inside the pass, ungated');
 });

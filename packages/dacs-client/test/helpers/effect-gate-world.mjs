@@ -13,34 +13,20 @@ export const sellerPublications = () => ({
 });
 
 /**
- * Returns the exported transport owner with two test views over it: `replaceLocal(local)` makes currentLocal() report another
- * connection, and `acquisitions()` counts fence acquisitions. Every acquisition is the real owner's own, fence sharing included.
- */
-function observedOwner(owner) {
-  let replaced = null, acquisitions = 0;
-  return {
-    ...owner,
-    currentLocal: () => replaced ?? owner.currentLocal(),
-    replaceLocal(local) { replaced = local; },
-    acquisitions: () => acquisitions,
-    acquireConnectionFence(...args) { acquisitions += 1; return owner.acquireConnectionFence(...args); },
-  };
-}
-
-/**
  * The scripted world for gate tests: a seller (default) or buyer composition on the exported transport owner, spied at the
- * inner signature. `currentOwner()` is the current composition's owner; `clock` is the composition's mutable clock;
- * `qualify` is installed on a seller.
+ * inner signature. The owner is the exported one except for currentLocal(), which `replaceLocal(local)` makes report another
+ * connection. `currentOwner()` is the current composition's owner; `clock` is the composition's mutable clock; `qualify` is
+ * installed on a seller.
  */
 export async function gateWorld(t, { seller = true, qualify, sessionOptions = {} } = {}) {
   const clock = { now: () => T0 };
-  let owner;
+  let owner, replaced = null;
   const w = await spiedWorld(t, {
     createSession: seller ? api.createNodeSellerComposition : api.createNodeWalletSession,
-    ownerWrap: raw => { owner = observedOwner(raw); return owner; },
+    ownerWrap: raw => { replaced = null; owner = { ...raw, currentLocal: () => replaced ?? raw.currentLocal() }; return owner; },
     sessionOptions: { clock, ...(seller ? { approveConfirmedWrite: null, publications: sellerPublications(), ...(qualify ? { qualify } : {}) } : {}), ...sessionOptions },
   });
-  return Object.assign(w, { clock, currentOwner: () => owner });
+  return Object.assign(w, { clock, currentOwner: () => owner, replaceLocal: local => { replaced = local; } });
 }
 
 /**
