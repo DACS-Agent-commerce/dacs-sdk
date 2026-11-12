@@ -7843,6 +7843,23 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged response classification rebuild in the authenticated retries client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "671a9686ba54d03ab0ef0ac6e8205b78505c272a",
+          "after": "671a9686ba54d03ab0ef0ac6e8205b78505c272a"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "b63568fc8eac39716c34f9ad72918f8ec4f9e2bb",
+          "after": "b63568fc8eac39716c34f9ad72918f8ec4f9e2bb"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the request signer doc comment in the authenticated request retries",
       "files": [
         {
