@@ -37,19 +37,21 @@ Self-declared identity (+ one verified claim) · fixed-price negotiation · **x4
 
 The role-separated fixed-price coordinators cover all five lifecycle stages.
 A buyer and a seller run in separate processes, each over its own durable
-store. After a restart, a payment with no recorded outcome is reconciled or
-refused, never repeated. See [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
+store. After a restart, the x402 buyer settlement step (`advanceX402BuyerSettlement`)
+first reconciles an attempt that has no recorded outcome against the chain, and
+submits again only once that read shows the payment authorization unused. See
+[docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
 
 The exported `SignedArtifact`, `buildSignedArtifact()` and
-`verifySignedArtifact()` symbols are likewise legacy raw-hex compatibility
-surfaces used by that quarantined path and historical readers. New producers
+`verifySignedArtifact()` symbols are legacy raw-hex compatibility surfaces used
+by `Agent.runSession()`, which still ships, and by historical readers. New producers
 and readers must use `ComponentSignedArtifact`,
 `buildComponentSignedArtifact()` and `verifyComponentSignature()`.
 
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | fixed-price coordinators · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
+| **Vet** | fixed-price coordinators · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements |
 | **Negotiate** | fixed-price coordinators · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core |
 | **Settle** | `payDemSettle` · `withRecoveredAttempts` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
@@ -209,10 +211,7 @@ deployment responsibility of the generated role services.
 import {
   createAgent,
   createFsDemosWriteJournal,
-  createIdempotencyStore,
   createInMemoryBindingStore,
-  createX402Rail,
-  x402Settle,
   verifyCompositeVerificationRecord,
 } from "@kynesyslabs/dacs";
 import { join } from "node:path";
@@ -268,8 +267,9 @@ if (
   throw new Error(`listing binding was not published: ${published.status}`);
 }
 
-// A read-only Directory can omit both wallet and publisher. A buyer that pays
-// supplies its own wallet but still needs only the consumer index.
+// A read-only Directory can omit both wallet and publisher. A buyer that takes
+// part in a purchase holds its own Demos wallet (the coordinator guide's buyer
+// process does) but still needs only the consumer index.
 const buyer = await createAgent({
   demosRpc,
   wallet: buyerWallet,
@@ -303,28 +303,11 @@ if (
 // Or page the historical Listings published by one known seller. This is
 // owner-scoped discovery, not global marketplace search.
 const firstPage = await buyer.enumerateListings(agentId);
-const rail = await createX402Rail({
-  evmPrivateKey,
-  rpcUrl: process.env.BUYER_EVM_RPC!, // independent trusted chain read
-  // Use the exact positive value from the authenticated rail descriptor.
-  finalityBlocks: 1,
-});
-// `durableSettlementLog` is your application's durable `SettlementLog`
-// (see the settlement store notes below); the bridge refuses to start without a store.
-const settlementStore = createIdempotencyStore(durableSettlementLog);
-// `url`, `network` and `recipientEvm` are the paywall's coordinates from the
-// listing and the rail descriptor; `evmPrivateKey` is the buyer's EVM key.
-// `asset` is the on-chain token id (ERC-20 contract) the 402 must advertise —
-// the §4.1 guard compares against it, not the Price.asset symbol.
-const settle = x402Settle(rail, { url, network, recipientEvm, asset }, { store: settlementStore });
-
-// The purchase itself runs in the buyer coordinator
-// (`createFixedPriceX402BuyerCoordinator`, see
-// docs/fixed-price-x402-coordinator.md), not in this snippet. Its `payment`
-// operation calls `settle` with a `SettleRequest`, and its `agreement`
-// operation is built on `advanceFixedPriceAgreementDurable`. A restarted worker
-// runs the same operations again over the same durable stores.
 ```
+
+The snippet stops before payment. The purchase runs in the role-separated
+coordinators, each over its own durable store; see
+[docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
 
 Once the purchase has produced a finalized bundle, anyone can verify it, and
 `getReputation` reads reputation from bundle references. `bundleRef` is the
@@ -576,6 +559,8 @@ action.
 `createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
 hook. A caller can omit it, but a purchase that must finish after a restart needs
 the journal it fills (see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
+Only `Agent.runSession()`, which still ships, refuses a pay-dem bridge built over
+a rail without it.
 Without the hook the low-level rail provides only in-process hash-first
 observation. Across a
 process restart, at-most-once settlement requires `payDemSettle` with a
@@ -665,27 +650,44 @@ Run the funded test only with the complete guarded environment described above:
 npm run test:live:pay-dem
 ```
 
-The Agreement pins the exact DACS-1 §6.3.4 LR-1
-`(listingId, listingVersion, contentHash)` tuple of the admitted Listing
-(`resolved.listingPin`), so a newer Listing version never changes a purchase in
-progress.
+A fixed-price Agreement records the exact DACS-1 §6.3.4 LR-1
+`(listingId, version, contentHash)` tuple of the verified Listing it was derived
+from, as its `listingRef`. `readListing` returns that tuple as `listingPin`.
 
-To settle a purchase after a restart, call the same bridge with the original
-request and `recoveryOnly: true`. A recovery request never starts a fresh
-payment. The bridge settles through its store's `recover`, whose own atomic
-claim returns the recorded outcome or reconciles an unresolved intent, adopting
-a payment it proves landed. With no unresolved intent for the job, it refuses
-and leaves the rail's log unchanged: a crash before the rail recorded intent, or
-a release after a not-invoked attempt, needs operator action. Recovering an
-expired unresolved intent takes a current `reconcile` lease. Recovery needs a
-store with `recover()` over a settlement log with `claimExistingIntent`
-(`createIdempotencyStore` over `createInMemorySettlementLog()` has both); a
-custom log without it cannot recover.
+To settle a purchase after a restart through one of the bridges above, call it
+with the original request and `recoveryOnly: true`. A recovery request never
+starts a fresh payment: the bridge settles through its store's `recover`, and a
+store without `recover()` is refused. Recovery also needs a settlement log with
+`claimExistingIntent` (`createIdempotencyStore` over
+`createInMemorySettlementLog()` has both); a custom log without it cannot
+recover. What recovery does depends on what the store holds for the job:
+
+- A recorded outcome is returned.
+- No recorded intent: it refuses and leaves the rail's log unchanged. A crash
+  before the rail recorded its intent, or a release after a not-invoked attempt,
+  needs operator action.
+- An intent whose lease another worker still holds: it refuses rather than pay
+  again.
+- An unresolved intent whose lease has expired: recovery takes a current
+  `reconcile` lease, and the bridge's `reconcile` option decides the rest.
+  Without it the recovery is refused and the purchase stays unresolved; nothing
+  is paid again, and the payment is not adopted even if it landed. The
+  `x402Settle` and `evmErc20Settle` bridges built as shown above have no
+  `reconcile`, so for them this is the outcome; check the chain by hand before
+  buying again under a new job id (see
+  [the pay-dem guide](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
+  With `reconcile`, a final result bound to the request is recorded and
+  returned, which adopts a payment that landed; an authorization to replay that
+  is bound to the same effect lets recovery submit again; `null` (proof of
+  absence) is refused, because absence alone cannot revoke an earlier effect;
+  and a throw leaves the purchase unresolved. `payDemSettle` is built with
+  `reconcile` above.
 
 Keep the order's job id in your durable store before anything can fail, and
 restart with the same id. Do not start a second purchase under a new id while
 the first has no recorded outcome. A restart that finds an intent and no
-recorded outcome refuses instead of paying again; for a pay-dem purchase,
+recorded outcome does not pay again by itself: the bridge refuses, or acts only
+on what `reconcile` proves. For a pay-dem purchase,
 [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)
 finishes it from the prepared-transfer journal. A job id alone cannot prove
 whether a lost rail response moved value.
@@ -765,8 +767,8 @@ it returns no Listings or diagnostics, and the caller retries its unchanged
 `retryCursor`. `invalid-seller` and `invalid-options` are caller errors;
 `historyPageSize`, when supplied, must be an integer from 1 through 100.
 
-See **[examples/hello-world.ts](./examples/hello-world.ts)** for publishing a Listing and admitting it from
-its logical address. For the purchase itself, see
+In the repository, `examples/hello-world.ts` (not shipped in the package) publishes a Listing and admits
+it from its logical address. For the purchase itself, see
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md). In a checkout of the repository,
 `npm run test:live` runs the funded two-agent flow end to end when funded testnet credentials are set, and
 skips it otherwise; `docs/live-e2e.md` in the repository lists what it needs.
