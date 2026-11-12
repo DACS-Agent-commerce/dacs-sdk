@@ -50,6 +50,32 @@ The check is by name. It counts top-level `function` declarations and `const` na
 
 The file size and shared helper checks also have a `--write-baseline` flag that rewrites the list from the code. Use it only in a change that edits the check itself, and say why in that change; never use it to get a pass.
 
+## Error code check
+
+`error-codes.mjs` checks how errors are built in the files and folders that `error-codes.json` lists under `migrated`. The list is empty until a folder moves to error codes; a folder is listed with a trailing slash. The catalog is the `codeCategory` table in `src/errors.ts`. Each code is lower case, shaped `domain.reason`, and has one category. `sdk.unclassified` is reserved for this check and never goes in the table.
+
+In a migrated file the check refuses:
+
+- `new DacsError`, `new TransientError`, `new CounterpartyError` or `new SubstrateError` without a `code` written as a string literal, with a code that is not in the catalog, or with `sdk.unclassified`;
+- a catalog code on `TransientError`, `CounterpartyError` or `SubstrateError` whose category in the table differs from the class's;
+- `category` beside `code` on `DacsError`, because the table decides the category;
+- any other class that extends `DacsError` and neither takes a catalog code nor declares its own `code`;
+- `new WireError`, `new RawJsonAdmissionError`, `new AnchorWaitError`, and a call without a code to the `fail()` helper declared in `src/wire/validate.ts` or the `reject()` helper declared in `src/canonical/rawJson.ts`, in a file that declares or imports it. A function of the same name that is not that helper, such as a Promise executor's `reject`, is not checked. Their codes stay outside the catalog;
+- a plain `Error`, `TypeError`, `RangeError` or `SyntaxError` thrown with or without `new` that is not listed under `retainedPlainThrows`.
+
+A class imported under another name (`import { DacsError as SDKError }`) is checked as the class it stands for, and the messages name that class.
+
+A retained throw is listed with its path, the throw written as it is in the file, and the reason it stays, for example a programmer assertion that no caller can reach. The check also fails when a listed throw has no reason or no longer exists, or when a migrated path does not exist.
+
+Classes are found by name: every top-level class under `src/` that extends `DacsError`, directly or through other classes. The check reads the syntax only. It cannot tell whether a plain throw reaches a caller, so a listed throw is a judgement for the reviewer.
+
+What it does not see:
+
+- a class reached through a namespace import (`errors.DacsError`) or a local alias (`const E = DacsError`);
+- a class declared inside a function or block;
+- a plain error that is built in one statement and thrown in another (`const e = new Error("x"); throw e;`), or passed to a Promise's `reject`;
+- a plain error thrown through a name or member other than the bare `Error`, `TypeError`, `RangeError` or `SyntaxError` (`globalThis.Error`).
+
 ## What's left out
 
 - `test/package-consumer/`: its own project, which needs the packed packages.
