@@ -1158,6 +1158,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` | bb916bc970fc5e7dba074ae95e9edf98b84137d0 |
 | WF | delta(client): WF document the refusal of a marked answer in the public reader | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/substrate/demos.mjs:1` | 1210a631918cb1b11824b80770e1497c52738180 |
+| D40 | delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/portal-capability.mjs:1` | fb1f631894e79e1139d7d66c8ce2e56d97a40ae5 |
+| | `packages/dacs-client/test/portal-capability.test.mjs:1` | 03649eaa13ff185ed7e74c73984df819b417e1ff |
 
 ## Complete commit and file inventory
 
@@ -3670,6 +3673,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/README.md:1` |
 | delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF document the refusal of a marked answer in the public reader | `packages/dacs-client/src/substrate/demos.mjs:1` |
+| delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/src/portal-capability.mjs:1` |
+| delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/test/portal-capability.test.mjs:1` |
 
 ## Original moved files
 
