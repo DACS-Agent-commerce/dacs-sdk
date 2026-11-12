@@ -207,6 +207,10 @@ jobs:
       - name: Build Node host kit
         run: npm run host:build
 
+      - name: Check client signature key validation
+        if: matrix.node-version == '22'
+        run: npm run client-keys:test
+
       # The seller shards prepare the locked seller consumer before the seller suite. A pull request runs no node 20
       # seller shard, so this leg prepares it here instead, as every leg did before the suites were split.
       - name: Prepare locked seller consumer

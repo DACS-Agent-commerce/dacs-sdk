@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "c3da407e16617a648def02b11f319d05bea16184"
+        "blob": "4b01895adef943fb8f9eb3d74f11ba41d088c7ff"
       },
       "DELTA-LEDGER.json": {
-        "blob": "03d527d13dde9dde45da61b2c88d211553e83b66"
+        "blob": "2b1a79d70b05fcc41dd93eb917fbcdb1ffba29f0"
       },
       "DELTA-MAP.md": {
-        "blob": "c7f5e83106d57c142284ccea1ee71e8c21f09e22"
+        "blob": "d70dee5171cc090a85e9b91ae9f718ea6ede76cc"
       },
       "DELTA-NOTES.md": {
         "blob": "8760f0cd2a4c367c48b4057ba534d29ecb09ca25"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "e2c84d624ad977d521e8b7eae266aff262e0f95c"
+        "blob": "6b7aa815e4c54e444cedc5cc9c4ed4cc9f3adb91"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1061,7 +1061,7 @@
         "blob": "05aecddde57e93c2e7e90572e5757fef722946e6"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
+        "blob": "29c44d710b48ddfa5de0b0acbf4edd9e488e881b"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1184,7 +1184,7 @@
         "blob": "14a0693cb2484eb39c9db122914b46ef31503757"
       },
       "src/dacs/seller-transport-auth.mjs": {
-        "blob": "68a8a8946386f010d7a157a25e184bfb52370108"
+        "blob": "17bf3788c7e5d12dad3a8ac4e133085b80e751ef"
       },
       "src/dacs/source-demo-seller-transport.mjs": {
         "blob": "208a59efea2ceed0f8b76d96aaf66444ac51cc40"
@@ -1238,7 +1238,7 @@
         "blob": "3d60f6151608b59fda215fb362bb54a5721c82ce"
       },
       "src/public/portal/embedded-wallet/sdk-provider.mjs": {
-        "blob": "fb364397ed046fb1211d620fb5dfa68563715c1a"
+        "blob": "fc0f620997c524c5f2a7d0ab8fde77b86debdb0d"
       },
       "src/public/portal/seller-session-delegation.mjs": {
         "blob": "1a36a9a9d65cd6723b1f149005c0338a87ffddee"
@@ -1914,6 +1914,9 @@
       },
       "test/seller-session-delegation-job-id.test.mjs": {
         "blob": "b0777e30c7cf6efedd45f3b645329057b18025e5"
+      },
+      "test/seller-transport-key-validation.test.mjs": {
+        "blob": "26523776589d9fbb6681a585ce59031a0dcdf48b"
       },
       "test/signatures-claim-ref.test.mjs": {
         "blob": "f0696e4cc8a8d54e4833adde9e465638d792a03c"
