@@ -272,10 +272,12 @@ test(card('T20'), async t => {
 
 test(card('T15'), () => {
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-  const result = spawnSync(process.execPath, ['--import', new URL('./helpers/kit-guard-fixture.mjs', import.meta.url).pathname, '--test', '--test-name-pattern=^(T[1-6] |B(2[3-9]|30) )',
+  // The default reporter differs between Node lines, so the child prints TAP explicitly.
+  const result = spawnSync(process.execPath, ['--import', new URL('./helpers/kit-guard-fixture.mjs', import.meta.url).pathname, '--test', '--test-reporter=tap', '--test-name-pattern=^(T[1-6] |B(2[3-9]|30) )',
     'packages/dacs-seller/test/d5-challenge-retention.test.mjs', 'packages/dacs-seller/test/d5-limits-before-effects.test.mjs'], { encoding: 'utf8', env });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stdout, /# pass [1-9]/);
+  // At least one selected test passed. The `# pass` count is no proof: Node may count a file in which no test matched as a passing test.
+  assert.match(result.stdout, /^\s*ok \d+ - (T[1-6]|B(2[3-9]|30)) /m);
 });
 
 for (const [id, port, code] of [['T16', 'access', 'buyer_access_closed'], ['T17', 'known', 'context_job_unknown']]) test(card(id), async t => {
