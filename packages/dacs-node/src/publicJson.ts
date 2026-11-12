@@ -27,7 +27,11 @@ export interface DacsPublicJsonReadDependenciesV1 {
 }
 
 export interface DacsPublicJsonReadOptionsV1 {
-  /** Deadline for the whole read, host resolution included. Body bytes do not extend it. */
+  /**
+   * Deadline for the whole read, host resolution included. Body bytes do not extend it.
+   * The built-in HTTPS request enforces it. A `dependencies.request` must stop within the
+   * `timeoutMs` it receives, which is the time left after host resolution.
+   */
   timeoutMs?: number;
   maxBytes?: number;
   dependencies?: Readonly<DacsPublicJsonReadDependenciesV1>;
