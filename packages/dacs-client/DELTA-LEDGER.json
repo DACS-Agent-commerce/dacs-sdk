@@ -6628,6 +6628,17 @@
           "after": "1534c01cc8e7959911d59cf24b3192eecd217c4a"
         }
       ]
+    },
+    {
+      "delta": "D37",
+      "subject": "delta(client): D37 say the expiry projection is read-side only",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "353259d6d98e8d809bf95bd11c79ab5cb6739793",
+          "after": "583d6115c7df3e00f7ae35ec3a69a0f38d943027"
+        }
+      ]
     }
   ]
 }

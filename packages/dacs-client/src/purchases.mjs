@@ -327,9 +327,12 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= at;
   }
 
-  // Diagnostic reads project expiry without persisting the action transition.
-  // They also count the wall clock, so a stale service clock cannot keep an
-  // elapsed approval open.
+  // Read-side projection only: status, portal evidence and readback show an
+  // approval as expired once either the service clock or the wall clock has
+  // reached its expiry. Nothing is saved, and actions keep using
+  // expireIfNeeded with the service clock alone. When a host injects a stale
+  // clock the two can disagree: reads say expired while approve and pay still
+  // go ahead. The read side fails closed.
   function projectExpiry(operation) {
     return approvalElapsed(operation) || approvalElapsed(operation, Date.now()) ? { ...operation, status: 'expired' } : operation;
   }
