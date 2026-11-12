@@ -7,6 +7,8 @@ on:
     branches: [main, phase0-completion]
   pull_request:
   merge_group:
+  # A full run (both Node legs, every suite) of any branch by hand, e.g. a pull request's branch before it merges.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -44,7 +46,7 @@ jobs:
 
   build-test:
     # The node 22 leg can run on the project's own one-job runners (label dacs-pool) for our own pull requests only
-    # (one pool job per node 22 shard, plus build-test-main's node 22 job: 5 on a pull request),
+    # (one pool job per node 22 shard, plus build-test-main's node 22 job: 7 on a pull request),
     # when ALL of these hold:
     #   - the repository variable SDK_SELF_HOSTED is 'on';
     #   - the event is pull_request and the head branch is in this repository;
@@ -79,9 +81,8 @@ jobs:
     needs: build-test-plan
     strategy:
       fail-fast: false
-      # One entry per shard: node-version, part (seller-1, client-2, ...), suite and shard (K/N). Pull requests run
-      # the seller suite on node 22 only; pushes and the merge queue run it on both legs. The client suite runs on
-      # node 22 only. scripts/ci-shards.mjs holds the list and the file split.
+      # One entry per shard: node-version, part (seller-1, client-2, ...), suite and shard (K/N). The seller
+      # suite runs on both legs for every event, pull requests included; the client suite runs on node 22 only. scripts/ci-shards.mjs holds the list and the file split.
       matrix: ${{ fromJSON(needs.build-test-plan.outputs.matrix) }}
     name: build-test shard (node ${{ matrix.node-version }}, ${{ matrix.part }})
     steps:
@@ -185,7 +186,10 @@ jobs:
       - name: Test release workflow wiring
         run: node --test test/scripts/release-workflow.test.mjs
 
-      - name: Check that every seller and client test file is in exactly one shard
+      - name: Test the shard split
+        run: npm run ci:test
+
+      - name: Check that every seller and client test file (and each test of a split file) is in exactly one shard
         run: node scripts/ci-shards.mjs check
 
       - name: Sync DACS-Standard conformance vectors
@@ -205,14 +209,6 @@ jobs:
 
       - name: Build Node host kit
         run: npm run host:build
-
-      # The seller shards prepare the locked seller consumer before the seller suite. A pull request runs no node 24
-      # seller shard, so this leg prepares it here instead, as every leg did before the suites were split.
-      - name: Prepare locked seller consumer
-        if: matrix.node-version != '22' && github.event_name == 'pull_request'
-        env:
-          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
-        run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
 
       - name: Test the kit-client contract harness
         if: matrix.node-version == '22'
@@ -571,16 +567,11 @@ jobs:
           ]) if (!compose.includes(required)) process.exit(1);
           NODE
 
-      # Pull requests run this step on node 22 only, like the seller suite (scripts/ci-shards.mjs). The node 24 leg
-      # runs it on pushes to main and phase0-completion and in main's merge queue.
+      # Every event runs this on both Node legs, pull requests included, so a node 24 failure shows before the merge.
       - name: Test (unit + conformance harness)
-        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         run: npm test
 
-      # Pull requests run this step on node 22 only, like the seller suite (scripts/ci-shards.mjs). The node 24 leg
-      # runs it on pushes to main and phase0-completion and in main's merge queue.
       - name: Test durable RFQ filesystem record-size boundaries
-        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         env:
           DACS_SLOW_BOUNDARY: "1"
         run: npx vitest run test/negotiate/durableRfqLifecycleStoreFs.test.ts -t "record size boundary"
@@ -757,6 +748,8 @@ jobs:
   buyer-minimum-runtime:
     runs-on: ubuntu-latest
     strategy:
+      # One failing Node leg must not cancel the other: each leg is its own engine-floor result.
+      fail-fast: false
       matrix:
         node-version: ["22.22.2", "24"]
     steps:
