@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-export const NODE_LEGS = ["20.19.0", "22"];
+export const NODE_LEGS = ["22", "24"];
 export const SHARDS = { seller: 2, client: 2 };
 export const DEFAULT_WEIGHT = 30;
 
@@ -248,8 +248,8 @@ export const WEIGHTS = {
   },
 };
 
-// Which Node legs run each suite. client: node 22 only (the package's engines start above the 20.19.0 floor).
-// seller: both legs, except that a pull request runs it on node 22 only; the 20.19.0 leg runs it on pushes and in
+// Which Node legs run each suite. client: node 22 only.
+// seller: both legs, except that a pull request runs it on node 22 only; the node 24 leg runs it on pushes and in
 // the merge queue.
 export function suiteRuns(suite, node, event) {
   if (suite === "client") return node === "22";

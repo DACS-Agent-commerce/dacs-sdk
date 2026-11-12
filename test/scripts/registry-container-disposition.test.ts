@@ -1376,7 +1376,7 @@ describe("registry/container evidence", () => {
     expect(readFileSync(join(repoRoot, "packages/create-dacs-agent/src/liveTemplates.ts"), "utf8")).toContain("RUN npm rebuild better-sqlite3");
     expect(measure?.line).not.toContain("npm rebuild"); expect(tests?.line).toContain("--read-only");
     expect(install?.line).toContain("--env npm_config_ignore_scripts=true"); expect(doctor?.line).not.toContain("npm ");
-    expect(install?.line).toContain("npm install --global --ignore-scripts npm@11.19.0");
+    expect(install?.line).toContain("npm install --global --prefix /tmp/npm --ignore-scripts npm@11.19.0");
     expect(install?.line).toContain("npm install --ignore-scripts ");
     expect(measure?.line).toMatch(new RegExp(` --user ${process.getuid?.()}:${process.getgid?.()} `));
     for (const run of [install, measure]) {
