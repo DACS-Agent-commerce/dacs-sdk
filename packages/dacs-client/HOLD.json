@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "04f87575a365c4fe822d3f8e58e5dd28a8e4ae19"
+        "blob": "cb2bcc92d39a6b0b6bf523e62a8a550d48132b7f"
       },
       "DELTA-LEDGER.json": {
-        "blob": "8fa590d39222e3b480799a86e91116c84f449dcb"
+        "blob": "d8b110cfe3b66d06da5638fed8ed5060391310f7"
       },
       "DELTA-MAP.md": {
-        "blob": "be95b0189f1020693bf8118451e60dd1ddbda2ce"
+        "blob": "9a398714d468af89bb69a35af2d1258976e8255e"
       },
       "DELTA-NOTES.md": {
-        "blob": "51583e5256c0286a82bf8aad7c2c2e025c76b852"
+        "blob": "09c2a5f922e9b133f862263e62fd633c1125373a"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "0fe900cd8b46b06aac3845c2b375f3fe013f9e9d"
+        "blob": "9f914e0063e92417fd009c2411e80a2c34665ae2"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "1f5c7ffe9c64d4d58c1be1b77d503bbf27698d22"
+        "blob": "b19812e7de5085163b239c16df2c081fb515cdde"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1175,10 +1175,10 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "a7bde64bb0b01a411fe520bb19a8d973fb05775c"
+        "blob": "40664e4d65a3766cd0ff4544f5364ff2a063cbc9"
       },
       "src/dacs/seller-response-class.mjs": {
-        "blob": "8ca70e7f5d3217388527c8dcab289193b2848780"
+        "blob": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
       },
       "src/dacs/seller-session-lifecycle.mjs": {
         "blob": "86fd5777a41c76183f2b3383898400469bdc60b3"
@@ -1940,7 +1940,7 @@
         "blob": "6c920248367b799050ce5f473574a6a9ca927f1e"
       },
       "test/seller-response-classification.test.mjs": {
-        "blob": "cc30e5ad0590631f781343edc60dcff1c0eecd2e"
+        "blob": "b63568fc8eac39716c34f9ad72918f8ec4f9e2bb"
       },
       "test/seller-retry-authentication.test.mjs": {
         "blob": "8ba0a6e6ffdfbc2d23c9a6dc9ce241160774447a"

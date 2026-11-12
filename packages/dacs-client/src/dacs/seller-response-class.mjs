@@ -1,5 +1,5 @@
-// K5's client side: the class of a seller answer, from the answer and the
-// request's own context. Pure: it reads no clock, file or network.
+// The class of a seller answer, from the answer and the request's own
+// context. Pure: it reads no clock, file or network.
 //
 // The answer record is made by the transport, never by the wire or the seller:
 // {status, signed: true, body} exists only after the wire verified the exact
@@ -24,10 +24,9 @@ export const SELLER_ANSWER_CLASS = Object.freeze({
 });
 const { RESULT, PROGRESS, UNKNOWN, SUSPENDED, HELD, NOT_STARTED, NOT_SENT, DEFINITE, READBACK_ONLY, FAILED_BOOTSTRAP } = SELLER_ANSWER_CLASS;
 
-/** The seller's code for work that only its operator can resolve (K5-C6). */
+/** The seller's code for work that only its operator can resolve. */
 export const SELLER_EFFECT_UNRESOLVED = 'seller_effect_unresolved';
 const SELLER_NOT_READY = 'seller_not_ready';
-const KNOWN_PATHS = new Set(Object.values(PATHS));
 const BUNDLE_PATHS = new Set([PATHS.bundleRequest, PATHS.bundleCountersignature]);
 // A 200 on these routes can be a nonterminal answer; other routes' 200 is a result.
 const PROGRESS_PATHS = new Set([PATHS.payments, PATHS.proposals]);
@@ -59,10 +58,6 @@ const isObject = (value) => value !== null && typeof value === 'object' && !Arra
 const isNonterminalPayment = (body) => body.status === 'payment-evidenced'
   && (!DELIVERY_FINAL_VALUES.has(body.delivery?.status) || body.delivery?.evidencePublication === 'held-readback-only');
 
-function assertContext({ path, dispatched, continuation, newPurchase } = {}) {
-  if (!KNOWN_PATHS.has(path) || [dispatched, continuation, newPurchase].some((flag) => typeof flag !== 'boolean')) throw new TypeError('seller_answer_context_invalid');
-}
-
 function classifySigned(status, body, { path, continuation, newPurchase }) {
   const code = typeof body.error === 'string' ? body.error : undefined;
   if (status === 200) {
@@ -78,13 +73,12 @@ function classifySigned(status, body, { path, continuation, newPurchase }) {
 }
 
 /**
- * Classifies one seller answer by K5's table.
+ * Classifies one seller answer by the seller answer table.
  * `verified` is `{status, signed: true, body}` built by the transport after the wire verified the answer, or null when no answer arrived.
  * `context` is the adapter's own record of the request: `path` (a seller route), `dispatched` (false only for a failure before the request left), `continuation` (the request carried a capability the client minted) and `newPurchase` (the adapter's durable records establish a new purchase).
- * Returns `{answerClass, code}`: `code` is the seller's `error` string when it sent one. Throws TypeError for a context that is not well formed, and for a record with a context that says nothing was dispatched.
+ * Returns `{answerClass, code}`: `code` is the seller's `error` string when it sent one. Throws TypeError for a record whose context says nothing was dispatched.
  */
 export function classifySellerAnswer(verified, context) {
-  assertContext(context);
   if (verified === null) return answer(context.dispatched ? UNKNOWN : NOT_SENT);
   if (!context.dispatched) throw new TypeError('seller_answer_context_invalid');
   if (verified?.signed !== true || !Number.isSafeInteger(verified.status) || !isObject(verified.body)) return answer(UNKNOWN);
