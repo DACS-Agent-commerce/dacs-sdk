@@ -13,7 +13,7 @@ async function boundFixture() {
   return { binding, authority, current, currentLocal: () => ({ ...current }) };
 }
 
-test("admitTp1Authority over K7-BIND-1 returns a token labelled TP1-4118a9181f5d6e475c446d44eebeb9fd; a label string is not a token", async () => {
+test("admitTp1Authority over the approved TP-1 binding returns a token labelled TP1-4118a9181f5d6e475c446d44eebeb9fd; a label string is not a token", async () => {
   const { binding, currentLocal } = await boundFixture();
   const token = await api.admitTp1Authority({ binding, currentLocal });
   assert.equal(token.label, APPROVED_LABEL);
@@ -33,7 +33,7 @@ test("admitTp1Authority over K7-BIND-1 returns a token labelled TP1-4118a9181f5d
   for (const value of ['TP1-' + '0'.repeat(31), 'TP1-' + '0'.repeat(33), 'TP1-' + 'A'.repeat(32), 'tp1-' + '0'.repeat(32), 'TEST-x', 7, null]) assert.equal(isTp1AuthorityLabel(value), false);
 });
 
-test("admitTp1Authority refuses a copied binding, another connection and a stalled reader with K7 codes and causes", async t => {
+test("admitTp1Authority refuses a copied binding, another connection and a stalled reader with the binding refusal codes and their causes", async t => {
   const fixture = await boundFixture(), { binding, currentLocal } = fixture;
   await assert.rejects(api.admitTp1Authority({ binding: structuredClone(binding), currentLocal }), { code: 'tp1_binding_required' });
   await assert.rejects(api.admitTp1Authority({ binding, currentLocal: () => ({ ...LOCAL, connectionId: 'TEST-other-connection' }) }), { code: 'tp1_local_binding_changed' });
