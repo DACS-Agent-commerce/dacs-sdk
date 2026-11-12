@@ -3709,6 +3709,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF merge the source-read transport helper into the source-read world fixture | `packages/dacs-client/test/helpers/source-read-transport.mjs` (deleted) |
 | delta(client): WF merge the source-read transport helper into the source-read world fixture | `packages/dacs-client/test/helpers/source-read-world.mjs:1` |
 | delta(client): WF merge the source-read transport helper into the source-read world fixture | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` |
+| test(client): expect a path recorded as deleted to be absent at HEAD in the WF blob check | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| test(client): expect a path recorded as deleted to be absent at HEAD in the WF blob check | `packages/dacs-client/DELTA-MAP.md:1` |
+| test(client): expect a path recorded as deleted to be absent at HEAD in the WF blob check | `packages/dacs-client/HOLD.json:1` |
+| test(client): expect a path recorded as deleted to be absent at HEAD in the WF blob check | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| test(client): expect a path recorded as deleted to be absent at HEAD in the WF blob check | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
