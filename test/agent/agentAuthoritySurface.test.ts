@@ -153,6 +153,30 @@ describe("Agent wallet-authority boundary", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it("refuses the removed identity.bundle key before connecting", async () => {
+    const connect = vi.spyOn(Demos.prototype, "connect")
+      .mockResolvedValue(undefined as never);
+    await expect(createAgent({
+      demosRpc: "https://rpc.example",
+      identity: { agentId: PRIMARY, bundle: structuredClone(BUYER_IDENTITY) },
+    } as Parameters<typeof createAgent>[0])).rejects.toThrow(
+      /AgentConfig\.identity\.bundle is no longer read/,
+    );
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("refuses the removed identity.verifyPresentation key before connecting", async () => {
+    const connect = vi.spyOn(Demos.prototype, "connect")
+      .mockResolvedValue(undefined as never);
+    await expect(createAgent({
+      demosRpc: "https://rpc.example",
+      identity: { agentId: PRIMARY, verifyPresentation: () => true },
+    } as Parameters<typeof createAgent>[0])).rejects.toThrow(
+      /AgentConfig\.identity\.verifyPresentation is no longer read/,
+    );
+    expect(connect).not.toHaveBeenCalled();
+  });
+
   it("does not reflectively expose the adapter, raw client, or wallet sentinel", () => {
     const adapter = authorityBearingAdapter();
     const agent = buildAgent(adapter, {
