@@ -265,7 +265,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 
 - `P21a2ab` — exposes the held transport facade and the seller composition. `devnet-native-transport.mjs` adds only `registerHeldTransportFacade`: it adds a facade to the capability set that holds its registered inner and throws for an unregistered inner; it is not in the package `exports` map. `node-wallet-session.mjs` adds `createHeldTransportFacade` (the active members and every `binding` phase but `readback` run the admission wrapper; the passive members are listed in the README), `createNodeSellerComposition` (the demo transport, the required `approveConfirmedWrite` routed so another sender's confirmation and a Listing CREATE pass and every other seller confirmation calls it once, and the composition's observer) and re-exports of the capability checks and the profile and policy constants. The buyer session keeps its transport, loading order and no confirmed-write policy. Packed consumers install npm's installed lock, so the demosdk version CI selects is the one tested, and both purchase runtime floors run the packed test. The inner effect gate stays with P21a2b.
 
-- `P21a2b` — adds the Node compositions' one effect gate, its host contract and the TP-1 authority token. `node-wallet-session.mjs` runs every transaction-hash signature inside `NodeDemos.sign` and every `confirmTx` or `broadcastTx` body sent through the owner's fetch through the gate, after the SDK's own preparation: the optional seller `qualify`, the pass's `refreshAuthority` and `finalStop` within its remaining deadline, then synchronously the hold, the connection, the pass's lease, its synchronous checks and the finalized content with the fee ceiling, then the inner call. `effectPass` and `runInEffectPass` are new members of both compositions, and the seller refuses `effect_pass_required` without a pass. The finalized-content check also refuses a fee above the total. A gated body resets the attempt's dispatched flag unless an effect body of that attempt was already sent, so a refused effect reports `not_dispatched` although the transport's earlier nonce read was sent. The observer's deadline helper is shared with the new `admitTp1Authority`, `tp1AuthorityLabel`, `authorityLabelOf` and `isTp1AuthorityToken`. New `src/dacs/tp1-authority-label.mjs` is a pure label parser. A fence acquisition on the exported transport owner made while `runInEffectPass` runs shares the pass's own fence and releases nothing, so the transport's own steps no longer wait on the fence the pass holds. No other source file changes.
+- `P21a2b` — adds the Node compositions' one effect gate, its host contract and the TP-1 authority token. `node-wallet-session.mjs` runs every transaction-hash signature inside `NodeDemos.sign` and every `confirmTx` or `broadcastTx` body sent through the owner's fetch through the gate, after the SDK's own preparation: the optional seller `qualify`, the pass's `refreshAuthority` and `finalStop` within its remaining deadline, then synchronously the hold, the connection, the pass's lease, its synchronous checks and the finalized content with the fee ceiling, then the inner call. `effectPass` and `runInEffectPass` are new members of both compositions, and the seller refuses `effect_pass_required` without a pass. The finalized-content check also refuses a fee above the total. A gated body resets the attempt's dispatched flag unless an effect body of that attempt was already sent, so a refused effect reports `not_dispatched` although the transport's earlier nonce read was sent. The observer's deadline helper is shared with the new `admitTp1Authority`, `tp1AuthorityLabel`, `authorityLabelOf` and `isTp1AuthorityToken`. New `src/dacs/tp1-authority-label.mjs` is a pure label parser. A fence acquisition on the exported transport owner made while `runInEffectPass` runs shares the pass's own fence and releases nothing, so the transport's own steps no longer wait on the fence the pass holds. `effectPass` refuses a missing argument, a deadline that is not a number and a check list with holes as `effect_pass_invalid`, and the gate tests run on the exported owner. No other source file changes.
 
 ## Commit register
 
@@ -1210,7 +1210,12 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | d7936b2ba890b2431ce8681de72fe572ed1119b4 |
 | | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | 10beba68fcc095df465df8e74e5e0e27fe8dd251 |
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | beb390b8c98523aeaa14210e43c207be82bf4696 |
-| WF | delta(client): WF record the merged public API test after carrying the held part up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| WF | delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 24cc435cbbd3e319a867bfb0d1759014dd077272 |
+| | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | d4a27b230ade392782c331f6100640e1c5742baf |
+| | `packages/dacs-client/test/node-wallet-authority-token.test.mjs:1` | 87f4ce20d1db5d2b032876da56d94c263b421a5f |
+| | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | 757b60148d789e59fc2db8b9350176f6fd859ce8 |
+| | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | e79fd458fc4120e07f82142805d6e01f93513019 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | f5bea631bd02f0505bde239e10be38970474caf6 |
 
 ## Complete commit and file inventory
@@ -3823,6 +3828,17 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the merged public API test after carrying the held part up | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the merged public API test after carrying the held part up | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the merged public API test after carrying the held part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/test/node-wallet-authority-token.test.mjs:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` |
+| delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` |
 
 ## Original moved files
 
