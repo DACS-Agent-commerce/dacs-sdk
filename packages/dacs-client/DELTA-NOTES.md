@@ -190,7 +190,7 @@ These records add no runtime behavior. SQL callbacks remain allowed inside a lea
 
 D11 transaction adapter dependency split:
 
-The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
+The purchase transaction adapter requires the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs` for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
 
 D11 SQLite transaction split:
 
@@ -260,3 +260,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 - `P11b1L2` (WF) — the buyer coordinator treats an authenticated HTTP 404 `peer_unknown_job` as absence only during proposal reconciliation, so the first proposal reaches the wire host. Publication and seller-contribution refusals keep their classifications. The buyer package's seller HTTP client (`src/dacs/seller-http.mjs`) now passes the exact response bytes to the response verifier and awaits it within the call's deadline, so an unsigned, invalidly signed or changed-body 404 ends the call as an unavailable answer (`response-auth`, or `timeout` for a stalled verifier) instead of reaching the refusal path. Offline wire/coordinator tests, including the buyer package's own client, cover authentication failures and both sides of dispatch; the package integrity pins record the exact changed bytes.
 
 - `P52c` (WF) — the public, testnet-pinned, read-only Demos chain reader (`src/substrate/demos.mjs`, new export `./substrate/demos`, whose only name is `createDemosPublicChainReader`). It wraps `createDemosChainReader` from `src/dacs/chain.mjs`, which is unchanged, and offers a frozen object of nine reads and five metadata fields with no identity, passive-transfer or request method. The first read checks the pinned identity before its own request; only a successful check is shared. `observePurchaseTransfer` reports an included transfer as unavailable. The root still exports no chain reader.
+
+## D39 — Remove the unused guarded SQLite module
+
+`src/util/guarded-sqlite.mjs` and `test/guarded-sqlite.test.mjs` are deleted. Nothing in the package imports the module. The ledger records each deletion with `after: null`, and the earlier records of both files stay as history.

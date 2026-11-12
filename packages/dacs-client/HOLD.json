@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "8512e95145c117d2c376010ce5ac592e82107f0d"
+        "blob": "6f64d57e7244a39c697b66b828243cebb466bde9"
       },
       "DELTA-LEDGER.json": {
-        "blob": "c96097b0c69d249be3062391d2aa5bb41688b4cd"
+        "blob": "570fa9585f3d32199ddff09fd794660ae422ca80"
       },
       "DELTA-MAP.md": {
-        "blob": "e8706bea2c9e2316aa34f5b9d928f0b2e17439fa"
+        "blob": "44f08a55f11da99aa93e580545b28fa2718f564a"
       },
       "DELTA-NOTES.md": {
-        "blob": "7a3ff95339f2c23bc5ba504020f18055d5a6a759"
+        "blob": "30345db23ce3569cc5a7e773d707002816bb137c"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "1d6feafefebddbbdf99de8276a6174a4f570e0df"
+        "blob": "6a06963f7f26d5055b7fea3690df5c25e9e36fc7"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "05aecddde57e93c2e7e90572e5757fef722946e6"
+        "blob": "29e7e35a6c4e96732487745b2be56ec4e0335a2d"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1273,9 +1273,6 @@
       "src/switch-files.mjs": {
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
       },
-      "src/util/guarded-sqlite.mjs": {
-        "blob": "631654f861dddd1f1b3cbce70da004c96933d5f4"
-      },
       "src/util/http.mjs": {
         "blob": "1491db0fe720a81c5b0cb053ad79af4ab5f79639"
       },
@@ -1446,9 +1443,6 @@
       },
       "test/fixtures/wallet.mjs": {
         "blob": "4ee7eacda377c731fd70105eaa3bf862421e01c3"
-      },
-      "test/guarded-sqlite.test.mjs": {
-        "blob": "900af80069850c3942204a858d8989e8e11a3adc"
       },
       "test/helpers/agreement-context-integration.mjs": {
         "blob": "3bbc74d4d3f72101e8b3d3b2ff27449ba4105add"

@@ -6759,6 +6759,22 @@
           "after": "1210a631918cb1b11824b80770e1497c52738180"
         }
       ]
+    },
+    {
+      "delta": "D39",
+      "subject": "delta(client): D39 remove the unused guarded SQLite module",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+          "before": "631654f861dddd1f1b3cbce70da004c96933d5f4",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+          "before": "900af80069850c3942204a858d8989e8e11a3adc",
+          "after": null
+        }
+      ]
     }
   ]
 }
