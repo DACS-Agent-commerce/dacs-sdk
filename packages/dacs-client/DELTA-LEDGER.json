@@ -6628,6 +6628,17 @@
           "after": "2a6f47ebfb1788974642eb560643ceeaad52b2bf"
         }
       ]
+    },
+    {
+      "delta": "D38",
+      "subject": "delta(client): D38 share the lock and fence abort wiring and narrow the abort comments",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "53cb946760c16418ef295626bbce65c9c1042987",
+          "after": "330883bdd1e897b9d630a6fdb21d8fd61b05871f"
+        }
+      ]
     }
   ]
 }

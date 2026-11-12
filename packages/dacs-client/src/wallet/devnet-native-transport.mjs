@@ -467,31 +467,29 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (r) { sharedAuth-=r.used.size; r.reserved=true; }
     else authRecords.set(identity,{ used:new Set(),floor:-Infinity,reserved:true });
   };
-  // A wait for a lock or a connection fence runs no work, so an abort of
-  // `signal` ends it at once with the abort reason. A lock or fence granted
-  // after that is released without running anything. Once granted in time,
-  // work runs to completion as before.
-  function lockUnlessAborted(signal, key, work) {
+  // Ends a wait for a lock or a connection fence with the abort reason as soon
+  // as `signal` aborts. `wait` receives a function to call when the grant
+  // arrives; an abort after that no longer ends the wait, so granted work runs
+  // to completion. The wait itself keeps polling in the background until the
+  // grant comes or its own limit runs out. Once the wait is aborted, no work
+  // runs, and a lock or fence granted after the abort is released without any.
+  function untilAborted(signal, wait) {
     signal.throwIfAborted();
     return new Promise((resolve, reject) => {
       const giveUp = () => reject(signal.reason);
+      const granted = () => signal.removeEventListener('abort', giveUp);
       signal.addEventListener('abort', giveUp, { once: true });
-      journal.withWalletLock(key, () => { signal.removeEventListener('abort', giveUp); signal.throwIfAborted(); return work(); })
-        .finally(() => signal.removeEventListener('abort', giveUp)).then(resolve, reject);
+      wait(granted).then(resolve, reject).finally(granted);
     });
   }
-  function fenceUnlessAborted(signal, address) {
-    signal.throwIfAborted();
-    return new Promise((resolve, reject) => {
-      const giveUp = () => reject(signal.reason);
-      signal.addEventListener('abort', giveUp, { once: true });
-      Promise.resolve().then(() => transportOwner.acquireConnectionFence({ address })).then(f => {
-        if (!signal.aborted) return resolve(f);
-        // The caller already has the abort reason; a failed release has no one to report to.
-        Promise.resolve().then(() => f?.release?.()).catch(() => {});
-      }, reject).finally(() => signal.removeEventListener('abort', giveUp));
-    });
-  }
+  const lockUnlessAborted = (signal, key, work) => untilAborted(signal, granted =>
+    journal.withWalletLock(key, () => { granted(); signal.throwIfAborted(); return work(); }));
+  const fenceUnlessAborted = (signal, address) => untilAborted(signal, () =>
+    Promise.resolve().then(() => transportOwner.acquireConnectionFence({ address })).then(f => {
+      if (!signal.aborted) return f;
+      // The caller already has the abort reason; a failed release has no one to report to.
+      Promise.resolve().then(() => f?.release?.()).catch(() => {});
+    }));
   async function fenced(work, address, signal) {
     await releaseExpiredLeases();
     const f = await (signal ? fenceUnlessAborted(signal, address) : transportOwner.acquireConnectionFence({ address }));
@@ -960,10 +958,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // 'included'}; rejects invalid_params, readback_unverified, a binding
   // failure, or the abort reason (caller, close(), or OutboundError 'timeout').
   // Abort contract: fetchImpl and transportOwner honour AbortSignal and settle.
-  // An abort stops new steps and aborts requests; it abandons no running work,
-  // and close() aborts and then waits for it. A wait for the source-read lock
-  // or the connection fence runs no work, so an abort or the deadline ends it
-  // at once; a lock or fence granted afterwards is released without any read.
+  // An abort stops new steps and aborts requests, and close() aborts and then
+  // waits for reads that are running. An abort or the deadline ends a wait for
+  // the source-read lock or the connection fence at once. After that, no read
+  // runs, and a lock or fence granted after the abort is released without a
+  // read. close() does not wait for the lock wait, which keeps polling until
+  // the lock is granted or the journal's lock timeout runs out.
   async function observePassiveTransfer(hash, options={}) {
     if(typeof hash!=='string' || !HASH.test(hash)) fail('invalid_params','a canonical native transaction hash is required');
     const stop=AbortSignal.any([closing.signal,...(options.signal?[options.signal]:[])]);
