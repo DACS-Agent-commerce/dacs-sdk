@@ -78,8 +78,9 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
       return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } catch (error) {
       // The message can quote the input and the path can hold any character. JSON
-      // escaping keeps it on one line, so none of it can start a `::` workflow command.
-      process.stderr.write(`${JSON.stringify(`${path}: ${error.message}`)}\n`);
+      // escaping keeps it on one line, so none of it can start a `::` workflow command,
+      // and `##[` is escaped because the runner reads that older form anywhere in a line.
+      process.stderr.write(`${JSON.stringify(`${path}: ${error.message}`).replaceAll("##[", "##\\u005b")}\n`);
       process.exit(1);
     }
   };
