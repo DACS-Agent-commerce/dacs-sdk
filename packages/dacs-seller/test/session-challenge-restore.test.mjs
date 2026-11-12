@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { createSellerDurableState, SELLER_STATE_SIGNING_DOMAIN } from '../src/dacs/seller-durable-state.mjs';
-import { createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { proposalAdmissionFixture } from './helpers/proposal-admission-fixture.mjs';
 import { JOB, buyer } from './helpers/protocol-fixture.mjs';

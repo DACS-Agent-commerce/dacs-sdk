@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   packages, plannedVersion, validateManifest, validateFiles, publicEntries,
-  validateLock, checkInstalled, prepare, consume, dryRun, expectedNode20Rejection, release, checkGenerator, validateArtifactSet,
+  validateLock, checkInstalled, prepare, consume, dryRun, release, checkGenerator, validateArtifactSet,
 } from "../../scripts/release-checks.mjs";
 
 const core = packages[0];
@@ -92,21 +92,6 @@ test("consumer lock refuses links and directory dependencies but admits the inpu
   for (const value of [{ link: true }, { resolved: "file:../core" }, { resolved: "workspace:*" }]) {
     assert.throws(() => validateLock({ packages: { [`node_modules/${core.name}`]: value } }, allowed), /link|local|internal.*tarball/);
   }
-});
-
-test("only declared Node 22 surfaces may reject node:sqlite on Node 20", () => {
-  const error = { code: "ERR_UNKNOWN_BUILTIN_MODULE", message: "No such built-in module: node:sqlite" };
-  const p = { name: packages[3].name, engines: { node: ">=22.13.0" } };
-  assert.equal(expectedNode20Rejection(p, ".", error, "20.19.0"), true);
-  assert.equal(expectedNode20Rejection(p, ".", error, "22.21.1"), false);
-  assert.equal(expectedNode20Rejection({ ...p, name: core.name }, ".", error, "20.19.0"), false);
-  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, ".", error, "20.19.0"), false);
-  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./wallet/durable-journal", error, "20.19.0"), true);
-  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./durable-journal", error, "20.19.0"), false);
-  for (const message of ["No such built-in module: node:sqlite-extra", "No such built-in module: node:sqlite/extra", "other failure involving node:sqlite"]) {
-    assert.equal(expectedNode20Rejection(p, ".", { ...error, message }, "20.19.0"), false);
-  }
-  assert.equal(expectedNode20Rejection(p, ".", { ...error, code: "ERR_MODULE_NOT_FOUND" }, "20.19.0"), false);
 });
 
 async function fixture(fn) {
