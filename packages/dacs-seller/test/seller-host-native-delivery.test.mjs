@@ -264,7 +264,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
   const effects = { deliverySubmit: [], deliveryResends: [], published: [], publishCalls: [], retainedReads: [], retainedResends: [], signCreate: [], signed: [], broadcast: [], componentSigns: [], deliverySignCreate: [], deliverySigned: [], deliveryBroadcast: [] };
-  const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, readRetainedEvidenceHang: null, artifactApproval: null, evidenceReadAbsence: null, evidencePending: false };
+  const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, readRetainedEvidenceHang: null, artifactApproval: null, evidenceReadAbsence: null, evidencePending: false, commitmentPending: false, beforeCommitmentResendCheck: null };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     if (lostBeforeCompletion && Buffer.from(bytes).toString('utf8').startsWith(DACS_SELLER_HTTP_DOMAINS.response)) throw new Error('TEST process lost before the response');
@@ -388,9 +388,11 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       if (faults.readRetainedThrowKind === artifactKind) { faults.readRetainedThrowKind = null; throw null; }
       if (artifactKind === 'SettlementEvidence' && faults.readRetainedEvidenceHang) return faults.readRetainedEvidenceHang(options);
       // A retained evidence CREATE the node accepted but cannot show yet: like the shipped capability, a read broadcasts it again only when it asks for a resend and its own check answers true.
-      if (artifactKind === 'SettlementEvidence' && faults.evidencePending && signedCreates.has(logicalAddress)) {
+      // The commitment read works the same way: `faults.commitmentPending` leaves its retained CREATE pending.
+      if (((artifactKind === 'SettlementEvidence' && faults.evidencePending) || (artifactKind === 'FinalityCommitmentRecord' && faults.commitmentPending)) && signedCreates.has(logicalAddress)) {
         const check = options?.resend === true && typeof options.authorizeResend === 'function' ? options.authorizeResend : null;
-        if (check && faults.beforeEvidenceResendCheck) { const hook = faults.beforeEvidenceResendCheck; faults.beforeEvidenceResendCheck = null; await hook(); }
+        if (check && artifactKind === 'FinalityCommitmentRecord' && faults.beforeCommitmentResendCheck) { const hook = faults.beforeCommitmentResendCheck; faults.beforeCommitmentResendCheck = null; await hook(); }
+        if (check && artifactKind === 'SettlementEvidence' && faults.beforeEvidenceResendCheck) { const hook = faults.beforeEvidenceResendCheck; faults.beforeEvidenceResendCheck = null; await hook(); }
         if (check && await check() === true) effects.retainedResends.push({ artifactKind, logicalAddress });
         return { status: 'indeterminate', reason: 'TEST retained CREATE is pending' };
       }
@@ -2521,6 +2523,34 @@ test('commitment transport reconciliation reads an uncertain retained commitment
   assert.deepEqual(reads.filter(read => read.resend !== false), []);
   assert.equal(w.effects.published.length, 1);
  } finally { agent.close(); }
+});
+
+const commitmentResends = (w, p) => w.effects.retainedResends.filter((read) => read.logicalAddress === core.finalityCommitmentAddress(p.jobId)).length;
+
+// A commitment CREATE whose publish answer was lost, which the node cannot show yet, when the restarted seller resumes the job.
+const resumeWithPendingCommitment = async (t, beforeResendCheck) => {
+  const w = await world(t), p = await w.purchase({ commit: false });
+  w.faults.artifactPublish.push('FinalityCommitmentRecord:land-throw');
+  await assert.rejects(p.client().commit(p.jobId));
+  await w.restart();
+  w.faults.commitmentPending = true;
+  w.faults.beforeCommitmentResendCheck = () => beforeResendCheck(w, p);
+  const agent = await w.agentFor();
+  try { await assert.rejects(agent.resume({ jobId: p.jobId })); } finally { agent.close(); }
+  assert.equal(w.faults.beforeCommitmentResendCheck, null, 'the commitment read asked for the check');
+  return { w, p };
+};
+
+test('a pending commitment CREATE is sent again once, through the seller-state check asked right before the resend', async t => {
+  let sentBeforeCheck = null;
+  const { w, p } = await resumeWithPendingCommitment(t, (world, purchase) => { sentBeforeCheck = commitmentResends(world, purchase); });
+  assert.equal(sentBeforeCheck, 0, 'nothing was sent before the check');
+  assert.equal(commitmentResends(w, p), 1);
+});
+
+test('a pending commitment CREATE is not sent again once the seller-state check, asked right before the resend, fails', async t => {
+  const { w, p } = await resumeWithPendingCommitment(t, (world, purchase) => world.loseJobLock(purchase.jobId));
+  assert.equal(commitmentResends(w, p), 0, 'a failed check sends nothing');
 });
 
 // The public host forwards issuance to the same verifier-owned generator.
