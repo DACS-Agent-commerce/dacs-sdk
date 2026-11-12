@@ -64,7 +64,8 @@ function errorText(error) {
   let text = 'chain reader failed';
   try {
     const message = typeof error === 'string' ? error : Object.getOwnPropertyDescriptor(error, 'message')?.value;
-    if (typeof message === 'string') text = message;
+    // An empty or blank message explains nothing, so it keeps the fixed text too.
+    if (typeof message === 'string' && message.slice(0, MAX_OBSERVATION_REASON_LENGTH).trim()) text = message;
   } catch { /* An unreadable message retains the fixed fallback. */ }
   return text.slice(0, MAX_OBSERVATION_REASON_LENGTH);
 }
