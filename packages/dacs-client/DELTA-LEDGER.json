@@ -6724,6 +6724,33 @@
       ]
     },
     {
+      "delta": "D34",
+      "subject": "delta(client): D34 report a failed transaction-body read as chain unavailable",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd",
+          "after": "55a0b3db0633bcebea37746ac31e5ae1700d06bf"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4",
+          "after": "340d541daecd3e501767c1cf341ea1e7c2c1683f"
+        }
+      ]
+    },
+    {
+      "delta": "D36",
+      "subject": "delta(client): D36 keep a failed transaction-body read reported as chain unavailable",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a",
+          "after": "aebbb2f2a8cbd4ed3c053e258097bb40f879ed45"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P13a1 sign and verify seller traffic through the wire",
       "compact": true,
@@ -8014,6 +8041,41 @@
           "path": "packages/dacs-client/src/dacs/seller-http.mjs",
           "before": "40664e4d65a3766cd0ff4544f5364ff2a063cbc9",
           "after": "40664e4d65a3766cd0ff4544f5364ff2a063cbc9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF drive the client-minted capability test through the request record",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "60d3849d0f82b3eea964a03c1919306f56d4960b",
+          "after": "e2495f7ef3e210d2e0ca67278568bb29d7bc7da6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged seller response classification test blob of the stored request bytes fixes",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "35f0ac9deae8e0b1c8c1a3057fe8dad6da32a55d",
+          "after": "35f0ac9deae8e0b1c8c1a3057fe8dad6da32a55d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged purchases blob of two parallel records",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "1426fa081a61f904773ce02cb38d9c7184851839",
+          "after": "1426fa081a61f904773ce02cb38d9c7184851839"
         }
       ]
     },

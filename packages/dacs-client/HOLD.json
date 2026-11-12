@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "255c842baba44088f11f6c78b7ef4359c86957b9"
+        "blob": "2bdc48aee819345960922d725866f1a1ead5bdd3"
       },
       "DELTA-LEDGER.json": {
-        "blob": "55a1e356497a0e6b4b88ef133f9bdb6e90582894"
+        "blob": "de29aa467baa5ac7299a2829c25f4dd4e506cb77"
       },
       "DELTA-MAP.md": {
-        "blob": "d51468d8186ddc776f036c7a6d3fb00645b62e77"
+        "blob": "7fc2e64f89844047019151500ef7f4373412d0ab"
       },
       "DELTA-NOTES.md": {
         "blob": "4d850fc224a01a25fa65cd8933403b87e546e4be"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "0cfc09599a5001f18b8653e5243c9422af3bc0e1"
+        "blob": "754acded0ce35d15e3cc7d29dc6f2246a0ab5320"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "68befa8a28496bcc9b0199b49674cde7dc1acb52"
+        "blob": "3aaf8049cceed07f08273f63853b102b07afd355"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "6ed2b09718f6d4d1a04c2a4684c167b953d0059a"
@@ -1259,7 +1259,7 @@
         "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "b0b53ae4d5f19dd08211fadab2054d49f17b2b26"
+        "blob": "1426fa081a61f904773ce02cb38d9c7184851839"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1787,7 +1787,7 @@
         "blob": "c458b4582cc4b2aef338c9525dd0b69a0ec1ff57"
       },
       "test/host-observations.test.mjs": {
-        "blob": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4"
+        "blob": "340d541daecd3e501767c1cf341ea1e7c2c1683f"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "2bb9dd310f49253c35f2985fff4a653e0b22775e"
@@ -1943,7 +1943,7 @@
         "blob": "97f99b5f286658c793fe6cb44de12ff39951dab7"
       },
       "test/seller-response-classification.test.mjs": {
-        "blob": "b63568fc8eac39716c34f9ad72918f8ec4f9e2bb"
+        "blob": "35f0ac9deae8e0b1c8c1a3057fe8dad6da32a55d"
       },
       "test/seller-retry-authentication.test.mjs": {
         "blob": "8ba0a6e6ffdfbc2d23c9a6dc9ce241160774447a"
