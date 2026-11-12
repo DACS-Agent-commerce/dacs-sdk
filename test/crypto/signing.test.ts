@@ -96,6 +96,14 @@ describe("Ed25519 verification", () => {
   ])("refuses a small-order or non-canonical public key", (hex) => {
     expect(ed25519Verify(Buffer.from("message"), Buffer.from("01" + "00".repeat(63), "hex"), publicKeyFromRaw(Buffer.from(hex, "hex")))).toBe(false);
   });
+
+  it("refuses the non-canonical encoding of the identity key with the identity signature", () => {
+    const publicKey = publicKeyFromRaw(Buffer.from("ee" + "ff".repeat(30) + "7f", "hex"));
+    const signature = Buffer.from("01" + "00".repeat(63), "hex");
+    for (const message of ["message", "signed message", ""]) {
+      expect(ed25519Verify(Buffer.from(message), signature, publicKey)).toBe(false);
+    }
+  });
 });
 
 describe("signing (§B.7)", () => {
