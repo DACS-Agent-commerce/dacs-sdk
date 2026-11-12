@@ -6823,6 +6823,17 @@
           "after": "ed5ca3d48021e4df8e372307148c25e68e1765b8"
         }
       ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 state the block-two pin without a capture path",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "553cb843ac22399e425a0bfbb334500e869caecb",
+          "after": "172c0e6ab561cdb1ddf4efe9e6eddb9b24fdef6f"
+        }
+      ]
     }
   ]
 }

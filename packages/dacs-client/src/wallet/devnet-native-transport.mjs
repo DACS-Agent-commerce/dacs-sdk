@@ -22,8 +22,8 @@ export const DEVNET_NATIVE_PROFILE = 'devnet-native';
 // the run-reviewed Node2 RPC representation which the transport may unwrap.
 export const DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE = 'node2-result-400-error-require-reply-false-block-number-not-provided/v1';
 export const DEVNET_NODE2_BLOCK_LAYOUT = 'node2-number-id-plus-one-empty-extra/v1';
-// Reviewed TP-1 continuation: conformance/tp1-node-observations-2026-11-08/block2-2026-11-08.json.
-// Its predecessor is the recorded block one; this pin is never learned from a live read.
+// Reviewed hash of TP-1 block two. Its predecessor is the recorded block one;
+// this pin is never learned from a live read.
 export const TP1_REVIEWED_BLOCK_TWO_HASH = 'ee41ad17448a9723b1040b41a4d375ab9071f5a9bcdd363bc22dba150faf1bd5';
 const NODE2_CONTENT_FIELDS = ['ordered_transactions','encrypted_transactions_hashes','per_address_transactions','web2data','previousHash','timestamp','peerlist','l2ps_partecipating_nodes','l2ps_banned_nodes','native_tables_hashes'];
 function reviewedNode2Block(answer) {
