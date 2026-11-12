@@ -318,21 +318,20 @@ describe("build-test long suites (.github/workflows/ci.yml)", () => {
     for (const name of suites) {
       for (const event of EVENTS) expect(legsRunning(name, event)).toEqual([...MAIN_LEGS].sort());
     }
-    const demosdk = "Typecheck and test against demosdk 4.0.18";
-    for (const event of ["push", "merge_group"]) expect(legsRunning(demosdk, event).length).toBeGreaterThan(0);
   });
 
-  it("runs the older-demosdk step on node 22 outside pull requests only, in exactly one shard", () => {
-    const name = "Typecheck and test against demosdk 4.0.18";
-    const step = (SHARD.steps ?? []).find((s) => s.name === name);
-    expect(legsRunning(name, "pull_request")).toEqual([]);
-    for (const event of ["push", "merge_group"]) {
-      expect(legsRunning(name, event)).toEqual(["22"]);
-      const entries = (shards.plan(event) as Entry[]).filter((entry) => holds(step?.if, { matrix: entry, github: { event_name: event } }));
-      expect(entries).toHaveLength(1);
+  // The demosdk 4.0.18 checks moved to the daily demosdk-compat workflow (test/scripts/demosdk-pin-drift.test.ts).
+  it("installs no other demosdk version in any build-test job", () => {
+    for (const job of [MAIN, SHARD]) {
+      expect((job.steps ?? []).some((s) => (s.run ?? "").includes("@kynesyslabs/demosdk@"))).toBe(false);
     }
-    // It replaces the installed SDK, so it stays the last step of its job.
-    expect(SHARD.steps?.at(-1)?.name).toBe(name);
+  });
+
+  // The typechecks read the locked TypeScript and @types/node, not the running Node, so one leg is enough.
+  it("typechecks on the node 22 leg only, for every event", () => {
+    for (const name of ["Typecheck", "Typecheck Node host kit", "Typecheck project generator"]) {
+      for (const event of EVENTS) expect(legsRunning(name, event), `${name} ${event}`).toEqual(["22"]);
+    }
   });
 });
 
