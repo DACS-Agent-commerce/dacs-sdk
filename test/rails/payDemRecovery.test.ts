@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { SettleRequest, SettlementRecoveryAttempt } from "../../src/agent/runSessionCore.js";
+import type { SettleRequest, SettlementRecoveryAttempt } from "../../src/rails/settlementTypes.js";
 import * as canonicalSnapshot from "../../src/canonical/snapshot.js";
 import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import {

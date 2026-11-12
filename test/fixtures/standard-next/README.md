@@ -40,6 +40,11 @@ ahead of the repository-wide conformance pin.
 - `fab-bundle-extended-pointer-v0.3.json` — four retained v0.3 E7 pointer
   outcomes; commit `662be1d4899a2cadf327fe2d5523e93a80334e5f`, file SHA-256
   `5d6e596c0f22c74281b8791d5801047aba7f809d250917f5f05184a6b5bb6cfc`.
+- `listing-string-length-v0.1.json` — DACS-1 §6.3.4 Listing `max N chars`
+  bounds, counted in Unicode scalar values of the CF-1 (NFC) form; 13
+  boundary vectors; Standard PR #447, commit
+  `4c083db7f7833553975b987399d25fd6be0d5771`, file SHA-256
+  `ec7c86f33af6101bb205969cbd3c675c755244a9ec7d4ca71cf1c76cf3a8b5ca`.
 
 Do not edit a fixture locally. Replace it from a named Standard commit and
 update this provenance note.

@@ -29,8 +29,6 @@ export {
   type SignatureCheck,
   type Reputation,
   type ReputationExclusion,
-  type RunSessionOptions,
-  type SessionListingInput,
 } from "./Agent.js";
 export {
   verifyBundleCore,
@@ -307,10 +305,12 @@ export {
   type SessionVetRequest,
   type VetFinalityAuthenticationRequest,
   type SessionTerms,
-  type SettleRequest,
-  type SettleResult,
-  type SettlementRecoveryAttempt,
 } from "./runSessionCore.js";
+export type {
+  SettleRequest,
+  SettleResult,
+  SettlementRecoveryAttempt,
+} from "../rails/settlementTypes.js";
 export {
   assertCheckpointPayloadShape,
   createInMemorySessionStore,

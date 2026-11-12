@@ -1,28 +1,6 @@
 import { snapshotWireJsonRead } from "../canonical/snapshot.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "../rails/demosAddress.js";
-
-/**
- * A rail's projection of a terminal failed Demos record. The rail must build it
- * from the node's `getTxByHash` record only after matching the signed
- * hash/nonce, inclusion block and native body. It describes failure of this
- * attempt; it never authorizes a replacement debit.
- *
- * Fields are projections of the node's `getTxByHash` record, in canonical form:
- * `txHash`, `payer` and `payee` are 64 lower-case hex without `0x` (the node
- * serves `0x`-prefixed keys); `nonce` is the record's decimal nonce string
- * converted to a safe integer; `amountOs` is the decimal OS amount. The public
- * result carries this projection; the SDK rail authenticates fresh results
- * with a separate private record verdict.
- */
-export interface DemosFailedRecordProof {
-  kind: "demos-failed-record";
-  txHash: string;
-  nonce: number;
-  blockNumber: number;
-  payer: string;
-  payee: string;
-  amountOs: string;
-}
+import type { DemosFailedRecordProof } from "../rails/settlementTypes.js";
 
 const RESULT_KEYS = new Set([
   "ok", "txHash", "chainId", "payer", "payee", "errorClass", "failureProof",

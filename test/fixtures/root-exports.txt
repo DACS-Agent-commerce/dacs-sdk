@@ -888,7 +888,6 @@ type RfqTranscriptDisclosureResult
 type RfqTranscriptDisclosureVerifiers
 type RfqTurnBody
 type RuleRef
-type RunSessionOptions
 type ScanOptions
 type ScanPage
 type ScanSeen
@@ -1041,7 +1040,6 @@ type SellerX402TxRef
 type SessionCheckpoint
 type SessionDeps
 type SessionLease
-type SessionListingInput
 type SessionLoad
 type SessionOutcome
 type SessionParty

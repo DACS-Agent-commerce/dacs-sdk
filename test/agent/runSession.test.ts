@@ -7,9 +7,8 @@ import {
   runSessionCore,
   type SessionDeps,
   type SessionTerms,
-  type SettleRequest,
-  type SettleResult,
 } from "../../src/agent/runSessionCore.js";
+import type { SettleRequest, SettleResult } from "../../src/rails/settlementTypes.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { createFsSessionStore } from "../../src/agent/sessionStoreFs.js";
 import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";

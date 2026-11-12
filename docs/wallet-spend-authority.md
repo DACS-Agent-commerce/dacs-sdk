@@ -74,8 +74,11 @@ rollback-resistant across actor backup/restore. It:
   budget.
 
 Filesystem and custom stores that do not explicitly implement a lineage
-selector keep the historical wallet/chain/policy-id scope, so an SDK upgrade
-continues to address their existing journal. The PostgreSQL store explicitly
+selector use the wallet/chain/policy-id scope, with the wallet written in its
+canonical form (`0x` followed by lowercase hex), so every spelling of one
+wallet addresses the same journal. A journal that an earlier SDK wrote under
+another spelling of the wallet (without `0x`, in uppercase, or with a label)
+is not found under that scope. The PostgreSQL store explicitly
 selects canonical wallet+chain lineage. Moving an existing journal to
 PostgreSQL requires the authenticated operator-only legacy import described in
 `wallet-budget-authority-design.md`; creating an empty lineage is not migration.

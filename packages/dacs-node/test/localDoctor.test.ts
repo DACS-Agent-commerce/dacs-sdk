@@ -112,7 +112,7 @@ describe("built-in local doctor probes", () => {
     const actors = [await actor(parent, "buyer"), await actor(parent, "seller")];
     const probes = createDacsNodeLocalDoctorProbesV1({
       actors,
-      nodeVersion: "v22.12.0",
+      nodeVersion: "v22.22.2",
       minimumFreeBytes: 1,
       transportIdentities: () => ({ status: "pass" }),
       deploymentRuntime: () => ({ status: "pass" }),
@@ -145,6 +145,19 @@ describe("built-in local doctor probes", () => {
       status: "fail",
       reasonCode: "data-directory-permissions-unsafe",
     });
+  });
+
+  it("passes Node only inside the package's engines range", async () => {
+    const parent = root();
+    const actors = [await actor(parent, "buyer"), await actor(parent, "seller")];
+    const check = (nodeVersion: string) =>
+      createDacsNodeLocalDoctorProbesV1({ actors, nodeVersion })["local.node-version"]!({} as never);
+    for (const nodeVersion of ["v22.22.2", "v22.23.0", "v24.15.0"]) {
+      expect(check(nodeVersion), nodeVersion).toMatchObject({ status: "pass" });
+    }
+    for (const nodeVersion of ["v20.19.0", "v22.12.0", "v22.22.1", "v23.4.0", "v24.14.0", "v25.0.0", "v26.0.0"]) {
+      expect(check(nodeVersion), nodeVersion).toMatchObject({ status: "fail", reasonCode: "node-version-unsupported" });
+    }
   });
 
   it("blocks missing external transport and deployment capabilities", async () => {

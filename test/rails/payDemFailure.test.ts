@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SettleResult } from "../../src/agent/runSessionCore.js";
+import type { SettleResult } from "../../src/rails/settlementTypes.js";
 import { hasDefinitiveDemosFailure } from "../../src/agent/settlementFailure.js";
 import { createIdempotencyStore, createInMemorySettlementLog,
   type SettlementBinding } from "../../src/rails/idempotency.js";

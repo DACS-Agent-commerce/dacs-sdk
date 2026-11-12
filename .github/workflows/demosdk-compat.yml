@@ -36,7 +36,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22.21.1"
+          node-version: "22.22.2"
 
       # Keep 4.0.18 equal to the version pinned in ci.yml.
       - name: Compare the ci.yml pin with the newest in-range release
@@ -57,7 +57,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22.21.1"
+          node-version: "22.22.2"
 
       - name: Record compatibility environment
         run: |

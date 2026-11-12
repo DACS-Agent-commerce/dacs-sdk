@@ -765,7 +765,11 @@ exactly the profile of every message for that purchase (`assertPurchaseProfile`;
   purchase); a request is never signed without a kept tuple. It signs the
   `expiresAt` the payload carries: the 30 s signer lifetime is applied by
   `signWireRequest` and `signWireResponse`, so a host that calls
-  `signWireEnvelope` directly must bound `expiresAt` itself.
+  `signWireEnvelope` directly must bound `expiresAt` itself. It also verifies
+  the signature its signer returns under the key the receiver will use (the
+  delegated session key, else the buyer's key for a request or the seller's for
+  a response), and throws `peer_signature_invalid` instead of returning a header
+  that would be refused.
 
 With one revision defined, a message naming any other revision is unknown.
 When a later SDK defines another revision, a party that selected or kept

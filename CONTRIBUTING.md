@@ -9,9 +9,10 @@ Standard wins — open an issue rather than diverging.
 
 ## Prerequisites
 
-- **Node 20.19 or 22.12** (the two versions CI runs). Avoid Node ≥ 24: a
-  transitive dependency (`avsc`, via `@kynesyslabs/demosdk`) breaks on it with
-  `buffer.SlowBuffer is not a constructor`.
+- **Node 22.22.2+ or 24.15.0+** (`^22.22.2 || ^24.15.0`; CI runs Node 22 and
+  Node 24). Avoid Node ≥ 25: a transitive dependency (`avsc`, via
+  `@kynesyslabs/demosdk`) breaks on it with `buffer.SlowBuffer is not a
+  constructor`.
 - npm (the repo ships a `package-lock.json`; use `npm ci`).
 
 ## Setup
@@ -46,10 +47,10 @@ manifest-driven and will fail against stale/missing vectors.
 ## Tests
 
 - `npm test` — the full offline suite (unit + conformance harness). This is what
-  CI gates on, across Node 20 and 22. On a pull request the long suites run on
-  Node 22 only (the Node 20 check stays required but skips them); the Node 20 run
+  CI gates on, across Node 22 and 24. On a pull request the long suites run on
+  Node 22 only (the Node 24 check stays required but skips them); the Node 24 run
   happens on pushes to `phase0-completion` and `main` and in the merge queue. For a
-  pull request into `phase0-completion`, a Node-20-only failure therefore shows up
+  pull request into `phase0-completion`, a Node-24-only failure therefore shows up
   only after it merges; into `main`, the merge queue catches it before the merge.
 - Live on-chain tests are **skipped unless their env is set**, so they never run
   in `npm test`/CI. To run the funded two-sided lifecycle against a real Demos
@@ -58,7 +59,7 @@ manifest-driven and will fail against stale/missing vectors.
 ## Pull requests
 
 - Open the PR against `main`. Branch protection requires an approving review and
-  **green CI on both Node 20 and Node 22**, so keep the merge state CLEAN.
+  **green CI on both Node 22 and Node 24**, so keep the merge state CLEAN.
 - Stacked PRs merge parent-first; rebase each onto its reviewed base before merge.
 - Every PR gets a review. Reviews are done at the exact current head — if you
   rewrite a head after approval, request a fresh review rather than relying on the

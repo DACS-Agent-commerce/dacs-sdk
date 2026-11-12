@@ -185,8 +185,8 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
     expect(route({ author: "second", actor: "second", triggering: "owner" })).toEqual(POOL);
   });
 
-  it("keeps the node 20 leg on hosted runners", () => {
-    expect(route({ node: "20.19.0" })).toBe("ubuntu-latest");
+  it("keeps the node 24 leg on hosted runners", () => {
+    expect(route({ node: "24" })).toBe("ubuntu-latest");
   });
 
   it("stays on hosted runners unless the switch is exactly on", () => {
@@ -229,7 +229,7 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
   describe("Blacksmith", () => {
     it("sends both legs of every same-repository pull request to Blacksmith when the switch is on", () => {
       expect(route({ blacksmith: "on" })).toBe(BLACKSMITH);
-      expect(route({ blacksmith: "on", node: "20.19.0" })).toBe(BLACKSMITH);
+      expect(route({ blacksmith: "on", node: "24" })).toBe(BLACKSMITH);
       expect(route({ blacksmith: "on", enabled: "off" })).toBe(BLACKSMITH);
     });
 
@@ -245,13 +245,13 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
     it("leaves routing unchanged unless the switch is on", () => {
       for (const blacksmith of ["off", "", "yes", "ON "]) {
         expect(route({ blacksmith })).toEqual(POOL);
-        expect(route({ blacksmith, node: "20.19.0" })).toBe("ubuntu-latest");
+        expect(route({ blacksmith, node: "24" })).toBe("ubuntu-latest");
         expect(route({ blacksmith, enabled: "off" })).toBe("ubuntu-latest");
       }
     });
 
     it("never takes draft pull requests", () => {
-      for (const node of ["22", "20.19.0"]) {
+      for (const node of ["22", "24"]) {
         expect(route({ blacksmith: "on", draft: true, node, enabled: "off" })).toBe("ubuntu-latest");
         expect(route({ blacksmith: "on", draft: false, node })).toBe(BLACKSMITH);
       }
@@ -260,7 +260,7 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
     });
 
     it("never takes pushes, merge-queue runs or fork pull requests", () => {
-      for (const node of ["22", "20.19.0"]) {
+      for (const node of ["22", "24"]) {
         expect(route({ blacksmith: "on", event: "push", node })).toBe("ubuntu-latest");
         expect(route({ blacksmith: "on", event: "merge_group", node })).toBe("ubuntu-latest");
         expect(route({ blacksmith: "on", headRepo: "someone/fork", node })).toBe("ubuntu-latest");
@@ -303,14 +303,14 @@ describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", (
     "Test durable RFQ filesystem record-size boundaries",
   ];
 
-  it("runs the long suites on both legs except the node 20 leg of a pull request", () => {
+  it("runs the long suites on both legs except the node 24 leg of a pull request", () => {
     for (const name of suites) {
       expect(legsRunning(name, "pull_request")).toEqual(["22"]);
-      for (const event of ["push", "merge_group"]) expect(legsRunning(name, event)).toEqual(["20.19.0", "22"]);
+      for (const event of ["push", "merge_group"]) expect(legsRunning(name, event)).toEqual(["22", "24"]);
     }
   });
 
-  // The legs come from the matrix itself, so pinning a leg (say "22" to "22.21.1") can't leave a suite running on no
+  // The legs come from the matrix itself, so pinning a leg (say "22" to "22.22.2") can't leave a suite running on no
   // pull request leg while the literal cases above still pass.
   it("runs each long suite on at least one matrix leg of a pull request, and on every leg otherwise", () => {
     expect(MAIN_LEGS.length).toBeGreaterThan(1);
@@ -339,7 +339,7 @@ describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", (
 
 describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", () => {
   // Before the split every leg prepared the locked seller consumer; the seller shards now prepare it, and
-  // build-test-main prepares it on a leg where no seller shard runs (node 20 on a pull request).
+  // build-test-main prepares it on a leg where no seller shard runs (node 24 on a pull request).
   it("prepares the locked seller consumer on every leg of every event, in main only where no seller shard runs", () => {
     const name = "Prepare locked seller consumer";
     const main = (MAIN.steps ?? []).find((s) => s.name === name);
@@ -396,6 +396,8 @@ describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", 
 
   it("keeps the required check names on build-test-result only, one job per leg that needs every build-test job", () => {
     expect(RESULT.name).toBe("build-test (node ${{ matrix.node-version }})");
+    // The required checks are "build-test (node 22)" and "build-test (node 24)", one per supported Node line.
+    expect(MAIN_LEGS).toEqual(["22", "24"]);
     const resultMatrix = RESULT.strategy?.matrix;
     expect(typeof resultMatrix === "object" ? resultMatrix["node-version"] : undefined).toEqual(MAIN_LEGS);
     expect(RESULT.needs).toEqual(["build-test-plan", "build-test-main", "build-test"]);
@@ -451,15 +453,15 @@ describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", 
       for (const [status, conclusion] of [["completed", "failure"], ["completed", "cancelled"], ["completed", "skipped"], ["in_progress", null]]) {
         const jobs = passing("push").map((job) => job.name === shards.shardJobName("22", "client-2") ? { ...job, status, conclusion } : job);
         expect(shards.verify("22", "push", jobs).failures).toEqual([`build-test shard (node 22, client-2): ${status}/${conclusion}`]);
-        expect(shards.verify("20.19.0", "push", jobs).failures).toEqual([]);
+        expect(shards.verify("24", "push", jobs).failures).toEqual([]);
       }
     });
 
     it("fails a leg whose main job or a planned shard is missing or listed twice", () => {
-      const missing = passing("push").filter((job) => job.name !== shards.shardJobName("20.19.0", "seller-2"));
-      expect(shards.verify("20.19.0", "push", missing).failures).toEqual(["build-test shard (node 20.19.0, seller-2): 0 jobs in this run, expected 1"]);
-      const noMain = passing("pull_request").filter((job) => job.name !== shards.mainJobName("20.19.0"));
-      expect(shards.verify("20.19.0", "pull_request", noMain).failures).toHaveLength(1);
+      const missing = passing("push").filter((job) => job.name !== shards.shardJobName("24", "seller-2"));
+      expect(shards.verify("24", "push", missing).failures).toEqual(["build-test shard (node 24, seller-2): 0 jobs in this run, expected 1"]);
+      const noMain = passing("pull_request").filter((job) => job.name !== shards.mainJobName("24"));
+      expect(shards.verify("24", "pull_request", noMain).failures).toHaveLength(1);
       const twice = [...passing("push"), { name: shards.mainJobName("22"), status: "completed", conclusion: "success" }];
       expect(shards.verify("22", "push", twice).failures).toEqual(["build-test main (node 22): 2 jobs in this run, expected 1"]);
     });

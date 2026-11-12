@@ -807,6 +807,10 @@ function admitAcceptanceRun(summary, packageVersion) {
 
 const stoppedAt = summary => `stage ${String(summary.failedStage || "unknown")}`;
 
+// The first sentence of npm ci's error when its built tree and the lock differ.
+const NPM_CI_LOCK_SYNC_ERROR = "`npm ci` can only install packages when your package.json and package-lock.json " +
+  "or npm-shrinkwrap.json are in sync.";
+
 // The text's every `npm error code`, or null for none. Repeated or differing
 // codes come back joined by a space, which no single code equals, so a log that
 // names a second failure never reads as the first one alone.
@@ -1264,6 +1268,7 @@ export function extractPolicyFindings(readInput) {
       // npm names that package on both its `engine` and `notsup` lines.
       reportedPackage: [...new Set(Array.from((strictLog ?? "").matchAll(/Not compatible with your version of node\/npm: (\S+)/g),
         match => match[1]))].join(" ") || null,
+      lockSyncFailed: (strictLog ?? "").includes(NPM_CI_LOCK_SYNC_ERROR),
       scan, scanComplete, violations },
     lockSbom: sbom("consumer-lock-sbom"),
     physicalSbom: sbom("consumer-physical-sbom"),
@@ -1294,10 +1299,16 @@ const listedState = (items, known, same) => !Array.isArray(items) ? "blocked" : 
   : allListed(items, known, same) ? "baseline" : "blocked";
 
 // npm ci --engine-strict exits 0 with no violation, or 1 (EBADENGINE) naming
-// one of the violations the complete lock scan lists.
+// one of the violations the complete lock scan lists. npm ci checks engines
+// while it builds the tree and only then compares it with the lock, so its
+// lock sync failure (EUSAGE, from the nested Git `avsc`) means no engine
+// failed; that passes only when the scan also lists no violation.
 function engineState(engine, known) {
   if (engine?.scanComplete !== true || !Array.isArray(engine.violations)) return "blocked";
   if (engine.exitCode === 0) return engine.code === null && engine.violations.length === 0 ? "passed" : "blocked";
+  if (engine.exitCode === 1 && engine.code === "EUSAGE" && engine.lockSyncFailed === true) {
+    return engine.violations.length === 0 ? "passed" : "blocked";
+  }
   const reported = engine.exitCode === 1 && engine.code === "EBADENGINE" &&
     engine.violations.some(violation => violation?.package === engine.reportedPackage);
   return reported ? listedState(engine.violations, known, engineIdentity) : "blocked";

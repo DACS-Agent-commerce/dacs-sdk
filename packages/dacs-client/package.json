@@ -5,7 +5,8 @@
   "exports": {
     ".": "./src/index.mjs",
     "./wallet/durable-journal": "./src/wallet/durable-journal.mjs",
-    "./node-wallet": "./src/wallet/node-wallet-session.mjs"
+    "./node-wallet": "./src/wallet/node-wallet-session.mjs",
+    "./substrate/demos": "./src/substrate/demos.mjs"
   },
   "scripts": {
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
@@ -35,6 +36,7 @@
     "src/purchase-state-schema.mjs", "src/purchases.mjs",
     "src/seams/purchase-store-not-wired.mjs", "src/seams/seller-integration-not-wired.mjs",
     "src/seams/wallet-actions-not-wired.mjs", "src/signatures.mjs",
+    "src/substrate/demos.mjs",
     "src/util/sqlite-purchase-admission.mjs",
     "src/util/sqlite-statement-boundary.mjs", "src/util/sqlite-write-lease.mjs",
     "src/util/http.mjs", "src/util/ids.mjs",
@@ -47,7 +49,7 @@
     "src/public-admission.mjs", "src/public-guidance.mjs", "src/public-verification.mjs"
   ],
   "engines": {
-    "node": "^22.13.0 || >=23.4.0"
+    "node": "^22.22.2 || ^24.15.0"
   },
   "license": "MIT",
   "repository": {

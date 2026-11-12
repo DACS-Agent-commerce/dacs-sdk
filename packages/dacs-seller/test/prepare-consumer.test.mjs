@@ -9,7 +9,7 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { sellerSourceFingerprint, staleSetupReason } from '../../../scripts/prepare-seller-consumer.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -193,6 +193,37 @@ test('setup before the core build is refused with a clear message and creates no
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /the core is not built: run npm run build before npm run seller:prepare/);
   assert.equal(existsSync(directory), false);
+});
+
+// A checkout holding only the files the fingerprint reads, so a test can change one without touching this repository.
+async function fingerprintCheckout(t) {
+  const checkout = mkdtempSync(join(tmpdir(), 'dacs-seller-fingerprint-'));
+  t.after(() => rmSync(checkout, { recursive: true, force: true }));
+  const files = {
+    'package.json': '{"name":"root"}',
+    'package-lock.json': '{}',
+    'packages/dacs-seller/test/helpers/installed-seller-host.mjs': '',
+    'packages/dacs-seller/package.json': '{"name":"seller"}',
+    'packages/dacs-node/package.json': '{"name":"node-host","exports":{".":"./dist/index.js"}}',
+    'packages/dacs-node/dist/index.js': 'export {};',
+    'dist/index.js': 'export {};',
+  };
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(checkout, path)), { recursive: true });
+    writeFileSync(join(checkout, path), content);
+  }
+  mkdirSync(join(checkout, 'scripts'));
+  copyFileSync(script, join(checkout, 'scripts', 'prepare-seller-consumer.mjs'));
+  const copy = await import(pathToFileURL(join(checkout, 'scripts', 'prepare-seller-consumer.mjs')).href);
+  return { checkout, fingerprint: () => copy.sellerSourceFingerprint(['package.json']) };
+}
+
+test('a changed Node host manifest makes a prepared setup stale', async (t) => {
+  const { checkout, fingerprint } = await fingerprintCheckout(t);
+  const before = fingerprint();
+  assert.equal(fingerprint(), before, 'the same files give the same fingerprint');
+  writeFileSync(join(checkout, 'packages/dacs-node/package.json'), '{"name":"node-host","exports":{".":"./dist/index.js","./secrets":"./dist/secrets.js"}}');
+  assert.notEqual(fingerprint(), before);
 });
 
 test('a setup for another runtime, other sources, a changed lock or no marker is stale', (t) => {

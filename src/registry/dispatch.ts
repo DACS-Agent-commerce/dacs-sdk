@@ -2,7 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import { DacsError } from "../errors.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
-import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import type { SettleRequest, SettleResult } from "../rails/settlementTypes.js";
 import { createX402Rail, x402Settle } from "../rails/x402.js";
 import { assertDacsX402OutboundUrlV1 } from "../rails/x402Outbound.js";
 import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";

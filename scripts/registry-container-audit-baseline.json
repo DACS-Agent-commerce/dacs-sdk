@@ -60,6 +60,7 @@
     "GHSA-g3hv-75wg-m249",
     "GHSA-gcqx-w48m-w2h4",
     "GHSA-gvwx-54wh-qm9j",
+    "GHSA-h895-cgqg-jf52",
     "GHSA-hfxv-24rg-xrqf",
     "GHSA-hhf6-3xpg-pggx",
     "GHSA-hmw2-7cc7-3qxx",
@@ -319,6 +320,14 @@
         "package": "tuf-js@6.0.2",
         "location": "node_modules/tuf-js",
         "integrity": "sha512-k78oXrR/Ssi2kTXgP0paoQ7efyw/fO2RBgxXnTQTfoyZRM72XuT8D0ylG9NkJgdnYtx4LWo+qpGdpI4o7FIiJA==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "minipass-fetch@6.0.1",
+        "location": "node_modules/minipass-fetch",
+        "integrity": "sha512-wV03kbBre0q+NJLfcUswkG+6vGn/atIdXOMiD0uKIqdWpevHiCFg3ML9V8jolPoKM7H/kmDV9Xsk0j7/FDRyhA==",
         "required": {
           "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
         }

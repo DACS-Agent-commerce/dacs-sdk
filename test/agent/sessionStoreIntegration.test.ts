@@ -5,8 +5,8 @@ import {
   runSessionCore,
   sessionAnchorName,
   type SessionDeps,
-  type SettleResult,
 } from "../../src/agent/runSessionCore.js";
+import type { SettleResult } from "../../src/rails/settlementTypes.js";
 import { payDemSettle } from "../../src/rails/payDem.js";
 import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";

@@ -36,3 +36,6 @@ jobs:
 
       - name: Shared helper check
         run: node tools/lint/shared-helpers.mjs
+
+      - name: Error code check
+        run: node tools/lint/error-codes.mjs

@@ -871,7 +871,10 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
    * A PostgreSQL authority resolver must bind roleId/operationId/requestHash
    * to the state store operation callback and use one stable service owner
    * identity. The resolver is called again before any retained response is
-   * disclosed.
+   * disclosed. `scope.wallet` arrives in the spelling the client configured,
+   * while the returned authority's `policy.wallet` is canonical (`0x` followed
+   * by lowercase hex), so look the wallet up by its canonical form
+   * (`canonicalWalletSpendWalletV1`), not by comparing the two strings.
    */
   resolveAuthority(scope: Readonly<{
     roleId: string;
@@ -1166,6 +1169,12 @@ export function createDacsWalletSpendAuthorityServiceV1(input: Readonly<{
 /** V2-only funded service boundary with required current-head attestation. */
 export function createDacsWalletSpendAuthorityServiceV2(input: Readonly<{
   authenticate(token: string): Promise<string | null> | string | null;
+  /**
+   * `scope.wallet` arrives in the spelling the client configured, while the
+   * returned authority's policy wallet is canonical (`0x` followed by
+   * lowercase hex), so look the wallet up by its canonical form
+   * (`canonicalWalletSpendWalletV1`), not by comparing the two strings.
+   */
   resolveAuthority(scope: Readonly<{
     roleId: string;
     operationId: string;
