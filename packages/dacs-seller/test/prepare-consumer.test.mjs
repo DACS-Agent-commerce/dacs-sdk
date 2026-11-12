@@ -55,7 +55,8 @@ function fixture(t) {
   return {
     base,
     temp,
-    calls: () => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean),
+    env,
+    calls:() => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean),
     run: (directory, extra = {}) => spawnSync(process.execPath, args(directory), { env: { ...env, ...extra }, encoding: 'utf8', timeout: RUN_TIMEOUT_MS }),
     start: (directory, extra = {}) => new Promise((resolve) => {
       const child = spawn(process.execPath, args(directory), { env: { ...env, ...extra } });
@@ -108,6 +109,15 @@ test('without a directory, each run prepares its own fresh temporary directory',
     assert.equal(dirname(path), probe.temp);
     assert.ok(existsSync(join(path, 'prepared.json')));
   }
+});
+
+test('running the script through a symbolic link prepares the directory', (t) => {
+  const probe = fixture(t), directory = join(probe.base, 'consumer'), link = join(probe.base, 'prepare-link.mjs');
+  symlinkSync(script, link);
+  const result = spawnSync(process.execPath, [link, directory], { env: probe.env, encoding: 'utf8', timeout: RUN_TIMEOUT_MS });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(preparedPath(result.stdout), directory);
+  assert.ok(existsSync(join(directory, 'prepared.json')));
 });
 
 const EXISTING = {
