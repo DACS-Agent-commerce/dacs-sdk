@@ -1,18 +1,20 @@
 import { types as nodeTypes } from "node:util";
 
-import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
+import { hasDefinitiveDemosFailure } from "../agent/settlementFailure.js";
 import { createPayDemExecutionAuthority } from "./payDemExecutionAuthority.js";
 import type {
+  DemosFailedRecordProof,
   SettleRequest,
   SettleResult,
   SettlementRecoveryAttempt,
-} from "../agent/runSessionCore.js";
+} from "./settlementTypes.js";
 import { baseUnits } from "../canonical/index.js";
 import {
   snapshotCanonicalJsonRead,
   snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { createDemosClient } from "./demosClient.js";
 import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "./demosRpc.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
@@ -1638,7 +1640,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
   );
 
   const { Demos } = await import("@kynesyslabs/demosdk/websdk");
-  const demos = new Demos();
+  const demos = createDemosClient(Demos);
   // Capture the complete Demos authority before its first asynchronous call.
   // This supports ordinary class instances while rejecting accessors/proxies
   // that could swap the signer, confirmer, broadcaster, or nonce authority at
