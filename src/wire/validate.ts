@@ -28,7 +28,7 @@ export function wireFaultCategory(status: number): FaultCategory {
 /** Wire refusal: `code` is stable, `status` is the HTTP status a seller answers with. */
 export class WireError extends DacsError {
   constructor(
-    readonly code: string,
+    override readonly code: string,
     readonly status: number = 401,
     readonly detail?: string,
     cause?: unknown,

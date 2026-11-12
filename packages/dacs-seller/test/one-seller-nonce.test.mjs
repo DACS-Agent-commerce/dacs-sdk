@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Server } from 'node:net';
 import Database from 'better-sqlite3';
-import { canonicalize, generateCanonicalJobId, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, DacsError, generateCanonicalJobId, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { createSellerTransportServerAuth, createSellerTransportClientAuth,
   sellerContextScopeHash, sellerContextChallengeScope, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH,
@@ -120,10 +120,10 @@ async function fixture(t, options = {}) {
 
 
 test(card('T05'), async t => {
-  for (const point of ['scope', 'access', 'known', 'admission', 'hold', 'untyped', 'malformedAdmission', 'malformedCode', 'acceptanceSave']) await t.test(point, async t => {
+  for (const point of ['scope', 'access', 'known', 'admission', 'hold', 'untyped', 'untypedDacsError', 'malformedAdmission', 'malformedCode', 'acceptanceSave']) await t.test(point, async t => {
     const f = await fixture(t), input = await f.input();
     const code = { scope: 'context_scope_invalid', access: 'buyer_access_closed', known: 'context_job_unknown',
-      admission: 'session_not_admitted', hold: 'seller_budget_refused', untyped: 'operation_uncertain', malformedAdmission: 'session_admission_unavailable', malformedCode: 'operation_uncertain', acceptanceSave: 'EIO' }[point];
+      admission: 'session_not_admitted', hold: 'seller_budget_refused', untyped: 'operation_uncertain', untypedDacsError: 'operation_uncertain', malformedAdmission: 'session_admission_unavailable', malformedCode: 'operation_uncertain', acceptanceSave: 'EIO' }[point];
     if (point === 'scope') input.body.scope.buyerBundleHash = sha256Hex('TEST wrong digest');
     if (point === 'access') f.policy.access = () => { throw new SellerTransportError(code, 409); };
     if (point === 'known') f.policy.known = () => false;
@@ -140,7 +140,9 @@ test(card('T05'), async t => {
     if (point === 'malformedAdmission') f.policy.admission = () => null;
     if (point === 'hold') f.policy.hold = () => 'TEST refused';
     if (point === 'untyped') f.policy.admission = () => { throw new Error('TEST admission interrupted'); };
+    if (point === 'untypedDacsError') f.policy.admission = () => { throw new DacsError('TEST admission interrupted'); };
     const error = await errorOf(f.route.reserve(input.request, input.body, f.store));
+    if (point === 'untypedDacsError') assert.ok(error instanceof DacsError && !('code' in error), 'the thrown error is an uncoded DacsError');
     assert.equal(typeof error.code==='string' && error.code ? error.code : 'operation_uncertain', code);
     const row = f.store.challenges.retained(input.nonce); assert.equal(row.state, 'failed'); assert.equal(row.failure.code, code);
     if(point==='acceptanceSave'){assert.equal(f.rows('kit_context_reservations').length,0);assert.equal(f.rows('peer_effects').length,0);assert.equal(f.calls.releases,1);}
@@ -473,14 +475,19 @@ const refusalOf = async (promise, code, status) => {
 
 // The route's store and the agent share one ledger and one clock.
 async function composed(t, storeOptions = {}) {
-  let agent, f, lose = false;
+  let agent, f, lose = false, acceptRefusal = null;
   const ledger = () => {
     const shared = f.store.challenges;
-    return { ...shared, issueForOperator: request => {
-      const answer = shared.issueForOperator(request);
-      if (lose) { lose = false; throw new Error('TEST answer lost after commit'); }
-      return answer;
-    } };
+    return { ...shared,
+      issueForOperator: request => {
+        const answer = shared.issueForOperator(request);
+        if (lose) { lose = false; throw new Error('TEST answer lost after commit'); }
+        return answer;
+      },
+      accept: (owner, nonce, record) => {
+        if (acceptRefusal !== null) throw acceptRefusal;
+        return shared.accept(owner, nonce, record);
+      } };
   };
   const pa = await proposalAdmissionFixture(t, { ledger });
   f = await fixture(t, { parties: { buyer: agentBuyer, seller: agentSeller }, listing: pa.listing, time: NOW,
@@ -494,6 +501,7 @@ async function composed(t, storeOptions = {}) {
   };
   return { pa, f, present, get agent() { return agent; },
     loseNextOperatorAnswer: () => { lose = true; },
+    refuseAccept: error => { acceptRefusal = error; },
     admitReads: () => pa.admission.calls.filter(([name]) => name === 'admit').length,
     advance: ms => { f.advance(ms); pa.advance(ms); },
     async reopen() { agent.close(); f.reopen(); f.closeLost(); agent = await pa.open(); },
@@ -701,6 +709,15 @@ test('operator-proposal-validator-owner-crash', async t => {
     const retry = await refusalOf(c.proposal(bundle), 'session_not_admitted', 409);
     assert.match(retry.message, /context_challenge_failed.*validator_lost|validator_lost/); assert.equal(c.f.store.challenges.retained(sessionNonce).state, 'failed'); assert.equal(c.admitReads(), 1);
   });
+});
+
+test('an uncoded DacsError on the proposal path closes the challenge as operation_uncertain', async t => {
+  const c = await composed(t), { sessionNonce } = await c.agent.issueSessionChallenge({ jobId: JOB, buyer: agentBuyer.claim });
+  c.refuseAccept(new DacsError('TEST acceptance refused'));
+  const error = await errorOf(c.proposal(c.present(sessionNonce)));
+  assert.ok(error instanceof DacsError && !('code' in error), 'the proposal path rethrew the uncoded DacsError');
+  const row = c.f.store.challenges.retained(sessionNonce);
+  assert.equal(row.state, 'failed'); assert.equal(row.failure.code, 'operation_uncertain');
 });
 
 // ---- late fixes on the one ledger (P09bbL3) ----
