@@ -7084,6 +7084,23 @@
           "after": "0fd2ace1a4dae5ef01f51650072be5662066a04f"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "client: queue signPass calls of one operation so only one artifact is signed",
+      "sha": "f1ae63ab3f9ff3c5ba0eca09c21285135d7139ca",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "b4d690799d4ea3e95f16278a542759e6f59f15ce",
+          "after": "10533f72e4ce2b3fe0ad791d92797796fd1a8221"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "c5f91f14575651303e144ec91570d7db728034e1",
+          "after": "d0771ba60ff24d68a635598c833f0ad7e0fa76b8"
+        }
+      ]
     }
   ]
 }
