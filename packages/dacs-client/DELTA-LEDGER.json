@@ -7288,6 +7288,22 @@
           "after": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF run the gate tests on the exported owner with only currentLocal replaced",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "d4a27b230ade392782c331f6100640e1c5742baf",
+          "after": "b9340992077b4fd90675cb50762e57f5abc0c558"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "757b60148d789e59fc2db8b9350176f6fd859ce8",
+          "after": "8336e5393f66bcf9184b1b22b44911a9a1a32fbc"
+        }
+      ]
     }
   ]
 }
