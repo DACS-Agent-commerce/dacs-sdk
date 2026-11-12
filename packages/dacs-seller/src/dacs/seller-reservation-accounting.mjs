@@ -20,7 +20,7 @@ const uint = value => Number.isSafeInteger(value) && value >= 0 && !Object.is(va
 const fail = (code, status) => { throw new SellerTransportError(code, status); };
 /** The key a request's accounting row is stored under: the hash of its buyer, seller, profile and nonce. */
 export const requestNonceKey = (payload) => sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
-// A refusal of the wire or the host carries a string code and an HTTP status; a system error's code (EIO) has no status.
+// K5 step 8 (amend1 D19): a refusal of the wire or the host carries a string code and an HTTP status; a system error's code (EIO) has no status.
 const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isInteger(error.status);
 
 /**

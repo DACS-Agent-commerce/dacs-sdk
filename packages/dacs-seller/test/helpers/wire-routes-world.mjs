@@ -40,7 +40,6 @@ export const SKEW_MS = 30_000;
 export const DAY_MS = 86_400_000;
 export const REQUEST_NONCE_BYTE = 0x6e;
 export const JOURNAL_LEASE_MS = 300_000;
-export const OLD_PIN_VERSION = 'dacs-demos-testnet-identity/2026-10-15';
 
 export const derive = (label) => sha256Hex(`wire-signed-routes:${label}`);
 export const jobFor = (label) => `0${derive(`job-${label}`).slice(0, 25).toUpperCase()}`;

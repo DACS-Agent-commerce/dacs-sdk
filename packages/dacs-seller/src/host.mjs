@@ -314,11 +314,10 @@ export async function startSellerHost(options) {
     let stopping = false;
     // The seller takes new purchases until it stops. No route allocates purchase capacity yet, so readiness does not read it.
     const sellerReady = () => !stopping;
-    // Every effect route reserves through it under one mutex per operation, inspected from this journal; the context route's job
-    // lease is validated once the host composes the admission transaction. The completion port ends the attempts it issued.
+    // Every effect route reserves through the coordinator and ends its attempt through the completion port.
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
-    // The one context every signed route on `./wire` uses (its journal is the wire request journal). Each signed request and
+    // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.
     const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion });
     // The state directories and the new transport database entry are durable
