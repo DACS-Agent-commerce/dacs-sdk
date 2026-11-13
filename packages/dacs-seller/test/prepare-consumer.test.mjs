@@ -56,7 +56,7 @@ function fixture(t) {
     base,
     temp,
     env,
-    calls:() => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean),
+    calls: () => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean),
     run: (directory, extra = {}) => spawnSync(process.execPath, args(directory), { env: { ...env, ...extra }, encoding: 'utf8', timeout: RUN_TIMEOUT_MS }),
     start: (directory, extra = {}) => new Promise((resolve) => {
       const child = spawn(process.execPath, args(directory), { env: { ...env, ...extra } });
@@ -118,6 +118,15 @@ test('running the script through a symbolic link prepares the directory', (t) =>
   assert.equal(result.status, 0, result.stderr);
   assert.equal(preparedPath(result.stdout), directory);
   assert.ok(existsSync(join(directory, 'prepared.json')));
+});
+
+test('importing the script from standard input does not run the setup', (t) => {
+  const probe = fixture(t);
+  const source = `import { runtimeKey } from ${JSON.stringify(pathToFileURL(script).href)}; console.log(typeof runtimeKey);`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-'], { input: source, env: probe.env, encoding: 'utf8', timeout: RUN_TIMEOUT_MS });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'function');
+  assert.equal(readdirSync(probe.temp).length, 0);
 });
 
 const EXISTING = {
