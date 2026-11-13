@@ -328,7 +328,8 @@ env \
     > "$artifact_stage/compose.rendered.yaml"
 
 stage=image-build
-# BuildKit reports progress and npm errors on stderr; keep both in the log.
+# BuildKit reports progress and npm errors on stderr; keep both in the log. The
+# log is capped: a build that prints more fails this stage.
 node scripts/bounded-build.mjs "$project"
 image_started=1
 run_bounded docker build \
@@ -336,7 +337,7 @@ run_bounded docker build \
   "${build_network_args[@]}" \
   --tag "$runtime_image" \
   "$project" \
-  2>&1 | tee "$artifact_stage/docker-build.log"
+  2>&1 | node scripts/bounded-log.mjs "$artifact_stage/docker-build.log"
 stage=image-policy
 
 docker image inspect "$runtime_image" > "$artifact_stage/docker-image.json"

@@ -15,7 +15,6 @@ import {
   isAnchorReceipt,
   isAttestationRef,
   isChainTxRef,
-  isIdentityBundle,
   readListingArtifact,
 } from "../artifacts/validators.js";
 import {
@@ -385,20 +384,13 @@ export interface AgentConfig {
   /** Durable wallet/write authority required by Demos write methods. */
   demosWriteJournal?: DemosWriteJournal;
   /**
-   * Local identity authority. Session-capable agents must provide the exact
-   * DACS-1 bundle whose presentation is authenticated by `verifyPresentation`
-   * (or an explicitly configured listing-validation fallback); the SDK
-   * computes every session party hash from these bytes rather than `agentId`.
+   * Local identity of this agent. `agentId` is checked to be a string; the
+   * Agent does not sign, hash or authenticate anything with it. A buyer on the
+   * fixed-price coordinator path is identified by the `buyer` claim reference of
+   * the order it passes to `startOrder`, not by this option.
    */
   identity?: {
     agentId?: string;
-    bundle?: IdentityBundle;
-    /**
-     * Authenticate this agent's exact DACS-1 bundle presentation before any
-     * session effect. Keep this authority independent from seller Listing
-     * validation when the two identities use different keys or claim methods.
-     */
-    verifyPresentation?: ListingValidationDeps["verifyIdentityPresentation"];
   };
   /**
    * DACS-1 §6.3.1 / CORE §B.1: explicit Ed25519 resolver for canonical
@@ -949,45 +941,30 @@ function captureAgentIdentityConfig(
     "agentId",
     "AgentConfig.identity.agentId",
   );
-  const bundle = stableAgentData(
-    value,
-    "bundle",
-    "AgentConfig.identity.bundle",
-  );
-  const verifyPresentation = stableAgentMethod<
-    NonNullable<AgentConfig["identity"]>["verifyPresentation"]
-  >(
-    value,
-    "verifyPresentation",
-    "AgentConfig.identity.verifyPresentation",
-    true,
-  );
   if (agentId !== undefined && typeof agentId !== "string") {
     throw new DacsError("AgentConfig.identity.agentId must be a string");
   }
-  const retainedBundle = bundle === undefined
-    ? undefined
-    : snapshotCanonicalJson(
-        bundle,
-        "AgentConfig.identity.bundle",
-      );
-  if (retainedBundle !== undefined && !isIdentityBundle(retainedBundle)) {
-    throw new DacsError(
-      "AgentConfig.identity.bundle must be a normative DACS-1 IdentityBundle",
-    );
-  }
   return Object.freeze({
     ...(agentId === undefined ? {} : { agentId }),
-    ...(retainedBundle === undefined ? {} : { bundle: retainedBundle }),
-    ...(verifyPresentation === undefined ? {} : { verifyPresentation }),
   });
 }
 
+const UNREAD_AGENT_IDENTITY_KEYS = ["bundle", "verifyPresentation"] as const;
+
 /**
- * Refuse a construction key that an unreleased revision used and the Agent no
- * longer reads, rather than dropping it silently.
+ * Refuse a construction key that the Agent does not read, rather than
+ * dropping it silently.
  */
 function refuseReplacedAgentConfig(config: AgentConfig): void {
+  const identity = stableAgentData(config, "identity", "AgentConfig.identity");
+  if (identity !== null && typeof identity === "object") {
+    for (const key of UNREAD_AGENT_IDENTITY_KEYS) {
+      const label = `AgentConfig.identity.${key}`;
+      if (stableAgentData(identity, key, label) !== undefined) {
+        throw new DacsError(`${label} is not an Agent option; remove it`);
+      }
+    }
+  }
   if (
     stableAgentData(
       config,
@@ -1288,34 +1265,6 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     typeof configuredBuyerId !== "string"
   ) {
     throw new DacsError("AgentConfig.identity.agentId must be a string");
-  }
-  const identityBundleInput =
-    identity === undefined
-      ? undefined
-      : stableAgentData(identity, "bundle", "AgentConfig.identity.bundle");
-  const configuredBuyerIdentityBundle =
-    identityBundleInput === undefined
-      ? undefined
-      : snapshotCanonicalJson(
-          identityBundleInput,
-          "AgentConfig.identity.bundle",
-        );
-  if (
-    configuredBuyerIdentityBundle !== undefined &&
-    !isIdentityBundle(configuredBuyerIdentityBundle)
-  ) {
-    throw new DacsError(
-      "AgentConfig.identity.bundle must be a normative DACS-1 IdentityBundle",
-    );
-  }
-  if (
-    configuredBuyerIdentityBundle !== undefined &&
-    configuredBuyerId !== undefined &&
-    configuredBuyerIdentityBundle.presentedBy !== configuredBuyerId
-  ) {
-    throw new DacsError(
-      "AgentConfig.identity.bundle.presentedBy must equal AgentConfig.identity.agentId",
-    );
   }
   const resolveCanonicalSigningKey = async (
     claim: string,

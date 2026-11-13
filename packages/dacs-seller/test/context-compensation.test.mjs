@@ -51,7 +51,7 @@ for(const resumed of [false,true])test(`${resumed?'resumed':'fresh'} policy hold
  const admission=createSellerContextAdmission(config);let exactHold;
  const route=createSellerContextRoute({admitPresentation:admitFixtureFor(w.listing),listing:w.listing,resolveBuyer:presentContext,assertBuyerAccess:()=>{},knownJob:()=>true,writable:()=>true,now:w.now,limits,recover:async()=>null,
   admitWrites:async value=>{exactHold=value.hold;assert.equal(await admission.reserve(value),null);throw Object.assign(new Error('TEST post-append sync'),{code:'EIO'})},
-  releaseWrites:async value=>{assert.equal(rows(w,'peer_effects')[0].state,'pending');if(exactHold)assert.equal(value.hold,exactHold);await admission.release(value)} });
+  releaseWrites:async value=>{assert.equal(rows(w,'peer_effects')[0].state,exactHold?'pending':'uncertain');if(exactHold)assert.equal(value.hold,exactHold);await admission.release(value)} });
  if(resumed){const r=w.store.reserve(request,body,{admit:()=>w.now()});w.store.finish(r,503,'{}');await assert.rejects(route.resume(w.store.reserve(request,body),request,w.store,{writes:2}),{code:'EIO'});}
  else await assert.rejects(route.reserve(request,body,w.store),{code:'EIO'});
  const ledger=withContextHolds(parsePolicyLedger(await readFile(evidencePath,'utf8')).rows);
@@ -185,6 +185,22 @@ test('a failed release of an ended attempt is retried by the resume for that att
  fail = false;
  const second = await route.resume(store.reserve(s.request, s.body), s.request, store, {writes: 1});
  assert.deepEqual(await s.open(), [s.otherJob.hold, second.contextHold.hold]);
+});
+test('a resume whose release of the previous hold fails leaves the journal owner unchanged, and a retry releases that hold', async t => {
+ let failNext = false;
+ const s = await ownedHoldWorld(t, {}, 4), {store} = s.w;
+ const route = policyRoute(s, async input => { if (failNext) { failNext = false; throw new Error('TEST release unavailable'); } await s.admission.release(input); });
+ const first = await route.reserve(s.request, s.body, store); store.finish(first, 503, '{}');
+ failNext = true;
+ assert.equal(await route.resume(store.reserve(s.request, s.body), s.request, store, {writes: 1}), null);
+ assert.deepEqual(await s.open(), [first.contextHold.hold]);
+ const retained = store.reserve(s.request, s.body);
+ assert.deepEqual([retained.disposition, retained.owner], ['uncertain', first.owner]);
+ const second = await route.resume(retained, s.request, store, {writes: 1});
+ assert.deepEqual(await s.open(), [second.contextHold.hold]);
+ store.finish(second, 503, '{}');
+ const third = await route.resume(store.reserve(s.request, s.body), s.request, store, {writes: 1});
+ assert.deepEqual(await s.open(), [third.contextHold.hold]);
 });
 test('over HTTP a late release of an ended attempt does not free the live hold of its resume', async t => {
  let entered, finish, performing, finishResume, first = true, performs = 0;

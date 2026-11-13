@@ -23,6 +23,7 @@ const { readDemDeliveryReady }=await import('../src/dacs/dem-delivery-consumer.m
 const { createDevnetSettlementTransport, DEVNET_SETTLEMENT_POLICY }=await import('../src/wallet/devnet-native-transport.mjs');
 const { createDevnetNativeCommitmentCapability, DEVNET_NATIVE_COMMITMENT_MARKER }=await import('../src/devnet-demo/commitment-consumer.mjs');
 const { createProtocolPurchases, protocolStageHelp }=await import('../src/dacs/protocol-purchases.mjs');
+const { SellerRefusedError }=await import('../src/dacs/seller-http.mjs');
 // The seller is a real key pair so payment evidence can carry a real signature.
 const keyPair=seedByte=>{const seed=new Uint8Array(32).fill(seedByte),hex=Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString('hex');return {key:privateKeyFromSeed(seed),hex,claim:'did:demos:agent:'+hex};};
 const sellerKeys=keyPair(17),otherKeys=keyPair(23);
@@ -212,4 +213,17 @@ test('present native payment evidence records the source outcome',async t=>{
  await service.recheck(op,{verifiedAt:'TEST',reportedTxHash:txHash,observation:{observation:transfer()}});
  assert.equal(ops.get(op.accountId,op.id).state.protocol.stage,'payment-evidenced');
  assert.equal(ops.history(op.id).at(-1).data.outcome,'verified-source-native-read');
+});
+
+test('a definite refusal on payments of a verified on-chain payment leaves status and stage held and opens no refund or cancel path',async t=>{
+ state.observeTransfer=async()=>transfer();paymentReader();
+ state.seller={origin:'https://seller.invalid',submitPayment:async()=>{throw new SellerRefusedError('peer_operation_mismatch','the job is bound elsewhere',409);}};
+ const {op,ops,service}=coordinator(t,{retainedDelivery:false,stage:'awaiting-claim',protocolPatch:{commitment:{committedAt:transferTime-1000},chainReadback:{[evidenceAddress]:paymentProjection}}});
+ await service.recheck(op,{verifiedAt:'TEST',reportedTxHash:txHash,observation:{observation:transfer()}});
+ const stored=ops.get(op.accountId,op.id);
+ assert.equal(stored.status,'settled_verified');
+ assert.equal(stored.state.protocol.stage,'awaiting-claim');
+ const history=JSON.stringify(ops.history(op.id));
+ assert.match(history,/the job is bound elsewhere/);
+ assert.doesNotMatch(history,/payment_failed|cancel|refund/i);
 });
