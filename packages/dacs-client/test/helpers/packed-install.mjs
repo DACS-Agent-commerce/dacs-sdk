@@ -16,6 +16,37 @@ const STATE_MODULE = 'src/dacs/purchase-admission-state.mjs';
 // The lock records a version as published ("1.0.01" for pqcrypto); the installed manifest holds npm's normalized form ("1.0.1").
 const canonicalVersion = version => version.replace(/(^|\.)0+(?=\d)/g, '$1');
 
+// Where npm finds `name` for the package at `path`: its own node_modules, then each parent's, then the root's.
+function lockEntryPath(packages, path, name) {
+  for (let base = path; ; base = base.slice(0, Math.max(base.lastIndexOf('/node_modules/'), 0))) {
+    const candidate = (base ? base + '/' : '') + 'node_modules/' + name;
+    if (packages[candidate]) return candidate;
+    if (!base.includes('/node_modules/')) return base ? lockEntryPath(packages, '', name) : null;
+  }
+}
+
+/** Every [package path, dependency name] where a dependency or optional dependency named in a lock entry has no lock entry; `npm ci` refuses such a lock. */
+export function lockMissingEntries(lock) {
+  const missing = [];
+  for (const [path, entry] of Object.entries(lock.packages)) {
+    for (const name of Object.keys({ ...entry.dependencies, ...entry.optionalDependencies })) {
+      if (!lockEntryPath(lock.packages, path, name)) missing.push([path, name]);
+    }
+  }
+  return missing;
+}
+
+// npm's installed-tree lock has no entry for optional packages that were not installed on this platform, but the
+// entries that name them still list them. Those packages are never installed here, so drop the names from the lock.
+function dropUninstalledOptionalNames(lock) {
+  for (const [path, entry] of Object.entries(lock.packages)) {
+    for (const name of Object.keys(entry.optionalDependencies ?? {})) {
+      if (!lockEntryPath(lock.packages, path, name)) delete entry.optionalDependencies[name];
+    }
+    if (entry.optionalDependencies && !Object.keys(entry.optionalDependencies).length) delete entry.optionalDependencies;
+  }
+}
+
 /** A temporary copy of the client package whose hold constant reads "testnet-tp1". Removed after the test. */
 export function switchedCopy(t) {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-switched-'));
@@ -79,9 +110,16 @@ export function installPackedPair(t, { clientDir = packageDir, installedDependen
       peerDependencies: pkg.peerDependencies, peerDependenciesMeta: pkg.peerDependenciesMeta, engines: pkg.engines };
   }
   writeFileSync(join(app, 'package-lock.json'), JSON.stringify(lock));
-  // Recompute flags after removing workspace roots, so the seller's mandatory
-  // SQLite dependency does not survive as a required dependency of this app.
-  if (installedDependencyGraph) run('npm', ['install', '--package-lock-only', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
+  if (installedDependencyGraph) {
+    // Recompute flags after removing workspace roots, so the seller's mandatory
+    // SQLite dependency does not survive as a required dependency of this app.
+    run('npm', ['install', '--package-lock-only', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
+    // That step does not keep entries for optional packages absent from this machine, so drop the names that point at them.
+    const recomputed = JSON.parse(readFileSync(join(app, 'package-lock.json')));
+    dropUninstalledOptionalNames(recomputed);
+    writeFileSync(join(app, 'package-lock.json'), JSON.stringify(recomputed));
+  }
+  assert.deepEqual(lockMissingEntries(JSON.parse(readFileSync(join(app, 'package-lock.json')))), []);
   run('npm', ['ci', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
   return { app, run, nodeArchive: dependencies['@kynesyslabs/dacs-node'] };
 }
