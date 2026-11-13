@@ -263,8 +263,8 @@ transaction's inclusion: a seller intent that holds no hash keeps the hash and
 signed bytes it found in the journals as local values, and a pending or failed
 read leaves every journal row, including `demo/recovery`, as it was. Only an
 authenticated inclusion saves that checkpoint. An active read asks `authorizeResend`
-once under the recovery lock and again after the deployment check, so authority
-that closed in between sends and records nothing.
+once, under the recovery lock and after the deployment check, so authority that
+closed during that check sends and records nothing.
 `read` takes the same options. The seller's restart of a submitted Deliverable
 passes them (with the same check) to the native delivery `read`, so a Deliverable
 CREATE kept before a crash that is still pending is sent again once; every other

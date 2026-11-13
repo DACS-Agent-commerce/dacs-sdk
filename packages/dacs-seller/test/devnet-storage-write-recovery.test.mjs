@@ -384,15 +384,17 @@ test('NEW-D1b-preauth-projection',async()=>{
 test('NEW-D1b-final-effect-authorization',async()=>{
  const w=await pendingAcceptedWorld(),recoveryRows=()=>[...w.journal.rows].filter(([key])=>key.startsWith('demo/recovery/'));
  await w.journal.put(w.key,{...await w.journal.get(w.key),stage:'issued',hash:w.signed.hash});
- // The caller's authority is open when asked first and closed when the awaited deployment check is done.
- let asked=0;
- const closing={resend:true,authorizeResend:async()=>++asked===1};
+ // The caller's authority is open until the awaited deployment check runs, and closed when that check is done.
+ let authorityOpen=true,asked=0;
+ w.source.verifyDeployment=async()=>{authorityOpen=false;return true;};
+ const closing={resend:true,authorizeResend:async()=>{asked++;return authorityOpen;}};
  assert.equal((await w.open().readRetained(w.retainedInput,closing)).status,'indeterminate');
- assert.equal(asked,2,'the authority is asked again after the awaited preparation');
+ assert.equal(asked,1,'the authority is asked once, after the awaited preparation');
  noEffects(w);
  assert.deepEqual(recoveryRows(),[],'no recovery intent was recorded');
  assert.deepEqual(await w.sourceJournal.get(`source/${JOBS[0]}`),w.signed,'the retained signed bytes are unchanged');
  // The same read with authority held through the end sends the exact retained bytes once.
+ w.source.verifyDeployment=async()=>true;
  const open={resend:true,authorizeResend:async()=>true};
  for(const repeat of [1,2])await w.open().readRetained(w.retainedInput,open);
  assert.deepEqual(w.resends,[w.signed.signedTransaction],'one resend of the exact original bytes');

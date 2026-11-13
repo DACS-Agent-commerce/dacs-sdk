@@ -242,8 +242,8 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // refused: the CREATE was refused by the node, so an absent readback (not only a
   // pending one) leaves its original bytes eligible for the one resend.
   // A resend is off unless asked for, and then only after authorizeResend (the
-  // caller's own check, asked here, under the recovery lock, right before the
-  // resend is recorded) answers exactly true. Anything else sends nothing and
+  // caller's own check, asked in recoverExactRetainedCreate, under the recovery
+  // lock, right before the resend is recorded) answers exactly true. Anything else sends nothing and
   // records nothing; a throw from it reaches the caller with its cause.
   async function observeSource(hash,projection,writeProof,{resend=false,refused=false,authorizeResend}={}) {
     if(resend&&typeof authorizeResend!=='function')fail('invalid','a resend needs the caller\'s authorization check');
@@ -256,9 +256,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return observed;
   }
 
-  // The one place a retained accepted CREATE is sent again: its exact stored bytes, at most once. The caller's check is asked
-  // under the recovery lock, and asked again after the awaited deployment check, so authority that closed meanwhile sends and
-  // records nothing. Only an active read reaches it; eligibility is decided by observeSource.
+  // The one place a retained accepted CREATE is sent again: its exact stored bytes, at most once. Only an active read reaches it;
+  // eligibility is decided by observeSource. The caller's check is asked once, under the recovery lock, after the awaited
+  // deployment check and right before the intent is recorded, so authority that closed during that check sends and records nothing.
   async function recoverExactRetainedCreate({hash,signedTransaction,authorizeResend}) {
     const recoveryKey=`demo/recovery/${hash}`;
     await journal.withWalletLock(recoveryKey,async()=>{
@@ -269,7 +269,6 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         // transport said it never dispatched left its slot unused.
         if(prior.stage!==UNSENT_RECOVERY_STAGE)return;
       }
-      if(await authorizeResend()!==true)return;
       await assertQualifiedDeployment(sourceCapability);
       if(await authorizeResend()!==true)return;
       await journal.put(recoveryKey,{stage:'intent',projectionHash});
