@@ -76,6 +76,8 @@ export function stubAgent() {
     calls: { proposals: 0, commits: 0, signatureCommits: 0, states: 0, reconciled: 0, payments: 0 },
     transportAgreementOf: (jobId) => structuredClone(drafts.get(jobId) ?? null),
     retainsProposalWork: (jobId) => agent.retains && drafts.has(jobId),
+    retainsUnfinishedWork: () => false,
+    revalidateCompletedAnswer: async () => {},
     retainsPaymentClaim: () => agent.retains,
     assertSettlementCredit: (jobId) => agent.credit(jobId),
     receiveProposal: async (body, { transport } = {}) => {
@@ -207,8 +209,8 @@ export const proposeJob = async (w, label) => {
 };
 
 /** A world over a real durable agent's retained commitment, with its proposal completed. */
-export async function continuingWorld(t) {
-  const fixture = await wireContinuationFixture(t), w = await world(t, { fixture });
+export async function continuingWorld(t, options = {}) {
+  const fixture = await wireContinuationFixture(t), w = await world(t, { fixture, ...options });
   const jobId = fixture.agreement.jobId, agreementHash = fixture.request.transportIdentity.agreementHash;
   const bodyFor = (path) => path === PATHS.proposals ? fixture.request : path === PATHS.state ? identityBody(jobId, agreementHash)
     : path === PATHS.payments ? { jobId, txHash: derive('continuing-payment'), payerPayingKey: buyer.claim }

@@ -863,6 +863,22 @@ per-client limiter so one client cannot exhaust the shared request budget.
   check): the ST-11 finalizer, which needs finalized and independently
   resolved Vet, commitment, settlement and bundle records, is not part of this
   package. The session ends at delivery.
+- The proposal and bundle routes each end an attempt by their own rule
+  (`src/dacs/seller-effect-routes.mjs`). A proposal answered `waiting`,
+  `indeterminate` or `rejected` ends with no outcome only when nothing of it was
+  signed or kept; once a signature intent is recorded the attempt stays open,
+  and the lease or the next recovery resumes the same responder. A bundle route
+  ends with no outcome only when, under the job's lock, no countersignature
+  work is retained; it then answers its named refusal again (`bundles/request`:
+  `not_delivered` 422 without a payment, `bundle_finalization_unavailable` 503
+  with one; `bundles/countersignature`: `bundle_finalization_unavailable` 503),
+  and it never records a completed bundle. A completed proposal answer is signed
+  again only after its sources are read again, read only: the retained
+  contribution and Agreement, both Vet records with their receipts, and the
+  buyer's current access. A source that fails answers `503
+  seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
+  `too_large` or `unavailable`), a closed buyer access keeps its own refusal,
+  and the stored outcome is never rewritten.
 - It does not mount the Vet and Agreement context route (`createSellerContextRoute`,
   see the root exports above) itself: the challenge
   a session needs is the one `host.issueSessionChallenge` issued, which the

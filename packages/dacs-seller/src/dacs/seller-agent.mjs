@@ -72,6 +72,10 @@ export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required',
 // so is a payment whose transaction hash is not 64 hexadecimal digits (payment_tx_hash_invalid).
 export const NO_EFFECT_ERRORS = Object.freeze(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_agreement_invalid', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'seller_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', 'payment_tx_hash_invalid', ...SELLER_PRE_EFFECT_REFUSALS]);
 const NO_EFFECT_CODES = new Set(NO_EFFECT_ERRORS);
+// The two bundle routes that run an attempt; the buyer-copy route is a read.
+const BUNDLE_PATHS = new Set(['/dacs/v1/bundles/request', '/dacs/v1/bundles/countersignature']);
+// The cause a failed read of a retained source gives a withheld replay; any other failure of the read is `unavailable`.
+const SOURCE_CAUSE_BY_READ_FAILURE = Object.freeze({ timeout: 'timeout', 'reply-limit': 'too_large' });
 export const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
@@ -85,7 +89,7 @@ const paymentPending = (answer) => answer?.status === 'held' || (answer?.status 
 export function transportOutcome(path, result = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
   const { answer, error, held, cause = error } = result;
   const failed = Object.hasOwn(result, 'error');
-  const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals';
+  const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals', bundle = BUNDLE_PATHS.has(path);
   const refusal = error instanceof SellerAgentError && NO_EFFECT_CODES.has(error.code);
   const rejected = refusal || ((proposal || answer?.code !== 'party_vet_non_pass') && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
   if (held !== undefined || (failed && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
@@ -93,13 +97,14 @@ export function transportOutcome(path, result = {}, { retained = true, recoverin
   const noEffect = rejected && !resumed && !retained;
   const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
   const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
-  if (recovering && !(readOnly ? !retry && !noEffect && !rejected : retry || noEffect ? proposal || payment : !rejected)) {
+  if (recovering && !(readOnly ? !retry && !noEffect && !rejected : retry || noEffect ? proposal || payment || bundle : !rejected)) {
     return { disposition: 'indeterminate', reason: String(refusal ? error.code : answer?.reason ?? 'seller_transport_work_retained').slice(0, 240), status: 503, value: UNCERTAIN, settle: false, retry: false, noEffect: false };
   }
   return { disposition: noEffect ? 'no-effect' : retry ? 'retry' : 'present', status: refusal ? error.status : 200,
     value: refusal ? { error: error.code, message: error.message } : answer, settle: true, retry, noEffect };
 }
 import { proposalTimeProblem } from './seller-proposal-time.mjs';
+import { SellerTransportError } from './seller-transport-auth.mjs';
   // A miss allows consulting the journal; it is no execution-absence proof.
 const NATIVE_READ_MISSES = Object.freeze(['name-index-miss', 'native-address-miss']);
 // Readback failures of retained native evidence work (the commitment and
@@ -2110,14 +2115,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // through the command's own durable reducer, whose journals replay what was
   // signed or sent; under an expired delegation, read back only.
   const proposalWork = (jobId) => { const s = durable?.loadSession(jobId) ?? sessions.get(jobId); return Boolean(s?.agreementSignatureKey || s?.sellerContribution || s?.commitment); };
+  // Countersignature work a bundle route must finish: kept for the buyer's signature, with no seller copy anchored yet.
+  const unfinishedBundleWork = (session) => Boolean(session?.countersignatureWork && !session.sellerCopy);
   // Work of exactly this command that forbids releasing its effect.
-  const retainedWork = (path, jobId, body) => path === '/dacs/v1/agreements/proposals' ? proposalWork(jobId) : path === '/dacs/v1/payments' && api.retainsPaymentClaim(jobId, body);
+  const retainedWork = (path, jobId, body) => path === '/dacs/v1/agreements/proposals' ? proposalWork(jobId) : path === '/dacs/v1/payments' ? api.retainsPaymentClaim(jobId, body)
+    : BUNDLE_PATHS.has(path) && unfinishedBundleWork(durable?.loadSession(jobId) ?? sessions.get(jobId));
   async function recoverTransport({ request, body, rawBody, readOnly, transport }) {
     const same = (a, b) => canonicalize(a) === canonicalize(b);
     const proposal = request.path === '/dacs/v1/agreements/proposals', session = sessions.get(request.jobId) ?? null;
     const identity = proposal ? body.transportIdentity : session?.transportIdentity;
-    let decoded; try { decoded = JSON.parse(Buffer.from(rawBody).toString('utf8')); } catch { /* differs below */ }
-    if (request.method !== 'POST' || request.seller !== claim || !same(request.listingPin, pin) || sha256Hex(rawBody) !== request.bodyHash || decoded === undefined || !same(decoded, body) ||
+    // The body is the admitted one; the exact bytes it was admitted from are bound to the request by their hash.
+    if (request.method !== 'POST' || request.seller !== claim || !same(request.listingPin, pin) || sha256Hex(rawBody) !== request.bodyHash ||
         request.jobId !== (body.transportIdentity?.jobId ?? body.jobId) || identity?.seller !== claim || request.buyer !== identity?.buyer || request.agreementHash !== identity?.agreementHash ||
         (proposal ? request.buyer !== body.buyerIdentityBundle?.presentedBy : request.agreementHash !== session?.agreementHash)) return { held: 'seller_transport_context_mismatch' };
     try {
@@ -2159,7 +2167,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!readOnly) return { answer: await submitPayment(body) };
           return fixtureSettlement ? { answer: await fixtureSettlement.readPayment(body) } : { held: 'seller_payment_readback_unavailable' };
         }
-        case '/dacs/v1/bundles/request': case '/dacs/v1/bundles/countersignature': case '/dacs/v1/bundles/buyer-copy': return { held: 'bundle_finalization_unavailable' };
+        // Recovery runs under the job's lock, so a job with no retained countersignature work has no worker: the route's own refusal answers.
+        case '/dacs/v1/bundles/request': case '/dacs/v1/bundles/countersignature':
+          if (unfinishedBundleWork(session)) return { held: 'seller_bundle_work_retained' };
+          return { answer: await (request.path === '/dacs/v1/bundles/request' ? bundleRequest : countersign)({ jobId: request.jobId }) };
+        case '/dacs/v1/bundles/buyer-copy': return { held: 'bundle_finalization_unavailable' };
         default: return { held: 'seller_transport_reconciliation_unsupported' };
       }
     } catch (error) { return { error }; }
@@ -2269,8 +2281,33 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // retires the job on that attempt. Synchronous and read only.
     retainsUnfinishedWork: ({ jobId, path }) => {
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
-      return Boolean((session?.commitCreatedAt && !session.commitment && !session.signatureCommitmentHeld) ||
+      return Boolean((session?.commitCreatedAt && !session.commitment && !session.signatureCommitmentHeld) || (BUNDLE_PATHS.has(path) && unfinishedBundleWork(session)) ||
         (path === '/dacs/v1/payments' && (session?.payment || session?.paymentWork || session?.nativeEvidenceWork || durable?.settlementBoundTo(jobId))));
+    },
+    /**
+     * Reads the sources of a completed proposal answer again, read only, before the stored answer is signed again: the current
+     * buyer access, the retained contribution and Agreement, the stored answer against that contribution, and both Vet records
+     * with their receipts. Resolves with nothing when every one authenticates. Throws SellerTransportError `seller_source_unavailable`
+     * (503) with a cause of `absent`, `changed`, `timeout`, `too_large` or `unavailable`, the closed-access refusal as its own
+     * SellerTransportError, and a TypeError for a path that has no completed answer here. It writes nothing and signs nothing.
+     */
+    revalidateCompletedAnswer: async ({ path, jobId, outcome }) => {
+      if (path !== '/dacs/v1/agreements/proposals') throw new TypeError(`a completed ${path} answer is not revalidated here`);
+      const unavailable = (cause) => new SellerTransportError('seller_source_unavailable', 503, { cause });
+      let session;
+      try { session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId)); }
+      catch (error) { throw unavailable(SOURCE_CAUSE_BY_READ_FAILURE[readFailureCode(error)] ?? 'unavailable'); }
+      if (!session?.proposal || !session.sellerContribution) throw unavailable('absent');
+      try { assertBuyer(session.buyerBundle.presentedBy, jobId, { proposal: true }); }
+      catch (error) { throw error?.code === 'buyer_access_closed' ? new SellerTransportError(error.code, error.status) : error; }
+      let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
+      const agreement = await finalizeFixedPriceAgreementContributions(session.proposal.plan, [session.proposal.buyerContribution, session.sellerContribution], contributionVerifier).catch(() => null);
+      if (stored?.disposition !== 'complete' || canonicalize(stored.contribution) !== canonicalize(session.sellerContribution) ||
+          agreement === null || contentHash(agreement) !== session.agreementHash || retainedVetModeProblem(session) !== null) throw unavailable('changed');
+      let problem;
+      try { problem = verifiesRetainedVet(session) ? await retainedVetEvidenceProblem(session) : null; }
+      catch (error) { throw unavailable(SOURCE_CAUSE_BY_READ_FAILURE[readFailureCode(error)] ?? 'unavailable'); }
+      if (problem) throw unavailable('changed');
     },
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
     // For the host that holds the seller state lock: releases the job lock rows
