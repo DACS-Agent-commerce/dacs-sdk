@@ -3962,6 +3962,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the public https endpoint preparation fix and refresh package pins | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF record the merged recorded suspension fixes and refresh package pins | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF test the authenticated loopback seller endpoint and record the merged client blobs | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/test/seller-public-endpoint.test.mjs:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
