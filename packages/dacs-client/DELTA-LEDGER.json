@@ -6873,6 +6873,17 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the public API test merged with the engines range change",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "04b9b695052d43d73b6437653b830f55f903d8a4",
+          "after": "04b9b695052d43d73b6437653b830f55f903d8a4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF merge the source-read transport helper into the source-read world fixture",
       "files": [
         {
@@ -6894,17 +6905,6 @@
           "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
           "before": "4734c66eb0b25db13d505cc6cc9df63f4237d09c",
           "after": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the public API test merged with the engines range change",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/public-api.test.mjs",
-          "before": "04b9b695052d43d73b6437653b830f55f903d8a4",
-          "after": "04b9b695052d43d73b6437653b830f55f903d8a4"
         }
       ]
     }

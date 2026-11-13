@@ -1180,13 +1180,13 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` | 4734c66eb0b25db13d505cc6cc9df63f4237d09c |
 | WF | delta(client): WF record the merged public API test after carrying base/main up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | fd6d1efda44695f2e160927a08b0ba7295cdced6 |
+| WF | delta(client): WF record the public API test merged with the engines range change | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 04b9b695052d43d73b6437653b830f55f903d8a4 |
 | WF | delta(client): WF merge the source-read transport helper into the source-read world fixture | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/source-read-crash-child.mjs:1` | df503bf02fa05bb270f3917138d7b46423ebd704 |
 | | `packages/dacs-client/test/helpers/source-read-transport.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/helpers/source-read-world.mjs:1` | d99dfa33ba877ff2fdcefcce104abe9cf9727e88 |
 | | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` | 3f2bbe6f992aae79cd8e55a4f11c69de52468ed9 |
-| WF | delta(client): WF record the public API test merged with the engines range change | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/public-api.test.mjs:1` | 04b9b695052d43d73b6437653b830f55f903d8a4 |
 
 ## Complete commit and file inventory
 
@@ -3765,6 +3765,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the public API test merged with the engines range change | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the public API test merged with the engines range change | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the public API test merged with the engines range change | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF order the public API merge record before the source-read fixture merge | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF order the public API merge record before the source-read fixture merge | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF order the public API merge record before the source-read fixture merge | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF order the public API merge record before the source-read fixture merge | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF order the public API merge record before the source-read fixture merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
