@@ -1218,6 +1218,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` | da2946d04f52ac899dfd805ec55b02ddcb3213da |
 | WF | delta(client): WF record the merged public API test after carrying the fence part up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72 |
+| WF | delta(client): WF record the public API test merged from the fence part | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 7bea27e2b2d1cff5aec2f37457073c17048b0471 |
 | D11 | fix(client): D11 keep seller identity and packed runtime checks stable | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | acaa5486c9fafb7d178aa37f16d517d80919fa47 |
 | | `packages/dacs-client/test/helpers/fresh-node-child.mjs:1` | c5b141ceb517de732d91608ba14b679ba5ee53fd |
@@ -3863,6 +3865,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): end the delta ledger with a source or test change | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): end the delta ledger with a source or test change | `packages/dacs-client/HOLD.json:1` |
 | fix(client): end the delta ledger with a source or test change | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the public API test merged from the fence part | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the public API test merged from the fence part | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the public API test merged from the fence part | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the public API test merged from the fence part | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the public API test merged from the fence part | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

@@ -7271,6 +7271,17 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF record the public API test merged from the fence part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "7bea27e2b2d1cff5aec2f37457073c17048b0471",
+          "after": "7bea27e2b2d1cff5aec2f37457073c17048b0471"
+        }
+      ]
+    },
+    {
       "delta": "D11",
       "subject": "fix(client): D11 keep seller identity and packed runtime checks stable",
       "files": [
