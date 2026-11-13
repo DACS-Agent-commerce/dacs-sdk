@@ -570,6 +570,14 @@ for (const [label, nodeFee, debitOs] of [
   await assert.rejects(journal.ensureEvidence({ ...input, expectedJournalId: journal.journalId }), held, 'ensure');
   assert.deepEqual([w.calls.sign, w.calls.broadcast.length, w.calls.reads.length], [0, 0, 0]);
 });
+test('a kept evidence CREATE without a data field is refused as a journal conflict', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  const input = w.input(), kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1 });
+  delete kept.content.data[1].data;
+  keepUncheckedCreate(w.path, 'evidence_creates', input, kept);
+  await assert.rejects(journal.anchorEvidence(input), { code: 'wallet_journal_conflict' });
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
 test('a kept evidence CREATE whose whole debit is exactly the ceiling is not held and is sent', async (t) => {
   const w = wallet(t), journal = w.open(); t.after(() => journal.close());
   const input = w.input(), kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1, nodeFee: { networkFee: 18, rpcFee: 30 } });

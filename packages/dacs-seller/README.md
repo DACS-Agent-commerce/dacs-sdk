@@ -537,8 +537,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   (`code` and `message`) on the held answer of the seller agent. On the
   Deliverable path it is the `reason` of the held, pending or indeterminate
   delivery outcome, which starts with `write-fee-cap:`.
-  Clearing a held write is not built yet: there is no operator command for it
-  (tracked in issue #1640).
+  There is no operator command to clear a held write.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers

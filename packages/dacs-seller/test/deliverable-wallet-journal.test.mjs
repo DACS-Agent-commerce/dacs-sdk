@@ -222,6 +222,17 @@ for (const [label, nodeFee, debitOs] of [
   await assert.rejects(submit(journal, asked), held, 'submit');
   assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
 });
+test('a kept Deliverable CREATE without a data field is refused as a journal conflict', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const asked = w.input(), input = { ...asked, artifact: asked.report, artifactKind: 'Deliverable' };
+  const kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1 });
+  delete kept.content.data[1].data;
+  keepUncheckedCreate(w.path, 'deliverable_creates', input, kept);
+  await assert.rejects(resume(journal, asked), { code: 'wallet_journal_conflict' });
+  await assert.rejects(submit(journal, asked), { code: 'wallet_journal_conflict' });
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
 test('a kept Deliverable CREATE whose whole debit is exactly the ceiling is not held and is sent', async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());

@@ -1,5 +1,5 @@
-// The wallet journal and the operator approval policy compare the whole debit of one write with the same
-// limit, so a write is kept and sent by the journal exactly when the policy does not refuse it for its cost.
+// With the operator approval policy set to the wallet journal's limit, both compare the whole debit of one write
+// with it, so a write is kept and sent by the journal exactly when the policy does not refuse it for its cost.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';

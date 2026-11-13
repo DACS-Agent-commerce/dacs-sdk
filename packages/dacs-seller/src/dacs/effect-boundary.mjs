@@ -19,7 +19,7 @@ const JOB_OPERATION_CLASSES = ['job-create', 'payment-evidence', 'job-resume'];
 // Whether the retained bytes may be sent again after an earlier stage may have reached transport (K0 lane policy).
 const KINDS = { 'native-transaction': { mayResend: false }, 'seller-create': { mayResend: true }, 'wire-request': { mayResend: true } };
 const NOT_STOPPED_STATUS = 503;
-/** The per-write ceiling of the seller's signed writes, in OS (10^9 OS per DEM): 50 DEM, as the write-fee-cap refusal says. It is compared with the whole debit of a write: its fees plus the storage and gas burns. */
+/** The wallet journals' per-write ceiling, in OS (10^9 OS per DEM): 50 DEM, as the write-fee-cap refusal says. A journal compares it with the whole debit of a write: its fees plus the storage and gas burns. The approval policy has its own limit (4 DEM by default) and the effect boundary takes its limit from its caller; neither shares this constant. */
 export const WRITE_FEE_CEILING_OS = 50_000_000_000n;
 
 const assertAdmitted = () => assertKitOperationAdmitted('effectBoundary');

@@ -168,7 +168,7 @@ const storageFeeDem = (op) => Math.max(1, Math.ceil(Buffer.byteLength(JSON.strin
 // summed exactly or the content has no operation. The one sum both ceiling checks compare.
 function wholeDebitOs(content) {
   const feeOs = writeFeeOs(content), op = content?.data?.[1];
-  if (feeOs === null || !object(op)) return null;
+  if (feeOs === null || !object(op) || op.data === undefined) return null;
   return feeOs + BigInt(storageFeeDem(op) + GAS_DEM) * OS_PER_DEM;
 }
 
