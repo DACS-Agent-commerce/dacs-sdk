@@ -8368,6 +8368,22 @@
           "after": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "2f2c2f648bb095b7812aeac6523ae8cc22602bd8",
+          "after": "50355ea4059121eac4b97ea068a01be647e8dc24"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "25d796340d239be5de80a55c42ad7bce48755f5e",
+          "after": "25d796340d239be5de80a55c42ad7bce48755f5e"
+        }
+      ]
     }
   ]
 }

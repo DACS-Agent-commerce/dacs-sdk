@@ -1365,6 +1365,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | fix(client): require a string artifact hash in the dispatch history | Git commit selector 6387ec98397795aea109a075a4b27cdfc34c1f8a |
 | | `packages/dacs-client/src/wallet/effect-history.mjs:1` | b5e0e3ca4da2cfa9f69cbf46d2b2881f80f6f29a |
 | | `packages/dacs-client/test/effect-history.test.mjs:1` | d7894853a7aa7c21b1b993b37d74642856ce1e4c |
+| WF | delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` | 50355ea4059121eac4b97ea068a01be647e8dc24 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 25d796340d239be5de80a55c42ad7bce48755f5e |
 
 ## Complete commit and file inventory
 
@@ -4088,6 +4091,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/HOLD.json:1` |
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` |
 
 ## Original moved files
 
