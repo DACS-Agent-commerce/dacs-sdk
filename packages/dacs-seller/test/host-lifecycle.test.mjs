@@ -4,7 +4,7 @@ import fs, {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {connect} from 'node:net';
 import {once} from 'node:events';
-import {mkdtemp,rm,chmod,access,writeFile,symlink} from 'node:fs/promises';
+import {mkdtemp,rm,chmod,access,writeFile,symlink,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
@@ -361,10 +361,25 @@ test('a host started with a TP-1 G3 orchestrator DEM context takes a W proposal'
  const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
  assert.equal((await f.client(host,request).propose(request)).disposition,'complete');
 });
-test('the host refuses a counterparty DEM context with vet_mode_mismatch before the state lock',async t=>{
+test('the host refuses a counterparty DEM context with its own vet_mode_mismatch before it opens any state',async t=>{
  const f=await fixture(t);
- await assert.rejects(f.start({demDeliveryContext:f.capability(undefined)}),{name:'TypeError',code:'vet_mode_mismatch'});
- await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
+ await assert.rejects(f.start({demDeliveryContext:f.capability(undefined)}),{name:'TypeError',code:'vet_mode_mismatch',message:/the seller host runs in the tp1-g3-orchestrator Vet mode/});
+ assert.deepEqual(await readdir(f.dataDirectory),[]);
+});
+test('mode-like environment variables and a request member leave the host in the kit Vet mode',async t=>{
+ const names=['VET_MODE','DACS_VET_MODE','KIT_TP1_VET_MODE','DACS_SELLER_VET_MODE'],saved=names.map(name=>[name,process.env[name]]);
+ t.after(()=>{for(const [name,value] of saved){if(value===undefined)delete process.env[name];else process.env[name]=value;}});
+ for(const name of names)process.env[name]='counterparty';
+ const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
+ const withMember={...request,vetMode:'counterparty'},withProposalMember={...request,proposal:{...request.proposal,vetMode:'counterparty'}};
+ for(const sent of [withMember,withProposalMember,request])assert.equal((await f.client(host,sent).propose(sent)).disposition,'complete');
+});
+test('a Listing member naming another Vet mode leaves the host in the kit Vet mode',async t=>{
+ const f=await fixture(t),draft={...f.listing};
+ delete draft.signature;
+ const listing=await core.signComponentArtifact({...draft,vetMode:'counterparty'},core.ARTIFACT_SEPARATORS.Listing,{signer:seller.claim,algorithm:'ed25519',sign:seller.signBytes});
+ // An agent in another mode than the host's kit DEM context cannot be created, so a started host is in the kit mode.
+ await f.start({listing});
 });
 test('no host option selects or changes the kit Vet mode',async t=>{
  const f=await fixture(t);
