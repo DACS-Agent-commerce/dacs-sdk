@@ -56,6 +56,11 @@ export async function resignedProjection(content) {
   return { hash, content, signature: await (await sdkWallet(false, null)).signMessage(hash) };
 }
 
+// The test wallet's signature over exactly `message`, as the { type, data } a signed projection carries.
+export async function signMessageAsTestWallet(message) {
+  return (await sdkWallet(false, null)).signMessage(message);
+}
+
 // The node's view of signed content, by the code the SDK shares with it: the
 // content is already its fork's wire form (the bytes the node hashes,
 // serializerGate), and its gcr_edits are the ones GCRGeneration regenerates
