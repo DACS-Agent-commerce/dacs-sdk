@@ -6724,6 +6724,22 @@
       ]
     },
     {
+      "delta": "D40",
+      "subject": "delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/portal-capability.mjs",
+          "before": "d6200b11094df0e624dd644d980ac3bc7444868d",
+          "after": "fb1f631894e79e1139d7d66c8ce2e56d97a40ae5"
+        },
+        {
+          "path": "packages/dacs-client/test/portal-capability.test.mjs",
+          "before": "073700c9a849a4bfc092cb5913498364fd622f0d",
+          "after": "03649eaa13ff185ed7e74c73984df819b417e1ff"
+        }
+      ]
+    },
+    {
       "delta": "D34",
       "subject": "delta(client): D34 report a failed transaction-body read as chain unavailable",
       "files": [
