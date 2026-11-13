@@ -266,8 +266,11 @@ export async function createDacsAgentProject(
     ], targetDirectory);
     if (mode === "live-demos") {
       // The host kit's reviewed SQLite adapter is the only dependency allowed
-      // to run a native install lifecycle in the generated live project.
-      await runCommand(npm, ["rebuild", "better-sqlite3"], targetDirectory);
+      // to run a native install lifecycle in the generated live project. The
+      // command-line flag overrides the child's npm_config_ignore_scripts.
+      await runCommand(npm, [
+        "rebuild", "better-sqlite3", "--ignore-scripts=false",
+      ], targetDirectory);
     }
   }
   let doctor: CreatedDacsAgentProject["doctor"] = "not-run";
