@@ -11,8 +11,10 @@ const refuse = () => { throw new OperationError('not_found', 'unknown or invalid
 export function createPortalCapability({ db, ops, now }) {
   const stored = db.prepare('SELECT account_id, kind, handoff_token_hash, handoff_expires_at FROM operations WHERE id = ?');
   return (operationId, token) => {
-    if (typeof operationId !== 'string' || !operationId || operationId.length > MAX_OPERATION_ID_LENGTH
-      || typeof token !== 'string' || !token || token.length > MAX_HANDOFF_TOKEN_LENGTH) refuse();
+    // Ill-formed UTF-16 has no exact UTF-8 bytes: an unpaired surrogate hashes and
+    // binds as U+FFFD, so distinct ids or tokens would match the same stored value.
+    if (typeof operationId !== 'string' || !operationId || operationId.length > MAX_OPERATION_ID_LENGTH || !operationId.isWellFormed()
+      || typeof token !== 'string' || !token || token.length > MAX_HANDOFF_TOKEN_LENGTH || !token.isWellFormed()) refuse();
     const capability = stored.get(operationId);
     if (!capability || capability.kind !== 'purchase') refuse();
     let businessClock, wallClock;
