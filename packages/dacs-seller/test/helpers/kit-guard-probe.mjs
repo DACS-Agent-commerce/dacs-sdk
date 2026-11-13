@@ -201,6 +201,8 @@ async function effectEntries() {
   await attempt('ensureEvidence', () => evidence.ensureEvidence({}));
   readable.signedProjection = await evidence.readSignedProjection({ logicalAddress: 'dacs4:evidence:probe' });
   evidence.close();
+  // Without `anchorEvidence` the consumer only reads, so it stays constructible while off.
+  readable.evidenceConsumerWithoutAnchor = typeof createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', fetchImpl: never('a fetch') }).readEvidence;
   const other = createSignedCreateJournal({ ...journalOptions('other.sqlite'), table: 'probe_creates' });
   await attempt('guardedCreate', () => other.guardedCreate({}, { resume: false }));
   other.close();
