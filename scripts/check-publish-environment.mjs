@@ -76,7 +76,13 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
       const bytes = readFileSync(path);
       if (bytes.length > HTTP_JSON_MAX_BYTES) throw new Error(`input exceeds ${HTTP_JSON_MAX_BYTES} bytes`);
       return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    } catch (error) { process.stderr.write(`${path}: ${error.message}\n`); process.exit(1); }
+    } catch (error) {
+      // The message can quote the input and the path can hold any character. JSON
+      // escaping keeps it on one line, so none of it can start a `::` workflow command,
+      // and `##[` is escaped because the runner reads that older form anywhere in a line.
+      process.stderr.write(`${JSON.stringify(`${path}: ${error.message}`).replaceAll("##[", "##\\u005b")}\n`);
+      process.exit(1);
+    }
   };
   const problems = environmentPath && policiesPath ? publishEnvironmentProblems(read(environmentPath), read(policiesPath),
     process.env.GITHUB_TRIGGERING_ACTOR || process.env.GITHUB_ACTOR || "")
