@@ -250,24 +250,32 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     let observed=await sourceCapability.binding({phase:'readback',address:owner,hash,...(writeProof?{writeProof}:{})});
     // While the kit's guard is off every read, resend-enabled lane reconcilers included, stays readback only.
     if(resend && kitOperationAdmitted() && (observed.disposition==='pending'||refused&&observed.disposition==='absent') && signRpc && projection?.content?.type==='storageProgram') {
-      const recoveryKey=`demo/recovery/${hash}`;
-      await journal.withWalletLock(recoveryKey,async()=>{
-        const prior=await journal.get(recoveryKey),projectionHash=exactHash(projection);
-        if(prior){
-          if(prior.projectionHash!==projectionHash)fail('invalid','retained recovery projection differs');
-          // An interrupted or uncertain resend never authorizes another; one the
-          // transport said it never dispatched left its slot unused.
-          if(prior.stage!==UNSENT_RECOVERY_STAGE)return;
-        }
-        if(await authorizeResend()!==true)return;
-        await assertQualifiedDeployment(sourceCapability);
-        await journal.put(recoveryKey,{stage:'intent',projectionHash});
-        const answer=await sourceCapability.recoverStorageWrite({signedTransaction:projection,signRpc});
-        await journal.put(recoveryKey,{stage:answer?.resent===false?UNSENT_RECOVERY_STAGE:'issued',projectionHash});
-      });
+      await recoverExactRetainedCreate({hash,signedTransaction:projection,authorizeResend});
       observed=await sourceCapability.binding({phase:'readback',address:owner,hash});
     }
     return observed;
+  }
+
+  // The one place a retained accepted CREATE is sent again: its exact stored bytes, at most once. The caller's check is asked
+  // under the recovery lock, and asked again after the awaited deployment check, so authority that closed meanwhile sends and
+  // records nothing. Only an active read reaches it; eligibility is decided by observeSource.
+  async function recoverExactRetainedCreate({hash,signedTransaction,authorizeResend}) {
+    const recoveryKey=`demo/recovery/${hash}`;
+    await journal.withWalletLock(recoveryKey,async()=>{
+      const prior=await journal.get(recoveryKey),projectionHash=exactHash(signedTransaction);
+      if(prior){
+        if(prior.projectionHash!==projectionHash)fail('invalid','retained recovery projection differs');
+        // An interrupted or uncertain resend never authorizes another; one the
+        // transport said it never dispatched left its slot unused.
+        if(prior.stage!==UNSENT_RECOVERY_STAGE)return;
+      }
+      if(await authorizeResend()!==true)return;
+      await assertQualifiedDeployment(sourceCapability);
+      if(await authorizeResend()!==true)return;
+      await journal.put(recoveryKey,{stage:'intent',projectionHash});
+      const answer=await sourceCapability.recoverStorageWrite({signedTransaction,signRpc});
+      await journal.put(recoveryKey,{stage:answer?.resent===false?UNSENT_RECOVERY_STAGE:'issued',projectionHash});
+    });
   }
 
   // The lane reconcilers' own resend of another job's accepted-but-missing write
@@ -379,7 +387,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     const projection=await publicProjection(hash);
     if(!projection) return {status:broadcastRejected(retained)?'rejected':'indeterminate',reason:broadcastRejected(retained)?'broadcast_rejected: no original signed CREATE retained':'the original public signed CREATE projection is unavailable',noResend:true};
     if(!projectionAuthentic(projection,{transactionRef:{value:hash}})) return {status:'indeterminate',reason:'the original public signed CREATE does not authenticate',noResend:true};
-    if(!retained.signedTransaction) {retained={...retained,hash,signedTransaction:projection};await journal.put(keyFor(input.logicalAddress),retained);}
+    // The adopted hash and bytes are saved before an active read may send them again. A passive read keeps them local until the
+    // authenticated inclusion below saves them, so a pending or failed read leaves the journal as it was.
+    if(!retained.signedTransaction) {retained={...retained,hash,signedTransaction:projection};if(resend)await journal.put(keyFor(input.logicalAddress),retained);}
     const cacheable=cachedKinds.has(input.artifactKind),cacheKey=cacheScope(input,projection,retained.receipt ?? null);
     const cached=cacheable&&!fresh?immutable.get(cacheKey):null;
     if(cached){await sourceCapability.observeBinding();return cached;}

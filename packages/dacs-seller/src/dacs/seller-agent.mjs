@@ -76,6 +76,10 @@ const NO_EFFECT_CODES = new Set(NO_EFFECT_ERRORS);
 const BUNDLE_PATHS = new Set(['/dacs/v1/bundles/request', '/dacs/v1/bundles/countersignature']);
 // The cause a failed read of a retained source gives a withheld replay; any other failure of the read is `unavailable`.
 const SOURCE_CAUSE_BY_READ_FAILURE = Object.freeze({ timeout: 'timeout', 'reply-limit': 'too_large' });
+const sourceCauseOf = (readError) => SOURCE_CAUSE_BY_READ_FAILURE[readFailureCode(readError)] ?? 'unavailable';
+const sourceUnavailable = (cause) => new SellerTransportError('seller_source_unavailable', 503, { cause });
+// What a completed commitment answer says, by route.
+const COMMITMENT_ANSWER_STATUS = Object.freeze({ '/dacs/v1/commitments': 'committed', '/dacs/v1/commitments/signature': 'commitment-held' });
 export const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
@@ -1310,13 +1314,53 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // command from this seller's retained state plus a fresh native readback. It
   // never signs or publishes to complete an uncertain effect: a finalized (or
   // early held) commitment answers what the same request would answer now.
-  // Only a native read that proves nothing was ever signed, or that a refused
-  // CREATE can no longer be included, may hand the request back to its
-  // ordinary start once, under the same job lock.
+  // Only a read that proves nothing was ever signed (a native proof of no intent
+  // in both signed journals, or for an early commitment on a fixture anchor, no
+  // anchor row), or that a refused CREATE can no longer be included, may hand
+  // the request back to its original start once, under the same job lock.
   const COMMITMENT_PATHS = new Set(['/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
-  // Answers `{ proven }`; a read that fails is never a proof, and its error is passed out as `failure`.
-  const provenUnsignedCommitment = async (jobId) => {
-    if (!nativeArtifactAnchor) return { proven: false };
+  // The commitment CREATE as its source holds it now, read in passive mode: `{ anchored, projection }`. Throws SellerTransportError
+  // `seller_source_unavailable` unless the source answers with the one present commitment.
+  async function readCommitmentSource(logicalAddress) {
+    let readFailure, resolved;
+    try {
+      if (nativeArtifactAnchor) {
+        const read = await readRetainedBounded(nativeArtifactAnchor, { logicalAddress, artifactKind: 'FinalityCommitmentRecord', fresh: true }, PASSIVE_RETAINED_READ);
+        resolved = read.status === 'present'
+          ? { disposition: 'present', projection: read.signedProjection, anchored: { record: read.artifact, anchorTxRef: read.txRef, anchorReceipt: read.receipt } }
+          : { disposition: read.status };
+      } else resolved = await commitmentReader(anchors, claim, (cause) => { readFailure = cause; }).resolve(logicalAddress);
+    } catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+    if (resolved.disposition === 'present') return resolved;
+    throw sourceUnavailable(readFailure ? sourceCauseOf(readFailure) : { absent: 'absent', rejected: 'changed' }[resolved.disposition] ?? 'unavailable');
+  }
+  // Reads a completed commitment answer's sources again, read only: no `commit`, durable anchor read, phase change or slot release.
+  async function revalidateCommitmentAnswer({ path, jobId, outcome }) {
+    let session;
+    try { session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId)); }
+    catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+    const retained = session?.commitment, logicalAddress = finalityCommitmentAddress(jobId);
+    // An early commitment holds no ordinary commitment yet: its retained evidence is the CREATE at its address and the Agreement hash.
+    if (!session?.agreementHash || !(retained || (path === '/dacs/v1/commitments/signature' && session.signatureCommitmentHeld))) throw sourceUnavailable('absent');
+    let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
+    if (stored?.status !== COMMITMENT_ANSWER_STATUS[path] || stored.address !== logicalAddress ||
+        (retained && (retained.logicalAddress !== logicalAddress || retained.agreementHash !== session.agreementHash))) throw sourceUnavailable('changed');
+    const { anchored, projection } = await readCommitmentSource(logicalAddress);
+    if (anchored.record?.agreementHash !== session.agreementHash || anchored.anchorReceipt?.logicalAddress !== logicalAddress ||
+        (retained && (contentHash(retained.record) !== contentHash(anchored.record) || canonicalize(retained.anchorTxRef) !== canonicalize(anchored.anchorTxRef) ||
+          !sameNativeCommitmentReceipt(retained.anchorReceipt, anchored.anchorReceipt)))) throw sourceUnavailable('changed');
+    let verdict;
+    try {
+      verdict = nativeArtifactAnchor
+        ? await readAdmissionCapability(nativeArtifactAnchor, 'verifyReceipt', { logicalAddress, artifact: anchored.record, artifactKind: 'FinalityCommitmentRecord', receipt: anchored.anchorReceipt, signedProjection: projection, fresh: true })
+        : commitmentReader(anchors, claim).verifyAnchorReceipt(anchored);
+    } catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+    if (verdict !== 'valid') throw sourceUnavailable(verdict === 'invalid' ? 'changed' : 'unavailable');
+  }
+  // Answers `{ proven }`; a read that fails is never a proof, and its error is passed out as `failure`. The fixture anchors keep an
+  // anchor row before they write, so an early commitment with no row never started its CREATE.
+  const provenUnsignedCommitment = async (jobId, early) => {
+    if (!nativeArtifactAnchor) return { proven: early && Boolean(durable) && !durable.hasAnchor(finalityCommitmentAddress(jobId)) };
     try {
       const read = await readRetainedBounded(nativeArtifactAnchor, { logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true }, PASSIVE_RETAINED_READ);
       return { proven: mayPublishAgain(read) };
@@ -1345,15 +1389,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // fall through to the ordinary commitment path: a body without one was
     // never a signature commitment request.
     if (early && (!body.agreement || typeof body.agreement !== 'object' || Array.isArray(body.agreement))) return held('the signature commitment request has no Agreement');
-    // Recovery never starts an early attempt or reserves its buyer slot.
-    if (early && !session.signatureCommitmentAttempt) return held('seller_signature_attempt_absent');
     const input = { jobId: request.jobId, signedProjection: body.signedProjection };
     const options = { readbackOnly: true, adopt: !early, noLocalWrites: readOnly, ...(early ? { signatureAgreement: body.agreement } : {}) };
     let answer;
     try { answer = await commit(input, options); }
     catch (error) {
-      if (readOnly || early || session.commitment || session.signatureCommitmentHeld) return failed(error);
-      const unsigned = await provenUnsignedCommitment(request.jobId);
+      if (readOnly || session.commitment || session.signatureCommitmentHeld) return failed(error);
+      // An early attempt marker alone is no proof that its CREATE was sent: the proof of no intent decides.
+      const unsigned = await provenUnsignedCommitment(request.jobId, early);
       if (!unsigned.proven) return failed(error, unsigned.failure ?? error);
       try { answer = await commit(input, early ? { signatureAgreement: body.agreement } : {}); }
       catch (retryError) { return failed(retryError); }
@@ -2285,29 +2328,41 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         (path === '/dacs/v1/payments' && (session?.payment || session?.paymentWork || session?.nativeEvidenceWork || durable?.settlementBoundTo(jobId))));
     },
     /**
-     * Reads the sources of a completed proposal answer again, read only, before the stored answer is signed again: the current
-     * buyer access, the retained contribution and Agreement, the stored answer against that contribution, and both Vet records
-     * with their receipts. Resolves with nothing when every one authenticates. Throws SellerTransportError `seller_source_unavailable`
+     * Reads the sources of a completed proposal or commitment answer again, read only, before the stored answer is signed again.
+     * A proposal: the current buyer access, the retained contribution and Agreement, the stored answer against that contribution,
+     * and both Vet records with their receipts. A commitment (or early commitment): the retained commitment, its canonical address,
+     * its record, transaction and finalized receipt, read from the commitment's source in passive mode, against the stored answer.
+     * Resolves with nothing when every one authenticates. Throws SellerTransportError `seller_source_unavailable`
      * (503) with a cause of `absent`, `changed`, `timeout`, `too_large` or `unavailable`, the closed-access refusal as its own
      * SellerTransportError, and a TypeError for a path that has no completed answer here. It writes nothing and signs nothing.
      */
     revalidateCompletedAnswer: async ({ path, jobId, outcome }) => {
+      if (COMMITMENT_PATHS.has(path)) return revalidateCommitmentAnswer({ path, jobId, outcome });
       if (path !== '/dacs/v1/agreements/proposals') throw new TypeError(`a completed ${path} answer is not revalidated here`);
-      const unavailable = (cause) => new SellerTransportError('seller_source_unavailable', 503, { cause });
       let session;
       try { session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId)); }
-      catch (error) { throw unavailable(SOURCE_CAUSE_BY_READ_FAILURE[readFailureCode(error)] ?? 'unavailable'); }
-      if (!session?.proposal || !session.sellerContribution) throw unavailable('absent');
+      catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+      if (!session?.proposal || !session.sellerContribution) throw sourceUnavailable('absent');
       try { assertBuyer(session.buyerBundle.presentedBy, jobId, { proposal: true }); }
       catch (error) { throw error?.code === 'buyer_access_closed' ? new SellerTransportError(error.code, error.status) : error; }
       let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
       const agreement = await finalizeFixedPriceAgreementContributions(session.proposal.plan, [session.proposal.buyerContribution, session.sellerContribution], contributionVerifier).catch(() => null);
       if (stored?.disposition !== 'complete' || canonicalize(stored.contribution) !== canonicalize(session.sellerContribution) ||
-          agreement === null || contentHash(agreement) !== session.agreementHash || retainedVetModeProblem(session) !== null) throw unavailable('changed');
+          agreement === null || contentHash(agreement) !== session.agreementHash || retainedVetModeProblem(session) !== null) throw sourceUnavailable('changed');
       let problem;
       try { problem = verifiesRetainedVet(session) ? await retainedVetEvidenceProblem(session) : null; }
-      catch (error) { throw unavailable(SOURCE_CAUSE_BY_READ_FAILURE[readFailureCode(error)] ?? 'unavailable'); }
-      if (problem) throw unavailable('changed');
+      catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+      if (problem) throw sourceUnavailable('changed');
+    },
+    // Whether this seller retains commitment work for the job (a CREATE time, a publication request, an early attempt or a
+    // commitment): the transport then never ends the commitment attempt with no outcome. Synchronous and read only.
+    // Throws seller_state_unverified (503) for a retained session it cannot verify.
+    retainsCommitmentWork: (jobId) => {
+      if (!isCanonicalJobId(jobId)) return false;
+      const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      const problem = session && (retainedSnapshotProblem(session) ?? retainedSessionProblem(session));
+      if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
+      return Boolean(session && (session.commitCreatedAt !== undefined || session.commitment || session.signatureCommitmentAttempt || session.commitmentPublishAsked));
     },
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
     // For the host that holds the seller state lock: releases the job lock rows
