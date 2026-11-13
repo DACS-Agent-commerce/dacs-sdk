@@ -26,7 +26,11 @@ const SUITE_COMMANDS = [
   "npm test", "npm run host:test", "npm run generator:test", "npm test --workspace @kynesyslabs/dacs-client",
   "npm run seller:prepare -- \"$DACS_SELLER_SMOKE_DIR\"", "npm run seller:test", "npm run release:test",
 ];
-const PUBLICATION_CREDENTIAL = /secrets\s*[.[]|github\.token|registry-url|NODE_AUTH_TOKEN|GH_TOKEN/u;
+// The job is scanned as JSON, so a double quote inside an expression arrives escaped as `\"`.
+const PUBLICATION_CREDENTIAL = new RegExp(
+  String.raw`secrets\s*[.[]|github\s*(?:\.\s*token\b|\[\s*\\?["']token\\?["']\s*\])|registry-url|NODE_AUTH_TOKEN|GH_TOKEN`,
+  "u",
+);
 // The whole job is scanned, so job-level `env` counts as well as step fields.
 const mentionsPublicationCredential = (job: Job | undefined) => PUBLICATION_CREDENTIAL.test(JSON.stringify(job));
 const PUBLICATION_CREDENTIAL_FORMS: Record<string, (verify: Job) => void> = {
@@ -34,6 +38,11 @@ const PUBLICATION_CREDENTIAL_FORMS: Record<string, (verify: Job) => void> = {
   "a secret read by index": (verify) => { verify.env = { NPM_TOKEN: "${{ secrets['NPM_TOKEN'] }}" }; },
   "the workflow token in a job-level env": (verify) => { verify.env = { TOKEN: "${{ github.token }}" }; },
   "the workflow token in a step": (verify) => { verify.steps?.push({ run: "echo ${{ github.token }}" }); },
+  "the workflow token by single-quoted index": (verify) => { verify.env = { TOKEN: "${{ github['token'] }}" }; },
+  "the workflow token by double-quoted index": (verify) => { verify.env = { TOKEN: "${{ github[\"token\"] }}" }; },
+  "the workflow token by index in a step": (verify) => { verify.steps?.push({ run: "echo ${{ github['token'] }}" }); },
+  "the workflow token by index with spaces": (verify) => { verify.env = { TOKEN: "${{ github [ 'token' ] }}" }; },
+  "the workflow token with spaces around the dot": (verify) => { verify.env = { TOKEN: "${{ github . token }}" }; },
   "a registry-url on setup-node": (verify) => { verify.steps?.push({ uses: "actions/setup-node@v4", with: { "registry-url": "https://registry.npmjs.org" } }); },
 };
 const PUBLISH_COMMAND ="node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next --job-started-at \"$DACS_PUBLISH_JOB_STARTED_AT\"";
