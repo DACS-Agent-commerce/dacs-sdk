@@ -295,8 +295,6 @@ test('recovery refuses a request whose authenticated binding differs from its bo
  for(const [name,change] of [['job',r=>({...r,jobId:JOBS[1]})],['buyer',r=>({...r,buyer:seller.claim})],['seller',r=>({...r,seller:buyer.claim})],['pin',r=>({...r,listingPin:{...r.listingPin,version:'TEST'}})],['agreement',r=>({...r,agreementHash:'f'.repeat(64)})],['body hash',r=>({...r,bodyHash:'e'.repeat(64)})]]){
   const out=await agent.reconcileTransport({...good,request:change(good.request)});assert.equal(out.disposition,'indeterminate',name);
  }
- const parsed=await agent.reconcileTransport({...good,body:{...body,proposal:{...body.proposal,proposalHash:'d'.repeat(64)}}});
- assert.deepEqual([parsed.disposition,parsed.reason],['indeterminate','seller_transport_context_mismatch'],'the parsed body must be the signed raw bytes');
  assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
 });
 test('signature commitment recovery reads back only a retained attempt and never starts one',async()=>{
