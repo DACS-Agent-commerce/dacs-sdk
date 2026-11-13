@@ -94,6 +94,14 @@ test('K5-R4 proposal answer {waiting, indeterminate, rejected} × signature inte
     assert.equal((await job.post()).status, 200, `${cell}: recovered`);
     assert.equal(w.agent.calls.reconciled, reconciled + 1, `${cell}: the agent reconciled first`);
   }
+  // An agent that cannot say what it retains is never read as retaining nothing.
+  for (const retainsProposalWork of [() => { throw new Error('TEST retained state unreadable'); }, undefined]) {
+    const w = await world(t), job = await proposeJob(w, `r4-unknown-${retainsProposalWork === undefined}`);
+    w.agent.retainsProposalWork = retainsProposalWork;
+    w.agent.answer = () => ({ disposition: 'waiting', stage: 'lease', reason: 'TEST' });
+    await job.post();
+    assert.equal(operationOf(w, job.jobId, PATHS.proposals).state, 'pending', 'unknown evidence keeps the attempt open');
+  }
 });
 
 test('K5-R6 a proposal answered waiting after its signature intent stays open: pending within the lease, then recover resumes the same responder with one seller signature', async (t) => {

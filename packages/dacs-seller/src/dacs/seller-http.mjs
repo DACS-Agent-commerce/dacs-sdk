@@ -9,7 +9,7 @@
 // With the `wire` option, every route but the challenge and the context step opens
 // each request and signs each answer through `./wire` (seller-wire-requests.mjs); the
 // wire journal owns their effects, the reservation coordinator accounts for them, the completion port ends each
-// attempt, and read routes reserve nowhere.
+// attempt (by the rule of the route's row in seller-effect-routes.mjs, where it has one), and read routes reserve nowhere.
 // With `context` and `wire` together the challenge is on the wire too (`context.challengeOnWire`),
 // before any Agreement and with no journal. The context step keeps the old server auth, and so
 // does the challenge of a handler composed without `wire`. Each request has one authenticator,
