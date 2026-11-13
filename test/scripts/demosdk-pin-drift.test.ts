@@ -95,7 +95,7 @@ describe("scheduled demosdk pin drift check", () => {
   });
 });
 
-// Runs the real ci.yml step script with a stub npm/npx and returns the calls it made.
+// Runs the real demosdk-compat.yml step script with a stub npm/npx and returns the calls it made.
 // `node --test` is recorded and not run, because the scratch folder holds no test files;
 // every other node call (the installed-version check) runs on the real binary.
 function runPinnedStep(
@@ -115,12 +115,12 @@ exit 0`;
 exec ${shellQuote(nodeBinary)} "$@"`;
   const path = stubBin(directory, { node, npm, npx: "exit 0" });
   const script = join(directory, "step.sh");
-  writeFileSync(script, workflowStepScript(PIN_STEP, ciPath));
+  writeFileSync(script, workflowStepScript(PIN_STEP, compatPath));
   const result = runBash(["-e", script], { cwd: directory, env: { PATH: path } });
   return { result, calls: readFileSync(calls, "utf8").trim().split("\n") };
 }
 
-describe("pull-request demosdk step", () => {
+describe("pinned demosdk step", () => {
   it("runs when the node path and the folder holding the calls log contain a single quote", () => {
     const directory = mkdtempSync(join(tmpdir(), "demosdk-pin-it's-"));
     directories.push(directory);
@@ -178,12 +178,38 @@ describe("where the drift check runs", () => {
     expect(runs.some((run) => run.includes("demosdk-pin-drift"))).toBe(false);
   });
 
-  it("runs only on the schedule, for the version ci.yml pins", () => {
+  it("runs only on the schedule, for the version the pinned step installs", () => {
     const job = compat.jobs["demosdk-pin-drift"];
     expect(job?.if).toBe("github.event_name == 'schedule'");
     const command = (job?.steps ?? []).map((step) => step.run ?? "").find((run) => run.includes("demosdk-pin-drift"));
-    const pinnedInCi = /@kynesyslabs\/demosdk@(\d+\.\d+\.\d+)/.exec(workflowStepScript(PIN_STEP, ciPath))?.[1];
-    expect(pinnedInCi).toBe(PINNED);
-    expect(command).toContain(`scripts/demosdk-pin-drift.mjs ${pinnedInCi} `);
+    const pinned = /@kynesyslabs\/demosdk@(\d+\.\d+\.\d+)/.exec(workflowStepScript(PIN_STEP, compatPath))?.[1];
+    expect(pinned).toBe(PINNED);
+    expect(command).toContain(`scripts/demosdk-pin-drift.mjs ${pinned} `);
+  });
+});
+
+describe("where the pinned demosdk step runs", () => {
+  const ci = parse(readFileSync(ciPath, "utf8")) as Workflow;
+  const compat = parse(readFileSync(compatPath, "utf8")) as Workflow;
+
+  it("is not in ci.yml", () => {
+    const steps = Object.values(ci.jobs).flatMap((job) => job.steps ?? []);
+    expect(steps.some((step) => step.name === PIN_STEP)).toBe(false);
+    // An exact-version install (the package smoke's caret range is the consumer's own install, not a pin).
+    expect(steps.some((step) => /@kynesyslabs\/demosdk@\d/.test(step.run ?? ""))).toBe(false);
+  });
+
+  it("is the last step of its own unconditional compatibility job, which builds the host kit first", () => {
+    const job = compat.jobs["demosdk-pinned-tests"];
+    const steps = job?.steps ?? [];
+    expect(job?.if).toBeUndefined();
+    expect(steps.at(-1)?.name).toBe(PIN_STEP);
+    expect(steps.at(-1)?.if).toBeUndefined();
+    const runs = steps.map((step) => step.run ?? "");
+    expect(runs.indexOf("npm run host:build")).toBeGreaterThan(runs.indexOf("npm ci --no-audit"));
+    expect(runs.indexOf("npm run host:build")).toBeLessThan(steps.length - 1);
+    // The build/declaration matrix keeps an entry for the same pinned version.
+    const compatMatrix = (compat.jobs["demosdk-compat"] as { strategy?: { matrix?: { demosdk?: string[] } } }).strategy?.matrix?.demosdk;
+    expect(compatMatrix).toContain(PINNED);
   });
 });

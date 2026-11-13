@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import DatabaseSync from 'better-sqlite3';
 import { NO_EFFECT_ERRORS, SellerAgentError, transportOutcome } from '../src/dacs/seller-agent.mjs';
 import { NOW, testWallet } from './helpers/protocol-fixture.mjs';
-import { BUYER as WORLD_BUYER, LISTING, PIN as WORLD_PIN, SELLER as WORLD_SELLER, continuingWorld, derive, identityBody, jobFor, proposalFor, proposeJob, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
+import { BUYER as WORLD_BUYER, DELIVERED, HELD, LISTING, PIN as WORLD_PIN, SELLER as WORLD_SELLER, completions, continuingWorld, derive, identityBody, jobFor, operationOf, proposalFor, proposeJob, reconcilingWith, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
 import { canonicalize, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
 import { fixtureIdentityBundle } from './fixtures/listings.mjs';
 import { agreementInput } from '../src/dacs/purchase-protocol.mjs';
@@ -756,21 +756,6 @@ test('with the guard off, a directly composed handler answers kit_operation_guar
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { env: { ...process.env, NODE_OPTIONS: options.join(' ') }, encoding: 'utf8' });
   assert.equal(child.stdout.trim(), 'kit_operation_guard_off', child.stderr);
 });
-
-// The completions the completion port recorded: only a final outcome is recorded, and only it returns a route slot.
-const completions = (w) => {
-  const db = new DatabaseSync(w.storePath, { readonly: true });
-  try { return db.prepare('SELECT route, attempt, status, cleanup FROM kit_ordinary_completions ORDER BY rowid').all(); } finally { db.close(); }
-};
-const operationOf = (w, jobId, path) => inspectWireOperation(w.handle.wire.journal, { seller: WORLD_SELLER.claim, jobId, path });
-const HELD = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
-const DELIVERED = { status: 'payment-evidenced', delivery: { status: 'delivered' } };
-// A recovery that answers as the agent's reconciliation classifies a retained answer.
-const reconcilingWith = (path, resultFor) => async (input) => {
-  input.transport.claim();
-  const outcome = transportOutcome(path, await resultFor(input), { retained: true, recovering: true });
-  if (outcome.settle) await input.transport.settle(outcome);
-};
 
 test('an effect route reserves through the coordinator and ends through the completion port', async t => {
   const w = await routeWorld(t), done = await proposeJob(w, 'port-outcome'), refused = await proposeJob(w, 'port-null');

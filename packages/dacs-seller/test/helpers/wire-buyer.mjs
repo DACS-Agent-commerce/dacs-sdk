@@ -43,7 +43,9 @@ export async function wireBuyer({ buyer, seller, listingPin, clock, connection =
     },
     verifyResponse: (request, { header, status, responseBytes }) => verifyWireResponse(request, { header, status, body: responseBytes, now: clock(), binding, local: connection() }),
   });
-  return { binding, connection, endpointProof, signRequest, authentication };
+  /** The buyer's endpoint proof of discovery bytes a seller served. Rejects with the wire's refusal. */
+  const verifyDiscovery = (bytes) => verifyEndpointProof(bytes, { listing, binding, local: connection(), now: clock(), readListingEligibility: eligibilityFor(listing, clock()), readCommitmentReceipt });
+  return { binding, connection, endpointProof, signRequest, authentication, verifyDiscovery };
 }
 
 /**
