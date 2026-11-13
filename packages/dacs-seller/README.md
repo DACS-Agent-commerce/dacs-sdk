@@ -51,14 +51,17 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
-The host's optional `maxRecords` (default 10,000) is the permanent reservation
-budget. A purchase allocation holds 17 units for each of the context, proposals,
-commitments and payments routes (68 units, or 85 when commitments/signature is
-enabled), and admission allots one only while the whole allotment is free. A
-successful context completion returns only the context slot; an aborted start, a
-failed or non-validated context and a terminal DACS-5 session return every open
-slot. Returned units never reduce what has been charged. The host composes a
-reservation coordinator: one
+The host's optional `maxRecords` (default 10,000) is the reservation budget. A purchase allocation holds 17 units for each of the
+context, proposals, commitments and payments routes (68 units, or 85 when
+commitments/signature is enabled), and admission allots one only while the whole
+allotment is free. A successful context completion returns only the context
+slot; an aborted start, a failed or non-validated context and a terminal DACS-5
+session return every open slot. Returned units never reduce what has been
+charged, but a charge stops counting against the budget once its request has
+expired and its job has been retired (the job has ended, all its work is finished and its retention windows have
+passed), unless a crash left it still reserving. Charges that no longer count stay in the store,
+and each admission still scans them; they are never pruned. The host
+composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
 accounting and recording the reservation result. The routes do not yet reserve
 through the coordinator. Admission and accounting accept capacity through their
@@ -105,7 +108,7 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
-  maxRecords: 10000,     // optional permanent reservation budget; a purchase allocation is 68 units
+  maxRecords: 10000,     // optional reservation budget; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
@@ -922,7 +925,9 @@ one read answer, refusal or discovery document, whose `sign` returns a Promise
 of the signature (always `await` both: a Promise is never accepted as signature
 bytes) and checks the TP-1 authority when it signs, and the kit guard for a
 `ready: true` discovery document; and `integritySigner`, for seller-state journal bytes only.
-After `close()` every role refuses. Nothing in this package calls it yet.
+After `close()` every role refuses. The host signs the discovery document it serves at
+`/.well-known/dacs-seller.json` and each read answer through `readOnlyAnswerSigner`, and
+every other answer with `sign`.
 
 This checkout provides source modules. Build the core from the same checkout
 before importing the seller source kit.
