@@ -50,7 +50,7 @@ for (const label of SUBMITS) test(`a native delivery ${label} that outlasts the 
   assert.equal(answer, undefined);
   finish();
   await pending;
-  assert.equal(answer, accepted);
+  assert.deepEqual(answer, accepted);
 });
 
 for (const label of READ_ONLY) test(`a native delivery ${label} that never settles answers indeterminate at the deadline`, async t => {
@@ -76,20 +76,35 @@ test('a native delivery read reply with too many list entries is refused as inde
   assertIndeterminate('read', await readNativeDemDelivery(capability, {}), /limit/);
 });
 
-test('a read inside the limits returns the capability\'s own reply object', async () => {
+test('a read of proven unsigned absence returns the capability\'s own reply object', async () => {
   const absence = provenUnsignedAbsence('TEST never signed');
   const answer = await readNativeDemDelivery(capabilityWhere('read', async () => absence), {});
   assert.equal(answer, absence);
   assert.equal(mayPublishAgain(answer), true);
 });
 
-test('a read reply with an undefined-valued key inside the limits is returned unchanged', async () => {
+test('a read reply with an undefined-valued key inside the limits is returned as its checked copy', async () => {
   const reply = { status: 'present', receipt: { transactionRef: { value: 'TEST' }, note: undefined } };
-  assert.equal(await readNativeDemDelivery(capabilityWhere('read', async () => reply), {}), reply);
+  const answer = await readNativeDemDelivery(capabilityWhere('read', async () => reply), {});
+  assert.deepEqual(answer, { status: 'present', receipt: { transactionRef: { value: 'TEST' } } });
+});
+
+test('a read reply whose toJSON hides an oversized artifact does not reach the caller', async () => {
+  const reply = { status: 'present', artifact: { text: 'x'.repeat(300 * 1024) }, toJSON() { return { status: 'present' }; } };
+  const answer = await readNativeDemDelivery(capabilityWhere('read', async () => reply), {});
+  assert.notEqual(answer, reply);
+  assert.equal(answer.artifact, undefined);
+  assert.equal(answer.toJSON, undefined);
 });
 
 test('an error thrown by the capability reaches the caller unchanged', async () => {
   const failure = Object.assign(new Error('TEST read failed'), { observation: 'absent' });
+  const capability = capabilityWhere('read', async () => { throw failure; });
+  await assert.rejects(readNativeDemDelivery(capability, {}), error => error === failure);
+});
+
+test('a capability error that reads like a timeout is not taken for the deadline', async () => {
+  const failure = Object.assign(new Error('resolver-timeout'), { code: 'rpc_failure', observation: 'absent' });
   const capability = capabilityWhere('read', async () => { throw failure; });
   await assert.rejects(readNativeDemDelivery(capability, {}), error => error === failure);
 });

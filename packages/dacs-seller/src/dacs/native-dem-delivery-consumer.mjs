@@ -4,7 +4,7 @@
 // A missed deadline never proves that no write occurred.
 import { isDemDeliveryContextAuthority } from './dem-delivery-context-consumer.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
-import { resolveWithDeadline, boundedResolutionValue } from '../util/bounded-resolution.mjs';
+import { resolveWithDeadline, boundedResolutionValue, isResolverDeadline } from '../util/bounded-resolution.mjs';
 export const NATIVE_DEM_DELIVERY_SOURCE = 'dacs-chatgpt-plugin/native-dem-delivery/v1';
 const capabilities = new WeakMap();
 
@@ -81,17 +81,20 @@ const NATIVE_DEM_DELIVERY_LIMITS = Object.freeze({ timeoutMs: 30_000, maxBytes: 
 /**
  * Check a reply against NATIVE_DEM_DELIVERY_LIMITS. A reply over them is answered with
  * `indeterminate(reason)`: it proves neither that nothing was written nor that the Deliverable is
- * absent. The reply is checked in its JSON form (replies may carry keys whose value is undefined);
- * the capability's own object is returned, because the unsigned-absence and dead-refusal proofs are
+ * absent. The reply is checked in its JSON form (replies may carry keys whose value is undefined)
+ * and that checked copy is what the caller gets, so nothing unchecked passes through. Only the
+ * unsigned-absence and dead-refusal objects are returned as they are, because their proofs are
  * carried by object identity.
  */
 function boundedReply(reply, indeterminate) {
+  if (isProvenUnsignedAbsence(reply) || isDeadRefusedCreate(reply)) return reply;
   try {
-    boundedResolutionValue(JSON.parse(JSON.stringify(reply)), NATIVE_DEM_DELIVERY_LIMITS);
+    const plain = JSON.parse(JSON.stringify(reply));
+    boundedResolutionValue(plain, NATIVE_DEM_DELIVERY_LIMITS);
+    return plain;
   } catch (error) {
     return indeterminate(`native delivery reply exceeds its read limits: ${error.message}`);
   }
-  return reply;
 }
 
 /**
@@ -104,7 +107,7 @@ async function runWithinLimits(operation, indeterminate) {
   try {
     reply = await resolveWithDeadline(() => operation(), NATIVE_DEM_DELIVERY_LIMITS);
   } catch (error) {
-    if (error?.message === 'resolver-timeout') return indeterminate('native delivery operation exceeded its deadline');
+    if (isResolverDeadline(error)) return indeterminate('native delivery operation exceeded its deadline');
     throw error;
   }
   return boundedReply(reply, indeterminate);
