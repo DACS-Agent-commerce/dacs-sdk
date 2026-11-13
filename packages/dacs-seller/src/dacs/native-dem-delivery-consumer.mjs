@@ -85,14 +85,16 @@ const NATIVE_DEM_DELIVERY_LIMITS = Object.freeze({ timeoutMs: 30_000, maxBytes: 
  * `indeterminate(reason)`: it proves neither that nothing was written nor that the Deliverable is
  * absent. The reply is checked in its JSON form (replies may carry keys whose value is undefined)
  * and that checked copy is what the caller gets, so nothing unchecked passes through. Only the
- * unsigned-absence and dead-refusal objects are returned as they are once checked, because their
- * proofs are carried by object identity.
+ * unsigned-absence and dead-refusal objects are returned as they are, because their proofs are
+ * carried by object identity; the object itself is checked too, so a `toJSON` cannot hide a field.
  */
 function boundedReply(reply, indeterminate) {
   try {
     const plain = JSON.parse(JSON.stringify(reply));
     boundedResolutionValue(plain, NATIVE_DEM_DELIVERY_LIMITS);
-    return isProvenUnsignedAbsence(reply) || isDeadRefusedCreate(reply) ? reply : plain;
+    if (!isProvenUnsignedAbsence(reply) && !isDeadRefusedCreate(reply)) return plain;
+    boundedResolutionValue(reply, NATIVE_DEM_DELIVERY_LIMITS);
+    return reply;
   } catch (error) {
     return indeterminate(`native delivery reply exceeds its read limits: ${error.message}`);
   }

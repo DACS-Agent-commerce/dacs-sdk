@@ -90,6 +90,14 @@ test('a proven unsigned absence with an oversized reason answers indeterminate',
   assert.equal(mayPublishAgain(answer), false);
 });
 
+test('a proven unsigned absence whose toJSON hides an oversized reason answers indeterminate', async () => {
+  const absence = provenUnsignedAbsence(OVER_BYTE_LIMIT);
+  Object.defineProperty(absence, 'toJSON', { value: () => ({ status: 'absent', reason: 'short' }), enumerable: true });
+  const answer = await readNativeDemDelivery(capabilityWhere('read', async () => absence), {});
+  assert.equal(answer.status, 'indeterminate');
+  assert.equal(mayPublishAgain(answer), false);
+});
+
 test('a read reply holding the largest report the seller sends, twice, is returned', async () => {
   const wide = Array.from({ length: 8000 }, () => 0);
   let deep = 0;
