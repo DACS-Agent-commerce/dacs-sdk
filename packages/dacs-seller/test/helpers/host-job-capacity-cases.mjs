@@ -68,7 +68,7 @@ export function hostJobCapacityTests(world) {
     assert.equal(before.jobs.length, 1);
     assert.ok(before.settlements.length > 0);
     ended.add(first.jobId);
-    w.advanceTime(2 * 60 * 60 * 1000);
+    w.advance(2 * 60 * 60 * 1000);
     if (restart) await w.restart();
 
     const second = await w.purchase({ commit: false });
@@ -106,7 +106,7 @@ export function hostJobCapacityTests(world) {
       await interrupt(w, first, () => first.claim(tx));
       const kept = retainedRows(w.dataDirectory);
       ended.set(first.jobId, state);
-      w.advanceTime(2 * 60 * 60 * 1000);
+      w.advance(2 * 60 * 60 * 1000);
       if (restart) await w.restart();
 
       await assert.rejects(w.purchase({ commit: false }), { code: 'peer_job_capacity', status: 503 });
@@ -123,7 +123,7 @@ export function hostJobCapacityTests(world) {
       assert.equal(w.createsAt(`dacs4:deliverable:${first.jobId}`), 1, 'the order is delivered once');
 
       ended.set(first.jobId, state);
-      w.advanceTime(2 * 60 * 60 * 1000);
+      w.advance(2 * 60 * 60 * 1000);
       const second = await w.purchase({ commit: false });
       assert.ok(transportRows(w.dataDirectory).retired.some(row => row.job === first.jobId && row.job_retired === 1));
       assert.deepEqual(retainedRows(w.dataDirectory).jobs.map(row => row.job), [first.jobId, second.jobId]);
@@ -139,7 +139,7 @@ export function hostJobCapacityTests(world) {
     assert.deepEqual(retainedRows(w.dataDirectory).settlements, [], 'no payment is recorded');
     await assert.rejects(w.purchase({ commit: false }), { code: 'peer_job_capacity', status: 503 });
     ended.add(first.jobId);
-    w.advanceTime(2 * 60 * 60 * 1000);
+    w.advance(2 * 60 * 60 * 1000);
     if (restart) await w.restart();
 
     const second = await w.purchase({ commit: false });
