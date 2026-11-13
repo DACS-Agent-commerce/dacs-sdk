@@ -9,7 +9,7 @@
 // process killed at any step leaves it for the next process (a crash test).
 import { readFileSync, writeFileSync } from 'node:fs';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
-import { resignedProjection, SDK_WALLET_ADDRESS, sdkSignedCreate } from './payment-evidence-wallet-sdk.mjs';
+import { resignedProjection, SDK_WALLET_ADDRESS, sdkSignedCreate, signMessageAsTestWallet } from './payment-evidence-wallet-sdk.mjs';
 
 export const evidenceInput = (writer, extra = {}) => ({ logicalAddress: 'dacs4:payment:TEST-job:demos-native:DEM:2', artifact: { TEST: 'evidence' }, writer,
   artifactKind: 'SettlementEvidence', jobId: 'TEST-job', receiptContentHash: 'e1'.repeat(32), ...extra });
@@ -33,13 +33,15 @@ export function walletChain({ state = newWalletChainState(), file = null } = {})
   // `change` picks what the SDK signs ({ nonce, artifact, postFork, nodeFee,
   // prepare }: see sdkSignedCreate), or alters it as a hostile wallet would:
   // `edit(content)` changes the SDK's signed content, which is then hashed and
-  // signed again; `signature` replaces the signature; `wrap(signed)` changes the
+  // signed again; `signature` replaces the signature; `signedOver(hash)` names the
+  // message the wallet signs in place of the hash; `wrap(signed)` changes the
   // signed projection; `txHash` and `claimedNonce` change what the answer claims.
   const signCreate = async (input, change = {}) => {
     const nonce = change.nonce ?? chain.nextNonce++;
     let projection = await sdkSignedCreate(input, { ...change, nonce, timestamp: chain.timestamp++ });
     if (change.edit) { change.edit(projection.content); projection = await resignedProjection(projection.content); }
     if (change.signature) projection.signature = { type: 'ed25519', data: change.signature };
+    if (change.signedOver) projection.signature = await signMessageAsTestWallet(change.signedOver(projection.hash));
     const signed = change.wrap ? change.wrap(projection) : projection;
     chain.signed[projection.hash] = projection.content.nonce;
     save();
