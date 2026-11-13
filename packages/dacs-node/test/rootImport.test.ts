@@ -93,8 +93,10 @@ describe("root import without the optional SQLite driver", () => {
     return { run, probe: JSON.parse(run.stdout) as ProbeOutput };
   }
 
+  // Distinct module URLs: Node 24 does not keep a module whose import failed and
+  // loads it again on every import, so a refused driver logs the same URL per open.
   function loadedSqliteModules(log: readonly string[]): string[] {
-    return log.filter((line) => line.startsWith("load ") && line.endsWith(SQLITE_MODULE_SUFFIX));
+    return [...new Set(log.filter((line) => line.startsWith("load ") && line.endsWith(SQLITE_MODULE_SUFFIX)))];
   }
 
   it("the root entry imports without requesting better-sqlite3", () => {
