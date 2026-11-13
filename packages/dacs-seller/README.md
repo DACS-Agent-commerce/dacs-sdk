@@ -286,6 +286,15 @@ Keep both journals across restart; losing or rolling them back invalidates the
 proof. Without a valid proof after a failure before signing, the commitment
 remains held until the operator can reconcile it.
 
+The seller checks every reply of the `nativeDemDelivery` operations against fixed
+limits: 256 KiB, 32768 values, 80 levels deep and 16384 entries in a list. These
+cover any Deliverable the seller can send. A reply over a limit is answered as
+`indeterminate`, never as absent. A reconcile, read or verify that takes longer
+than 30 seconds is also answered as `indeterminate`; a missed deadline does not
+prove that nothing was written. A submit has no deadline. Except for the
+`provenUnsignedAbsence` and `deadRefusedCreate` objects, the caller gets a JSON
+copy of a reply, not the object the capability returned.
+
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
 per-client limiter so one client cannot exhaust the shared request budget.

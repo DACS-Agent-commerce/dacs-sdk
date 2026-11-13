@@ -8,7 +8,7 @@ import {
 
 const DEADLINE_MS = 30_000;
 const OVER_BYTE_LIMIT = 'x'.repeat(300 * 1024);
-const OVER_LIST_LIMIT = Array.from({ length: 2000 }, () => 0);
+const OVER_LIST_LIMIT = Array.from({ length: 20_000 }, () => 0);
 
 const OPERATIONS = {
   submit: { call: (capability) => submitNativeDemDelivery(capability, {}), indeterminate: { status: 'indeterminate' } },
@@ -81,6 +81,24 @@ test('a read of proven unsigned absence returns the capability\'s own reply obje
   const answer = await readNativeDemDelivery(capabilityWhere('read', async () => absence), {});
   assert.equal(answer, absence);
   assert.equal(mayPublishAgain(answer), true);
+});
+
+test('a proven unsigned absence with an oversized reason answers indeterminate', async () => {
+  const absence = provenUnsignedAbsence(OVER_BYTE_LIMIT);
+  const answer = await readNativeDemDelivery(capabilityWhere('read', async () => absence), {});
+  assert.equal(answer.status, 'indeterminate');
+  assert.equal(mayPublishAgain(answer), false);
+});
+
+test('a read reply holding the largest report the seller sends, twice, is returned', async () => {
+  const wide = Array.from({ length: 8000 }, () => 0);
+  let deep = 0;
+  for (let level = 1; level < 64; level++) deep = [deep];
+  for (const report of [{ list: wide }, deep]) {
+    const reply = { status: 'present', artifact: { report }, receipt: { nested: { a: { b: { c: { report } } } } } };
+    const answer = await readNativeDemDelivery(capabilityWhere('read', async () => reply), {});
+    assert.deepEqual(answer, reply);
+  }
 });
 
 test('a read reply with an undefined-valued key inside the limits is returned as its checked copy', async () => {
