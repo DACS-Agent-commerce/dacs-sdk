@@ -1440,9 +1440,6 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 084ebc66416efef054224c570a539ce3e6561666 |
 | WF | fix(wallet): check that no package export reaches the reservation module | Git commit selector fce7c509715ce94ee9153eaad2efe11d27bdef23 |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 5fe427a4c2f7d293a9a1b925e381a4e24346af95 |
-| D11 | fix(client): D11 keep the packed consumer lock installable on Node 24 | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/helpers/packed-install.mjs:1` | 85564b54de812d5ae795ea5aca7e567a1819b1e6 |
-| | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | cb7e6298b275bb6123561c5afa4a52a4981b72bf |
 | WF | delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 89db1bf53f2e62853119805060587931c6b7078f |
 | | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 04faef5ff305e1763bfe712d51c396fedd2a7fb3 |
@@ -1455,6 +1452,12 @@ Client commits that move the buyer client onto the new wire and its public API u
 | D11 | fix(client): D11 fence audited unsigned reservation revisions | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | b8d65ab0a50ab2d37f22da6f5d74a41ffb65207a |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | bb26d97d15d59c621b149847feebd7c7095dbe7e |
+| WF | delta(client): WF finish the signer reservation's terminal steps and startup recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 7ca77023b701055eb1bf092ff0ce632846f3702b |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 7e54669ad2d3b2af37aee198f8f4de382d598186 |
+| | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | 8b03bdb1392424fc58763afdabd38e9a28a82598 |
+| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 3048034aa3b7af377e090e62be3f1173c1f06ee0 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 705b9c4c787df1e2a6b646fc4f3d596354b4aea9 |
 | WF | delta(client): WF record the merged public API test after carrying the signer part up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74 |
 | WF | delta(client): WF record the merged signer reservation test after carrying the exports test fix up | Git subject selector (must resolve exactly once after publication checkpoint) |
@@ -1466,12 +1469,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF record the public API test and wallet session merged from the signer part | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 486970306e8b48607e190ce43ffd2f6f0b46113c |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 52730e2159bc80c6265d505e401c89810c3d1a80 |
-| WF | delta(client): WF finish the signer reservation's terminal steps and startup recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 7ca77023b701055eb1bf092ff0ce632846f3702b |
-| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 7e54669ad2d3b2af37aee198f8f4de382d598186 |
-| | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | 8b03bdb1392424fc58763afdabd38e9a28a82598 |
-| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 3048034aa3b7af377e090e62be3f1173c1f06ee0 |
-| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 705b9c4c787df1e2a6b646fc4f3d596354b4aea9 |
+| D11 | fix(client): D11 keep the packed consumer lock installable on Node 24 | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/packed-install.mjs:1` | 85564b54de812d5ae795ea5aca7e567a1819b1e6 |
+| | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | cb7e6298b275bb6123561c5afa4a52a4981b72bf |
 
 ## Complete commit and file inventory
 
@@ -4419,6 +4419,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): list the ledger move in the commit inventory | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): list the ledger move in the commit inventory | `packages/dacs-client/HOLD.json:1` |
 | fix(client): list the ledger move in the commit inventory | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/HOLD.json:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
