@@ -154,10 +154,15 @@ or `unreadable`); nothing is migrated. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
 
-Signed effect routes commit reservation accounting before the wire journal
-publishes their attempt. Retries reconcile retained work after its 300 s lease;
-completed outcomes use the existing source checks before answering. Signed
-reads create no reservation rows or journal files.
+Signed effect routes reserve through one reservation coordinator, which commits
+accounting before the wire journal publishes their attempt. A final answer
+completes the operation and returns its route slot; a later request is answered
+from it, after the existing source checks. An answer that is not final yet (a
+`waiting` proposal, a `held` payment) ends the attempt without an outcome, and
+the next request recovers at once, the agent reconciling first. An uncertain
+attempt stays open: a request inside its 300 s lease gets `seller_effect_pending`,
+and the first after it recovers; after 16 lapsed attempts the operation answers
+`seller_effect_unresolved`. Signed reads create no reservation rows or journal files.
 
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
@@ -326,7 +331,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `./wire` (domain `dacs-seller-http:v1`, the host's bound TP-1 profile and the
   tuple kept for the job); a request signed under the old domain is refused, so
   `createSellerTransportClientAuth` does not reach these routes. The
-  transport store stays their journal; the two read routes reserve and store
+  wire request journal is their journal; the two read routes reserve and store
   nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
   (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`
   first), and a delegated request for one is refused
@@ -349,14 +354,17 @@ per-client limiter so one client cannot exhaust the shared request budget.
   admitted only by an expired delegation also signs nothing and saves no
   session or anchor state: it answers for a commitment the seller already retained and holds
   (`commitment_readback_required`) rather than adopting one.
-  Agreement state reads use isolated retained snapshots; cached payment and
-  delivery answers require current durable settlement credit (DACS-4 SB-2).
+  Agreement state reads use isolated retained snapshots. A signed 200 on these
+  routes is sent only after it is signed and the agent's settlement-credit
+  check has passed (10 s deadline); otherwise the answer is `503
+  operation_uncertain`.
   A payment answer that is not final is not cached as final:
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, runs the agent's retained work again on the buyer's next request
-  (which reads back first), and a different claim for the job is still
+  done yet, ends the attempt without an outcome, and the buyer's next request
+  recovers at once and runs the agent's retained work again (reading back
+  first), and a different claim for the job is still
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
   node or name-index outage) is a `held` answer with its cause
@@ -909,7 +917,9 @@ one read answer, refusal or discovery document, whose `sign` returns a Promise
 of the signature (always `await` both: a Promise is never accepted as signature
 bytes) and checks the TP-1 authority when it signs, and the kit guard for a
 `ready: true` discovery document; and `integritySigner`, for seller-state journal bytes only.
-After `close()` every role refuses. Nothing in this package calls it yet.
+After `close()` every role refuses. The host signs the discovery document it serves at
+`/.well-known/dacs-seller.json` and each read answer through `readOnlyAnswerSigner`, and
+every other answer with `sign`.
 
 This checkout provides source modules. Build the core from the same checkout
 before importing the seller source kit.
