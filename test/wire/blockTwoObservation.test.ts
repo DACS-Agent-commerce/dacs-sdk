@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 const dir = new URL("../../conformance/tp1-node-observations-2026-11-08/", import.meta.url);
 const manifest: typeof import("../../conformance/tp1-node-observations-2026-11-08/manifest.json") = JSON.parse(readFileSync(new URL("manifest.json", dir), "utf8"));
 
-describe("pinned read-only node observation of TP-1 block two (2026-11-08)", () => {
+describe("pinned read-only node observation of TP-1 block two",() => {
   it("pins the manifest and records both endpoints and the unrecorded node build", () => {
     expect(createHash("sha256").update(readFileSync(new URL("manifest.json", dir))).digest("hex"))
       .toBe("5afa85ca50bcf96c6a82994d19825ce3428c31de724d9b7de7804eac7c3f9df5");
