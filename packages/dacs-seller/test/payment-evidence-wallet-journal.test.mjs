@@ -831,7 +831,11 @@ test('a kept CREATE is re-checked after its fate is read, and authorized in the 
  w.faults.nonce.push(()=>{order.push('nonce');});w.faults.state.push(()=>{order.push('state');});w.faults.broadcast.push(()=>{order.push('broadcast');});
  await journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,attempt:{outcome:'sent',answer:first},
    authorize:()=>{order.push('authorize');return true;},recheck:async()=>{order.push('recheck');}});
- assert.deepEqual(order.slice(-5),['nonce','state','recheck','authorize','broadcast']);
+ // The authorization asked before the wallet may sign can come before or after the reads; the one after the re-check is the broadcast's.
+ const cut=order.indexOf('recheck'),before=order.slice(0,cut);
+ assert.deepEqual(order.slice(cut),['recheck','authorize','broadcast']);
+ assert.deepEqual(before.filter(step=>step!=='authorize'),['nonce','state']);
+ assert.ok(before.filter(step=>step==='authorize').length<=1);
 });
 
 test('an evidence re-check that is not a function is refused before anything is signed',async t=>{
