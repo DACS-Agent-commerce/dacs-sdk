@@ -102,7 +102,7 @@ export function admitPublicFactory(factory, { passive = [], purchase = false, on
     const admission = readAdmission(options);
     if (purchase) assertPurchaseRuntime(process.version);
     const factoryOptions = { ...options };
-    delete factoryOptions.admission;
+    factoryOptions.admission = admission;
     const original = factory(factoryOptions);
     const members = Object.entries(original).map(([name, value]) => [name,
       typeof value !== 'function' || passiveNames.has(name) ? value : function admittedAction(...args) { return callAdmitted(value, original, args, admission, purchase); }]);
