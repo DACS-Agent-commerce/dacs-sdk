@@ -271,3 +271,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 - `WF` — `createSellerAgentClient` accepts an endpoint for which the wire's `isPublicEndpoint` holds when it is given a wire authentication, so the buyer's signed requests can reach a public HTTPS seller. Loopback stays for unauthenticated fixtures; credentials, query, fragment and a path prefix are still refused before anything is signed or sent, and the release gate still holds the client.
 
 - `WF` — remove the client's unused seller HTTP handler and its server-only imports; the buyer POST and its bounded raw-JSON checks stay. Seller errors, the old transport authentication and its session limits leave the packed closure; their source files stay on disk. The seller package's real handler carries the server-side raw-JSON corpus.
+
+- `P13c2` — delete the client's `src/dacs/seller-transport-auth.mjs`, so no packed client file carries an old transport domain. `src/dacs/seller-session-limits.mjs` stays on disk for the unpacked browser copy `src/public/portal/seller-session-delegation.mjs`. Test fixtures that built old-transport headers import the seller package's copy.
+
+- `P13c2` — delete the client's `src/dacs/seller-transport-auth.mjs`, so no packed client file carries an old transport domain. `src/dacs/seller-session-limits.mjs` stays on disk for the unpacked browser copy `src/public/portal/seller-session-delegation.mjs`. Test fixtures that built old-transport headers import the seller package's copy.
