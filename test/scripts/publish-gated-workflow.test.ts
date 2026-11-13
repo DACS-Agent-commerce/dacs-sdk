@@ -26,10 +26,12 @@ const SUITE_COMMANDS = [
   "npm test", "npm run host:test", "npm run generator:test", "npm test --workspace @kynesyslabs/dacs-client",
   "npm run seller:prepare -- \"$DACS_SELLER_SMOKE_DIR\"", "npm run seller:test", "npm run release:test",
 ];
-// The job is scanned as JSON, so a double quote inside an expression arrives escaped as `\"`.
+// The job is scanned as JSON, so a double quote inside an expression arrives escaped as `\"`. Expression names are not
+// case-sensitive, and a name that follows a letter, digit, `_`, `-` or `.` (`needs.github.token`) is another name.
 const PUBLICATION_CREDENTIAL = new RegExp(
-  String.raw`secrets\s*[.[]|github\s*(?:\.\s*token\b|\[\s*\\?["']token\\?["']\s*\])|registry-url|NODE_AUTH_TOKEN|GH_TOKEN`,
-  "u",
+  String.raw`(?<![\w.-])(?:secrets\s*[.[]|github\s*(?:\.\s*token\b|\[\s*\\?["']token\\?["']\s*\])|toJSON\s*\(\s*(?:github|secrets)\s*\))` +
+    String.raw`|registry-url|NODE_AUTH_TOKEN|GH_TOKEN`,
+  "iu",
 );
 // The whole job is scanned, so job-level `env` counts as well as step fields.
 const mentionsPublicationCredential = (job: Job | undefined) => PUBLICATION_CREDENTIAL.test(JSON.stringify(job));
@@ -43,6 +45,13 @@ const PUBLICATION_CREDENTIAL_FORMS: Record<string, (verify: Job) => void> = {
   "the workflow token by index in a step": (verify) => { verify.steps?.push({ run: "echo ${{ github['token'] }}" }); },
   "the workflow token by index with spaces": (verify) => { verify.env = { TOKEN: "${{ github [ 'token' ] }}" }; },
   "the workflow token with spaces around the dot": (verify) => { verify.env = { TOKEN: "${{ github . token }}" }; },
+  "the workflow token with capitals in the name": (verify) => { verify.env = { TOKEN: "${{ GitHub.Token }}" }; },
+  "the workflow token with a capitalised key": (verify) => { verify.env = { TOKEN: "${{ github.TOKEN }}" }; },
+  "the workflow token by index with capitals": (verify) => { verify.env = { TOKEN: "${{ GITHUB['token'] }}" }; },
+  "a secret with a capital first letter": (verify) => { verify.env = { X: "${{ Secrets.X }}" }; },
+  "a secret by index with capitals": (verify) => { verify.env = { X: "${{ SECRETS['X'] }}" }; },
+  "the whole github context as JSON": (verify) => { verify.env = { CONTEXT: "${{ toJSON(github) }}" }; },
+  "the whole secrets context as JSON": (verify) => { verify.env = { CONTEXT: "${{ toJSON(secrets) }}" }; },
   "a registry-url on setup-node": (verify) => { verify.steps?.push({ uses: "actions/setup-node@v4", with: { "registry-url": "https://registry.npmjs.org" } }); },
 };
 const PUBLISH_COMMAND ="node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next --job-started-at \"$DACS_PUBLISH_JOB_STARTED_AT\"";
@@ -151,6 +160,12 @@ describe("the gated publish workflow", () => {
       if (verify === undefined) throw new Error("the gated workflow has no verify job");
       addCredential(verify);
       expect(mentionsPublicationCredential(verify), label).toBe(true);
+    }
+  });
+
+  it("a name that only ends in github or secrets, or sits behind another name, is not a publication credential", () => {
+    for (const env of ["${{ needs.github.token }}", "${{ mygithub.token }}", "${{ needs.secrets.X }}", "${{ toJSON(needs) }}"]) {
+      expect(mentionsPublicationCredential({ env: { X: env } }), env).toBe(false);
     }
   });
 
