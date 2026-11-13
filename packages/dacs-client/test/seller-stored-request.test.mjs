@@ -212,7 +212,7 @@ test("in each of the five seller flows an authenticated send gets the approval-c
 test("a configured sellerRequestTimeoutMs is the send budget on every route but context, which keeps 240 through 300 seconds", async (t) => {
   const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
   for (const configured of [1000, 300000]) {
-    const budgets = await budgetsDuring(t, () => sellerFlow(t, 'commit', { sellerRequestTimeoutMs: configured }));
+    const budgets = await budgetsDuring(t, () => sellerFlow(t, 'commit', undefined, { sellerRequestTimeoutMs: configured }));
     assert.ok(budgets.length > 0 && budgets.every(budget => budget === configured), `${configured}: ${budgets}`);
   }
   const s = await storedWorld(t);
