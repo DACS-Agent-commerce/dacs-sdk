@@ -10,6 +10,7 @@ const UNKNOWN_SUMMARY = "node build unknown (no build RPC)";
 const OTHER_SHA = "0123456789abcdef0123456789abcdef01234567";
 const REPORT_EXIT_WITH_BLOCKED_CHECKS = 5;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+const DISPLAY_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 const recordedVersionReply = JSON.parse(readFileSync(
   new URL("../substrate/fixtures/demos-node-replies/node-version.json", import.meta.url),
@@ -159,6 +160,36 @@ describe("dacs doctor node build check", () => {
       expect(formatDoctorText(report).replace(/\n/g, "")).not.toMatch(CONTROL_CHARS);
       expect(JSON.stringify(nodeBuildCheck(report))).not.toMatch(CONTROL_CHARS);
     }
+  });
+
+  it("strips Unicode format and line-separator characters from the version in the check, the JSON and the text", async () => {
+    const hostileVersion = "1‮.2⁦.3​‏  ﻿-rc";
+    const report = await doctorWith(stubFetch(async () => jsonReply({
+      version: hostileVersion,
+      commit: OTHER_SHA,
+    })));
+
+    expect(nodeBuildCheck(report).data).toMatchObject({ version: "1.2.3-rc", commit: OTHER_SHA });
+    expect(JSON.stringify(report)).not.toMatch(DISPLAY_CHARS);
+    expect(formatDoctorText(report).replace(/\n/g, "")).not.toMatch(DISPLAY_CHARS);
+  });
+
+  it("strips Unicode format and line-separator characters from the failure detail", async () => {
+    const failed = await doctorWith(stubFetch(async () => {
+      throw new TypeError("fetch‮ failed", { cause: new Error("bad ⁦cause") });
+    }));
+
+    expect(nodeBuildCheck(failed).detail).toBe("fetch failed: badcause");
+    expect(JSON.stringify(failed)).not.toMatch(DISPLAY_CHARS);
+  });
+
+  it("keeps printable non-ASCII text in the version", async () => {
+    const report = await doctorWith(stubFetch(async () => jsonReply({
+      version: "1.2.3-é",
+      commit: OTHER_SHA,
+    })));
+
+    expect(nodeBuildCheck(report).data).toMatchObject({ version: "1.2.3-é" });
   });
 
   it("reports a timeout, not a JSON error, when the deadline fires mid-body", async () => {
