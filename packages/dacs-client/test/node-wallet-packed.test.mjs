@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, existsSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import { installPackedPair, sdkDir } from './helpers/packed-install.mjs';
+import { installPackedPair, lockMissingEntries, sdkDir } from './helpers/packed-install.mjs';
 import { childOwnStderr, runFreshChild } from './helpers/fresh-node-child.mjs';
 
 let installed;
@@ -14,6 +14,7 @@ test('the packed client, dacs-node and core installed outside the checkout with 
   const { app, nodeArchive } = installed;
   assert.ok(relative(sdkDir, app).startsWith('..'));
   const lock = JSON.parse(readFileSync(join(app, 'package-lock.json')));
+  assert.deepEqual(lockMissingEntries(lock), []);
   assert.equal(resolve(app, lock.packages['node_modules/@kynesyslabs/dacs-node'].resolved.slice('file:'.length)), resolve(app, nodeArchive.slice('file:'.length)));
   assert.equal(existsSync(join(app, 'node_modules/better-sqlite3')), false);
   assert.equal(lock.packages['node_modules/@kynesyslabs/demosdk'].version, JSON.parse(readFileSync(join(sdkDir, 'node_modules/@kynesyslabs/demosdk/package.json'))).version);
