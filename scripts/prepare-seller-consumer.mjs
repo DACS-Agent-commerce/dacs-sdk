@@ -31,11 +31,11 @@ export function sellerPackFiles() {
 /**
  * Returns the digest of the given packed seller files, the built core and Node
  * host kit (`dist/`, `packages/dacs-node/dist`), the root manifest and lock,
- * and the smoke runner: a setup is current only
+ * the Node host manifest, and the smoke runner: a setup is current only
  * while it matches. Throws if a file cannot be read.
  */
 export function sellerSourceFingerprint(sellerFiles) {
-  const files = ["package.json", "package-lock.json", SMOKE_RUNNER, ...sellerFiles.map((file) => "packages/dacs-seller/" + file)];
+  const files = ["package.json", "package-lock.json", "packages/dacs-node/package.json", SMOKE_RUNNER, ...sellerFiles.map((file) => "packages/dacs-seller/" + file)];
   const walk = (dir) => {
     for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
       if (entry.isDirectory()) walk(dir + "/" + entry.name);
