@@ -179,7 +179,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   };
   mount();
   t.after(() => handle.store.close());
-  const reopen = () => { handle.store.close(); handle.finishFails = false; mount(); };
+  const reopen = (options = {}) => { handle.store.close(); handle.finishFails = false; if (options.maxRecords !== undefined) maxRecords = options.maxRecords; mount(); };
   /** Runs `work` on a restarted seller whose wire context takes `overrides` (the context is frozen), then restarts it again without them. */
   const withWire = async (overrides, work) => {
     handle.wireOverrides = overrides; reopen();

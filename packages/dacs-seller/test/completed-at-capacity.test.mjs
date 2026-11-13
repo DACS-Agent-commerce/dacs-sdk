@@ -114,6 +114,22 @@ test('at zero free capacity a replay of a completed operation is answered when t
   assert.deepEqual({ status: fresh.status, error: fresh.body.error }, { status: 429, error: 'peer_buyer_nonce_limit' });
 });
 
+test('a replay of a completed operation is answered from the stored outcome when the record limit was lowered below the records held (free -1), as at zero', async (t) => {
+  const { w, job, first } = await completedAtZeroFree(t, 'below-zero');
+  w.reopen({ maxRecords: MAX_RECORDS - 1 });
+  assert.equal(w.handle.capacity.capacityReport().free, -1);
+  const watch = watchRevalidation(w), before = snapshot(w), attempts = operationOf(w, job.jobId, PATHS.proposals);
+  let answer;
+  const writes = (await statementsDuring(async () => { answer = await job.post(); })).filter((sql) => WRITING.test(sql));
+  assert.deepEqual({ status: answer.status, text: answer.text }, { status: 200, text: first.text });
+  assert.deepEqual(watch.outcomes, [{ status: 200, text: first.text }], 'the source was revalidated once, with the stored outcome');
+  assert.deepEqual(writes, [], 'no statement wrote');
+  assert.deepEqual(snapshot(w), before, 'the answer left no row, file or unit');
+  assert.deepEqual(operationOf(w, job.jobId, PATHS.proposals), attempts, 'the operation gained no attempt');
+  const fresh = await (await proposeJob(w, 'below-zero-new')).post();
+  assert.deepEqual({ status: fresh.status, error: fresh.body.error }, { status: 503, error: 'peer_store_capacity' });
+});
+
 test('a completed operation answered at zero free capacity is refused peer_expired when the request expired before the answer, without revalidating', async (t) => {
   const { w, job } = await completedAtZeroFree(t, 'expired');
   const watch = watchRevalidation(w), reserve = w.handle.wire.reservations.reserveCoordinated, rows = w.rows();
