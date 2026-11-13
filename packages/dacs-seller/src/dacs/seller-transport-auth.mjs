@@ -482,13 +482,15 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     const view = wireOperationView({ seller: p.seller, jobId: p.jobId, path: p.path });
     return ![undefined, null, 'none'].includes(view?.state) && view.binding === wireOperationBinding(p);
   };
+  // The accounting rows that still count at `time`; the purchase capacity's `used` is this count too.
+  const retainedReservationCount = (time) => get(`SELECT COUNT(*) AS n FROM kit_reservations WHERE NOT (${RETIRABLE_RESERVATION})`, time - reservationRetentionMs).n;
   // Every read runs in the caller's transaction.
   const reservationLedger = Object.freeze({
     recordCountWithin: (time) => Math.max(
       get(`SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES})`, time).n,
       get(`SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE expires_at > ? OR created_at > ?
         OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES}))`, time, time - nonceWindowMs, time).n,
-    ) + get(`SELECT COUNT(*) AS n FROM kit_reservations WHERE NOT (${RETIRABLE_RESERVATION})`, time - reservationRetentionMs).n,
+    ) + retainedReservationCount(time),
     buyerUnitsWithin: (buyer, time) => get(`SELECT COUNT(*) AS n FROM (${ledgerSources('buyerUnits').join(' UNION ALL ')})
       WHERE buyer = ? AND at > ?`, buyer, time - nonceWindowMs).n,
     jobHeldWithin: (jobId) => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
@@ -1028,13 +1030,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     close: () => db.close(),
     journaledOnlyReserve: true,
   };
-  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }),
+  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, retainedReservationCount, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }),
     terminalSession, sessionState: contextSessionState, bindTerminalCleanup, flushTerminalObservations }));
   return store;
 }
 
 /**
- * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, limits,
+ * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, retainedReservationCount, limits,
  * terminalSession, sessionState, bindTerminalCleanup, flushTerminalObservations }`, where `limits` are the context-record and unpaid-start
  * limits the ledger enforces at issue. `sessionState({ jobId }, source)` is the one observation adapter: it answers a job's closure, else the
  * port's synchronous DACS-5 name or null, and keeps a terminal name (the closure and the capacity's release) with the work that saw it or,
