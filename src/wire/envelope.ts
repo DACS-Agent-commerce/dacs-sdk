@@ -486,14 +486,13 @@ function effectJournal(request: WireRequestPayload, journal: unknown): object | 
  *
  * Once the operation has completed, a later request under the same binding
  * whose body passes the host's body checks gets the recorded outcome, not a
- * new attempt; a body field those checks do not read (the signature inside a
- * proposal's buyer presentation, say) makes no difference, while a body they
- * refuse is refused before the journal is consulted. The recorded outcome
- * goes only to a request authenticated under that binding. Its signature is
- * verified, and its buyer and Agreement hash are checked against the host's
- * retained Agreement, before it is reserved. A handler's own refusal of a
- * body that differs from earlier work (a seller refusing a different proposal
- * for a job) applies only before the operation completes.
+ * new attempt; a body they refuse is refused before the journal is consulted.
+ * The recorded outcome goes only to a request authenticated under that
+ * binding. Its signature is verified, and its buyer and Agreement hash are
+ * checked against the host's retained Agreement, before it is reserved. A
+ * handler's own refusal of a body that differs from earlier work (a seller
+ * refusing a different proposal for a job) applies only before the operation
+ * completes.
  */
 export function wireOperationId(request: Pick<WireRequestPayload, "seller" | "jobId" | "path">): string {
   const { seller, jobId, path } = request;

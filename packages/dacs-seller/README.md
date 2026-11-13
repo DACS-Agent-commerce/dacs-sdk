@@ -167,17 +167,18 @@ and the first after it recovers; after 16 lapsed attempts the operation answers
 An operation is one job's request on one route. Its binding is the profile,
 buyer and Agreement hash it was first reserved under. Once the operation has
 completed, a later request under the same binding whose body passes the host's
-body checks is the same operation, not a new reservation. Body fields those
-checks do not read, such as the signature inside a proposal's buyer
-presentation, make no difference. A body the checks refuse, such as a proposal
-with a changed `proposalHash`, is refused 409 `peer_proposal_mismatch` before
-the journal is consulted. A completed proposal gets the stored answer, and the
-agent is not called again. A completed commitment is answered by reading the
-commitment back, and a completed payment whose stored answer reports delivery
-is put to the agent again. The stored answer goes only to a request with the
+body checks is the same operation, not a new reservation. A body the checks
+refuse, such as a proposal with a changed `proposalHash`, is refused 409
+`peer_proposal_mismatch` before the journal is consulted. A completed proposal
+gets the stored answer, and the agent is not called again, even when the new
+body differs in a field the checks do not read, such as the signature inside the
+buyer presentation. A completed commitment is read back with the new request's
+body, and a completed payment whose stored answer reports delivery is put to
+the agent again with that body. The stored answer goes only to a request with the
 buyer's transport signature under the same binding. The host checks the header,
 signature, buyer and Agreement hash before it reserves: a missing header, or one
-that is not a well-formed envelope, gets 401 `peer_envelope_invalid`, a header
+that is not a well-formed envelope, gets 401 `peer_envelope_invalid`, a payload
+with no profile 409 `tp1_profile_missing`, a header
 that decodes to something other than JSON 401 `wire_json_rejected`, a signature that is
 malformed or by another key 401 `peer_signature_invalid`, a header signed over
 a different body 401 `peer_request_mismatch`, and another buyer or Agreement
