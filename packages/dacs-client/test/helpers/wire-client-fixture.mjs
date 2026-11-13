@@ -75,7 +75,7 @@ export async function world(t, { pin: committedPin, agreementHash = sha256Hex('a
   return { buyer, seller, session, other, local, state, binding, admission, pin, endpointProof, publicEndpoint, payload, delegation, job, options, auth, createSellerWireAuthentication };
 }
 export const request = (w, path = wire.DACS_SELLER_HTTP_PATHS.state) => w.auth.request(path, { transportIdentity: { jobId: JOB } }, JSON.stringify({ transportIdentity: { jobId: JOB } }));
-export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing } = {}) {
+export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {} } = {}) {
   const { createSourceDemoSellerTransport } = await import('../../src/dacs/source-demo-seller-transport.mjs');
   const { createProtocolPurchases } = await import('../../src/index.mjs');
   let policies = 0;
@@ -154,6 +154,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
     rmSync(dir, { recursive: true, force: true });
   });
   db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('TEST-buyer', 'TEST', 'TEST-buyer', new Date(T0).toISOString());
+  configureTerms(terms, listing);
   const op = ops.createIdempotent({
     accountId: 'TEST-buyer', kind: 'purchase', idempotencyKey: 'TEST-wire', request: {}, status, terms, termsHash: contentHash(terms), state: { protocol: { stage: 'identity', listing, ...protocolPatch } }, expiresAt: new Date(T0 + 3600000).toISOString()
   }).operation;
@@ -164,6 +165,6 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
       return ops;
     }, get db() {
       return db;
-    }, op, get: () => ops.get(op.accountId, op.id), reopen, policies: () => policies, transport, journalReads: () => journalReads
+    }, op, config, get: () => ops.get(op.accountId, op.id), reopen, policies: () => policies, transport, journalReads: () => journalReads
   };
 }

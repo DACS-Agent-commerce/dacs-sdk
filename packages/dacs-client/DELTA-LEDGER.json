@@ -7379,6 +7379,286 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF verify seller answers on their exact bytes and classify them",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "b88097dc5621acb7affa393aade0133f1c873923",
+          "after": "73af84a387f7c2145ee9ee1e35275e0622fd7d4c"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": "8ca70e7f5d3217388527c8dcab289193b2848780",
+          "after": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "6982df671d7d2040341fd534d075b1225fc000f6",
+          "after": "501e8eefddad1bd2c38e6e35efd87178e03fedba"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13b1b store seller request bytes under the purchase revision and retry unknown answers",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/commit-on-signature.mjs",
+          "before": "6eb54096a53a281766e7846cb46d7c5eeec7d532",
+          "after": "e8e7037514829c256308b6b24339178d90fe1881"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "74db6f3632bfcb00c067941017012fc536da6524",
+          "after": "59fb22f510c27ffbe977db910b7c73d3c3f2726a"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "b88097dc5621acb7affa393aade0133f1c873923",
+          "after": "e9ae634270a864049943fc107503cf7831da4acb"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/stored-request-fixture.mjs",
+          "before": null,
+          "after": "d239a6eb873f3e35c7057a0eaf7c5d1117e1931c"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/stored-request-flow-loader.mjs",
+          "before": null,
+          "after": "504131cea52f01a11311e619e01576a9939f87b6"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+          "before": null,
+          "after": "128ace501f6aa5f4ff68cf7d8067ea62d19e9998"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+          "before": "096b90fa41c0369bf138bbd18360b04951415116",
+          "after": "106b9d16fdbbd28db6ebadd36ea5d0ba94b702f0"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "6982df671d7d2040341fd534d075b1225fc000f6",
+          "after": "642219516e80498d69b7b31c11ae82721a2d73ab"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
+          "before": null,
+          "after": "8f231f6102facaa62dad45d5fac984357ba11980"
+        }
+      ],
+      "compact": true
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): build the request-progress view without unused bindings",
+      "sha": "f6df1f3eedfbdc110ab87685639f19b99cff8bdd",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "59fb22f510c27ffbe977db910b7c73d3c3f2726a",
+          "after": "d5b1b5ffe6c32d5292195025b6bc17c59823fe6b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+          "before": "128ace501f6aa5f4ff68cf7d8067ea62d19e9998",
+          "after": "f7b21b70231518c359487627ed207c4bc39dbc2d"
+        }
+      ],
+      "compact": true
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): stop a retry that wakes past its route deadline",
+      "sha": "228e4f3bc10ff06fb20f9c7ff5abf727179883df",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "e9ae634270a864049943fc107503cf7831da4acb",
+          "after": "5b50b3d347a2cec7ea4c6a4e108bc487a19ba68c"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
+          "before": "8f231f6102facaa62dad45d5fac984357ba11980",
+          "after": "53fdb217b04d43f879c51cb1169ab5ae66b20520"
+        }
+      ],
+      "compact": true
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF keep durable request storage independent of retries",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "d5b1b5ffe6c32d5292195025b6bc17c59823fe6b",
+          "after": "97000e170be323d044a68c7fc0fa6efe03efe2e1"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "5b50b3d347a2cec7ea4c6a4e108bc487a19ba68c",
+          "after": "b7587cf87b6cfbde30f56d5177fc0dbba631be16"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/stored-request-fixture.mjs",
+          "before": "d239a6eb873f3e35c7057a0eaf7c5d1117e1931c",
+          "after": "b09dba88259bd7dbdade6509e31e40a86727a13a"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "642219516e80498d69b7b31c11ae82721a2d73ab",
+          "after": "0ea0e5c477334f9969bf3885887e4f40ac3620a3"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-storage-boundaries.test.mjs",
+          "before": null,
+          "after": "d8fa7c318c181091f7c9d6793942d5288733362e"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
+          "before": "53fdb217b04d43f879c51cb1169ab5ae66b20520",
+          "after": "919fd780e50a524ee24c547b4ed9d0b2ae3f087c"
+        }
+      ],
+      "compact": true
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF remove unused storage-layer bindings",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "b7587cf87b6cfbde30f56d5177fc0dbba631be16",
+          "after": "66893f360d39e0437f5134ec72151e7ee517ce50"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "0ea0e5c477334f9969bf3885887e4f40ac3620a3",
+          "after": "71d7482308110c72059754e79f8929e55debe1c3"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
+          "before": "919fd780e50a524ee24c547b4ed9d0b2ae3f087c",
+          "after": "1e5d5ce574538a7e96f257dcc7aa405fa636ef56"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13b1b keep the storage branch's classification test after the 408 or 429 re-record merge",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "71d7482308110c72059754e79f8929e55debe1c3",
+          "after": "71d7482308110c72059754e79f8929e55debe1c3"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 bind the terminal storage record to a source change",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "9ba32690269d501dbd268aa6d6baab4f73e8c176",
+          "after": "d268285a6a256119ca07a0d87557610764f5afa8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): keep the validated seller request timeout as the one per-send budget",
+      "sha": "c4d569cde90379614b46ced7597c6216c1f073e7",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "97000e170be323d044a68c7fc0fa6efe03efe2e1",
+          "after": "23a0d6a845b396c04faf933030dfdad194a0d58d"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "66893f360d39e0437f5134ec72151e7ee517ce50",
+          "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/stored-request-fixture.mjs",
+          "before": "b09dba88259bd7dbdade6509e31e40a86727a13a",
+          "after": "0fb0482deee0820d23ee7b2f022ea3633a8acfa4"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/stored-request-flow-loader.mjs",
+          "before": "504131cea52f01a11311e619e01576a9939f87b6",
+          "after": "1b650e43fbb462da68e37017465f8f106f778a39"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+          "before": "f7b21b70231518c359487627ed207c4bc39dbc2d",
+          "after": "6755532d932f0f7295a35a96010a317b16e81eb5"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
+          "before": "1e5d5ce574538a7e96f257dcc7aa405fa636ef56",
+          "after": "fedc8a44148d1f627f78da01a118a0c1a8bbbe47"
+        }
+      ],
+      "compact": true
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged stored request bytes client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "c993d159786433207d171ee4383c7aa2b860ceb5",
+          "after": "c993d159786433207d171ee4383c7aa2b860ceb5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f80404d442afea5c691c15c3b729ec10ea9bf319",
+          "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the stored-request buyer seller client after the merge and refresh package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f80404d442afea5c691c15c3b729ec10ea9bf319",
+          "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged response classification rebuild in the stored request bytes client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "2d406c3de227b1365694f2b3eaea2f7e0c18ab20",
+          "after": "2d406c3de227b1365694f2b3eaea2f7e0c18ab20"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "60d3849d0f82b3eea964a03c1919306f56d4960b",
+          "after": "60d3849d0f82b3eea964a03c1919306f56d4960b"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P52a admit purchases only on the engines range, Node 22.22.2 to 22.x and 24.15.0 to 24.x",
       "files": [
         {
@@ -7440,28 +7720,12 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF verify seller answers on their exact bytes and classify them",
-      "compact": true,
+      "subject": "delta(client): WF drive the client-minted capability test through the request record",
       "files": [
         {
-          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
-          "before": "b88097dc5621acb7affa393aade0133f1c873923",
-          "after": "73af84a387f7c2145ee9ee1e35275e0622fd7d4c"
-        },
-        {
-          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
-          "before": "8ca70e7f5d3217388527c8dcab289193b2848780",
-          "after": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
-        },
-        {
-          "path": "packages/dacs-client/src/index.mjs",
-          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
-          "after": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
-        },
-        {
           "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
-          "before": "6982df671d7d2040341fd534d075b1225fc000f6",
-          "after": "501e8eefddad1bd2c38e6e35efd87178e03fedba"
+          "before": "60d3849d0f82b3eea964a03c1919306f56d4960b",
+          "after": "e2495f7ef3e210d2e0ca67278568bb29d7bc7da6"
         }
       ]
     }

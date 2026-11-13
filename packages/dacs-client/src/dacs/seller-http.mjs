@@ -9,7 +9,7 @@
 // bootstrap becomes SellerRefusedError; unsigned, malformed, interrupted,
 // ambiguous, held, suspended or readback-only answers are unavailable, with
 // their class and cause kept.
-import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
 import { SellerAgentError } from './seller-agent-error.mjs';
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
@@ -216,8 +216,22 @@ export class SellerRefusedError extends Error {
   }
 }
 
-// No request carries a capability the client minted, and the adapter's durable records establish no new-purchase request yet.
-const REQUEST_PROVENANCE = Object.freeze({ continuation: false, newPurchase: false });
+// Closed route policy: durable effects, bootstrap provenance and retained replay.
+/** Policy for the ten admitted seller routes; unknown routes have no durable identity. */
+export const SELLER_REQUEST_POLICY = Object.freeze(Object.fromEntries([
+  [DACS_SELLER_HTTP_PATHS.context, true, true, false],
+  [DACS_SELLER_HTTP_PATHS.contextChallenge, true, true, false],
+  [DACS_SELLER_HTTP_PATHS.proposals, true, false, false],
+  [DACS_SELLER_HTTP_PATHS.commitments, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.commitmentSignature, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.payments, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.bundleRequest, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.bundleCountersignature, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.state, false, false, false],
+  [DACS_SELLER_HTTP_PATHS.bundleBuyerCopy, false, false, false],
+].map(([path, durable, bootstrap, retained]) => [path, Object.freeze({ durable, bootstrap, retained })])));
+// A refusal raised by the request records (stale row, purchase no longer authorizing): not a seller answer.
+const recordRefusals = new WeakSet();
 const SELLER_OPERATOR_MESSAGE = 'the seller reports this operation is unresolved and needs the seller operator; it is not retried automatically';
 const UNAVAILABLE_ANSWER_MESSAGE = 'seller agent response is unavailable or unauthenticated; the operation outcome may be unknown';
 const { RESULT, PROGRESS, DEFINITE, FAILED_BOOTSTRAP } = SELLER_ANSWER_CLASS;
@@ -234,7 +248,13 @@ function answerOrError(verdict, answer, status) {
   throw new SellerUnavailableError(code === SELLER_EFFECT_UNRESOLVED ? SELLER_OPERATOR_MESSAGE : UNAVAILABLE_ANSWER_MESSAGE, statusCause(status), verdict);
 }
 
-export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false }) {
+/**
+ * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
+ * requestRecords is the adapter's durable record store (`start(path, body)` returns the attempt
+ * `{text, continuation, newPurchase, check(), finish(answerClass)}` and `failure(error)` records a refusal).
+ * Each call sends once, using the stored bytes when present.
+ */
+export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false, requestRecords }) {
   const base = new URL(String(url).replace(/\/$/, ''));
   if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
     throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');
@@ -245,17 +265,32 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
   if (authentication && prefix) throw new Error('authenticated seller transport uses the exact /dacs/v1 paths');
   let lastFailureCause, lastFailureDispatched, hasDispatched = false;
 
+  // Commit the exact bytes and unknown intent before the call's single send.
   async function post(path, body) {
+    const attempt = requestRecords?.start(path, body);
+    try {
+      const answer = await send(path, body, attempt);
+      attempt?.finish(answer.answerClass);
+      return answer.body;
+    } catch (error) {
+      if (error instanceof SellerUnavailableError || error instanceof SellerRefusedError) attempt?.finish(error.answerClass);
+      throw error;
+    }
+  }
+
+  async function send(path, requestBody, attempt) {
     lastFailureCause = undefined;
     lastFailureDispatched = undefined;
     let phase = 'other', signal;
     try {
-      const text = JSON.stringify(body);
+      const text = attempt?.text ?? JSON.stringify(requestBody);
+      const body = attempt ? JSON.parse(text) : requestBody;
       if (Buffer.byteLength(text) > MAX_BODY) throw new Error('request exceeds byte limit');
       // One deadline covers signing too: the wire's authority and proof reads and the host's signer have none of their own.
       signal = AbortSignal.timeout(timeoutMs);
       phase = 'client-sign';
       const signed = authentication ? await settleOnAbort(authentication.request(path, body, text, { signal }), signal) : null;
+      try { attempt?.check(); } catch (refusal) { recordRefusals.add(refusal); throw refusal; }
       phase = 'other';
       hasDispatched = true;
       const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
@@ -287,12 +322,15 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       // The record exists only here, after the wire verified the exact bytes: the HTTP status it checked and the body it admitted.
       if (authentication) {
         phase = 'classified';
-        return answerOrError(classifySellerAnswer({ status: response.status, signed: true, body: answer }, { path, dispatched: true, ...REQUEST_PROVENANCE }), answer, response.status);
+        // Provenance and request kind come only from the adapter's own record of this request, never from the answer or a caller.
+        const verdict = classifySellerAnswer({ status: response.status, signed: true, body: answer }, { path, dispatched: true, continuation: attempt?.continuation ?? false, newPurchase: attempt?.newPurchase ?? false });
+        return { body: answerOrError(verdict, answer, response.status), answerClass: verdict.answerClass };
       }
       if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
       if (!response.ok) throw new Error('seller did not return success');
-      return answer;
+      return { body: answer, answerClass: RESULT };
     } catch (error) {
+      if (recordRefusals.has(error)) throw error;
       if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
       if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }
@@ -305,6 +343,10 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
 
   return {
     origin,
+    // The route adapter for callers without a named method yet (the context and challenge routes belong to the bootstrap callers).
+    request: post,
+    // Records, for the operator, why a request that was started never reached the seller.
+    recordFailure: (error) => requestRecords?.failure(error),
     // The durable Agreement coordinator retains only disposition/reason.
     // Its caller records the last failed HTTP call's bounded cause separately.
     get failureCause() { return lastFailureCause; },
