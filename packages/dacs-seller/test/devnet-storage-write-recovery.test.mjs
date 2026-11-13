@@ -396,7 +396,7 @@ test('NEW-D1b-final-effect-authorization',async()=>{
  // The same read with authority held through the end sends the exact retained bytes once.
  w.source.verifyDeployment=async()=>true;
  const open={resend:true,authorizeResend:async()=>true};
- for(const repeat of [1,2])await w.open().readRetained(w.retainedInput,open);
+ for(let reads=0;reads<2;reads++)await w.open().readRetained(w.retainedInput,open);
  assert.deepEqual(w.resends,[w.signed.signedTransaction],'one resend of the exact original bytes');
 });
 
@@ -423,6 +423,6 @@ test('native passive read and readRetained never recover a pending accepted CREA
  // The explicitly authorized control resends the retained bytes once, through the same journals.
  await w.journal.rows.delete(recoveryKey);
  const active=w.open();
- for(const repeat of [1,2])await active.readRetained(w.retainedInput,{resend:true,authorizeResend:async()=>true});
+ for(let reads=0;reads<2;reads++)await active.readRetained(w.retainedInput,{resend:true,authorizeResend:async()=>true});
  assert.deepEqual([w.counts.recoveries,w.resends[0]],[1,w.signed.signedTransaction]);
 });
