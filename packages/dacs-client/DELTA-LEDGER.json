@@ -7900,6 +7900,17 @@
           "after": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the wallet session merged from the retirement part",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0698e6f10714b3d5256a28af93a630a65018ac6e",
+          "after": "0698e6f10714b3d5256a28af93a630a65018ac6e"
+        }
+      ]
     }
   ]
 }
