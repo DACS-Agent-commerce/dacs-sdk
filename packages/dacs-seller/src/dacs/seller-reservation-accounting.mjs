@@ -18,6 +18,8 @@ const PAYMENT_PATH = '/dacs/v1/payments';
 const transactionOf = value => typeof value === 'string' && /^(?:0x)?[0-9a-fA-F]{64}$/.test(value) ? value.replace(/^0x/, '').toLowerCase() : null;
 const uint = value => Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0);
 const fail = (code, status) => { throw new SellerTransportError(code, status); };
+/** The key a request's accounting row is stored under: the hash of its buyer, seller, profile and nonce. */
+export const requestNonceKey = (payload) => sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
 // K5 step 8 (amend1 D19): a refusal of the wire or the host carries a string code and an HTTP status; a system error's code (EIO) has no status.
 const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isInteger(error.status);
 
@@ -158,7 +160,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       assertKitOperationAdmitted('reserveAccounted');
       const input = admittedInput(options);
       const { checked, payload } = input;
-      const key = sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
+      const key = requestNonceKey(payload);
       const replay = transaction(() => chargeWithin(input, key, wireRequestHash(payload)));
       let effect;
       try { effect = await checked.reserve(); }
