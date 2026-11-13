@@ -152,6 +152,67 @@ test('a signCreate answer that is not the signed CREATE it names is refused: not
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
 });
 
+const CHAIN_BOUND = (chainId) => (hash) => `demos-tx:v1:${chainId}:${hash}`;
+
+test('a CREATE signed over the bare hash is kept whether or not a signature chain id is configured', async (t) => {
+  for (const options of [{}, { signatureChainId: '7' }]) {
+    const w = wallet(t), journal = w.open(options);
+    t.after(() => journal.close());
+    assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted', JSON.stringify(options));
+  }
+});
+
+test('a CREATE signed over the domain-separated message is kept when the journal\'s own chain id is configured', async (t) => {
+  const w = wallet(t), journal = w.open({ signatureChainId: '7' });
+  t.after(() => journal.close());
+  w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
+  assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
+});
+
+test('a kept CREATE signed over the domain-separated message is still the same evidence when the journal is reopened with the same chain id', async (t) => {
+  const w = wallet(t);
+  let journal = w.open({ signatureChainId: '7' });
+  w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
+  w.faults.broadcast.push('throw');
+  await assert.rejects(journal.anchorEvidence(w.input()), /TEST node unreachable/);
+  journal.close();
+  journal = w.open({ signatureChainId: '7' });
+  t.after(() => journal.close());
+  const [first] = w.calls.signed;
+  assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'submitted', txHash: first }, 'the kept bytes are sent again, not refused as other evidence');
+  assert.equal(w.calls.sign, 1, 'signed once');
+});
+
+test('a CREATE signed over any other message than the bare hash or the configured chain-bound form is refused', async (t) => {
+  const w = wallet(t), journal = w.open({ signatureChainId: '7' });
+  t.after(() => journal.close());
+  const other = 'ab'.repeat(32);
+  for (const [label, signedOver] of [['another chain id', CHAIN_BOUND('8')], ['another version', (hash) => `demos-tx:v2:7:${hash}`], ['another prefix', (hash) => `demos-evm:v1:7:${hash}`],
+    ['no chain id', (hash) => `demos-tx:v1::${hash}`], ['two chain id fields', (hash) => `demos-tx:v1:7:7:${hash}`], ['a leading-zero chain id', CHAIN_BOUND('07')],
+    ['a leading byte', (hash) => ` ${hash}`], ['a trailing byte', (hash) => `${hash}\n`], ['another hash', () => CHAIN_BOUND('7')(other)], ['upper-case hex', (hash) => hash.toUpperCase()]]) {
+    w.faults.sign.push({ signedOver });
+    await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ }, label);
+    assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned', `${label}: nothing is kept`);
+  }
+  assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
+});
+
+test('a journal with no signature chain id refuses a domain-separated signature', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ });
+  assert.deepEqual(w.calls.broadcast, []);
+});
+
+test('a signature chain id that is not a canonical decimal string is refused when the journal is made', async (t) => {
+  const w = wallet(t);
+  for (const signatureChainId of ['', '07', '-1', '7.0', 'x7', ' 7', 7, 7n, null, {}]) {
+    assert.throws(() => w.open({ signatureChainId }), { name: 'TypeError', message: /signatureChainId/ }, String(signatureChainId));
+  }
+});
+
 // The kept bytes must be a CREATE the node can execute and the SR-2 readback
 // (demos-sr2-adapter.mjs authenticate) can read back as this evidence: exactly
 // the signed projection (node 61b8e75 validateTransaction refuses a truthy

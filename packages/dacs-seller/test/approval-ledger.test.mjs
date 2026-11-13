@@ -52,6 +52,12 @@ test('held manual attempt converts once at signature authority and completes onc
   const final = parse([held, manual, authorized, completed]); assert.equal(final.attempts.get(attemptId).outcome, 'spent'); assert.deepEqual(budget(final.rows), { writes: 1, totalOs: 4n });
   assert.throws(() => parse([held, manual, authorized, completed, completed]));
 });
+for (const [first, second] of [['approved', 'approved'], ['approved', 'rejected'], ['rejected', 'approved'], ['rejected', 'rejected']]) test(`a held attempt refuses a second manual answer (${first}, then ${second})`, () => {
+  const held = { format: EVIDENCE, decision: 'rejected', approvalMode: 'policy', policyReason: 'seller-record-missing', attemptId, approvalHash, requestBytes, recordedAt: 90 };
+  const answer = decision => ({ format: EVIDENCE, decision, attemptId, approvalHash, requestBytes, recordedAt: 91 });
+  assert.doesNotThrow(() => parse([held, answer(first)]));
+  assert.throws(() => parse([held, answer(first), answer(second)]), error => error.ledgerLine === 3);
+});
 test('duplicate, mismatched and early completion cannot erase a live reservation', () => {
   for (const changed of [{ ...completion, approvalHash: 'b'.repeat(64) }, { ...completion, recordedAt: 99 }, { ...completion, reservationId: attemptId }]) assert.throws(() => parse([signRow, changed]));
   assert.throws(() => parse([signRow, completion, completion]));
