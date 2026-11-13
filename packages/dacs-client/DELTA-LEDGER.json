@@ -7417,6 +7417,17 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the public API test merged from the held part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "0463873a7b94a988da064525e1285747019c3c1c",
+          "after": "0463873a7b94a988da064525e1285747019c3c1c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF run the gate tests on the exported owner with only currentLocal replaced",
       "files": [
         {

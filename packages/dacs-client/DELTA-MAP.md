@@ -1248,6 +1248,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | 757b60148d789e59fc2db8b9350176f6fd859ce8 |
 | | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | e79fd458fc4120e07f82142805d6e01f93513019 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | f5bea631bd02f0505bde239e10be38970474caf6 |
+| WF | delta(client): WF record the public API test merged from the held part | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 0463873a7b94a988da064525e1285747019c3c1c |
 | WF | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | b9340992077b4fd90675cb50762e57f5abc0c558 |
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | 8336e5393f66bcf9184b1b22b44911a9a1a32fbc |
@@ -3948,6 +3950,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` |
 | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` |
+| delta(client): WF record the public API test merged from the held part | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the public API test merged from the held part | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the public API test merged from the held part | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the public API test merged from the held part | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the public API test merged from the held part | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
