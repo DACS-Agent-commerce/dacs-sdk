@@ -116,7 +116,7 @@ test('candidate manifest uses release metadata and the exact public boundary', a
   const client = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs-client'))));
   const core = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs'))));
   assert.equal(client.private, true);
-  assert.equal(client.engines.node, '^22.13.0 || >=23.4.0');
+  assert.equal(client.engines.node, core.engines.node);
   assert.equal(client.type, 'module');
   assert.equal(client.version, core.version);
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
