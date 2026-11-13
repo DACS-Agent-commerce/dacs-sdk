@@ -8963,17 +8963,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF test that reserve repeats an unfinished retirement while its finishing write keeps failing",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/node-signer-retirement.test.mjs",
-          "before": null,
-          "after": "6175c0421d58d74bf403ee1150a32c750011c455"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF P21a3ba sign payment-evidence CREATEs on the signer reservation",
       "files": [
         {
@@ -9182,17 +9171,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF record the merged payment evidence adapter test after carrying the payment part up",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
-          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
-          "after": "75588decc6f7f051ba27c3f90bd6b9a04031cc45"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge",
       "files": [
         {
@@ -9214,12 +9192,34 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged payment evidence adapter test after carrying the payment part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
+          "after": "75588decc6f7f051ba27c3f90bd6b9a04031cc45"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the wallet session merged from the payment part",
       "files": [
         {
           "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
           "before": "b9290c0f6b1673b099a1a66597ef46bdaa14c387",
           "after": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that reserve repeats an unfinished retirement while its finishing write keeps failing",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-retirement.test.mjs",
+          "before": null,
+          "after": "6175c0421d58d74bf403ee1150a32c750011c455"
         }
       ]
     }
