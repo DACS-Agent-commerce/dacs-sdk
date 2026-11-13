@@ -144,7 +144,9 @@ the version and integrity its source run observed, and matching uses them:
   unlisted even at the same package name and location.
 - SBOM findings match one `npm sbom` line with the installed and required
   versions elided after `invalid:`/`extraneous:` and `required by`. Only these
-  rules ignore installed versions.
+  rules ignore installed versions. An npm alias such as
+  `@ton/core@npm:other@1.0.0` installs another package under the recorded
+  name, so its version is not elided and the line is unlisted.
 
 For Git, engine and image findings, a new patch version, a rebuilt archive or
 any other integrity is therefore unlisted and exits 3 until a reviewed PR

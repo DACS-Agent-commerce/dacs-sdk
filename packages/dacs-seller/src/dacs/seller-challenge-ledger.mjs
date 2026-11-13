@@ -31,7 +31,7 @@ const ownerText = (owner) => (isRecord(owner) && typeof owner.generation === 'st
 // A stored column that cannot be read back never matches or answers anything.
 const parseColumn = (text) => { try { return text === null ? null : JSON.parse(text); } catch { return null; } };
 
-function deepFreeze(value) {
+export function deepFreeze(value) {
   if (value !== null && typeof value === 'object') Object.values(value).forEach(deepFreeze);
   return Object.freeze(value);
 }

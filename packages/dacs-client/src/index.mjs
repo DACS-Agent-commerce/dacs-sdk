@@ -34,7 +34,7 @@ export { createDemDeliveryContext } from './dacs/dem-delivery-context-consumer.m
 export { createNativeDemDeliveryCapability } from './dacs/native-dem-delivery-consumer.mjs';
 /** createNativePaymentEvidenceConsumer({rpcUrl,sourceCapability,anchorEvidence,fetchImpl,now}) returns a frozen capability with observeDemosTransfer and readEvidence over one pinned RPC origin. It throws TypeError unless sourceCapability is the exact opaque settlement-evidence capability whose endpoint equals rpcUrl, rpcUrl has no credentials, path, query or fragment, and anchorEvidence is a function when given; an unparseable rpcUrl throws TypeError. Construction makes no request. */
 export { createNativePaymentEvidenceConsumer } from './dacs/native-payment-evidence-consumer.mjs';
-/** createSourceDemoSellerTransport({authority,authenticationFor,sessionDelegation=null}) returns a frozen opaque capability that selects the signed-peer seller transport. It throws TypeError unless authority is a TEST- label, authenticationFor is a function and sessionDelegation is null or exactly {request,accept} functions; the TEST- label stays until the testnet authority is wired. The capability's authenticationFor(operation) throws TypeError unless the adapter is exactly {request,verifyResponse} functions. Construction sends nothing. */
+/** createSourceDemoSellerTransport({authority,sessionSignerFor,sessionPolicyFor,endpointProofFor}) returns an opaque wire transport capability. The resolvers supply {claim,sign}, {expiresAt} and a proof from verifyEndpointProof for the purchase. Throws TypeError for missing resolvers or a non-TEST authority. Construction sends nothing. */
 export { createSourceDemoSellerTransport } from './dacs/source-demo-seller-transport.mjs';
 /** createDevnetNativeCommitmentCapability({authority,anchor}) returns a frozen opaque capability for the native seller commitment; DEVNET_NATIVE_COMMITMENT_MARKER is its source constant. It throws TypeError unless authority is a TEST-RUN- label and anchor carries the same authority with readRetained and verifyReceipt functions; the TEST-RUN- label stays until the testnet authority is wired. Construction reads and writes nothing. */
 export { createDevnetNativeCommitmentCapability, DEVNET_NATIVE_COMMITMENT_MARKER } from './devnet-demo/commitment-consumer.mjs';
@@ -56,7 +56,7 @@ export { OutboundError } from './util/http.mjs';
 export { OperationError, NotWiredError } from './client-errors.mjs';
 /** StaleProtocolCheck(operation) returns an Error for a protocol decision overtaken by retained state; construction performs no writes. */
 export { StaleProtocolCheck } from './dacs/protocol-purchases.mjs';
-/** SellerRefusedError(code,message,status), SellerUnavailableError(message,causeCode="other") and SellerTlsUnusableError(message) return transport Errors preserving refusal versus unavailable causes; construction performs no requests. */
+/** SellerRefusedError(code,message,status,answerClass="definite"), SellerUnavailableError(message,causeCode="other",{answerClass="unknown",code}) and SellerTlsUnusableError(message) return transport Errors preserving refusal versus unavailable causes and the class of the seller's answer; construction performs no requests. */
 export { SellerRefusedError, SellerUnavailableError, SellerTlsUnusableError } from './dacs/seller-http.mjs';
 /** DemosSr2BridgeError(code,message) returns an Error for refused wallet bridge input or state; construction neither signs nor submits. */
 export { DemosSr2BridgeError } from './dacs/demos-sr2-wallet-bridge.mjs';
