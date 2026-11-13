@@ -51,15 +51,16 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
-The host's optional `maxRecords` (default 10,000) is the reservation budget. A purchase allocation holds 17 units for each of the context, proposals,
-commitments and payments routes (68 units, or 85 when commitments/signature is
-enabled), and admission allots one only while the whole allotment is free. A
-successful context completion returns only the context slot; an aborted start, a
-failed or non-validated context and a terminal DACS-5 session return every open
-slot. Returned units never reduce what has been charged, but a charge stops
-counting against the budget once its request has expired and its job has ended.
-The host composes a
-reservation coordinator: one
+The host's optional `maxRecords` (default 10,000) is the reservation budget. A purchase allocation holds 17 units for each of the
+context, proposals, commitments and payments routes (68 units, or 85 when
+commitments/signature is enabled), and admission allots one only while the whole
+allotment is free. A successful context completion returns only the context
+slot; an aborted start, a failed or non-validated context and a terminal DACS-5
+session return every open slot. Returned units never reduce what has been
+charged, but a charge stops counting against the budget once its request has
+expired and its job has ended. Charges that no longer count stay in the store,
+and each admission still scans them; they are never pruned. The host
+composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
 accounting and recording the reservation result. The routes do not yet reserve
 through the coordinator. Admission and accounting accept capacity through their
