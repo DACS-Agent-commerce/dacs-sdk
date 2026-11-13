@@ -65,23 +65,23 @@ for (const jump of [-60_000, 60_000]) {
       elapsed = 10;
       assert.equal(cache.get(input), null);
     });
-
-    test(`${port} request rate window ignores a ${jump} ms wall jump`, async () => {
-      let elapsed = 0;
-      const create = loadFunction(`packages/${port}/src/dacs/seller-http.mjs`, 'createSellerHttpHandler', {
-        Date: { now: () => 1_000_000 + elapsed + (elapsed > 0 ? jump : 0) }, performance: { now: () => elapsed },
-        assertKitOperationAdmitted() {}, ROUTES: {}, SIGNATURE_ROUTES: {}, loopbackSocket: () => true, SELLER_TRANSPORT_MAX_RESPONSE: 10_000,
-      });
-      const handler = create({}, { maxRequestsPerWindow: 1, rateWindowMs: 10 });
-      let status;
-      const request = () => handler({ socket: {}, url: '/missing' }, {
-        writeHead(value) { status = value; }, end() {},
-      });
-      await request(); assert.equal(status, 404);
-      elapsed = 1; await request(); assert.equal(status, 429);
-      elapsed = 10; await request(); assert.equal(status, 404);
-    });
   }
+
+  test(`dacs-seller request rate window ignores a ${jump} ms wall jump`, async () => {
+    let elapsed = 0;
+    const create = loadFunction('packages/dacs-seller/src/dacs/seller-http.mjs', 'createSellerHttpHandler', {
+      Date: { now: () => 1_000_000 + elapsed + (elapsed > 0 ? jump : 0) }, performance: { now: () => elapsed },
+      assertKitOperationAdmitted() {}, ROUTES: {}, SIGNATURE_ROUTES: {}, loopbackSocket: () => true, SELLER_TRANSPORT_MAX_RESPONSE: 10_000,
+    });
+    const handler = create({}, { maxRequestsPerWindow: 1, rateWindowMs: 10 });
+    let status;
+    const request = () => handler({ socket: {}, url: '/missing' }, {
+      writeHead(value) { status = value; }, end() {},
+    });
+    await request(); assert.equal(status, 404);
+    elapsed = 1; await request(); assert.equal(status, 429);
+    elapsed = 10; await request(); assert.equal(status, 404);
+  });
 
   test(`mount-table cache TTL ignores a ${jump} ms wall jump`, async () => {
     let elapsed = 0, loads = 0;
