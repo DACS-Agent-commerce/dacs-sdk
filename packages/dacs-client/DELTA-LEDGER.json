@@ -7994,6 +7994,17 @@
           "after": "f47e93e24b21002ae87f0b7ec1b7d67abf30422e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the wallet session merged from the payment part",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b9290c0f6b1673b099a1a66597ef46bdaa14c387",
+          "after": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
+        }
+      ]
     }
   ]
 }

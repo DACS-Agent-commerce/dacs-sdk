@@ -1366,6 +1366,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | 7e44af5f5f7960f6430b02f5ea22fa26eca75fb3 |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | b9290c0f6b1673b099a1a66597ef46bdaa14c387 |
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | f47e93e24b21002ae87f0b7ec1b7d67abf30422e |
+| WF | delta(client): WF record the wallet session merged from the payment part | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | b9290c0f6b1673b099a1a66597ef46bdaa14c387 |
 
 ## Complete commit and file inventory
 
@@ -4277,6 +4279,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
 | delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): WF record the wallet session merged from the payment part | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the wallet session merged from the payment part | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the wallet session merged from the payment part | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the wallet session merged from the payment part | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the wallet session merged from the payment part | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
