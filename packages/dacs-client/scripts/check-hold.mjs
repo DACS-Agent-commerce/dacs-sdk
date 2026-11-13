@@ -31,8 +31,8 @@ const USAGE = "usage: check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]";
 class UsageError extends Error {}
 
 export const PINNED = Object.freeze({
-  holdSha256: "7c9a5bc99f567dec3b4b6c7adc98debffc462c7f170346cf76223a66a5fadc57",
-  holdBytesSha256: "fc1cf80e2b9c8fa611491e16aa32cb1be71458a942bcc10189ceb12e908e2aac",
+  holdSha256: "8d2490767bff6c0f1219dee7363b349b5c009ee1210aeb2053107499f06795cf",
+  holdBytesSha256: "d90fa070cb5ce21c903cc0494cce6f676ed26811986a871e6c9a4345d940a9de",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",

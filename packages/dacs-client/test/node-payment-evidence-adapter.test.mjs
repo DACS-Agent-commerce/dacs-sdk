@@ -76,6 +76,22 @@ test("stored signed bytes come back for the same input with no signature or writ
   assertNothingSent(w);
 });
 
+test("signed bytes that were never sent hold the signer for every other input, also after a restart, because only an execution of the stored bytes frees signed bytes; the same input is the way out", async t => {
+  const w = await adapterWorld(t), input = evidenceInput(w);
+  const first = await signIn(w, input), stored = await recordOf(w), signaturesBefore = w.innerSigns.length;
+  const otherAddress = evidenceInput(w, 'b'), changedEvidence = { ...input, artifact: { TEST: 'changed-evidence' } };
+  for (const phase of ['before the restart', 'after the restart']) {
+    for (const [name, other] of [['another evidence address', otherAddress], ['changed evidence at the same address', changedEvidence]]) {
+      await assert.rejects(signIn(w, other), { code: 'signer_lane_busy' }, `${name} ${phase}`);
+    }
+    assert.deepEqual(await recordOf(w), stored, `${phase}: nothing is retired or rewritten`);
+    if (phase === 'before the restart') await w.restart();
+  }
+  assert.deepEqual(await signIn(w, input), first, 'the same input still returns the stored bytes for the journal to send');
+  assert.equal(w.innerSigns.length, signaturesBefore, 'no second inner signature'); assert.deepEqual(releasedIds(w), []);
+  assertNothingSent(w);
+});
+
 test("every unsigned exit retires the reservation, keeps the floor and releases a bound authorization once; a different evidence address then signs at the same nonce", async t => {
   const w = await adapterWorld(t), input = evidenceInput(w);
   let late;

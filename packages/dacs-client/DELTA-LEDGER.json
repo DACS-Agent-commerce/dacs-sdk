@@ -8831,6 +8831,17 @@
           "after": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 test that unsent signed bytes hold the signer until their execution",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "0c4803853e13c363d12b241e1d5657501538152c",
+          "after": "a4e588ba8351ad22b97d9234aa0918e2158ecf65"
+        }
+      ]
     }
   ]
 }

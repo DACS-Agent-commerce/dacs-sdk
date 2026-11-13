@@ -1455,6 +1455,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | 02c3808d514792df7d0a707767dfb08feb08685c |
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | 0a89124816f6c933eae528c682873577e0d6edd8 |
 | | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | e3fbe968e1ab056b5aee351d668cd064e4abd4c4 |
+| D11 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | a4e588ba8351ad22b97d9234aa0918e2158ecf65 |
 
 ## Complete commit and file inventory
 
@@ -4429,6 +4431,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/helpers/packed-install.mjs:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` |
+| fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
 
 ## Original moved files
 
