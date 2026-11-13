@@ -7288,6 +7288,97 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the request signer doc comment with and without evidence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
+          "after": "1eaa3e419dc2d124c78fbc916d0cef0ae99f6f4c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13b1a verify seller answers on their exact bytes and classify them by K5's table",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "add72c0add7c8188d6cc86e7476207a4882c93af",
+          "after": "b88097dc5621acb7affa393aade0133f1c873923"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": null,
+          "after": "9e086f4add1dd0f39d97a2f406e76456a0976483"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "dd10aa2b3ebe253b092d9543850079587b5bca27",
+          "after": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "aa0be667f8a71c8b7a687588757106bef3ca3cd8",
+          "after": "6ef2bd3df352fcca8200df647c7d0345cd5eac8f"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": null,
+          "after": "3aeea852dffad587c333c12b28aa112733a7e853"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): classify a signed 408 or 429 outside the table rows as unknown",
+      "sha": "064f0f0f96e2e783f9bc6dac77a6737a4aa4ef2d",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": "9e086f4add1dd0f39d97a2f406e76456a0976483",
+          "after": "8ca70e7f5d3217388527c8dcab289193b2848780"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "3aeea852dffad587c333c12b28aa112733a7e853",
+          "after": "6982df671d7d2040341fd534d075b1225fc000f6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13b1a withdraw the signed 408 or 429 unknown classification for re-recording",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": "8ca70e7f5d3217388527c8dcab289193b2848780",
+          "after": "9e086f4add1dd0f39d97a2f406e76456a0976483"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "6982df671d7d2040341fd534d075b1225fc000f6",
+          "after": "3aeea852dffad587c333c12b28aa112733a7e853"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": "9e086f4add1dd0f39d97a2f406e76456a0976483",
+          "after": "8ca70e7f5d3217388527c8dcab289193b2848780"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "3aeea852dffad587c333c12b28aa112733a7e853",
+          "after": "6982df671d7d2040341fd534d075b1225fc000f6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P52a admit purchases only on the engines range, Node 22.22.2 to 22.x and 24.15.0 to 24.x",
       "files": [
         {
@@ -7349,12 +7440,28 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF record the request signer doc comment with and without evidence",
+      "subject": "delta(client): WF verify seller answers on their exact bytes and classify them",
+      "compact": true,
       "files": [
         {
-          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
-          "before": "4754c968bde4ee62121134b3645c16d5d40c9cbf",
-          "after": "1eaa3e419dc2d124c78fbc916d0cef0ae99f6f4c"
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "b88097dc5621acb7affa393aade0133f1c873923",
+          "after": "73af84a387f7c2145ee9ee1e35275e0622fd7d4c"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": "8ca70e7f5d3217388527c8dcab289193b2848780",
+          "after": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "6982df671d7d2040341fd534d075b1225fc000f6",
+          "after": "501e8eefddad1bd2c38e6e35efd87178e03fedba"
         }
       ]
     }

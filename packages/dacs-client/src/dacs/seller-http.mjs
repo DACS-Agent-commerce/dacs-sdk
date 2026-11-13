@@ -4,13 +4,17 @@
 // Server/client stay loopback-only. Existing unauthenticated fixture callers
 // remain supported. Supplying an authentication adapter enables signed peer
 // requests, independently signed seller responses and a durable intent journal.
-// Only an authenticated definite refusal becomes SellerRefusedError in that
-// mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
+// In that mode an answer is classified (seller-response-class.mjs) only after
+// the wire verified its exact received bytes. Only a definite refusal or failed
+// bootstrap becomes SellerRefusedError; unsigned, malformed, interrupted,
+// ambiguous, held, suspended or readback-only answers are unavailable, with
+// their class and cause kept.
 import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS } from '@kynesyslabs/dacs/wire';
 import { SellerAgentError } from './seller-agent-error.mjs';
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
+import { classifySellerAnswer, SELLER_ANSWER_CLASS, SELLER_EFFECT_UNRESOLVED } from './seller-response-class.mjs';
 
 const MAX_BODY = 64 * 1024;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
@@ -155,12 +159,15 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   };
 }
 
+// The third argument is the classifier's {answerClass, code}: the class of the seller's answer and its error code.
 export class SellerUnavailableError extends Error {
-  constructor(message, causeCode = 'other') {
+  constructor(message, causeCode = 'other', { answerClass = SELLER_ANSWER_CLASS.UNKNOWN, code } = {}) {
     super(message);
     this.name = 'SellerUnavailableError';
     this.code = 'seller_unavailable';
     this.causeCode = sellerFailureCause(causeCode) ?? 'other';
+    this.answerClass = answerClass;
+    this.answerCode = code;
   }
 }
 
@@ -173,14 +180,14 @@ export function sellerFailureAttempt(error) {
 
 export class SellerTlsUnusableError extends SellerUnavailableError {
   constructor(message) {
-    super(message, 'tls');
+    super(message, 'tls', { answerClass: SELLER_ANSWER_CLASS.NOT_SENT });
     this.code = 'seller_tls_unusable';
     Object.defineProperty(this, 'dispatched', { value: false, enumerable: true });
     preDispatchFailures.add(this);
   }
 }
 
-const FAILURE_CAUSES = new Set(['tls', 'network', 'response-auth', 'status-5xx', 'client-sign', 'timeout', 'other']);
+const FAILURE_CAUSES = new Set(['tls', 'network', 'response-auth', 'status-4xx', 'status-5xx', 'client-sign', 'timeout', 'other']);
 export const sellerFailureCause = (value) => FAILURE_CAUSES.has(value) ? value : undefined;
 const TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_REVOKED', 'CERT_SIGNATURE_FAILURE', 'CERT_UNTRUSTED', 'CERT_REJECTED', 'CERT_CHAIN_TOO_LONG', 'PATH_LENGTH_EXCEEDED', 'INVALID_PURPOSE', 'UNABLE_TO_DECRYPT_CERT_SIGNATURE', 'UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY', 'ERROR_IN_CERT_NOT_BEFORE_FIELD', 'ERROR_IN_CERT_NOT_AFTER_FIELD', 'UNHANDLED_CRITICAL_EXTENSION', 'INVALID_CA']);
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET']);
@@ -200,12 +207,31 @@ function failureCause(error, phase, signal) {
 }
 
 export class SellerRefusedError extends Error {
-  constructor(code, message, status) {
+  constructor(code, message, status, answerClass = SELLER_ANSWER_CLASS.DEFINITE) {
     super(message);
     this.name = 'SellerRefusedError';
     this.code = code;
     this.status = status;
+    this.answerClass = answerClass;
   }
+}
+
+// No request carries a capability the client minted, and the adapter's durable records establish no new-purchase request yet.
+const REQUEST_PROVENANCE = Object.freeze({ continuation: false, newPurchase: false });
+const SELLER_OPERATOR_MESSAGE = 'the seller reports this operation is unresolved and needs the seller operator; it is not retried automatically';
+const UNAVAILABLE_ANSWER_MESSAGE = 'seller agent response is unavailable or unauthenticated; the operation outcome may be unknown';
+const { RESULT, PROGRESS, DEFINITE, FAILED_BOOTSTRAP } = SELLER_ANSWER_CLASS;
+const statusCause = (status) => (status >= 500 && status <= 599 ? 'status-5xx' : status >= 400 && status < 500 ? 'status-4xx' : 'other');
+
+// Result and progress answers are returned; a definite answer is a refusal; every other class leaves the outcome unknown.
+function answerOrError(verdict, answer, status) {
+  const { answerClass, code } = verdict;
+  if (answerClass === RESULT || answerClass === PROGRESS) return answer;
+  if (answerClass === DEFINITE || answerClass === FAILED_BOOTSTRAP) {
+    const refusalCode = code ?? `http_${status}`;
+    throw new SellerRefusedError(refusalCode, typeof answer.message === 'string' ? answer.message.slice(0, 200) : refusalCode, status, answerClass);
+  }
+  throw new SellerUnavailableError(code === SELLER_EFFECT_UNRESOLVED ? SELLER_OPERATOR_MESSAGE : UNAVAILABLE_ANSWER_MESSAGE, statusCause(status), verdict);
 }
 
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false }) {
@@ -258,14 +284,20 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');
+      // The record exists only here, after the wire verified the exact bytes: the HTTP status it checked and the body it admitted.
+      if (authentication) {
+        phase = 'classified';
+        return answerOrError(classifySellerAnswer({ status: response.status, signed: true, body: answer }, { path, dispatched: true, ...REQUEST_PROVENANCE }), answer, response.status);
+      }
       if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
       if (!response.ok) throw new Error('seller did not return success');
       return answer;
     } catch (error) {
       if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
+      if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }
       lastFailureCause = failureCause(error, phase, signal);
-      const unavailable = new SellerUnavailableError('seller agent response is unavailable or unauthenticated; the operation outcome may be unknown', lastFailureCause);
+      const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause);
       if (error instanceof RawJsonAdmissionError) { unavailable.admissionCode = error.code; unavailable.admissionStage = error.stage; }
       throw unavailable;
     }
