@@ -186,8 +186,8 @@ const TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET']);
 const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
 function failureCause(error, phase, signal) {
-  if (phase === 'client-sign') return 'client-sign';
   if (signal?.aborted) return 'timeout';
+  if (phase === 'client-sign') return 'client-sign';
   // Node fetch wraps TLS/socket errors in `cause`. Inspect only bounded
   // machine codes, never error messages, peer metadata or certificate bytes.
   for (let depth = 0, current = error; current && depth < 4; depth++, current = current.cause) {
@@ -226,10 +226,11 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     try {
       const text = JSON.stringify(body);
       if (Buffer.byteLength(text) > MAX_BODY) throw new Error('request exceeds byte limit');
-      phase = 'client-sign';
-      const signed = authentication ? await authentication.request(path, body, text) : null;
-      phase = 'other';
+      // One deadline covers signing too: the wire's authority and proof reads and the host's signer have none of their own.
       signal = AbortSignal.timeout(timeoutMs);
+      phase = 'client-sign';
+      const signed = authentication ? await settleOnAbort(authentication.request(path, body, text, { signal }), signal) : null;
+      phase = 'other';
       hasDispatched = true;
       const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
       phase = 'response-auth';

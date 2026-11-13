@@ -58,6 +58,7 @@ import { NATIVE_DEM_DELIVERY_SOURCE, nativeDemDeliveryConfig } from './native-de
 import { DEVNET_NATIVE_COMMITMENT_MARKER, devnetNativeCommitmentConfig } from '../devnet-demo/commitment-consumer.mjs';
 import { BuyerChainReadbackUnsupported, createBuyerChainReadback, POINTER_MISSING, signedCreateBytes, signedCreateFor } from './buyer-chain-readback.mjs';
 import { cutText } from '../util/text.mjs';
+import { settleOnAbort } from '../util/http.mjs';
 
 // Retained native Agreement profile; consumer capabilities are bound in terms.
 export const OFFLINE_AGREEMENT_MODE = 'dacs-sr2-wallet-agreement';
@@ -519,6 +520,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (!stages.includes(stage)) throw new OperationError('invalid_state', `DACS purchase step is ${stage ?? 'unset'}`);
   };
   const buyerClaim = (operation) => claimForAddress(operation.terms.buyer.wallet);
+  // The wire reads its authority with no deadline of its own: stop waiting for a read after the seller request timeout.
+  const withinSellerDeadline = (pending) => settleOnAbort(pending, AbortSignal.timeout(sellerRequestTimeoutMs))
+    .catch((error) => { throw error?.name === 'TimeoutError' ? new OperationError('seller_authority_timeout', 'the wire authority read did not finish in time; nothing was signed or sent', undefined, { cause: error }) : error; });
   function requireDelegationMargin(operation, step) {
     if (!operation.terms.protocol?.sellerTransport?.delegation) return;
     const expiresAt = operation.state.protocol?.sessionDelegation?.payload?.expiresAt;
@@ -574,7 +578,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // asynchronously, so the hold and the actor's connection are checked again before the message leaves.
   async function delegationWalletMessage(payload) {
     const local = admission.currentLocal(), localDigest = canonicalize(local);
-    const bytes = await sellerSessionDelegationSigningBytes(payload, admission.binding, local);
+    const bytes = await withinSellerDeadline(sellerSessionDelegationSigningBytes(payload, admission.binding, local));
     assertPurchaseActionsAdmitted();
     if (canonicalize(admission.currentLocal()) !== localDigest) throw new OperationError('tp1_local_binding_changed', 'the actor connection changed before the wallet message');
     return Buffer.from(bytes).toString('utf8');
@@ -669,7 +673,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       try { signature = decodeSignature(delegationSignature ?? p.sessionDelegation?.signature).toString('base64url'); }
       catch (cause) { throw new OperationError('bad_signature', 'the wallet delegation signature encoding is invalid', undefined, { cause }); }
       const delegation = { payload: p.sessionDelegation?.payload, signature };
-      await verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), delegationScope(operation));
+      await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), delegationScope(operation)));
       operation = save(operation, { sessionDelegation: delegation }, { event: 'protocol_seller_session_delegated' });
       // Before the context read: it can already make seller Vet writes.
       requireDelegationMargin(operation, 'the Agreement plan');
@@ -723,8 +727,11 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
 
   async function savePlan(operation, buyerBundle, planned, context) {
     if (operation.terms.protocol.sellerTransport?.delegation) {
-      try { await verifySellerSessionDelegation(Buffer.from(JSON.stringify(operation.state.protocol.sessionDelegation)), { ...delegationScope(operation), deadline: planned.draft.terms.deadline }); }
-      catch (cause) { throw new OperationError('seller_delegation_invalid', 'the seller delegation is expired or differs from the derived Agreement', undefined, { cause }); }
+      try { await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(operation.state.protocol.sessionDelegation)), { ...delegationScope(operation), deadline: planned.draft.terms.deadline })); }
+      catch (cause) {
+        if (cause?.code === 'seller_authority_timeout') throw cause;
+        throw new OperationError('seller_delegation_invalid', 'the seller delegation is expired or differs from the derived Agreement', undefined, { cause });
+      }
       requireDelegationMargin(operation, 'the Agreement plan');
     }
     const bound = boundTermsMismatch(operation, planned.draft);
