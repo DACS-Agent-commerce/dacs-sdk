@@ -16,7 +16,8 @@ import { AGREEMENT_CONTEXT_SOURCE } from '../../src/dacs/agreement-context-consu
 import { createSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth, createSellerTransportStore } from '../../src/dacs/seller-transport-auth.mjs';
+import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './bound-transport-store.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { testWallet } from './protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
@@ -80,7 +81,7 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
   const journal = openWireRequestJournal(journalDirectory, { leaseMs: 300_000, clock: now });
   t.after(() => journal.close?.());
   const agent = { claim: SELLER.claim, listingPin: pin, transportAgreementOf: () => { calls.transportAgreementOf++; return null; },
-    continuationEvidenceOf: () => { calls.continuationEvidenceOf++; return null; } };
+    continuationEvidenceOf: () => { calls.continuationEvidenceOf++; return null; }, retainsPaymentClaim: () => true, assertSettlementCredit: () => {} };
   const readCommitmentReceipt = Object.assign(() => { calls.readCommitmentReceipt++; return 'valid'; }, { chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
   /** The wire context over the current store; `overrides` replace only the members they name. */
   const makeWire = (overrides = {}) => createWireContext({ binding, tp1Network: { connection: () => { calls.connection++; return { ...TEST_CONNECTION }; } }, signer: signer(SELLER), store, journal,

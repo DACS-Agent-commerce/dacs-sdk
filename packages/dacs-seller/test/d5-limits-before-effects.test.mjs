@@ -10,7 +10,8 @@ import DatabaseSync from 'better-sqlite3';
 import {canonicalize,identityBundleHash,sha256Hex} from '@kynesyslabs/dacs';
 const {createSellerHttpHandler}=await import('../src/dacs/seller-http.mjs');
 const {createSellerContextRoute,SELLER_CONTEXT_LIMITS}=await import('../src/dacs/seller-context-route.mjs');
-const {createSellerTransportStore,createSellerTransportServerAuth,createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.mjs');
+const {createSellerTransportServerAuth,createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.mjs');
+const {createSellerTransportStore}=await import('./helpers/bound-transport-store.mjs');
 import {JOBS,T,key,bundleFor,exchange,presentContext,world} from './helpers/d5-http-fixture.mjs';
 
 test('transport job capacity is independent of live nonce capacity, with completed jobs retained', async t => {
@@ -110,7 +111,7 @@ test('B15 a failed release cannot turn a definite context answer into an uncerta
 test('B16 a resume conflict releases its new unused hold and never calls the provider',async t=>{
  const w=await world(t),input=await w.wire(),request=w.auth.readRequest(input.header),before=w.effects();
  assert.equal(await w.route.resume({effectKey:'a'.repeat(64)},request,{resume(){throw new Error('fixture conflict')}},{writes:1}),null);
- assert.equal(w.effects().holds,before.holds);assert.equal(w.effects().releases,before.releases);assert.equal(w.effects().writes,0);assert.deepEqual(w.effects().counts,before.counts);
+ assert.equal(w.effects().holds,before.holds);assert.equal(w.effects().releases,before.releases+1,'only the previous hold is released, before the journal is asked');assert.equal(w.effects().writes,0);assert.deepEqual(w.effects().counts,before.counts);
 });
 
 async function signed(w,body,{actor=w.buyer,url=SELLER_CONTEXT_PATH}={}){
@@ -170,7 +171,7 @@ test('B40 direct context routes and clients refuse malformed IDs before store, p
   await assert.rejects(w.route.reconcile({body}),{code:'peer_job_invalid'});
   await assert.rejects(w.route.resume({},p,untouched,{writes:1}),{code:'peer_job_invalid'});
   const {createSellerContextClient,createSellerContextRecords}=await import('../src/dacs/seller-context-route.mjs');
-  const records=createSellerContextRecords({listing:w.listing,store:()=>assert.fail('records opened malformed job')});
+  const records=createSellerContextRecords({listing:w.listing,admission:()=>assert.fail('records read an admission for a malformed job'),contextOutcome:()=>assert.fail('records read an outcome for a malformed job')});
   assert.throws(()=>records.exactRequest({jobId,buyerBundle:body.buyerIdentityBundle,generatedAt:T}),{code:'peer_job_invalid'});
   assert.throws(()=>records.completedScope({jobId,buyer:w.buyer.claim}),{code:'peer_job_invalid'});
   assert.throws(()=>w.auth.validate(p,{}),{code:'peer_request_unauthenticated'});

@@ -24,7 +24,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     version: "0.1.0",
     private: true,
     type: "module",
-    engines: { node: "^20.19.0 || >=22.12.0" },
+    engines: { node: "^22.22.2 || ^24.15.0" },
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
@@ -786,7 +786,8 @@ function supportedNode(): boolean {
   if (match === null) return false;
   const major = Number(match[1]);
   const minor = Number(match[2]);
-  return major === 20 ? minor >= 19 : major === 22 ? minor >= 12 : major > 22;
+  const patch = Number(match[3]);
+  return major === 22 ? minor > 22 || (minor === 22 && patch >= 2) : major === 24 && minor >= 15;
 }
 
 async function privateDirectory(role: "buyer" | "seller") {
@@ -4519,7 +4520,7 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 });
 `;
 
-const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
+const DOCKERFILE = `FROM node:22.22.2-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --omit=optional
@@ -4530,7 +4531,7 @@ COPY test ./test
 RUN npm run build
 RUN npm prune --omit=dev --omit=optional --ignore-scripts
 
-FROM node:20.19.1-bookworm-slim
+FROM node:22.22.2-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
 RUN groupadd --system --gid 10001 dacs && useradd --system --uid 10001 --gid dacs --home-dir /app dacs \\

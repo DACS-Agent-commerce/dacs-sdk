@@ -9,7 +9,7 @@ import { linkPackagedWallet } from './offline-agreement-fixture.mjs';
 import { tool, toolRaw, tokenFrom } from './flows.mjs';
 import { post } from './public-sr2-projection-flow.mjs';
 import { createOfflineAgreementBrokerClient } from '../../public/portal/offline-agreement-broker.mjs';
-import { createSellerTransportClientAuth } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportClientAuth } from './legacy-seller-client-auth.mjs';
 
 export const NEW_FIELDS = /chainReadback|publicSignedCreates|answerProjectionOnly|chainSignedCreate/;
 export const txReads = (h) => h.transport.requests.filter((request) => request === 'getTxByHash').length;

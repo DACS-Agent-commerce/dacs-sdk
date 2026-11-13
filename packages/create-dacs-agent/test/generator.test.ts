@@ -76,6 +76,35 @@ describe("create-dacs-agent", () => {
     });
   });
 
+  test("generated projects declare the SDK's Node engines and build on its lowest supported Node", async () => {
+    const core = JSON.parse(
+      await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
+    ) as { engines: { node: string } };
+    const floor = /^\^(\d+\.\d+\.\d+) /.exec(core.engines.node)?.[1];
+    expect(floor).toBeDefined();
+    const parent = await temporaryDirectory();
+    const offline = join(parent, "offline");
+    const live = join(parent, "live");
+    await createDacsAgentProject({ targetDirectory: offline, install: false, role: "demo-all", deployment: "docker" });
+    await createDacsAgentProject({
+      targetDirectory: live,
+      mode: "live-demos",
+      profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "buyer",
+      deployment: "docker",
+      install: false,
+    });
+    for (const target of [offline, live]) {
+      const manifest = JSON.parse(await readFile(join(target, "package.json"), "utf8"));
+      expect(manifest.engines, target).toEqual({ node: core.engines.node });
+      const images = (await readFile(join(target, "Dockerfile"), "utf8")).match(/^FROM \S+/gm);
+      expect(images, target).toEqual([
+        `FROM node:${floor}-bookworm-slim`,
+        `FROM node:${floor}-bookworm-slim`,
+      ]);
+    }
+  });
+
   test("generates the bounded public-package verifier simulation without installing", async () => {
     const parent = await temporaryDirectory();
     const target = join(parent, "my-agent");
