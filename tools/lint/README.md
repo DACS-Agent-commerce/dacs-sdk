@@ -4,7 +4,7 @@ ESLint with bug-finding rules only. There are no style rules. It lives here, apa
 
 ## Run it
 
-Needs Node 22.13 or newer. The type-aware checks read this repo's dependencies, so install those too. The run can take a few minutes and needs up to about 6 GB of memory.
+Needs Node `^22.22.2 || ^24.15.0`, like the rest of the repo. The type-aware checks read this repo's dependencies, so install those too. The run can take a few minutes and needs up to about 6 GB of memory.
 
 ```bash
 npm ci --ignore-scripts
