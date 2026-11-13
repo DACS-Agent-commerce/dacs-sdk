@@ -164,6 +164,23 @@ attempt stays open: a request inside its 300 s lease gets `seller_effect_pending
 and the first after it recovers; after 16 lapsed attempts the operation answers
 `seller_effect_unresolved`. Signed reads create no reservation rows or journal files.
 
+An operation is one job's request on one route. Its binding is the profile,
+buyer and Agreement hash it was first reserved under. Once the operation has
+completed, every body field outside the binding is incidental, a proposal's
+buyer presentation included: a later request under the same binding is the
+same operation and runs no second effect. A completed proposal gets the stored
+answer, and the agent is not called again. (A completed commitment is answered
+by reading the commitment back, and a completed payment that reported delivery
+is put to the agent again, so a saved success is never just replayed.) The stored answer goes only
+to a request with the buyer's transport signature under the same binding. The
+host checks the signature, buyer and Agreement hash before it reads the
+journal: a missing or malformed signature gets 401 `peer_envelope_invalid`, a
+signature by another key 401 `peer_signature_invalid`, another buyer or
+Agreement hash 409 `peer_agreement_party_mismatch` or `peer_agreement_mismatch`,
+and a signed request sent again 409 `peer_request_replayed`. The agent's own
+refusal of a different proposal for a job applies only before the proposal has
+completed; after that, the agent is not asked.
+
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
 build the signed Listing; a wallet signs the returned messages. A buyer
