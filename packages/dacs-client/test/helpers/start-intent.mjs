@@ -88,7 +88,7 @@ export function viewFor(p, { now = Date.now(), recordId = 'rec_aaaaaaaaaaaaaaaaa
   };
 }
 
-// A seller session delegation payload for p, as seller-transport-auth.mjs builds it.
+// A seller session delegation payload for p, as the seller package's seller-transport-auth.mjs builds it.
 export function delegationFor(p, address, { now = Date.now(), session = createEphemeralWallet(), notBefore = now - 1000, expiresAt = now + 3_600_000 } = {}) {
   return { version: '1', kind: 'seller-session-delegation', buyer: `did:demos:agent:${address.slice(2)}`, sessionPublicKey: session.claim.slice('did:demos:agent:'.length), seller: p.seller.claim,
     listingPin: { listingId: p.listing.listingId, version: p.listing.listingVersion, contentHash: p.terms.listing.contentHash }, jobId: p.jobId, notBefore, expiresAt };
