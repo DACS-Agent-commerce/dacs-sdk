@@ -14,12 +14,13 @@
 // before any Agreement and with no journal. The context step keeps the old server auth, and so
 // does the challenge of a handler composed without `wire`. Each request has one authenticator,
 // chosen by its route.
-import { completeWireEffect, WireError } from '@kynesyslabs/dacs/wire';
+import { completeWireEffect, DACS_SELLER_DISCOVERY_PATH, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome, UNCERTAIN } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
+import { signedDiscovery } from './seller-wire-discovery.mjs';
 import { WIRE_ROUTE_PATHS, wireAuthenticator } from './seller-wire-requests.mjs';
 import { createCompletionRecords } from './seller-completion-records.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
@@ -169,7 +170,8 @@ function readRequest(req, timeoutMs) {
 // `context` (seller-context-route.mjs, seller context route) mounts the
 // Vet and Agreement-context route. Without it the route table is unchanged.
 // `wire` (a createWireContext context) moves the mounted routes of WIRE_ROUTE_PATHS onto `./wire`, with
-// the raw transport store as their only journal. It needs `authentication`, naming the same seller and delegation rule and
+// the raw transport store as their only journal, and, when the context has a `publicEndpoint`, serves the signed discovery
+// document at DACS_SELLER_DISCOVERY_PATH. It needs `authentication`, naming the same seller and delegation rule and
 // made over the context's store, for the challenge and the context step; the context must be made for this `agent`.
 export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire = null } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
@@ -243,6 +245,14 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     }
     write(res, status, headers, text);
   };
+  // The discovery document is public, so it is signed as a document and carries no response envelope; a GET with a body is refused.
+  const serveDiscovery = async (req, res) => {
+    const unsent = sender(null);
+    if (req.method !== 'GET') return await unsent(res, 405, { error: 'method_not_allowed' }, null, { close: true });
+    if ((req.headers['content-length'] ?? '0') !== '0' || req.headers['transfer-encoding'] !== undefined) return await unsent(res, 413, { error: 'body_too_large' }, null, { close: true });
+    const text = Buffer.from(await signedDiscovery(wire, agent.listingPin)).toString('utf8');
+    write(res, 200, await signedHeaders(null, 200, text, null), text);
+  };
   return async (req, res) => {
     // One authenticator per route, chosen here: the wire's for the routes it opens, the old server auth for every other.
     const wireChallenge = wireAuth !== null && context !== null && req.url === SELLER_CONTEXT_CHALLENGE_PATH;
@@ -278,6 +288,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (Date.now() - windowStart >= rateWindowMs) { windowStart = Date.now(); requests = 0; }
       if (++requests > maxRequestsPerWindow || active >= maxConcurrent) return await send(res, 429, { error: 'seller_rate_limited' }, null, { close: true });
       active++; counted = true;
+      if (wire?.publicEndpoint != null && req.url === DACS_SELLER_DISCOVERY_PATH) return await serveDiscovery(req, res);
       // Match the raw request target exactly: query strings, alternate paths
       // and encoded aliases cannot evade the path authenticated by the peer.
       const contextChallenge = context !== null && req.url === SELLER_CONTEXT_CHALLENGE_PATH;

@@ -1,7 +1,7 @@
 // Archived buyer implementation for legacy server fixtures only. Never shipped.
 import { randomBytes, createPublicKey, verify } from 'node:crypto';
 import { canonicalize, sha256Hex, admitRawJson } from '@kynesyslabs/dacs';
-import { sellerTransportSigningBytes, verifySellerSessionDelegation, SellerTransportError } from '../../src/dacs/seller-transport-auth.mjs';
+import { sellerTransportSigningBytes, verifySellerSessionDelegation, SellerTransportError } from '../../../dacs-seller/src/dacs/seller-transport-auth.mjs';
 const CLAIM = /^did:demos:agent:[0-9a-f]{64}$/;
 const clone = value => JSON.parse(JSON.stringify(value));
 const exact = (a, b) => canonicalize(a) === canonicalize(b);
