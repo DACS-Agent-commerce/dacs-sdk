@@ -1229,6 +1229,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | client: queue signPass calls of one operation so only one artifact is signed | Git commit selector f1ae63ab3f9ff3c5ba0eca09c21285135d7139ca |
 | | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | 10533f72e4ce2b3fe0ad791d92797796fd1a8221 |
 | | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | d0771ba60ff24d68a635598c833f0ad7e0fa76b8 |
+| WF | client: report a failed fence release after a successful effect with its result | Git commit selector 5769d48c87ef6bed3094adb442d35ad4b0c6e538 |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | 796433f8bc1bca0d06a152305289e52f05f03812 |
+| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 83bf647eea4cbb4cf4614e97b07b52203356393c |
 
 ## Complete commit and file inventory
 
@@ -3923,6 +3926,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
 | fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5769d48c87ef6bed3094adb442d35ad4b0c6e538 | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| 5769d48c87ef6bed3094adb442d35ad4b0c6e538 | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
