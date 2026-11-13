@@ -1,13 +1,13 @@
 name: demosdk compatibility
 
-# ci.yml typechecks and tests demosdk 4.0.18 on pushes to main and phase0-completion and in main's merge queue
-# (not on pull requests).
-# This daily workflow detects new in-range releases before another PR arrives
+# This daily workflow typechecks and tests demosdk 4.0.18 (the demosdk-pinned-tests job; ci.yml no longer does),
+# detects new in-range releases before another PR arrives
 # (the demosdk-pin-drift job, scheduled runs only, so it never blocks a PR)
 # and adds build/declaration emit at 4.0.18 and the newest in-range release.
 # Its PR runs cover changes to this workflow or dependency configuration only;
-# source changes get the ci.yml compatibility step after they merge (see above).
-# When bumping ci.yml's pinned demosdk, update the matrix entry here too.
+# source changes get the 4.0.18 checks on the next daily run after they reach the default branch
+# (scheduled runs use the default branch only).
+# When bumping the pinned demosdk, update demosdk-pinned-tests; update the matrix entry here too.
 # The demosdk-pin-drift job also passes the pinned version to scripts/demosdk-pin-drift.mjs.
 
 on:
@@ -28,7 +28,7 @@ jobs:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    name: newer in-range demosdk than the ci.yml pin
+    name: newer in-range demosdk than the pinned version
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -38,8 +38,8 @@ jobs:
         with:
           node-version: "22.22.2"
 
-      # Keep 4.0.18 equal to the version pinned in ci.yml.
-      - name: Compare the ci.yml pin with the newest in-range release
+      # Keep 4.0.18 equal to the version pinned in demosdk-pinned-tests below.
+      - name: Compare the pinned version with the newest in-range release
         run: node scripts/demosdk-pin-drift.mjs 4.0.18 "$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
 
   demosdk-compat:
@@ -130,3 +130,50 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # The locked demosdk 4.0.16 declarations do not resolve with NodeNext, so its NetworkInfo/AddressInfo and web2 types
+  # are `any` in ci.yml's checks. 4.0.18 resolves them; this job typechecks and runs the demosdk-related tests against
+  # it. It checks exactly 4.0.18 and never looks up the newest release (the pinned install itself still needs
+  # the registry). It runs daily, on manual runs and on pull requests that change this workflow or the dependency
+  # files, so a break against 4.0.18 shows up to a day after it reaches the default branch (scheduled runs use the
+  # default branch only). The demosdk-pin-drift job above reports newer
+  # releases in ^4.0.16 (scripts/demosdk-pin-drift.mjs); the PR that acts on that report replaces every 4.0.18 in this
+  # file with the new version and fixes what then fails.
+  demosdk-pinned-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    name: typecheck + tests (demosdk 4.0.18)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci --no-audit
+
+      - name: Sync DACS-Standard conformance vectors
+        run: npm run conformance:sync
+
+      - name: Build
+        run: npm run build
+
+      # The client tests import @kynesyslabs/dacs-node/demos-loader, which is dist/demosLoader.js.
+      - name: Build Node host kit
+        run: npm run host:build
+
+      # Last step: it replaces the installed SDK for the rest of this job.
+      - name: Typecheck and test against demosdk 4.0.18
+        run: |
+          npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
+          test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
+          npm run typecheck
+          npm run host:typecheck
+          npx vitest run test/substrate/demos-adapter.test.ts test/rails/payDem-adapter.test.ts test/rails/payDem.test.ts test/agent/settlementFailure.test.ts
+          # Every client file this area promises under 4.0.18, named one by one; later changes append theirs. No glob selects one.
+          node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs packages/dacs-client/test/node-wallet-demosdk.test.mjs packages/dacs-client/test/node-wallet-final-content.test.mjs packages/dacs-client/test/node-wallet-fresh-child.test.mjs packages/dacs-client/test/node-wallet-observer.test.mjs packages/dacs-client/test/node-wallet-source-reads.test.mjs packages/dacs-client/test/node-wallet-effect-gate.test.mjs packages/dacs-client/test/node-signer-reservation.test.mjs packages/dacs-client/test/node-wallet-packed.test.mjs
+          node --test packages/dacs-client/test/delta-ledger-gate.test.mjs
