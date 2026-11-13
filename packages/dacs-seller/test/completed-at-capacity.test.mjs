@@ -15,16 +15,16 @@ const MAX_RECORDS = ALLOTMENT_UNITS + 2;
 const WRITING = /^\s*(INSERT|UPDATE|DELETE|REPLACE)/i;
 
 /** A world whose store has another purchase's allotment held. */
-async function crowdedWorld(t) {
-  const w = await world(t, { maxRecords: MAX_RECORDS });
+async function crowdedWorld(t, options = {}) {
+  const w = await world(t, { maxRecords: MAX_RECORDS, ...options });
   assert.equal(w.handle.capacity.capacityReport().allotment, ALLOTMENT_UNITS);
   sellerStoreInternals(w.handle.store).transaction(() => w.handle.capacity.allocateWithin({ jobId: jobFor('other-purchase'), buyer: BUYER.claim, seller: SELLER.claim, listingPin: PIN }));
   assert.equal(w.handle.capacity.capacityReport().allotted, ALLOTMENT_UNITS);
   return w;
 }
 
-async function completedAtZeroFree(t, label) {
-  const w = await crowdedWorld(t), job = await proposeJob(w, label);
+async function completedAtZeroFree(t, label, options) {
+  const w = await crowdedWorld(t, options), job = await proposeJob(w, label);
   const first = await job.post();
   assert.equal(first.status, 200);
   assert.equal((await job.post()).text, first.text);
@@ -83,6 +83,35 @@ test('at zero free capacity a replay of a completed proposals operation gets the
   assert.notEqual(refused.text, first.text, 'a failed revalidation withholds the stored text');
   assert.deepEqual(snapshot(w), before, 'a failed revalidation changed nothing');
   assert.deepEqual(operationOf(w, job.jobId, PATHS.proposals), attempts);
+});
+
+/** Fills the nonce ledger with `count` live records of `buyer`, as other valid traffic would. */
+function fillNonceLedger(w, buyer, count) {
+  const { db } = sellerStoreInternals(w.handle.store), at = w.state.time;
+  for (let n = 0; n < count; n++) db.prepare('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)').run(`${buyer}:filler-${n}`, buyer, at, at + 60_000);
+}
+
+test('at zero free capacity a replay of a completed operation is answered when the record limit is full, while a new job is refused', async (t) => {
+  const { w, job, first } = await completedAtZeroFree(t, 'record-limit');
+  fillNonceLedger(w, 'filler-buyer', MAX_RECORDS);
+  const watch = watchRevalidation(w), before = snapshot(w);
+  const answer = await job.post();
+  assert.deepEqual({ status: answer.status, text: answer.text }, { status: 200, text: first.text });
+  assert.equal(watch.outcomes.length, 1);
+  assert.deepEqual(snapshot(w), before, 'the answer left no row, file or unit');
+  const fresh = await (await proposeJob(w, 'record-limit-new')).post();
+  assert.deepEqual({ status: fresh.status, error: fresh.body.error }, { status: 503, error: 'peer_store_capacity' });
+});
+
+test('at zero free capacity a replay of a completed operation is answered when the buyer window is full', async (t) => {
+  const { w, job, first } = await completedAtZeroFree(t, 'buyer-window', { maxNoncesPerBuyerPerWindow: 5 });
+  fillNonceLedger(w, BUYER.claim, 5);
+  const before = snapshot(w);
+  const answer = await job.post();
+  assert.deepEqual({ status: answer.status, text: answer.text }, { status: 200, text: first.text });
+  assert.deepEqual(snapshot(w), before, 'the answer left no row, file or unit');
+  const fresh = await (await proposeJob(w, 'buyer-window-new')).post();
+  assert.deepEqual({ status: fresh.status, error: fresh.body.error }, { status: 429, error: 'peer_buyer_nonce_limit' });
 });
 
 test('a completed operation answered at zero free capacity is refused peer_expired when the request expired before the answer, without revalidating', async (t) => {

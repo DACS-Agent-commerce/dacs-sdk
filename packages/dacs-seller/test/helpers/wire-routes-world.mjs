@@ -113,7 +113,7 @@ export function stubAgent() {
 }
 
 /** One seller: a transport store, a bound profile, the wire journal and the handler, with a buyer that signs for it. */
-export async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader(), fixture = null, leaseMs = JOURNAL_LEASE_MS, commitOnSignature = true } = {}) {
+export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow, readAuthority = authorityReader(), fixture = null, leaseMs = JOURNAL_LEASE_MS, commitOnSignature = true } = {}) {
   const pin = fixture ? listingPin(fixture.listing) : PIN;
   const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-routes-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -161,7 +161,7 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
   const handle = { store: null, handler: null, finishFails: false, wireOverrides: {} };
   const mount = () => {
     if (fixture) fixture.admittedListing = admitWireArtifact(Buffer.from(JSON.stringify(fixture.listing)));
-    const store = createUnboundStore({ path: storePath, maxJobs, maxRecords, now: clock, contextSessionState: () => state.session });
+    const store = createUnboundStore({ path: storePath, maxJobs, maxRecords, maxNoncesPerBuyerPerWindow, now: clock, contextSessionState: () => state.session });
     const capacity = createPurchaseCapacity({ store, now: clock, maxRecords, commitOnSignature, sessionState: sellerStoreInternals(store).sessionState });
     // A restart reopens the same journal.
     const journalDirectory = join(directory, 'wire-journal');
