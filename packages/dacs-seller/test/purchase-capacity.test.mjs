@@ -747,7 +747,7 @@ test('the coordinator and terminal observer refuse without writes when the guard
   assert.deepEqual(JSON.parse(child.stdout), { code: 'kit_operation_guard_off', written: 0, portCalls: 0, terminalSession: 'kit_operation_guard_off', observed: 'finalised', closures: 0 });
 });
 
-test('with `maxRecords` small and `free` 0, then again after the 60,000 ms buyer window has moved, 100 fresh requests from 100 distinct buyers each refuse `peer_store_capacity` and leave every count at its pre-request value, also after two restarts', async t => {
+test('with `maxRecords` small and `free` 0, 100 fresh requests from 100 distinct buyers each refuse `peer_store_capacity` and leave every count at its pre-request value, also after two restarts', async t => {
   const w = await coordination(t, { maxRecords: 10 });
   for (let n = 0; n < 10; n++) {
     const request = await w.request({}, { retainedWork: false });
@@ -767,8 +767,25 @@ test('with `maxRecords` small and `free` 0, then again after the 60,000 ms buyer
     assert.ok(w.counts().kit_reservations <= 10);
   };
   await flood(0);
-  w.f.setTime(fixture.T0 + 60001); await flood(1);
-  w.reopen(); w.reopen(); await flood(2);
+  w.reopen(); w.reopen(); await flood(1);
+});
+
+test('refused polls fill the store only until their requests expire, then a repeat and a new job are admitted again', async t => {
+  const w = await coordination(t, { maxRecords: 5 });
+  for (let n = 0; n < 5; n++) {
+    const request = await w.request({}, { retainedWork: false });
+    if (n === 0) await w.reserve(request);
+    else await rejects(w.reserve(request), 'seller_effect_pending', 503);
+  }
+  assert.equal(w.capacity.capacityReport().free, 0);
+  await rejects(w.reserve(await w.request({}, { retainedWork: false })), 'peer_store_capacity', 503);
+  w.f.setTime(fixture.T0 + 60001);
+  assert.equal(w.capacity.capacityReport().used, 1);
+  await rejects(w.reserve(await w.request({}, { retainedWork: false })), 'seller_effect_pending', 503);
+  const jobId = generateCanonicalJobId({ timestamp: T0, entropy: Buffer.alloc(10, 9) }), payload = w.f.payload({ jobId, buyer: claim('new-job-buyer') });
+  const effect = await w.reserve({ checked: { reserve: async () => ({ state: 'new' }) }, payload, route: payload.path, operationId: wireOperationId(payload),
+    newJob: true, contextStart: false, paymentTx: null, keepProfile: FIXTURE_PROFILE, retainedWork: false });
+  assert.equal(effect.state, 'new');
 });
 
 // An operation completed through the coordinator, then the store reopened at `limit` (FOUR leaves `free` 0).
@@ -1341,4 +1358,41 @@ test('terminal-reader-installation-audit', () => {
   }
   assert.equal(store.match(/createSellerChallengeLedger\(\{[^}]*sessionState: contextSessionState/g)?.length, 1, 'the ledger is given the adapter');
   assert.ok(sources.get('host.mjs').includes('sessionState: sellerStoreInternals(store).sessionState'), 'the capacity is given the store\'s adapter');
+});
+
+// Accounting stops counting a settled repeat or a refused row once its request has expired, so `used` does the same.
+const REQUEST_EXPIRED_MS = 61000;
+
+test('repeat and refused rows of an expired request stop counting toward used', t => {
+  const w = world(t, { maxRecords: 5 }), p = w.purchase();
+  w.charge(p.jobId, PATHS.proposals, 5);
+  assert.deepEqual(figures(w.report()), { used: 5, allotted: 0, free: 0 });
+  refusal(() => w.capacity.classify(classifyInput(p, PATHS.proposals, view.none)), 'peer_store_capacity', 503);
+  w.control.clock += REQUEST_EXPIRED_MS;
+  assert.deepEqual(figures(w.report()), { used: 1, allotted: 0, free: 4 }, 'only the first settled row of the route is kept');
+  assert.equal(w.capacity.classify(classifyInput(p, PATHS.proposals, view.none)).class, 'general');
+});
+
+test('a full store frees its room for a new purchase once the repeat rows expire', t => {
+  const w = world(t, { maxRecords: FOUR + 5 }), p = w.purchase(1);
+  w.charge(p.jobId, PATHS.proposals, FOUR + 5);
+  assert.equal(w.capacity.fitsNewPurchase(), false);
+  w.control.clock += REQUEST_EXPIRED_MS;
+  assert.equal(w.capacity.fitsNewPurchase(), true);
+  assert.equal(w.allocate(w.purchase(2)).state, 'live');
+});
+
+test('a row still reserving after a crash keeps counting after its request expired', t => {
+  const w = world(t, { maxRecords: 5 }), p = w.purchase();
+  w.charge(p.jobId, PATHS.proposals, 3);
+  w.db().prepare("UPDATE kit_reservations SET state = 'reserving', rev = 1").run();
+  w.control.clock += REQUEST_EXPIRED_MS;
+  assert.equal(w.report().used, 3);
+});
+
+test('a row of a request that has not expired yet keeps counting', t => {
+  const w = world(t, { maxRecords: 5 }), p = w.purchase();
+  w.charge(p.jobId, PATHS.proposals, 5);
+  w.control.clock += REQUEST_EXPIRED_MS - 2000;
+  assert.equal(w.report().used, 5);
 });
