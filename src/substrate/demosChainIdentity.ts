@@ -11,9 +11,11 @@ export interface DemosChainIdentity {
 
 /** A network identity refusal, with a stable code and retry category. */
 export class DemosChainIdentityError extends DacsError {
-  constructor(readonly code: string, options?: { cause?: unknown; retryable?: boolean }) {
+  declare readonly code: string;
+  constructor(code: string, options?: { cause?: unknown; retryable?: boolean }) {
     super(code + (options?.cause instanceof Error ? `: ${options.cause.message}` : ""), { cause: options?.cause, category: options?.retryable ? "transient" : "permanent" });
     this.name = "DemosChainIdentityError";
+    this.code = code;
   }
 }
 
