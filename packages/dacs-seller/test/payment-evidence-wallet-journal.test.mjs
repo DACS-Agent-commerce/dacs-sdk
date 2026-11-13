@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPaymentEvidenceWalletJournal } from '../src/index.mjs';
 import { isPaymentEvidenceWalletJournalPair } from '../src/dacs/payment-evidence-wallet-journal.mjs';
-import { evidenceInput, newWalletChainState, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
-import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
+import { evidenceInput, keepUncheckedCreate, newWalletChainState, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
+import { sdkRegeneratesSignedCreate, sdkSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 
 const CRASH_CHILD = fileURLToPath(new URL('./helpers/payment-evidence-wallet-crash.mjs', import.meta.url));
 
@@ -196,9 +196,12 @@ test('a signed CREATE the node or the readback would refuse is not kept: exact p
 // and after the node's denomination fork (number or string amount, fees and
 // balance edits), with the node's fee or the SDK's own, for a storage fee of one
 // and of two 10240-byte chunks, and with the SR-2 source binding the signer adds
-// before signing. Each is kept and sent as signed, and the SDK regenerates its
-// edits and bytes (the node's check), so the journal refuses none the node takes.
-const NODE_FEE = { networkFee: 2, rpcFee: 3 }, TWO_CHUNK_ARTIFACT = { artifact: { TEST: 'e'.repeat(12_000) } };
+// before signing. Each whose fee is at most the 50 DEM ceiling per write is kept
+// and sent as signed, and the SDK regenerates its edits and bytes (the node's
+// check): the journal compares only the ceiling with the node's fee, so up to
+// it the journal refuses none the node takes, and one unit above it the journal
+// refuses a CREATE the node would take.
+const NODE_FEE = { networkFee: 2, rpcFee: 3 }, CEILING_FEE = { networkFee: 20, rpcFee: 30 }, TWO_CHUNK_ARTIFACT = { artifact: { TEST: 'e'.repeat(12_000) } };
 for (const [label, sign, extra] of [
   ['before the denomination fork, with the SDK fee', {}],
   ['before the denomination fork, with the node fee', { nodeFee: NODE_FEE }],
@@ -209,6 +212,8 @@ for (const [label, sign, extra] of [
   ['with the SR-2 source binding', { nodeFee: NODE_FEE, prepare: (content) => {
     Object.assign(content, { network: 'TEST-network', chainIdentity: 'TEST-chain' }); content.data[1].metadata.networkBinding = { network: 'TEST-network' };
   } }],
+  ['before the denomination fork, with a node fee exactly at the ceiling', { nodeFee: CEILING_FEE }],
+  ['after the denomination fork, with a node fee exactly at the ceiling', { postFork: true, nodeFee: CEILING_FEE }],
 ]) test(`the CREATE the SDK signs ${label} is kept and sent as signed`, async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
@@ -222,6 +227,33 @@ for (const [label, sign, extra] of [
   assert.equal((await journal.reconcilePaymentEvidence(w.input(extra))).txHash, txHash);
   assert.equal(w.calls.sign, 1);
 });
+// One unit above the ceiling: a whole DEM before the fork (its fees are whole-DEM numbers), one OS after it.
+for (const [label, sign, feeOs] of [
+  ['before the denomination fork, with a node fee one DEM above the ceiling', { nodeFee: { ...CEILING_FEE, rpcFee: 31 } }, '51000000000'],
+  ['after the denomination fork, with a node fee one OS above the ceiling', { postFork: true, nodeFee: CEILING_FEE,
+    edit: (content) => { content.transaction_fee.rpc_fee = String(BigInt(content.transaction_fee.rpc_fee) + 1n); } }, '50000000001'],
+]) test(`the CREATE the SDK signs ${label} is refused before retention and never broadcast`, async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.sign.push(sign);
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: new RegExp(`a fee of ${feeOs} OS, above the 50 DEM ceiling per write`) });
+  assert.equal(await sdkRegeneratesSignedCreate(w.calls.signedContents[0]), true, 'the node would take it');
+  assert.equal(await journal.readSignedProjection(w.input()), null, 'nothing is kept');
+  assert.equal(w.calls.broadcast.length, 0, 'nothing is broadcast');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned');
+});
+// A fee the journal cannot sum exactly is refused, never skipped. After the fork
+// only canonical OS strings are taken (see hostileCreateEdits).
+for (const [label, networkFee] of [['a fractional DEM number', 2.5], ['a DEM number above the safe integers', 2 ** 53]]) {
+  test(`a node fee of ${label} before the denomination fork cannot be summed exactly and is refused before retention`, async (t) => {
+    const w = wallet(t), journal = w.open();
+    t.after(() => journal.close());
+    w.faults.sign.push({ nodeFee: { networkFee, rpcFee: 0 } });
+    await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /a fee that cannot be summed exactly/ });
+    assert.equal(await journal.readSignedProjection(w.input()), null);
+    assert.equal(w.calls.broadcast.length, 0);
+  });
+}
 
 test('the pair check names only one journal\'s own anchorEvidence and reconcilePaymentEvidence', async (t) => {
   const a = wallet(t).open(), b = wallet(t).open();
@@ -503,6 +535,31 @@ for (const [label, edit, { node = false, postFork = false } = {}] of hostileCrea
   assert.equal(w.calls.broadcast.length, 0);
   if (node) assert.equal(await sdkRegeneratesSignedCreate(w.calls.signedContents[0]), false, 'the node refuses it too');
   assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted');
+});
+
+// The pinned SDK signs the fee its RPC node answers (getNetworkParameters) as
+// given. A node answering a huge fee makes an honest wallet sign a CREATE the
+// node also takes, so only the journal can stop the charge before it is sent.
+test('refuses the evidence CREATE an honest SDK signs with an inflated node fee before retention', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  w.faults.sign.push({ nodeFee: { networkFee: 1_000_000, rpcFee: 1_000_000 } });
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid' }, 'a 2,000,000 DEM fee on a zero-value evidence CREATE is kept and broadcast');
+  assert.equal(await journal.readSignedProjection(w.input()), null);
+  assert.equal(w.calls.broadcast.length, 0);
+});
+
+// A CREATE an earlier build kept with a fee above the ceiling is never sent
+// again: every question about its address is refused (write-fee-cap) with its
+// hash and fee, before any chain read, so the agent holds it for the operator.
+test('a kept evidence CREATE whose fee is above the ceiling is held: not rebroadcast, not read, not signed anew', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  const input = w.input(), kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1, nodeFee: { networkFee: 20, rpcFee: 31 } });
+  keepUncheckedCreate(w.path, 'evidence_creates', input, kept);
+  const held = { code: 'write-fee-cap', message: `the wallet journal keeps the signed CREATE ${kept.hash}, whose fee of 51000000000 OS is above the 50 DEM ceiling per write; it is held and never broadcast again` };
+  await assert.rejects(journal.reconcilePaymentEvidence(input), held, 'reconcile');
+  await assert.rejects(journal.anchorEvidence(input), held, 'anchor');
+  await assert.rejects(journal.ensureEvidence({ ...input, expectedJournalId: journal.journalId }), held, 'ensure');
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length, w.calls.reads.length], [0, 0, 0]);
 });
 
 for (const [label, change] of [

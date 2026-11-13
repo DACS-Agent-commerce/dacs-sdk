@@ -8,8 +8,19 @@
 // With `file`, the chain is kept in that JSON file after every change, so a
 // process killed at any step leaves it for the next process (a crash test).
 import { readFileSync, writeFileSync } from 'node:fs';
+import DatabaseSync from 'better-sqlite3';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { resignedProjection, SDK_WALLET_ADDRESS, sdkSignedCreate } from './payment-evidence-wallet-sdk.mjs';
+
+// Writes a signed projection into a journal file's table as the live CREATE for
+// input, with none of the journal's checks: a row an earlier build kept.
+export function keepUncheckedCreate(path, table, input, { hash, content, signature }) {
+  const db = new DatabaseSync(path);
+  try {
+    db.prepare(`INSERT INTO ${table} (logical_address, receipt_content_hash, tx_hash, nonce, signed_transaction, signed_at) VALUES (?, ?, ?, ?, ?, 1)`)
+      .run(input.logicalAddress, input.receiptContentHash, hash, content.nonce, JSON.stringify({ hash, content, signature }));
+  } finally { db.close(); }
+}
 
 export const evidenceInput = (writer, extra = {}) => ({ logicalAddress: 'dacs4:payment:TEST-job:demos-native:DEM:2', artifact: { TEST: 'evidence' }, writer,
   artifactKind: 'SettlementEvidence', jobId: 'TEST-job', receiptContentHash: 'e1'.repeat(32), ...extra });

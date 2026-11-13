@@ -519,8 +519,15 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `storageAddress` the address the writer, the program name and the nonce
   derive, from the writer's address (`from` and `from_ed25519_address`), with
   the writer's Ed25519 signature over the hash as `0x` and lower-case hex.
+  Its fee is the node's to set, up to a ceiling of 50 DEM per write: the
+  network, rpc and additional fee, summed in OS (whole DEM numbers before the
+  node's denomination fork, OS strings after it), must not be above 50 DEM, and
+  a fee that cannot be summed exactly is refused. Below the ceiling the fee is
+  not compared with any expected amount.
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
-  sent.
+  sent. A kept CREATE whose fee is above the ceiling is never broadcast again:
+  every call about its address is refused with `write-fee-cap`, naming its
+  hash and fee, so the claim stays held for the operator.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers

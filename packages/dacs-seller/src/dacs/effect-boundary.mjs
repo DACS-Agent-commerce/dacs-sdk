@@ -19,6 +19,8 @@ const JOB_OPERATION_CLASSES = ['job-create', 'payment-evidence', 'job-resume'];
 // Whether the retained bytes may be sent again after an earlier stage may have reached transport (K0 lane policy).
 const KINDS = { 'native-transaction': { mayResend: false }, 'seller-create': { mayResend: true }, 'wire-request': { mayResend: true } };
 const NOT_STOPPED_STATUS = 503;
+/** The per-write fee ceiling of the seller's signed writes, in OS (10^9 OS per DEM): 50 DEM, as the write-fee-cap refusal says. */
+export const WRITE_FEE_CEILING_OS = 50_000_000_000n;
 
 const assertAdmitted = () => assertKitOperationAdmitted('effectBoundary');
 const refuse = (code, detail, cause, status = 500) => new WireError(code, status, detail, cause);
