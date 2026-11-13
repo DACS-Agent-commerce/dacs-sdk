@@ -450,8 +450,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // An accounting row stops counting once its request has expired (a request admitted at `at` is expired by
   // `at` plus one transport lifetime, and the wire journal refuses its nonce key again). It is kept while it is `reserving`
   // (a crash left it) and, while its job is open, while it is the first settled row of its job and route, the witness of
-  // that route's one effect (`accountedSlotWithin`, `terminalStartWithin`). Once the job is retired every expired row stops
-  // counting, witnesses included; the rows stay in the table and keep answering those two reads. The one parameter is the cutoff time.
+  // that route's one effect (`accountedSlotWithin`, `terminalStartWithin`). Once the job is retired every expired row except
+  // a `reserving` one stops counting, witnesses included; the rows stay in the table and keep answering those two reads.
+  // The one parameter is the cutoff time.
   const reservationRetentionMs = Math.max(MAX_TRANSPORT_LIFETIME_MS, nonceWindowMs);
   const RETIRABLE_RESERVATION = `at <= ? AND state <> 'reserving' AND (state = 'refused'
     OR EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = kit_reservations.jobId AND r.job_retired = 1)
