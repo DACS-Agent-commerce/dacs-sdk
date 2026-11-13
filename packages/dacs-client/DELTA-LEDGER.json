@@ -8846,37 +8846,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF finish the signer reservation's terminal steps and startup recovery",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
-          "before": "0d4803b0dcf41dd15566abe589f3756ebf2cabce",
-          "after": "7ca77023b701055eb1bf092ff0ce632846f3702b"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
-          "before": "ed1935c77b265ee31428df33d4d85170d1d08d2b",
-          "after": "7e54669ad2d3b2af37aee198f8f4de382d598186"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
-          "before": "8b03bdb1392424fc58763afdabd38e9a28a82598",
-          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
-          "before": "3048034aa3b7af377e090e62be3f1173c1f06ee0",
-          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
-        },
-        {
-          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
-          "before": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f",
-          "after": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF record the merged public API test after carrying the signer part up",
       "files": [
         {
@@ -8931,6 +8900,37 @@
           "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
           "before": "52730e2159bc80c6265d505e401c89810c3d1a80",
           "after": "52730e2159bc80c6265d505e401c89810c3d1a80"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF finish the signer reservation's terminal steps and startup recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0d4803b0dcf41dd15566abe589f3756ebf2cabce",
+          "after": "7ca77023b701055eb1bf092ff0ce632846f3702b"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "ed1935c77b265ee31428df33d4d85170d1d08d2b",
+          "after": "7e54669ad2d3b2af37aee198f8f4de382d598186"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "8b03bdb1392424fc58763afdabd38e9a28a82598",
+          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "3048034aa3b7af377e090e62be3f1173c1f06ee0",
+          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f",
+          "after": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9"
         }
       ]
     }

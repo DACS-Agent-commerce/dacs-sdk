@@ -1455,12 +1455,6 @@ Client commits that move the buyer client onto the new wire and its public API u
 | D11 | fix(client): D11 fence audited unsigned reservation revisions | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | b8d65ab0a50ab2d37f22da6f5d74a41ffb65207a |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | bb26d97d15d59c621b149847feebd7c7095dbe7e |
-| WF | delta(client): WF finish the signer reservation's terminal steps and startup recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 7ca77023b701055eb1bf092ff0ce632846f3702b |
-| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 7e54669ad2d3b2af37aee198f8f4de382d598186 |
-| | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | 8b03bdb1392424fc58763afdabd38e9a28a82598 |
-| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 3048034aa3b7af377e090e62be3f1173c1f06ee0 |
-| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 705b9c4c787df1e2a6b646fc4f3d596354b4aea9 |
 | WF | delta(client): WF record the merged public API test after carrying the signer part up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74 |
 | WF | delta(client): WF record the merged signer reservation test after carrying the exports test fix up | Git subject selector (must resolve exactly once after publication checkpoint) |
@@ -1472,6 +1466,12 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF record the public API test and wallet session merged from the signer part | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 486970306e8b48607e190ce43ffd2f6f0b46113c |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 52730e2159bc80c6265d505e401c89810c3d1a80 |
+| WF | delta(client): WF finish the signer reservation's terminal steps and startup recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 7ca77023b701055eb1bf092ff0ce632846f3702b |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 7e54669ad2d3b2af37aee198f8f4de382d598186 |
+| | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | 8b03bdb1392424fc58763afdabd38e9a28a82598 |
+| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 3048034aa3b7af377e090e62be3f1173c1f06ee0 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 705b9c4c787df1e2a6b646fc4f3d596354b4aea9 |
 
 ## Complete commit and file inventory
 
