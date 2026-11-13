@@ -62,6 +62,9 @@
 //  does not (wallet_sign_timeout) keeps nothing and frees the journal; a
 //  broadcast that does not (wallet_broadcast_timeout) leaves the kept CREATE
 //  live for reconcilePaymentEvidence, which answers `pending` for it.
+//  The reads of a kept CREATE are made before the writer lock is taken, so a
+//  slow node does not make other handles of the file wait; the lock is held to
+//  decide, write and sign. A read is used only for the CREATE it was made for.
 // Returns { anchorEvidence, reconcilePaymentEvidence, readSignedProjection,
 // journalId, close }: the first goes into createNativePaymentEvidenceConsumer,
 // the second is the host option. createSellerAgent (and so startSellerHost)
@@ -347,20 +350,37 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     }
     return { alive: false, reason: `the kept signed CREATE ${signed.txHash} (nonce ${signed.nonce}) is not executed through block ${state.value.checkedThroughBlock} and the account nonce is ${account.value.nonce}; it can no longer be executed` };
   }
-  // The live kept CREATE after its fate is read; one that can no longer be
+  // The fate of the address's live kept CREATE, read before the writer lock is
+  // taken so a slow node does not hold it. It is a hint for one transaction:
+  // `undefined` when nothing is live or the file is busy at this moment, which
+  // leaves the read to the lock holder.
+  async function observeFate(input) {
+    if (!object(input) || typeof input.logicalAddress !== 'string') return undefined;
+    let live;
+    try { live = db.prepare(`SELECT tx_hash, nonce FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress); }
+    catch (error) { if (error.code === 'SQLITE_BUSY') return undefined; throw error; }
+    return live ? { txHash: live.tx_hash, checked: await fate({ txHash: live.tx_hash, nonce: Number(live.nonce) }) } : undefined;
+  }
+  // Runs `change(observed)` under the writer lock, after the node was read for it.
+  async function lockedAfterObserving(input, change) {
+    const observed = await observeFate(input);
+    return locked(() => change(observed));
+  }
+  // The live kept CREATE after its fate is known; one that can no longer be
   // included is superseded (compare-and-swap on its live row) and none is live.
-  async function liveFor(input) {
+  // `observed` is used only for the very CREATE it was read for.
+  async function liveFor(input, observed) {
     const { live, highestNonce } = keptFor(input);
     if (!live) return { live: null, highestNonce };
-    const checked = await fate(live);
+    const checked = observed?.txHash === live.txHash ? observed.checked : await fate(live);
     if (checked.alive) return { live, highestNonce, applied: checked.applied, reason: checked.reason };
     const swap = db.prepare(`UPDATE ${table} SET superseded_at = ? WHERE logical_address = ? AND tx_hash = ? AND superseded_at IS NULL`).run(now(), input.logicalAddress, live.txHash);
     if (swap.changes !== 1) throw Object.assign(new Error('the wallet journal row changed while it was checked'), { code: 'wallet_journal_conflict' });
     return { live: null, highestNonce, superseded: { txHash: live.txHash, reason: checked.reason } };
   }
 
-  async function prepareAnchor(input, permit = allow) {
-    let { live: signed, highestNonce, applied } = await liveFor(input);
+  async function prepareAnchor(input, observed, permit = allow) {
+    let { live: signed, highestNonce, applied } = await liveFor(input, observed);
     if (!signed) {
       const answer = await withDeadline((signal) => { permit(); return signCreate(structuredClone(input), { signal }); },
         () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
@@ -379,7 +399,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   }
   async function anchorCreate(input) {
     assertKitOperationAdmitted('anchorEvidence');
-    const signed = await locked(() => prepareAnchor(input));
+    const signed = await lockedAfterObserving(input, (observed) => prepareAnchor(input, observed));
     if (!signed.applied) await sendSigned(signed);
     return { status: signed.applied ? 'applied' : 'submitted', txHash: signed.txHash };
   }
@@ -410,7 +430,8 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
         }
       }
   }
-  // Owner-bound recovery inspects and prepares under the signing lease. A
+  // Owner-bound recovery is refused for another journal before anything is read,
+  // then inspects and prepares under the signing lease. A
   // crashed caller's unnamed attempt cannot override this journal's facts.
   // expectedJournalId must be the immutable checkpoint owner; generic
   // reconciliation still refuses unnamed ambiguous and unkept attempts.
@@ -423,8 +444,8 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     // Asked synchronously with the wallet effect it guards. A refusal the caller throws (a lost job fence) keeps its own
     // code; any other answer than `true` is wallet_not_authorized.
     const permit=authorize?()=>{const answer=authorize();permitted(()=>answer);}:allow;
-    const signed=await locked(async()=>{
-      assertOwner(expectedJournalId);
+    assertOwner(expectedJournalId);
+    const signed=await lockedAfterObserving(input,async(observed)=>{
       permit();
       const key=`ensure:${input.logicalAddress}`,binding=JSON.stringify([input.receiptContentHash,attempt?.answer?.txHash??null]);
       const accepted=db.prepare('SELECT value FROM journal_meta WHERE key = ?').get(key);
@@ -432,7 +453,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       // a lost broadcast answer cannot leave the caller naming a stale row.
       inspectAttempt(input,attempt,true,accepted?.value===binding);
       db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
-      return prepareAnchor(input,permit);
+      return prepareAnchor(input,observed,permit);
     });
     if(!signed.applied)await sendSigned(signed,permit);
     return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};
@@ -444,9 +465,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     // anchored through another journal (a lost or replaced file): its fate is
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
     const attempt = input?.attempt, named = attempt?.answer?.txHash;
-    const kept = await locked(async () => {
+    const kept = await lockedAfterObserving(input, async (observed) => {
       inspectAttempt(input,attempt);
-      return liveFor(input);
+      return liveFor(input, observed);
     });
     return answerFor(input, named, kept);
   }
@@ -478,10 +499,10 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     assertKitOperationAdmitted('guardedCreate');
     if (typeof authorize !== 'function') throw new TypeError('a guarded wallet journal call needs its authorization callback');
     const permit = () => permitted(authorize);
-    const kept = await locked(async () => {
-      assertOwner(expectedJournalId);
+    assertOwner(expectedJournalId);
+    const kept = await lockedAfterObserving(input, async (observed) => {
       permit();
-      return resume ? liveFor(input) : prepareAnchor(input, permit);
+      return resume ? liveFor(input, observed) : prepareAnchor(input, observed, permit);
     });
     if (resume) return answerFor(input, undefined, kept, permit);
     if (!kept.applied) await sendSigned(kept, permit);
