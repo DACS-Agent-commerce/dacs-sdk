@@ -158,7 +158,7 @@ test('NEW-C2-reader-change', (t) => {
   const ask = () => records.completedScope({ jobId: JOB, buyer: buyer.claim });
   assert.deepEqual(ask(), scope);
   const served200 = (value) => () => ({ status: 200, text: JSON.stringify(value) });
-  const wrongScopes = { another_job: { ...scope, jobId: OTHER_JOB }, another_buyer: { ...scope, buyer: otherParty.claim }, extra_key: { ...scope, extra: 1 }, missing_key: (({ price, ...rest }) => rest)(scope) };
+  const wrongScopes = { another_job: { ...scope, jobId: OTHER_JOB }, another_buyer: { ...scope, buyer: otherParty.claim }, extra_key: { ...scope, extra: 1 }, missing_key: Object.fromEntries(Object.entries(scope).filter(([key]) => key !== 'price')) };
   const unreadable = [() => ({ status: 200, text: '{not json' }), () => ({ status: 200, text: 'null' }), () => ({ status: 503, text: presentAnswer(scope).text }),
     served200({ disposition: 'rejected', reason: 'no' }), served200({ disposition: 'present', value: {} }), served200({ disposition: 'present' }),
     ...Object.values(wrongScopes).map((wrong) => served200({ disposition: 'present', value: { scope: wrong } }))];
