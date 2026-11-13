@@ -177,8 +177,10 @@ body, and a completed payment whose stored answer reports delivery is put to
 the agent again with that body. The stored answer goes only to a request with the
 buyer's transport signature under the same binding. The host checks the header,
 signature, buyer and Agreement hash before it reserves: a missing header, or one
-that is not a well-formed envelope, gets 401 `peer_envelope_invalid`, a payload
-with no profile 409 `tp1_profile_missing`, a header
+whose encoding or outer envelope shape is invalid, gets 401
+`peer_envelope_invalid`. A payload with exactly the other required fields but no
+profile gets 409 `tp1_profile_missing`; a payload with any other field missing
+or extra gets 401 `peer_envelope_invalid`. A header
 that decodes to something other than JSON 401 `wire_json_rejected`, a signature that is
 malformed or by another key 401 `peer_signature_invalid`, a header signed over
 a different body 401 `peer_request_mismatch`, and another buyer or Agreement
