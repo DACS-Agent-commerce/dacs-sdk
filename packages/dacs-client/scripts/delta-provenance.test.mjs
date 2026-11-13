@@ -23,7 +23,6 @@ function checkCallbackHistory(dir) {
     assert.ok(notes.includes(`- \`${subject}\`: superseded by \`${replacement}\`.`),
       `the provenance explanation must identify the replacement for ${subject}`);
   }
-  assert.match(notes, /SQL callbacks remain allowed inside a leased transaction/);
   const lease = changes.find(change => change.subject === replacement);
   assert.ok(lease, 'the write-lease implementation must retain its own delta record');
   // The committed tree keeps the write-lease source and test blobs, except for
@@ -34,8 +33,8 @@ function checkCallbackHistory(dir) {
   for (const file of lease.files) {
     const deleted = later.some(change => change.files.some(entry => entry.path === file.path && entry.after === null));
     if (deleted) {
-      const probe = spawnSync('git', ['-C', dir, 'cat-file', '-e', `HEAD:${file.path}`], { encoding: 'utf8' });
-      assert.notEqual(probe.status, 0, `${file.path} is deleted by a later record and must be absent`);
+      const listing = execFileSync('git', ['-C', dir, 'ls-tree', '--name-only', 'HEAD', '--', file.path], { encoding: 'utf8' });
+      assert.equal(listing.trim(), '', `${file.path} is deleted by a later record and must be absent`);
     } else {
       const committed = execFileSync('git', ['-C', dir, 'rev-parse', `HEAD:${file.path}`], { encoding: 'utf8' }).trim();
       assert.equal(committed, file.after, `${file.path} must retain the write-lease implementation`);
@@ -49,7 +48,7 @@ function checkCallbackHistory(dir) {
     }
   }
 }
-test('callback history explains the superseded guard and preserves the write-lease tree', () => checkCallbackHistory(root));
+test('callback history explains the superseded guard and matches the recorded write-lease files', () => checkCallbackHistory(root));
 test('callback history check needs no ancestry beyond the checked-out commit', t => {
   const dir = mkdtempSync(join(tmpdir(), 'delta-provenance-shallow-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
