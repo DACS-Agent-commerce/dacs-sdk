@@ -1,7 +1,8 @@
 // Purchase capacity on the transport store's one SQLite owner. An admitted purchase holds one allocation with a slot of 17
 // reservation units per route; a charged request spends one unit of its slot, or one general unit, as the accounting row it commits.
-// `used` is every accounting row (it never decreases), `allotted` the unspent units of the open slots of live allocations, and
-// `free` is what is left of `maxRecords`. Nothing here signs, sends or deletes a journal file.
+// `used` is the accounting rows that still count (a refused row or a settled repeat stops counting once its request has expired, as
+// in the accounting's own limit), `allotted` the unspent units of the open slots of live allocations, and `free` is what is left of
+// `maxRecords`. Nothing here signs, sends or deletes a journal file.
 import { randomUUID } from 'node:crypto';
 import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, wireOperationId } from '@kynesyslabs/dacs/wire';
@@ -67,7 +68,7 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
   const byId = (allocationId) => { const found = db.prepare('SELECT * FROM kit_allocations WHERE allocationId = ?').get(allocationId); return found ? snapshot(found) : null; };
   const liveAllocations = () => db.prepare("SELECT * FROM kit_allocations WHERE state = 'live'").all().map(snapshot);
   function totals() {
-    const used = db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n;
+    const used = internals.retainedReservationCount(now());
     const allotted = liveAllocations().reduce((sum, row) => sum + Object.values(row.slots).reduce((units, slot) => units + unspent(slot), 0), 0);
     return { used, allotted, free: maxRecords - used - allotted };
   }
