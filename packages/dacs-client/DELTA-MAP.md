@@ -4520,6 +4520,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| fix(client): end the delta ledger on the last source change | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): end the delta ledger on the last source change | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): end the delta ledger on the last source change | `packages/dacs-client/HOLD.json:1` |
+| fix(client): end the delta ledger on the last source change | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): list the ledger move in the commit inventory | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): list the ledger move in the commit inventory | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): list the ledger move in the commit inventory | `packages/dacs-client/HOLD.json:1` |
+| fix(client): list the ledger move in the commit inventory | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/HOLD.json:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
