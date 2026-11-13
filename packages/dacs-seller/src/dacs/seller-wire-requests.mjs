@@ -122,15 +122,19 @@ function admitAnswerText(text) {
  * store, which backs accounting and retained purchases), `reservations` (the reservation coordinator every effect route reserves
  * through), `completion` (the completion port that ends the attempts it issued), `readCommitmentReceipt` and `requireDelegation` are
  * values. `stopped()` is the host's stop
- * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. Returns the frozen context,
- * the only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
+ * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. `publicEndpoint` is the origin
+ * the handler's discovery document names; it is `null` when none is given, and then no discovery document is served. A `signer`
+ * with `readOnlyAnswerSigner` signs read answers and discovery through that role; one without it signs them as itself. Returns the
+ * frozen context, the only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
  */
-export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion, stopped = null }) {
+export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion, stopped = null, publicEndpoint = null }) {
   const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
   if (stopped !== null && typeof stopped !== 'function') throw new TypeError('the wire context\'s stop check must be a function');
-  const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt,
+  if (publicEndpoint !== null && typeof publicEndpoint !== 'string') throw new TypeError('the wire context\'s public endpoint must be a string');
+  const readSigner = (purpose, body) => (typeof signer.readOnlyAnswerSigner === 'function' ? signer.readOnlyAnswerSigner({ purpose, binding, local: tp1Network.connection(), body }) : signer);
+  const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt, publicEndpoint, readSigner,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
     stopped: stopped === null ? null : () => stopped(),
     retainedFor: (input) => retainedFor(agent, input, { store, capacity }), continuationFor: (input) => continuationFor(agent, input, signedListing) });
@@ -314,7 +318,11 @@ export function wireAuthenticator(wire, agent, authentication) {
       const assertLive = () => { const code = lapse(opened); if (code !== null) throw new SellerTransportError(code, 408); };
       return { body, read: isReadRoute(input.path), readbackOnly: () => readbackOnly || expired(opened), recheck, assertLive };
     },
-    sign: (request, status, text) => (request.seller !== wire.signer.claim ? undefined
-      : signWireResponse(request, status, text, { signer: wire.signer, binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId), now: wire.now() })),
+    sign: async (request, status, text) => {
+      if (request.seller !== wire.signer.claim) return undefined;
+      // A read answer is signed by the key's read-only role; every other answer, refusals included, by the effect signer.
+      const signer = status === 200 && isReadRoute(request.path) ? await wire.readSigner('read-answer', text) : wire.signer;
+      return signWireResponse(request, status, text, { signer, binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId), now: wire.now() });
+    },
   });
 }
