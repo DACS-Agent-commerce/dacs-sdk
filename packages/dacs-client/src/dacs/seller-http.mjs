@@ -257,9 +257,9 @@ function answerOrError(verdict, answer, status) {
 /**
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
  * requestRecords is the adapter's durable record store (`start(path, body)` returns
- * `{text, stored, continuation, newPurchase, check(), finish(answerClass)}`; `stored: true` identifies a durably
+ * `{text, stored, continuation, newPurchase, check(), finish(answerClass, answerCode)}`; `stored: true` identifies a durably
  * recorded effect attempt, while reads use false, and `failure(error)` records a refusal). Authenticated calls with
- * stored attempts retry unknown dispatches twice; all other calls send once.
+ * stored attempts retry unknown dispatches twice; all other calls send once. A suspended answer is recorded and never retried.
  * clock supplies `now()` and `sleep(ms)` so a test injects time.
  */
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, requestRecords, clock = SELLER_CLOCK }) {
@@ -297,7 +297,11 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
         return answer.body;
       } catch (error) {
         if (!(error instanceof SellerUnavailableError) && !(error instanceof SellerRefusedError)) throw error;
-        attempt?.finish(error.answerClass);
+        // A suspended answer stops retries even when its suspension write fails; the write failure is kept as its cause.
+        try { attempt?.finish(error.answerClass, error.answerCode); } catch (writeFailure) {
+          if (error.answerClass !== SELLER_ANSWER_CLASS.SUSPENDED) throw writeFailure;
+          error.cause = writeFailure;
+        }
         // A retry that fails before dispatch is recorded as unsent, but the call still owes the earlier send's unknown outcome.
         if (unknown && error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT) { lastFailureCause = unknownCause; lastFailureDispatched = undefined; throw unknown; }
         if (!authentication || !attempt?.stored || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
