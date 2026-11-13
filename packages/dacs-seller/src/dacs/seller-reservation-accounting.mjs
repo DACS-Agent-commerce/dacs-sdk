@@ -22,6 +22,10 @@ const fail = (code, status) => { throw new SellerTransportError(code, status); }
 export const requestNonceKey = (payload) => sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
 // K5 step 8 (amend1 D19): a refusal of the wire or the host carries a string code and an HTTP status; a system error's code (EIO) has no status.
 const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isInteger(error.status);
+// Thrown inside the charge transaction to roll it back when a completed operation is answered at capacity.
+class CompletedAtCapacity extends Error {
+  constructor(outcome) { super('completed operation answered at capacity'); this.outcome = outcome; }
+}
 
 /**
  * Compose durable pre-reservation accounting over the owning store's synchronous SQL/transaction port and its
@@ -253,7 +257,7 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
     if (capacity.terminalSession(payload.jobId).terminal) fail('context_session_terminal', 409);
     refuseByGates(Object.freeze({ route, jobId: payload.jobId, payload, inspection }));
   }
-  async function reserveUnderMutex({ retainedWork, ...accounted }) {
+  async function reserveUnderMutex({ retainedWork, answersCompletedAtCapacity, ...accounted }) {
     const { payload, route } = accounted;
     capacity.flushTerminalObservations();
     const inspection = inspectOperation(payload);
@@ -268,11 +272,16 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
         if (error?.code === STORE_CAPACITY_CODE) refusal = error;
         throw error;
       }
-      // A completed operation at capacity has no unit to charge, and answering it needs its source revalidated: it is refused.
-      if (classified.class === 'completed-at-capacity') fail(STORE_CAPACITY_CODE, 503);
+      // A completed operation at capacity has no unit to charge. A route that revalidates its sources is answered from the
+      // stored outcome: the throw rolls the charge back, so no row, nonce or unit is kept. Any other route is refused.
+      if (classified.class === 'completed-at-capacity') {
+        if (answersCompletedAtCapacity) throw new CompletedAtCapacity(classified.outcome);
+        fail(STORE_CAPACITY_CODE, 503);
+      }
       return classified;
     };
     try { return await accounting.reserveAccounted({ ...accounted, checkCapacityWithin }); } catch (error) {
+      if (error instanceof CompletedAtCapacity) return Object.freeze({ state: 'completed', outcome: error.outcome });
       if (refusal !== null && error === refusal) annotateExhaustion(accounted, refusal);
       throw error;
     }
@@ -299,15 +308,17 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
      * check nor a gate; any other request is refused context_session_terminal 409 once its job's closure is durable, or by a gate, before
      * any accounting row, unit or agent call. A failed write of the closure, or of an earlier pending one, is thrown as it is.
      * Throws seller_effect_pending 503 (the timeout as its cause) after 10,000 ms without the mutex, before inspecting and with no
-     * row, unit or file. Throws peer_store_capacity 503 for a completed operation at capacity, with no row, unit, file or exhaustion record,
-     * and where the class has no capacity, after its exhaustion record; wire_input_invalid 500
+     * row, unit or file. A completed operation at capacity returns `{ state: 'completed', outcome }` with no row, unit, nonce, file or
+     * exhaustion record when `answersCompletedAtCapacity` is true (the route revalidates its sources before it answers); otherwise it
+     * throws peer_store_capacity 503, as does a class that has no capacity, after its exhaustion record; wire_input_invalid 500
      * for malformed input; a TypeError for a context request without a live lease of its job or any other route given one;
      * otherwise the inspection's, accounting's or reservation's own error.
      */
     async reserveCoordinated(input = {}, ownership) {
       assertKitOperationAdmitted('reserveCoordinated');
-      const { payload, route, operationId, retainedWork } = input;
-      if (payload === null || typeof payload !== 'object' || route !== payload.path || operationId !== wireOperationId(payload) || typeof retainedWork !== 'boolean') {
+      const { payload, route, operationId, retainedWork, answersCompletedAtCapacity = false } = input;
+      if (payload === null || typeof payload !== 'object' || route !== payload.path || operationId !== wireOperationId(payload) || typeof retainedWork !== 'boolean' ||
+          typeof answersCompletedAtCapacity !== 'boolean') {
         fail('wire_input_invalid', 500);
       }
       const release = await enter(input, ownership);

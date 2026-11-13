@@ -14,11 +14,11 @@
 // before any Agreement and with no journal. The context step keeps the old server auth, and so
 // does the challenge of a handler composed without `wire`. Each request has one authenticator,
 // chosen by its route.
-import { completeWireEffect, WireError } from '@kynesyslabs/dacs/wire';
+import { completeWireEffect, DACS_SELLER_HTTP_PATHS, inspectWireOperation, isReadRoute, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome, UNCERTAIN } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
-import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
 import { WIRE_ROUTE_PATHS, wireAuthenticator } from './seller-wire-requests.mjs';
 import { createCompletionRecords } from './seller-completion-records.mjs';
@@ -157,6 +157,37 @@ export function endWireAttempt(completion, reservation, decision) {
   }
   completeWireEffect(port.journal, held.effect, decision.outcome);
   port.records.complete(held, { status: decision.outcome.status, cleanup: decision.cleanup });
+}
+
+const OPERATION_BINDING = /^[0-9a-f]{64}$/;
+const EFFECT_PATHS = new Set(Object.values(DACS_SELLER_HTTP_PATHS).filter((path) => !isReadRoute(path)));
+
+/**
+ * Creates the reader of completed operations that answers without a reservation. `journal` is the wire journal and `seller` the
+ * seller's claim. The returned `completedOutcomeWithoutReservation({ path, jobId, binding, revalidate })` inspects the operation
+ * and resolves with its stored `{ status, text }` after `revalidate` accepted a detached copy of it, with null when the operation
+ * is not completed, and never reserves, records a nonce, completes, repairs or changes anything: the same signed request may be
+ * answered again. Throws a TypeError for a malformed path, job, binding or callback before it reads anything,
+ * SellerTransportError peer_operation_mismatch (409) for a completed operation under another binding, and
+ * seller_source_unavailable (503) with the callback's own error as its cause when `revalidate` throws or rejects. The journal's own errors propagate.
+ */
+export function createCompletedOutcomeReader({ journal, seller }) {
+  if (typeof journal !== 'object' || journal === null || typeof seller !== 'string' || seller.length === 0) throw new TypeError('a completed-outcome reader needs the wire journal and the seller claim');
+  return Object.freeze({
+    async completedOutcomeWithoutReservation({ path, jobId, binding, revalidate }) {
+      if (!EFFECT_PATHS.has(path) || !isCanonicalJobId(jobId) || !OPERATION_BINDING.test(binding) || typeof revalidate !== 'function') {
+        throw new TypeError('a completed outcome is read for an effect path, a canonical job id, a binding and a revalidation');
+      }
+      const view = inspectWireOperation(journal, { seller, jobId, path });
+      if (view.state !== 'completed') return null;
+      if (view.binding !== binding) throw new SellerTransportError('peer_operation_mismatch', 409);
+      const { status, text } = view.outcome;
+      try { await revalidate({ status, text }); } catch (cause) {
+        throw cause instanceof SellerTransportError && cause.code === 'seller_source_unavailable' ? cause : new SellerTransportError('seller_source_unavailable', 503, { cause });
+      }
+      return { status, text };
+    },
+  });
 }
 
 function readRequest(req, timeoutMs) {
