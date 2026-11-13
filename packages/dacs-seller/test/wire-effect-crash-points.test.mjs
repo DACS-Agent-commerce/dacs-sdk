@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { DELIVERED, PATHS, completions, continuingWorld, operationOf, reconcilingWith } from './helpers/wire-routes-world.mjs';
 
 const WAIT_TURNS = 200;
-const REPEATED_ROUTES = [PATHS.commitments, PATHS.bundleRequest, PATHS.bundleCountersignature];
+// The bundle routes only refuse here, because the seller signs no completed bundle, so they have no completed answer to repeat.
+const REPEATED_ROUTES = [PATHS.commitments];
 const never = () => new Promise(() => {});
 
 const waitUntil = async (reached) => {
