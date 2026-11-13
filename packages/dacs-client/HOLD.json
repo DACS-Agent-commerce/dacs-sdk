@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "64ab80b83bcb11f229dabc264a03edc561dc3901"
+        "blob": "2d7f619a774f736e0024841667b1f3141e18dea4"
       },
       "DELTA-LEDGER.json": {
-        "blob": "935e45d3c660c575f05148ce3eb131685d56aac0"
+        "blob": "ee6ab3d46722b1dd9842eda0d93176006682a0f4"
       },
       "DELTA-MAP.md": {
-        "blob": "b48f1278102a4874b163d230d7d3e28477dacc10"
+        "blob": "ba6b83a70590b930b6848079a2e3a91f35572744"
       },
       "DELTA-NOTES.md": {
         "blob": "7bd9d9c1f1a9116fd21ee1cab579f4099320cab9"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "e572e2b43129a03234a2b3349fbbb0bdf929f04a"
+        "blob": "3c4fc643d6a90c174a67e3ecca81482695e8bd23"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,10 +1058,10 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "26c60cdb0e5ffb7e16a87236831ef6c3e2452633"
+        "blob": "21de9802c498cf2ac42a9a854933fa6cb2beef57"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
+        "blob": "6ed2b09718f6d4d1a04c2a4684c167b953d0059a"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1185,6 +1185,9 @@
       },
       "src/dacs/seller-transport-auth.mjs": {
         "blob": "68a8a8946386f010d7a157a25e184bfb52370108"
+      },
+      "src/dacs/seller-wire-authentication.mjs": {
+        "blob": "948a90f0c28e84d88cdb098baf69478d0bc4286f"
       },
       "src/dacs/source-demo-seller-transport.mjs": {
         "blob": "208a59efea2ceed0f8b76d96aaf66444ac51cc40"
@@ -1771,6 +1774,9 @@
       "test/helpers/wallet-write-batch-child.mjs": {
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
+      "test/helpers/wire-client-fixture.mjs": {
+        "blob": "d0403f064afb87caf0a366d62dca51a9410ad00a"
+      },
       "test/host-observations.test.mjs": {
         "blob": "340d541daecd3e501767c1cf341ea1e7c2c1683f"
       },
@@ -1971,6 +1977,9 @@
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
+      },
+      "test/wire-authentication.test.mjs": {
+        "blob": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
       }
     },
     "plannedRepins": {
