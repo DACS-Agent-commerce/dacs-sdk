@@ -326,16 +326,20 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     } catch (cause) { throw refuse('outcome_unknown', cause); }
   }
 
-  // The executed form of the original: successful, in the status's block, with the same signature and complete content.
+  // The executed form of the original: successful, in the status's block, with the same signature and complete content. The node
+  // also reports an empty `ed25519_signature` and `attrs` beside the signed members; any other member refuses.
   function executedMatches(executed, tx, blockNumber) {
-    return hasKeys(executed, ['hash', 'content', 'signature', 'status', 'blockNumber']) && executed.hash === tx.hash && executed.status === 'confirmed'
-      && executed.blockNumber === blockNumber && sameJson(executed.signature, tx.signature) && isObject(executed.content) && demosTransactionContentMatches(tx.content, executed.content, tx.hash);
+    const { ed25519_signature: dual = null, attrs, ...reported } = isObject(executed) ? executed : {};
+    return hasKeys(reported, ['hash', 'content', 'signature', 'status', 'blockNumber']) && (dual === null || dual === '') && (attrs === undefined || isObject(attrs))
+      && reported.hash === tx.hash && reported.status === 'confirmed' && reported.blockNumber === blockNumber && sameJson(reported.signature, tx.signature)
+      && isObject(reported.content) && demosTransactionContentMatches(tx.content, reported.content, tx.hash);
   }
-  // An authenticated block of this chain that lists the hash; block one's previous hash is the chain identity.
+  // An authenticated block of this chain that lists the hash; block one's previous hash is the chain identity. Only the members that
+  // decide this are read: the block's `content` also carries the node's other members, which are accepted.
   function blockListsHash(block, blockNumber, txHash) {
-    const hashes = block?.content?.ordered_transactions;
+    const { previousHash, ordered_transactions: hashes } = isObject(block?.content) ? block.content : {};
     return (hasKeys(block, ['number', 'status', 'hash', 'content']) || storageWriteIdentityMatches(block)) && block.number === blockNumber && block.status === 'confirmed' && SHA256_HEX.test(block.hash)
-      && hasKeys(block.content, ['previousHash', 'ordered_transactions']) && SHA256_HEX.test(block.content.previousHash) && (blockNumber !== 1 || block.content.previousHash === pins.chainIdentity)
+      && (blockNumber !== 1 || previousHash === pins.chainIdentity)
       && Array.isArray(hashes) && hashes.length <= MAX_BLOCK_TRANSACTIONS && hashes.every(hash => SHA256_HEX.test(hash)) && hashes.includes(txHash);
   }
   async function verifyExecution(tx, signal) {

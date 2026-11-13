@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
@@ -428,6 +428,56 @@ test("readTransactionState answers applied only for authenticated successful exe
   replyFor(w, 'getTxByHash', () => responseOf(ok({ ...JSON.parse(signed.signedTransaction), status: 'failed', blockNumber: 1 })));
   assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending', 'included but failed');
   assert.deepEqual(spentIds(w), []); w.reply = null;
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+});
+
+// Replies as a live node records them: block one with every member of its `content`, and an executed transaction with the members the node adds.
+const recordedJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'));
+const recordedBlockOne = JSON.parse(recordedJson('../../../conformance/tp1-node-observations/block1.json').body).response;
+const recordedExecuted = Object.values(recordedJson('../../../test/fixtures/demos-node2-records.json').getTxByHash)[0].response;
+const liveBlock = (ordered, content = {}) => ({ ...recordedBlockOne, number: 1, content: { ...recordedBlockOne.content, previousHash: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, ordered_transactions: ordered, ...content } });
+const liveExecuted = (signed, extra = {}) => ({ ...JSON.parse(signed.signedTransaction), ed25519_signature: recordedExecuted.ed25519_signature, attrs: recordedExecuted.attrs, status: 'confirmed', blockNumber: 1, ...extra });
+const serveReadback = (w, executed, block) => {
+  const answers = { getTransactionStatus: ok({ state: 'included', blockNumber: 1 }), getTxByHash: ok(executed), getBlockByNumber: ok(block) };
+  w.reply = row => (Object.hasOwn(answers, messageOf(row)) && (messageOf(row) !== 'getBlockByNumber' || row.body.params[0].data.blockNumber === 1) ? responseOf(answers[messageOf(row)]) : undefined);
+};
+
+test("a block recorded from a live node, with all ten members of its content, answers applied when it lists the hash and pending when it does not", async t => {
+  assert.equal(Object.keys(recordedBlockOne.content).length, 10, 'the fixture is the live shape');
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed);
+  for (const [name, ordered] of [['no transactions', []], ['another transaction only', ['c'.repeat(64)]]]) {
+    serveReadback(w, liveExecuted(signed), liveBlock(ordered));
+    const answer = await w.adapter.readTransactionState(signed);
+    assert.equal(answer.state, 'pending', name); assert.ok(w.session.internalCauseOf(answer), `${name}: the cause is kept`);
+  }
+  assert.deepEqual(spentIds(w), []);
+  serveReadback(w, liveExecuted(signed), liveBlock(['c'.repeat(64), signed.txHash]));
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+});
+
+test("the executed record a live node serves, with its empty dual signature and attrs, is applied; any other member, a dual signature, a block with no listing or another chain identity is pending", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed);
+  const listed = liveBlock([signed.txHash]);
+  const refused = {
+    'an unknown member of the executed record': [liveExecuted(signed, { TEST_extra: 1 }), listed],
+    'a non-empty dual signature': [liveExecuted(signed, { ed25519_signature: `0x${'1'.repeat(128)}` }), listed],
+    'attrs that are not an object': [liveExecuted(signed, { attrs: 'TEST' }), listed],
+    'block content without a listing': [liveExecuted(signed), liveBlock(undefined)],
+    'a listing that is not an array': [liveExecuted(signed), liveBlock(signed.txHash)],
+    'a block one that follows another chain': [liveExecuted(signed), liveBlock([signed.txHash], { previousHash: 'd'.repeat(64) })],
+    'an unknown member of the block': [liveExecuted(signed), { ...listed, TEST_extra: 1 }],
+  };
+  for (const [name, [executed, block]] of Object.entries(refused)) {
+    serveReadback(w, executed, block);
+    const answer = await w.adapter.readTransactionState(signed);
+    assert.equal(answer.state, 'pending', name); assert.ok(w.session.internalCauseOf(answer), `${name}: the cause is kept`);
+  }
+  assert.deepEqual(spentIds(w), []);
+  serveReadback(w, liveExecuted(signed), listed);
   assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
   assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
 });
