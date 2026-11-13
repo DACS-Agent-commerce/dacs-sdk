@@ -1382,10 +1382,13 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | 8b03bdb1392424fc58763afdabd38e9a28a82598 |
 | | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 3048034aa3b7af377e090e62be3f1173c1f06ee0 |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 8dcb7f15daa80e2e2abf272b6ce867d06f40101f |
-| WF | fix(wallet): check that no package export reaches the reservation module | Git commit selector fce7c509715ce94ee9153eaad2efe11d27bdef23 |
-| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 5fe427a4c2f7d293a9a1b925e381a4e24346af95 |
 | WF | delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 084ebc66416efef054224c570a539ce3e6561666 |
+| WF | fix(wallet): check that no package export reaches the reservation module | Git commit selector fce7c509715ce94ee9153eaad2efe11d27bdef23 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 5fe427a4c2f7d293a9a1b925e381a4e24346af95 |
+| D11 | fix(client): D11 keep the packed consumer lock installable on Node 24 | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/packed-install.mjs:1` | 85564b54de812d5ae795ea5aca7e567a1819b1e6 |
+| | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | cb7e6298b275bb6123561c5afa4a52a4981b72bf |
 
 ## Complete commit and file inventory
 
@@ -4234,6 +4237,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/helpers/packed-install.mjs:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` |
 
 ## Original moved files
 
