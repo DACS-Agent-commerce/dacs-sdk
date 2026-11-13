@@ -518,9 +518,14 @@ per-client limiter so one client cannot exhaust the shared request budget.
   evidence) at this logical address, with `to` and the operation's
   `storageAddress` the address the writer, the program name and the nonce
   derive, from the writer's address (`from` and `from_ed25519_address`), with
-  the writer's Ed25519 signature over the hash as `0x` and lower-case hex.
-  Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
-  sent.
+  the writer's Ed25519 signature as `0x` and lower-case hex, over the hash or,
+  when the journal is given `signatureChainId`, over
+  `demos-tx:v1:<signatureChainId>:<hash>`. `signatureChainId` is the node's
+  chain id as a decimal string, taken from the seller's own network
+  configuration; without it only the bare hash is accepted, and any other
+  message is refused. `createNativePaymentEvidenceConsumer` takes the same
+  option for the readback. Anything else is refused (`wallet_sign_invalid`),
+  and nothing is kept or sent.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers

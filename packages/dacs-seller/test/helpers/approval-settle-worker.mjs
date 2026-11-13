@@ -3,6 +3,10 @@ import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { once } from 'node:events';
 import { address, seller, sourceBinding, artifactAuthority, pin, deliveredHashFor, T0 } from './d5-policy-fixtures.mjs';
+import { installNoNetworkTrap } from './no-network-trap.mjs';
+
+// Every network call here is recorded, even one the code under test caught, and sent to the parent in the result.
+const trap = installNoNetworkTrap();
 
 const [input] = await once(process, 'message');
 const readFile = fs.readFile; let paused = false;
@@ -28,7 +32,7 @@ try {
   const approval = composeSellerApproval({ mode: 'policy', policy, manual: async () => false });
   await approval.retained.settle({ ledgerId: input.ledgerId, requestText: input.requestText }, 'spent');
   await policy.stop();
-  process.send({ type: 'result' });
+  process.send({ type: 'result', networkCalls: trap.calls });
 } catch (error) {
   process.send({ type: 'error', code: error.code, message: error.message });
   process.exitCode = 1;
