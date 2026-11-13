@@ -171,7 +171,7 @@ test('B40 direct context routes and clients refuse malformed IDs before store, p
   await assert.rejects(w.route.reconcile({body}),{code:'peer_job_invalid'});
   await assert.rejects(w.route.resume({},p,untouched,{writes:1}),{code:'peer_job_invalid'});
   const {createSellerContextClient,createSellerContextRecords}=await import('../src/dacs/seller-context-route.mjs');
-  const records=createSellerContextRecords({listing:w.listing,store:()=>assert.fail('records opened malformed job')});
+  const records=createSellerContextRecords({listing:w.listing,admission:()=>assert.fail('records read an admission for a malformed job'),contextOutcome:()=>assert.fail('records read an outcome for a malformed job')});
   assert.throws(()=>records.exactRequest({jobId,buyerBundle:body.buyerIdentityBundle,generatedAt:T}),{code:'peer_job_invalid'});
   assert.throws(()=>records.completedScope({jobId,buyer:w.buyer.claim}),{code:'peer_job_invalid'});
   assert.throws(()=>w.auth.validate(p,{}),{code:'peer_request_unauthenticated'});
