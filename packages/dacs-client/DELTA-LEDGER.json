@@ -7722,6 +7722,22 @@
           "after": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the public API test and wallet session merged from the signer part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "486970306e8b48607e190ce43ffd2f6f0b46113c",
+          "after": "486970306e8b48607e190ce43ffd2f6f0b46113c"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "52730e2159bc80c6265d505e401c89810c3d1a80",
+          "after": "52730e2159bc80c6265d505e401c89810c3d1a80"
+        }
+      ]
     }
   ]
 }

@@ -1310,6 +1310,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 52730e2159bc80c6265d505e401c89810c3d1a80 |
 | | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | d0e4b92a51189b36931096c70db47ffcf44d42c6 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74 |
+| WF | delta(client): WF record the public API test and wallet session merged from the signer part | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 486970306e8b48607e190ce43ffd2f6f0b46113c |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 52730e2159bc80c6265d505e401c89810c3d1a80 |
 
 ## Complete commit and file inventory
 
@@ -4122,6 +4125,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
