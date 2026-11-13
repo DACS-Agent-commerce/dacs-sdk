@@ -13,9 +13,9 @@ import { exchange } from './d5-http-fixture.mjs';
 import { proposalForInput } from './proposal-admission-fixture.mjs';
 import { NOW, buyer, seller, testWallet } from './protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
-import { wireBuyer } from './wire-buyer.mjs';
+import { FIXTURE_ENDPOINT, wireBuyer } from './wire-buyer.mjs';
 import { agreementInput, listingPin } from '../../src/dacs/purchase-protocol.mjs';
-import { SellerAgentError } from '../../src/dacs/seller-agent.mjs';
+import { SellerAgentError, transportOutcome } from '../../src/dacs/seller-agent.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
@@ -174,7 +174,7 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
     reservations.reserveCoordinated = (...args) => { state.readsAtReserve = state.authorityReads + 1; return reserveCoordinated(...args); };
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
-      signedListing: fixture?.admittedListing, readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader(), reservations, completion, ...handle.wireOverrides });
+      publicEndpoint: fixture?.listing.seller.publicEndpoint ?? FIXTURE_ENDPOINT, signedListing: fixture?.admittedListing, readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader(), reservations, completion, ...handle.wireOverrides });
     Object.assign(handle, { store, capacity, authentication, wire, handler: createSellerHttpHandler(agent, { authentication, wire, commitOnSignature }) });
   };
   mount();
@@ -228,3 +228,22 @@ export async function continuingWorld(t, options = {}) {
   assert.equal((await post(PATHS.proposals)).status, 200);
   return { ...w, fixture, jobId, agreementHash, bodyFor, request: post };
 }
+
+export const HELD = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
+export const DELIVERED = { status: 'payment-evidenced', delivery: { status: 'delivered' } };
+
+/** The completions the completion port recorded: only a final outcome is recorded, and only it returns a route slot. */
+export const completions = (w) => {
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try { return db.prepare('SELECT route, attempt, status, cleanup FROM kit_ordinary_completions ORDER BY rowid').all(); } finally { db.close(); }
+};
+
+/** The wire journal's view of the operation `path` has for `jobId`. */
+export const operationOf = (w, jobId, path) => inspectWireOperation(w.handle.wire.journal, { seller: seller.claim, jobId, path });
+
+/** A recovery that answers as the agent's reconciliation classifies a retained answer: `resultFor(input)` is its result. */
+export const reconcilingWith = (path, resultFor) => async (input) => {
+  input.transport.claim();
+  const outcome = transportOutcome(path, await resultFor(input), { retained: true, recovering: true });
+  if (outcome.settle) await input.transport.settle(outcome);
+};
