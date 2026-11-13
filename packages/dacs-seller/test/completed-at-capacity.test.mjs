@@ -46,8 +46,8 @@ function watchRevalidation(w) {
 
 const sourceUnavailable = (cause) => new SellerTransportError('seller_source_unavailable', 503, { cause });
 
-test('K5-A13 at zero free capacity a poll inside a live lease is general and refused peer_store_capacity with no row and no file', async (t) => {
-  const w = await crowdedWorld(t), job = await proposeJob(w, 'a13');
+test('at zero free capacity a poll inside a live lease is general and refused peer_store_capacity with no row and no file', async (t) => {
+  const w = await crowdedWorld(t), job = await proposeJob(w, 'live-lease');
   let enter, release;
   const entered = new Promise((resolve) => { enter = resolve; }), held = new Promise((resolve) => { release = resolve; });
   const receive = w.agent.receiveProposal;
@@ -66,8 +66,8 @@ test('K5-A13 at zero free capacity a poll inside a live lease is general and ref
   assert.equal((await running).status, 200);
 });
 
-test('K5-A14 at zero free capacity a replay of a completed proposals operation gets the stored outcome after revalidation with no row, file or attempt', async (t) => {
-  const { w, job, first } = await completedAtZeroFree(t, 'a14');
+test('at zero free capacity a replay of a completed proposals operation gets the stored outcome after revalidation with no row, file or attempt', async (t) => {
+  const { w, job, first } = await completedAtZeroFree(t, 'replay');
   const watch = watchRevalidation(w), before = snapshot(w), attempts = operationOf(w, job.jobId, PATHS.proposals);
   let answer;
   const writes = (await statementsDuring(async () => { answer = await job.post(); })).filter((sql) => WRITING.test(sql));
@@ -145,8 +145,8 @@ test('the settled-outcome reader refuses a malformed path, job, binding or reval
   assert.throws(() => createCompletedOutcomeReader({ journal: w.handle.wire.journal, seller: '' }), TypeError);
 });
 
-test('K5-X4 an attempt whose end record carries the outcome with no outcome file answers completed', async (t) => {
-  const { w, job, first } = await completedAtZeroFree(t, 'x4');
+test('an attempt whose end record carries the outcome with no outcome file answers completed', async (t) => {
+  const { w, job, first } = await completedAtZeroFree(t, 'end-record');
   const directory = w.state.journals[0], outcomes = readdirSync(directory).filter((name) => name.endsWith('.done'));
   assert.equal(outcomes.length, 1, 'the journal publishes the outcome as a file of its own');
   rmSync(join(directory, outcomes[0]));
