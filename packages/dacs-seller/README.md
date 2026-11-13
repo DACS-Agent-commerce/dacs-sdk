@@ -917,7 +917,9 @@ one read answer, refusal or discovery document, whose `sign` returns a Promise
 of the signature (always `await` both: a Promise is never accepted as signature
 bytes) and checks the TP-1 authority when it signs, and the kit guard for a
 `ready: true` discovery document; and `integritySigner`, for seller-state journal bytes only.
-After `close()` every role refuses. Nothing in this package calls it yet.
+After `close()` every role refuses. The host signs the discovery document it serves at
+`/.well-known/dacs-seller.json` and each read answer through `readOnlyAnswerSigner`, and
+every other answer with `sign`.
 
 This checkout provides source modules. Build the core from the same checkout
 before importing the seller source kit.

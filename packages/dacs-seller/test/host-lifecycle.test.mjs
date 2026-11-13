@@ -19,11 +19,12 @@ import {startSellerHost,KIT_TP1_VET_MODE} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
 import {SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
 import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
-import {wireAuthentication} from './helpers/wire-buyer.mjs';
+import {DACS_SELLER_DISCOVERY_PATH} from '@kynesyslabs/dacs/wire';
+import {FIXTURE_ENDPOINT,wireAuthentication,wireBuyer} from './helpers/wire-buyer.mjs';
 import {PROCESS_LEASE_ID,PROCESS_NAMESPACE} from '../src/dacs/process-lease.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
-async function fixture(t,{wrap=agent=>agent}={}){
- const f=await commitmentFixture(t,{vetMode:KIT_TP1_VET_MODE}),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
+async function fixture(t,{wrap=agent=>agent,publicEndpoint=null}={}){
+ const f=await commitmentFixture(t,{vetMode:KIT_TP1_VET_MODE,publicEndpoint}),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
  // `vetMode` is an agent option: the host fixes it and takes no such option.
  const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;delete config.vetMode;
  delete config.challengeLedger; // the host builds its own ledger
@@ -370,4 +371,18 @@ test('no host option selects or changes the kit Vet mode',async t=>{
  const f=await fixture(t);
  for(const mode of ['counterparty',KIT_TP1_VET_MODE,undefined])await assert.rejects(f.start({vetMode:mode}),/unknown seller host option: vetMode/);
  await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
+});
+const discoveryOf=async host=>{const response=await fetch(`${host.url}${DACS_SELLER_DISCOVERY_PATH}`);return{status:response.status,bytes:Buffer.from(await response.arrayBuffer())};};
+test('a started host serves its signed discovery document over HTTP, which the buyer\'s endpoint proof accepts',async t=>{
+ const f=await fixture(t,{publicEndpoint:FIXTURE_ENDPOINT}),host=await f.start();
+ const buyerWire=await wireBuyer({buyer:{claim:buyer.claim,sign:buyer.signBytes},seller:{claim:seller.claim,sign:seller.signBytes},listingPin:host.listingPin,clock:()=>NOW});
+ const served=await discoveryOf(host);
+ assert.equal(served.status,200);
+ const proof=await buyerWire.verifyDiscovery(served.bytes);
+ assert.deepEqual({endpoint:proof.payload.publicEndpoint,ready:proof.ready},{endpoint:FIXTURE_ENDPOINT,ready:true});
+});
+test('a started host whose Listing names no HTTPS origin answers discovery with the wire\'s discovery_invalid and no document',async t=>{
+ const f=await fixture(t),host=await f.start();
+ const served=await discoveryOf(host);
+ assert.deepEqual({status:served.status,error:JSON.parse(served.bytes).error},{status:500,error:'discovery_invalid'});
 });

@@ -13,7 +13,7 @@ import { exchange } from './d5-http-fixture.mjs';
 import { proposalForInput } from './proposal-admission-fixture.mjs';
 import { NOW, buyer, seller, testWallet } from './protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
-import { wireBuyer } from './wire-buyer.mjs';
+import { FIXTURE_ENDPOINT, wireBuyer } from './wire-buyer.mjs';
 import { agreementInput, listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
@@ -163,7 +163,7 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
     reservations.reserveCoordinated = (...args) => { state.readsAtReserve = state.authorityReads + 1; return reserveCoordinated(...args); };
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
-      signedListing: fixture?.admittedListing, readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader(), reservations, completion, ...handle.wireOverrides });
+      publicEndpoint: fixture?.listing.seller.publicEndpoint ?? FIXTURE_ENDPOINT, signedListing: fixture?.admittedListing, readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader(), reservations, completion, ...handle.wireOverrides });
     Object.assign(handle, { store, capacity, authentication, wire, handler: createSellerHttpHandler(agent, { authentication, wire, commitOnSignature }) });
   };
   mount();
