@@ -82,7 +82,7 @@ test('a job that is not retired keeps its witness row counted after expiry', asy
   assert.equal(used(f), 1);
 });
 
-test('a retired job\'s row still counts until its request has expired, and is kept for the retired replay', async t => {
+test('a retired job\'s replay counts until its request has expired and is then uncounted, with no row deleted', async t => {
   const { f, session } = await fixtureWithSession(t);
   await settleJob(f);
   retireJob(f, session);
