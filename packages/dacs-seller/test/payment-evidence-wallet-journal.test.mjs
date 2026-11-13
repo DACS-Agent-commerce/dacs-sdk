@@ -589,6 +589,73 @@ test('opening another initialized journal handle does not wait for an active sig
   }
 });
 
+test('a slow node read of a kept CREATE does not hold the writer lock from other handles of the journal', async (t) => {
+  const w = wallet(t), node = walletChain({ state: w.chain });
+  let release, entered, slowRead = false;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const reading = new Promise((resolve) => { entered = resolve; });
+  const reader = w.open({ readTimeoutMs: 5_000, readAccountNonce: async () => {
+    if (slowRead) { entered(); await gate; }
+    return { nonce: node.accountNonce(), blockHeight: node.accountNonce() };
+  } });
+  const other = w.open();
+  t.after(() => { reader.close(); other.close(); });
+  w.faults.broadcast.push('drop');
+  const kept = (await reader.anchorEvidence(w.input())).txHash;
+  slowRead = true;
+  const reconciled = reader.reconcilePaymentEvidence(w.input());
+  await reading;
+  w.faults.broadcast.push('drop');
+  try {
+    const anchored = await other.anchorEvidence(w.input({ logicalAddress: 'dacs4:payment:TEST-job:demos-native:DEM:3' }));
+    assert.equal(anchored.status, 'submitted', 'another handle signs while the node read is pending');
+  } finally { release(); }
+  assert.deepEqual(await reconciled, { status: 'rebroadcast', txHash: kept });
+  assert.equal(w.calls.sign, 2);
+});
+
+test('a fate read before the lock is not applied to a live CREATE that replaced the one it was read for', async (t) => {
+  const w = wallet(t), node = walletChain({ state: w.chain });
+  let release, entered, firstRead = true;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const reading = new Promise((resolve) => { entered = resolve; });
+  const reader = w.open({ readTimeoutMs: 5_000, readTransactionState: async ({ txHash }) => {
+    if (firstRead) { firstRead = false; entered(); await gate; }
+    return { state: node.transactionState(txHash), checkedThroughBlock: node.accountNonce() };
+  } });
+  const other = w.open();
+  t.after(() => { reader.close(); other.close(); });
+  w.faults.broadcast.push('drop');
+  const first = (await reader.anchorEvidence(w.input())).txHash;
+  w.other();
+  const reconciled = reader.reconcilePaymentEvidence(w.input());
+  await reading;
+  let second;
+  try {
+    assert.equal((await other.reconcilePaymentEvidence(w.input())).status, 'unsigned', 'the overtaken CREATE is superseded by the other handle');
+    w.faults.broadcast.push('drop');
+    second = (await other.anchorEvidence(w.input())).txHash;
+  } finally { release(); }
+  // The read that finds the first CREATE gone must not supersede the second.
+  const answer = await reconciled;
+  assert.deepEqual(answer, { status: 'rebroadcast', txHash: second });
+  assert.notEqual(second, first);
+  const db = new DatabaseSync(w.path), live = db.prepare('SELECT tx_hash FROM evidence_creates WHERE superseded_at IS NULL').all().map((row) => row.tx_hash);
+  db.close();
+  assert.deepEqual(live, [second]);
+});
+
+test('a read made before the lock that meets a busy journal is refused as wallet_journal_busy', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.broadcast.push('drop');
+  await journal.anchorEvidence(w.input());
+  const holder = new DatabaseSync(w.path);
+  t.after(() => holder.close());
+  holder.exec('BEGIN EXCLUSIVE');
+  await assert.rejects(journal.reconcilePaymentEvidence(w.input()), { code: 'wallet_journal_busy' });
+});
+
 test('a superseded named attempt cannot broadcast or answer for its live successor after reopen', async (t) => {
   const w = wallet(t);
   let journal = w.open();
@@ -797,9 +864,9 @@ for(const [read,lost] of [['nonce','withdrawn'],['state','withdrawn'],['nonce','
 test('a broadcast is made only while authorized: a withdrawal queued by the answer that permitted it cannot come between the check and the broadcast',async t=>{
  const w=wallet(t),journal=w.open();t.after(()=>journal.close());
  w.faults.broadcast.push('drop');const first=await journal.anchorEvidence(w.input());
- let allowed=true,armed=false,broadcastsWithdrawn=0;
- const authorize=()=>{const answer=allowed;if(armed)queueMicrotask(()=>{allowed=false;});return answer;};
- w.faults.state.push(()=>{armed=true;});
+ // The first answer permits the signing lease's own check; the second permits the broadcast and queues the withdrawal.
+ let allowed=true,asked=0,broadcastsWithdrawn=0;
+ const authorize=()=>{const answer=allowed;if(++asked===2)queueMicrotask(()=>{allowed=false;});return answer;};
  w.faults.broadcast.push(()=>{if(!allowed)broadcastsWithdrawn++;});
  const result=await journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,attempt:{outcome:'sent',answer:first},authorize});
  assert.equal(broadcastsWithdrawn,0,'no broadcast after the withdrawal');assert.equal(result.txHash,first.txHash);assert.equal(w.calls.sign,1);

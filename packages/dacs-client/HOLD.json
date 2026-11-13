@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "d4e64db88d21a2bb5cb7a59b5d9cfa53bd2c4562"
+        "blob": "312d78ecf52371d49099ab26866f6f7284f19a5b"
       },
       "DELTA-LEDGER.json": {
-        "blob": "b6725d49d23bc019b8a7261f2be9f4777e187d40"
+        "blob": "5655e1dd742070846afca31e6a7afb5fba4fdbef"
       },
       "DELTA-MAP.md": {
-        "blob": "bff83dffe32f958052d269934c9c9c26a54351d9"
+        "blob": "3851ba15be2e06c707ea1c585acc0f8bca826ba4"
       },
       "DELTA-NOTES.md": {
-        "blob": "28911f62ee805bb2efbdab30c7829ed124872981"
+        "blob": "a285031b0d9d8f0363f2fe1b6a65d9d9895eaa3f"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "771374ac0e59f7bcfde1fddd7484df5cc92e89ca"
+        "blob": "f7c5904ad1cfc306322a03ef921a0a16534b5676"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "c7cbb21fe65fa3a89f1ff89c1778cdec779f1882"
+        "blob": "56e21adcf8c4e4202906892673b7c0e0c3a3baa4"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1157,7 +1157,7 @@
         "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "b7f98682851f39cb7130cc8e410ea8a783ed09c5"
+        "blob": "f6492ec9771611dd72c96e94107384db860ca748"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1175,7 +1175,7 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "671a9686ba54d03ab0ef0ac6e8205b78505c272a"
+        "blob": "393500db3b5729d7cc113576d2c41fbc240ed9a6"
       },
       "src/dacs/seller-response-class.mjs": {
         "blob": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
@@ -1259,7 +1259,7 @@
         "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "aebbb2f2a8cbd4ed3c053e258097bb40f879ed45"
+        "blob": "1426fa081a61f904773ce02cb38d9c7184851839"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1775,7 +1775,7 @@
         "blob": "1b650e43fbb462da68e37017465f8f106f778a39"
       },
       "test/helpers/stored-request-flows.mjs": {
-        "blob": "6755532d932f0f7295a35a96010a317b16e81eb5"
+        "blob": "b59171dbbc86f4612ba57ae203e0fc3822ac7a1c"
       },
       "test/helpers/tp1-node-fixture.mjs": {
         "blob": "768ebf54a4154a3474b684f4e564c174b34dd29e"
@@ -1790,7 +1790,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/helpers/wire-client-fixture.mjs": {
-        "blob": "106b9d16fdbbd28db6ebadd36ea5d0ba94b702f0"
+        "blob": "71a70d307b2be21ea10fca0a15de1d8eb27f2912"
       },
       "test/helpers/wire-committed-purchase.mjs": {
         "blob": "c458b4582cc4b2aef338c9525dd0b69a0ec1ff57"
@@ -1954,6 +1954,9 @@
       "test/runtime-floor.test.mjs": {
         "blob": "c8133057b9b84685e1227cbb72fd1e1e8467f6ef"
       },
+      "test/seller-public-endpoint.test.mjs": {
+        "blob": "97f99b5f286658c793fe6cb44de12ff39951dab7"
+      },
       "test/seller-response-classification.test.mjs": {
         "blob": "35f0ac9deae8e0b1c8c1a3057fe8dad6da32a55d"
       },
@@ -1970,7 +1973,10 @@
         "blob": "d8fa7c318c181091f7c9d6793942d5288733362e"
       },
       "test/seller-stored-request.test.mjs": {
-        "blob": "14c291cb02dd34a5176d017d6ef7f8d77efa1f88"
+        "blob": "e6286d5490face166248a41c993be87823af8fdc"
+      },
+      "test/seller-suspension.test.mjs": {
+        "blob": "c3f5dac05fd2af76c65238f819d636869f7919fb"
       },
       "test/signatures-claim-ref.test.mjs": {
         "blob": "f0696e4cc8a8d54e4833adde9e465638d792a03c"

@@ -1,15 +1,17 @@
 // Narrow HTTP transport for the seller agent (seller-agent.mjs) and the
 // buyer-side client the plugin uses to reach it.
 //
-// Server/client stay loopback-only. Existing unauthenticated fixture callers
-// remain supported. Supplying an authentication adapter enables signed peer
-// requests, independently signed seller responses and a durable intent journal.
+// The server stays loopback-only. The client reaches loopback endpoints, and,
+// when given a wire authentication, a public https origin (`isPublicEndpoint`).
+// Existing unauthenticated fixture callers remain supported. Supplying an
+// authentication adapter enables signed peer requests, independently signed
+// seller responses and a durable intent journal.
 // In that mode an answer is classified (seller-response-class.mjs) only after
 // the wire verified its exact received bytes. Only a definite refusal or failed
 // bootstrap becomes SellerRefusedError; unsigned, malformed, interrupted,
 // ambiguous, held, suspended or readback-only answers are unavailable, with
 // their class and cause kept.
-import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
 import { SellerAgentError } from './seller-agent-error.mjs';
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
@@ -254,19 +256,30 @@ function answerOrError(verdict, answer, status) {
   throw new SellerUnavailableError(code === SELLER_EFFECT_UNRESOLVED ? SELLER_OPERATOR_MESSAGE : UNAVAILABLE_ANSWER_MESSAGE, statusCause(status), verdict);
 }
 
+/** Parses a seller endpoint: a public https origin when the calls are authenticated, otherwise a loopback one, in both cases without credentials, query or fragment. Throws for any other endpoint. */
+function parseSellerEndpoint(url, authenticated) {
+  const endpoint = String(url);
+  const base = new URL(endpoint.replace(/\/$/, ''));
+  const signedPublicEndpoint = authenticated && isPublicEndpoint(endpoint);
+  if (!signedPublicEndpoint && (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash)) {
+    throw new Error('seller agent endpoint must be a public https origin given a wire authentication, or loopback, without credentials, query or fragment');
+  }
+  return base;
+}
+
+/** The origin a seller endpoint is reached at, accepted under the same rule as `createSellerAgentClient` (public https only when `authenticated`). Throws for any other endpoint. */
+export const sellerEndpointOrigin = (url, authenticated = false) => parseSellerEndpoint(url, authenticated).origin;
+
 /**
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
  * requestRecords is the adapter's durable record store (`start(path, body)` returns
- * `{text, stored, continuation, newPurchase, check(), finish(answerClass)}`; `stored: true` identifies a durably
+ * `{text, stored, continuation, newPurchase, check(), finish(answerClass, answerCode)}`; `stored: true` identifies a durably
  * recorded effect attempt, while reads use false, and `failure(error)` records a refusal). Authenticated calls with
- * stored attempts retry unknown dispatches twice; all other calls send once.
+ * stored attempts retry unknown dispatches twice; all other calls send once. A suspended answer is recorded and never retried.
  * clock supplies `now()` and `sleep(ms)` so a test injects time.
  */
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, requestRecords, clock = SELLER_CLOCK }) {
-  const base = new URL(String(url).replace(/\/$/, ''));
-  if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
-    throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');
-  }
+  const base = parseSellerEndpoint(url, Boolean(authentication));
   const origin = base.origin;
   const prefix = base.pathname.replace(/\/$/, '');
 
@@ -297,7 +310,11 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
         return answer.body;
       } catch (error) {
         if (!(error instanceof SellerUnavailableError) && !(error instanceof SellerRefusedError)) throw error;
-        attempt?.finish(error.answerClass);
+        // A suspended answer stops retries even when its suspension write fails; the write failure is kept as its cause.
+        try { attempt?.finish(error.answerClass, error.answerCode); } catch (writeFailure) {
+          if (error.answerClass !== SELLER_ANSWER_CLASS.SUSPENDED) throw writeFailure;
+          error.cause = writeFailure;
+        }
         // A retry that fails before dispatch is recorded as unsent, but the call still owes the earlier send's unknown outcome.
         if (unknown && error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT) { lastFailureCause = unknownCause; lastFailureDispatched = undefined; throw unknown; }
         if (!authentication || !attempt?.stored || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;

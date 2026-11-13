@@ -136,6 +136,20 @@ describe("inventory executable entries", () => {
       expect(runtimeImageInventoryFindings(runtimeImageInventory(directory), input))
         .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
     });
+  it("accepts a bin link when the root path contains a symlink", () => {
+    const directory = root(); const real = join(directory, "real");
+    pkg(join(real, "node_modules/a"));
+    mkdirSync(join(real, "node_modules/.bin"));
+    writeFileSync(join(real, "node_modules/a/cli.js"), "module.exports = 42;");
+    symlinkSync(join(real, "node_modules/a/cli.js"), join(real, "node_modules/.bin/a"));
+    const linkedRoot = join(directory, "linked");
+    symlinkSync(real, linkedRoot, "dir");
+    const input = { packages: { "": {}, "node_modules/a": { version: "1.0.0", bin: { a: "cli.js" } } } };
+    const inventory = runtimeImageInventory(linkedRoot);
+    expect(inventory.packages).toContainEqual(expect.objectContaining({ location: "node_modules/.bin/a", target: "node_modules/a/cli.js" }));
+    expect(runtimeImageInventoryFindings(inventory, input))
+      .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+  });
 });
 
 describe("required runtime dependency reachability", () => {
