@@ -1498,7 +1498,7 @@ test('a crash during a first claim that keeps nothing does not bind the job to i
     const tx = p.pay(), answer = await p.claim(tx);
     assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
     assert.equal(answer.delivery?.status, 'delivery-ready', `${label}: ${shown(answer.delivery)}`);
-    assert.equal((await p.claim(first)).error, 'seller_native_evidence_conflict', `${label}: a completed delivery is put to the agent again, which refuses the claim naming another transfer`);
+    assert.equal((await p.claim(first)).error, 'payment_already_recorded', `${label}: a completed delivery answers only its own claim and refuses a claim naming another transfer`);
     assert.equal(w.createsAt(paymentAddress(p)), 1, label);
   }
 });
@@ -2726,7 +2726,7 @@ test('a retained delivery is rechecked by the agent while a repeated wire reques
   assert.ok(refusalSigns[0].startsWith(DACS_SELLER_HTTP_DOMAINS.response));
   assert.deepEqual({ ...w.effects, componentSigns: beforeReplay.componentSigns }, beforeReplay, 'a replay runs no native work');
   assert.equal((await w.refreshPayment(p, tx)).status, 'held', 'a native refresh');
-  assert.equal((await p.claim(tx)).status, 'held', 'a completed delivery is put to the agent again: its answer now is sent, not the saved success');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'a completed delivery is signed again only after its sources are read again: the saved success is withheld while the source is down');
   const agent = await w.agentFor();
   try {
     const retry = await agent.submitPayment({ jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });

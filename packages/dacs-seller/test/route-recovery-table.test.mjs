@@ -18,14 +18,14 @@ const ADMISSION_READ_MAX_BYTES = 65_536;
 
 test('NEW-D1a-table-scope', async (t) => {
   const enabled = createSellerEffectRoutes({ commitOnSignature: false });
-  const owned = [PATHS.proposals, PATHS.bundleRequest, PATHS.bundleCountersignature, PATHS.commitments].sort();
+  const owned = [PATHS.proposals, PATHS.payments, PATHS.bundleRequest, PATHS.bundleCountersignature, PATHS.commitments].sort();
   assert.deepEqual(Object.keys(enabled).sort(), owned, 'one row per owned route');
   assert.deepEqual(Object.keys(createSellerEffectRoutes({ commitOnSignature: true })).sort(), [...owned, PATHS.commitmentSignature].sort(), 'the signature row exists only when enabled');
   for (const bad of [undefined, null, 'true', 1]) assert.throws(() => createSellerEffectRoutes({ commitOnSignature: bad }), TypeError, `commitOnSignature ${bad}`);
   assert.throws(() => createSellerEffectRoutes(), TypeError);
   assert.ok(Object.isFrozen(SELLER_EFFECT_ROUTES) && Object.values(SELLER_EFFECT_ROUTES).every((route) => Object.isFrozen(route)), 'the table and its rows are frozen');
   assert.throws(() => { enabled[PATHS.payments] = enabled[PATHS.proposals]; }, TypeError);
-  for (const path of [PATHS.state, PATHS.bundleBuyerCopy, PATHS.payments, PATHS.commitmentSignature, '/dacs/v1/context', `${PATHS.proposals}?x=1`, PATHS.proposals.toUpperCase()]) {
+  for (const path of [PATHS.state, PATHS.bundleBuyerCopy, PATHS.commitmentSignature, '/dacs/v1/context', `${PATHS.proposals}?x=1`, PATHS.proposals.toUpperCase()]) {
     assert.equal(enabled[path], undefined, `${path} has no row`);
   }
   for (const route of Object.values(enabled)) assert.deepEqual(Object.keys(route).sort(), ['endAfter', 'idempotenceKey', 'recover', 'revalidate', 'sink']);
@@ -44,7 +44,7 @@ test('NEW-D1a-table-scope', async (t) => {
 });
 
 test('the route table has one row per enabled non-context effect route and none for read routes; commitments/signature only when enabled', () => {
-  const effectRoutes = [PATHS.proposals, PATHS.commitments, PATHS.bundleRequest, PATHS.bundleCountersignature];
+  const effectRoutes = [PATHS.proposals, PATHS.payments, PATHS.commitments, PATHS.bundleRequest, PATHS.bundleCountersignature];
   for (const commitOnSignature of [false, true]) {
     const routes = Object.keys(createSellerEffectRoutes({ commitOnSignature })).sort();
     assert.deepEqual(routes, [...effectRoutes, ...(commitOnSignature ? [PATHS.commitmentSignature] : [])].sort(), `commit-on-signature ${commitOnSignature}`);
@@ -300,7 +300,7 @@ test('completed revalidation: route {proposals, commitments, commitments/signatu
 
   await t.test('a job the seller holds nothing for, and a path with no completed answer, are not revalidated', async () => {
     await assert.rejects(w.fixture.agent().revalidateCompletedAnswer({ path: PATHS.proposals, jobId: jobFor('revalidate-unknown'), outcome: w.outcome }), (error) => error.code === 'seller_source_unavailable' && error.cause === 'absent');
-    for (const path of [PATHS.payments, PATHS.state, PATHS.bundleRequest]) {
+    for (const path of [PATHS.state, PATHS.bundleRequest]) {
       await assert.rejects(w.fixture.agent().revalidateCompletedAnswer({ path, jobId: w.jobId, outcome: w.outcome }), TypeError, path);
     }
   });

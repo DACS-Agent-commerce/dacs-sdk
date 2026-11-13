@@ -316,29 +316,48 @@ test('a new proposal runs the agent once and completes its attempt with the exac
   assert.equal(w.agent.calls.proposals, 1);
 });
 
-test('a completed payments operation that reported delivery is put to the agent again, and a later claim gets the answer the agent gives now', async t => {
+test('a completed payments operation is revalidated read only before the stored answer is sent again, and never runs the claim again', async t => {
   const w = await continuingWorld(t);
   const first = await w.request(PATHS.payments);
   assert.equal(first.status, 200);
-  const seen = [];
-  w.agent.submitPayment = async (body, { transport }) => { seen.push({ txHash: body.txHash, check: typeof transport.check, settle: typeof transport.settle }); return { status: 'held', reason: 'the delivery cannot be read now' }; };
-  const files = w.journalFiles().length;
-  const later = await w.post(PATHS.payments, { ...w.bodyFor(PATHS.payments), txHash: derive('another-transaction') }, { jobId: w.jobId, agreementHash: w.agreementHash });
-  assert.deepEqual({ status: later.status, answer: later.body.status }, { status: 200, answer: 'held' }, 'the saved success is not replayed');
-  assert.deepEqual(seen, [{ txHash: derive('another-transaction'), check: 'function', settle: 'undefined' }], 'the agent was asked once, with a check and no settle');
-  await w.verified(later);
-  assert.equal(w.journalFiles().length, files + 1, 'only the later request\'s nonce key was added: no new attempt');
-  w.agent.submitPayment = async () => { throw new Error('TEST the refresh failed'); };
-  const failed = await w.request(PATHS.payments);
-  assert.deepEqual({ status: failed.status, error: failed.body.error }, { status: 503, error: 'operation_uncertain' }, 'a refresh that fails is no definite answer, and never the saved success');
+  const calls = { ...w.agent.calls }, revalidated = [];
+  w.agent.submitPayment = async () => assert.fail('a replay never runs the payment again');
+  w.agent.revalidateCompletedAnswer = async (input) => { revalidated.push(input); };
+  const replayed = await w.request(PATHS.payments);
+  assert.deepEqual([replayed.status, replayed.text], [200, first.text], 'the stored answer is sent');
+  assert.deepEqual(revalidated, [{ path: PATHS.payments, jobId: w.jobId, outcome: { status: 200, text: first.text } }]);
+  await w.verified(replayed);
+  w.agent.revalidateCompletedAnswer = async () => { throw new SellerTransportError('seller_source_unavailable', 503, { cause: 'changed' }); };
+  const refused = await w.request(PATHS.payments);
+  assert.deepEqual({ status: refused.status, error: refused.body.error, cause: refused.body.cause, signed: refused.signed }, { status: 503, error: 'seller_source_unavailable', cause: 'changed', signed: true });
+  assert.deepEqual(w.agent.calls, calls, 'no replay ran the payment again');
+  assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed', 'the stored outcome stays');
 });
 
-test('a delivery refresh of a completed payment is refused once its request expired while the agent waited', async t => {
+test('a completed payment answers only the claim it was made for: another transaction is refused and the stored outcome stays', async t => {
   const w = await continuingWorld(t);
   assert.equal((await w.request(PATHS.payments)).status, 200);
-  w.agent.submitPayment = async (_body, { transport }) => { w.state.time += 5000; transport.check(); return { status: 'payment-evidenced', delivery: { status: 'delivered' } }; };
-  const refused = await w.request(PATHS.payments, { lifetimeMs: 2000 });
-  assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 408, error: 'peer_expired' });
+  w.agent.retains = true;
+  w.agent.retainsPaymentClaim = (_jobId, body) => body.txHash === w.bodyFor(PATHS.payments).txHash;
+  const revalidated = [];
+  w.agent.revalidateCompletedAnswer = async (input) => { revalidated.push(input); };
+  const other = await w.post(PATHS.payments, { ...w.bodyFor(PATHS.payments), txHash: derive('another-transaction') }, { jobId: w.jobId, agreementHash: w.agreementHash });
+  assert.deepEqual({ status: other.status, error: other.body.error }, { status: 409, error: 'payment_already_recorded' });
+  assert.deepEqual(revalidated, [], 'nothing is read for a claim the payment was not made for');
+  assert.equal((await w.request(PATHS.payments)).status, 200, 'its own claim still replays');
+  assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed');
+});
+
+test('a completed payments replay reads the request\'s authority once more before it is answered', async t => {
+  const w = await continuingWorld(t);
+  assert.equal((await w.request(PATHS.payments)).status, 200);
+  const before = w.state.authorityReads;
+  assert.equal((await w.request(PATHS.payments)).status, 200);
+  const reads = w.state.authorityReads - before;
+  w.state.withdrawAtRead = w.state.authorityReads + reads;
+  const refused = await w.request(PATHS.payments);
+  assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 503, error: 'tp1_participant_refused' }, 'the last read of the replay is the recheck, and its refusal withholds the answer');
+  assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed');
 });
 
 for (const route of ['commitments', 'commitmentSignature']) {
@@ -432,7 +451,7 @@ test('every no-effect code, one unlisted SellerAgentError and a plain Error × p
   assert.equal((await rejected.post()).status, 200, 'the null end: the next request recovers at once');
 });
 
-test('every no-effect code and a plain Error on commitments and payments keep the proposal rule: a listed refusal ends null (on retained payment work as progress), anything else stays open', async t => {
+test('every no-effect code and a plain Error on commitments and payments keep the proposal rule: a listed refusal ends null (but not on retained payment work), anything else stays open', async t => {
   for (const [code, error, answer] of [['peer_job_capacity', new SellerAgentError('peer_job_capacity', 'TEST', 503), 'peer_job_capacity'], ['plain', new Error('TEST plain'), 'operation_uncertain']]) {
     const w = await continuingWorld(t);
     w.agent.answer = () => { throw error; };
@@ -448,7 +467,7 @@ test('every no-effect code and a plain Error on commitments and payments keep th
     assert.equal(answered.body.error, listed ? 'rail_unavailable' : 'operation_uncertain', `payments retained ${retained} listed ${listed}`);
     payments.state.time += listed ? 0 : payments.leaseMs - 1;
     const next = await payments.request(PATHS.payments);
-    assert.equal(next.body.error === 'seller_effect_pending', !listed, 'a null end recovers at once; an open attempt is pending');
+    assert.equal(next.body.error === 'seller_effect_pending', !listed || retained, 'a null end recovers at once; an open attempt, and one with retained payment work, is pending');
   }
 });
 
@@ -648,10 +667,10 @@ test('the state and buyer-copy routes reserve nothing and touch no journal', asy
   assert.equal(w.agent.agreementState(identityBody(jobFor('t19-unknown'), derive('t19')).transportIdentity).proposal, null);
 });
 
-test('an agent without callable retainsPaymentClaim or assertSettlementCredit is refused at construction', async t => {
+test('an agent without callable retainsPaymentWork or assertSettlementCredit is refused at construction', async t => {
   const w = await routeWorld(t);
   const { wire } = w.handle, authentication = createSellerTransportServerAuth({ sellerSigner: { claim: WORLD_SELLER.claim, sign: WORLD_SELLER.sign }, listingPin: WORLD_PIN, store: w.handle.store, now: w.clock });
-  for (const name of ['retainsPaymentClaim', 'assertSettlementCredit']) for (const value of [undefined, 'not a function', {}]) {
+  for (const name of ['retainsPaymentWork', 'assertSettlementCredit']) for (const value of [undefined, 'not a function', {}]) {
     const agent = { ...w.agent, [name]: value };
     assert.throws(() => createSellerHttpHandler(agent, { authentication, wire }), TypeError, `${name} ${typeof value}`);
   }
@@ -806,7 +825,7 @@ test('a held payment recovers after one clean restart and completes once without
   w.reopen();
   assert.deepEqual((await w.request(PATHS.payments)).body, DELIVERED, 'after the restart the next request recovers at once and delivers');
   assert.deepEqual({ intake, recovered }, { intake: 1, recovered: 2 }, 'payment intake ran once: no second charge');
-  assert.deepEqual(completions(w).filter((row) => row.route === PATHS.payments), [{ route: PATHS.payments, attempt: 2, status: 200, cleanup: 'route' }], 'completed once');
+  assert.deepEqual(completions(w).filter((row) => row.route === PATHS.payments), [{ route: PATHS.payments, attempt: 2, status: 200, cleanup: 'purchase-final' }], 'completed once, as a final payment');
 });
 
 test('two buyers racing for one job: the first committed claim wins and the other is refused with nothing created or charged', async t => {

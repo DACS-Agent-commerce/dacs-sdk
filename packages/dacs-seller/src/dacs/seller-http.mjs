@@ -51,27 +51,32 @@ export { SELLER_PRE_EFFECT_REFUSALS } from './seller-agent.mjs';
 // checkpoint (nothing sent), from its start, and goes back to the retry (or,
 // when that run kept nothing and answered `rejected` or `indeterminate`, is
 // released as a no-effect answer). Whether a claim's effect may be released
-// is the agent's retained work for exactly that claim (retainsPaymentClaim),
-// never its answer alone: once work is retained, no answer or refusal of the
-// claim releases its slot, so another claim cannot take it.
+// is the agent's retained payment work for the job (retainsPaymentWork),
+// never its answer alone: once work is retained, no answer or refusal of any
+// claim for the job ends its attempt with no outcome, so another claim cannot
+// take it. A final answer is stored only after its sources are read again.
 const PROPOSAL_PATH = '/dacs/v1/agreements/proposals';
 const PAYMENT_PATH = '/dacs/v1/payments';
 const COMMITMENT_PATH = '/dacs/v1/commitments';
 const COMMITMENT_SIGNATURE_PATH = '/dacs/v1/commitments/signature';
-const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
+const retainsPayment = (agent, jobId) => { try { return agent.retainsPaymentWork?.(jobId) !== false; } catch { return true; } };
 const reportsDeliveryReady = (text) => {
   try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && ['delivery-ready','delivered'].includes(answer.delivery?.status); } catch { return false; }
 };
 // A proposal effect is released only on the agent's proof that it signed and kept nothing.
 const retainsProposal = (agent, jobId) => { try { return agent.retainsProposalWork?.(jobId) !== false; } catch { return true; } };
-const retainedBy = (agent, path, jobId, body) => path === PAYMENT_PATH ? retainsClaim(agent, jobId, body) : path === PROPOSAL_PATH && retainsProposal(agent, jobId);
+const retainedBy = (agent, path, jobId) => path === PAYMENT_PATH ? retainsPayment(agent, jobId) : path === PROPOSAL_PATH && retainsProposal(agent, jobId);
 
 // What the agent holds for a table route's job, for the row's end rule. The agent settles inside its job lock, so a route
 // that retains nothing has no worker either. A route the agent cannot answer for is `unknown`, never `none`.
 function routeEvidence(agent, path, jobId, outcome) {
   const commitment = path === COMMITMENT_PATH || path === COMMITMENT_SIGNATURE_PATH;
   let work;
-  try { work = path === PROPOSAL_PATH ? agent.retainsProposalWork?.(jobId) : commitment ? agent.retainsCommitmentWork?.(jobId) : agent.retainsUnfinishedWork?.({ jobId, path }); } catch { work = undefined; }
+  try {
+    work = path === PROPOSAL_PATH ? agent.retainsProposalWork?.(jobId) : commitment ? agent.retainsCommitmentWork?.(jobId) : agent.retainsUnfinishedWork?.({ jobId, path });
+    // Any payment work of the job retains it, whatever transaction or payer this request names.
+    if (path === PAYMENT_PATH && work === false) work = agent.retainsPaymentWork?.(jobId);
+  } catch { work = undefined; }
   const retained = work === true ? 'work' : work === false ? 'none' : 'unknown';
   return Object.freeze({ retained, workerQuiescent: retained === 'none', signatureIntent: path === PROPOSAL_PATH && retained === 'work', createIntent: commitment && retained === 'work',
     final: outcome.status === 200 && !outcome.retry && !outcome.noEffect });
@@ -221,7 +226,7 @@ function readRequest(req, timeoutMs) {
 export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire = null } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
   if (wire !== null && !authentication) throw new Error('the wire routes need the old authentication of the routes still on it');
-  if (wire !== null && ['retainsPaymentClaim', 'assertSettlementCredit'].some((name) => typeof agent[name] !== 'function')) throw new TypeError('the wire routes need the agent\'s retainsPaymentClaim and assertSettlementCredit');
+  if (wire !== null && ['retainsPaymentWork', 'assertSettlementCredit'].some((name) => typeof agent[name] !== 'function')) throw new TypeError('the wire routes need the agent\'s retainsPaymentWork and assertSettlementCredit');
   if (![bodyTimeoutMs, maxRequestsPerWindow, rateWindowMs, maxConcurrent].every((n) => Number.isSafeInteger(n) && n > 0)) throw new Error('seller transport limits must be positive integers');
   if (typeof commitOnSignature !== 'boolean') throw new TypeError('commitOnSignature must be boolean');
   const routes = commitOnSignature ? SIGNATURE_ROUTES : ROUTES;
@@ -316,7 +321,20 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     // Only the routes the wire serves have table rows, looked up by their exact path.
     const rowOfRoute = () => (wired ? effectRoutes[req.url] : undefined);
     let concluded = false, delivered = false;
+    // A payment's final answer is stored and signed only after its sources are read again, passively. A failure throws before anything
+    // is concluded: the attempt stays open and the refusal is answered with its cause.
+    const revalidateFinalPayment = async (outcome) => {
+      const row = rowOfRoute();
+      if (row === undefined || req.url !== PAYMENT_PATH || outcome.status !== 200) return;
+      let text;
+      try { text = auth.encode(JSON.stringify(outcome.value)); } catch { return; /* an answer that cannot be stored is refused below */ }
+      if (row.endAfter({ ...outcome, text }, routeEvidence(agent, req.url, request.jobId, outcome)).kind === 'outcome') {
+        await row.revalidate({ agent, jobId: request.jobId, outcome: { status: outcome.status, text } });
+      }
+    };
     const conclude = async (outcome, end) => {
+      if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
+      await revalidateFinalPayment(outcome);
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
       concluded = true;
       const text = auth.encode(JSON.stringify(outcome.value)), sent = await pointed(outcome.status, text, request.jobId, req.url);
@@ -390,8 +408,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           return await send(res,200,answer,request,{text:await pointed(200,JSON.stringify(answer),request.jobId,req.url)});
         }
         const readbackOnly = opened.readbackOnly();
-        if (reservation.disposition === 'cached' && req.url === PAYMENT_PATH && reportsDeliveryReady(reservation.text)) {
-          // A cached completed answer is only a record of it. Under a live
+        if (reservation.disposition === 'cached' && req.url === PAYMENT_PATH && !wired && reportsDeliveryReady(reservation.text)) {
+          // Without the wire, a cached completed answer is only a record of it. Under a live
           // delegation the agent authenticates the payment evidence and reads
           // the Deliverable again, and what it answers now is sent, never the
           // saved success. An expired delegation admits journaled readback
@@ -404,16 +422,18 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           }
           // A cached refresh owns no pending reservation. Recheck its live
           // authority inside the agent's job fence, including after restore.
-          // A wire request is rechecked by the wire on a fresh clock first; the old
-          // authentication knows no wire request, and its expiry bounds its delegation's. The wire's expiry, once seen at any
-          // call, is kept: a clock that later reads earlier does not let a refresh go on.
-          if (wired) await opened.recheck();
-          const transport = Object.freeze({ check: wired ? opened.assertLive : () => authentication.assertLive(request) });
+          const transport = Object.freeze({ check: () => authentication.assertLive(request) });
           const answer = await route(agent, body, { transport }), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
         }
         if (reservation.disposition === 'cached') {
           // A completed answer of a table route is signed again only after its sources are read again; a refusal withholds it and rewrites nothing.
+          // A wire payment replay is rechecked on a fresh clock first, unless an expired delegation admitted it for stored readback only.
+          // A completed payment answers only the claim it was made for: another transaction or payer is refused, as the payment itself refuses it.
+          if (wired && req.url === PAYMENT_PATH) {
+            if (!readbackOnly) await opened.recheck();
+            if (agent.retainsPaymentWork(request.jobId) && !agent.retainsPaymentClaim(request.jobId, body)) throw new SellerTransportError('payment_already_recorded', 409);
+          }
           await rowOfRoute()?.revalidate({ agent, jobId: request.jobId, outcome: { status: reservation.status, text: reservation.text } });
           return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
         }
@@ -465,7 +485,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       // settles there; a route without the fence is classified here when it
       // returns. A resumed context step has written before: no answer of it deletes its records.
       // A wire attempt is answered where it is settled, inside the fence when there is one.
-      const classified = (result) => transportOutcome(req.url, result, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId, body), resumed: reservation?.resumed === true });
+      const classified = (result) => transportOutcome(req.url, result, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId), resumed: reservation?.resumed === true });
       const transport = authentication && !contextStep ? Object.freeze({ path: req.url, check: () => auth.store.assertPending(reservation), settle: (outcome) => wired ? finishWith(outcome) : void (fenced = finishWith(outcome)) }) : undefined;
       const answer = await route(agent, body, { transport });
       if (wired) { if (!delivered) await finishWith(classified({ answer })); return; }
@@ -476,12 +496,12 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (delivered) return;
       const beforeEffect = !reservation || reservation.disposition !== 'perform';
       // A wire refusal keeps its code, status and cause, never `operation_uncertain`. After the effect started, only the
-      // refusal to store an unsignable answer does; any other error leaves the effect uncertain.
-      const refusal = !concluded && (error instanceof SellerTransportError || error instanceof WireError) && (beforeEffect || error.code === 'outgoing_body_rejected');
+      // refusal to store an unsignable answer and a source that cannot confirm a final answer do; any other error leaves the effect uncertain.
+      const refusal = !concluded && (error instanceof SellerTransportError || error instanceof WireError) && (beforeEffect || ['outgoing_body_rejected', 'seller_source_unavailable'].includes(error.code));
       // A refusal the agent settled inside its fence is answered as settled. A wire attempt whose answer failed before it was
       // written (a superseded attempt, a failed signer or credit check) never sends that answer: its outcome is uncertain.
       const outcome = concluded ? { status: 503, value: UNCERTAIN } : fenced ?? (refusal ? { status: error.status, value: { error: error.code, message: error.message, ...(CAUSE_ANSWERED_REFUSALS.has(error.code) && typeof error.cause === 'string' ? { cause: error.cause } : {}) } }
-        : transportOutcome(req.url, { error }, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId, body), resumed: reservation?.resumed === true }));
+        : transportOutcome(req.url, { error }, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId), resumed: reservation?.resumed === true }));
       let { status, value: answer } = outcome;
       if (wired && reservation?.disposition === 'perform' && !concluded) {
         try { return await finishWith(outcome); } catch { if (delivered) return; ({ status, value: answer } = { status: 503, value: UNCERTAIN }); }

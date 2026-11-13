@@ -82,7 +82,7 @@ export function stubAgent() {
     retainsUnfinishedWork: () => false,
     retainsCommitmentWork: (jobId) => agent.retains && drafts.has(jobId),
     revalidateCompletedAnswer: async () => {},
-    retainsPaymentClaim: () => agent.retains,
+    retainsPaymentClaim: () => agent.retains, retainsPaymentWork: () => agent.retains,
     assertSettlementCredit: (jobId) => agent.credit(jobId),
     receiveProposal: async (body, { transport } = {}) => {
       agent.calls.proposals++;
