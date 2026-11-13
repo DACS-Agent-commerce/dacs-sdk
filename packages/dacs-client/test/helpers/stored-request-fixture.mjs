@@ -16,7 +16,7 @@ export const errorCode = code => error => error.code === code;
 
 /**
  * A purchase row with a retained Agreement plan, the real wire authentication and an in-process seller that
- * signs with the wire's `signWireResponse`. `advance` moves the purchase clock.
+ * signs with the wire's `signWireResponse`. `clock` is injected: `sleep` advances it and the purchase clock.
  */
 export async function storedWorld(t, { stage = 'agreement-signing', accepted = true, status = 'agreement_pending', paid = false, configureTerms } = {}) {
   const made = await committedPurchase({ jobId: JOB, publicEndpoint: PUBLIC_ENDPOINT });
@@ -25,10 +25,11 @@ export async function storedWorld(t, { stage = 'agreement-signing', accepted = t
   const bytes = value => Buffer.from(canonicalize(value));
   const auth = w.createSellerWireAuthentication({ ...w.options, evidence: async () => ({ commitment: bytes(made.anchored), agreement: bytes(made.agreement), signedListing: bytes(made.listing) }) });
   const { transaction } = createSqlitePurchaseStore();
-  let current = p.get();
+  let current = p.get(), time = 0;
   const holder = { get: () => current, set: next => { current = next; } };
   const records = (target = holder, recordTransaction = transaction) => createSellerRequestRecords({ db: p.db, ops: p.ops, transaction: recordTransaction, holder: target, now: () => w.state.time });
-  const fetches = [];
+  const fetches = [], delays = [];
+  const clock = { now: () => time, async sleep(ms) { delays.push(ms); time += ms; w.state.time += ms; } };
   const reply = async (init, status = 200, body = { status: 'complete' }) => {
     const { payload } = JSON.parse(Buffer.from(init.headers[wire.DACS_SELLER_HTTP_HEADER], 'base64url'));
     const text = JSON.stringify(body);
@@ -36,15 +37,15 @@ export async function storedWorld(t, { stage = 'agreement-signing', accepted = t
     return new Response(text, { status, headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: header } });
   };
   const client = ({ respond = init => reply(init), requestRecords = records(), ...options } = {}) => createSellerAgentClient({
-    url: PUBLIC_ENDPOINT, authentication: auth, requestRecords, commitOnSignature: true,
+    url: PUBLIC_ENDPOINT, authentication: auth, requestRecords, clock, commitOnSignature: true,
     fetchImpl: async (_url, init) => { fetches.push(init); return respond(init); }, ...options
   });
   const patch = (protocol = {}, nextStatus = p.get().status) => {
     const saved = p.get();
     return p.ops.transition(saved.id, saved.status, nextStatus, { state: { protocol: { ...saved.state.protocol, ...protocol, revision: (saved.state.protocol.revision ?? 0) + 1, progressGeneration: (saved.state.protocol.progressGeneration ?? saved.state.protocol.revision ?? 0) + 1 } }, event: 'test_progress', data: {} });
   };
-  return { w, p, made, holder, records, client, auth, reply, fetches, patch,
-    advance(ms) { w.state.time += ms; },
+  return { w, p, made, holder, records, client, auth, reply, fetches, delays, clock, patch,
+    advance(ms) { time += ms; w.state.time += ms; },
     restart() { p.reopen(); current = p.get(); },
     record(path) { return p.get().state.protocol.sellerRequests?.[path]; } };
 }

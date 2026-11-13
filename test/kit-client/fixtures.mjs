@@ -101,5 +101,5 @@ export async function sellerTransportPair(t) {
     const body = { transportIdentity: { jobId: JOB } };
     return clientAuth.request(STATE_PATH, body, JSON.stringify(body));
   };
-  return { serverAuth, clientAuth, stateRequest };
+  return { store, serverAuth, clientAuth, stateRequest };
 }

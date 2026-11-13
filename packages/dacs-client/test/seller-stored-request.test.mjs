@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { storedWorld, PATHS, bodyFor, errorCode, nonce, sameBodies } from './helpers/stored-request-fixture.mjs';
+import { setPurchaseAdmission } from './helpers/wire-client-fixture.mjs';
 const { signatureCommitmentAnchor } = await import('../src/dacs/commit-on-signature.mjs');
+const transport = await import('../src/dacs/seller-http.mjs');
 const { createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
 const P = PATHS.proposals;
 
@@ -30,6 +32,13 @@ test("a timed-out send is recorded unknown, and the next explicit call resends t
   await assert.rejects(s.client({ respond }).propose(bodyFor(P)), e => e.answerClass === 'unknown');
   assert.equal(s.record(P).lastClass, 'unknown'); assert.equal(s.fetches.length, 1);
   s.restart(); await s.client({ respond }).propose(bodyFor(P)); sameBodies(s.fetches);
+});
+
+test("in-call retries are at most SELLER_UNKNOWN_RETRIES, spaced SELLER_RETRY_DELAY_MS, inside the deadline", async (t) => {
+  const s = await storedWorld(t); const times = [];
+  await assert.rejects(s.client({ respond: init => { times.push(s.clock.now()); return s.reply(init, 503, { error: 'seller_effect_pending' }); } }).propose(bodyFor(P)), e => e.answerClass === 'unknown');
+  assert.equal(transport.SELLER_UNKNOWN_RETRIES, 2); assert.equal(transport.SELLER_RETRY_DELAY_MS, 5000);
+  assert.deepEqual(times, [0, 5000, 10000]); assert.deepEqual(s.delays, [5000, 5000]); sameBodies(s.fetches);
 });
 
 test("a late response for stage n after the row moved to n+1 is ignored (K5-C4)", async (t) => {
@@ -97,6 +106,37 @@ test("keepChainPointers, holdChainReadback, note and save keep every stored requ
   assert.ok(replay.result.state.protocol.sellerRequests[PATHS.commitments]);
 });
 
+test("a context-shaped body keeps generatedAt across retries (K5-C3)", async (t) => {
+  const s = await storedWorld(t, { accepted: false }); let first = true;
+  await s.client({ respond: init => { if (first) { first = false; return s.reply(init, 503, { error: 'context_attempt_pending' }); } return s.reply(init); } }).request(PATHS.context, bodyFor(PATHS.context));
+  sameBodies(s.fetches); assert.equal(JSON.parse(s.fetches[1].body).scope.generatedAt, bodyFor(PATHS.context).scope.generatedAt);
+});
+
+test("a retry sleep that wakes at or past the route deadline records and sends nothing more and rethrows the unknown answer", async (t) => {
+  for (const [route, wake] of [[P, 15000], [P, 20000], [PATHS.context, transport.SELLER_REQUEST_POLICY[PATHS.context].timeoutMs + 1000]]) {
+    const s = await storedWorld(t, route === PATHS.context ? { accepted: false } : {});
+    s.clock.sleep = async ms => { s.delays.push(ms); s.advance(wake); };
+    await assert.rejects(s.client({ respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).request(route, bodyFor(route)), e => e.answerClass === 'unknown', `${route} ${wake}`);
+    assert.equal(s.fetches.length, 1, route); assert.equal(s.w.state.signs.length, 1, route);
+    assert.equal(s.record(route).attempts, 1, route); assert.equal(s.record(route).lastClass, 'unknown', route);
+  }
+});
+
+test("a retry after the delay re-checks admission and the row and signs nothing for a purchase cancelled, expired or re-held during the delay", async (t) => {
+  for (const mode of ['cancelled', 'expired', 'held', 'suspended']) {
+    const s = await storedWorld(t);
+    s.clock.sleep = async ms => {
+      s.advance(ms);
+      if (mode === 'held') setPurchaseAdmission('held');
+      else if (mode === 'expired') s.advance(3600000);
+      else if (mode === 'suspended') s.patch({ sellerSuspension: { cause: 'TEST' } });
+      else s.patch({}, 'cancelled');
+    };
+    await assert.rejects(s.client({ respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).propose(bodyFor(P)));
+    assert.equal(s.fetches.length, 1, mode); assert.equal(s.w.state.signs.length, 1, mode); setPurchaseAdmission('testnet-tp1');
+  }
+});
+
 test("a purchase cancelled while its request is being signed sends nothing and keeps the refusal's cause", async (t) => {
   const s = await storedWorld(t);
   const authentication = { ...s.auth, async request(...args) { const signed = await s.auth.request(...args); s.patch({}, 'cancelled'); return signed; } };
@@ -147,46 +187,48 @@ test("stored request byte and metadata bounds fail closed before signing", async
   assert.equal(s.fetches.length, 0); assert.equal(s.w.state.signs.length, 0);
 });
 
-// Budgets passed to AbortSignal.timeout while `work` runs.
+// Budgets passed to AbortSignal.timeout while `work` runs. The transport's clock is held still, so a send's budget is
+// the whole route deadline.
 const budgetsDuring = async (t, work) => {
+  const now = t.mock.method(performance, 'now', () => 0);
   const spy = t.mock.method(AbortSignal, 'timeout');
   await work();
   const budgets = spy.mock.calls.map(call => call.arguments[0]);
   spy.mock.restore();
+  now.mock.restore();
   return budgets;
 };
 
 test("in each of the five seller flows an authenticated send gets the approval-capable default budget", async (t) => {
   const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
   for (const kind of ['agreement', 'commit', 'replay', 'payment', 'signature']) {
-    const spy = t.mock.method(AbortSignal, 'timeout');
-    const { s } = await sellerFlow(t, kind);
-    const budgets = spy.mock.calls.map(call => call.arguments[0]);
-    spy.mock.restore();
-    assert.ok(s.fetches.length > 0, kind);
+    let flow;
+    const budgets = await budgetsDuring(t, async () => { flow = await sellerFlow(t, kind); });
+    assert.ok(flow.s.fetches.length > 0, kind);
     assert.ok(budgets.length > 0 && budgets.every(budget => budget === 240000), `${kind}: ${budgets}`);
   }
 });
 
-test("a configured sellerRequestTimeoutMs is the send budget on every route", async (t) => {
+test("a configured sellerRequestTimeoutMs is the send budget on every route but context, which keeps 240 through 300 seconds", async (t) => {
   const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
   for (const configured of [1000, 300000]) {
-    const spy = t.mock.method(AbortSignal, 'timeout');
-    await sellerFlow(t, 'commit', { sellerRequestTimeoutMs: configured });
-    const budgets = spy.mock.calls.map(call => call.arguments[0]);
-    spy.mock.restore();
+    const budgets = await budgetsDuring(t, () => sellerFlow(t, 'commit', { sellerRequestTimeoutMs: configured }));
     assert.ok(budgets.length > 0 && budgets.every(budget => budget === configured), `${configured}: ${budgets}`);
   }
   const s = await storedWorld(t);
-  const budgets = await budgetsDuring(t, () => s.client({ timeoutMs: 1000 }).request(PATHS.context, bodyFor(PATHS.context)).catch(() => {}));
-  assert.deepEqual(budgets, [1000]);
+  for (const [timeoutMs, expected] of [[1000, 240000], [400000, 300000]]) {
+    const budgets = await budgetsDuring(t, () => s.client({ timeoutMs }).request(PATHS.context, bodyFor(PATHS.context)).catch(() => {}));
+    assert.deepEqual(budgets, [expected], `${timeoutMs}`);
+  }
 });
 
-test("the unauthenticated transport defaults to 15 seconds on the context route", async (t) => {
+test("the unauthenticated transport defaults to 15 seconds on every route but context, which defaults to 240 seconds", async (t) => {
   const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
   const fetchImpl = async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
-  const budgets = await budgetsDuring(t, () => createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl }).request(PATHS.context, {}).catch(() => {}));
-  assert.deepEqual(budgets, [15000]);
+  for (const [path, expected] of [[PATHS.context, 240000], [PATHS.state, 15000]]) {
+    const budgets = await budgetsDuring(t, () => createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl }).request(path, {}).catch(() => {}));
+    assert.deepEqual(budgets, [expected], path);
+  }
 });
 
 
