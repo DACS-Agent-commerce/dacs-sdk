@@ -7176,6 +7176,17 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the wallet session blob chosen when the effect gate fixes merged",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "084ebc66416efef054224c570a539ce3e6561666",
+          "after": "084ebc66416efef054224c570a539ce3e6561666"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF run the gate tests on the exported owner with only currentLocal replaced",
       "files": [
         {
