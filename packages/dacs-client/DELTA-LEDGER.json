@@ -8517,6 +8517,22 @@
           "after": "e159d0cb9ca487ba30500a5a3da40ea5bfab4b32"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "50355ea4059121eac4b97ea068a01be647e8dc24",
+          "after": "48056110819fef0a22ae0e8bff28e5781ed1bcb6"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "683f3a9c22c09a4207d1f588e0108cb327b579f2",
+          "after": "683f3a9c22c09a4207d1f588e0108cb327b579f2"
+        }
+      ]
     }
   ]
 }

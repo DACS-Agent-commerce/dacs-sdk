@@ -1394,6 +1394,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/effect-history.mjs:1` | d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53 |
 | WF | delta(client): WF name the packed contents test without a plan abbreviation | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | e159d0cb9ca487ba30500a5a3da40ea5bfab4b32 |
+| WF | delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` | 48056110819fef0a22ae0e8bff28e5781ed1bcb6 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 683f3a9c22c09a4207d1f588e0108cb327b579f2 |
 
 ## Complete commit and file inventory
 
@@ -4188,6 +4191,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/HOLD.json:1` |
 | fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` |
 
 ## Original moved files
 
