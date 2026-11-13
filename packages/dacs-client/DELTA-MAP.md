@@ -1185,6 +1185,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/helpers/source-read-transport.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/helpers/source-read-world.mjs:1` | d99dfa33ba877ff2fdcefcce104abe9cf9727e88 |
 | | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` | 3f2bbe6f992aae79cd8e55a4f11c69de52468ed9 |
+| WF | delta(client): WF record the public API test merged with the engines range change | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 04b9b695052d43d73b6437653b830f55f903d8a4 |
 
 ## Complete commit and file inventory
 
@@ -3758,6 +3760,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | test(client): expect a path recorded as deleted to be absent at HEAD in the WF blob check | `packages/dacs-client/HOLD.json:1` |
 | test(client): expect a path recorded as deleted to be absent at HEAD in the WF blob check | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | test(client): expect a path recorded as deleted to be absent at HEAD in the WF blob check | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): WF record the public API test merged with the engines range change | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the public API test merged with the engines range change | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the public API test merged with the engines range change | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the public API test merged with the engines range change | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the public API test merged with the engines range change | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
