@@ -1307,6 +1307,7 @@ for (const restart of [false, true]) test(`completed retired replays respect the
     input.checkCapacityWithin = () => { charges++; return { class: 'general', allocationId: null }; };
     return f.reserve(input);
   };
+  assert.equal((await replay()).state, 'completed', 'the retired job\'s expired witness row no longer fills the limit');
   const before = { rows: f.rows(), holds: f.holds(), files: f.files() };
   await assert.rejects(replay(), { code: 'peer_store_capacity', status: 503 });
   assert.deepEqual({ rows: f.rows(), holds: f.holds(), files: f.files() }, before);
