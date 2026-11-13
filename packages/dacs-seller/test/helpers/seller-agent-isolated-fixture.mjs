@@ -29,7 +29,7 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
  let agent,store;const create=()=>createSellerAgent(config);
  const openStore=()=>createSellerDurableState({dir,signer:seller,listingPin:pin});
  const negotiate=async(jobId,{anchor=true,claims=[]}={})=>{
-  const {plan,buyerContribution,body}=await fixtureProposal(listing,jobId,claims),{proposal}=body,response=await agent.receiveProposal(body);
+  const {plan,buyerContribution,body}=await fixtureProposal(listing,jobId,claims),response=await agent.receiveProposal(body);
   if(response.disposition!=='complete')throw new Error('TEST proposal incomplete: '+JSON.stringify(response));
   const agreement=await core.finalizeFixedPriceAgreementContributions(plan,[buyerContribution,response.contribution],contributionVerifier),address=core.fixedPriceAgreementLogicalAddress(jobId);agreements.set(jobId,agreement);
   if(anchor)await anchors.write({logicalAddress:address,artifact:agreement,writer:buyer.claim,writerSignature:signAnchorWrite(buyer.sign,address,core.contentHash(agreement))});
