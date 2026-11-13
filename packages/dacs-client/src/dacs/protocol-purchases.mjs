@@ -26,7 +26,7 @@ import { isDevnetAgreementTransport, DEVNET_AGREEMENT_KIND } from '../wallet/dev
 import { NotWiredError, OperationError } from '../client-errors.mjs';
 import { verifyDemosSignature, claimForAddress, decodeSignature } from '../signatures.mjs';
 import { attachIdentityPresentation, buildUnsignedIdentityBundle, verifyComponent } from './listing.mjs';
-import { createSellerAgentClient, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
+import { createSellerAgentClient, sellerEndpointOrigin, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
 import { createDemosSr2WalletBridge, SR2_WALLET_KIND } from './demos-sr2-wallet-bridge.mjs';
 import { DemosSr2Error } from './demos-sr2-adapter.mjs';
 import {
@@ -552,8 +552,10 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (!url) throw new OperationError('seller_agent_unavailable', 'no seller agent endpoint is known for this seller; nothing was prepared');
     if (mode === OFFLINE_AGREEMENT_MODE && domain.network !== walletConfig.network) throw new OperationError('network_identity_mismatch', 'the injected wallet bridge is not bound to the prepared fixture network');
     if (!nativeSellerCommitment) throw new OperationError('seller_commitment_unavailable', 'native seller commitment capability required');
+    // The declared seller transport below is what makes later calls authenticated, which is what allows a public https endpoint.
+    const authenticated = Boolean(mode === OFFLINE_AGREEMENT_MODE && nativePayment && nativeEvidence && sellerTransport);
     return {
-      terms: { wireProfile: admission.binding.profile, profile: OFFLINE_AGREEMENT_PROFILE, orchestration: ORCHESTRATION, sellerAgent: createSellerAgentClient({ url, fetchImpl }).origin, substrate: 'source-pinned-native-fixed-price-demo; finality-held',
+      terms: { wireProfile: admission.binding.profile, profile: OFFLINE_AGREEMENT_PROFILE, orchestration: ORCHESTRATION, sellerAgent: sellerEndpointOrigin(url, authenticated), substrate: 'source-pinned-native-fixed-price-demo; finality-held',
         ...(mode === OFFLINE_AGREEMENT_MODE && sourceCapability ? {transportBinding:sourceCapability.transportBinding} : {}),
         ...(mode === OFFLINE_AGREEMENT_MODE && (agreementContext || demDeliveryContext) ? { agreementContext: demDeliveryContext ? DEM_DELIVERY_CONTEXT_SOURCE : AGREEMENT_CONTEXT_SOURCE } : {}),
         ...(mode === OFFLINE_AGREEMENT_MODE && nativeDemDelivery ? {nativeDelivery:NATIVE_DEM_DELIVERY_SOURCE}:{}),
