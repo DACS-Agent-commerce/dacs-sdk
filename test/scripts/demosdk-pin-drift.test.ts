@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
-import { runBash, stubBin, workflowStepScript } from "./helpers/workflow.js";
+import { runBash, shellQuote, stubBin, workflowStepScript } from "./helpers/workflow.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const ciPath = join(repoRoot, ".github/workflows/ci.yml");
@@ -98,18 +98,21 @@ describe("scheduled demosdk pin drift check", () => {
 // Runs the real demosdk-compat.yml step script with a stub npm/npx and returns the calls it made.
 // `node --test` is recorded and not run, because the scratch folder holds no test files;
 // every other node call (the installed-version check) runs on the real binary.
-function runPinnedStep(registryBody: string, installedVersion = PINNED) {
-  const directory = scratch();
+function runPinnedStep(
+  registryBody: string,
+  installedVersion = PINNED,
+  { directory = scratch(), nodeBinary = process.execPath } = {},
+) {
   const calls = join(directory, "npm-calls.log");
-  const npm = `echo "$*" >> '${calls}'
+  const npm = `echo "$*" >> ${shellQuote(calls)}
 ${registryBody}
 if [ "$1" = install ]; then
   mkdir -p node_modules/@kynesyslabs/demosdk
   printf '{"version":"${installedVersion}"}' > node_modules/@kynesyslabs/demosdk/package.json
 fi
 exit 0`;
-  const node = `if [ "$1" = --test ]; then echo "node $*" >> '${calls}'; exit 0; fi
-exec '${process.execPath}' "$@"`;
+  const node = `if [ "$1" = --test ]; then echo "node $*" >> ${shellQuote(calls)}; exit 0; fi
+exec ${shellQuote(nodeBinary)} "$@"`;
   const path = stubBin(directory, { node, npm, npx: "exit 0" });
   const script = join(directory, "step.sh");
   writeFileSync(script, workflowStepScript(PIN_STEP, compatPath));
@@ -118,6 +121,16 @@ exec '${process.execPath}' "$@"`;
 }
 
 describe("pinned demosdk step", () => {
+  it("runs when the node path and the folder holding the calls log contain a single quote", () => {
+    const directory = mkdtempSync(join(tmpdir(), "demosdk-pin-it's-"));
+    directories.push(directory);
+    const nodeBinary = join(directory, "node");
+    symlinkSync(process.execPath, nodeBinary);
+    const { result, calls } = runPinnedStep(registryReplying([PINNED]), PINNED, { directory, nodeBinary });
+    expect(result.status).toBe(0);
+    expect(calls.some((call) => call.startsWith("node --test"))).toBe(true);
+  });
+
   it("passes when a newer 4.x is published and never looks up the newest version", () => {
     const { result, calls } = runPinnedStep(registryReplying(["4.0.17", PINNED, "4.0.19"]));
     expect(result.status).toBe(0);
