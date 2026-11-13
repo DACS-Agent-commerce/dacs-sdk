@@ -70,8 +70,9 @@ export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required',
 // A payment claim other than the one whose work the agent retains
 // (seller_native_evidence_conflict) is refused before anything of it runs, and
 // so is a payment whose transaction hash is not 64 hexadecimal digits (payment_tx_hash_invalid).
-const NO_EFFECT_ERRORS = new Set(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_agreement_invalid', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'seller_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', 'payment_tx_hash_invalid', ...SELLER_PRE_EFFECT_REFUSALS]);
-const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
+export const NO_EFFECT_ERRORS = Object.freeze(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_agreement_invalid', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'seller_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', 'payment_tx_hash_invalid', ...SELLER_PRE_EFFECT_REFUSALS]);
+const NO_EFFECT_CODES = new Set(NO_EFFECT_ERRORS);
+export const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
 /** The one classification of an authenticated seller command's result
@@ -85,7 +86,7 @@ export function transportOutcome(path, result = {}, { retained = true, recoverin
   const { answer, error, held, cause = error } = result;
   const failed = Object.hasOwn(result, 'error');
   const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals';
-  const refusal = error instanceof SellerAgentError && NO_EFFECT_ERRORS.has(error.code);
+  const refusal = error instanceof SellerAgentError && NO_EFFECT_CODES.has(error.code);
   const rejected = refusal || ((proposal || answer?.code !== 'party_vet_non_pass') && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
   if (held !== undefined || (failed && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
     ...(failed || cause !== undefined ? { cause, causeCode: readFailureCode(cause) } : {}) };
@@ -106,7 +107,7 @@ const NATIVE_READ_MISSES = Object.freeze(['name-index-miss', 'native-address-mis
 const RETAINED_READBACK_FAILURES = new Set(['commitment_failed', 'commitment_readback_required', 'substrate_unavailable', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'seller_agreement_readback_required']);
 // A claimed pay-dem transaction hash as core payment intake reads it
 // (lower case, without `0x`): the transport admits either form.
-const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, '');
+export const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, '');
 // What is kept of a wallet answer: its status, transaction hash and reason, bounded.
 const walletAnswer = (answer) => ({ status: typeof answer?.status === 'string' ? answer.status.slice(0, 32) : 'missing',
   ...(typeof answer?.txHash === 'string' ? { txHash: answer.txHash.slice(0, 128) } : {}), ...(typeof answer?.reason === 'string' ? { reason: answer.reason.slice(0, 240) } : {}) });
@@ -578,7 +579,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (!transport) return fn(input);
     let result, failed = false;
     try { transport.check();const answer=await transportAuthority.run(transport,()=>fn(input,{transport}));transport.check();result={answer}; } catch (error) { failed = true; result = { error }; }
-    transport.settle?.(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
+    await transport.settle?.(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
     if (failed) throw result.error;
     return result.answer;
   }).catch((error) => {
@@ -2211,7 +2212,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         result = { held: await readIssued?.(jobId, { unknownOnly: true }) ? 'buyer_access_closed; issued unknown writes inspected read-only; retained outcome unchanged' : 'buyer_access_closed; no unknown issued write, nothing was read; retained outcome unchanged' };
       } else { sessions.delete(jobId); await restore(session); result = await recoverTransport({ ...input, readOnly, transport:typeof claimed?.check==='function'?claimed:undefined }); }
       const outcome = transportOutcome(path, result, { retained: retainedWork(path, jobId, input.body), recovering: true, readOnly });
-      if (outcome.settle) transport?.settle(outcome);
+      if (outcome.settle) await transport?.settle(outcome);
       return outcome;
     }) : undefined,
     commitOnSignature: recoveryCall((input) => {
@@ -2246,13 +2247,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     durableSessionOf: durable ? (jobId) => sessionView(durable.loadSession(jobId)) : undefined,
     // Whether this seller retains payment work for exactly this claim (its
     // transaction and payer): the transport then never releases the claim's
-    // effect as one that started nothing. Synchronous and read only.
+    // effect as one that started nothing. Synchronous and read only. Throws
+    // seller_state_unverified (503) for a retained session it cannot verify.
     retainsPaymentClaim: (jobId, { txHash, payerPayingKey } = {}) => {
       if (!isCanonicalJobId(jobId)) return false;
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
-      // An unverified retained session retains nothing: the transport may
-      // release the claim's effect rather than keep work it cannot attribute.
-      if (session && (retainedSnapshotProblem(session) ?? retainedSessionProblem(session))) return false;
+      // A retained session that cannot be verified is unknown work, never no work.
+      const problem = session && (retainedSnapshotProblem(session) ?? retainedSessionProblem(session));
+      if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
       const work = session?.nativeEvidenceWork ?? session?.paymentWork;
       return Boolean(work) && work.txHash === paymentTxHash(txHash) && work.payerPayingKey === payerPayingKey;
     },
