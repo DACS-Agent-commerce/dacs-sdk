@@ -31,7 +31,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/rail-authority.mjs': { effect: {  }, pure: ['intakeRailDefinition', 'railAuthorityConfig', 'validateSellerListing'] },
   'src/dacs/seller-agent.mjs': { effect: { createSellerAgent: ['createSellerAgent'] }, pure: ['SellerAgentError', 'buildReport', 'canonicalSignature', 'paymentTxHash', 'proposalTimeProblem', 'transportOutcome'] },
   'src/dacs/seller-admission-transaction.mjs': { effect: { createContextAdmissionTransaction: ['begin', 'runningCheck', 'reserveContext', 'complete', 'compensate'] }, pure: ['admissionTransactionInternals', 'assertAdmissionJobLease'] },
-  'src/dacs/seller-challenge-ledger.mjs': { effect: { createSellerChallengeLedger: ['issue', 'issueForOperator'] }, pure: [] },
+  'src/dacs/seller-challenge-ledger.mjs': { effect: { createSellerChallengeLedger: ['issue', 'issueForOperator'] }, pure: ['deepFreeze'] },
   'src/dacs/seller-completion-records.mjs': { effect: {  }, pure: ['createCompletionRecords'] },
   'src/dacs/seller-context-route.mjs': { effect: {  }, pure: ['createSellerContextClient', 'createSellerContextRecords', 'createSellerContextRoute', 'sellerContextReason', 'sellerContextRequestUnknown'] },
   'src/dacs/seller-durable-state.mjs': { effect: { createSellerDurableState: ['signOnce', 'anchor'] }, pure: ['SellerRecoveryError'] },

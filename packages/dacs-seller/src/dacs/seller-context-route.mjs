@@ -1,7 +1,7 @@
 // Seller-owned Vet and Agreement context over the authenticated transport.
 // Admission reserves two writes. Pre-payment writes still require exact
 // seller approval. This is the kit's only context mode.
-import { identityBundleHash, isCanonicalJobId, isIdentityBundle, sha256Hex } from '@kynesyslabs/dacs';
+import { identityBundleHash, isCanonicalJobId, isIdentityBundle, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { admitPreAgreementRequest } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { KitOperationGuardError, kitOperationAdmitted } from '../kit-operation-guard.mjs';
@@ -10,6 +10,7 @@ import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs
 import { AGREEMENT_CONTEXT_SOURCE } from './agreement-context-consumer.mjs';
 import { DEM_RAIL, canonicalize, purchaseSupport, verifyComponent } from './listing.mjs';
 import { listingPin } from './purchase-protocol.mjs';
+import { deepFreeze } from './seller-challenge-ledger.mjs';
 import { SellerRefusedError, sellerFailureAttempt } from './seller-http.mjs';
 import { openWireRequest } from './seller-wire-requests.mjs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash, sellerTransportEffect } from './seller-transport-auth.mjs';
@@ -409,40 +410,60 @@ export function createSellerContextClient({ clientFor }) {
   });
 }
 
-// Read-only views of the seller's durable context records for the steps after
-// the route. store() returns the seller transport store once it is open.
-export function createSellerContextRecords({ listing, store }) {
+// Admission states in which the seller accepted a context request and has not aborted it.
+const ACCEPTED_ADMISSION_STATES = Object.freeze(['admitted', 'running', 'settled']);
+
+// What a synchronous reader answers for a job. A reader that throws or answers a promise gives null; a rejected promise is observed.
+function readOrNull(read, jobId) {
+  try {
+    const value = read(jobId);
+    if (typeof value?.then !== 'function') return value;
+    Promise.resolve(value).catch(() => {});
+    return null;
+  } catch { return null; }
+}
+
+// The scope in a context answer's text, when the answer is a present one.
+function presentedScope(text) {
+  try { const answer = JSON.parse(text); return answer?.disposition === 'present' ? answer.value?.scope : null; } catch { return null; }
+}
+
+// Read-only views of the seller's durable context records for the steps after the route.
+// admission(jobId) is the job's admission row ({ jobId, buyer, seller, listingPin, contextScopeHash, state }) or null.
+// contextOutcome(jobId) is the context operation's completed wire outcome ({ status, text }) or null.
+// Both must answer synchronously. A reader that throws makes exactRequest false and completedScope null; a malformed job id throws peer_job_invalid.
+export function createSellerContextRecords({ listing, admission, contextOutcome }) {
   const support = purchaseSupport(listing);
-  if (!support.supported || typeof store !== 'function') throw new TypeError('the seller context records need a supported Listing and the seller transport store');
+  if (!support.supported || typeof admission !== 'function' || typeof contextOutcome !== 'function') throw new TypeError('the seller context records need a supported Listing and the admission and context outcome readers');
   const seller = listing.seller.identity.presentedBy, pin = listingPin(listing);
-  const open = () => { const value = store(); return typeof value?.contextAdmission === 'function' && typeof value.contextAnswer === 'function' ? value : null; };
-  // The scope the route admits for this job, buyer bundle and generatedAt
-  // (every other field is the seller's own, see scopeProblem).
-  const scopeOf = (jobId, bundle, generatedAt) => {
+  // The scope the route admits for this job, buyer and bundle (every other field is the seller's own, see scopeProblem).
+  const scopeOf = (jobId, buyer, bundle, generatedAt) => {
     try {
-      return { source: AGREEMENT_CONTEXT_SOURCE, wallet: addressForClaim(bundle.presentedBy), jobId, buyer: bundle.presentedBy, buyerBundleHash: identityBundleHash(bundle),
+      return { source: AGREEMENT_CONTEXT_SOURCE, wallet: addressForClaim(buyer), jobId, buyer, buyerBundleHash: identityBundleHash(bundle),
         seller, listingPin: pin, rail: { railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion }, payee: support.payee, price: support.price, generatedAt };
     } catch { return null; }
   };
-  const admitted = (jobId, buyer) => { const found = open()?.contextAdmission(jobId); return found && found.buyer === buyer && found.seller === seller && same(found.listingPin, pin) ? found : null; };
+  // The job's admission row when it is accepted, for this Listing, and its buyer is the same identity as `buyer`.
+  const acceptedRow = (jobId, buyer) => {
+    const row = readOrNull(admission, jobId);
+    return record(row) && ACCEPTED_ADMISSION_STATES.includes(row.state) && row.jobId === jobId && row.seller === seller && same(row.listingPin, pin) && sameCanonicalClaimIdentity(row.buyer, buyer) ? row : null;
+  };
   return Object.freeze({
-    // True only when the job's admission record is this buyer's, for this
-    // Listing, and its scope hash is the scope of exactly this bundle and generatedAt.
+    // True only when the job's admission row is accepted, this buyer's, for this Listing,
+    // and its scope hash is the scope of exactly this bundle and generatedAt under the row's own buyer.
     exactRequest({ jobId, buyerBundle, generatedAt }) {
       requireJobId(jobId);
-      const found = admitted(jobId, buyerBundle?.presentedBy), scope = found && Number.isSafeInteger(generatedAt) ? scopeOf(jobId, buyerBundle, generatedAt) : null;
-      return Boolean(scope) && sellerContextScopeHash(scope) === found.scopeHash;
+      const row = acceptedRow(jobId, buyerBundle?.presentedBy), scope = row && Number.isSafeInteger(generatedAt) ? scopeOf(jobId, row.buyer, buyerBundle, generatedAt) : null;
+      return scope !== null && sellerContextScopeHash(scope) === row.contextScopeHash;
     },
-    // The scope of the job's completed context step for this buyer, from the
-    // durable records only: its admission record and that effect's completed,
-    // present answer in the journal, whose scope hashes to the admitted one.
+    // The scope of the job's completed context step for this buyer, from the durable records only: its accepted
+    // admission row and that operation's completed, present answer, whose scope hashes to the admitted one.
+    // It says which scope was admitted and answered, not that anything it names is still valid at its source.
     completedScope({ jobId, buyer }) {
       requireJobId(jobId);
-      const found = admitted(jobId, buyer), answer = found ? open().contextAnswer(jobId) : null;
-      if (answer?.status !== 200) return null;
-      let scope;
-      try { const value = JSON.parse(answer.text); scope = value?.disposition === 'present' ? value.value?.scope : null; } catch { return null; }
-      return keys(scope, SELLER_CONTEXT_SCOPE_KEYS) && scope.jobId === jobId && scope.buyer === buyer && sellerContextScopeHash(scope) === found.scopeHash ? structuredClone(scope) : null;
+      const row = acceptedRow(jobId, buyer), outcome = row ? readOrNull(contextOutcome, jobId) : null;
+      const scope = outcome?.status === 200 ? presentedScope(outcome.text) : null;
+      return keys(scope, SELLER_CONTEXT_SCOPE_KEYS) && scope.jobId === jobId && scope.buyer === row.buyer && sellerContextScopeHash(scope) === row.contextScopeHash ? deepFreeze(scope) : null;
     },
   });
 }
