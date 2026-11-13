@@ -1,36 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { installPackedPair } from './helpers/packed-install.mjs';
+import { LOADING_MODULES, entryPointClosure, packageDir } from './helpers/entry-point-closure.mjs';
 
-const packageDir = fileURLToPath(new URL('..', import.meta.url));
-// Shipped in the package although no entry point imports them yet.
-const SHIPPED_NOT_YET_WIRED = ['src/wallet/effect-fence.mjs', 'src/wallet/effect-history.mjs', 'src/wallet/effect-boundary.mjs'];
-function entryPointClosure() {
-  const files = new Set();
-  function visit(path) {
-    if (files.has(path)) return;
-    assert.ok(path.startsWith('src/') && path.endsWith('.mjs'), path);
-    files.add(path);
-    const source = readFileSync(join(packageDir, path), 'utf8');
-    for (const [, specifier] of source.matchAll(/\b(?:from|import)\s*(?:\(\s*)?['"](\.[^'"]+)['"]/g)) {
-      visit(relative(packageDir, resolve(packageDir, dirname(path), specifier)));
-    }
-  }
-  visit('src/index.mjs');
-  visit('src/wallet/durable-journal.mjs');
-  visit('src/wallet/node-wallet-session.mjs');
-  visit('src/substrate/demos.mjs');
-  for (const path of SHIPPED_NOT_YET_WIRED) files.add(path);
-  return [...files].sort();
-}
-
-// The quiet hook is registered by URL, so no import reaches it; the four entry points determine the rest of the closure.
-const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs'];
 test('npm pack ships the four entry points, their reviewed import closure and the quiet loading hook', t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-pack-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -53,6 +29,9 @@ test('npm pack ships the four entry points, their reviewed import closure and th
     assert.doesNotMatch(path, /(?:^|\/)(?:public|portal|portal-intent|config|seller-agent|seller-durable-state|switch-files|FIX-REPORT|\.fix-tmp|\.rr-tmp|\.stack)(?:[/.]|$)/, path);
   }
   assert.deepEqual(files, [...entryPointClosure(), ...LOADING_MODULES, 'package.json', 'README.md', 'LICENSE'].sort());
+  for (const path of ['src/dacs/seller-agent-error.mjs', 'src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-session-limits.mjs']) {
+    assert.ok(!files.includes(path), `${path} stays outside the buyer closure`);
+  }
   for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs']) assert.ok(files.includes(path), `${path} ships`);
 });
 
