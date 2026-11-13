@@ -8907,6 +8907,17 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged payment evidence adapter test after carrying the payment part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
+          "after": "75588decc6f7f051ba27c3f90bd6b9a04031cc45"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge",
       "files": [
         {

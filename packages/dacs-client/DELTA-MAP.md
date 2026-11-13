@@ -1471,6 +1471,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-rpc-clock.test.mjs:1` | 23a5c14494356db736948abef01b67602c97eea8 |
 | WF | delta(client): WF record the merged signer reservation test after carrying the payment-evidence part up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | fd5942a7d5ff71be33366dd8c04bd757e9f85ce6 |
+| WF | delta(client): WF record the merged payment evidence adapter test after carrying the payment part up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | 75588decc6f7f051ba27c3f90bd6b9a04031cc45 |
 | WF | delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | 7e44af5f5f7960f6430b02f5ea22fa26eca75fb3 |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | b9290c0f6b1673b099a1a66597ef46bdaa14c387 |
@@ -4490,6 +4492,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): WF record the merged payment evidence adapter test after carrying the payment part up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged payment evidence adapter test after carrying the payment part up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged payment evidence adapter test after carrying the payment part up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged payment evidence adapter test after carrying the payment part up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged payment evidence adapter test after carrying the payment part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
