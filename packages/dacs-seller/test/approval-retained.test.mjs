@@ -9,12 +9,13 @@ import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { address,seller,buyer,pin,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor } from './helpers/d5-policy-fixtures.mjs';
 import { installNoNetworkTrap } from './helpers/no-network-trap.mjs';
-const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,heldPolicyBudget,serializedPolicy }=await import('../src/devnet-demo/operator-approval.mjs');
 
 // The real approval ledger over a private temporary directory, a scripted purchase source and scripted manual
 // approvers. Nothing here touches a wallet, a journal or the network: a trap fails any fetch or socket call, and the
-// file fails if one was made, even when the code under test swallowed the error.
+// file fails if one was made, even when the code under test swallowed the error. The trap is installed before the
+// approval module is imported, so a call made while that module loads is recorded too.
 const networkTrap=installNoNetworkTrap();
+const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,heldPolicyBudget,serializedPolicy }=await import('../src/devnet-demo/operator-approval.mjs');
 after(()=>{networkTrap.restore();assert.deepEqual(networkTrap.calls,[],'the retained approval tests made a network call');});
 const MAX_TOTAL_OS='50000000000',LOCK_FILE='seller-state.lock',OPERATION_TIMEOUT_MS=30_000;
 const purchase=()=>({seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,paymentTxRef:{...PAYMENT_TX_REF},prePaymentOpen:false});
