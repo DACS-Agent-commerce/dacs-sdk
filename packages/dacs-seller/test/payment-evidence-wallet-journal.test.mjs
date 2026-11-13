@@ -196,12 +196,14 @@ test('a signed CREATE the node or the readback would refuse is not kept: exact p
 // and after the node's denomination fork (number or string amount, fees and
 // balance edits), with the node's fee or the SDK's own, for a storage fee of one
 // and of two 10240-byte chunks, and with the SR-2 source binding the signer adds
-// before signing. Each whose fee is at most the 50 DEM ceiling per write is kept
-// and sent as signed, and the SDK regenerates its edits and bytes (the node's
-// check): the journal compares only the ceiling with the node's fee, so up to
-// it the journal refuses none the node takes, and one unit above it the journal
-// refuses a CREATE the node would take.
-const NODE_FEE = { networkFee: 2, rpcFee: 3 }, CEILING_FEE = { networkFee: 20, rpcFee: 30 }, TWO_CHUNK_ARTIFACT = { artifact: { TEST: 'e'.repeat(12_000) } };
+// before signing. Each whose whole debit is at most the 50 DEM ceiling per write
+// is kept and sent as signed, and the SDK regenerates its edits and bytes (the
+// node's check): the journal compares only the ceiling with the node's fee, so
+// up to it the journal refuses none the node takes, and one unit above it the
+// journal refuses a CREATE the node would take.
+// A whole debit of exactly 50 DEM: the fees plus 1 DEM of gas and 1 DEM of storage fee per chunk.
+const NODE_FEE = { networkFee: 2, rpcFee: 3 }, TWO_CHUNK_ARTIFACT = { artifact: { TEST: 'e'.repeat(12_000) } };
+const CEILING_FEE = { networkFee: 18, rpcFee: 30 }, TWO_CHUNK_CEILING_FEE = { networkFee: 17, rpcFee: 30 };
 for (const [label, sign, extra] of [
   ['before the denomination fork, with the SDK fee', {}],
   ['before the denomination fork, with the node fee', { nodeFee: NODE_FEE }],
@@ -212,8 +214,10 @@ for (const [label, sign, extra] of [
   ['with the SR-2 source binding', { nodeFee: NODE_FEE, prepare: (content) => {
     Object.assign(content, { network: 'TEST-network', chainIdentity: 'TEST-chain' }); content.data[1].metadata.networkBinding = { network: 'TEST-network' };
   } }],
-  ['before the denomination fork, with a node fee exactly at the ceiling', { nodeFee: CEILING_FEE }],
-  ['after the denomination fork, with a node fee exactly at the ceiling', { postFork: true, nodeFee: CEILING_FEE }],
+  ['before the denomination fork, with a whole debit exactly at the ceiling', { nodeFee: CEILING_FEE }],
+  ['after the denomination fork, with a whole debit exactly at the ceiling', { postFork: true, nodeFee: CEILING_FEE }],
+  ['for a two-chunk artifact before the denomination fork, with a whole debit exactly at the ceiling', { nodeFee: TWO_CHUNK_CEILING_FEE }, TWO_CHUNK_ARTIFACT],
+  ['for a two-chunk artifact after the denomination fork, with a whole debit exactly at the ceiling', { postFork: true, nodeFee: TWO_CHUNK_CEILING_FEE }, TWO_CHUNK_ARTIFACT],
 ]) test(`the CREATE the SDK signs ${label} is kept and sent as signed`, async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
@@ -228,19 +232,21 @@ for (const [label, sign, extra] of [
   assert.equal(w.calls.sign, 1);
 });
 // One unit above the ceiling: a whole DEM before the fork (its fees are whole-DEM numbers), one OS after it.
-for (const [label, sign, feeOs] of [
-  ['before the denomination fork, with a node fee one DEM above the ceiling', { nodeFee: { ...CEILING_FEE, rpcFee: 31 } }, '51000000000'],
-  ['after the denomination fork, with a node fee one OS above the ceiling', { postFork: true, nodeFee: CEILING_FEE,
-    edit: (content) => { content.transaction_fee.rpc_fee = String(BigInt(content.transaction_fee.rpc_fee) + 1n); } }, '50000000001'],
+const oneOsMore = (content) => { content.transaction_fee.rpc_fee = String(BigInt(content.transaction_fee.rpc_fee) + 1n); };
+for (const [label, sign, debitOs, extra] of [
+  ['before the denomination fork, with a whole debit one DEM above the ceiling', { nodeFee: { ...CEILING_FEE, rpcFee: 31 } }, '51000000000'],
+  ['after the denomination fork, with a whole debit one OS above the ceiling', { postFork: true, nodeFee: CEILING_FEE, edit: oneOsMore }, '50000000001'],
+  ['for a two-chunk artifact before the denomination fork, with a whole debit one DEM above the ceiling', { nodeFee: { ...TWO_CHUNK_CEILING_FEE, rpcFee: 31 } }, '51000000000', TWO_CHUNK_ARTIFACT],
+  ['for a two-chunk artifact after the denomination fork, with a whole debit one OS above the ceiling', { postFork: true, nodeFee: TWO_CHUNK_CEILING_FEE, edit: oneOsMore }, '50000000001', TWO_CHUNK_ARTIFACT],
 ]) test(`the CREATE the SDK signs ${label} is refused before retention and never broadcast`, async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
   w.faults.sign.push(sign);
-  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: new RegExp(`a fee of ${feeOs} OS, above the 50 DEM ceiling per write`) });
+  await assert.rejects(journal.anchorEvidence(w.input(extra)), { code: 'wallet_sign_invalid', message: new RegExp(`a debit of ${debitOs} OS \\(fee, storage fee and gas\\), above the 50 DEM ceiling per write`) });
   assert.equal(await sdkRegeneratesSignedCreate(w.calls.signedContents[0]), true, 'the node would take it');
-  assert.equal(await journal.readSignedProjection(w.input()), null, 'nothing is kept');
+  assert.equal(await journal.readSignedProjection(w.input(extra)), null, 'nothing is kept');
   assert.equal(w.calls.broadcast.length, 0, 'nothing is broadcast');
-  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input(extra))).status, 'unsigned');
 });
 // A fee the journal cannot sum exactly is refused, never skipped. After the fork
 // only canonical OS strings are taken (see hostileCreateEdits).

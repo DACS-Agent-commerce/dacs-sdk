@@ -45,9 +45,10 @@
 //    burn, the storage program, the gas burn and the nonce increment by 1), as
 //    DEM numbers before the node's denomination fork and OS strings after it
 //    (amount "0"). The node's fee amounts are compared only with the per-write
-//    ceiling (WRITE_FEE_CEILING_OS, 50 DEM, effect-boundary.mjs): the network,
-//    rpc and additional fee, summed in OS (whole-DEM numbers before the fork),
-//    must not be above it, and a fee that cannot be summed exactly is refused.
+//    ceiling (WRITE_FEE_CEILING_OS, 50 DEM, effect-boundary.mjs): the whole
+//    debit, the network, rpc and additional fee plus the storage and gas burns,
+//    summed in OS (whole-DEM numbers before the fork), must not be above it, and
+//    a fee that cannot be summed exactly is refused.
 //    Anything else is refused (wallet_sign_invalid), and nothing is kept or
 //    sent. A kept CREATE whose fee is above the ceiling is never broadcast
 //    again: every call about its address is refused (write-fee-cap) before
@@ -168,8 +169,9 @@ function writeFeeOs(content) {
 // they would never be superseded.
 // Why the node fee and execution edits are not exactly those demosdk 4.0.16 sign writes for this CREATE, or null: the
 // node's (or the SDK's own) network and rpc fee with no additional fee or rpc address, and the edits GCRGeneration makes,
-// which the node regenerates and compares: storage fee burn, storage program, gas burn, nonce increment by 1. The fee
-// amount is compared only with the per-write ceiling: a fee that cannot be summed exactly, or sums above it, is refused.
+// which the node regenerates and compares: storage fee burn, storage program, gas burn, nonce increment by 1. The whole
+// debit (fee plus the storage and gas burns) is compared only with the per-write ceiling: a fee that cannot be summed
+// exactly, or a debit above it, is refused.
 function feeAndEditsProblem(content, from, op) {
   const zero = content.amount, postFork = zero === '0', fee = content.transaction_fee;
   const amount = (value) => (postFork ? typeof value === 'string' && OS_AMOUNT.test(value) : typeof value === 'number' && Number.isFinite(value) && value >= 0);
@@ -177,9 +179,10 @@ function feeAndEditsProblem(content, from, op) {
       || fee.additional_fee !== zero || fee.rpc_address !== null) return 'does not carry the node fee as the SDK signs it';
   const feeOs = writeFeeOs(content);
   if (feeOs === null) return 'carries a fee that cannot be summed exactly';
-  if (feeOs > WRITE_FEE_CEILING_OS) return `carries a fee of ${feeOs} OS, above ${FEE_CEILING}`;
   const dem = (value) => (postFork ? String(BigInt(value) * OS_PER_DEM) : value);
   const storageFee = Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(op.data), 'utf8') / STORAGE_FEE_CHUNK_BYTES));
+  const debitOs = feeOs + BigInt(storageFee + GAS_DEM) * OS_PER_DEM;
+  if (debitOs > WRITE_FEE_CEILING_OS) return `carries a debit of ${debitOs} OS (fee, storage fee and gas), above ${FEE_CEILING}`;
   const edits = [{ type: 'balance', operation: 'remove', isRollback: false, account: from, txhash: '', amount: dem(storageFee) },
     { type: 'storageProgram', target: op.storageAddress, isRollback: false, txhash: '', context: { operation: 'CREATE_STORAGE_PROGRAM', sender: from, data: { variables: op, metadata: op.metadata } } },
     { type: 'balance', account: from, operation: 'remove', amount: dem(GAS_DEM), txhash: '', isRollback: false },
