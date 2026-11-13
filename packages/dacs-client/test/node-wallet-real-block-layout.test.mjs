@@ -124,6 +124,20 @@ for (const [name, height, mutate, code = 'malformed_observation'] of refusals) {
   });
 }
 
+test('recorded buyer path accepts the recorded blocks after refusing a wrong block-one predecessor', async t => {
+  const w = await world(t), signs = await signSpy(t);
+  let wrong = true;
+  recorded(w, (answer, height) => { if (wrong && height === 1) answer.response.content.previousHash = otherHash; });
+  const refused = await w.send();
+  assert.equal(refused.success, false);
+  assert.ok(causes(w, refused).includes('identity_mismatch'));
+  assert.equal(signs(), 0);
+  wrong = false;
+  const result = await w.send();
+  assert.equal(result.success, true, JSON.stringify({ result, codes: causes(w, result) }));
+  assert.equal(w.node.broadcasts.length, 1);
+});
+
 for (const height of [1, 2]) {
   test(`recorded buyer path refuses block ${height} changing between binding and signature`, async t => {
     const w = await world(t), signs = await signSpy(t);

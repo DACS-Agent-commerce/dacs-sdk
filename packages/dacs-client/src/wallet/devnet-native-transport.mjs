@@ -252,6 +252,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           || (Object.hasOwn(second,'previousHash') && second.previousHash !== first.hash)
           || ['chainIdentity','genesisHash'].some((key)=>Object.hasOwn(second,key)&&second[key]!==firstIdentity)) fail('malformed_observation','the reviewed Node2 block-two continuation differs');
         if (second.hash !== reviewedBlockTwoHash) fail('identity_mismatch','the fresh Node2 block-two hash differs from exact admission review');
+        if (firstIdentity !== pinned.chainIdentity) fail('identity_mismatch','the fresh Node2 block-one predecessor differs from the pinned chain identity');
         const reads = canonicalize([first,second]);
         if (reviewedNode2Reads !== undefined && reads !== reviewedNode2Reads) fail('identity_mismatch','the reviewed Node2 blocks changed between identity reads');
         reviewedNode2Reads = reads;
