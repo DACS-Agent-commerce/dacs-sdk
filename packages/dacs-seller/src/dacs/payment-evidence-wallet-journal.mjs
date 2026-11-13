@@ -417,9 +417,13 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   const assertOwner = (expectedJournalId) => {
     if (expectedJournalId !== journalId) throw Object.assign(new Error('the original wallet journal is required'), { code: 'wallet_journal_changed' });
   };
-  async function ensureEvidence({expectedJournalId,attempt,authorize,...input}) {
+  // recheck() is the awaited part of the authorization: it runs after all of the
+  // wallet's own reads and signing, outside the lease, and a throw sends nothing
+  // (the kept row stays). The broadcast follows it with no wallet wait in between.
+  async function ensureEvidence({expectedJournalId,attempt,authorize,recheck,...input}) {
     assertKitOperationAdmitted('ensureEvidence');
     if(authorize!==undefined&&typeof authorize!=='function')throw new TypeError('evidence authorization must be a function');
+    if(recheck!==undefined&&typeof recheck!=='function')throw new TypeError('evidence re-check must be a function');
     // Asked synchronously with the wallet effect it guards. A refusal the caller throws (a lost job fence) keeps its own
     // code; any other answer than `true` is wallet_not_authorized.
     const permit=authorize?()=>{const answer=authorize();permitted(()=>answer);}:allow;
@@ -434,7 +438,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
       return prepareAnchor(input,permit);
     });
-    if(!signed.applied)await sendSigned(signed,permit);
+    if(!signed.applied){await recheck?.();await sendSigned(signed,permit);}
     return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};
   }
 

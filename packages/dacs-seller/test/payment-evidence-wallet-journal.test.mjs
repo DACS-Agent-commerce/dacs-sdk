@@ -812,6 +812,34 @@ for(const [label,authorize] of [['rejects',async()=>{throw new Error('TEST autho
  assert.equal(w.calls.sign,0);assert.equal(w.calls.broadcast.length,0);assert.equal(await journal.readSignedProjection(w.input()),null);
 });
 
+test('evidence is re-checked after the wallet signs: a refused re-check sends nothing, keeps the signed CREATE, and keeps its own code',async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ let verified=true;
+ const input={...w.input(),expectedJournalId:journal.journalId,authorize:()=>true,recheck:async()=>{if(!verified)throw Object.assign(new Error('TEST transfer no longer verifies'),{code:'TEST-transfer-gone'});}};
+ w.faults.sign.push(()=>{verified=false;});
+ await assert.rejects(journal.ensureEvidence(input),{code:'TEST-transfer-gone'});
+ assert.equal(w.calls.sign,1);assert.equal(w.calls.broadcast.length,0);
+ const kept=await journal.readSignedProjection(w.input());assert.ok(kept);
+ verified=true;const sent=await journal.ensureEvidence(input);
+ assert.equal(w.calls.sign,1,'the kept CREATE is sent, not signed anew');assert.equal(sent.txHash,kept.hash);assert.equal(w.calls.broadcast.length,1);
+});
+
+test('a kept CREATE is re-checked after its fate is read, and authorized in the same step as its broadcast',async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ w.faults.broadcast.push('drop');const first=await journal.anchorEvidence(w.input());
+ const order=[];
+ w.faults.nonce.push(()=>{order.push('nonce');});w.faults.state.push(()=>{order.push('state');});w.faults.broadcast.push(()=>{order.push('broadcast');});
+ await journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,attempt:{outcome:'sent',answer:first},
+   authorize:()=>{order.push('authorize');return true;},recheck:async()=>{order.push('recheck');}});
+ assert.deepEqual(order.slice(-5),['nonce','state','recheck','authorize','broadcast']);
+});
+
+test('an evidence re-check that is not a function is refused before anything is signed',async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ await assert.rejects(journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,authorize:()=>true,recheck:true}),TypeError);
+ assert.equal(w.calls.sign,0);assert.equal(w.calls.broadcast.length,0);
+});
+
 test('a withdrawal while the wallet reads the nonce does not end the process and signs no successor',t=>{
  const w=wallet(t),child=spawnSync(process.execPath,[fileURLToPath(new URL('./helpers/payment-evidence-authorization-withdrawn.mjs',import.meta.url)),w.path],{encoding:'utf8',timeout:60000});
  assert.equal(child.status,0,child.stderr);assert.deepEqual(JSON.parse(child.stdout),{signs:1,code:'wallet_not_authorized'});
