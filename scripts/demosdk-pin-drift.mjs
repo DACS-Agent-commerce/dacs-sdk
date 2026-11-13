@@ -1,5 +1,5 @@
 // Reports when the registry lists a newer @kynesyslabs/demosdk than the version
-// ci.yml pins, within the published peer range. Run by the scheduled
+// demosdk-compat.yml pins, within the published peer range. Run by the scheduled
 // demosdk-compat workflow only; pull-request CI never looks up the newest version.
 //
 // Usage: node scripts/demosdk-pin-drift.mjs <pinned-version> <range>
@@ -68,7 +68,7 @@ function main(pinned, range) {
     return EXIT_UNREADABLE;
   }
   if (compareVersions(newest, pinned) !== 0) {
-    console.error(`::error::${PACKAGE_NAME} ${newest} is the newest in ${range}, but ci.yml pins ${pinned}. Update the pin in ci.yml and demosdk-compat.yml.`);
+    console.error(`::error::${PACKAGE_NAME} ${newest} is the newest in ${range}, but demosdk-compat.yml pins ${pinned}. Update every pin in demosdk-compat.yml.`);
     return EXIT_DRIFT;
   }
   console.log(`${PACKAGE_NAME} ${pinned} is the newest in ${range}`);
