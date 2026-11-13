@@ -899,6 +899,19 @@ test('a manual approval written while a waiver prompt is pending is a write of i
  await seventhWriteIsRefused(fixture,'pending prompt then stop');
 });
 
+for(const [first,second] of [[true,true],[true,false],[false,true],[false,false]])test(`a held attempt records one manual answer: answering ${first} then ${second} for the same attemptId leaves one manual line and approves nothing the second time`,async t=>{
+ const fixture=await ledgerFixture(t,{limits:{maxWriteTotalOs:'3000000000'}}),request=evidence();
+ const held=await fixture.restart().decide(request);assert.equal(held.outcome,'held');
+ const answers=[first,second],manual=manualApprover(fixture,{authorize:async()=>answers.shift()});
+ assert.equal(await manual(request,undefined,{attemptId:held.attemptId}),first);
+ const afterFirst=await text(fixture.evidencePath);
+ assert.equal(await manual(request,undefined,{attemptId:held.attemptId}),false,'the second answer approves nothing');
+ assert.equal(await text(fixture.evidencePath),afterFirst,'the second answer writes no line');
+ const manualLines=(await lines(fixture.evidencePath)).filter(line=>line.attemptId===held.attemptId&&!line.approvalMode);
+ assert.deepEqual(manualLines.map(line=>line.decision),[first?'approved':'rejected']);
+ assert.doesNotThrow(()=>parsePolicyLedger(afterFirst));
+});
+
 test('a manual answer that names a waiverId is recorded only for an open, unanswered refusal of the same bytes: an unknown, malformed, other-request, repeated or attemptId-combined id writes nothing and answers false, and the ledger still parses',async t=>{
  const {fixture,manual}=await answeringFixture(t),{waiverId}=await fixture.restart().authorizeRetained(waivable());
  const unchanged=async(work,why)=>{const before=await text(fixture.evidencePath);assert.equal(await work(),false,why);assert.equal(await text(fixture.evidencePath),before,`${why}: nothing written`);};
