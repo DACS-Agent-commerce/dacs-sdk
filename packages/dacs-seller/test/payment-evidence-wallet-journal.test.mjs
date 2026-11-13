@@ -554,18 +554,28 @@ test('refuses the evidence CREATE an honest SDK signs with an inflated node fee 
   assert.equal(w.calls.broadcast.length, 0);
 });
 
-// A CREATE an earlier build kept with a fee above the ceiling is never sent
-// again: every question about its address is refused (write-fee-cap) with its
-// hash and fee, before any chain read, so the agent holds it for the operator.
-test('a kept evidence CREATE whose fee is above the ceiling is held: not rebroadcast, not read, not signed anew', async (t) => {
+// A CREATE kept with a whole debit above the ceiling is never sent again:
+// every question about its address is refused (write-fee-cap) with its hash and
+// debit, before any chain read, so the agent holds it for the operator.
+for (const [label, nodeFee, debitOs] of [
+  ['whose fee is above the ceiling', { networkFee: 20, rpcFee: 31 }, '53000000000'],
+  ['whose fee is exactly the ceiling and whose storage fee and gas are on top', { networkFee: 20, rpcFee: 30 }, '52000000000'],
+]) test(`a kept evidence CREATE ${label} is held: not rebroadcast, not read, not signed anew`, async (t) => {
   const w = wallet(t), journal = w.open(); t.after(() => journal.close());
-  const input = w.input(), kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1, nodeFee: { networkFee: 20, rpcFee: 31 } });
+  const input = w.input(), kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1, nodeFee });
   keepUncheckedCreate(w.path, 'evidence_creates', input, kept);
-  const held = { code: 'write-fee-cap', message: `the wallet journal keeps the signed CREATE ${kept.hash}, whose fee of 51000000000 OS is above the 50 DEM ceiling per write; it is held and never broadcast again` };
+  const held = { code: 'write-fee-cap', message: `the wallet journal keeps the signed CREATE ${kept.hash}, whose debit of ${debitOs} OS (fee, storage fee and gas) is above the 50 DEM ceiling per write; it is held and never broadcast again` };
   await assert.rejects(journal.reconcilePaymentEvidence(input), held, 'reconcile');
   await assert.rejects(journal.anchorEvidence(input), held, 'anchor');
   await assert.rejects(journal.ensureEvidence({ ...input, expectedJournalId: journal.journalId }), held, 'ensure');
   assert.deepEqual([w.calls.sign, w.calls.broadcast.length, w.calls.reads.length], [0, 0, 0]);
+});
+test('a kept evidence CREATE whose whole debit is exactly the ceiling is not held and is sent', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  const input = w.input(), kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1, nodeFee: { networkFee: 18, rpcFee: 30 } });
+  keepUncheckedCreate(w.path, 'evidence_creates', input, kept);
+  assert.equal((await journal.anchorEvidence(input)).txHash, kept.hash);
+  assert.equal(w.calls.broadcast.length, 1);
 });
 
 for (const [label, change] of [

@@ -50,7 +50,7 @@
 //    summed in OS (whole-DEM numbers before the fork), must not be above it, and
 //    a fee that cannot be summed exactly is refused.
 //    Anything else is refused (wallet_sign_invalid), and nothing is kept or
-//    sent. A kept CREATE whose fee is above the ceiling is never broadcast
+//    sent. A kept CREATE whose whole debit is above the ceiling is never broadcast
 //    again: every call about its address is refused (write-fee-cap) before
 //    any wallet read, so the agent holds it for the operator;
 //  - broadcast({ signedTransaction, txHash }, { signal }): sends exactly these bytes. The
@@ -161,6 +161,17 @@ function writeFeeOs(content) {
   return total;
 }
 
+// The storage fee in DEM a CREATE of this operation burns: 1 DEM per started chunk of its program's JSON.
+const storageFeeDem = (op) => Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(op.data), 'utf8') / STORAGE_FEE_CHUNK_BYTES));
+
+// The whole debit of a signed CREATE, in OS: its fees plus the storage fee and gas burns. Null when the fee cannot be
+// summed exactly or the content has no operation. The one sum both ceiling checks compare.
+function wholeDebitOs(content) {
+  const feeOs = writeFeeOs(content), op = content?.data?.[1];
+  if (feeOs === null || !object(op)) return null;
+  return feeOs + BigInt(storageFeeDem(op) + GAS_DEM) * OS_PER_DEM;
+}
+
 // Why signCreate's answer is not the signed CREATE it names, or null. The fate
 // of a kept CREATE is read by its hash and nonce, so both must be the bytes'.
 // The bytes must also be what the node executes and the SR-2 readback
@@ -177,11 +188,10 @@ function feeAndEditsProblem(content, from, op) {
   const amount = (value) => (postFork ? typeof value === 'string' && OS_AMOUNT.test(value) : typeof value === 'number' && Number.isFinite(value) && value >= 0);
   if (!object(fee) || Object.keys(fee).join() !== 'network_fee,rpc_fee,additional_fee,rpc_address' || !amount(fee.network_fee) || !amount(fee.rpc_fee)
       || fee.additional_fee !== zero || fee.rpc_address !== null) return 'does not carry the node fee as the SDK signs it';
-  const feeOs = writeFeeOs(content);
-  if (feeOs === null) return 'carries a fee that cannot be summed exactly';
+  const debitOs = wholeDebitOs(content);
+  if (debitOs === null) return 'carries a fee that cannot be summed exactly';
   const dem = (value) => (postFork ? String(BigInt(value) * OS_PER_DEM) : value);
-  const storageFee = Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(op.data), 'utf8') / STORAGE_FEE_CHUNK_BYTES));
-  const debitOs = feeOs + BigInt(storageFee + GAS_DEM) * OS_PER_DEM;
+  const storageFee = storageFeeDem(op);
   if (debitOs > WRITE_FEE_CEILING_OS) return `carries a debit of ${debitOs} OS (fee, storage fee and gas), above ${FEE_CEILING}`;
   const edits = [{ type: 'balance', operation: 'remove', isRollback: false, account: from, txhash: '', amount: dem(storageFee) },
     { type: 'storageProgram', target: op.storageAddress, isRollback: false, txhash: '', context: { operation: 'CREATE_STORAGE_PROGRAM', sender: from, data: { variables: op, metadata: op.metadata } } },
@@ -335,10 +345,10 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   const keptFor = (input) => {
     if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const kept = rows(input.logicalAddress);
-    // A kept CREATE whose fee is above the ceiling is never sent again, and nothing more is signed for its address.
+    // A kept CREATE whose whole debit is above the ceiling is never sent again, and nothing more is signed for its address.
     for (const row of kept) {
-      const feeOs = writeFeeOs(signedContent(row.signed_transaction));
-      if (feeOs !== null && feeOs > WRITE_FEE_CEILING_OS) throw Object.assign(new Error(`the wallet journal keeps the signed CREATE ${row.tx_hash}, whose fee of ${feeOs} OS is above ${FEE_CEILING}; it is held and never broadcast again`), { code: 'write-fee-cap' });
+      const debitOs = wholeDebitOs(signedContent(row.signed_transaction));
+      if (debitOs !== null && debitOs > WRITE_FEE_CEILING_OS) throw Object.assign(new Error(`the wallet journal keeps the signed CREATE ${row.tx_hash}, whose debit of ${debitOs} OS (fee, storage fee and gas) is above ${FEE_CEILING}; it is held and never broadcast again`), { code: 'write-fee-cap' });
     }
     if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     const live = kept.find((row) => row.superseded_at === null);

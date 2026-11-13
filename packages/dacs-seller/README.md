@@ -526,9 +526,19 @@ per-client limiter so one client cannot exhaust the shared request budget.
   summed exactly is refused. Below the ceiling the fee is not compared with any
   expected amount.
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
-  sent. A kept CREATE whose fee is above the ceiling is never broadcast again:
-  every call about its address is refused with `write-fee-cap`, naming its
-  hash and fee, so the claim stays held for the operator.
+  sent. A kept CREATE whose whole debit is above the ceiling is never
+  broadcast again: `anchorEvidence`, `reconcilePaymentEvidence`,
+  `ensureEvidence` and the Deliverable journal's `resume` and
+  `submitAuthorized` refuse its address with `write-fee-cap`, naming its hash
+  and debit, before any wallet read or signature. `readSignedProjection` still
+  returns the held write.
+  The operator sees a held write as the `write-fee-cap` reason with the hash
+  and cost of the write. On the payment evidence path it is `anchorError`
+  (`code` and `message`) on the held answer of the seller agent. On the
+  Deliverable path it is the `reason` of the held, pending or indeterminate
+  delivery outcome, which starts with `write-fee-cap:`.
+  Clearing a held write is not built yet: there is no operator command for it
+  (tracked in issue #1640).
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
