@@ -93,7 +93,8 @@ charging.
 
 Both reserve paths count live nonce records and retained accounting rows against maxRecords. An accounting row stops
 counting after its request retention window unless it is still reserving or is the first non-refused row for its job
-and route while the job is open; once the job has ended every expired row except a reserving one stops counting. Reservation and hold records remain durable when they stop counting.
+and route while the job is not retired; once the job has been retired (it has ended, all its work is finished and its
+retention windows have passed) every expired row except a reserving one stops counting. Reservation and hold records remain durable when they stop counting.
 
 Nonce retention covers the full minute, with at most 120 new rows per buyer per minute. Cached-effect retries and
 unknown-job state reads insert no rows. Expired completed and no-effect nonces can be reclaimed before new work; the

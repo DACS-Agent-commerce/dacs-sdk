@@ -58,7 +58,8 @@ allotment is free. A successful context completion returns only the context
 slot; an aborted start, a failed or non-validated context and a terminal DACS-5
 session return every open slot. Returned units never reduce what has been
 charged, but a charge stops counting against the budget once its request has
-expired and its job has ended, unless a crash left it still reserving. Charges that no longer count stay in the store,
+expired and its job has been retired (the job has ended, all its work is finished and its retention windows have
+passed), unless a crash left it still reserving. Charges that no longer count stay in the store,
 and each admission still scans them; they are never pruned. The host
 composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
