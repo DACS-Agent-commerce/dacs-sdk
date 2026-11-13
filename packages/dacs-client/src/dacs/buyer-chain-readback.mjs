@@ -158,11 +158,13 @@ export function createBuyerChainReadback({ sourceCapability, now = () => Date.no
     const read = await authenticated({ logicalAddress: address, writer, artifactKind: 'FinalityCommitmentRecord', signedProjection });
     if (read.status !== 'present') { immutable.delete(cacheKey); return { ...read, address }; }
     const refuse = () => { throw new Error('the buyer never signs or submits a commitment'); };
+    // The anchored tuple the wire's continuation input takes (DC-CW15), returned with the verified result.
+    const anchored = { record: read.artifact, nativeAddress: read.receipt.nativeAddress, anchorTxRef: demosSr2TxRef(read.receipt), anchorReceipt: read.receipt };
     let receiptContradicted = false;
     try {
       const finalized = await commitFixedPriceAgreement({ agreement, verifiedListing: { disposition: 'verified', listing, pin: listingPin(listing) }, session, createdAt: now(),
         commitmentSigner: { algorithm: 'ed25519', signer: session.orchestrator, sign: refuse } }, {
-        resolve: async () => ({ disposition: 'present', anchored: { record: read.artifact, nativeAddress: read.receipt.nativeAddress, anchorTxRef: demosSr2TxRef(read.receipt), anchorReceipt: read.receipt } }),
+        resolve: async () => ({ disposition: 'present', anchored }),
         verifyAnchorReceipt: async (anchored) => {
           const verdict = await adapter.verifyReceipt({ receipt: anchored.anchorReceipt, logicalAddress: address, artifact: anchored.record, expectedWriter: writer,
           artifactKind: 'FinalityCommitmentRecord', receiptContentHash: contentHash(anchored.record), signedProjection });
@@ -173,7 +175,7 @@ export function createBuyerChainReadback({ sourceCapability, now = () => Date.no
       }, commitmentVerifier);
       if (!finalized.resumed || finalized.recordKind !== 'finality' || finalized.record.signature?.signer !== writer) { immutable.delete(cacheKey); return { ...contradicted('commitment was not resumed from native readback'), address }; }
       const verified = { status: 'verified', address, ref: { anchor: { kind: 'storage-program', locator: address }, contentHash: contentHash(finalized.record), signer: session.orchestrator },
-        contentHash: contentHash(finalized.record), signer: finalized.record.signature.signer, committedAt: finalized.committedAt, anchorReceipt: finalized.anchorReceipt,
+        contentHash: contentHash(finalized.record), signer: finalized.record.signature.signer, committedAt: finalized.committedAt, anchorReceipt: finalized.anchorReceipt, anchored,
         substrate: 'source-native-one-node', chainSignedCreate: read.signedProjection };
       immutable.put(cacheKey, verified);
       return verified;

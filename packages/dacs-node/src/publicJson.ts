@@ -27,6 +27,11 @@ export interface DacsPublicJsonReadDependenciesV1 {
 }
 
 export interface DacsPublicJsonReadOptionsV1 {
+  /**
+   * Deadline for the whole read, host resolution included. Body bytes do not extend it.
+   * The built-in HTTPS request enforces it. A `dependencies.request` must stop within the
+   * `timeoutMs` it receives, which is the time left after host resolution.
+   */
   timeoutMs?: number;
   maxBytes?: number;
   dependencies?: Readonly<DacsPublicJsonReadDependenciesV1>;
@@ -109,20 +114,45 @@ function pinnedHttpsRequest(input: Readonly<{
         }
         chunks.push(bytes);
       });
-      response.once("end", () => resolve(Object.freeze({
+      response.once("end", () => settle(() => resolve(Object.freeze({
         status: response.statusCode ?? 0,
         contentType: typeof response.headers["content-type"] === "string"
           ? response.headers["content-type"] : "",
         bytes: Uint8Array.from(Buffer.concat(chunks, total)),
         redirected: (response.statusCode ?? 0) >= 300 && (response.statusCode ?? 0) < 400,
-      })));
+      }))));
+      // `end` is emitted before `close` on a complete response, so a close or
+      // error that arrives first means the server cut the body short.
+      const rejectIncomplete = () => settle(() => reject(
+        new DacsPublicJsonError("public-json-response-incomplete"),
+      ));
+      response.once("close", rejectIncomplete);
+      response.once("error", rejectIncomplete);
     });
-    request.setTimeout(input.timeoutMs, () => {
+    // One timer for the whole exchange: bytes arriving do not restart it.
+    const deadline = setTimeout(() => {
       request.destroy(new DacsPublicJsonError("public-json-timeout"));
-    });
-    request.once("error", reject);
+    }, input.timeoutMs);
+    const settle = (finish: () => void) => {
+      clearTimeout(deadline);
+      finish();
+    };
+    request.once("error", (error) => settle(() => reject(error)));
     request.end();
   });
+}
+
+/** Rejects with `public-json-timeout` when `work` has not settled within `timeoutMs`. */
+async function withinDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new DacsPublicJsonError("public-json-timeout")), timeoutMs);
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const defaultDependencies: Readonly<DacsPublicJsonReadDependenciesV1> = Object.freeze({
@@ -152,20 +182,28 @@ export async function readDacsPublicJsonV1(
     throw new DacsPublicJsonError("public-json-url-unsafe");
   }
   const dependencies = options.dependencies ?? defaultDependencies;
+  const startedAt = performance.now();
   let addresses: readonly string[];
   try {
-    addresses = [...new Set(await dependencies.resolveHost(url.hostname))];
-  } catch {
+    addresses = [...new Set(await withinDeadline(
+      Promise.resolve(dependencies.resolveHost(url.hostname)), timeoutMs,
+    ))];
+  } catch (error) {
+    if (error instanceof DacsPublicJsonError && error.reasonCode === "public-json-timeout") {
+      throw error;
+    }
     throw new DacsPublicJsonError("public-json-dns-unavailable");
   }
   if (addresses.length === 0) throw new DacsPublicJsonError("public-json-dns-empty");
   if (!addresses.every(isDacsPublicAddressV1)) {
     throw new DacsPublicJsonError("public-json-address-unsafe");
   }
+  const remainingMs = Math.ceil(timeoutMs - (performance.now() - startedAt));
+  if (remainingMs <= 0) throw new DacsPublicJsonError("public-json-timeout");
   let response: Readonly<DacsPublicJsonResponseV1>;
   try {
     response = await dependencies.request({
-      url: url.toString(), approvedAddresses: addresses, timeoutMs, maxBytes,
+      url: url.toString(), approvedAddresses: addresses, timeoutMs: remainingMs, maxBytes,
     });
   } catch (error) {
     if (error instanceof DacsPublicJsonError) throw error;

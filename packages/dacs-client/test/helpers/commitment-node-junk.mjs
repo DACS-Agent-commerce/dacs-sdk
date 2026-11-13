@@ -12,7 +12,7 @@ import { linkPackagedWallet } from './offline-agreement-fixture.mjs';
 import { tool, tokenFrom } from './flows.mjs';
 import { post } from './public-sr2-projection-flow.mjs';
 import { createOfflineAgreementBrokerClient } from '../../public/portal/offline-agreement-broker.mjs';
-import { createSellerTransportClientAuth } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportClientAuth } from './legacy-seller-client-auth.mjs';
 import { createDevnetNativeCommitmentCapability } from '../../src/devnet-demo/commitment-consumer.mjs';
 import { IMMUTABLE_READBACK_TTL_MS } from '../../src/util/immutable-readbacks.mjs';
 

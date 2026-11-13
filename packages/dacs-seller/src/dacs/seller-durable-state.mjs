@@ -359,12 +359,14 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         return row ? verified(row.value, 'context', 'context') : null;
       },
       retainContext(context) {
+        // The stored form is the JSON copy, so the comparison uses that copy too.
+        const snapshot = clone(context);
         transaction(() => {
           const row = get('SELECT value FROM seller_meta WHERE key=?', 'context');
           if (!row) fail('seller_state_corrupt');
           const previous = verified(row.value, 'context', 'context');
-          if (previous === null) run('UPDATE seller_meta SET value=? WHERE key=?', authenticated('context', 'context', context), 'context');
-          else if (!same(previous, context)) fail('seller_state_context_conflict');
+          if (previous === null) run('UPDATE seller_meta SET value=? WHERE key=?', authenticated('context', 'context', snapshot), 'context');
+          else if (!same(previous, snapshot)) fail('seller_state_context_conflict');
         });
       },
       sessions: () => db.prepare('SELECT job FROM seller_jobs ORDER BY job').all().map(({ job }) => load(job).session),
@@ -388,13 +390,16 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       loadSession: (jobId) => load(jobId)?.session ?? null,
       saveSession(session) {
         const jobId = session.jobId;
+        // The row is keyed by `jobId` but signed over this copy: they must agree.
+        const snapshot = clone(session);
+        if (snapshot.jobId !== jobId) fail('seller_state_job_invalid');
         const committed = transaction(() => {
           const held = fence(jobId);
           const previous = load(jobId);
           if ((previous?.revision ?? 0) !== held.revision) fail('seller_state_fenced');
           if (!previous && activeSessionCount() >= maxJobs) fail('seller_state_capacity');
           const revision = held.revision + 1;
-          const value = authenticated('session', jobId, { revision, session });
+          const value = authenticated('session', jobId, { revision, session: snapshot });
           run('INSERT INTO seller_jobs VALUES (?,?,?) ON CONFLICT(job) DO UPDATE SET revision=excluded.revision,value=excluded.value', jobId, revision, value);
           return { held, revision };
         });

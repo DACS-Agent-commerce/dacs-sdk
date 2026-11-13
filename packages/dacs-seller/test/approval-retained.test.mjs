@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{ after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod,mkdir,mkdtemp,readFile,rm,appendFile } from 'node:fs/promises';
 import { existsSync,readFileSync,statSync } from 'node:fs';
@@ -8,10 +8,15 @@ import { createHash,randomUUID } from 'node:crypto';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { address,seller,buyer,pin,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor } from './helpers/d5-policy-fixtures.mjs';
-const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,heldPolicyBudget,serializedPolicy }=await import('../src/devnet-demo/operator-approval.mjs');
+import { installNoNetworkTrap } from './helpers/no-network-trap.mjs';
 
 // The real approval ledger over a private temporary directory, a scripted purchase source and scripted manual
-// approvers. Nothing here touches a wallet, a journal or the network.
+// approvers. Nothing here touches a wallet, a journal or the network: a trap fails any fetch or socket call, and the
+// file fails if one was made, even when the code under test swallowed the error. The trap is installed before the
+// approval module is imported, so a call made while that module loads is recorded too.
+const networkTrap=installNoNetworkTrap();
+const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,heldPolicyBudget,serializedPolicy }=await import('../src/devnet-demo/operator-approval.mjs');
+after(()=>{networkTrap.restore();assert.deepEqual(networkTrap.calls,[],'the retained approval tests made a network call');});
 const MAX_TOTAL_OS='50000000000',LOCK_FILE='seller-state.lock',OPERATION_TIMEOUT_MS=30_000;
 const purchase=()=>({seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,paymentTxRef:{...PAYMENT_TX_REF},prePaymentOpen:false});
 const unpaid=()=>({...purchase(),paymentObserved:false,paymentTxRef:null,prePaymentOpen:true});
@@ -183,10 +188,21 @@ test('two processes settling the same ledgerId through the policy lock produce o
  await rejectsWith(parent.retained.settle(bindingOf(prepared),'spent'),'seller_state_locked');
  assert.deepEqual(await completions(fixture.evidencePath,prepared.ledgerId),[]);
  const result=once(child,'message'),exited=once(child,'exit');child.send({type:'continue'});
- assert.deepEqual((await result)[0],{type:'result'});assert.equal((await exited)[0],0);
+ assert.deepEqual((await result)[0],{type:'result',networkCalls:[]});assert.equal((await exited)[0],0);
  assert.equal((await completions(fixture.evidencePath,prepared.ledgerId)).length,1);
  await parent.retained.settle(bindingOf(prepared),'spent');
  assert.equal((await completions(fixture.evidencePath,prepared.ledgerId)).length,1);
+});
+
+test('the settle worker reports a network call that the code it runs swallowed',{timeout:15_000},async t=>{
+ const fixture=await ledgerFixture(t),parent=fixture.compose(fixture.restart()),prepared=await parent.retained.prepare(evidence());
+ const child=fork(new URL('./helpers/approval-settle-worker.mjs',import.meta.url),[],{execArgv:['--import',new URL('./helpers/swallowed-fetch-preload.mjs',import.meta.url).href],stdio:['ignore','ignore','pipe','ipc']});
+ t.after(async()=>{if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill('SIGKILL');await exited;}});
+ const reading=once(child,'message');child.send({evidencePath:fixture.evidencePath,maxTotalOs:fixture.maxTotalOs,...bindingOf(prepared)});
+ assert.deepEqual((await reading)[0],{type:'reading'});
+ const result=once(child,'message'),exited=once(child,'exit');child.send({type:'continue'});
+ const [message]=await result;assert.equal(message.type,'result');
+ assert.ok(message.networkCalls.length>0&&message.networkCalls.every(name=>name==='fetch'),'the swallowed fetch is reported');assert.equal((await exited)[0],0);
 });
 
 test('first retained.prepare through real composeSellerApproval and the real ledger completes with exactly one policy-lock acquisition; an independent ledger operation then completes',async t=>{
@@ -897,6 +913,19 @@ test('a manual approval written while a waiver prompt is pending is a write of i
  await hanging.stop();await rejectsWith(stopping,'operator_closing');
  assert.equal((await parsed(fixture.evidencePath)).rows.some(row=>row.retainedAnswer),false);
  await seventhWriteIsRefused(fixture,'pending prompt then stop');
+});
+
+for(const [first,second] of [[true,true],[true,false],[false,true],[false,false]])test(`a held attempt records one manual answer: answering ${first} then ${second} for the same attemptId leaves one manual line and approves nothing the second time`,async t=>{
+ const fixture=await ledgerFixture(t,{limits:{maxWriteTotalOs:'3000000000'}}),request=evidence();
+ const held=await fixture.restart().decide(request);assert.equal(held.outcome,'held');
+ const answers=[first,second],manual=manualApprover(fixture,{authorize:async()=>answers.shift()});
+ assert.equal(await manual(request,undefined,{attemptId:held.attemptId}),first);
+ const afterFirst=await text(fixture.evidencePath);
+ assert.equal(await manual(request,undefined,{attemptId:held.attemptId}),false,'the second answer approves nothing');
+ assert.equal(await text(fixture.evidencePath),afterFirst,'the second answer writes no line');
+ const manualLines=(await lines(fixture.evidencePath)).filter(line=>line.attemptId===held.attemptId&&!line.approvalMode);
+ assert.deepEqual(manualLines.map(line=>line.decision),[first?'approved':'rejected']);
+ assert.doesNotThrow(()=>parsePolicyLedger(afterFirst));
 });
 
 test('a manual answer that names a waiverId is recorded only for an open, unanswered refusal of the same bytes: an unknown, malformed, other-request, repeated or attemptId-combined id writes nothing and answers false, and the ledger still parses',async t=>{

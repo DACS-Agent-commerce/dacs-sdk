@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, posix, resolve } from "node:path";
+import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectAuditVersions } from "./check-npm-advisories.mjs";
 import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
@@ -1286,13 +1286,16 @@ export function extractPolicyFindings(readInput) {
 // engine ones also pin the required range. An SBOM rule elides the installed
 // and required versions after `invalid:`/`extraneous:` and after `required by`,
 // which npm prints from the tree, so a rule matches the same package pair.
+// Only a plain version (no `@` or `:`) is elided. An alias pkgid,
+// `<name>@npm:<package>@<version>`, installs another package under the name,
+// so it stays in the rule and matches no recorded line.
 const sameIdentity = (keys) => (item, known) => keys.every(key => JSON.stringify(item?.[key]) === JSON.stringify(known?.[key]));
 const gitIdentity = sameIdentity(["location", "field", "value", "version", "integrity"]);
 const engineIdentity = sameIdentity(["package", "location", "integrity", "required"]);
 const imageIdentity = sameIdentity(["name", "location", "version", "integrity"]);
 const sbomProblemRule = (line) => typeof line === "string" ? line
-  .replace(/^((?:invalid|extraneous): (?:@[^\s@/]+\/)?[^\s@]+)@[^\s,]+/, "$1@*")
-  .replace(/( required by (?:@[^\s@/]+\/)?[^\s@]+)@\S+$/, "$1@*") : line;
+  .replace(/^((?:invalid|extraneous): (?:@[^\s@/]+\/)?[^\s@]+)@[^\s,@:]+(?=[\s,]|$)/, "$1@*")
+  .replace(/( required by (?:@[^\s@/]+\/)?[^\s@]+)@[^\s@:]+$/, "$1@*") : line;
 const sbomIdentity = (item, known) => typeof item === "string" && sbomProblemRule(item) === sbomProblemRule(known);
 const allListed = (items, known, same) => Array.isArray(known) && items.every(item => known.some(entry => same(item, entry)));
 const listedState = (items, known, same) => !Array.isArray(items) ? "blocked" : items.length === 0 ? "passed"
@@ -1469,9 +1472,19 @@ export function registryAuditDriftDisposition(summary, baseline = JSON.parse(rea
 }
 
 // Removes a previous report before its inputs are read, so a failed repeat
-// leaves no stale result; an output naming an input is refused first.
+// leaves no stale result. The output is looked at as the operating system
+// resolves it, without following a final link (removing a link deletes only the
+// link), and refused when it is the same file as an input, however either path
+// is spelled.
 function invalidateReport(output, inputs) {
-  if (inputs.some(input => resolve(input) === resolve(output))) throw new Error("evidence input and output must differ");
+  let existing;
+  try { existing = lstatSync(output, { bigint: true }); } catch { existing = null; }
+  if (existing !== null && inputs.some(input => {
+    try {
+      const evidence = statSync(input, { bigint: true });
+      return evidence.dev === existing.dev && evidence.ino === existing.ino;
+    } catch { return false; }
+  })) throw new Error("evidence input and output must differ");
   rmSync(output, { force: true });
 }
 
@@ -1495,7 +1508,7 @@ if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.u
     if (!auditPath || !lockPath || !output) {
       throw new Error("usage: --audit-policy <npm-audit.json> <generated-package-lock.json> <output>");
     }
-    invalidateReport(output, [auditPath, lockPath]);
+    invalidateReport(output, [auditPath, lockPath, fileURLToPath(baselinePath)]);
     const audit = JSON.parse(readRequiredEvidence(auditPath));
     let lock = null;
     try { lock = JSON.parse(readEvidence(lockPath)); } catch { /* missing or unreadable: applicability is unevaluated */ }

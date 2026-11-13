@@ -14,7 +14,9 @@ const {proposalTimeProblem}=await import('../src/dacs/seller-proposal-time.mjs')
 test('R1 only the exact admitted request extends proposal time, and the Agreement deadline remains exclusive',async t=>{
  const w=await world(t),input=await w.wire(),body=JSON.parse(input.text),request=w.auth.readRequest(input.header);
  const {createSellerContextRecords}=await import('../src/dacs/seller-context-route.mjs');
- const records=createSellerContextRecords({listing:w.listing,store:()=>w.store});
+ // The old store's admission row, shaped as K1's admission row the records read.
+ const admission=jobId=>{const old=w.store.contextAdmission(jobId);return old&&{jobId,buyer:old.buyer,seller:old.seller,listingPin:old.listingPin,contextScopeHash:old.scopeHash,state:'admitted'};};
+ const records=createSellerContextRecords({listing:w.listing,admission,contextOutcome:()=>null});
  // Actual admission record and exact-request predicate, then the helper used by the agent.
  const reservation=await w.route.reserve(request,body,w.store);assert.equal(reservation.disposition,'perform');
  const exact={jobId:JOBS[0],buyerBundle:body.buyerIdentityBundle,generatedAt:T};assert.equal(records.exactRequest(exact),true);

@@ -21,7 +21,7 @@ import { createNativePaymentEvidenceConsumer } from '../../src/dacs/native-payme
 import { createSellerSr2AgreementAnchor } from '../../src/dacs/seller-sr2-agreement-consumer.mjs';
 import { createSourceDemoSellerTransport } from '../../src/dacs/source-demo-seller-transport.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
-import { createSellerTransportServerAuth, createSellerTransportStore } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportServerAuth, createSellerTransportStore } from '../../../dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { DEM_RAIL } from '../../src/dacs/listing.mjs';
 import { CALLBACK_ORIGIN } from './harness.mjs';
 

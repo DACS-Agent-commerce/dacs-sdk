@@ -44,32 +44,6 @@ const buyerPublicKey = rawPublicKey(publicKeyFromSeed(BUYER_SEED));
 const buyerHex = Buffer.from(buyerPublicKey).toString("hex");
 const buyerDid = `did:demos:agent:${buyerHex}`;
 
-function signedIdentityBundle(
-  presentedBy: string,
-  privateKey: typeof buyerPriv,
-): IdentityBundle {
-  const bundle: IdentityBundle = {
-    bundleVersion: "1",
-    presentedBy,
-    presentedAt: 1_780_000_000_000,
-    claims: [{ ref: presentedBy }],
-    presentation: {
-      kind: "per-claim",
-      signatures: [{ ref: presentedBy, signature: "pending" }],
-    },
-  };
-  if (bundle.presentation.kind !== "per-claim") throw new Error("fixture drift");
-  bundle.presentation.signatures[0]!.signature = Buffer.from(
-    ed25519Sign(
-      signedBytes("dacs-bundle-presentation:v1:", identityBundleHash(bundle)),
-      privateKey,
-    ),
-  ).toString("base64url");
-  return bundle;
-}
-
-const buyerIdentity = signedIdentityBundle(buyerDid, buyerPriv);
-
 /** In-memory adapter — just the surface the public Agent reads touch. */
 function memAdapter(options: { failBundleOnce?: boolean } = {}) {
   const store = new Map<string, Record<string, unknown>>();
@@ -219,15 +193,6 @@ async function anchorListing(
 }
 
 describe("public Agent surface: listing discovery, bundle verification and reputation", () => {
-  test("rejects a configured bundle for a different agent at construction", () => {
-    const { adapter } = memAdapter();
-    expect(() => buildAgent(adapter as never, {
-      demosRpc: "mem",
-      wallet: "x",
-      identity: { agentId: sellerDid, bundle: buyerIdentity },
-    })).toThrow(/bundle\.presentedBy must equal/);
-  });
-
   test("public discovery rejects a foreign DID that only ends in the seller key", async () => {
     const { adapter, store } = memAdapter();
     const lookalike = `did:ethr:${sellerHex}`;
@@ -235,7 +200,7 @@ describe("public Agent surface: listing discovery, bundle verification and reput
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid, bundle: buyerIdentity },
+      identity: { agentId: buyerDid },
     });
 
     await expect(agent.discover([ref])).resolves.toEqual([]);
@@ -264,7 +229,7 @@ describe("public Agent surface: listing discovery, bundle verification and reput
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid, bundle: buyerIdentity },
+      identity: { agentId: buyerDid },
     });
     await expect(agent.getReputation(buyerDid, ["stor:forged-bundle"]))
       .resolves.toMatchObject({ totalAgreements: 0, completed: 0 });
@@ -770,7 +735,7 @@ describe("public Agent surface: listing discovery, bundle verification and reput
     const agent = buildAgent(adapter as never, {
       demosRpc: "mem",
       wallet: "x",
-      identity: { agentId: buyerDid, bundle: buyerIdentity },
+      identity: { agentId: buyerDid },
     });
     const result = await agent.verifyBundle("stor:pre-commit-bundle");
     expect(result.ok).toBe(true);

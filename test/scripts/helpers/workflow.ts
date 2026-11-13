@@ -53,13 +53,16 @@ export function workflowJob(path: string, jobId: string) {
   return job;
 }
 
+// Wraps `value` in single quotes so a shell reads it back as one literal word,
+// including when it contains a single quote.
+export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
 // Every child runs without rc files and with an explicit PATH whose `node` is
 // this process's own binary, never a host node.
 export function stubBin(directory: string, stubs: Record<string, string> = {}) {
   const bin = join(directory, "bin");
   mkdirSync(bin, { recursive: true });
-  const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
-  for (const [name, body] of Object.entries({ node: `exec ${node} "$@"`, ...stubs })) {
+  for (const [name, body] of Object.entries({ node: `exec ${shellQuote(process.execPath)} "$@"`, ...stubs })) {
     writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
     chmodSync(join(bin, name), 0o700);
   }

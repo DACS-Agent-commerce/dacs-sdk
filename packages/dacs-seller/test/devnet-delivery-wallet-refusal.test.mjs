@@ -145,6 +145,26 @@ test('the guarded SDK class signs as before outside a guarded write', async () =
  assert.deepEqual(await new Demos().sign({TEST:'plain'}),{TEST:'plain',signed:true});
 });
 
+test('locking the wallet while a guarded signature is pending leaves the wallet without its key', async () => {
+ const attempt=createOperatorApprovalAttempt(async()=>true);
+ let release;const pending=new Promise(resolve=>{release=resolve;});
+ const Demos=attempt.guardSigning(class{
+  crypto={sign:async tx=>({...tx,signed:true})};
+  lock(){this.crypto=null;}
+  async sign(tx){await pending;return {...tx,signed:true};}
+ });
+ const demos=new Demos();
+ const original=demos.crypto;
+ const signing=attempt.run(async()=>demos.sign({TEST:'lock'}),()=>true);
+ // The guarded signature has swapped in its wrapper and waits; the wallet is locked in that time.
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.notEqual(demos.crypto,original,'the signature is pending behind the wrapper');
+ demos.lock();
+ release();
+ await signing;
+ assert.equal(demos.crypto,null,'the lock stays: the original key is not put back');
+});
+
 test('a guarded write withdrawn during the SDK signature\'s own network read is not signed by the real SDK', async () => {
  const {register}=await import('node:module');
  register(new URL('./helpers/demosdk-operations-resolve.mjs',import.meta.url));

@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { world, JOBS } from './helpers/d5-http-fixture.mjs';
-import { sellerTransportEffect } from '../src/dacs/seller-transport-auth.mjs';
+import { sellerTransportEffect, SELLER_TRANSPORT_MAX_RESPONSE } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { createSellerContextAdmission, releaseSellerContextHolds, parsePolicyLedger, withContextHolds, heldPolicyBudget } from '../src/devnet-demo/operator-approval.mjs';
 import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs';
@@ -135,7 +135,7 @@ test('startup repairs a torn release and retries the exact hold once', async t =
   assert.equal((await f.rows())[0].released, true);
 });
 
-for (const damage of ['missing-effect', 'missing-admission', 'dangling-mapping', 'wrong-job', 'wrong-effect', 'unknown-state', 'invalid-completion']) {
+for (const damage of ['missing-effect', 'missing-admission', 'dangling-mapping', 'wrong-job', 'wrong-effect', 'unknown-state', 'invalid-completion', 'other-job', 'missing-admissions-table', 'wrong-mapping']) {
   test(`startup refuses ${damage} journal joins before releasing any holds`, async t => {
     const f = await fixture(t), reservation = f.store.reserve(f.request, f.body, { admit: f.now });
     await f.policy.reserve(f.hold);
@@ -148,6 +148,9 @@ for (const damage of ['missing-effect', 'missing-admission', 'dangling-mapping',
       if (damage === 'wrong-effect') db.prepare('UPDATE peer_context_admissions SET effect = ?').run('c'.repeat(64));
       if (damage === 'unknown-state') db.prepare("UPDATE peer_effects SET state = 'TEST unknown'").run();
       if (damage === 'invalid-completion') db.prepare("UPDATE peer_effects SET state = 'complete', status = 503, response = '{}'").run();
+      if (damage === 'other-job') db.prepare('INSERT INTO peer_context_admissions SELECT ?, buyer, seller, listing_pin, scope_hash, effect, admitted_at FROM peer_context_admissions').run(JOBS[1]);
+      if (damage === 'missing-admissions-table') db.exec('DROP TABLE peer_context_admissions');
+      if (damage === 'wrong-mapping') db.prepare('UPDATE peer_effect_jobs SET job = ?').run(JOBS[1]);
     } finally { db.close(); }
     const before = await readFile(f.config.evidencePath, 'utf8'), restarted = f.restart();
     await assert.rejects(restarted.ready, { code: 'peer_context_reconciliation_conflict' });
@@ -203,6 +206,60 @@ test('transport classification refuses invalid hold job and effect identifiers',
   const f = await fixture(t);
   assert.throws(() => f.store.contextHoldState({ jobId: 'TEST invalid job', effect: f.hold.effect }), { code: 'peer_job_invalid' });
   assert.throws(() => f.store.contextHoldState({ jobId: f.hold.jobId, effect: 'TEST invalid effect' }), { code: 'peer_context_reconciliation_conflict' });
+});
+
+function editJournal(path, edit) {
+  const db = new Database(path);
+  try { edit(db); } finally { db.close(); }
+}
+const classification = f => f.store.contextHoldState({ jobId: f.hold.jobId, effect: f.hold.effect });
+const CONFLICT = { code: 'peer_context_reconciliation_conflict' };
+
+test('transport classification refuses an effect that another job also holds', async t => {
+  const f = await fixture(t); f.store.reserve(f.request, f.body, { admit: f.now });
+  assert.equal(classification(f), 'pending');
+  editJournal(f.path, db => db.prepare('INSERT INTO peer_context_admissions SELECT ?, buyer, seller, listing_pin, scope_hash, effect, admitted_at FROM peer_context_admissions').run(JOBS[1]));
+  assert.throws(() => classification(f), CONFLICT);
+});
+
+const COMPLETIONS = [
+  ['status 199', 199, '{}', CONFLICT],
+  ['status 200', 200, '{}', 'complete'],
+  ['status 499', 499, '{}', 'complete'],
+  ['status 500', 500, '{}', CONFLICT],
+  ['no status', null, '{}', CONFLICT],
+  ['a fractional status', 200.5, '{}', CONFLICT],
+  ['no response text', 200, null, CONFLICT],
+  ['a response of exactly the size limit', 200, 'x'.repeat(SELLER_TRANSPORT_MAX_RESPONSE), 'complete'],
+  ['a response one byte over the size limit', 200, 'x'.repeat(SELLER_TRANSPORT_MAX_RESPONSE + 1), CONFLICT],
+  ['a multibyte response over the size limit', 200, 'é'.repeat(SELLER_TRANSPORT_MAX_RESPONSE / 2 + 1), CONFLICT],
+];
+for (const [name, status, response, expected] of COMPLETIONS) {
+  test(`transport classification ${expected === 'complete' ? 'accepts' : 'refuses'} a completed effect with ${name}`, async t => {
+    const f = await fixture(t); f.store.reserve(f.request, f.body, { admit: f.now });
+    editJournal(f.path, db => db.prepare("UPDATE peer_effects SET state = 'complete', status = ?, response = ?").run(status, response));
+    if (expected === 'complete') assert.equal(classification(f), 'complete');
+    else assert.throws(() => classification(f), expected);
+  });
+}
+
+const hasAdmissionsTable = path => {
+  const db = new Database(path, { readonly: true });
+  try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'peer_context_admissions'").get()); }
+  finally { db.close(); }
+};
+
+test('transport classification reports absent when the store has no context admissions table', async t => {
+  const f = await fixture(t);
+  assert.equal(hasAdmissionsTable(f.path), false);
+  assert.equal(classification(f), 'absent');
+});
+
+test('transport classification refuses a saved effect when the store has no context admissions table', async t => {
+  const f = await fixture(t); f.store.reserve(f.request, f.body, { admit: f.now });
+  editJournal(f.path, db => db.exec('DROP TABLE peer_context_admissions'));
+  assert.equal(hasAdmissionsTable(f.path), false);
+  assert.throws(() => classification(f), CONFLICT);
 });
 
 test('reopening an older transport store adds an indexed effect lookup for startup joins', async t => {

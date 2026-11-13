@@ -47,11 +47,11 @@ manifest-driven and will fail against stale/missing vectors.
 ## Tests
 
 - `npm test` — the full offline suite (unit + conformance harness). This is what
-  CI gates on, across Node 22 and 24. On a pull request the long suites run on
-  Node 22 only (the Node 24 check stays required but skips them); the Node 24 run
-  happens on pushes to `phase0-completion` and `main` and in the merge queue. For a
-  pull request into `phase0-completion`, a Node-24-only failure therefore shows up
-  only after it merges; into `main`, the merge queue catches it before the merge.
+  CI gates on, across Node 22 and 24. Every event, pull requests included, runs
+  the unit and conformance suite and the seller suite on both Node legs, so a
+  Node-24-only failure shows on the pull request before it merges. The client
+  suite runs on Node 22 only. A full run of any branch can be started by hand
+  (`workflow_dispatch`).
 - Live on-chain tests are **skipped unless their env is set**, so they never run
   in `npm test`/CI. To run the funded two-sided lifecycle against a real Demos
   node + Base Sepolia, follow the runbook at `docs/live-e2e.md` (added in #179).
