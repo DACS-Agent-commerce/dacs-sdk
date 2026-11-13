@@ -128,6 +128,32 @@ The complete facade inventory is below. Active calls return Promises and run the
 
 The entry also re-exports the boolean capability checks `isDevnetAgreementTransport`, `isDevnetSettlementTransport` and `isDevnetDemoTransport`, and the declarations `DEVNET_AGREEMENT_PROFILE`, `DEVNET_AGREEMENT_KIND`, `DEVNET_AGREEMENT_SOURCE`, `DEVNET_SETTLEMENT_KIND`, `DEVNET_SETTLEMENT_POLICY`, `DEVNET_DELIVERY_KIND`, `DEVNET_DELIVERY_POLICY`, `DEVNET_DEMO_ARTIFACT_KIND`, `DEVNET_DEMO_ARTIFACT_POLICY` and `DEVNET_DEMO_ARTIFACT_TYPES`. No raw transport constructor is exported.
 
+## Seller transport composition
+
+`createSourceDemoSellerTransport({authority, sessionSignerFor, sessionPolicyFor, endpointProofFor})` takes three functions of the purchase: the session signer `{claim, sign}`, the expiry policy `{expiresAt}` and the endpoint proof that the wire's `verifyEndpointProof` returned (verified with the buyer's own commitment receipt reader). The authority still needs a `TEST-` label.
+Requests, delegation bytes and received response bytes go through `@kynesyslabs/dacs/wire` under the purchase's kept TP-1 profile. The client saves the delegation payload before it returns the wallet message, stores the wallet signature as canonical base64url, and refuses a purchase prepared under the old transport declaration with `seller_transport_changed`. The seller request timeout also bounds the wire's authority reads and the session signer: a seller call that has not finished signing by then sends nothing and fails with cause `timeout`, and a wallet message or delegation check that is still waiting for the authority fails with `seller_authority_timeout`.
+Payment and bundle requests (the wire's continuing routes) and the two ordinary read routes (`agreements/state`, `bundles/buyer-copy`) of a committed purchase are signed with the job's finalized commitment, its two-party Agreement and the signed Listing, as canonical bytes rebuilt from the purchase row. The commitment's anchored tuple is kept with its SHA-256 when the commitment verifies. A verified row with no usable kept bytes keeps them once from a fresh authenticated readback that matches the stored summary, and otherwise nothing is signed (`commitment_unverified`). The proof's receipt reader authenticates the commitment at every signing, so these requests sign under a `ready: false` proof and after the Listing's window ends, with no continuation capability. Challenge, context, proposals and commitment requests carry no commitment evidence, and a read before commitment keeps the wire's live Listing checks. `bundles/buyer-copy` has no such read before commitment, so the wire refuses it without evidence.
+
+### Seller answer classification
+
+With an authentication adapter, each answer is verified on its exact received bytes, then classified by its HTTP status and `error` code, the route, and the request's provenance. The transport builds the record `{status, signed: true, body}` only after verification; an answer that fails verification is `unknown`. A `result` or `progress` answer is returned. Every other class throws: `definite` and `failed-bootstrap` as `SellerRefusedError` (`code` is the seller's code), the rest as `SellerUnavailableError` (`answerCode` is the seller's code). Both carry `answerClass`. Each seller route stores its exact request bytes under the purchase revision (`state.protocol.sellerRequests`) before the first send; the two read routes store nothing. An authenticated call with a stored attempt retries an unknown dispatch at most twice, 5 seconds apart, using the same bytes and fresh wire nonces. Legacy callers and unrecorded reads send once. One absolute deadline (15 seconds by default; context 240–300 seconds) includes storage, authority reads, signing and fetch; an exhausted budget signs and sends nothing further. Unknown outcomes remain unknown, and a later explicit call reuses stored bytes. Failures before dispatch clear only their own attempt; swallowed failures retain their bounded class and cause. Without an adapter (loopback fixtures only), answers are not classified: a 4xx other than 408 or 429 with an `error` code is `SellerRefusedError`, any other non-2xx answer is `SellerUnavailableError`, and a 2xx body is returned.
+
+| Answer | Class |
+|---|---|
+| signed 200 | `result`; on payments and proposals, `held`, `indeterminate`, `waiting`, or `payment-evidenced` with delivery pending, is `progress`, never final |
+| 409 `peer_request_replayed`; 503 `seller_effect_pending`; 503 `context_attempt_pending`; 408 `peer_expired`; any other signed 408; a signed 429 on any route but context and challenge; any other signed 5xx; a signed 4xx with no `error` code; any other signed 2xx or 3xx; an answer that fails verification; a timeout | `unknown` |
+| 503 `seller_stopped` | `suspended` |
+| 503 `bundle_finalization_unavailable` and 422 `not_delivered` on the bundle routes | `held` |
+| 503 `seller_not_ready` on a request the adapter's own records show to be new: the challenge or the context route, no capability, no accepted context, and no earlier attempt that may have been sent | `not-started` |
+| 503 `seller_not_ready` on any other request | `unknown` |
+| 409 `peer_operation_mismatch` | `definite` |
+| 500 `seller_effect_unresolved` | `held`: needs the seller operator |
+| 408 `peer_delegation_expired` | `readback-only` |
+| 409 `context_challenge_failed`, `context_challenge_consumed`, `context_challenge_expired`, `context_challenge_mismatch`, `context_job_closed`, `context_admission_closed`; 429 on the context route | `failed-bootstrap` |
+| 429 on the challenge route | `definite` |
+| any other signed 4xx (not 408 or 429) with an `error` code | `definite` |
+| a TLS failure before the request left | `not-sent` |
+
 ## Factory integration
 
 Supply application inputs through host, including a synchronous operations-store factory. On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.
