@@ -133,7 +133,7 @@ test('read paths refuse a retained session another writer left unverified',async
  const bundle=presentWith(buyer,'ab'.repeat(32));
  await saveSession(f,sessionFor(JOB,bundle,{buyer:vetRef(JOB,buyer.claim,seller.claim),seller:vetRef(JOB,seller.claim,buyer.claim)}));
  for(const read of [()=>agent.transportAgreementOf(JOB),()=>agent.deliveryStateOf(JOB)])assert.throws(read,error=>error.code==='seller_state_unverified');
- assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
+ assert.throws(()=>agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),{code:'seller_state_unverified'},'an unverified session is unknown retention, never no work');
 });
 test('restart refuses a Vet record the counterparty did not sign or a receipt below accepted',async t=>{
  const signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes},otherJob='01J8N4YV7YVYQ4DB7M8T4C7W0B';
@@ -253,7 +253,7 @@ test('live reads refuse a shape-valid session another writer saved after open',a
  admitWith(f.ledger,issued.sessionNonce,session);await saveSession(f,session);
  for(const read of [()=>agent.stageOf(JOB),()=>agent.durableSessionOf(JOB),()=>agent.transportAgreementOf(JOB),()=>agent.deliveryStateOf(JOB),()=>agent.durableSessions()])
   assert.throws(read,error=>error.code==='seller_state_unverified'&&/not verified by this seller instance/.test(error.message));
- assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
+ assert.throws(()=>agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),{code:'seller_state_unverified'},'an unverified session is unknown retention, never no work');
 });
 test('live reads refuse a retained session changed after this instance verified it',async t=>{
  const {f,admission}=await vettedSession(t),agent=await f.open({sessionAdmission:admission.sessionAdmission});t.after(()=>agent.close());
