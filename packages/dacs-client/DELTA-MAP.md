@@ -1357,6 +1357,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | b9340992077b4fd90675cb50762e57f5abc0c558 |
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | 8336e5393f66bcf9184b1b22b44911a9a1a32fbc |
+| D11 | fix(client): D11 keep the packed consumer lock installable on Node 24 | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/packed-install.mjs:1` | 85564b54de812d5ae795ea5aca7e567a1819b1e6 |
+| | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | cb7e6298b275bb6123561c5afa4a52a4981b72bf |
 
 ## Complete commit and file inventory
 
@@ -4143,6 +4146,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the public API test merged from the held part | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the public API test merged from the held part | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the public API test merged from the held part | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/helpers/packed-install.mjs:1` |
+| fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` |
 
 ## Original moved files
 
