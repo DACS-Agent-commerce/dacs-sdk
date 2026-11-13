@@ -1286,13 +1286,16 @@ export function extractPolicyFindings(readInput) {
 // engine ones also pin the required range. An SBOM rule elides the installed
 // and required versions after `invalid:`/`extraneous:` and after `required by`,
 // which npm prints from the tree, so a rule matches the same package pair.
+// Only a plain version (no `@` or `:`) is elided. An alias pkgid,
+// `<name>@npm:<package>@<version>`, installs another package under the name,
+// so it stays in the rule and matches no recorded line.
 const sameIdentity = (keys) => (item, known) => keys.every(key => JSON.stringify(item?.[key]) === JSON.stringify(known?.[key]));
 const gitIdentity = sameIdentity(["location", "field", "value", "version", "integrity"]);
 const engineIdentity = sameIdentity(["package", "location", "integrity", "required"]);
 const imageIdentity = sameIdentity(["name", "location", "version", "integrity"]);
 const sbomProblemRule = (line) => typeof line === "string" ? line
-  .replace(/^((?:invalid|extraneous): (?:@[^\s@/]+\/)?[^\s@]+)@[^\s,]+/, "$1@*")
-  .replace(/( required by (?:@[^\s@/]+\/)?[^\s@]+)@\S+$/, "$1@*") : line;
+  .replace(/^((?:invalid|extraneous): (?:@[^\s@/]+\/)?[^\s@]+)@[^\s,@:]+(?=[\s,]|$)/, "$1@*")
+  .replace(/( required by (?:@[^\s@/]+\/)?[^\s@]+)@[^\s@:]+$/, "$1@*") : line;
 const sbomIdentity = (item, known) => typeof item === "string" && sbomProblemRule(item) === sbomProblemRule(known);
 const allListed = (items, known, same) => Array.isArray(known) && items.every(item => known.some(entry => same(item, entry)));
 const listedState = (items, known, same) => !Array.isArray(items) ? "blocked" : items.length === 0 ? "passed"
