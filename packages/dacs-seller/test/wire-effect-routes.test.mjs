@@ -326,14 +326,14 @@ async function rivalProposal(jobId, wallet) {
   return { body, agreementHash: plan.agreementHash };
 }
 
-/** The proposal body with its buyer presentation's signature replaced: a field outside the operation's binding. */
+/** The proposal body with its buyer presentation's signature replaced: a field the host's body checks do not read. */
 const withOtherPresentation = (body) => {
   const changed = structuredClone(body);
   changed.buyerIdentityBundle.presentation.signatures[0].signature = Buffer.alloc(64, 7).toString('base64url');
   return changed;
 };
 
-test('a completed proposal answers the same buyer and Agreement hash with the stored answer when only its buyer presentation differs, and the agent runs once', async t => {
+test('a completed proposal answers the same buyer and Agreement hash with the stored answer when only the signature in its buyer presentation differs, and the agent runs once', async t => {
   const w = await routeWorld(t), job = await proposeJob(w, 'same-operation');
   const first = await job.post();
   assert.equal(first.status, 200);
@@ -343,7 +343,18 @@ test('a completed proposal answers the same buyer and Agreement hash with the st
   assert.equal(w.agent.calls.proposals, 1, 'the agent ran once in total');
 });
 
-test('a completed proposal\'s stored answer goes to no request that is not its buyer\'s, authenticated under the same Agreement hash', async t => {
+test('a completed proposal does not answer a request under the same binding whose body fails the proposal checks', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 'refused-body');
+  const first = await job.post();
+  assert.equal(first.status, 200);
+  const changed = structuredClone(job.body);
+  changed.transportIdentity.proposalHash = sha256Hex('another-proposal');
+  const answer = await w.post(PATHS.proposals, changed, { jobId: job.jobId, agreementHash: job.agreementHash });
+  assert.deepEqual({ status: answer.status, error: answer.body.error }, { status: 409, error: 'peer_proposal_mismatch' });
+  assert.equal(w.agent.calls.proposals, 1, 'the agent is not asked');
+});
+
+test('a completed proposal\'s stored answer is refused to a request that is not a new one signed by its buyer under the same Agreement hash', async t => {
   const w = await routeWorld(t), job = await proposeJob(w, 'stored-answer-refusals');
   const first = await job.post();
   assert.equal(first.status, 200);

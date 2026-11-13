@@ -166,20 +166,26 @@ and the first after it recovers; after 16 lapsed attempts the operation answers
 
 An operation is one job's request on one route. Its binding is the profile,
 buyer and Agreement hash it was first reserved under. Once the operation has
-completed, every body field outside the binding is incidental, a proposal's
-buyer presentation included: a later request under the same binding is the
-same operation and runs no second effect. A completed proposal gets the stored
-answer, and the agent is not called again. (A completed commitment is answered
-by reading the commitment back, and a completed payment that reported delivery
-is put to the agent again, so a saved success is never just replayed.) The stored answer goes only
-to a request with the buyer's transport signature under the same binding. The
-host checks the signature, buyer and Agreement hash before it reads the
-journal: a missing or malformed signature gets 401 `peer_envelope_invalid`, a
-signature by another key 401 `peer_signature_invalid`, another buyer or
-Agreement hash 409 `peer_agreement_party_mismatch` or `peer_agreement_mismatch`,
-and a signed request sent again 409 `peer_request_replayed`. The agent's own
-refusal of a different proposal for a job applies only before the proposal has
-completed; after that, the agent is not asked.
+completed, a later request under the same binding whose body passes the host's
+body checks is the same operation, not a new reservation. Body fields those
+checks do not read, such as the signature inside a proposal's buyer
+presentation, make no difference. A body the checks refuse, such as a proposal
+with a changed `proposalHash`, is refused 409 `peer_proposal_mismatch` before
+the journal is consulted. A completed proposal gets the stored answer, and the
+agent is not called again. A completed commitment is answered by reading the
+commitment back, and a completed payment whose stored answer reports delivery
+is put to the agent again. The stored answer goes only to a request with the
+buyer's transport signature under the same binding. The host checks the header,
+signature, buyer and Agreement hash before it reserves: a missing header, or one
+that is not a well-formed envelope, gets 401 `peer_envelope_invalid`, a header
+that decodes to something other than JSON 401 `wire_json_rejected`, a signature that is
+malformed or by another key 401 `peer_signature_invalid`, a header signed over
+a different body 401 `peer_request_mismatch`, and another buyer or Agreement
+hash 409 `peer_agreement_party_mismatch` or `peer_agreement_mismatch`. The
+reservation then refuses a signed request sent again with 409
+`peer_request_replayed`. The agent's own refusal of a different proposal for a
+job applies only before the proposal has completed; after that, the agent is
+not asked.
 
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
