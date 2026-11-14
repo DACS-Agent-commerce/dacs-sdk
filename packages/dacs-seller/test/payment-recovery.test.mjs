@@ -162,6 +162,8 @@ const FIRST_COMPLETION_CELLS = [
   ['the transfer read fails', 'unavailable', (w) => changedAtCheck(w, { transfer: async () => { throw new Error('TEST node unreachable'); } })],
   ['the transfer amount is not the price', 'changed', (w) => changedAtCheck(w, { transfer: underpaid })],
   ['the transfer was paid by another key', 'changed', (w) => changedAtCheck(w, { transfer: (txHash) => includedTransfer(txHash, { payer: seller.address }) })],
+  ['the permit is gone from the receipt state', 'changed', (w) => changedAtCheck(w, { afterTransfer: () => editReceipts(w, (state) => { state.records = {}; state.permits = {}; }) })],
+  ['the permit authorizes a different rail registry version', 'changed', (w) => changedAtCheck(w, { afterTransfer: () => editReceipts(w, (state) => { permitRecord(state).selected.authorization.railRegistryVersion = 2; }) })],
   ['the receipt state that holds the permit is damaged', 'unavailable', (w) => changedAtCheck(w, { afterTransfer: () => editReceipts(w, (state) => { state.permits = {}; }) })],
   ['the payment evidence record differs', 'changed', (w) => changedAtCheck(w, { afterTransfer: () => alteredRecord(w, paymentEvidenceAddress(w.jobId, 'demos-native:DEM', 2), (row) => ({ ...row, artifact: { ...row.artifact, observedAt: 1 } })) })],
   ['the Deliverable record is gone', 'changed', (w) => changedAtCheck(w, { afterTransfer: () => alteredRecord(w, deliverableAddress(w.jobId), () => ({ status: 'absent' })) })],
