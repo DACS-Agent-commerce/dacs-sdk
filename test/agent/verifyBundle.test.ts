@@ -414,7 +414,6 @@ function depsFor(
     resolve?: (did: string) => Uint8Array | null;
     resolveAttestationRef?: VerifyBundleDeps["resolveAttestationRef"];
     resolveListingRef?: VerifyBundleDeps["resolveListingRef"];
-    resolveRef?: VerifyBundleDeps["resolveRef"];
     listing?: Record<string, unknown> | null;
     verifyEvidence?: VerifyBundleDeps["verifyEvidence"] | null;
     verifyAlternativePaymentProjection?: VerifyBundleDeps["verifyAlternativePaymentProjection"];
@@ -442,7 +441,6 @@ function depsFor(
             : null),
     resolveListingRef:
       opts.resolveListingRef ?? (async () => listing),
-    ...(opts.resolveRef ? { resolveRef: opts.resolveRef } : {}),
     resolvePublicKey: async (did) => (opts.resolve ?? resolveFromDid)(did),
     verify,
     ...(verifyEvidence ? { verifyEvidence } : {}),
@@ -851,110 +849,6 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
       result.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
     ).toBe("invalid-shape");
     expect(result.ok).toBe(false);
-  });
-
-  test("legacy runSession graph resolves only its exactly pinned normative Listing", async () => {
-    const { listing } = await buildArtifacts();
-    const listingPin = {
-      listingId: listing.listingId,
-      version: listing.listingVersion,
-      contentHash: contentHash(listing),
-    };
-    const agreement: Record<string, unknown> = {
-      jobId: JOB_ID,
-      pattern: "negotiate-fixed-price",
-      buyer: buyerDid,
-      seller: sellerDid,
-      listingRef: LISTING_ADDR,
-      dacsSdkListingPin: structuredClone(listingPin),
-      price: {
-        amount: "1",
-        asset: "USDC",
-        decimals: 6,
-        rail: "x402:default",
-      },
-      delivery: {
-        phase: "deliver-attested-payload",
-        format: "application/json",
-      },
-      expiresAt: "2026-08-21T12:00:00.000Z",
-    };
-    const body: Record<string, unknown> = {
-      bundleVersion: "1",
-      jobId: JOB_ID,
-      outcome: "completed",
-      anchoredByRole: "buyer",
-      listingRef: structuredClone(listingPin),
-      agreementRef: {
-        kind: "dacs-3-agreement",
-        id: "agreement-transitional",
-        contentHash: contentHash(agreement),
-      },
-      parties: [
-        { role: "buyer", bundleHash: h("c"), primaryClaim: buyerDid },
-      ],
-      phaseSummary: [],
-      vetRecords: [],
-      settlementEvidence: [],
-      recipeRegistryVersion: 1,
-      railRegistryVersion: 1,
-      finalisedAt: 1780000000000,
-    };
-    const resign = async (): Promise<Record<string, unknown>> => {
-      const scope = structuredClone(body);
-      delete scope.anchoredByRole;
-      const message = signedBytes(
-        ARTIFACT_SEPARATORS.AttestationBundle,
-        contentHash(scope),
-      );
-      return {
-        ...structuredClone(body),
-        signatures: [
-          {
-            party: buyerDid,
-            algorithm: "ed25519",
-            value: Buffer.from(await signBuyer(message)).toString("base64url"),
-          },
-          {
-            party: sellerDid,
-            algorithm: "ed25519",
-            value: Buffer.from(await signSeller(message)).toString("base64url"),
-          },
-        ],
-      };
-    };
-    let bundle = await resign();
-    const verifyGraph = () =>
-      verifyBundleCore("transitional-bundle", {
-        readArtifact: async (ref) =>
-          ref === LISTING_ADDR ? listing : bundle,
-        resolveRef: async (kind) =>
-          kind === "dacs-3-agreement" ? agreement : null,
-        resolvePublicKey: async (did) => resolveFromDid(did),
-        verify,
-      });
-
-    const accepted = await verifyGraph();
-    expect(accepted.ok).toBe(false);
-    expect(
-      accepted.refs.find((ref) => ref.kind === "dacs-3-agreement"),
-    ).toMatchObject({
-      verdict: "signature-missing",
-      signature: { verdict: "missing" },
-    });
-    expect(
-      accepted.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
-    ).toBe("ok");
-
-    delete agreement.dacsSdkListingPin;
-    (body.agreementRef as { contentHash: string }).contentHash =
-      contentHash(agreement);
-    bundle = await resign();
-    const unpinned = await verifyGraph();
-    expect(unpinned.ok).toBe(false);
-    expect(
-      unpinned.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
-    ).toBe("invalid-shape");
   });
 
   test("snapshots the signed bundle before any asynchronous callback", async () => {
@@ -1675,52 +1569,18 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     expect(res.bundle?.listingRef).toEqual(expectedListingRef);
     expect(res.bundle?.parties).toEqual(expectedParties);
 
-    let legacyCalls = 0;
-    const legacyOnlyDeps = depsFor(fx, {
-      resolveRef: async () => {
-        legacyCalls += 1;
-        return fx.listing;
-      },
-    });
-    delete legacyOnlyDeps.resolveListingRef;
+    const depsWithoutListingResolver = depsFor(fx);
+    delete depsWithoutListingResolver.resolveListingRef;
     const withoutNormativeResolver = await verifyBundleCore(
       "ref",
-      legacyOnlyDeps,
+      depsWithoutListingResolver,
     );
-    expect(legacyCalls).toBe(0);
     expect(
       withoutNormativeResolver.refs.find(
         (ref) => ref.kind === "dacs-1-listing",
       )?.verdict,
     ).toBe("unresolved");
     expect(withoutNormativeResolver.ok).toBe(false);
-  });
-
-  test("explicit legacy MVP graph retains only the legacy Listing resolver", async () => {
-    const fx = await buildLegacyMvpAbortFixture();
-    let normativeCalls = 0;
-    const legacyCalls: Array<readonly unknown[]> = [];
-    const result = await verifyBundleCore("legacy-bundle", {
-      readArtifact: async () => fx.bundle,
-      resolveListingRef: async () => {
-        normativeCalls += 1;
-        return fx.listing;
-      },
-      resolveRef: async (kind, jobId, parties) => {
-        legacyCalls.push([kind, jobId, structuredClone(parties)]);
-        return kind === "dacs-1-listing" ? fx.listing : null;
-      },
-      resolvePublicKey: async (did) => resolveFromDid(did),
-      verify,
-    });
-    expect(result.ok).toBe(true);
-    expect(normativeCalls).toBe(0);
-    expect(legacyCalls).toEqual([
-      ["dacs-1-listing", "legacy-job", fx.bundle.parties],
-    ]);
-    expect(
-      result.refs.find((ref) => ref.kind === "dacs-1-listing")?.verdict,
-    ).toBe("ok");
   });
 
   test("completed or post-commit bundle without agreementRef fails verification", async () => {
@@ -1775,13 +1635,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     await resignFixture(fx, [
       { party: outsiderDid, sign: signerFor(outsiderSeed) },
     ]);
-    const result = await verifyBundleCore(
-      "ref",
-      depsFor(fx, {
-        resolveRef: async (kind) =>
-          kind === "dacs-1-listing" ? fx.listing : null,
-      }),
-    );
+    const result = await verifyBundleCore("ref", depsFor(fx));
     expect(result.ok).toBe(false);
     expect(result.fullyVerified).toBe(false);
     expect(result.signatures).toEqual([
@@ -1795,13 +1649,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     fx.bundle.outcome = "aborted-by-other";
     fx.bundle.settlementEvidence = [];
     await resignFixture(fx, [{ party: sellerDid, sign: signSeller }]);
-    const result = await verifyBundleCore(
-      "ref",
-      depsFor(fx, {
-        resolveRef: async (kind) =>
-          kind === "dacs-1-listing" ? fx.listing : null,
-      }),
-    );
+    const result = await verifyBundleCore("ref", depsFor(fx));
     expect(result.ok).toBe(false);
     expect(result.reason).toContain(buyerDid);
   });
@@ -2013,6 +1861,278 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     for (const [, , parties] of seen) {
       expect(parties).toEqual(fx.bundle.parties);
     }
+  });
+});
+
+describe("verifyBundleCore refuses old shapes", () => {
+  const oldShapeRef = (kind: string) => ({
+    kind,
+    id: `old-${kind}`,
+    contentHash: h("a"),
+  });
+
+  /**
+   * A bundle with the current top-level fields (`anchoredByRole`, buyer and
+   * seller parties) and no references, signed by the buyer. Its Listing is the
+   * old reduced shape, which is what an old-shape reader would accept.
+   */
+  async function buildAbortBundle(edit: (body: Record<string, unknown>) => void) {
+    const { listing, bundle } = await buildLegacyMvpAbortFixture();
+    const { signatures: _signatures, ...body } = bundle;
+    body.anchoredByRole = "buyer";
+    edit(body);
+    const scope = { ...body };
+    delete scope.anchoredByRole;
+    const signature = await signBuyer(
+      signedBytes(ARTIFACT_SEPARATORS.AttestationBundle, contentHash(scope)),
+    );
+    return {
+      listing,
+      bundle: {
+        ...body,
+        signatures: [
+          {
+            party: buyerDid,
+            algorithm: "ed25519",
+            value: Buffer.from(signature).toString("base64url"),
+          },
+        ],
+      },
+    };
+  }
+
+  const refused = (result: Awaited<ReturnType<typeof verifyBundleCore>>) => {
+    expect(result.reason).toBe("not an attestation bundle");
+    expect(result.ok).toBe(false);
+    expect(result.fullyVerified).toBe(false);
+    expect(result.refs).toEqual([]);
+    expect(result.signatures).toEqual([]);
+    expect(result.bundle).toBeUndefined();
+  };
+
+  test("refuses an old-shape bundle and never calls a resolver", async () => {
+    const fx = await buildLegacyMvpAbortFixture();
+    const calls = { resolveRef: 0, resolveListingRef: 0, resolveAttestationRef: 0 };
+    const deps = {
+      readArtifact: async () => fx.bundle,
+      resolveAttestationRef: async () => {
+        calls.resolveAttestationRef += 1;
+        return null;
+      },
+      resolveListingRef: async () => {
+        calls.resolveListingRef += 1;
+        return fx.listing;
+      },
+      resolveRef: async (kind: string) => {
+        calls.resolveRef += 1;
+        return kind === "dacs-1-listing" ? fx.listing : null;
+      },
+      resolvePublicKey: async (did: string) => resolveFromDid(did),
+      verify,
+    };
+    refused(await verifyBundleCore("legacy-bundle", deps));
+    expect(calls).toEqual({
+      resolveRef: 0,
+      resolveListingRef: 0,
+      resolveAttestationRef: 0,
+    });
+  });
+
+  test("refuses an old-shape bundle whose old-shape agreement resolves to an old-shape agreement", async () => {
+    const { listing } = await buildArtifacts();
+    const agreement = {
+      jobId: JOB_ID,
+      pattern: "negotiate-fixed-price",
+      buyer: buyerDid,
+      seller: sellerDid,
+      listingRef: LISTING_ADDR,
+      dacsSdkListingPin: {
+        listingId: listing.listingId,
+        version: listing.listingVersion,
+        contentHash: contentHash(listing),
+      },
+      price: { amount: "1", asset: "USDC", decimals: 6, rail: "x402:default" },
+      delivery: { phase: "deliver-attested-payload", format: "application/json" },
+      expiresAt: "2026-08-21T12:00:00.000Z",
+    };
+    const { bundle } = await buildAbortBundle((body) => {
+      body.outcome = "completed";
+      body.listingRef = {
+        listingId: listing.listingId,
+        version: listing.listingVersion,
+        contentHash: contentHash(listing),
+      };
+      body.agreementRef = {
+        kind: "dacs-3-agreement",
+        id: "agreement-transitional",
+        contentHash: contentHash(agreement),
+      };
+    });
+    const deps = {
+      readArtifact: async (ref: string) => (ref === LISTING_ADDR ? listing : bundle),
+      resolveRef: async (kind: string) =>
+        kind === "dacs-3-agreement" ? agreement : null,
+      resolvePublicKey: async (did: string) => resolveFromDid(did),
+      verify,
+    };
+    refused(await verifyBundleCore("transitional-bundle", deps));
+  });
+
+  test.each([
+    ["agreementRef", (body: Record<string, unknown>) => {
+      body.agreementRef = oldShapeRef("dacs-3-agreement");
+    }],
+    ["settlementEvidence entry", (body: Record<string, unknown>) => {
+      body.settlementEvidence = [oldShapeRef("dacs-4-evidence")];
+    }],
+    ["vetRecords entry", (body: Record<string, unknown>) => {
+      body.vetRecords = [oldShapeRef("dacs-2-verifyresult")];
+    }],
+    ["phaseSummary attestationRef", (body: Record<string, unknown>) => {
+      body.phaseSummary = [{
+        index: 0,
+        kind: "vet-credentials",
+        outcome: "ok",
+        attestationRef: oldShapeRef("dacs-2-verifyresult"),
+      }];
+    }],
+  ])("refuses a current-shaped bundle that carries an old-shape %s", async (_site, edit) => {
+    const { listing, bundle } = await buildAbortBundle(edit);
+    const deps = {
+      readArtifact: async () => bundle,
+      resolveListingRef: async () => listing,
+      resolveRef: async (kind: string) =>
+        kind === "dacs-1-listing" ? listing : null,
+      resolvePublicKey: async (did: string) => resolveFromDid(did),
+      verify,
+    };
+    refused(await verifyBundleCore("mixed-bundle", deps));
+  });
+
+  test("refuses a current bundle whose Listing carries an old-shape raw-hex signature", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const { signature: _signature, ...currentScope } = fx.listing;
+    const hybridScope = { ...currentScope, ...buildLegacyMvpListing() };
+    const hybridListing = {
+      ...hybridScope,
+      signature: Buffer.from(
+        await signSeller(
+          signedBytes(ARTIFACT_SEPARATORS.Listing, contentHash(hybridScope)),
+        ),
+      ).toString("hex"),
+    };
+    (fx.agreement.listingRef as { contentHash: string }).contentHash =
+      contentHash(hybridScope);
+    (fx.bundle.listingRef as { contentHash: string }).contentHash =
+      contentHash(hybridScope);
+    await resignAgreement(fx);
+    (fx.bundle.agreementRef as { contentHash: string }).contentHash =
+      contentHash(fx.agreement);
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+
+    const result = await verifyBundleCore(
+      "ref",
+      depsFor(fx, { listing: hybridListing }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.refs.find((ref) => ref.kind === "dacs-1-listing")).toMatchObject({
+      verdict: "signature-malformed",
+      signature: { verdict: "malformed" },
+    });
+  });
+
+  test("refuses a current bundle whose agreement ref resolves to an old-shape agreement", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const oldAgreement = {
+      jobId: JOB_ID,
+      pattern: "negotiate-fixed-price",
+      buyer: buyerDid,
+      seller: sellerDid,
+      listingRef: LISTING_ADDR,
+      price: { amount: "1", asset: "USDC", decimals: 6, rail: "x402:default" },
+      delivery: { phase: "deliver-attested-payload", format: "application/json" },
+      expiresAt: "2026-08-21T12:00:00.000Z",
+    };
+    (fx.bundle.agreementRef as { contentHash: string }).contentHash =
+      contentHash(oldAgreement);
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const result = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "agreement-j1"
+            ? oldAgreement
+            : ref.anchor.locator === "settlement-j1"
+              ? fx.evidence
+              : null,
+      }),
+    );
+    expect(
+      result.refs.find((ref) => ref.kind === "dacs-3-agreement")?.verdict,
+    ).toBe("invalid-shape");
+    expect(result.ok).toBe(false);
+  });
+
+  test("refuses a current bundle whose evidence ref resolves to an old-shape evidence record", async () => {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    const oldEvidence = {
+      evidenceVersion: "1",
+      jobId: JOB_ID,
+      phase: "pay-x402",
+      phaseIndex: 0,
+      outcome: "success",
+      paymentTxRefs: [{ rail: "x402", txHash: "0xabc", kind: "x402" }],
+      paymentAmount: { amount: "1000000", currency: "USDC" },
+      settlementFinality: {
+        model: "provider-receipt",
+        finalityObservedAt: 1780000000000,
+      },
+      observedAt: 1780000000000,
+    };
+    (fx.bundle.settlementEvidence as Array<{ contentHash: string }>)[0]!
+      .contentHash = contentHash(oldEvidence);
+    await resignFixture(fx, [
+      { party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller },
+    ]);
+    const result = await verifyBundleCore(
+      "ref",
+      depsFor(fx, {
+        resolveAttestationRef: async (ref) =>
+          ref.anchor.locator === "agreement-j1"
+            ? fx.agreement
+            : ref.anchor.locator === "settlement-j1"
+              ? oldEvidence
+              : null,
+      }),
+    );
+    expect(
+      result.refs.find((ref) => ref.kind === "dacs-4-evidence")?.verdict,
+    ).toBe("invalid-shape");
+    expect(result.ok).toBe(false);
+  });
+
+  test("public verifyBundle refuses an old-shape bundle without resolving session anchor names", async () => {
+    const fx = await buildLegacyMvpAbortFixture();
+    const readAnchor = vi.fn(async (address: string) =>
+      address === "legacy-bundle" ? fx.bundle : fx.listing,
+    );
+    const resolveAnchorByName = vi.fn(async () => ({
+      status: "present" as const,
+      address: "legacy-bundle",
+    }));
+    const agent = buildAgent(
+      { readAnchor, resolveAnchorByName } as never,
+      { demosRpc: "mem" },
+    );
+    refused(await agent.verifyBundle("legacy-bundle"));
+    expect(resolveAnchorByName).not.toHaveBeenCalled();
   });
 });
 

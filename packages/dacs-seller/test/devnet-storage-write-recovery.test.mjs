@@ -326,3 +326,103 @@ test('operator refusal is stable across publication and both read methods after 
  for(const read of Object.values(retainedReads))assert.equal((await read(w.open(),request)).status,'rejected');
  assert.equal(w.captured.length,1);
 });
+
+// A signed CREATE the node accepted but has not included: the seller's intent row holds no hash, and only the source journal
+// retains the exact signed bytes. `counts` and `resends` log every RPC effect signature and every recovery send.
+async function pendingAcceptedWorld(){
+ const counts={rpcSignatures:0,recoveries:0},resends=[];
+ const w=await anchorFixture({signRpc:async()=>{counts.rpcSignatures++;return 'rpc-auth';}});
+ w.source.binding=async()=>({disposition:'pending'});
+ w.source.recoverStorageWrite=async({signedTransaction})=>{counts.recoveries++;resends.push(structuredClone(signedTransaction));return {};};
+ w.controls.request=async request=>{
+  const signedTransaction=await signSdkCreate(request.transaction);
+  await w.sourceJournal.put(`source/${request.jobId}`,{stage:'signed',hash:signedTransaction.hash,signedTransaction});
+  return {success:false,error:{code:'internal_error'}};
+ };
+ await w.publish(w.open(),JOBS[0]);
+ const [key,row]=[...w.journal.rows].find(([key])=>key.startsWith('demo/artifact/'));
+ const signed=await w.sourceJournal.get(`source/${JOBS[0]}`);
+ const retainedInput={logicalAddress:row.input.logicalAddress,artifactKind:row.input.artifactKind};
+ return {...w,counts,resends,key,signed,input:row.input,retainedInput,journalState:()=>JSON.stringify([...w.journal.rows])};
+}
+const PASSIVE={resend:false};
+const passiveReads=w=>({
+ 'read, default options':()=>w.open().read(w.input),
+ 'readRetained, default options':()=>w.open().readRetained(w.retainedInput),
+ 'read, fresh and passive':()=>w.open().read({...w.input,fresh:true},PASSIVE),
+ 'readRetained, fresh and passive':()=>w.open().readRetained({...w.retainedInput,fresh:true},PASSIVE),
+ 'readRetained, proof of no intent':()=>w.open().readRetained({...w.retainedInput,fresh:true,proofOfNoIntent:true},PASSIVE),
+});
+const settledOutcome=read=>read().then(out=>out.status,error=>`threw ${error.message}`);
+const noEffects=w=>assert.deepEqual(w.counts,{rpcSignatures:0,recoveries:0});
+
+test('NEW-D1b-preauth-projection',async()=>{
+ const w=await pendingAcceptedWorld(),before=w.journalState();
+ assert.equal(JSON.parse(before).find(([key])=>key===w.key)[1].hash,undefined,'the seller intent holds no hash');
+ for(const [name,read] of Object.entries(passiveReads(w)))for(const repeat of [1,2]){
+  assert.equal(await settledOutcome(read),'indeterminate',`${name} ${repeat}`);
+  assert.equal(w.journalState(),before,`${name} ${repeat}: the pending read adopted nothing`);
+ }
+ w.source.binding=async()=>{throw new Error('TEST source unavailable');};
+ for(const [name,read] of Object.entries(passiveReads(w))){
+  assert.match(await settledOutcome(read),/threw TEST source unavailable|indeterminate/,name);
+  assert.equal(w.journalState(),before,`${name}: a failed read adopted nothing`);
+ }
+ noEffects(w);
+ // Authenticated inclusion checkpoints the adopted hash and bytes, and only that.
+ w.source.binding=async()=>({disposition:'included'});
+ const receipt={contentHash:w.input.receiptContentHash,nativeAddress:'TEST-native-address',transactionRef:{kind:'demos',value:w.signed.hash}};
+ w.controls.reader.read=async()=>({status:'present',artifact:w.input.artifact,receipt,demosEvidence:{}});
+ w.controls.reader.verifyReceipt=async()=>'valid';
+ assert.equal((await w.open().read(w.input)).status,'present');
+ const checkpoint=await w.journal.get(w.key);
+ assert.deepEqual([checkpoint.stage,checkpoint.hash,checkpoint.signedTransaction],['verified',w.signed.hash,w.signed.signedTransaction]);
+ assert.deepEqual([...w.journal.rows].filter(([key])=>key.startsWith('demo/recovery/')),[],'no recovery row was written');
+ noEffects(w);
+});
+
+test('NEW-D1b-final-effect-authorization',async()=>{
+ const w=await pendingAcceptedWorld(),recoveryRows=()=>[...w.journal.rows].filter(([key])=>key.startsWith('demo/recovery/'));
+ await w.journal.put(w.key,{...await w.journal.get(w.key),stage:'issued',hash:w.signed.hash});
+ // The caller's authority is open until the awaited deployment check runs, and closed when that check is done.
+ let authorityOpen=true,asked=0;
+ w.source.verifyDeployment=async()=>{authorityOpen=false;return true;};
+ const closing={resend:true,authorizeResend:async()=>{asked++;return authorityOpen;}};
+ assert.equal((await w.open().readRetained(w.retainedInput,closing)).status,'indeterminate');
+ assert.equal(asked,1,'the authority is asked once, after the awaited preparation');
+ noEffects(w);
+ assert.deepEqual(recoveryRows(),[],'no recovery intent was recorded');
+ assert.deepEqual(await w.sourceJournal.get(`source/${JOBS[0]}`),w.signed,'the retained signed bytes are unchanged');
+ // The same read with authority held through the end sends the exact retained bytes once.
+ w.source.verifyDeployment=async()=>true;
+ const open={resend:true,authorizeResend:async()=>true};
+ for(let reads=0;reads<2;reads++)await w.open().readRetained(w.retainedInput,open);
+ assert.deepEqual(w.resends,[w.signed.signedTransaction],'one resend of the exact original bytes');
+});
+
+test('native passive read and readRetained never recover a pending accepted CREATE, including completed proposal and commitment checks and a closed attempt',async()=>{
+ const w=await pendingAcceptedWorld(),hashed=async()=>w.journal.put(w.key,{...await w.journal.get(w.key),stage:'issued',hash:w.signed.hash});
+ const recoveryKey=`demo/recovery/${w.signed.hash}`;
+ for(const variant of ['no recovery row','issued recovery row','intent recovery row','retained hash']){
+  if(variant==='retained hash')await hashed();
+  else if(variant!=='no recovery row')await w.journal.put(recoveryKey,{stage:variant.split(' ')[0],projectionHash:'f'.repeat(64)});
+  const before=w.journalState();
+  for(const [name,read] of Object.entries(passiveReads(w)))for(const repeat of [1,2]){
+   assert.equal(await settledOutcome(read),'indeterminate',`${variant} ${name} ${repeat}`);
+   assert.equal(w.journalState(),before,`${variant} ${name} ${repeat}: no recovery row or intent changed`);
+  }
+  w.source.binding=async()=>{throw new Error('TEST source timeout');};
+  for(const [name,read] of Object.entries(passiveReads(w)))assert.match(await settledOutcome(read),/threw TEST source timeout|indeterminate/,`${variant} ${name} timeout`);
+  assert.equal(w.journalState(),before,`${variant}: a failed source read changed nothing`);
+  w.source.binding=async()=>({disposition:'pending'});
+ }
+ noEffects(w);
+ // A reopened anchor over the same journals reads the same way.
+ assert.equal((await w.open().readRetained({...w.retainedInput,fresh:true},PASSIVE)).status,'indeterminate');
+ noEffects(w);
+ // The explicitly authorized control resends the retained bytes once, through the same journals.
+ await w.journal.rows.delete(recoveryKey);
+ const active=w.open();
+ for(let reads=0;reads<2;reads++)await active.readRetained(w.retainedInput,{resend:true,authorizeResend:async()=>true});
+ assert.deepEqual([w.counts.recoveries,w.resends[0]],[1,w.signed.signedTransaction]);
+});
