@@ -329,7 +329,7 @@ test('host start releases the open slots of a finished session once, starts with
 // A host with the default budget whose seller history holds `count` settled accounting rows of an earlier purchase, written
 // in the accounting's own shape while the host is stopped (one clean restart). The rows are a day old, so the store's own
 // record limit no longer counts them; the purchase budget counts every row ever written.
-async function hostWithAccountingHistory(t, count) {
+async function hostWithAccountingHistory(t, count, hostOptions = {}) {
   const f = await hostFixture(t);
   const first = await f.start(), listingPin = first.listingPin;
   await first.close();
@@ -344,9 +344,9 @@ async function hostWithAccountingHistory(t, count) {
       for (let n = 0; n < count; n++) row.run(derive(`history-${n}`), historyBuyer, earlier, operationId, PROPOSALS, derive('history-request'), NOW - DAY_MS);
     })();
   } finally { db.close(); }
-  const host = await f.start();
+  const host = await f.start(hostOptions);
   const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
-  const read = (sql, ...args) => { const view = new DatabaseSync(f.path(STORE_FILE), { readonly: true }); try { return view.prepare(sql).all(...args); } finally { view.close(); } };
+  const read =(sql, ...args) => { const view = new DatabaseSync(f.path(STORE_FILE), { readonly: true }); try { return view.prepare(sql).all(...args); } finally { view.close(); } };
   const accountingRows = () => read('SELECT COUNT(*) AS n FROM kit_reservations')[0].n;
   const rowStates = (id) => read('SELECT state FROM kit_reservations WHERE jobId = ? ORDER BY rowid', id).map((row) => row.state);
   const propose = async (id) => {
@@ -390,6 +390,36 @@ test('with the default budget and 9,933 earlier accounting rows, the host still 
   const a = await propose(generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) }));
   assert.equal(a.answer.status, 200, a.answer.bytes.toString());
   assert.equal(JSON.parse(a.answer.bytes).disposition, 'complete');
+});
+
+const NEW_PURCHASE = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) });
+
+// With one retained accounting row, a request is served while that row is below the reservation budget and the store's record
+// limit, and is refused `peer_store_capacity` once either limit is that row.
+const refusal = ({ status, bytes }) => [status, JSON.parse(bytes).error];
+
+test('a host whose reservation budget is one above its retained rows serves a request while maxRecords is at its default', async (t) => {
+  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 2 });
+  const { answer } = await propose(NEW_PURCHASE);
+  assert.equal(answer.status, 200, answer.bytes.toString());
+});
+
+test('a host whose reservation budget equals its retained rows refuses a request while maxRecords is at its default', async (t) => {
+  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 1 });
+  const { answer } = await propose(NEW_PURCHASE);
+  assert.deepEqual(refusal(answer), [503, 'peer_store_capacity']);
+});
+
+test('a host whose maxRecords equals its retained rows refuses a request while the reservation budget has room', async (t) => {
+  const { propose } = await hostWithAccountingHistory(t, 1, { maxRecords: 1, maxReservationUnits: DEFAULT_RESERVATION_BUDGET });
+  const { answer } = await propose(NEW_PURCHASE);
+  assert.deepEqual(refusal(answer), [503, 'peer_store_capacity']);
+});
+
+test('a host refuses a zero or fractional reservation budget and names the option', async (t) => {
+  const f = await hostFixture(t);
+  await (await f.start({ maxReservationUnits: 1 })).close();
+  for (const maxReservationUnits of [0, 1.5]) assert.match((await rejection(f.start({ maxReservationUnits }))).message, /maxReservationUnits must be a positive integer/);
 });
 
 test('P10-T04 a journal open failure closes the agent and store and reports the original cause', async (t) => {
