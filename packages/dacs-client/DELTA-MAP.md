@@ -4554,6 +4554,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): restore the subject prefix rule and record the key-check commit by its hash | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): restore the subject prefix rule and record the key-check commit by its hash | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 | delta(client): WF preserve key checks in the relocated transport fixture | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs:1`<br>`packages/dacs-client/test/seller-transport-key-validation.test.mjs:1` |
+| Align provenance tests with full-hash commit records | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
