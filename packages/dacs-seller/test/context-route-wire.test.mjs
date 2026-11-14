@@ -574,6 +574,15 @@ test('a failed start after an accepted admission ends its row, releases its hold
     assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w), w.counts.vetWrites, w.journalFiles()], ['aborted', 0, 'released', 0, 0]);
     await retryAdmitted(w);
   });
+  await t.test('a reservation that fails with an uncoded error', async (t) => {
+    const w = await contextWireWorld(t, oneSlot), request = await w.startContext();
+    w.behaviour.beforeReserve = async () => { throw new Error('TEST the reservation failed'); };
+    assert.deepEqual(summary(await w.post(request)), [503, 'operation_uncertain']);
+    await w.settleJob();
+    assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w), w.counts.vetWrites], ['aborted', 0, 'released', 0]);
+    w.behaviour.beforeReserve = null;
+    await retryAdmitted(w);
+  });
   await t.test('a provider that fails before it signs anything', async (t) => {
     const w = await contextWireWorld(t, oneSlot), request = await w.startContext();
     w.behaviour.provider = async () => { throw Object.assign(new Error('TEST provider failed'), { code: 'provider_failed' }); };
@@ -959,6 +968,15 @@ test('a job that keeps no purchase tuple because it is pending its hold, aborted
     assert.deepEqual(summary(await w.post(request)), [409, 'seller_budget_refused']);
     await w.settleJob();
     assert.equal(w.rowOf().state, 'aborted');
+    await answeredWithoutWrite(t, w, request, [409, 'context_job_closed']);
+  });
+  await t.test('it was fenced before its acceptance and its cleanup is still open', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    w.behaviour.evidenceKind = 'signed';
+    w.behaviour.policyReserve = async () => 'TEST over budget';
+    assert.deepEqual(summary(await w.post(request)), [409, 'seller_budget_refused']);
+    await w.settleJob();
+    assert.deepEqual([w.rowOf().state, w.rowOf().admittedAt], ['compensating', null]);
     await answeredWithoutWrite(t, w, request, [409, 'context_job_closed']);
   });
   await t.test('it was retired after it settled', async (t) => {
