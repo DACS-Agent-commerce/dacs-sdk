@@ -522,8 +522,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // Ends a wait for a lock or a connection fence with the abort reason as soon
   // as `signal` aborts. `wait` receives a function to call when the grant
   // arrives; an abort after that no longer ends the wait, so granted work runs
-  // to completion. After an abort the wait itself stays pending in the
-  // background until the lock or fence is granted. No work runs after the
+  // to completion. After an abort the wait itself goes on in the background
+  // until the lock or fence is granted or the journal gives up on the lock
+  // with 'journal-busy' (after its lockTimeoutMs). No work runs after the
   // abort, and a lock or fence granted after it is released without any.
   function untilAborted(signal, wait) {
     signal.throwIfAborted();
@@ -1015,8 +1016,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // waits for reads that are running. An abort or the deadline ends a wait for
   // the source-read lock or the connection fence at once. After that, no read
   // runs, and a lock or fence granted after the abort is released without a
-  // read. close() does not wait for an ended lock or fence wait, which stays
-  // pending until the lock or fence is granted.
+  // read. close() does not wait for an ended lock or fence wait, which goes on
+  // until the lock or fence is granted or the journal gives up on the lock
+  // with 'journal-busy'.
   async function observePassiveTransfer(hash, options={}) {
     if(typeof hash!=='string' || !HASH.test(hash)) fail('invalid_params','a canonical native transaction hash is required');
     const stop=AbortSignal.any([closing.signal,...(options.signal?[options.signal]:[])]);

@@ -9208,6 +9208,18 @@
           "after": "0f2dfd45f46bad38b1cf646182703db508aaf917"
         }
       ]
+    },
+    {
+      "delta": "D38",
+      "subject": "delta(client): D38 say that an abandoned lock wait also ends when the journal gives up with journal-busy",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0f2dfd45f46bad38b1cf646182703db508aaf917",
+          "after": "abf4b0a8fcce97c05fdd573460f27c25cf216716"
+        }
+      ]
     }
   ]
 }
