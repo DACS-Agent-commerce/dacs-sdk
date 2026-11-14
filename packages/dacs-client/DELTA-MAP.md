@@ -1449,6 +1449,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | f46d3e410597600af548d6dc5c52d0ec78858b81 |
 | WF | fix(client): send a held artifact once when two passes resume it at once | Git commit selector 4451a92f7120ca03f6df4100048c0a0709d4f6c9 |
 | | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | c235b85c61fab739e2eb29c1388130bd7d24cdd8 |
+| WF | delta(client): WF record the merged effect-boundary.mjs and effect-boundary.test.mjs blobs after merging 472193167d6f | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1`: 796433f8bc1bca0d06a152305289e52f05f03812<br>`packages/dacs-client/test/effect-boundary.test.mjs:1`: ba95a19ef6fa3331bb54536fa0910d058d2956f8 | |
 
 ## Complete commit and file inventory
 
@@ -4367,6 +4369,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): record the single-dispatch change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): record the single-dispatch change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
 | fix(client): record the single-dispatch change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the merged effect-boundary.mjs and effect-boundary.test.mjs blobs after merging 472193167d6f | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

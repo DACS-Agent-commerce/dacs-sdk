@@ -9046,6 +9046,23 @@
           "after": "c235b85c61fab739e2eb29c1388130bd7d24cdd8"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged effect-boundary.mjs and effect-boundary.test.mjs blobs after merging 472193167d6f",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "796433f8bc1bca0d06a152305289e52f05f03812",
+          "after": "796433f8bc1bca0d06a152305289e52f05f03812"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "ba95a19ef6fa3331bb54536fa0910d058d2956f8",
+          "after": "ba95a19ef6fa3331bb54536fa0910d058d2956f8"
+        }
+      ]
     }
   ]
 }
