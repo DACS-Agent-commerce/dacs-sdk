@@ -235,6 +235,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   if (authentication?.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
   if (context !== null && (!authentication || context?.path !== SELLER_CONTEXT_PATH || context?.challengePath !== SELLER_CONTEXT_CHALLENGE_PATH || typeof authentication.store?.classify !== 'function' || !['challenge', 'reserve', 'perform', 'settled', 'reconcile'].every((name) => typeof context[name] === 'function'))) throw new Error('the seller context route needs the authenticated transport and its admission');
   if (wire !== null && context !== null && (typeof wire.stopped !== 'function' || typeof context.challengeOnWire !== 'function')) throw new TypeError('the wire challenge route needs the host\'s stop predicate (wire.stopped) and the context route\'s challengeOnWire');
+  if (context?.handleContext !== undefined && (wire === null || typeof context.handleContext !== 'function')) throw new TypeError('the wire context route (context.handleContext) needs the wire option');
   if (publicSignedCreates !== null && typeof publicSignedCreates !== 'function') throw new Error('publicSignedCreates must be the seller\'s signed CREATE pointer function');
   // DACS_BUYER_CHAIN_READBACK=on: a successful commit or payment answer (the
   // only answers the buyer takes pointers from) also names the seller's
@@ -307,7 +308,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   return async (req, res) => {
     // One authenticator per route, chosen here: the wire's for the routes it opens, the old server auth for every other.
     const wireChallenge = wireAuth !== null && context !== null && req.url === SELLER_CONTEXT_CHALLENGE_PATH;
-    const auth = wireChallenge || (wireAuth !== null && WIRE_ROUTE_PATHS.includes(req.url)) ? wireAuth : oldAuth;
+    const wireContextStep = wireAuth !== null && typeof context?.handleContext === 'function' && req.url === SELLER_CONTEXT_PATH;
+    const auth = wireChallenge || wireContextStep || (wireAuth !== null && WIRE_ROUTE_PATHS.includes(req.url)) ? wireAuth : oldAuth;
     const send = sender(auth);
     let request;
     let reservation;
@@ -374,6 +376,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       try { body = admitRawJson(rawBody); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       if (authentication) {
+        // The context step on the wire answers unsigned text; it is signed here under the opened request, and a request that never opened is sent unsigned.
+        if (wireContextStep) {
+          const answer = await context.handleContext({ rawBody, header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url });
+          return await send(res, answer.status, null, answer.request, { text: answer.text });
+        }
         if (wireChallenge) {
           const answer = await context.challengeOnWire(wire, { header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; } });
           return await send(res, 200, answer, request, { text: auth.encode(JSON.stringify(answer)) });
