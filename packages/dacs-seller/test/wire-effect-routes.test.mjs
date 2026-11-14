@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import DatabaseSync from 'better-sqlite3';
 import { NO_EFFECT_ERRORS, SellerAgentError, transportOutcome } from '../src/dacs/seller-agent.mjs';
 import { NOW, testWallet } from './helpers/protocol-fixture.mjs';
-import { BUYER as WORLD_BUYER, DELIVERED, HELD, LISTING, PIN as WORLD_PIN, SELLER as WORLD_SELLER, completions, continuingWorld, derive, identityBody, jobFor, operationOf, proposalFor, proposeJob, reconcilingWith, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
+import { BUYER as WORLD_BUYER, DELIVERED, HELD, LISTING, answeredStatus, PIN as WORLD_PIN, SELLER as WORLD_SELLER, completions, continuingWorld, derive, identityBody, jobFor, operationOf, proposalFor, proposeJob, reconcilingWith, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
 import { canonicalize, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
 import { fixtureIdentityBundle } from './fixtures/listings.mjs';
 import { agreementInput } from '../src/dacs/purchase-protocol.mjs';
@@ -13,7 +13,7 @@ import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation } from '@kynesysl
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler, endWireAttempt } from '../src/dacs/seller-http.mjs';
-import { createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { SellerTransportError, createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { BUYER, JOB, JOB2, PIN, SELLER, T0, accountingFixture, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 
 // The ordinary completion port runs on the real reservation coordinator, purchase capacity, SQL store and wire journal: no route
@@ -411,21 +411,21 @@ test('a delivery refresh of a completed payment is refused once its request expi
 });
 
 for (const route of ['commitments', 'commitmentSignature']) {
-  test(`a completed commitment on ${PATHS[route]} is read again before it is sent again`, async t => {
+  test(`a completed commitment on ${PATHS[route]} is revalidated read only before the stored answer is sent again`, async t => {
     const w = await continuingWorld(t);
     const first = await w.request(PATHS[route]);
     assert.equal(first.body.status, 'committed');
-    const commits = { ...w.agent.calls };
-    w.agent.readCommitment = async ({ jobId }) => ({ status: 'commitment-held', jobId });
-    const held = await w.request(PATHS[route]);
-    assert.deepEqual({ status: held.status, answer: held.body.status }, { status: 200, answer: 'commitment-held' }, 'what the readback answers now is sent');
-    await w.verified(held);
-    for (const [label, read] of [['fails', async () => { throw new Error('TEST the commitment cannot be read'); }], ['answers something else', async () => ({ status: 'refused' })], ['answers nothing', async () => null]]) {
-      w.agent.readCommitment = read;
-      const refused = await w.request(PATHS[route]);
-      assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 503, error: 'commitment_readback_required' }, `a readback that ${label} is retryable`);
-      assert.equal(refused.signed, true);
-    }
+    const commits = { ...w.agent.calls }, revalidated = [];
+    w.agent.readCommitment = async () => assert.fail('a replay never reads the commitment back through the agent');
+    w.agent.revalidateCompletedAnswer = async (input) => { revalidated.push(input); };
+    const replayed = await w.request(PATHS[route]);
+    assert.deepEqual([replayed.status, replayed.text], [200, first.text], 'the stored answer is sent');
+    assert.deepEqual(revalidated, [{ path: PATHS[route], jobId: w.jobId, outcome: { status: 200, text: first.text } }]);
+    await w.verified(replayed);
+    w.agent.revalidateCompletedAnswer = async () => { throw new SellerTransportError('seller_source_unavailable', 503, { cause: 'timeout' }); };
+    const refused = await w.request(PATHS[route]);
+    assert.deepEqual({ status: refused.status, error: refused.body.error, cause: refused.body.cause }, { status: 503, error: 'seller_source_unavailable', cause: 'timeout' }, 'a source that fails withholds the answer');
+    assert.equal(refused.signed, true);
     assert.deepEqual(w.agent.calls, commits, 'no replay ran the commitment again');
   });
 }
@@ -441,7 +441,7 @@ for (const route of ['proposals', 'commitments', 'commitmentSignature', 'payment
     assert.deepEqual(order, ['route']);
     lapse(w);
     const recovered = await send();
-    assert.equal(recovered.status, 200);
+    assert.equal(recovered.status, answeredStatus(PATHS[route]));
     assert.deepEqual(order, ['route', 'reconcile'], 'the reconciliation ran, and no route effect ran again');
   });
 }
@@ -702,7 +702,7 @@ test('no non-context effect route reads or writes the old transport tables', asy
   for (const path of [PATHS.commitments, PATHS.payments, PATHS.state]) assert.equal((await w.request(path)).status, 200, path);
   await leaveOpen(w, () => w.request(PATHS.bundleRequest));
   lapse(w);
-  assert.equal((await w.request(PATHS.bundleRequest)).status, 200, 'one recovery');
+  assert.equal((await w.request(PATHS.bundleRequest)).status, answeredStatus(PATHS.bundleRequest), 'one recovery');
   assert.deepEqual(old(), before);
 });
 

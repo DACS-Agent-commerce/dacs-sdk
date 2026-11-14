@@ -18,7 +18,7 @@ const isPlainObject = (value) => value !== null && typeof value === 'object' && 
 const isText = (value) => typeof value === 'string' && value !== '';
 const isArtifact = ({ lane, artifactHash } = {}) => isText(lane) && typeof artifactHash === 'string' && ARTIFACT_HASH.test(artifactHash);
 const unavailable = (message, options) => new OperationError('eb_history_unavailable', `the dispatch history is unavailable: ${message}`, undefined, options);
-const persistFailed = (cause) => new OperationError('eb_persist_failed', 'the dispatch record was not persisted; nothing was transmitted', undefined, { cause });
+const persistFailed = (cause) => new OperationError('eb_persist_failed', 'the dispatch record was not persisted', undefined, { cause });
 
 function checkedRecord(record) {
   if (!isPlainObject(record) || !isArtifact(record) || !isText(record.passId) || !isText(record.state)) {

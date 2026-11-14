@@ -61,9 +61,6 @@ import type {
   SubstrateAdapter,
 } from "../substrate/SubstrateAdapter.js";
 import {
-  legacyMvpSessionAnchorName,
-} from "./runSessionCore.js";
-import {
   validateListingArtifact,
   type ListingValidationDeps,
   type ListingRailAuthorityInput,
@@ -1687,32 +1684,6 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           ? publicReads.readAnchor(resolved.address)
           : null;
       },
-      // Explicit pre-normative compatibility for legacy SDK bundles whose refs were
-      // keyed only by an SDK artifact kind and the enclosing job id.
-      resolveRef: async (kind, jobId, parties, legacyRef) => {
-        if (kind === "dacs-2-composite" && legacyRef) {
-          return publicReads.readAnchor(legacyRef.id);
-        }
-        const name =
-          kind === "dacs-3-agreement"
-            ? legacyMvpSessionAnchorName.agreement(jobId)
-            : kind === "dacs-4-evidence"
-              ? legacyMvpSessionAnchorName.evidence(jobId)
-              : kind === "dacs-2-verifyresult"
-                ? legacyMvpSessionAnchorName.vet(jobId)
-                : null;
-        if (!name) return null;
-        const buyer = parties.find((party) => party.role === "buyer");
-        const key = buyer
-          ? await resolveCanonicalSigningKeyForRead(buyer.primaryClaim)
-          : null;
-        if (!key) return null;
-        const owner = Buffer.from(key).toString("hex");
-        const resolved = await publicReads.resolveAnchorByName(name, owner);
-        return resolved.status === "present"
-          ? publicReads.readAnchor(resolved.address)
-          : null;
-      },
       resolvePublicKey: resolveCanonicalSigningKeyForRead,
       verify: ed25519RawVerify,
       ...(verifyCompositeRecord ? { verifyCompositeRecord } : {}),
@@ -2174,10 +2145,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
 
     async verifyBundle(ref: string): Promise<BundleVerification> {
       // Bundle signature verification (§7.7) PLUS dereferencing each referenced
-      // artifact and hash-checking it. Normative DACS-2 §7.5.2 refs resolve the
-      // signed storage-program locator directly. Pre-normative MVP refs alone use
-      // owner-bound name resolution (kind, jobId → name → address), because
-      // their physical address folds in the writer's create-time nonce.
+      // artifact and hash-checking it. DACS-2 §7.5.2 refs resolve the signed
+      // storage-program locator directly. A bundle or ref in an earlier shape
+      // is refused.
       return verifyBundleAtRef(ref);
     },
 

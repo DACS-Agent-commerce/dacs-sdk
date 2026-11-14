@@ -1376,6 +1376,55 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` | 50355ea4059121eac4b97ea068a01be647e8dc24 |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 25d796340d239be5de80a55c42ad7bce48755f5e |
+| WF | delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | ea9e892b09ac6333d8cec727575d5879c875f298 |
+| | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` | a63d589030296a4ce2afe05b377351748a6bf250 |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 867b80b2a25f2f8c8ceafce8f72d22561446d173 |
+| | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` | aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | abe08190196e3a17ccbb29ce6785df334c20d080 |
+| WF | delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 83e1364efe976f2b3125cd8466c459d1600f6795 |
+| WF | delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 4e5486337d9cddb235f415cfe4bd819c78ae6593 |
+| WF | delta(client): WF check that the effect boundary module is not exported without listing every export | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa |
+| WF | delta(client): WF give the effect boundary one effect per operation and lane | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | be747aab0f805f37b550920e8acea9c023ac7f93 |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | ffe644ce654cbfd530822f3b5cd173295aba480f |
+| | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` | f3d0560be2447f1a5195f646001e74f7454aa6c9 |
+| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | c5f91f14575651303e144ec91570d7db728034e1 |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | f948151165e3ba48272216e650df2f9bc3c20480 |
+| | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` | 1b83d2a67290fc5fb683667e993dbf498ecaf269 |
+| WF | delta(client): WF record the package-contents blob merged with the dispatch history | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | fa141114c1adc59dfed04b1e17830e8f2cfc866f |
+| WF | delta(client): WF record the dispatch history blob merged with the string artifact hash fix | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53 |
+| WF | delta(client): WF name the packed contents test without a plan abbreviation | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | e159d0cb9ca487ba30500a5a3da40ea5bfab4b32 |
+| WF | delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` | 48056110819fef0a22ae0e8bff28e5781ed1bcb6 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 683f3a9c22c09a4207d1f588e0108cb327b579f2 |
+| WF | delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | b4d690799d4ea3e95f16278a542759e6f59f15ce |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | 14cb1447457b9203e63d5a18e8a58da5d36784e6 |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9 |
+| WF | Report a lost acknowledgement record after a successful send as eb_ack_not_persisted | Git commit selector a66660e64790f27c86c47cc1c39e69b236784086 |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | c6a536f8fee883abd654907537ce728a0245155b |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | 52c03f2dddbee806d14b94b223fc2fac459e7bc6 |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 8881f3e8ce7a766a3162f5dc6afe79d2360884c4 |
+| WF | delta(client): WF record the dispatch history blob merged with the lower branch fixes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | c9067c8d3faf5b01d1f2f174280d81877786e2d5 |
+| WF | delta(client): WF record the effect boundary blobs merged with the lower branch fixes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | b4d690799d4ea3e95f16278a542759e6f59f15ce |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9 |
+| WF | delta(client): WF test a lost acknowledgement write with and without its unknown record | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 0fd2ace1a4dae5ef01f51650072be5662066a04f |
+| WF | client: queue signPass calls of one operation so only one artifact is signed | Git commit selector f1ae63ab3f9ff3c5ba0eca09c21285135d7139ca |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | 10533f72e4ce2b3fe0ad791d92797796fd1a8221 |
+| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | d0771ba60ff24d68a635598c833f0ad7e0fa76b8 |
+| WF | client: report a failed fence release after a successful effect with its result | Git commit selector 5769d48c87ef6bed3094adb442d35ad4b0c6e538 |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | 796433f8bc1bca0d06a152305289e52f05f03812 |
+| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 83bf647eea4cbb4cf4614e97b07b52203356393c |
 | WF | delta(client): WF P21a2aa add the fence-free observer and bounded source reads | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:95`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:111`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:134`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:223`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:264`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:268`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:270`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:274`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:299`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:358`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:646`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:664`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:718`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:728`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:735`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:789`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:864`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:887`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:914`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:978`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1123`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1131`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1147`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1157` | e081789da16ac68bfbb76978b8cea7000a0bb9a4 |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | c24bb9c6d829d4ead3c806eab84268c64047961c |
@@ -1424,34 +1473,6 @@ Client commits that move the buyer client onto the new wire and its public API u
 | D11 | fix(client): D11 keep the packed consumer lock installable on Node 24 | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/packed-install.mjs:1` | 85564b54de812d5ae795ea5aca7e567a1819b1e6 |
 | | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | cb7e6298b275bb6123561c5afa4a52a4981b72bf |
-| WF | delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | ea9e892b09ac6333d8cec727575d5879c875f298 |
-| | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` | a63d589030296a4ce2afe05b377351748a6bf250 |
-| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 867b80b2a25f2f8c8ceafce8f72d22561446d173 |
-| | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` | aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6 |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | abe08190196e3a17ccbb29ce6785df334c20d080 |
-| WF | delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | 83e1364efe976f2b3125cd8466c459d1600f6795 |
-| WF | delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 4e5486337d9cddb235f415cfe4bd819c78ae6593 |
-| WF | delta(client): WF check that the effect boundary module is not exported without listing every export | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa |
-| WF | delta(client): WF give the effect boundary one effect per operation and lane | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | be747aab0f805f37b550920e8acea9c023ac7f93 |
-| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | ffe644ce654cbfd530822f3b5cd173295aba480f |
-| | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` | f3d0560be2447f1a5195f646001e74f7454aa6c9 |
-| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | c5f91f14575651303e144ec91570d7db728034e1 |
-| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | f948151165e3ba48272216e650df2f9bc3c20480 |
-| | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` | 1b83d2a67290fc5fb683667e993dbf498ecaf269 |
-| WF | delta(client): WF record the package-contents blob merged with the dispatch history | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | fa141114c1adc59dfed04b1e17830e8f2cfc866f |
-| WF | delta(client): WF record the dispatch history blob merged with the string artifact hash fix | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53 |
-| WF | delta(client): WF name the packed contents test without a plan abbreviation | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | e159d0cb9ca487ba30500a5a3da40ea5bfab4b32 |
-| WF | delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` | 48056110819fef0a22ae0e8bff28e5781ed1bcb6 |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | 683f3a9c22c09a4207d1f588e0108cb327b579f2 |
 
 ## Complete commit and file inventory
 
@@ -4161,6 +4182,77 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the merged package-contents blob after carrying base/main up | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the merged package-contents blob after carrying base/main up | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the merged package-contents blob after carrying base/main up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/package.json:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `scripts/release-policy.json:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/src/wallet/effect-history.mjs:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a66660e64790f27c86c47cc1c39e69b236784086 | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| a66660e64790f27c86c47cc1c39e69b236784086 | `packages/dacs-client/src/wallet/effect-history.mjs:1` |
+| a66660e64790f27c86c47cc1c39e69b236784086 | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/HOLD.json:1` |
+| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/DELTA-MAP.md:1` |
+| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/HOLD.json:1` |
+| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): record the merged package-contents change as the last delta record | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): record the merged package-contents change as the last delta record | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): record the merged package-contents change as the last delta record | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -4173,17 +4265,69 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/src/wallet/effect-history.mjs:1` |
 | fix(client): require a string artifact hash in the dispatch history | `packages/dacs-client/test/effect-history.test.mjs:1` |
-| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/HOLD.json:1` |
-| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` |
+| delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/HOLD.json:1` |
+| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/HOLD.json:1` |
+| fix(client): name the string artifact hash fix in the delta ledger | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the dispatch history blob merged with the lower branch fixes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the effect boundary blobs merged with the lower branch fixes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF test a lost acknowledgement write with and without its unknown record | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF test a lost acknowledgement write with and without its unknown record | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF test a lost acknowledgement write with and without its unknown record | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF test a lost acknowledgement write with and without its unknown record | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF test a lost acknowledgement write with and without its unknown record | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF test a lost acknowledgement write with and without its unknown record | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| f1ae63ab3f9ff3c5ba0eca09c21285135d7139ca | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| f1ae63ab3f9ff3c5ba0eca09c21285135d7139ca | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5769d48c87ef6bed3094adb442d35ad4b0c6e538 | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| 5769d48c87ef6bed3094adb442d35ad4b0c6e538 | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a3aa0ac2212ab8da24ad5cc9d0e6ad2bdc3bb1e6 | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): re-render the delta ledger after the phase0-completion merge | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P21a2aa add the fence-free observer and bounded source reads | `.github/workflows/ci.yml:1` |
 | delta(client): WF P21a2aa add the fence-free observer and bounded source reads | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): WF P21a2aa add the fence-free observer and bounded source reads | `packages/dacs-client/DELTA-LEDGER.json:1` |
@@ -4294,82 +4438,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/helpers/packed-install.mjs:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-NOTES.md:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/HOLD.json:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/package.json:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `scripts/release-policy.json:1` |
-| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/HOLD.json:1` |
-| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/HOLD.json:1` |
-| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/HOLD.json:1` |
-| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/DELTA-MAP.md:1` |
-| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/HOLD.json:1` |
-| 3b590ba28565115712613dc0d015822c107fc062 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/DELTA-NOTES.md:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/HOLD.json:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/src/wallet/effect-history.mjs:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
-| delta(client): WF give the effect boundary one effect per operation and lane | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` |
-| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/HOLD.json:1` |
-| delta(client): WF record the package-contents blob merged with the dispatch history | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/DELTA-MAP.md:1` |
-| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/HOLD.json:1` |
-| e82d8b3d224d31471bf832837282360315b0d6aa | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/HOLD.json:1` |
-| delta(client): WF record the dispatch history blob merged with the string artifact hash fix | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/HOLD.json:1` |
-| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF name the packed contents test without a plan abbreviation | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/HOLD.json:1` |
-| fix(client): list the files of the merged history record commit in the register | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/HOLD.json:1` |
-| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up | `packages/dacs-client/test/helpers/entry-point-closure.mjs:1` |
 
 ## Original moved files
 
