@@ -80,8 +80,9 @@ function afterAnchorIn({ parents, order }, anchor) {
 }
 
 // Path -> [{sha, after}] from every resolved delta record, superseded ones
-// first, as delta-map.mjs reads them. An anchored path is recorded only after
-// the anchor.
+// first, then active records in file name order, as delta-map.mjs reads them.
+// Ancestry determines the newest blob regardless of that order. An anchored
+// path is recorded only after the anchor.
 function recordedBlobs(ledger, commits, afterAnchor, failures) {
   const recorded = new Map();
   for (const change of [...(ledger.supersededChanges ?? []), ...ledger.changes]) {
@@ -119,7 +120,7 @@ export function checkDerivedFreeze({ repoRoot, packageDir, pins, files, head, in
   let anchor;
   try { anchor = readAnchor(packageDir); } catch (error) { return [error.message]; }
   if (!history.order.has(anchor.commit)) return [`${PACKAGE_PREFIX}records/ANCHOR.json: anchor commit ${anchor.commit} is not in the history from the baseline to HEAD`];
-  const { ledger, failures } = assemble(packageDir, () => history.commits);
+  const { ledger, failures } = assemble(packageDir);
   const recorded = recordedBlobs(ledger, history.commits, afterAnchorIn(history, anchor.commit), failures);
   const added = addedRecordFiles(history.commits, failures);
   const baseline = new Map(sourceGit(['-C', repoRoot, 'ls-tree', '-r', BASELINE, '--', `${PACKAGE_PREFIX}src`, `${PACKAGE_PREFIX}test`], { encoding: 'utf8', maxBuffer: MAX_GIT_OUTPUT })

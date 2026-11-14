@@ -62,9 +62,14 @@ export const isRecordFile = path => path.startsWith('records/') && !isCorePath(p
 export const recordName = record => `${record.delta}-${(record.sha ?? createHash('sha256').update(record.subject).digest('hex')).slice(0, 12)}.json`;
 export const selects = (record, commit) => record.subject === commit.subject && (record.sha == null || record.sha === commit.sha);
 
+// Git reports paths with no empty, `.` or `..` segment; a record names them the same way.
+const isCanonicalPath = path => path.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..');
+const notCanonical = path => `${JSON.stringify(path)} is not a canonical path`;
+
 // Why `path` (a full repository path) may not appear in a record's files, or null.
 function pathRefusal(path) {
   if (typeof path !== 'string' || !path.startsWith(PACKAGE_PREFIX)) return `${JSON.stringify(path)} is outside ${PACKAGE_PREFIX}`;
+  if (!isCanonicalPath(path)) return notCanonical(path);
   const rel = path.slice(PACKAGE_PREFIX.length);
   if (isCorePath(rel)) return `${path} is a core path`;
   if (rel.startsWith('records/')) return `${path} is a record file`;
@@ -95,6 +100,7 @@ function commitFileFailures(record) {
   const list = record.commitFiles;
   if (!Array.isArray(list) || list.length === 0 || !list.every(path => typeof path === 'string' && path !== '')) return ['commitFiles must list the paths the commit changes'];
   const failures = isSortedUnique(list) ? [] : ['commitFiles must be sorted and unique'];
+  for (const path of list) if (!isCanonicalPath(path)) failures.push(notCanonical(path));
   // A commit-only record stands for a commit that changes only core or record files.
   if (record.kind === 'commit-only') for (const path of list) {
     const rel = path.startsWith(PACKAGE_PREFIX) ? path.slice(PACKAGE_PREFIX.length) : null;

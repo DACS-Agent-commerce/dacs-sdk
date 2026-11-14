@@ -31,11 +31,11 @@ export function locations(path) {
 // commit, whose subject must still match; a record without one selects by exact
 // subject, which must then resolve once. Two commits that share a subject can
 // therefore only be recorded with SHA-qualified selectors.
-export function commits(...order) {
-  return git('log','--no-merges','--reverse',...order,'--format=%H%x09%s',BASELINE+'..HEAD').split('\n').filter(Boolean).map(row => { const at=row.indexOf('\t'); return {sha:row.slice(0,at),subject:row.slice(at+1)}; });
+export function commits() {
+  return git('log','--no-merges','--reverse','--format=%H%x09%s',BASELINE+'..HEAD').split('\n').filter(Boolean).map(row => { const at=row.indexOf('\t'); return {sha:row.slice(0,at),subject:row.slice(at+1)}; });
 }
 // The archive followed by the record files: {ledger, commits, failures}.
-export const view = () => assemble(pkg, () => commits('--topo-order'));
+export const view = () => assemble(pkg);
 export const ledger = () => view().ledger;
 export { selects };
 export const recordFor = (records, commit) => records.find(r => r.sha === commit.sha && r.subject === commit.subject) ?? records.find(r => r.sha == null && r.subject === commit.subject);
