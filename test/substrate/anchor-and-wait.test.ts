@@ -151,6 +151,9 @@ async function makeAdapter(options?: {
     ...(options?.maximumFeeOs === undefined
       ? {} : { maximumFeeOs: options.maximumFeeOs }),
   });
+  vi.spyOn(adapter, "getChainIdentityDetails").mockResolvedValue({
+    chainId: null, genesisHash: "test-chain", genesisDataHash: null, source: "genesis-read",
+  });
   const raw = adapter.raw as any;
   let signedCount = 0;
   const signedPayloads = new Map<

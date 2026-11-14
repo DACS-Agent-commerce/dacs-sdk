@@ -130,6 +130,9 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
   if (persistentConfirmationDetected) {
     throw new Error("write confirmation must not be persisted in .env");
   }
+  if (process.env.DACS_DEMOS_CHAIN_ID && !process.env.DACS_DEMOS_GENESIS_HASH) {
+    throw new Error("DACS_DEMOS_CHAIN_ID requires DACS_DEMOS_GENESIS_HASH");
+  }
   const publicBaseUrl = publicUrl(role === "buyer"
     ? "DACS_BUYER_PUBLIC_BASE_URL" : role === "seller"
       ? "DACS_SELLER_PUBLIC_BASE_URL" : "DACS_VERIFIER_PUBLIC_BASE_URL");
@@ -144,6 +147,11 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     demos: {
       rpcUrl: process.env.DACS_DEMOS_RPC_URL ?? "https://node2.demos.sh",
+      ...(process.env.DACS_DEMOS_GENESIS_HASH ? { expectedIdentity: {
+        genesisHash: process.env.DACS_DEMOS_GENESIS_HASH,
+        ...(process.env.DACS_DEMOS_CHAIN_ID === undefined || process.env.DACS_DEMOS_CHAIN_ID === ""
+          ? {} : { chainId: process.env.DACS_DEMOS_CHAIN_ID }),
+      } } : {}),
       ...(publicUrl("DACS_DEMOS_STORAGE_READ_URL") === undefined
         ? {} : { storageReadUrl: publicUrl("DACS_DEMOS_STORAGE_READ_URL")! }),
     },
@@ -4549,6 +4557,8 @@ const DOCKERIGNORE = `**
 
 const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_DEMOS_RPC_URL: \${DACS_DEMOS_RPC_URL:-https://node2.demos.sh}
+  DACS_DEMOS_GENESIS_HASH: \${DACS_DEMOS_GENESIS_HASH:-}
+  DACS_DEMOS_CHAIN_ID: \${DACS_DEMOS_CHAIN_ID:-}
   DACS_DEMOS_STORAGE_READ_URL: \${DACS_DEMOS_STORAGE_READ_URL:-}
   DACS_RAIL_REGISTRY_INDEX_REF: \${DACS_RAIL_REGISTRY_INDEX_REF:-dacs4:registry:v0.1}
   DACS_RAIL_STEWARD_AUTHORITY: \${DACS_RAIL_STEWARD_AUTHORITY:-}
@@ -4685,6 +4695,8 @@ DACS_RUNTIME_GID=${options.runtimeGid}
 DACS_BUYER_DATA_DIRECTORY=./data/buyer
 DACS_SELLER_DATA_DIRECTORY=./data/seller
 DACS_DEMOS_RPC_URL=https://node2.demos.sh
+DACS_DEMOS_GENESIS_HASH=
+DACS_DEMOS_CHAIN_ID=
 DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:v0.1
 DACS_RAIL_STEWARD_AUTHORITY=
 DACS_X402_RAIL_ID=x402:default

@@ -8273,6 +8273,363 @@
       ]
     },
     {"delta":"WF","subject":"delta(client): WF record the merged seller transport blob after the base sync","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"c2a23d02278639657358480a74e9e933492b0832","after":"c2a23d02278639657358480a74e9e933492b0832"}]},
-    {"delta":"WF","sha":"7d49dcae349d6b5ec436c589a2a2673ba464d216","subject":"fix(client): drop the seller HTTP adapter claim from the seller agent header","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-agent.mjs","before":"ddf5ad868bbc84355b181be3a82b276e5c4eb199","after":"2ad03bd530d0b3c497d1cb53fe177de00f7e423a"}]}
+    {"delta":"WF","sha":"7d49dcae349d6b5ec436c589a2a2673ba464d216","subject":"fix(client): drop the seller HTTP adapter claim from the seller agent header","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-agent.mjs","before":"ddf5ad868bbc84355b181be3a82b276e5c4eb199","after":"2ad03bd530d0b3c497d1cb53fe177de00f7e423a"}]},
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a dispatch history on the durable journal and the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": null,
+          "after": "5e899dc36581ead321d1ddd6597497965ad46af5"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": null,
+          "after": "52d0f92199a96da74567b9b78107fdd5c275cfad"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": null,
+          "after": "0c406f1b30b33f1011df654f7d67282b99309148"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": null,
+          "after": "fad10bcd3acfcb4076653f885de9c4fdcdd14d41"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs",
+          "before": "e40dec6bf6740d4b0bb55e84e38d5428b7d26937",
+          "after": "e3987c120fb08295aa49ab436c627c2823ebe846"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026",
+          "after": "8f8757994d69d512ccbf145bcd2180b622acc962"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": "5e899dc36581ead321d1ddd6597497965ad46af5",
+          "after": "4919d146fb62f67705ae52f4fb553e165a9dfebe"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "0c406f1b30b33f1011df654f7d67282b99309148",
+          "after": "b6402003588457f0340179859466e374237f7fd6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF key each dispatch history record by its pass and state and release the actor fence only when its operation ends",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": "4919d146fb62f67705ae52f4fb553e165a9dfebe",
+          "after": "f084d06e7fcac773a024fb36149b1f68b2826403"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "52d0f92199a96da74567b9b78107fdd5c275cfad",
+          "after": "5ccc8c6f74eb51be885d17dac68c28649b34240b"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6402003588457f0340179859466e374237f7fd6",
+          "after": "2afc55221675d0f677f5553f81c02acbe47e7c87"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": "fad10bcd3acfcb4076653f885de9c4fdcdd14d41",
+          "after": "0eed8f24b66d3497b4f9c0ef23c6847ad56fb770"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "b28b9292f54c3a9d28e5dbc56f144fc33a395303",
+          "after": "f0a35af9f949550e02b20ae2f72dc75067e588d8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged package-contents blob after carrying base/main up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "05f66cefe8444a029f7c26d602c25b6ea25b9202",
+          "after": "05f66cefe8444a029f7c26d602c25b6ea25b9202"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): require a string artifact hash in the dispatch history",
+      "sha": "6387ec98397795aea109a075a4b27cdfc34c1f8a",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "b5e0e3ca4da2cfa9f69cbf46d2b2881f80f6f29a"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": "0eed8f24b66d3497b4f9c0ef23c6847ad56fb770",
+          "after": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "2f2c2f648bb095b7812aeac6523ae8cc22602bd8",
+          "after": "50355ea4059121eac4b97ea068a01be647e8dc24"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "25d796340d239be5de80a55c42ad7bce48755f5e",
+          "after": "25d796340d239be5de80a55c42ad7bce48755f5e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": null,
+          "after": "ea9e892b09ac6333d8cec727575d5879c875f298"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-barriers.test.mjs",
+          "before": null,
+          "after": "a63d589030296a4ce2afe05b377351748a6bf250"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6402003588457f0340179859466e374237f7fd6",
+          "after": "867b80b2a25f2f8c8ceafce8f72d22561446d173"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs",
+          "before": null,
+          "after": "aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "8f8757994d69d512ccbf145bcd2180b622acc962",
+          "after": "abe08190196e3a17ccbb29ce6785df334c20d080"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "83e1364efe976f2b3125cd8466c459d1600f6795",
+          "after": "83e1364efe976f2b3125cd8466c459d1600f6795"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
+          "after": "4e5486337d9cddb235f415cfe4bd819c78ae6593"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF check that the effect boundary module is not exported without listing every export",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "eed744fccb73e1c4c24346fffa91172a1d9029a1",
+          "after": "db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF give the effect boundary one effect per operation and lane",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "ea9e892b09ac6333d8cec727575d5879c875f298",
+          "after": "be747aab0f805f37b550920e8acea9c023ac7f93"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "ffe644ce654cbfd530822f3b5cd173295aba480f"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-barriers.test.mjs",
+          "before": "a63d589030296a4ce2afe05b377351748a6bf250",
+          "after": "f3d0560be2447f1a5195f646001e74f7454aa6c9"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": null,
+          "after": "c5f91f14575651303e144ec91570d7db728034e1"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
+          "after": "f948151165e3ba48272216e650df2f9bc3c20480"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs",
+          "before": "aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6",
+          "after": "1b83d2a67290fc5fb683667e993dbf498ecaf269"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the package-contents blob merged with the dispatch history",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "fa141114c1adc59dfed04b1e17830e8f2cfc866f",
+          "after": "fa141114c1adc59dfed04b1e17830e8f2cfc866f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the dispatch history blob merged with the string artifact hash fix",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53",
+          "after": "d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF name the packed contents test without a plan abbreviation",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "fa141114c1adc59dfed04b1e17830e8f2cfc866f",
+          "after": "e159d0cb9ca487ba30500a5a3da40ea5bfab4b32"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "50355ea4059121eac4b97ea068a01be647e8dc24",
+          "after": "48056110819fef0a22ae0e8bff28e5781ed1bcb6"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "683f3a9c22c09a4207d1f588e0108cb327b579f2",
+          "after": "683f3a9c22c09a4207d1f588e0108cb327b579f2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "b4d690799d4ea3e95f16278a542759e6f59f15ce",
+          "after": "b4d690799d4ea3e95f16278a542759e6f59f15ce"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "14cb1447457b9203e63d5a18e8a58da5d36784e6",
+          "after": "14cb1447457b9203e63d5a18e8a58da5d36784e6"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "Report a lost acknowledgement record after a successful send as eb_ack_not_persisted",
+      "sha": "a66660e64790f27c86c47cc1c39e69b236784086",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "ea9e892b09ac6333d8cec727575d5879c875f298",
+          "after": "c6a536f8fee883abd654907537ce728a0245155b"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "52c03f2dddbee806d14b94b223fc2fac459e7bc6"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
+          "after": "8881f3e8ce7a766a3162f5dc6afe79d2360884c4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the dispatch history blob merged with the lower branch fixes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "c9067c8d3faf5b01d1f2f174280d81877786e2d5",
+          "after": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the effect boundary blobs merged with the lower branch fixes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "b4d690799d4ea3e95f16278a542759e6f59f15ce",
+          "after": "b4d690799d4ea3e95f16278a542759e6f59f15ce"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test a lost acknowledgement write with and without its unknown record",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "0fd2ace1a4dae5ef01f51650072be5662066a04f"
+        }
+      ]
+    }
   ]
 }
