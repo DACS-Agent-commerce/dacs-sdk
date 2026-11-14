@@ -9393,6 +9393,22 @@
       ]
     },
     {
+      "delta": "D25",
+      "subject": "delta(client): D25 refuse a block-one predecessor that differs from the pin before saving the reads",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "172c0e6ab561cdb1ddf4efe9e6eddb9b24fdef6f",
+          "after": "dda41718971ceb8b360bb0bcfeb063a741b283aa"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "ed5ca3d48021e4df8e372307148c25e68e1765b8",
+          "after": "d2f826dc1bc3db1138b3d4df9ac61b33ffeed121"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF preserve merged wallet validation",
       "compact": true,
@@ -9406,22 +9422,6 @@
           "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
           "before": "37c703ca19b331857b0d49569589a6f15144b1ed",
           "after": "37c703ca19b331857b0d49569589a6f15144b1ed"
-        }
-      ]
-    },
-    {
-      "delta": "D25",
-      "subject": "delta(client): D25 refuse a block-one predecessor that differs from the pin before saving the reads",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "172c0e6ab561cdb1ddf4efe9e6eddb9b24fdef6f",
-          "after": "dda41718971ceb8b360bb0bcfeb063a741b283aa"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
-          "before": "ed5ca3d48021e4df8e372307148c25e68e1765b8",
-          "after": "d2f826dc1bc3db1138b3d4df9ac61b33ffeed121"
         }
       ]
     },
