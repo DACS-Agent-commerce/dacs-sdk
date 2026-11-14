@@ -17,6 +17,7 @@ const SOURCE_READ_TIMEOUT_MS = 10000;
 const EVENT_LOOP_TURNS = 100000;
 // The native world's node stamps its blocks a few seconds apart, so its clock may sit a little past the start time.
 const CLOCK_START_SLACK_MS = 60_000;
+const CLOCK_STEP_MS = 1000;
 const stateOf = (w, id = w.jobId) => operationOf(w, id, PATHS.payments).state;
 const pending = async () => ({ status: 'pending', reason: 'demos-pending' });
 const underpaid = (txHash) => includedTransfer(txHash, { amountOs: '1' });
@@ -517,6 +518,9 @@ test('a native response signer held by the test leaves the attempt open, and a s
   assert.equal(w.counts.responseSignatures, signedBefore + 1, 'the seller reached its response signature');
   assert.equal(nativeStateOf(w, p), 'pending', 'the attempt is open');
   assert.ok(w.leaseUntil() > w.clock() && w.leaseUntil() - w.clock() <= w.leaseMs, 'the host lease has not ended');
+  const wallBefore = w.clock(), monotonicBefore = performance.now();
+  w.advance(CLOCK_STEP_MS);
+  assert.deepEqual([w.clock() - wallBefore, performance.now() - monotonicBefore >= CLOCK_STEP_MS], [CLOCK_STEP_MS, true], 'the wall and monotonic clocks move together');
   const readsBefore = w.transferReads().flat().length;
   const second = await p.send(txHash, { lapse: false });
   assert.deepEqual([second.status, second.body.error], [503, 'seller_effect_pending']);

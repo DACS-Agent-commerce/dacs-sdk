@@ -6,6 +6,7 @@ import { mkdtempSync, realpathSync, rmSync, readdirSync, readFileSync, existsSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
+import { mock } from 'node:test';
 import DatabaseSync from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
@@ -55,7 +56,7 @@ let jobSequence = 0;
 
 /**
  * One native seller on its own directories, with its clock at `T0` and the host's own 300000 ms journal lease. `advance(ms)` moves the clock
- * and `beforeRetry()` moves it to the end of the open attempt's lease.
+ * (and what `performance.now` reads, which the wire times its admissions with) and `beforeRetry()` moves it to the end of the open attempt's lease.
  *
  * `purchase()` returns a signed, committed Agreement with its payment ready: `p.pay()` makes the buyer's transfer; `p.claim(txHash)` sends the
  * payment request through the client library; `p.sign(txHash, options)` signs one request and `p.post(signed)` sends exactly those bytes, so
@@ -78,6 +79,10 @@ export async function nativePaymentWorld(t) {
   const clock = () => Math.max(wallClock, node?.latestBlockMs() ?? 0);
   node = scriptedDemosNode(clock);
   const advance = (milliseconds) => { wallClock = clock() + milliseconds; advancedMs += milliseconds; };
+  // The wire times an admission with `performance.now`, which moves forward with the world's clock.
+  const monotonicNow = performance.now.bind(performance);
+  mock.method(performance, 'now', () => monotonicNow() + advancedMs);
+  t.after(() => mock.restoreAll());
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: clock });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, T0 - 1000), displayName: 'Native payment seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'native-payment-wire', listingVersion: 1, title: 'Native payment report', description: 'A paid report delivered through the wire handler.',
