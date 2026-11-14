@@ -19,7 +19,7 @@ function packageJson(packageName: string): string {
       version: "0.1.0",
       private: true,
       type: "module",
-      engines: { node: "^20.19.0 || >=22.12.0" },
+      engines: { node: "^22.22.2 || ^24.15.0" },
       scripts: {
         build: "tsc -p tsconfig.json",
         typecheck: "tsc --noEmit -p tsconfig.json",
@@ -189,7 +189,7 @@ test("offline quickstart produces a fail-closed verifier simulation report", asy
 });
 `;
 
-const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
+const DOCKERFILE = `FROM node:22.22.2-bookworm-slim AS build
 WORKDIR /app
 # A normal generator install creates this registry-backed lock. Docker refuses
 # to build without it and installs exactly that dependency graph.
@@ -203,7 +203,7 @@ COPY test ./test
 RUN npm run build
 RUN npm prune --omit=dev --ignore-scripts
 
-FROM node:20.19.1-bookworm-slim
+FROM node:22.22.2-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
 RUN groupadd --system dacs && useradd --system --gid dacs --home-dir /app dacs && install --directory --owner=dacs --group=dacs --mode=0750 /app/data

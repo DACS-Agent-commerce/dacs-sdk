@@ -302,6 +302,49 @@ describe("original container evidence and explicit simulations", () => {
       expect(disposition(simulation({ [file]: changed }))).toMatchObject({ exitCode: 4, checks: { [gate]: "baseline" } });
     });
   }
+  // npm sbom names an aliased package by its pkgid, `<name>@npm:<package>@<version>`.
+  it("blocks lockSbom when an npm alias installs another package under the recorded name", () => {
+    const aliased = (recordedSources["consumer-lock-sbom.err"] ?? "").replace("@ton/core@0.59.1", "@ton/core@npm:xpath@0.0.34");
+    expect(blocked(simulation({ "consumer-lock-sbom.err": aliased }), "lockSbom"))
+      .toEqual([expect.stringContaining("@ton/core@npm:xpath@0.0.34")]);
+  });
+  const sbomFile = (gate: "lockSbom" | "physicalSbom") => gate === "lockSbom" ? "consumer-lock-sbom.err" : "consumer-physical-sbom.err";
+  it.each([
+    ["lockSbom", "invalid: @ton/core@0.59.1", "invalid: @ton/core@npm:@scope/pkg@1.0.0"],
+    ["lockSbom", "required by arbundles@0.6.23", "required by arbundles@npm:xpath@0.6.23"],
+    ["lockSbom", "required by @ton/ton@15.4.0", "required by @ton/ton@npm:@scope/pkg@15.4.0"],
+    ["physicalSbom", "invalid: node-fetch@2.7.0", "invalid: node-fetch@npm:xpath@2.7.0"],
+    ["physicalSbom", "required by @near-js/providers@0.2.3", "required by @near-js/providers@npm:@scope/pkg@0.2.3"],
+  ] as const)("blocks %s when the recorded `%s` becomes the npm alias `%s`", (gate, recorded, aliased) => {
+    const original = recordedSources[sbomFile(gate)] ?? "";
+    if (!original.includes(recorded)) throw new Error(`Recorded ${gate} lacks ${recorded}`);
+    expect(blocked(simulation({ [sbomFile(gate)]: original.replace(recorded, aliased) }), gate))
+      .toEqual([expect.stringContaining(aliased)]);
+  });
+  it("blocks physicalSbom when a recorded extraneous package becomes an npm alias", () => {
+    const rules = structuredClone(baseline);
+    rules.policyFindings.physicalSbomProblems.push("extraneous: left-pad@1.0.0 node_modules/left-pad");
+    const aliased = "extraneous: left-pad@npm:xpath@1.0.0 node_modules/left-pad";
+    const summary = simulation({ "consumer-physical-sbom.err": `${recordedSources["consumer-physical-sbom.err"]}npm error ${aliased}\n` });
+    expect(blocked(summary, "physicalSbom", rules)).toEqual([aliased]);
+  });
+  it("grades a recorded extraneous package at another plain version as baseline", () => {
+    const rules = structuredClone(baseline);
+    rules.policyFindings.physicalSbomProblems.push("extraneous: left-pad@1.0.0 node_modules/left-pad");
+    const summary = simulation({ "consumer-physical-sbom.err":
+      `${recordedSources["consumer-physical-sbom.err"]}npm error extraneous: left-pad@1.0.1 node_modules/left-pad\n` });
+    expect(disposition(summary, rules)).toMatchObject({ exitCode: 4, checks: { physicalSbom: "baseline" } });
+  });
+  it.each([
+    ["lockSbom", "@ton/core@0.59.1", "@ton/core@0.63.0-rc.1+build.7"],
+    ["lockSbom", "arbundles@0.6.23", "arbundles@0.6.23-beta.2"],
+    ["physicalSbom", "@near-js/providers@0.2.3", "@near-js/providers@0.2.4+sha.5"],
+  ] as const)("grades %s as baseline when the recorded %s has the plain version %s", (gate, recorded, changed) => {
+    const original = recordedSources[sbomFile(gate)] ?? "";
+    if (!original.includes(recorded)) throw new Error(`Recorded ${gate} lacks ${recorded}`);
+    expect(disposition(simulation({ [sbomFile(gate)]: original.replace(recorded, changed) })))
+      .toMatchObject({ exitCode: 4, checks: { [gate]: "baseline" } });
+  });
 });
 
 describe("original baseline with independent image observations", () => {

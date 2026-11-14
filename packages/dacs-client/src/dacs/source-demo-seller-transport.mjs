@@ -1,27 +1,18 @@
 // Composition-only capability for the bounded source demo. It selects the
 // existing cryptographically authenticated seller HTTP client; it does not
 // weaken, replace or interpret that transport's request/response verdicts.
+import { DACS_SELLER_HTTP_V1, DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
 const capabilities = new WeakSet();
-const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
-  && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+/** The signed seller HTTP transport declaration retained in purchase terms. */
+export const SOURCE_DEMO_SELLER_TRANSPORT = DACS_SELLER_HTTP_V1;
 
-export const SOURCE_DEMO_SELLER_TRANSPORT = 'dacs-source-demo/signed-peer/v1';
-
-export function createSourceDemoSellerTransport({ authority, authenticationFor, sessionDelegation = null }) {
-  if (typeof authority !== 'string' || !authority.startsWith('TEST-') || typeof authenticationFor !== 'function') {
-    throw new TypeError('source demo seller transport requires explicit TEST authority and an authentication resolver');
-  }
-  if (sessionDelegation != null && (!exact(sessionDelegation, ['request', 'accept']) || !['request', 'accept'].every((name) => typeof sessionDelegation[name] === 'function'))) throw new TypeError('seller session delegation requires exact request and accept callbacks');
+/** Returns an opaque wire capability with session signer, expiry policy and verified endpoint-proof resolvers. Throws TypeError for missing resolvers or a non-TEST authority. Construction sends nothing. */
+export function createSourceDemoSellerTransport({ authority, sessionSignerFor, sessionPolicyFor, endpointProofFor }) {
+  if (typeof authority !== 'string' || !authority.startsWith('TEST-')) throw new TypeError('source demo seller transport requires explicit TEST authority');
+  if (![sessionSignerFor, sessionPolicyFor, endpointProofFor].every(member => typeof member === 'function')) throw new TypeError('seller transport requires session signer, policy and endpoint proof resolvers');
   const declaration = Object.freeze({ profile: SOURCE_DEMO_SELLER_TRANSPORT, authority,
-    request: sessionDelegation ? 'buyer-delegated-session-ed25519-complete-body' : 'buyer-ed25519-complete-body',
-    ...(sessionDelegation ? { delegation: 'seller-session-delegation/v1' } : {}), response: 'seller-ed25519-request-bound', durability: 'seller-intent-journal' });
-  const capability = Object.freeze({ declaration, sessionDelegation, authenticationFor(operation) {
-    const auth = authenticationFor(operation);
-    if (!exact(auth, ['request', 'verifyResponse']) || typeof auth.request !== 'function' || typeof auth.verifyResponse !== 'function') {
-      throw new TypeError('the exact existing seller client authentication adapter is unavailable');
-    }
-    return auth;
-  } });
+    request: DACS_SELLER_HTTP_DOMAINS.request, delegation: DACS_SELLER_HTTP_DOMAINS.delegation, response: DACS_SELLER_HTTP_DOMAINS.response, durability: 'seller-intent-journal' });
+  const capability = Object.freeze({ declaration, sessionSignerFor, sessionPolicyFor, endpointProofFor });
   capabilities.add(capability);
   return capability;
 }

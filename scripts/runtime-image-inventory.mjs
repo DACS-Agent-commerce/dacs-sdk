@@ -39,7 +39,7 @@ export function runtimeImageInventory(root) {
             if (lstatSync(executable).isSymbolicLink()) {
               item.link = true;
               const target = realpathSync(executable);
-              if (lstatSync(target).isFile()) item.target = relative(root, target);
+              if (lstatSync(target).isFile()) item.target = relative(realpathSync(root), target);
             }
           } catch (error) { item.error = `${error.name}: ${error.message}`; }
           packages.push(item);

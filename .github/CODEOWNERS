@@ -17,6 +17,7 @@
 /scripts/acceptance-ci.sh @randomblocker
 /scripts/bounded-build.mjs @randomblocker
 /scripts/bounded-command.mjs @randomblocker
+/scripts/bounded-log.mjs @randomblocker
 /scripts/bounded-npm-http.cjs @randomblocker
 /scripts/bounded-transport.sh @randomblocker
 /scripts/runtime-image-inventory.mjs @randomblocker

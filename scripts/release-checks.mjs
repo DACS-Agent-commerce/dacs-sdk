@@ -267,12 +267,6 @@ export function validateLock(lock, artifacts, consumer = ".", omitOptional = fal
   for (const name of allowed.keys()) if (!installed.has(name)) fail(`missing installed artifact in lock: ${name}`);
 }
 
-export function expectedNode20Rejection(p, subpath, error, node = process.versions.node) {
-  const restricted = p.name === "@kynesyslabs/dacs-seller" && p.engines?.node === ">=22.13.0" ||
-    p.name === "@kynesyslabs/dacs-client" && subpath === "./wallet/durable-journal";
-  return node.startsWith("20.") && Boolean(restricted) && error.code === "ERR_UNKNOWN_BUILTIN_MODULE" && error.message === "No such built-in module: node:sqlite";
-}
-
 // Prefixed to every check run in a child process. Code under test may call
 // process.exit(0) or print a completion line early; the child must set
 // `finished = true` immediately before its own completion line, or it exits 1.
@@ -425,21 +419,14 @@ export async function consumeImports(consumer, artifacts, log = console.log, inc
     if (!include(artifact, entry)) continue;
     const spec = artifact.manifest.name + (entry.subpath === "." ? "" : entry.subpath.slice(1));
     const imported = `imported ${spec}`;
-    const rejected = `not imported (expected Node 20 rejection): ${spec} needs node:sqlite`;
     const code = `import {fileURLToPath} from 'node:url';
       ${CHILD_EXIT_GUARD}
       const spec = ${JSON.stringify(spec)};
       const filename = fileURLToPath(import.meta.resolve(spec));
       if (!filename.startsWith(${JSON.stringify(base + "/")})) throw Error('export resolves outside consumer');
       const attributes = filename.endsWith('.json') ? {with:{type:'json'}} : {};
-      const expectedNode20Rejection = ${expectedNode20Rejection.toString()};
-      const manifest = ${JSON.stringify({ name: artifact.manifest.name, engines: artifact.manifest.engines })};
-      try { await import(spec, attributes); finished = true; console.log(${JSON.stringify(imported)}); }
-      catch (error) {
-        if (expectedNode20Rejection(manifest, ${JSON.stringify(entry.subpath)}, error)) { finished = true; console.log(${JSON.stringify(rejected)}); }
-        else throw error;
-      }`;
-    try { log(requireCompletion(run(process.execPath, ["--input-type=module", "-e", code], consumer), [imported, rejected], spec)); }
+      await import(spec, attributes); finished = true; console.log(${JSON.stringify(imported)});`;
+    try { log(requireCompletion(run(process.execPath, ["--input-type=module", "-e", code], consumer), [imported], spec)); }
     catch (error) { errors.push(`${spec}: ${error.message}`); }
   }
   if (errors.length) fail(errors.join("\n"));

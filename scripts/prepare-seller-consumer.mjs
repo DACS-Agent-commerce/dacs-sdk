@@ -3,7 +3,7 @@
 // it did not create in this run.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,11 +31,11 @@ export function sellerPackFiles() {
 /**
  * Returns the digest of the given packed seller files, the built core and Node
  * host kit (`dist/`, `packages/dacs-node/dist`), the root manifest and lock,
- * and the smoke runner: a setup is current only
+ * the Node host manifest, and the smoke runner: a setup is current only
  * while it matches. Throws if a file cannot be read.
  */
 export function sellerSourceFingerprint(sellerFiles) {
-  const files = ["package.json", "package-lock.json", SMOKE_RUNNER, ...sellerFiles.map((file) => "packages/dacs-seller/" + file)];
+  const files = ["package.json", "package-lock.json", "packages/dacs-node/package.json", SMOKE_RUNNER, ...sellerFiles.map((file) => "packages/dacs-seller/" + file)];
   const walk = (dir) => {
     for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
       if (entry.isDirectory()) walk(dir + "/" + entry.name);
@@ -158,4 +158,12 @@ function prepare(directory) {
   process.stdout.write("Prepared locked seller consumer: " + app + "\n");
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) prepare(process.argv[2]);
+function runDirectly() {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (runDirectly()) prepare(process.argv[2]);

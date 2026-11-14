@@ -37,6 +37,9 @@ function fetchRecording(fixture: RecordedReply) {
 
 function connectedAdapter(address: string): DemosAdapter {
   const adapter = new DemosAdapter({ rpc: RPC, chainIdentity: "test-chain" });
+  vi.spyOn(adapter, "getChainIdentityDetails").mockResolvedValue({
+    chainId: null, genesisHash: "test-chain", genesisDataHash: null, source: "genesis-read",
+  });
   Object.assign(adapter, { connected: true });
   vi.spyOn(adapter.raw, "getAddress").mockReturnValue(address);
   return adapter;

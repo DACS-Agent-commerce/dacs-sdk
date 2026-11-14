@@ -8,7 +8,7 @@
 // provably cannot, and only then is the address signed anew.
 //
 // createDeliverableWalletJournal({ path, signCreate, broadcast, readAccountNonce,
-//   readTransactionState, now, readTimeoutMs }) takes the wallet primitives of
+//   readTransactionState, now, readTimeoutMs, signatureChainId }) takes the wallet primitives of
 // the payment-evidence journal, and signCreate is asked for the Deliverable's
 // storage CREATE: { logicalAddress, artifact (the report), writer, artifactKind:
 // 'Deliverable', jobId, receiptContentHash, deliveryBinding }. The CREATE it

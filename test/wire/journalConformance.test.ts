@@ -19,9 +19,12 @@ vi.mock("node:fs", async (original) => {
       fs.fsyncSync(fd);
       if (!fault.trackDurability) return;
       const path = fault.fds.get(fd)!;
-      if (fs.fstatSync(fd).isDirectory()) fault.synced.push(path);
       const stat = fs.fstatSync(fd);
       if (stat.isDirectory()) {
+        fault.synced.push(path);
+        // Records live only in the journal's own tree. A directory above it is synced for the journal's entry; its
+        // other entries belong to other processes (the temporary directory), so they are not listed.
+        if (fault.directory === "" || (path !== fault.directory && !path.startsWith(`${fault.directory}/`))) return;
         fault.durable.clear();
         for (const name of fs.readdirSync(path)) {
           const file = join(path, name), inode = fs.statSync(file).ino;

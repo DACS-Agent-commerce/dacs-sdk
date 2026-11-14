@@ -259,16 +259,24 @@ test('D-3 a purchase read that times out after payment rejects with no prompt an
  for(const r of [payDem(),requestFor()])await assert.rejects(a(r),{code:'ETIMEDOUT'});
  assert.equal(prompts,0);await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
 });
+const LEDGER_WAIT_LIMIT_MS=10_000;
 // Resolves once the policy reports the ledger unreadable (it then waits, unsigned and not refused).
-function ledgerWait(t){
- const write=process.stderr.write;let seen;const waiting=new Promise(done=>{seen=done;});
- process.stderr.write=function(text,...rest){if(String(text).startsWith('seller-policy-ledger unreadable'))seen();return write.call(this,text,...rest);};
- t.after(()=>{process.stderr.write=write;});
+// Rejects if no report comes within limitMs, so a missing report fails the test instead of hanging the file.
+function ledgerWait(t,limitMs=LEDGER_WAIT_LIMIT_MS){
+ const write=process.stderr.write;let timer;
+ const waiting=new Promise((done,fail)=>{
+  timer=setTimeout(fail,limitMs,new Error(`the policy did not report an unreadable ledger within ${limitMs} ms`));
+  process.stderr.write=function(text,...rest){if(String(text).startsWith('seller-policy-ledger unreadable')){clearTimeout(timer);done();}return write.call(this,text,...rest);};
+ });
+ t.after(()=>{clearTimeout(timer);process.stderr.write=write;});
  return waiting;
 }
+test('waiting for the unreadable-ledger report rejects with a clear message when none comes',{timeout:5_000},async t=>{
+ await assert.rejects(ledgerWait(t,10),{message:'the policy did not report an unreadable ledger within 10 ms'});
+});
 for(const [label,end] of [['stop ends the wait',async(f,a,pending)=>{await f.p.stop();await assert.rejects(pending,{code:'seller_approval_stopped'});}],
  ['a repaired ledger is decided again',async(f,a,pending)=>{await writeFile(f.evidencePath,'');assert.equal(await pending,true);}]])test(`D-4 a torn ledger at restart holds paid evidence with no prompt: ${label}`,async t=>{
- const f=await fixture(t,purchase,{...OVER_CAP,ledgerRetryMs:1});let prompts=0;await writeFile(f.evidencePath,'{"format":');
+ const f=await fixture(t,purchase,{...OVER_CAP,ledgerRetryMs:1});t.after(()=>f.p.stop());let prompts=0;await writeFile(f.evidencePath,'{"format":');
  const waiting=ledgerWait(t),a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;return true;}}),pending=a(payDem());
  await waiting;assert.equal(prompts,0);await end(f,a,pending);
 });
@@ -641,7 +649,7 @@ test('cold F3 a decision that finds a torn context line cuts it and decides, wit
 // Only `{"format":"dacs-node2-seller-` is shared with the attempt and sign lines; one byte more is a context line.
 const SHARED_WITH_ATTEMPT='{"format":"dacs-node2-seller-';
 test('a decision leaves a torn tail that also starts an attempt line, held and unprompted until it is repaired',async t=>{
- const f=await fixture(t,purchase,{...OVER_CAP,ledgerRetryMs:1});let prompts=0;await writeFile(f.evidencePath,SHARED_WITH_ATTEMPT);
+ const f=await fixture(t,purchase,{...OVER_CAP,ledgerRetryMs:1});t.after(()=>f.p.stop());let prompts=0;await writeFile(f.evidencePath,SHARED_WITH_ATTEMPT);
  const waiting=ledgerWait(t),a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;return true;}}),pending=a(payDem());
  await waiting;assert.equal(prompts,0);assert.equal(await readFile(f.evidencePath,'utf8'),SHARED_WITH_ATTEMPT);
  await f.p.stop();await assert.rejects(pending,{code:'seller_approval_stopped'});

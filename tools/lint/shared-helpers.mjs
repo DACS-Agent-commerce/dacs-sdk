@@ -12,7 +12,8 @@ export const SHARED_HELPERS = ["deepFreeze", "exactKeys", "hasExactKeys", "isRec
 const SHARED_HOME = "src/internal/";
 const BASELINE_FILE = "tools/lint/shared-helpers-baseline.txt";
 
-function listSourceFiles(repoRoot) {
+/** Paths of the `.ts` files under src/, not declaration files, sorted. */
+export function listSourceFiles(repoRoot) {
   const out = [];
   const walk = (dir) => {
     for (const entry of readdirSync(join(repoRoot, dir), { withFileTypes: true })) {
@@ -26,7 +27,7 @@ function listSourceFiles(repoRoot) {
 }
 
 // Looks through parentheses, `as`, `satisfies`, `<T>` and `!` to the value they wrap.
-function unwrap(node) {
+export function unwrap(node) {
   let value = node;
   while (value && (ts.isParenthesizedExpression(value) || ts.isAsExpression(value) || ts.isSatisfiesExpression(value)
     || ts.isTypeAssertionExpression(value) || ts.isNonNullExpression(value))) {

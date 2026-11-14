@@ -56,6 +56,32 @@ test('authenticates signed CREATE and freshly rechecks across a journal restart'
   const restarted = readbackFixture({ journal: f.journal });
   assert.equal((await read(restarted)).receipt.transactionRef.value, result.receipt.transactionRef.value);
 });
+const signOver = (f, message) => {
+  f.signed.signature.data = `0x${seller.signBytes(Buffer.from(message)).toString('hex')}`;
+  Object.assign(f.tx, structuredClone(f.signed), { status: 'confirmed', blockNumber: 1 });
+};
+test('readback accepts the bare hash and the configured chain-bound signature', async () => {
+  for (const message of [f => f.signed.hash, f => `demos-tx:v1:7:${f.signed.hash}`]) {
+    const f = readbackFixture({ adapter: { signatureChainId: '7' } });
+    signOver(f, message(f));
+    assert.equal((await read(f)).status, 'present');
+  }
+});
+test('readback refuses a signature over another message than the bare hash or the configured chain-bound form', async () => {
+  for (const message of [f => `demos-tx:v1:8:${f.signed.hash}`, f => `demos-tx:v2:7:${f.signed.hash}`, f => `demos-tx:v1:7:7:${f.signed.hash}`, f => `${f.signed.hash}\n`]) {
+    const f = readbackFixture({ adapter: { signatureChainId: '7' } });
+    signOver(f, message(f));
+    await assert.rejects(read(f), error => error.code === 'invalid' && /exact writer authorization/.test(error.message));
+  }
+});
+test('readback with no signature chain id refuses a chain-bound signature', async () => {
+  const f = readbackFixture();
+  signOver(f, `demos-tx:v1:7:${f.signed.hash}`);
+  await assert.rejects(read(f), error => error.code === 'invalid' && /exact writer authorization/.test(error.message));
+});
+test('a signature chain id that is not a canonical decimal string is refused when the adapter is made', () => {
+  for (const signatureChainId of ['', '07', 'x7', 7, null]) assert.throws(() => readbackFixture({ adapter: { signatureChainId } }), { name: 'TypeError', message: /signatureChainId/ }, String(signatureChainId));
+});
 test('an empty name index cannot prove authenticated absence', async () => {
   const f = readbackFixture(); f.state.rows = [];
   await assert.rejects(read(f), error => error.code === 'indeterminate');

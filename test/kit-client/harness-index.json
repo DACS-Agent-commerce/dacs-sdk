@@ -36,10 +36,10 @@
   },
   {
     "id": "K12-H5",
-    "today": "the client classifies a signed 409 peer_request_replayed as SellerRefusedError",
+    "today": "the authenticated client classifies a signed 409 peer_request_replayed as unknown and retries the stored bytes within its fixed deadline",
     "target": "classified unknown; retried with the stored bytes",
     "owner": "P13b1b",
-    "flippedBy": null
+    "flippedBy": "P13b1b"
   },
   {
     "id": "K12-H6a",
@@ -53,7 +53,7 @@
     "today": "the client's request signer emits old-domain signing bytes",
     "target": "wire domain only",
     "owner": "P13a1",
-    "flippedBy": null
+    "flippedBy": "P13a1"
   },
   {
     "id": "K12-H7",

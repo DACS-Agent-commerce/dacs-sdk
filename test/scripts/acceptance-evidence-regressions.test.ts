@@ -319,6 +319,29 @@ describe("complete acceptance evidence regressions", () => {
       expect(findings.engine).toMatchObject({ code: "EBADENGINE", reportedPackage: "a@1.0.0" });
       expect(state).toBe("baseline");
     });
+
+    // npm ci checks engines while it builds the tree, then fails its lock sync check on the nested Git dependency.
+    const lockSyncLog = "npm error code EUSAGE\nnpm error\nnpm error `npm ci` can only install packages when your package.json " +
+      "and package-lock.json or npm-shrinkwrap.json are in sync. Please update your lock file with `npm install` before " +
+      "continuing.\nnpm error\nnpm error Missing: avsc@5.4.7 from lock file\n";
+    const lockSyncSources = (log: string) => ({ ...passingSources(), "engine-strict.log": log, "engine-strict.exit-code": "1\n" });
+
+    it("passes npm ci's lock sync failure when the lock scan lists no violation", () => {
+      const findings = extracted(lockSyncSources(lockSyncLog));
+      expect(findings.engine).toMatchObject({ code: "EUSAGE", lockSyncFailed: true, violations: [] });
+      expect(registryContainerDisposition(withFindings(findings))).toMatchObject({ exitCode: 0, checks: { engineStrict: "passed" } });
+    });
+
+    it("blocks npm ci's lock sync failure when the lock scan lists a violation, even a listed one", () => {
+      expect(classifyLog(lockSyncLog).state).toBe("blocked");
+    });
+
+    it("blocks a usage error that is not the lock sync failure", () => {
+      const log = "npm error code EUSAGE\nnpm error The `npm ci` command can only install with an existing package-lock.json or\n";
+      const findings = extracted(lockSyncSources(log));
+      expect(findings.engine).toMatchObject({ code: "EUSAGE", lockSyncFailed: false });
+      expect(classifyPolicyChecks(withFindings(findings), baseline).engineStrict).toBe("blocked");
+    });
   });
 
   it("rejects an incomplete engine scan behind a successful exit code", () => {

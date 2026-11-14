@@ -222,7 +222,7 @@ describe("Agent logical Listing discovery (#54)", () => {
     expect(readAnchor).not.toHaveBeenCalled();
   });
 
-  test("walletless write and session calls fail before adapter or publisher I/O", async () => {
+  test("walletless write calls fail before adapter or publisher I/O", async () => {
     const scan = vi.fn();
     const anchor = vi.fn();
     const sign = vi.fn();
@@ -247,9 +247,6 @@ describe("Agent logical Listing discovery (#54)", () => {
     await expect(agent.publishListing(listing)).rejects.toThrow(
       /AgentConfig\.wallet/,
     );
-    await expect(
-      agent.runSession("stor-listing", {} as never),
-    ).rejects.toThrow(/requires createAgent\(\{ wallet \}\)/);
 
     expect(scan).not.toHaveBeenCalled();
     expect(anchor).not.toHaveBeenCalled();

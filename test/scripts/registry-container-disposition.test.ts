@@ -787,7 +787,8 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
       if (split < 0 && DUAL_RAIL_DEPENDENCIES.includes(name)) continue;
       if (owner && !dependencies.some(field => Object.hasOwn(owner[field] ?? {}, name))) {
         const declared = owner.dependencies;
-        owner.dependencies = { ...(typeof declared === "object" && declared !== null ? declared : {}), [name]: entry.version };
+        // npm 11 ci leaves out a lock entry no spec declares; `*` declares one that has no version.
+        owner.dependencies = { ...(typeof declared === "object" && declared !== null ? declared : {}), [name]: entry.version ?? "*" };
       }
     }
     const lock = { lockfileVersion: 3, packages: { "": manifest, ...packages } };
@@ -1376,7 +1377,7 @@ describe("registry/container evidence", () => {
     expect(readFileSync(join(repoRoot, "packages/create-dacs-agent/src/liveTemplates.ts"), "utf8")).toContain("RUN npm rebuild better-sqlite3");
     expect(measure?.line).not.toContain("npm rebuild"); expect(tests?.line).toContain("--read-only");
     expect(install?.line).toContain("--env npm_config_ignore_scripts=true"); expect(doctor?.line).not.toContain("npm ");
-    expect(install?.line).toContain("npm install --global --ignore-scripts npm@11.19.0");
+    expect(install?.line).toContain("npm install --global --prefix /tmp/npm --ignore-scripts npm@11.19.0");
     expect(install?.line).toContain("npm install --ignore-scripts ");
     expect(measure?.line).toMatch(new RegExp(` --user ${process.getuid?.()}:${process.getgid?.()} `));
     for (const run of [install, measure]) {
@@ -2963,11 +2964,15 @@ describe("dependency policy over npm ci installations", () => {
         { bin: { "package.json": "scope.json" } }), "scope.json": scope });
       const other = packTarball({ "package.json": packageJson("other", CANDIDATE_VERSION),
         "index.js": "module.exports = 'unreleased-copy';" });
+      // npm 11 ci refuses a declared dependency the lock lacks and leaves out a lock entry nothing declares,
+      // so each alias form locks the copy it declares.
       const { project, policy } = await registryInstallation(directory, { plugin, "bin-owner": binOwner, other }, {
         "node_modules/plugin": ["plugin", { dependencies: { "bin-owner": CANDIDATE_VERSION } }],
         "node_modules/plugin/node_modules/bin-owner": ["bin-owner", { bin: { "package.json": "scope.json" } }],
-        ...(form === "alias-declaration" ? { "node_modules/candidate-alias": ["other", {}] as [string, Record<string, unknown>] } : {}),
-      }, { dependencies: { plugin: CANDIDATE_VERSION },
+        ...(form === "alias-declaration" ? { "node_modules/candidate-alias": ["other", { name: "other" }] as [string, Record<string, unknown>] } : {}),
+        ...(form === "alias-name" ? { "node_modules/candidate-alias": ["@kynesyslabs/dacs", { name: "@kynesyslabs/dacs", optional: true }] as
+          [string, Record<string, unknown>] } : {}),
+      }, { dependencies: { plugin: CANDIDATE_VERSION, ...(form === "alias-declaration" ? { [specifier]: `npm:other@${CANDIDATE_VERSION}` } : {}) },
         ...(form === "alias-name" ? { optionalDependencies: { [specifier]: alias } } : {}) });
       const installedScope = join(project, "node_modules/plugin/node_modules/.bin/package.json");
       expect(realpathSync(installedScope)).toBe(join(project, "node_modules/plugin/node_modules/bin-owner/scope.json"));

@@ -170,8 +170,8 @@ export function parsePolicyLedger(text){
       if(policyRow&&!Object.hasOwn(row,'policyHold')){
         // The hold opens the attempt.
         if(attempt||row.decision!=='rejected'||!HELD_REASONS.has(row.policyReason))malformed();
-        attempt={approvalHash:row.approvalHash,jobId:null,manual:false,reservation:null,outcome:null,reason:null,originLine:lineNumber};attempts.set(row.attemptId,attempt);opened=true;
-      }else if(!attempt||attempt.outcome!==null||attempt.approvalHash!==row.approvalHash||(attempt.reservation&&!(linked&&attempt.reservation===authorized)))malformed();
+        attempt={approvalHash:row.approvalHash,jobId:null,manual:false,answered:false,reservation:null,outcome:null,reason:null,originLine:lineNumber};attempts.set(row.attemptId,attempt);opened=true;
+      }else if(!attempt||attempt.outcome!==null||attempt.approvalHash!==row.approvalHash||(attempt.reservation&&!(linked&&attempt.reservation===authorized))||(!policyRow&&attempt.answered))malformed();
     }
     const request=JSON.parse(row.requestBytes),declared=request?.content?.debit?.totalOs;
     // A refusal line with a waiverId records a waivable refusal of a payment-evidence write. The operator's answer to it is
@@ -206,7 +206,7 @@ export function parsePolicyLedger(text){
     if(typeof entry.reservationId==='string')byReservationId.set(entry.reservationId,entry);
     if(attempt){
       attempt.jobId??=entry.jobId;
-      if(!policyRow&&row.decision==='approved')attempt.manual=true;
+      if(!policyRow){attempt.answered=true;if(row.decision==='approved')attempt.manual=true;}
       if(entry.held&&row.decision==='approved')attempt.reservation=entry;
     }
   }}catch(error){if(error&&typeof error==='object')error.ledgerLine??=lineNumber;throw error;}
@@ -611,6 +611,8 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   // (its release or manual answer) may be appended to.
   const waiverOpen=(snapshot,waiverId,approvalHash)=>{const waiver=snapshot.waivers.get(waiverId);return waiver?.answered===false&&waiver.approvalHash===approvalHash;};
   const heldOpen=(snapshot,attemptId,approvalHash)=>{const attempt=snapshot.attempts.get(attemptId);return attempt?.outcome===null&&!attempt.reservation&&attempt.approvalHash===approvalHash;};
+  // A held attempt takes one manual answer, yes or no: it is open for that answer until a line for it exists.
+  const awaitingAnswer=(snapshot,attemptId,approvalHash)=>heldOpen(snapshot,attemptId,approvalHash)&&!snapshot.attempts.get(attemptId).answered;
   // Ends what an unsigned record holds open on the ledger (snapshot, or a fresh read): the sign line it appended
   // (signIds) while still open, else its held attempt while open and unsigned for these bytes. The record is
   // forgotten only after that line is appended, or when the ledger shows nothing of it open.
@@ -745,7 +747,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const unchanged=()=>!accepted||JSON.stringify(request)===requestBytes;
     if(waiverId)return serializedPolicy(evidencePath,async()=>waiverOpen(await readPolicyLedger(evidencePath),waiverId,approvalHash)&&unchanged()&&record());
     if(!attemptId)return serializedPolicy(evidencePath,async()=>unchanged()&&record());
-    return serializedPolicy(evidencePath,async()=>heldOpen(await readPolicyLedger(evidencePath),attemptId,approvalHash)&&unchanged()&&record());
+    return serializedPolicy(evidencePath,async()=>awaitingAnswer(await readPolicyLedger(evidencePath),attemptId,approvalHash)&&unchanged()&&record());
   };
   const approve=(request,validity,options={})=>{
     if(!policyMode){

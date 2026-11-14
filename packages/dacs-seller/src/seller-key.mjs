@@ -59,10 +59,10 @@ function refusing(refusal, run) {
   }
 }
 
-// K14: the purchase paths admit Node ^22.13.0 || >=23.4.0.
+// The purchase paths admit Node ^22.22.2 || ^24.15.0, the package's engines range.
 function runtimeSupported(version) {
-  const [major, minor] = /^v(\d+)\.(\d+)\./.exec(version)?.slice(1).map(Number) ?? [];
-  return (major === 22 && minor >= 13) || (major === 23 && minor >= 4) || major >= 24;
+  const [major, minor, patch] = /^v(\d+)\.(\d+)\.(\d+)/.exec(version)?.slice(1).map(Number) ?? [];
+  return (major === 22 && (minor > 22 || (minor === 22 && patch >= 2))) || (major === 24 && minor >= 15);
 }
 
 function assertKeyLocation(filePath, dataDirectory) {

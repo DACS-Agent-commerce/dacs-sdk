@@ -1,8 +1,10 @@
 // Test-owned independent Node process for the durable wallet journal. It opens
 // the caller's explicit database and runs IPC commands. No network, no keys.
 import { openDurableWalletJournal } from '../../src/wallet/durable-journal.mjs';
+import { createEffectHistory } from '../../src/wallet/effect-history.mjs';
 
 const journal = openDurableWalletJournal({ path: process.env.DACS_DURABLE_JOURNAL_PATH, mode: 'open', lockTimeoutMs: Number(process.env.DACS_DURABLE_JOURNAL_LOCK_MS ?? 2000) });
+const history = createEffectHistory({ journal });
 const releases = new Map();
 const send = (message) => new Promise((resolve) => process.send(message, resolve));
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -24,6 +26,16 @@ const handlers = {
       await journal.put(key, record);
       if (JSON.stringify(await journal.get(key)) !== JSON.stringify(record)) throw new Error('readback differs');
       await send({ event: 'recorded', key });
+      process.kill(process.pid, 'SIGKILL');
+      await delay(10_000);
+    });
+  },
+  // Append the dispatch-history record inside the record's own lane frame, report
+  // it, then die before the frame releases the lane.
+  async crashAfterHistoryAppend({ record }) {
+    return journal.withWalletLock(record.lane, async () => {
+      await history.append(record);
+      await send({ event: 'recorded', key: record.lane });
       process.kill(process.pid, 'SIGKILL');
       await delay(10_000);
     });

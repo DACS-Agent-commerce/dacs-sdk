@@ -10,8 +10,8 @@ import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 
-const REFUSED = ['v20.19.0', 'v22.12.0', 'v23.3.0'];
-const ADMITTED = ['v22.13.0', 'v23.4.0', 'v24.0.0'];
+const REFUSED = ['v20.19.0', 'v22.13.0', 'v22.22.1', 'v23.4.0', 'v24.14.0', 'v25.0.0', 'v26.0.0'];
+const ADMITTED = ['v22.22.2', 'v22.23.0', 'v24.15.0'];
 const isUnsupported = (version) => (error) => error.code === 'runtime_unsupported' && error.message.includes(version);
 
 const setProcessVersion = (version) => Object.defineProperty(process, 'version', { value: version, configurable: true });
@@ -37,13 +37,18 @@ function realOptions(t, name) {
 
 const FACTORIES = { createProtocolPurchases, createPurchaseService, createListingVerifier };
 
-test('assertPurchaseRuntime refuses v20.19.0, v22.12.0 and v23.3.0 and admits v22.13.0, v23.4.0 and v24.0.0 (K14-R1 to R6)', () => {
+test('assertPurchaseRuntime refuses every REFUSED version and admits every ADMITTED version', () => {
   for (const version of REFUSED) assert.throws(() => assertPurchaseRuntime(version), isUnsupported(version), version);
   for (const version of ADMITTED) assert.equal(assertPurchaseRuntime(version), undefined, version);
-  for (const malformed of ['', 'v22', 'node-22.13.0', undefined, 22]) assert.throws(() => assertPurchaseRuntime(malformed), { code: 'runtime_unsupported' }, String(malformed));
+  for (const malformed of ['', 'v22', 'node-22.22.2', undefined, 22]) assert.throws(() => assertPurchaseRuntime(malformed), { code: 'runtime_unsupported' }, String(malformed));
 });
 
-test('each public purchase factory constructed with valid admission under process.version v20.19.0, v22.12.0 and v23.3.0 throws runtime_unsupported naming that version, with SQLite statements, journal, custody and signer constructed 0 times and the journal directory unchanged (K14-R1, R2, R4, R7)', async (t) => {
+test('the purchase runtime check admits exactly the client package engines range', () => {
+  const engines = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).engines.node;
+  assert.throws(() => assertPurchaseRuntime('v1.0.0'), (error) => error.message.startsWith(`purchases need Node ${engines};`));
+});
+
+test('each public purchase factory constructed with valid admission under every REFUSED process.version throws runtime_unsupported naming that version, with SQLite statements, journal, custody and signer constructed 0 times and the journal directory unchanged', async (t) => {
   const { binding, currentLocal } = await bindFixture();
   const directory = mkdtempSync(join(tmpdir(), 'dacs-floor-journal-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -59,7 +64,7 @@ test('each public purchase factory constructed with valid admission under proces
   assert.deepEqual(readdirSync(directory), []);
 });
 
-test('under v22.13.0, v23.4.0 and v24.0.0 each public purchase factory gets past the runtime check and finishes construction (K14-R3, R5, R6)', async (t) => {
+test('under every ADMITTED version each public purchase factory gets past the runtime check and finishes construction', async (t) => {
   const { binding, currentLocal } = await bindFixture();
   restoreProcessVersionAfter(t);
   for (const version of ADMITTED) {
@@ -71,7 +76,7 @@ test('under v22.13.0, v23.4.0 and v24.0.0 each public purchase factory gets past
   }
 });
 
-test('CI asserts the Node 20 refusal on the 20.19.0 leg only and constructs each packed factory at the engine floor (K14-R1, R3, R5)', () => {
+test('CI asserts the packed refusal on Node 20.19.0 and 22.13.0 and constructs each packed factory at the engine floor', () => {
   const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const step = (name) => {
     const start = workflow.indexOf(`- name: ${name}`);
@@ -79,14 +84,22 @@ test('CI asserts the Node 20 refusal on the 20.19.0 leg only and constructs each
     const next = workflow.indexOf('\n      - ', start + 1);
     return workflow.slice(start, next < 0 ? undefined : next);
   };
-  const smoke = step('Package smoke (buyer root; Node 20 import is outside client engines)');
+  const smoke = step('Package smoke (buyer root)');
   assert.doesNotMatch(smoke, /\n\s+if:/, 'the packed-root smoke runs on both build-test legs');
   assert.match(smoke, /canonicalize/);
-  assert.doesNotMatch(smoke, /runtime_unsupported/, 'the floating leg makes no refusal assertion');
-  const refusal = step('Package smoke (buyer purchase factories refuse Node 20 with runtime_unsupported)');
-  assert.match(refusal, /if: matrix\.node-version == '20\.19\.0'/);
-  assert.match(refusal, /runtime_unsupported/);
-  assert.match(refusal, /process\.version/);
+  assert.doesNotMatch(smoke, /runtime_unsupported/, 'the supported legs make no refusal assertion');
+  for (const version of ['20.19.0', '22.13.0']) {
+    const setup = step(`Use Node ${version} for the buyer refusal check`);
+    assert.match(setup, new RegExp(`node-version: "${version.replaceAll('.', '\\.')}"`), version);
+    const label = version === '20.19.0' ? 'Node 20' : `Node ${version}`;
+    const refusal = step(`Package smoke (buyer purchase factories refuse ${label} with runtime_unsupported)`);
+    assert.match(refusal, new RegExp(`test "\\$\\(node --version\\)" = v${version.replaceAll('.', '\\.')}`), version);
+    assert.match(refusal, /node refuse-runtime\.mjs/, version);
+  }
+  const script = step('Package smoke (buyer purchase factories refuse Node 20 with runtime_unsupported)');
+  assert.match(script, /runtime_unsupported/);
+  assert.match(script, /process\.version/);
+  assert.match(step("Use this leg's Node again after the refusal checks"), /node-version: \$\{\{ matrix\.node-version \}\}/);
   const floor = step('Check both packed JavaScript entry points at the engine floor');
   for (const name of Object.keys(FACTORIES)) assert.match(floor, new RegExp(`c\\.${name}\\(`), name);
 });

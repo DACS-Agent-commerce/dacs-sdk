@@ -19,7 +19,7 @@ npm run conformance:sync   # pull DACS-Standard §14 vectors into vendor/ (pinne
 | `npm run typecheck` | `tsc --noEmit` over `src` + `test` |
 | `npm run build` | emit ESM + types to `dist/` (`tsconfig.build.json`) |
 | `npm test` | vitest — unit tests + the conformance harness |
-| `npm run test:live` | live on-chain e2e (gated on a funded node + creds; skipped otherwise) |
+| `npm run test:live` | funded two-agent live e2e, see [`docs/live-e2e.md`](docs/live-e2e.md) (gated on a funded node + creds; skipped otherwise) |
 | `npm run conformance:sync` | sync the §14 vectors from `DACS-Standard` at the pinned ref |
 
 The `dacs doctor` CLI is read-only by default. Its offline and JSON modes are

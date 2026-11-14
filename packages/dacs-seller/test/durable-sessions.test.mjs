@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 import { durableFixture } from './helpers/durable-state-fixture.mjs';
-import { JOB, buyer } from './helpers/protocol-fixture.mjs';
+import { JOB, buyer, seller } from './helpers/protocol-fixture.mjs';
 const otherJob = JOB.slice(0, -1) + 'B';
 const connect = path => { const db = new DatabaseSync(path); db.exec('PRAGMA busy_timeout=0'); return db; };
 
@@ -91,4 +93,24 @@ test('wrong signer, listing context and tampered session signatures refuse', asy
   const db = connect(f.path), row = db.prepare('SELECT value FROM seller_jobs WHERE job=?').get(JOB), value = JSON.parse(row.value); value.payload.body.session.TEST = 'tampered';
   db.prepare('UPDATE seller_jobs SET value=? WHERE job=?').run(JSON.stringify(value), JOB); db.close();
   const reopened = await f.reopen(); assert.throws(() => reopened.loadSession(JOB), e => e.code === 'seller_state_corrupt'); reopened.close();
+});
+test('a session whose job id reads differently when copied is refused and nothing is kept', async t => {
+  const f = await durableFixture(t);
+  await f.store.withJob(JOB, () => {
+    let reads = 0;
+    const session = { get jobId() { return reads++ === 0 ? JOB : otherJob; } };
+    assert.throws(() => f.store.saveSession(session), e => e.code === 'seller_state_job_invalid');
+    assert.equal(f.store.loadSession(JOB), null);
+    assert.deepEqual(f.store.sessions(), []);
+    f.store.saveSession({ jobId: JOB, TEST: 'saved after the refusal' });
+  });
+  assert.equal(f.store.loadSession(JOB).TEST, 'saved after the refusal'); f.store.close();
+});
+test('retaining the same context again succeeds when it holds a value JSON stores differently', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'TEST-durable-context-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = await createSellerDurableState({ dir, signer: { claim: seller.claim, sign: seller.signBytes }, listingPin: { contentHash: 'a'.repeat(64) } });
+  const context = { admittedAt: new Date(0) };
+  store.retainContext(context); store.retainContext(context);
+  assert.deepEqual(store.context(), { admittedAt: '1970-01-01T00:00:00.000Z' });
+  assert.throws(() => store.retainContext({ admittedAt: new Date(1) }), e => e.code === 'seller_state_context_conflict'); store.close();
 });

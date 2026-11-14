@@ -51,8 +51,8 @@ Create a branch ruleset targeting the default branch with:
 - all review conversations resolved;
 - force pushes and branch deletion blocked;
 - required status checks, with branches required to be up to date:
-  - `build-test (node 20.19.0)`;
   - `build-test (node 22)`;
+  - `build-test (node 24)`;
   - `reproducible package + Bun consumer`;
   - `secret scan`;
 - bypass limited to the smallest documented maintainer group, with emergency

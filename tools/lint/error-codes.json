@@ -1,0 +1,5 @@
+{
+  "description": "Files and folders under src/ whose errors are all coded, checked by tools/lint/error-codes.mjs. A folder ends with a slash. A plain Error, TypeError, RangeError or SyntaxError throw that has to stay is listed in retainedPlainThrows with the throw as written and the reason it stays.",
+  "migrated": [],
+  "retainedPlainThrows": []
+}

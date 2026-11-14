@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -315,6 +315,60 @@ describe("audit policy CLI", () => {
     const bytes = readFileSync(join(root, name), "utf8");
     expect(cli("--audit-policy", input, lock, join(root, ".", name)).status).not.toBe(0);
     expect(readFileSync(join(root, name), "utf8")).toBe(bytes);
+  });
+
+  it("refuses an output that is the committed audit baseline without deleting it", () => {
+    const root = scratch(), input = join(root, "audit.json"), lock = join(root, "lock.json");
+    const baselineFile = join(repoRoot, "scripts/registry-container-audit-baseline.json");
+    const bytes = readFileSync(baselineFile);
+    writeFileSync(input, JSON.stringify(auditReport({})));
+    writeFileSync(lock, JSON.stringify(auditLock({})));
+    try {
+      expect(cli("--audit-policy", input, lock, baselineFile).status).not.toBe(0);
+      expect(readFileSync(baselineFile)).toEqual(bytes);
+    } finally {
+      if (!existsSync(baselineFile) || !readFileSync(baselineFile).equals(bytes)) writeFileSync(baselineFile, bytes);
+    }
+  });
+
+  it("refuses an output that reaches an input through a directory link without deleting it", () => {
+    const root = scratch(), real = join(root, "real"), link = join(root, "link");
+    mkdirSync(real);
+    symlinkSync(real, link);
+    const input = join(real, "audit.json"), lock = join(real, "lock.json");
+    writeFileSync(input, JSON.stringify(auditReport({})));
+    writeFileSync(lock, JSON.stringify(auditLock({})));
+    const bytes = readFileSync(input, "utf8");
+    expect(cli("--audit-policy", input, lock, join(link, "audit.json")).status).not.toBe(0);
+    expect(readFileSync(input, "utf8")).toBe(bytes);
+  });
+
+  it("refuses an output that reaches an input through a directory link and a parent step without deleting it", () => {
+    const root = scratch(), work = join(root, "work"), elsewhere = join(root, "elsewhere"), real = join(elsewhere, "real");
+    mkdirSync(work);
+    mkdirSync(elsewhere);
+    mkdirSync(real);
+    symlinkSync(real, join(work, "link"));
+    const input = join(elsewhere, "audit.json"), lock = join(elsewhere, "lock.json");
+    writeFileSync(input, JSON.stringify(auditReport({})));
+    writeFileSync(lock, JSON.stringify(auditLock({})));
+    const bytes = readFileSync(input, "utf8");
+    const result = cli("--audit-policy", input, lock, `${join(work, "link")}/../audit.json`);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("evidence input and output must differ");
+    expect(readFileSync(input, "utf8")).toBe(bytes);
+  });
+
+  it("refuses an output naming the target of a linked input without deleting it", () => {
+    const root = scratch(), target = join(root, "npm-audit.json"), input = join(root, "audit-link.json"), lock = join(root, "lock.json");
+    writeFileSync(target, JSON.stringify(auditReport({})));
+    writeFileSync(lock, JSON.stringify(auditLock({})));
+    symlinkSync(target, input);
+    const bytes = readFileSync(target, "utf8");
+    const result = cli("--audit-policy", input, lock, target);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("evidence input and output must differ");
+    expect(readFileSync(target, "utf8")).toBe(bytes);
   });
 
   it("names its arguments when one is missing", () => {

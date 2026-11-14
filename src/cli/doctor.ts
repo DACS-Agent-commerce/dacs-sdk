@@ -51,7 +51,7 @@ const NODE_BUILD_UNKNOWN_SUMMARY = "node build unknown (no build RPC)";
 const NODE_BUILD_TIMEOUT_MS = 5_000;
 const NODE_BUILD_MAX_BYTES = 4 * 1024;
 const COMMIT_SHA_SUFFIX_RE = /([0-9a-f]{40})$/i;
-const SUPPORTED_NODE_RANGE_FALLBACK = "^20.19.0 || >=22.12.0";
+const SUPPORTED_NODE_RANGE_FALLBACK = "^22.22.2 || ^24.15.0";
 
 function check(
   id: string,
@@ -76,13 +76,13 @@ function parseNodeVersion(version: string): { major: number; minor: number; patc
 function supportsNode(version: string): boolean {
   const parsed = parseNodeVersion(version);
   if (!parsed) return false;
-  if (parsed.major === 20) {
-    return parsed.minor > 19 || (parsed.minor === 19 && parsed.patch >= 0);
-  }
   if (parsed.major === 22) {
-    return parsed.minor > 12 || (parsed.minor === 12 && parsed.patch >= 0);
+    return parsed.minor > 22 || (parsed.minor === 22 && parsed.patch >= 2);
   }
-  return parsed.major > 22;
+  if (parsed.major === 24) {
+    return parsed.minor >= 15;
+  }
+  return false;
 }
 
 interface PackageMetadata {
@@ -163,9 +163,12 @@ export function rpcSensitiveNeedles(rpc?: string): string[] {
   }
 }
 
-/** Drop C0/C1 control characters (no exceptions) from text that comes from a node reply. */
+/**
+ * Drop control, format, line-separator and paragraph-separator characters (Unicode
+ * categories Cc, Cf, Zl and Zp) from text that comes from a node reply.
+ */
 function stripControlChars(text: string): string {
-  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "");
 }
 
 function sanitizeError(err: unknown, secrets: Array<string | undefined> = []): string {

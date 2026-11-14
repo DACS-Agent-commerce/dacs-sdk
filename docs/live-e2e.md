@@ -16,13 +16,14 @@ even when the balances are small.
 
 ## 1. Node version (required)
 
-demosdk's ESM packaging + `avsc` break on Node ≥ 24 (`buffer.SlowBuffer is not a
-constructor`). Use **Node 20 or 22** (the versions CI runs). Select it with your
-version manager, then run through the local binary:
+demosdk's ESM packaging + `avsc` break on Node ≥ 25 (`buffer.SlowBuffer is not a
+constructor`). Use **Node 22 or 24** (the versions CI runs; the supported range
+is `^22.22.2 || ^24.15.0`). Select it with your version manager, then run
+through the local binary:
 
 ```bash
-nvm use 20            # or: nvm use 22 — anything on 20.19+/22.12+, not >=24
-node --version        # confirm you are on 20 or 22 before spending funds
+nvm use 22            # or: nvm use 24 — anything on 22.22.2+/24.15.0+, not >=25
+node --version        # confirm you are on 22 or 24 before spending funds
 npx vitest run test/integration/funded-two-agent.e2e.test.ts
 ```
 

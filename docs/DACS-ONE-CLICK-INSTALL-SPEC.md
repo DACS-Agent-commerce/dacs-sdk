@@ -105,7 +105,7 @@ is released, the package MUST:
 - contain all declared runtime, type and CLI exports;
 - compile in a clean strict NodeNext TypeScript consumer without optional peers;
 - carry npm provenance and a reproducible package receipt;
-- support Node 20.19 and Node 22; and
+- support Node `^22.22.2 || ^24.15.0`; and
 - expose the exact supported Standard revision and profile identifiers as
   constants so generated applications do not duplicate them.
 

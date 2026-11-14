@@ -116,7 +116,7 @@ test('candidate manifest uses release metadata and the exact public boundary', a
   const client = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs-client'))));
   const core = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs'))));
   assert.equal(client.private, true);
-  assert.equal(client.engines.node, '^22.13.0 || >=23.4.0');
+  assert.equal(client.engines.node, core.engines.node);
   assert.equal(client.type, 'module');
   assert.equal(client.version, core.version);
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
@@ -312,5 +312,8 @@ test("node-wallet subpath exports exactly its reviewed names; the root import lo
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
  const api=await import('../src/wallet/node-wallet-session.mjs');
- assert.deepEqual(Object.keys(api).sort(),['createNodeTransportOwner','createNodeWalletSession','createRpcStampSource']);
+ assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource',
+   'createHeldTransportFacade','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport',
+   'DEVNET_AGREEMENT_PROFILE','DEVNET_AGREEMENT_KIND','DEVNET_AGREEMENT_SOURCE','DEVNET_SETTLEMENT_KIND','DEVNET_SETTLEMENT_POLICY',
+   'DEVNET_DELIVERY_KIND','DEVNET_DELIVERY_POLICY','DEVNET_DEMO_ARTIFACT_KIND','DEVNET_DEMO_ARTIFACT_POLICY','DEVNET_DEMO_ARTIFACT_TYPES'].sort());
 });

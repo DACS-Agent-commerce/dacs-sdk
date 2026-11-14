@@ -216,6 +216,19 @@ for (const field of ['before', 'after']) {
   });
 }
 
+for (const [name, substitute] of [['its own new blob', (record) => record.after], ['an older blob of the same file', (_record, earlier) => earlier.before]]) {
+  test(`a record whose before names ${name} instead of its parent's blob is refused`, async t => {
+    const history = await fixture(t);
+    history.record('changed\n');
+    const sha = history.record('next\n');
+    const ledger = history.read('DELTA-LEDGER.json');
+    const [earlier, record] = ledger.changes.map(change => change.files[0]);
+    record.before = substitute(record, earlier);
+    history.json('DELTA-LEDGER.json', ledger); history.render();
+    assert.ok(history.check().includes(`${path}: delta D11 blob differs at ${sha}^`));
+  });
+}
+
 test('a control-only last record is refused with the ledger path even when every earlier source record remains', async t => {
   const history = await fixture(t);
   history.record('changed\n'); history.record('changed\n');

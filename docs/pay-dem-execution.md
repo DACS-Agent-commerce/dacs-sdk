@@ -47,20 +47,20 @@ include `networkFeeOs`, a canonical non-negative integer OS string. Session
 checkpoints retain this fee across restart; the evidence's payment amount
 continues to describe the agreed transfer amount.
 
-Session recovery also reauthenticates every saved native-payment success through
-`resumeSettlement`, including older inclusion-only checkpoints and previously
-anchored success evidence. Wire that seam to the durable `payDemSettle` recovery
-path and retain the original signed-transfer journal. A bound failed record may
-replace an old successful rail checkpoint lacking execution authentication with
-permanent failure for the same transaction. Fresh native success and a
-successful audit durably mark execution authentication; a later contradictory
-failure is refused. A renewable session lease spans native recheck and evidence
-publication, and a lost lease or changed revision aborts completion. Already
-signed success evidence that contradicts execution is refused; the SDK does not
-rewrite it or complete the session. Absent, indeterminate or conflicting
-observations withhold success and never authorize a replacement debit. The
-original fee metadata is retained after a successful audit, and every subsequent
-restart authenticates execution again.
+The durable `payDemSettle` bridge reauthenticates a recorded native-payment
+success after every restart: it calls the `reconcile` function you built it with,
+and refuses a recorded success that the reconciliation contradicts, including a
+permanent failure for the same transaction. Built without `reconcile`, it refuses
+a recorded outcome that it has not itself authenticated. Keep the original
+signed-transfer journal. Absent, indeterminate or conflicting observations
+withhold success and never authorize a replacement debit.
+
+The bridge keeps no durable mark of that authentication. The older session runner
+(`runSessionCore`) does, in its own session store: a fresh native success and a
+successful audit mark the saved outcome execution-authenticated. A bound failed
+record may replace a saved successful checkpoint that lacks the mark with a
+permanent failure for the same transaction, but not one that has it. The saved fee
+metadata is retained after a successful audit.
 
 For a request carrying `priorAttempts`, `payDemSettle` performs only this audit;
 it never calls the submit-capable idempotency claim, even if the rail log has
@@ -95,31 +95,29 @@ during audit.
 
 ## Recovering a pay-dem purchase after a restart
 
-This recipe requires a prepared-transfer journal: `runSession` refuses a pay-dem
-session whose `settle` or `resumeSettlement` bridge was built over a rail without
-`journalPreparedTransfer`, whatever rail id the terms carry. The SDK ships
-`createFsDemosWriteJournal` but no ready-made hook, so write the few lines that
-put each prepared transfer into your journal. The check sees only that a hook
-exists; a hook that records nothing passes it, and a rail you built by hand
-declares nothing and is not refused.
+This recipe requires a prepared-transfer journal. Build the rail with
+`journalPreparedTransfer`. The SDK ships `createFsDemosWriteJournal` but no
+ready-made hook, so write the few lines that put each prepared transfer into
+your journal before it is broadcast. `payDemSettle` does not check the hook: a
+rail built without it, or with a hook that records nothing, leaves the recipe no
+hash to read. Only the older session runner (`runSessionCore`) refuses a pay-dem
+bridge built over a rail without `journalPreparedTransfer`.
 
-`runSession` always sets `recoveryOnly` on `resumeSettlement`. When the log holds
-no outcome and the session saved no transaction hash, the bridge refuses instead
-of paying, because the transfer may already have been sent. To finish such a
-purchase, resume the job and wrap the bridge with `withRecoveredAttempts`, which
-adds the hash you read from the prepared-transfer journal to the recovery
-request and keeps the bridge's registration, so `runSession` still accepts it:
+Settle a restarted purchase by calling the bridge with the request the purchase
+first sent and `recoveryOnly: true`. When the log holds no outcome and no
+transaction hash is supplied, the bridge refuses instead of paying, because the
+transfer may already have been sent. To finish such a purchase, wrap the bridge
+with `withRecoveredAttempts`, which adds the hash you read from the
+prepared-transfer journal to the recovery request:
 
 ```ts
-const resumeSettlement = withRecoveredAttempts(bridge, async (req) =>
+const recoverSettlement = withRecoveredAttempts(bridge, async (req) =>
   (await readPreparedTransfers(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0)))
     .map((prepared) => ({ txHash: prepared.txHash, chainId: network, ok: false })));
-await agent.runSession(ref, { terms, settle: bridge, resumeSettlement, sessionStore, jobId });
+const result = await recoverSettlement({ ...firstRequest, recoveryOnly: true });
 ```
 
-A function you write yourself as `resumeSettlement` is refused before any
-payment; only the bridges the SDK returns, or `withRecoveredAttempts` around one,
-are accepted. The wrapper only adds history. A request that already carries
+The wrapper only adds history. A request that already carries
 history, or is not a recovery request, passes through unchanged, and the bridge
 still decides from the chain whether the payment landed.
 
@@ -149,18 +147,15 @@ In order:
    outside the SDK (deliver or refund). If it is provably absent, use a new job
    id.
 
-If the session store itself refuses to read a transaction-hash binding as
-corrupt, for example after a crash left its file with two links, the recipe stays
-refused and pays nothing. Repair the store, then run the recipe again.
-
 `evmErc20Settle` and `x402Settle` never read the history that
-`withRecoveredAttempts` supplies, and with no outcome in the log a recovery is
-refused whether or not history is supplied. A refused ERC-20 or x402 purchase has
-no SDK recipe and stays unfinished. Before you re-buy under a new job id, check
-the chain by hand: for x402, the state of the job's EIP-3009 authorization on the
-token contract; for ERC-20, the buyer address's token-transfer history and any
-transaction hash bound to the session. If the payment is found, finish outside
-the SDK; if it is provably absent, use a new job id.
+`withRecoveredAttempts` supplies. Built without a `reconcile` option, they refuse
+a recovery that finds no outcome in the log, whether or not history is supplied.
+A refused ERC-20 or x402 purchase has no SDK recipe and stays unfinished. Before
+you re-buy under a new job id, check the chain by hand: for x402, the state of the
+job's EIP-3009 authorization on the token contract; for ERC-20, the buyer
+address's token-transfer history and any transaction hash your application
+recorded for the job. If the payment is found, finish outside the SDK; if it is
+provably absent, use a new job id.
 
 ## Custom native clients
 
@@ -254,9 +249,10 @@ The mapping was verified against kynesyslabs/node
 | Behaviour | Source |
 |---|---|
 | `getTransactionStatus` returns `pending`, `included` or `unknown`. It checks the mempool first (`pending`), then returns `included` for a stored transaction row not found there, failed rows included. `failed` is reserved and never produced. | `src/libs/blockchain/chainTypes.ts` (`TxStatus`), `src/libs/blockchain/chainTransactions.ts` (`getTransactionStatus`) |
+| A failure of the node's own status lookup is answered `{result: 500, response: {error: "INTERNAL_ERROR"}}`, and demosdk hands back only `response`. The Demos adapter's write wait reads exactly that answer as no information for that poll, like a transport failure, so it still reads the row in the same poll and keeps polling to its deadline. Other `error` answers, such as `Missing or invalid 'hash' field` or `Unknown message`, still stop the write as `demos-write-unresolved`. | `src/libs/network/routines/nodecalls/getTransactionStatus.ts` at e6af8f4 |
 | A transaction record's `status` is `confirmed`, `failed` or `pending`. | `src/utilities/constants.ts` (`TRANSACTION_STATUS`) |
 | `content.nonce` is a pg `bigint` column and is served as a decimal string. `content.amount` is served as a number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it; the rail accepts both. | `src/model/entities/Transactions.ts`, `src/libs/blockchain/transaction.ts` (`fromEntityToWireNumber`) |
-| `getTxByHash` for an unknown hash returns `{result: 400, response: "error"}` at 61b8e75 and `{result: 404, response: null}` at 52e2e569. The bounded record reader refuses either non-200 result as a failed read; the rail polls again. | node2 read; `src/libs/network/handlers/transactionHandlers.ts` at 52e2e569 |
+| `getTxByHash` for an unknown hash returns `{result: 400, response: "error"}` at 61b8e75 and `{result: 404, response: null}` at 52e2e569. The bounded record reader refuses either non-200 result as a failed read; the rail polls again. demosdk's `getTxByHash` hands back only `response`, so the Demos adapter's write wait sees `"error"` or `null`. It accepts only `null` as "no row yet": the 52e2e569 answer, and the one node2 gives in `test/substrate/fixtures/demos-node-replies/write-lifecycle/`. Against a build that answers `"error"`, as 61b8e75 did, it stops the write as `demos-write-unresolved` at its first poll, including a write that is still pending; it keeps the journal entry and resends nothing. | node2 read; `src/libs/network/handlers/transactionHandlers.ts` at 52e2e569 |
 | A transaction whose `content.gcr_edits` are absent or empty is applied as a successful no-op, and a successfully applied transaction is recorded `confirmed`. Mempool admission of a received native transaction re-derives its edits from the body and refuses a mismatch; apply repeats that check only for a non-empty edit list. | `src/libs/blockchain/gcr/handleGCR.ts` (`applyTransaction`), `src/libs/consensus/v2/PoRBFT.ts`, `src/libs/blockchain/mempool.ts` (`receive`) at 61b8e75 |
 
 The `testnet` snapshot at `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a` has no

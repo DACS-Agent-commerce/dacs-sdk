@@ -206,7 +206,11 @@ run_bounded docker run --rm --name "$consumer_container-install" --init \
       chown -R "$DACS_HOST_UID:$DACS_HOST_GID" /work || true
     }
     trap restore_host_ownership EXIT
-    npm install --global --ignore-scripts npm@11.19.0
+    # Installing over the image npm while it runs fails midway on Node 22.22.2;
+    # the pinned client gets its own prefix, first on PATH.
+    npm install --global --prefix /tmp/npm --ignore-scripts npm@11.19.0
+    export PATH="/tmp/npm/bin:$PATH"
+    test "$(npm --version)" = 11.19.0
     npm create "dacs-agent@$DACS_PACKAGE_VERSION" one-click-agent -- \
       --yes \
       --mode "$DACS_GENERATED_MODE" \
@@ -324,7 +328,8 @@ env \
     > "$artifact_stage/compose.rendered.yaml"
 
 stage=image-build
-# BuildKit reports progress and npm errors on stderr; keep both in the log.
+# BuildKit reports progress and npm errors on stderr; keep both in the log. The
+# log is capped: a build that prints more fails this stage.
 node scripts/bounded-build.mjs "$project"
 image_started=1
 run_bounded docker build \
@@ -332,7 +337,7 @@ run_bounded docker build \
   "${build_network_args[@]}" \
   --tag "$runtime_image" \
   "$project" \
-  2>&1 | tee "$artifact_stage/docker-build.log"
+  2>&1 | node scripts/bounded-log.mjs "$artifact_stage/docker-build.log"
 stage=image-policy
 
 docker image inspect "$runtime_image" > "$artifact_stage/docker-image.json"

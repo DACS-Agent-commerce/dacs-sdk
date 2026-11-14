@@ -122,21 +122,15 @@ describe("Agent wallet-authority boundary", () => {
     expect(Reflect.get(agent, "raw")).toBeUndefined();
   });
 
-  it("snapshots nested identity authority before connected construction awaits", async () => {
+  it("snapshots nested identity config before connected construction awaits", async () => {
     vi.spyOn(Demos.prototype, "connect").mockResolvedValue(undefined as never);
-    const identity = {
-      agentId: PRIMARY,
-      bundle: structuredClone(BUYER_IDENTITY),
-      verifyPresentation: vi.fn(() => true),
-    };
+    const identity: { agentId: unknown } = { agentId: PRIMARY };
     const pending = createAgent({
       demosRpc: "https://rpc.example",
-      identity,
+      identity: identity as { agentId: string },
     });
 
-    identity.bundle.presentedBy =
-      "did:demos:agent:2222222222222222222222222222222222222222222222222222222222222222";
-    identity.verifyPresentation = vi.fn(() => false);
+    identity.agentId = 42;
 
     await expect(pending).resolves.toBeDefined();
   });
@@ -149,6 +143,30 @@ describe("Agent wallet-authority boundary", () => {
       resolveAttestationAnchorWriter: () => PRIMARY,
     } as Parameters<typeof createAgent>[0])).rejects.toThrow(
       /AgentConfig\.resolveAttestationAnchorWriter .*AgentConfig\.resolveAttestationAnchorReceipt/,
+    );
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("refuses the removed identity.bundle key before connecting", async () => {
+    const connect = vi.spyOn(Demos.prototype, "connect")
+      .mockResolvedValue(undefined as never);
+    await expect(createAgent({
+      demosRpc: "https://rpc.example",
+      identity: { agentId: PRIMARY, bundle: structuredClone(BUYER_IDENTITY) },
+    } as Parameters<typeof createAgent>[0])).rejects.toThrow(
+      /AgentConfig\.identity\.bundle is not an Agent option/,
+    );
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it("refuses the removed identity.verifyPresentation key before connecting", async () => {
+    const connect = vi.spyOn(Demos.prototype, "connect")
+      .mockResolvedValue(undefined as never);
+    await expect(createAgent({
+      demosRpc: "https://rpc.example",
+      identity: { agentId: PRIMARY, verifyPresentation: () => true },
+    } as Parameters<typeof createAgent>[0])).rejects.toThrow(
+      /AgentConfig\.identity\.verifyPresentation is not an Agent option/,
     );
     expect(connect).not.toHaveBeenCalled();
   });
