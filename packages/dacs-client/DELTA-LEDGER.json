@@ -8768,6 +8768,151 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "d7936b2ba890b2431ce8681de72fe572ed1119b4",
+          "after": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": null,
+          "after": "77e197ff1b12c3d5e4405816fd0ca34390d74efa"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": null,
+          "after": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": null,
+          "after": "70c7c3ba010ad83c7b4a76eac9fc55c7116d05cf"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": null,
+          "after": "6c75a478fc43da0771bdb786427d4de34afa6bd6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(wallet): refuse a signer reservation record the journal cannot hold before writing",
+      "sha": "4bba02f8b41c38b13d3b1358b71354ed53d56587",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "77e197ff1b12c3d5e4405816fd0ca34390d74efa",
+          "after": "f59384d783444e82e2b2458c565ac81b576ff2f7"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "6c75a478fc43da0771bdb786427d4de34afa6bd6",
+          "after": "0f43918cb45c07f7acf9c1c1e5dda8e328654a01"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): measure signer reservation records against the journal's own record limit",
+      "sha": "fee6c6a786e12532bae7abb62ed5f482d95f03b8",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a284092528a7f3564c8def91dd5fee530ae04b93",
+          "after": "eb51e40f75731f88d50905f2aa4b6b4fa80cbcc8"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "f59384d783444e82e2b2458c565ac81b576ff2f7",
+          "after": "1d687234da2ff434291fcea67c4488d8e6614f4d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "70c7c3ba010ad83c7b4a76eac9fc55c7116d05cf",
+          "after": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "0f43918cb45c07f7acf9c1c1e5dda8e328654a01",
+          "after": "c0e9061d13141e783f3fdb484b97f66f9b45253c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3aa record the journal blob chosen at the base sync and re-pin the freeze",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a14bf40eabc66742e0cb3c7e99093246a16c72d3",
+          "after": "a14bf40eabc66742e0cb3c7e99093246a16c72d3"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a14bf40eabc66742e0cb3c7e99093246a16c72d3",
+          "after": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee",
+          "after": "e4c39b4014f9a33823ca4c8f2e043aa1502c5313"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "1d687234da2ff434291fcea67c4488d8e6614f4d",
+          "after": "e0c3f5b5d4075fdb06535238008c1f02344442bd"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6",
+          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a",
+          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0e9061d13141e783f3fdb484b97f66f9b45253c",
+          "after": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the wallet session blob chosen when the effect gate fixes merged",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "084ebc66416efef054224c570a539ce3e6561666",
+          "after": "084ebc66416efef054224c570a539ce3e6561666"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(wallet): check that no package export reaches the reservation module",
+      "sha": "fce7c509715ce94ee9153eaad2efe11d27bdef23",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f",
+          "after": "5fe427a4c2f7d293a9a1b925e381a4e24346af95"
+        }
+      ]
+    },
+    {
       "delta": "D11",
       "subject": "fix(client): D11 keep the packed consumer lock installable on Node 24",
       "files": [

@@ -44,7 +44,7 @@
     "src/util/text.mjs", "src/wallet/demos-quiet-hooks.mjs", "src/wallet/devnet-native-transport.mjs",
     "src/wallet/durable-journal.mjs", "src/wallet/effect-boundary.mjs", "src/wallet/effect-fence.mjs", "src/wallet/effect-history.mjs",
     "src/wallet/holder-incarnation.mjs", "src/wallet/node-demos-loading.mjs",
-    "src/wallet/node-wallet-session.mjs", "src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "src/wallet/node-wallet-session.mjs", "src/wallet/signer-reservation.mjs", "src/public/portal/embedded-wallet/sdk-provider.mjs",
     "src/wallet/payload-helpers.mjs",
     "README.md", "LICENSE",
     "src/public-admission.mjs", "src/public-guidance.mjs", "src/public-verification.mjs"

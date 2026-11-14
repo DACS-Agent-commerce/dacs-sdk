@@ -284,6 +284,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 
 - Node effect gate — adds the Node compositions' one effect gate, its host contract and the TP-1 authority token. `node-wallet-session.mjs` runs every transaction-hash signature inside `NodeDemos.sign` and every `confirmTx` or `broadcastTx` body sent through the owner's fetch through the gate, after the SDK's own preparation: the optional seller `qualify`, the pass's `refreshAuthority` and `finalStop` within its remaining deadline, then synchronously the hold, the connection, the pass's lease, its synchronous checks and the finalized content with the fee ceiling, then the inner call. `effectPass` and `runInEffectPass` are new members of both compositions, and the seller refuses `effect_pass_required` without a pass. The finalized-content check also refuses a fee above the total. A gated body resets the attempt's dispatched flag unless an effect body of that attempt was already sent, so a refused effect reports `not_dispatched` although the transport's earlier nonce read was sent. The observer's deadline helper is shared with the new `admitTp1Authority`, `tp1AuthorityLabel`, `authorityLabelOf` and `isTp1AuthorityToken`. New `src/dacs/tp1-authority-label.mjs` is a pure label parser. A fence acquisition on the exported transport owner made while `runInEffectPass` runs shares the pass's own fence and releases nothing, so the transport's own steps no longer wait on the fence the pass holds. `effectPass` refuses a missing argument, a deadline that is not a number and a check list with holes as `effect_pass_invalid`, and the gate tests run on the exported owner. No other source file changes.
 
+- `P21a3aa` — adds the internal signer reservation. New `src/wallet/signer-reservation.mjs` keeps one record per signer in the client durable journal, under the key of the signer's journal lock, and changes it with one put per step under that lock, so a refused or interrupted put leaves the previous record unchanged. `reserve` claims before a nonce is chosen: another operation or key is `signer_lane_busy`, the same operation gets its stored record back without a write or a chain read, and a new claim takes `max(chain + 1, floor)` with a generated attempt id or refuses `invalid_nonce`. `bindApprovalIntent` stores the exact request text, `bindApproval` attaches the ledger id (a null manual id stays in this instance) and `bindSigned` stores the signed projection after checking its hash, signer, nonce and Ed25519 signature; a put that throws is read back. `current` only reads. The module uses the journal's `get`, `put` and `withWalletLock` only. `node-wallet-session.mjs` creates the instance for each seller composition and exposes no member for it; `package.json` ships the new file and `scripts/release-policy.json` pins the new manifest. Terminal transitions and the adapter are not in this change. A record that names a full commit hash accepts any `fix(<area>): ` subject.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -1448,6 +1450,33 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF run the gate tests on the exported owner with only currentLocal replaced | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | b9340992077b4fd90675cb50762e57f5abc0c558 |
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | 8336e5393f66bcf9184b1b22b44911a9a1a32fbc |
+| WF | delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 095583a9cbbac1bbbb5cc578741caa2dd42f21ee |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 77e197ff1b12c3d5e4405816fd0ca34390d74efa |
+| | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | fcf8680fd294ff31fad8add0e4a5f459291dd7a6 |
+| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 70c7c3ba010ad83c7b4a76eac9fc55c7116d05cf |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 6c75a478fc43da0771bdb786427d4de34afa6bd6 |
+| WF | fix(wallet): refuse a signer reservation record the journal cannot hold before writing | Git commit selector 4bba02f8b41c38b13d3b1358b71354ed53d56587 |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | f59384d783444e82e2b2458c565ac81b576ff2f7 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 0f43918cb45c07f7acf9c1c1e5dda8e328654a01 |
+| WF | fix(client): measure signer reservation records against the journal's own record limit | Git commit selector fee6c6a786e12532bae7abb62ed5f482d95f03b8 |
+| | `packages/dacs-client/src/wallet/durable-journal.mjs:4`, `packages/dacs-client/src/wallet/durable-journal.mjs:9`, `packages/dacs-client/src/wallet/durable-journal.mjs:22`, `packages/dacs-client/src/wallet/durable-journal.mjs:77`, `packages/dacs-client/src/wallet/durable-journal.mjs:82`, `packages/dacs-client/src/wallet/durable-journal.mjs:92`, `packages/dacs-client/src/wallet/durable-journal.mjs:136`, `packages/dacs-client/src/wallet/durable-journal.mjs:175`, `packages/dacs-client/src/wallet/durable-journal.mjs:200`, `packages/dacs-client/src/wallet/durable-journal.mjs:206`, `packages/dacs-client/src/wallet/durable-journal.mjs:232`, `packages/dacs-client/src/wallet/durable-journal.mjs:255`, `packages/dacs-client/src/wallet/durable-journal.mjs:274`, `packages/dacs-client/src/wallet/durable-journal.mjs:276`, `packages/dacs-client/src/wallet/durable-journal.mjs:280`, `packages/dacs-client/src/wallet/durable-journal.mjs:297`, `packages/dacs-client/src/wallet/durable-journal.mjs:301`, `packages/dacs-client/src/wallet/durable-journal.mjs:322` | eb51e40f75731f88d50905f2aa4b6b4fa80cbcc8 |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 1d687234da2ff434291fcea67c4488d8e6614f4d |
+| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 2ab98b58381d5f76e5a2eb9a04fe4a713573269a |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | c0e9061d13141e783f3fdb484b97f66f9b45253c |
+| WF | delta(client): WF P21a3aa record the journal blob chosen at the base sync and re-pin the freeze | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/durable-journal.mjs:4`, `packages/dacs-client/src/wallet/durable-journal.mjs:9`, `packages/dacs-client/src/wallet/durable-journal.mjs:22`, `packages/dacs-client/src/wallet/durable-journal.mjs:77`, `packages/dacs-client/src/wallet/durable-journal.mjs:82`, `packages/dacs-client/src/wallet/durable-journal.mjs:92`, `packages/dacs-client/src/wallet/durable-journal.mjs:136`, `packages/dacs-client/src/wallet/durable-journal.mjs:175`, `packages/dacs-client/src/wallet/durable-journal.mjs:200`, `packages/dacs-client/src/wallet/durable-journal.mjs:206`, `packages/dacs-client/src/wallet/durable-journal.mjs:232`, `packages/dacs-client/src/wallet/durable-journal.mjs:255`, `packages/dacs-client/src/wallet/durable-journal.mjs:274`, `packages/dacs-client/src/wallet/durable-journal.mjs:276`, `packages/dacs-client/src/wallet/durable-journal.mjs:280`, `packages/dacs-client/src/wallet/durable-journal.mjs:297`, `packages/dacs-client/src/wallet/durable-journal.mjs:301`, `packages/dacs-client/src/wallet/durable-journal.mjs:322` | a14bf40eabc66742e0cb3c7e99093246a16c72d3 |
+| WF | delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/durable-journal.mjs:4`, `packages/dacs-client/src/wallet/durable-journal.mjs:9`, `packages/dacs-client/src/wallet/durable-journal.mjs:22`, `packages/dacs-client/src/wallet/durable-journal.mjs:77`, `packages/dacs-client/src/wallet/durable-journal.mjs:82`, `packages/dacs-client/src/wallet/durable-journal.mjs:92`, `packages/dacs-client/src/wallet/durable-journal.mjs:136`, `packages/dacs-client/src/wallet/durable-journal.mjs:175`, `packages/dacs-client/src/wallet/durable-journal.mjs:200`, `packages/dacs-client/src/wallet/durable-journal.mjs:206`, `packages/dacs-client/src/wallet/durable-journal.mjs:232`, `packages/dacs-client/src/wallet/durable-journal.mjs:255`, `packages/dacs-client/src/wallet/durable-journal.mjs:274`, `packages/dacs-client/src/wallet/durable-journal.mjs:276`, `packages/dacs-client/src/wallet/durable-journal.mjs:280`, `packages/dacs-client/src/wallet/durable-journal.mjs:297`, `packages/dacs-client/src/wallet/durable-journal.mjs:301`, `packages/dacs-client/src/wallet/durable-journal.mjs:322` | b99e53e5ea84eca0ca1e607c76ae98cd65d31da7 |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | e4c39b4014f9a33823ca4c8f2e043aa1502c5313 |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | e0c3f5b5d4075fdb06535238008c1f02344442bd |
+| | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | 8b03bdb1392424fc58763afdabd38e9a28a82598 |
+| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 3048034aa3b7af377e090e62be3f1173c1f06ee0 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 8dcb7f15daa80e2e2abf272b6ce867d06f40101f |
+| WF | delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 084ebc66416efef054224c570a539ce3e6561666 |
+| WF | fix(wallet): check that no package export reaches the reservation module | Git commit selector fce7c509715ce94ee9153eaad2efe11d27bdef23 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 5fe427a4c2f7d293a9a1b925e381a4e24346af95 |
 | D11 | fix(client): D11 keep the packed consumer lock installable on Node 24 | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/packed-install.mjs:1` | 85564b54de812d5ae795ea5aca7e567a1819b1e6 |
 | | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | cb7e6298b275bb6123561c5afa4a52a4981b72bf |
@@ -4372,6 +4401,68 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the public API test merged from the held part | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the public API test merged from the held part | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the public API test merged from the held part | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `.github/workflows/ci.yml:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/package.json:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `scripts/release-policy.json:1` |
+| 4bba02f8b41c38b13d3b1358b71354ed53d56587 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 4bba02f8b41c38b13d3b1358b71354ed53d56587 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 4bba02f8b41c38b13d3b1358b71354ed53d56587 | `packages/dacs-client/HOLD.json:1` |
+| 4bba02f8b41c38b13d3b1358b71354ed53d56587 | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| 4bba02f8b41c38b13d3b1358b71354ed53d56587 | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| b0c08a8de5e759b55473d0bbc4496c1bda84aafb | `packages/dacs-client/HOLD.json:1` |
+| b0c08a8de5e759b55473d0bbc4496c1bda84aafb | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fee6c6a786e12532bae7abb62ed5f482d95f03b8 | `packages/dacs-client/README.md:1` |
+| fee6c6a786e12532bae7abb62ed5f482d95f03b8 | `packages/dacs-client/src/wallet/durable-journal.mjs:4`, `packages/dacs-client/src/wallet/durable-journal.mjs:9`, `packages/dacs-client/src/wallet/durable-journal.mjs:22`, `packages/dacs-client/src/wallet/durable-journal.mjs:77`, `packages/dacs-client/src/wallet/durable-journal.mjs:82`, `packages/dacs-client/src/wallet/durable-journal.mjs:92`, `packages/dacs-client/src/wallet/durable-journal.mjs:136`, `packages/dacs-client/src/wallet/durable-journal.mjs:175`, `packages/dacs-client/src/wallet/durable-journal.mjs:200`, `packages/dacs-client/src/wallet/durable-journal.mjs:206`, `packages/dacs-client/src/wallet/durable-journal.mjs:232`, `packages/dacs-client/src/wallet/durable-journal.mjs:255`, `packages/dacs-client/src/wallet/durable-journal.mjs:274`, `packages/dacs-client/src/wallet/durable-journal.mjs:276`, `packages/dacs-client/src/wallet/durable-journal.mjs:280`, `packages/dacs-client/src/wallet/durable-journal.mjs:297`, `packages/dacs-client/src/wallet/durable-journal.mjs:301`, `packages/dacs-client/src/wallet/durable-journal.mjs:322` |
+| fee6c6a786e12532bae7abb62ed5f482d95f03b8 | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| fee6c6a786e12532bae7abb62ed5f482d95f03b8 | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` |
+| fee6c6a786e12532bae7abb62ed5f482d95f03b8 | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF P21a3aa record the signer reservation size-check fixes and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a3aa record the signer reservation size-check fixes and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a3aa record the signer reservation size-check fixes and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a3aa record the signer reservation size-check fixes and re-pin the freeze | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P21a3aa record the signer reservation size-check fixes and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a3aa record the signer reservation size-check fixes and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a3aa record the signer reservation size-check fixes and re-pin the freeze | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): WF P21a3aa record the journal blob chosen at the base sync and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a3aa record the journal blob chosen at the base sync and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a3aa record the journal blob chosen at the base sync and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a3aa record the journal blob chosen at the base sync and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a3aa record the journal blob chosen at the base sync and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/README.md:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/src/wallet/durable-journal.mjs:4`, `packages/dacs-client/src/wallet/durable-journal.mjs:9`, `packages/dacs-client/src/wallet/durable-journal.mjs:22`, `packages/dacs-client/src/wallet/durable-journal.mjs:77`, `packages/dacs-client/src/wallet/durable-journal.mjs:82`, `packages/dacs-client/src/wallet/durable-journal.mjs:92`, `packages/dacs-client/src/wallet/durable-journal.mjs:136`, `packages/dacs-client/src/wallet/durable-journal.mjs:175`, `packages/dacs-client/src/wallet/durable-journal.mjs:200`, `packages/dacs-client/src/wallet/durable-journal.mjs:206`, `packages/dacs-client/src/wallet/durable-journal.mjs:232`, `packages/dacs-client/src/wallet/durable-journal.mjs:255`, `packages/dacs-client/src/wallet/durable-journal.mjs:274`, `packages/dacs-client/src/wallet/durable-journal.mjs:276`, `packages/dacs-client/src/wallet/durable-journal.mjs:280`, `packages/dacs-client/src/wallet/durable-journal.mjs:297`, `packages/dacs-client/src/wallet/durable-journal.mjs:301`, `packages/dacs-client/src/wallet/durable-journal.mjs:322` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` |
+| delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| fce7c509715ce94ee9153eaad2efe11d27bdef23 | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a3aa record the package exports test fix and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-MAP.md:1` |
