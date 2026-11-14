@@ -9,6 +9,7 @@ import { boundedCall } from './bounded-call.mjs';
 import { isSmallOrderPublicKey } from './demos-claims.mjs';
 import { paymentTxHash } from './seller-agent.mjs';
 import { endWireAttempt } from './seller-http.mjs';
+import { SELLER_EFFECT_ROUTES } from './seller-effect-routes.mjs';
 import { requestNonceKey } from './seller-reservation-accounting.mjs';
 import { SellerTransportError, sellerStoreInternals, transportStoreOf, validateBody } from './seller-transport-auth.mjs';
 
@@ -270,9 +271,14 @@ export function wireAuthenticator(wire, agent, authentication) {
         return checked.reserve();
       } };
       const effect = await wire.reservations.reserveCoordinated({ checked: current, payload: request, route: request.path,
-        operationId: wireOperationId(request), keepProfile: request.profile, retainedWork,
+        operationId: wireOperationId(request), keepProfile: request.profile, retainedWork, answersCompletedAtCapacity: Object.hasOwn(SELLER_EFFECT_ROUTES, request.path),
         paymentTx: request.path === DACS_SELLER_HTTP_PATHS.payments ? paymentTxHash(checked.body.txHash) : null });
-      if (effect.state === 'completed') return Object.freeze({ disposition: 'cached', ...effect.outcome });
+      if (effect.state === 'completed') {
+        // A completed answer given at capacity skipped the journal's reservation, which is where an expired request is refused.
+        const code = lapse(request);
+        if (code !== null) return refuse(code, 408);
+        return Object.freeze({ disposition: 'cached', ...effect.outcome });
+      }
       const receipt = wire.completion.capture({ effect, key: requestNonceKey(request) });
       const reservation = Object.freeze({ disposition: effect.state === 'new' ? 'perform' : 'uncertain', effectKey: effect.operationId });
       reservations.set(reservation, { effect, request, receipt });
