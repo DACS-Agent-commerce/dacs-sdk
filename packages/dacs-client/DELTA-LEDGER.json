@@ -9022,6 +9022,137 @@
           "after": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a2ab expose the held seller composition and packed wallet",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "e081789da16ac68bfbb76978b8cea7000a0bb9a4",
+          "after": "7e61b54257846f628b2984bc6bee811470401dc2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "c24bb9c6d829d4ead3c806eab84268c64047961c",
+          "after": "b34577464d20d0b9c566876a35d50c2a26b96b65"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/fresh-node-child.mjs",
+          "before": "a398b50dda2846da3e06e0d9948d99126b47773b",
+          "after": "65308beab83304e56d651604f59faf6feaab6541"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/packed-install.mjs",
+          "before": "aef655a4d572cc793fde0d5f952278371470adc7",
+          "after": "0519336d2f31674a642da8079aa7365d384f9a95"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "768ebf54a4154a3474b684f4e564c174b34dd29e",
+          "after": "42a1d94960ea6b671d6ed387007bd899a2b4e33b"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "aa905dcb3de4fe3f4fffd2d2a30c422bd98df2ff",
+          "after": "d9d7a16e68b7d780ecc5766d23523d239756aa27"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": null,
+          "after": "dd4ed9c05f74261c828a740996444d3b3a88c167"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": null,
+          "after": "7b598204121d8e58bb55c3b4225ee5cdd05be0c5"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "f85d5b731a200483b9c5e95efa5f818b947e0e60",
+          "after": "d54a02c9580fe133738ec19c3ec19b323be0a66c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "da2946d04f52ac899dfd805ec55b02ddcb3213da",
+          "after": "da2946d04f52ac899dfd805ec55b02ddcb3213da"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying the fence part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72",
+          "after": "1c5d6a5d8deedc7e006cf32ab9111c00ddff2e72"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the public API test merged from the fence part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "7bea27e2b2d1cff5aec2f37457073c17048b0471",
+          "after": "7bea27e2b2d1cff5aec2f37457073c17048b0471"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep seller identity and packed runtime checks stable",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b34577464d20d0b9c566876a35d50c2a26b96b65",
+          "after": "acaa5486c9fafb7d178aa37f16d517d80919fa47"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/fresh-node-child.mjs",
+          "before": "65308beab83304e56d651604f59faf6feaab6541",
+          "after": "c5b141ceb517de732d91608ba14b679ba5ee53fd"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-fresh-child.test.mjs",
+          "before": "6a818fd66d7d90ba6196381033269fbfff8b4647",
+          "after": "396b4f470820de6aa77cce86839ce5a287b31ccd"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": "dd4ed9c05f74261c828a740996444d3b3a88c167",
+          "after": "fc9f5943d11b41eed2ded177c8e0982f1a5e0360"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "7b598204121d8e58bb55c3b4225ee5cdd05be0c5",
+          "after": "116879d4872c10a8d0c65ad5bb3cada05e5052aa"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep the packed consumer lock installable on Node 24",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/packed-install.mjs",
+          "before": "0519336d2f31674a642da8079aa7365d384f9a95",
+          "after": "85564b54de812d5ae795ea5aca7e567a1819b1e6"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": "fc9f5943d11b41eed2ded177c8e0982f1a5e0360",
+          "after": "cb7e6298b275bb6123561c5afa4a52a4981b72bf"
+        }
+      ]
     }
   ]
 }

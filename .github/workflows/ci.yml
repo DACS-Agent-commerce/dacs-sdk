@@ -744,7 +744,7 @@ jobs:
       - run: npm ci --no-audit
       - run: npm run build
       - run: npm run host:build
-      - run: node --test packages/dacs-client/test/node-wallet-fresh-child.test.mjs
+      - run: node --test packages/dacs-client/test/node-wallet-fresh-child.test.mjs packages/dacs-client/test/node-wallet-packed.test.mjs
       - name: Check both packed JavaScript entry points at the engine floor
         run: |
           client_minimum="$RUNNER_TEMP/client-minimum"
