@@ -16,10 +16,11 @@ export type FaultCategory = "transient" | "permanent" | "counterparty" | "substr
  * Codes are lower case, shaped `domain.reason`, and stay the same when a message is reworded.
  * `tools/lint/error-codes.mjs` reads this table; `sdk.unclassified` is reserved for that check and never goes in it.
  *
- * Three subclasses own their `code` and keep it outside this catalog:
+ * Four subclasses own their `code` and keep it outside this catalog:
  * - `WireError`: lower-case words joined by underscores, such as `bad_sig`, chosen at each `fail()` call;
  * - `RawJsonAdmissionError`: upper-case words joined by dashes, such as `INVALID-JSON`, chosen at each `reject()` call;
- * - `AnchorWaitError`: one of the `AnchorWaitFailureCode` values.
+ * - `AnchorWaitError`: one of the `AnchorWaitFailureCode` values;
+ * - `DemosChainIdentityError`: one of the network identity codes, such as `chain_identity_mismatch`, chosen at each throw.
  */
 const codeCategory = {
   "schema.invalid_field": "permanent",
