@@ -117,9 +117,11 @@ function fail(code, message) {
   return { success: false, data: null, error: { code, message } };
 }
 
-// SDK-generated mnemonics are lowercase words joined by single spaces, and
-// connectWallet hashes the exact string, so import uses that same form.
-function normalizeMnemonic(value) {
+/**
+ * Returns the recovery phrase in the form the SDK generates (lowercase words joined by single spaces), which is the form connectWallet
+ * hashes, so every wallet opened from one phrase has one address. Throws EmbeddedWalletError(invalid_mnemonic) for a non-string.
+ */
+export function normalizeMnemonic(value) {
   if (typeof value !== 'string') throw new EmbeddedWalletError('invalid_mnemonic', 'recovery phrase must be text');
   return value.normalize('NFKD').trim().toLowerCase().split(/\s+/).join(' ');
 }

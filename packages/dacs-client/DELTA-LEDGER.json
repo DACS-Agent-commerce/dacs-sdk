@@ -9120,6 +9120,152 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF P21a3ba sign payment-evidence CREATEs on the signer reservation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "fb364397ed046fb1211d620fb5dfa68563715c1a",
+          "after": "fedbd31b661b3ee5540213629d5e895c2a55ea3f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "7e61b54257846f628b2984bc6bee811470401dc2",
+          "after": "16c28532b8fe2b1ff6cf5acc3b50c9987aa87bfe"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": null,
+          "after": "b364d1682f678eb9c063da18de4f5646a0ce4442"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "89db1bf53f2e62853119805060587931c6b7078f",
+          "after": "63a2acf64382c128935d4bacc0c22498b2a0fe6e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "10beba68fcc095df465df8e74e5e0e27fe8dd251",
+          "after": "fb5e0177bac913dd0af186c40d8097af8503fbce"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": null,
+          "after": "a10c91b1ac1ba5e0b3754533229744649f337ce3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "b20c12b6561dea8fadb54a7e3c52e9f83e0e72e4",
+          "after": "78ca854a5b322c34ff1b099ad13b0c3b5b75d5a1"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": null,
+          "after": "659ceb2cc65e2139daf5032d9bf8dc4e1a6a72c7"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "bb26d97d15d59c621b149847feebd7c7095dbe7e",
+          "after": "deabf958f007e8e98be26cc53fd7a7d9f869f635"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "15e7ac95a7940b8712e966a83885505142afd796",
+          "after": "92d81e3b5e5bcc7381036bdc1ca189f54154e8c3"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF rebuild the payment-evidence adapter on the signer reservation record",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "b364d1682f678eb9c063da18de4f5646a0ce4442",
+          "after": "0afa4bcc983436ef2658ed8bbc4f90593edbbeab"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "fa77f92cfb5934b8e80aae284eb0f1f229888433",
+          "after": "caa9f060da7856d60ed8cb0dfd43d4ad6c97dbd7"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "a10c91b1ac1ba5e0b3754533229744649f337ce3",
+          "after": "9eeb7d5e566a2ad64e4eef0ab2a317abd92fa64a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "659ceb2cc65e2139daf5032d9bf8dc4e1a6a72c7",
+          "after": "0c4803853e13c363d12b241e1d5657501538152c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "be72001c276437177160b6a87ce365b7a24d3504",
+          "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test on the payment part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the wallet session merged from the retirement part",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0698e6f10714b3d5256a28af93a630a65018ac6e",
+          "after": "0698e6f10714b3d5256a28af93a630a65018ac6e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF list the payment evidence adapter among the seller members and record the blobs chosen when the lower parts merged",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0698e6f10714b3d5256a28af93a630a65018ac6e",
+          "after": "0698e6f10714b3d5256a28af93a630a65018ac6e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "02c3808d514792df7d0a707767dfb08feb08685c",
+          "after": "02c3808d514792df7d0a707767dfb08feb08685c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "8336e5393f66bcf9184b1b22b44911a9a1a32fbc",
+          "after": "0a89124816f6c933eae528c682873577e0d6edd8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4",
+          "after": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 test that unsent signed bytes hold the signer until their execution",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "0c4803853e13c363d12b241e1d5657501538152c",
+          "after": "a4e588ba8351ad22b97d9234aa0918e2158ecf65"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence",
       "files": [
         {
