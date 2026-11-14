@@ -648,7 +648,7 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     expect(sub.store.get(result.bundleRef)!.listingRef).toEqual(pinned);
   });
 
-  test("a tampered anchored bundle is still refused", async () => {
+  test("an anchored bundle from the early runner is refused by strict verification", async () => {
     const { sub, result } = await runFlow();
     // Mutate a supported signed-scope field of the bundle after it was signed.
     const bundle = { ...sub.store.get(result.bundleRef)! };
