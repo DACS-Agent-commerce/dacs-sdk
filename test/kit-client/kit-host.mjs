@@ -9,7 +9,7 @@ import { testNetwork } from '../../packages/dacs-seller/test/helpers/wire-author
 import { KIT_TP1_VET_MODE, startSellerHost } from '../../packages/dacs-seller/src/host.mjs';
 import { wireBuyer } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
 import { createSellerTransportClientAuth } from '../../packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs';
-import { SELLER_TRANSPORT_HEADER } from '../../packages/dacs-client/src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER } from '../../packages/dacs-seller/src/dacs/seller-transport-auth.mjs';
 
 /** Starts the kit's composed host over the kit's fixture capabilities; both are released when the test ends, whether it passes or fails. */
 export async function composedKitHost(t) {

@@ -2010,19 +2010,26 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
   }
 
+  // Throws payment_readback_required unless the node still verifies the transfer as the checkpoint's payment.
+  async function assertPaymentStillVerifies(session,work) {
+    const terms=agreementTerms(session.agreement);
+    const current=await verifySellerPaymentIntake({jobId:session.jobId,phaseIndex:terms.paymentPhaseIndex,railId:terms.rail,payerPayingKey:work.payerPayingKey,receipt:{kind:'pay-dem',txHash:work.txHash}},intakeDepsFor(session.jobId));
+    if(current.disposition!=='verified'||!['claim','already-claimed'].includes(current.fulfilment)||current.settlementId!==work.intake.settlementId||current.permitId!==work.intake.permitId||current.evidenceHash!==work.intake.evidenceHash
+      ||canonicalize(current.evidenceInput)!==canonicalize(work.intake.evidenceInput))throw new SellerAgentError('payment_readback_required',current.reason??'payment is not freshly authenticated',503);
+  }
+
   async function ensureNativePaymentEvidence(session,work) {
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
     // Bind only an older checkpoint that demonstrably predates its first call.
     if(!work.walletJournal&&work.anchorOutcome==='not-sent'&&!work.anchorAttempts&&!work.anchorAnswer){work.walletJournal=walletJournal.journalId;persist(session);}
     if(work.walletJournal!==walletJournal.journalId)throw new SellerAgentError('wallet_journal_changed','restore the original evidence journal',503);
-    const terms=agreementTerms(session.agreement);
-    const current=await verifySellerPaymentIntake({jobId:session.jobId,phaseIndex:terms.paymentPhaseIndex,railId:terms.rail,payerPayingKey:work.payerPayingKey,receipt:{kind:'pay-dem',txHash:work.txHash}},intakeDepsFor(session.jobId));
-    if(current.disposition!=='verified'||!['claim','already-claimed'].includes(current.fulfilment)||current.settlementId!==work.intake.settlementId||current.permitId!==work.intake.permitId||current.evidenceHash!==work.intake.evidenceHash
-      ||canonicalize(current.evidenceInput)!==canonicalize(work.intake.evidenceInput))throw new SellerAgentError('payment_readback_required',current.reason??'payment is not freshly authenticated',503);
+    await assertPaymentStillVerifies(session,work);
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
     work.anchorAttempts=(work.anchorAttempts??0)+1;persist(session);
     try {
-      const answer=await walletJournal.ensureEvidence({expectedJournalId:work.walletJournal,authorize:()=>{assertSettlementCredit(session.jobId);return heldFor(session.jobId)();},logicalAddress:work.address,artifact:structuredClone(work.evidence),writer:claim,artifactKind:'SettlementEvidence',jobId:session.jobId,
+      // The transfer is read again after the wallet's own reads and signing, right before the evidence is sent.
+      const answer=await walletJournal.ensureEvidence({expectedJournalId:work.walletJournal,recheck:()=>assertPaymentStillVerifies(session,work),
+        authorize:()=>{assertSettlementCredit(session.jobId);return heldFor(session.jobId)();},logicalAddress:work.address,artifact:structuredClone(work.evidence),writer:claim,artifactKind:'SettlementEvidence',jobId:session.jobId,
         receiptContentHash:work.intake.evidenceHash,...(work.journalVersion===1?{}:{attempt:{outcome:work.anchorOutcome,answer:structuredClone(work.anchorAnswer??null)}})});
       work.journalVersion=1;work.anchorAnswer=walletAnswer(answer);work.anchorOutcome='sent';delete work.anchorError;
     } catch(error) {work.anchorError={code:String(error?.code??'unknown').slice(0,64),message:String(error?.message??error).slice(0,240)};}
