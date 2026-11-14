@@ -9393,6 +9393,23 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF preserve merged wallet validation",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "9c5a38b22893b6f572bc63249f8b116fe1c738a0",
+          "after": "9c5a38b22893b6f572bc63249f8b116fe1c738a0"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "37c703ca19b331857b0d49569589a6f15144b1ed",
+          "after": "37c703ca19b331857b0d49569589a6f15144b1ed"
+        }
+      ]
+    },
+    {
       "delta": "D25",
       "subject": "delta(client): D25 refuse a block-one predecessor that differs from the pin before saving the reads",
       "files": [
