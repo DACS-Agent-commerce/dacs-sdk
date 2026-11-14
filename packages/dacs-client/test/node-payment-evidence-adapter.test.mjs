@@ -792,7 +792,7 @@ test("a confirmed transaction whose storage program is absent or differs from th
   const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), created = JSON.parse(signed.signedTransaction).content, operation = created.data[1];
   applyWithoutBroadcast(w, signed);
   const program = answer => { w.node.intercept = row => (row.body === null ? answer(row) : undefined); };
-  const served = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+  const served = body => new Response(JSON.stringify({ storageAddress: created.to, metadata: operation.metadata, ...body }), { headers: { 'content-type': 'application/json' } });
   for (const [name, answer] of [
     ['absent', () => new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } })],
     ['without data', () => served({ success: true })],
@@ -806,6 +806,44 @@ test("a confirmed transaction whose storage program is absent or differs from th
   w.node.intercept = null;
   assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
   assert.ok(w.node.calls.some(row => row.body === null && row.url.endsWith(`/storage-program/${created.to}`)), 'the program was read at the CREATE\'s storage address');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+});
+
+test("storage readback requires the CREATE address and every metadata field before spending approval", async t => {
+  const changes = {
+    'another address': program => ({ ...program, storageAddress: `0x${'9'.repeat(64)}` }),
+    'missing address': ({ storageAddress, ...program }) => program,
+    'another logical address': program => ({ ...program, metadata: { ...program.metadata, logicalAddress: 'TEST-other' } }),
+    'another artifact kind': program => ({ ...program, metadata: { ...program.metadata, artifactKind: 'TEST-other' } }),
+    'another content hash': program => ({ ...program, metadata: { ...program.metadata, contentHash: 'e2'.repeat(32) } }),
+    'another envelope hash': program => ({ ...program, metadata: { ...program.metadata, envelopeHash: 'e2'.repeat(32) } }),
+    'missing metadata': ({ metadata, ...program }) => program,
+    'extra metadata': program => ({ ...program, metadata: { ...program.metadata, TEST: 'other' } }),
+  };
+  for (const [name, change] of Object.entries(changes)) await t.test(name, async t => {
+    const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), created = JSON.parse(signed.signedTransaction).content;
+    applyWithoutBroadcast(w, signed);
+    const operation = created.data[1], kept = await recordOf(w);
+    const program = { success: true, storageAddress: created.to, data: operation.data, owner: created.from,
+      programName: operation.programName, metadata: operation.metadata };
+    w.node.intercept = row => row.body === null
+      ? new Response(JSON.stringify(change(program)), { headers: { 'content-type': 'application/json' } }) : undefined;
+    const answer = await w.adapter.readTransactionState(signed);
+    assert.equal(answer.state, 'pending');
+    assert.ok(codes(w.session.internalCauseOf(answer)).includes('readback_unverified'));
+    assert.deepEqual(spentIds(w), []);
+    assert.deepEqual(await recordOf(w), kept);
+  });
+});
+
+test("storage readback accepts matching metadata with a different member order", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), created = JSON.parse(signed.signedTransaction).content;
+  applyWithoutBroadcast(w, signed);
+  const operation = created.data[1];
+  w.node.intercept = row => row.body === null ? new Response(JSON.stringify({ success: true, storageAddress: created.to,
+    data: operation.data, owner: created.from, programName: operation.programName,
+    metadata: Object.fromEntries(Object.entries(operation.metadata).reverse()) }), { headers: { 'content-type': 'application/json' } }) : undefined;
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
   assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
 });
 

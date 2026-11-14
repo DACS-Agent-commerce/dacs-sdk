@@ -381,13 +381,14 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     const held = await reservationHolding(retained);
     if (held !== null) await reservations.consume(held, { status: 'executed', authenticated: true, txHash: tx.hash, projectionText: retained.signedTransaction });
   }
-  // The node must serve the program this CREATE made: its address, its exact data, its program name and the signer as owner.
+  // The node must serve the program this CREATE made: its address, data, metadata, program name and the signer as owner.
   async function verifyStorageProgram(tx, signal) {
     const operation = tx.content.data[1];
     if (tx.content.to !== deriveStorageAddress(signer, operation.programName, tx.content.nonce, '')) throw refuse('readback_unverified');
     const program = await fetchPinned(`${pins.endpoint.replace(/\/$/, '')}/storage-program/${tx.content.to}`, {}, signal);
     signal.throwIfAborted();
     const programOwner = typeof program?.owner === 'string' ? program.owner.toLowerCase() : null;
+    if (program?.storageAddress !== tx.content.to || !isObject(program.metadata) || canonicalize(program.metadata) !== canonicalize(operation.metadata)) throw refuse('readback_unverified');
     if (!(program?.success === true && programOwner === signer && program.programName === operation.programName && isObject(program.data) && canonicalize(program.data) === canonicalize(operation.data))) throw refuse('readback_unverified');
   }
   // The journal names a kept CREATE by its hash alone; its bytes and nonce are then the ones the reservation holds for that hash, or
