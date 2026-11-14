@@ -128,3 +128,20 @@ test('a real child killed at broadcast-started, and separately after recovery re
     assert.deepEqual(world.sent, { confirms: [], broadcasts: [] }, 'recovery never resends after the reservation');
   }
 });
+
+for (const jump of [-60_000, 60_000]) test(`wallet lane wait ignores a ${jump} ms wall jump`, async t => {
+  const { journal } = tempJournal(t, { lockTimeoutMs: 20, pollMs: 5 });
+  let release, ready;
+  const entered = new Promise(resolve => { ready = resolve; });
+  const held = journal.withWalletLock('clock-lane', () => new Promise(resolve => { release = resolve; ready(); }));
+  await entered;
+  let elapsed = 0;
+  const epoch = Date.now();
+  t.mock.method(Date, 'now', () => epoch + elapsed + (elapsed > 0 && elapsed < 60 ? jump : 0));
+  t.mock.method(performance, 'now', () => elapsed);
+  t.mock.method(globalThis, 'setTimeout', (callback, delay) => { elapsed += delay; queueMicrotask(callback); });
+  try {
+    await assert.rejects(journal.withWalletLock('clock-lane', () => assert.fail('occupied lane entered')), { code: 'journal-busy' });
+    assert.equal(elapsed, 20);
+  } finally { t.mock.restoreAll(); release(); await held; }
+});

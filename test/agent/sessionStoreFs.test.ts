@@ -1,3 +1,4 @@
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import {
   mkdtemp,
   writeFile,
@@ -411,3 +412,19 @@ describe("crash-window hardening (#67 round 3)", () => {
     );
   });
 });
+
+for (const jump of [-60_000, 60_000]) {
+  for (const held of ["lock", "reclaim"]) {
+    test(`session ${held} wait keeps its budget after a ${jump} ms wall jump`, async () => {
+      await store.create({ jobId: "clock-job", now: 1 });
+      const path = join(dir, "locks", `clock-job.${held}`);
+      if (held === "lock") await writeFile(path, JSON.stringify({ pid: process.pid, token: "held", createdAt: 1 }), { mode: 0o600 });
+      else {
+        await mkdir(path, { mode: 0o700 });
+        await writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid, token: "held" }), { mode: 0o600 });
+      }
+      await expectMonotonicTimeout(() => store.transition({ jobId: "clock-job", expectedRevision: 0, phase: "waiting", now: 1 }),
+        2_000, 5, jump, /contended|timed out/);
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
+  }
+}

@@ -379,7 +379,7 @@ export async function createFsSessionStore(
   ): Promise<T> {
     const owner: MutationGateOwner = { pid: process.pid, token: randomUUID() };
     while (!await acquireMutationGate(jobId, owner)) {
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         throw new DacsError(`session ${jobId} lock mutation gate is contended (timed out)`);
       }
       await sleep(LOCK_RETRY_MS);
@@ -467,7 +467,7 @@ export async function createFsSessionStore(
       token: randomUUID(),
       createdAt: Date.now(),
     };
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    const deadline = performance.now() + LOCK_TIMEOUT_MS;
     return withLockMutationGate(jobId, deadline, async () => {
       for (;;) {
         try {
@@ -483,7 +483,7 @@ export async function createFsSessionStore(
         // A legacy holder does not use the mutation gate. Wait for a live one,
         // or recover a dead one while every new-version mutation is excluded.
         await reclaimIfStaleUnderMutationGate(jobId, lp);
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           throw new DacsError(`session ${jobId} lock is contended (timed out)`);
         }
         await sleep(LOCK_RETRY_MS);

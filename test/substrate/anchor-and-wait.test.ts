@@ -2335,3 +2335,64 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 });
+
+for (const jump of [-60_000, 60_000]) {
+  for (const stage of ["inclusion", "visibility", "immutable-winner"] as const) {
+    it(`${stage} wait and receipt duration ignore a ${jump} ms wall jump`, async () => {
+      vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+      vi.setSystemTime(1_000_000);
+      const { adapter, raw } = await makeAdapter();
+      if (stage !== "visibility") {
+        raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
+        raw.nodeCall.mockResolvedValue({ state: "pending" });
+      } else raw.storagePrograms.read.mockRejectedValue(notFound());
+      let outcome: unknown;
+      const pending = (stage === "immutable-winner"
+        ? adapter.anchorWriteOnce("clock-immutable", { value: 1 }, { timeoutMs: 20, pollMs: 2 })
+        : adapter.anchorAndWait("clock-anchor", { value: 1 }, { completion: "read-visible", timeoutMs: 20, pollMs: 2 }))
+        .catch((error: unknown) => { outcome = error; });
+      await vi.advanceTimersByTimeAsync(1);
+      vi.setSystemTime(1_000_001 + jump);
+      await vi.advanceTimersByTimeAsync(18);
+      expect(outcome).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      const error = asAnchorError(outcome);
+      expect(error.code).toMatch(/timeout/);
+      expect(error.receipt.timings.elapsedMs).toBe(20);
+      expect(error.receipt.timings.startedAt).toBe(1_000_000);
+      expect(error.receipt.timings.finishedAt).toBe(1_000_020 + jump);
+      await pending;
+      vi.useRealTimers();
+    });
+  }
+}
+
+for (const jump of [-60_000, 60_000]) {
+  for (const kind of ["native-transfer", "storage-write", "nonce-visibility"] as const) {
+    it(`${kind} journal reconciliation ignores a ${jump} ms wall jump`, async () => {
+      vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+      vi.setSystemTime(1_000_000);
+      const { adapter, raw, wallet } = await makeAdapter();
+      const lease = await writeJournal.acquire({ chainIdentity: "test-chain", wallet: wallet.toLowerCase() });
+      const retained = kind !== "storage-write"
+        ? pendingNativeTransfer(lease.generation, wallet.replace(/^0x/, ""), "cd".repeat(32), "12".repeat(32), 9)
+        : pendingAnchorWrite(lease.generation, wallet, "tx-clock", 9, "clock-prior", "stor-clock", { value: 1 }).record;
+      await lease.put({ ...retained, stage: kind === "nonce-visibility" ? "canonical-confirmed" : retained.stage });
+      if (kind === "nonce-visibility") raw.getAddressNonce.mockResolvedValue(0);
+      raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
+      raw.nodeCall.mockResolvedValue({ state: "pending" });
+      let outcome: unknown;
+      const pending = adapter.reconcileWalletJournal(lease, 20, { pollMs: 2 })
+        .catch((error: unknown) => { outcome = error; });
+      try {
+        await vi.advanceTimersByTimeAsync(1);
+        vi.setSystemTime(1_000_001 + jump);
+        await vi.advanceTimersByTimeAsync(18);
+        expect(outcome).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(outcome).toBeInstanceOf(Error);
+        await pending;
+      } finally { await lease.release(); vi.useRealTimers(); }
+    });
+  }
+}

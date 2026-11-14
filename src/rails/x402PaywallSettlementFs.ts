@@ -647,7 +647,7 @@ export async function createFsX402PaywallSettlementStore(
   async function withLock<T>(settlementKey: string, operation: () => Promise<T>): Promise<T> {
     const path = lockPath(settlementKey);
     const owner: LockOwner = { pid: process.pid, token: randomUUID() };
-    const deadline = Date.now() + options.lockTimeoutMs;
+    const deadline = performance.now() + options.lockTimeoutMs;
     while (true) {
       // Publish a complete lock directory in one rename. Publishing an empty
       // final directory before owner.json creates a stale-reclamation race.
@@ -664,7 +664,7 @@ export async function createFsX402PaywallSettlementStore(
         await syncDirectory(candidate);
         if (await publishLockCandidate(candidate, path)) break;
         await maybeReclaimStale(path);
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           throw new DacsError("timed out acquiring x402 paywall settlement lock");
         }
         await wait(options.lockPollMs);

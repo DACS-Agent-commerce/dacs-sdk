@@ -1109,9 +1109,9 @@ async function observeDemosTerminalByHash(
     statusRequestTimeoutMs: number;
   }>,
 ): Promise<ObservedDemosTerminal> {
-  const deadline = Date.now() + options.inclusionTimeoutMs;
+  const deadline = performance.now() + options.inclusionTimeoutMs;
   while (true) {
-    const remaining = deadline - Date.now();
+    const remaining = deadline - performance.now();
     if (remaining <= 0) return { state: "timeout" };
 
     const request = Promise.resolve().then(() =>
@@ -1152,7 +1152,7 @@ async function observeDemosTerminalByHash(
       }
     }
 
-    const afterRead = deadline - Date.now();
+    const afterRead = deadline - performance.now();
     if (afterRead <= 0) return { state: "timeout" };
     await wait(Math.min(options.inclusionPollIntervalMs, afterRead));
   }
@@ -1482,11 +1482,11 @@ export async function observeDemosExecutionByHash(
     statusRequestTimeoutMs: number;
   }>,
 ): Promise<ObservedDemosExecution> {
-  const deadline = Date.now() + options.transactionRecordTimeoutMs;
+  const deadline = performance.now() + options.transactionRecordTimeoutMs;
   let pending = "transaction record was not observed";
   let readFailure: { cause: unknown } | undefined;
   while (true) {
-    const remaining = deadline - Date.now();
+    const remaining = deadline - performance.now();
     if (remaining <= 0) return { state: "indeterminate", reason: pending, ...readFailure };
 
     const request = Promise.resolve().then(() => getTxByHash(txHash));
@@ -1549,7 +1549,7 @@ export async function observeDemosExecutionByHash(
             reason: "transaction record does not match the prepared transfer",
           };
         }
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           return { state: "indeterminate", reason: "transaction record observation timed out" };
         }
         return record.status === DEMOS_FAILED_RECORD_STATUS
@@ -1560,7 +1560,7 @@ export async function observeDemosExecutionByHash(
       }
     }
 
-    const afterRead = deadline - Date.now();
+    const afterRead = deadline - performance.now();
     if (afterRead <= 0) return { state: "indeterminate", reason: pending, ...readFailure };
     await wait(Math.min(options.inclusionPollIntervalMs, afterRead));
   }
@@ -1930,11 +1930,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // `included` is not execution: the node can include the signed
       // transaction and record it failed. Require the transaction record to
       // show this exact prepared transfer executed before reporting success.
-      const recordDeadline = Date.now() + transactionRecordTimeoutMs;
+      const recordDeadline = performance.now() + transactionRecordTimeoutMs;
       const execution = await observeDemosExecutionByHash(
         txHash,
         (hash) => readDemosTransactionRecord(rpc, hash,
-          Math.max(1, Math.min(statusRequestTimeoutMs, recordDeadline - Date.now())), fetchRecord),
+          Math.max(1, Math.min(statusRequestTimeoutMs, recordDeadline - performance.now())), fetchRecord),
         { blockNumber: terminal.blockNumber, transfer: transferBinding },
         {
           transactionRecordTimeoutMs,

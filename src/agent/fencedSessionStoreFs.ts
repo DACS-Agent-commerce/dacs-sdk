@@ -536,7 +536,7 @@ export async function createFsFencedSessionStore(
   ): Promise<T> {
     const token = randomUUID();
     while (!await acquireReclaimGate(jobId, token)) {
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         throw new DacsError(`session ${jobId} lock mutation gate is contended (timed out)`);
       }
       await sleep(LOCK_RETRY_MS);
@@ -605,7 +605,7 @@ export async function createFsFencedSessionStore(
   async function withLock<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
     const lp = lockPath(jobId);
     const token = randomUUID();
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    const deadline = performance.now() + LOCK_TIMEOUT_MS;
     return withLockMutationGate(jobId, deadline, async () => {
       for (;;) {
         try {
@@ -619,7 +619,7 @@ export async function createFsFencedSessionStore(
         // A legacy holder does not use the mutation gate. Wait for a live one,
         // or recover a dead one while every new-version mutation is excluded.
         await reclaimIfStaleUnderMutationGate(jobId, lp);
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           throw new DacsError(`session ${jobId} lock is contended (timed out)`);
         }
         await sleep(LOCK_RETRY_MS);

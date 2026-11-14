@@ -8386,6 +8386,106 @@
       ]
     },
     {
+      "delta": "D24",
+      "subject": "delta(client): D24 use a monotonic clock for in-process waits",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "c2420945f3a5c5dbb1c3101923fd27af3e27398f",
+          "after": "78b217c6d2e5d6a590a75ffa599cd64652dfd3a2"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "3b37b663b20165b7a8a14a8a25ee62bf662cc5e6",
+          "after": "ba1d0e0443221024b579735a95dcde647cd9d4a5"
+        },
+        {
+          "path": "packages/dacs-client/src/util/immutable-readbacks.mjs",
+          "before": "8497f6a237a1c72ad3330cdebf529275700be15b",
+          "after": "7c5ee6fcbcf3cefa0045385a375a74004452c527"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "49ea60ec7688cde67f53c43ba2d467cab42f6097"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a284092528a7f3564c8def91dd5fee530ae04b93",
+          "after": "3f10c8317d82bf3c1bcb24ba331cc61107695c92"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+          "before": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54",
+          "after": "d1818df5ca9b61d9955d02d2fd4fda3a8ca62ab6"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "37e944e9f1b36e944b7af495fe532ba43b208aaa",
+          "after": "6823ed3ecdc354d9f81d84299518f7eff91781c5"
+        }
+      ]
+    },
+    {
+      "delta": "D35",
+      "subject": "delta(client): D35 re-apply the monotonic clock to the seller rate window and the wallet lane wait",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "eb89bc99364dc00d325530e5249981917b9cdb87",
+          "after": "b32273fc468d862e55d626121c8b2de60462d397"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7",
+          "after": "bc36e9f0477613f54e57b1a94424971e42e5c6e1"
+        }
+      ]
+    },
+    {
+      "delta": "D35",
+      "subject": "delta(client): D35 use the monotonic clock for the seller client deadline and drop the unused readback cache clock option",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/buyer-chain-readback.mjs",
+          "before": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2",
+          "after": "4f30e654375d06c846337e216487a88e15e56066"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+          "before": "9a0967034f9bad78b2c03836343926dce0a537f6",
+          "after": "43a29d02665781c4315ac877f81ee04856a6f3a8"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/verification.mjs",
+          "before": "de51f5bc8faf3b14b707783e03bc8e303fb44ca5",
+          "after": "d974b1b11cd188f5f7246bcba42ce541c5873a01"
+        },
+        {
+          "path": "packages/dacs-client/src/util/immutable-readbacks.mjs",
+          "before": "7c5ee6fcbcf3cefa0045385a375a74004452c527",
+          "after": "47ed22a28fcaaa1e32a0e5e2bd4fe0ded6000d6b"
+        }
+      ]
+    },
+    {
+      "delta": "D35",
+      "subject": "delta(client): D35 record the merged seller transport and chain readback blobs after the base sync",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/buyer-chain-readback.mjs",
+          "before": "716ab49bf29aca57444d2f6c132548d2e8abb437",
+          "after": "716ab49bf29aca57444d2f6c132548d2e8abb437"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "c2a23d02278639657358480a74e9e933492b0832",
+          "after": "c2a23d02278639657358480a74e9e933492b0832"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up",
       "files": [

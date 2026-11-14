@@ -1,3 +1,4 @@
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import {
   mkdir,
   mkdtemp,
@@ -1600,3 +1601,19 @@ describe("public surface", () => {
     }
   }, 20_000);
 });
+
+for (const jump of [-60_000, 60_000]) {
+  for (const held of ["lock", "reclaim"]) {
+    test(`buyer settlement ${held} wait keeps its budget after a ${jump} ms wall jump`, async () => {
+      const dir = await mkdtemp(join(tmpdir(), "dacs-buyer-clock-"));
+      dirs.push(dir);
+      const store = await createFsX402BuyerSettlementStore({ dir, lockTimeoutMs: 10, lockPollMs: 2 });
+      const intent = createX402BuyerSettlementIntent(intentDraft());
+      const path = join(dir, "locks", held === "reclaim" ? ".reclaim" : `${sha256Hex(intent.settlementKey)}.lock`);
+      await mkdir(path, { mode: 0o700 });
+      await writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid, token: "held" }), { mode: 0o600 });
+      await expectMonotonicTimeout(() => store.claim({ intent, owner: "waiting", now: 1, leaseDurationMs: 10 }),
+        10, 2, jump, /timed out/);
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
+  }
+}

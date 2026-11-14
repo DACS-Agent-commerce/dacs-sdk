@@ -1,3 +1,4 @@
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import { hostname, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -538,3 +539,20 @@ describe("wallet spend filesystem lock mutation races", () => {
     await expect(stat(quarantine)).resolves.toMatchObject({});
   });
 });
+
+for (const jump of [-60_000, 60_000]) {
+  for (const held of ["lock", "reclaim"]) {
+    test(`wallet spend ${held} wait keeps its budget after a ${jump} ms wall jump`, async () => {
+      const dir = await fixture(), scope = "a".repeat(64);
+      const store = await createFsWalletSpendStateStoreV1({ dir, integrityKey: KEY, lockTimeoutMs: 10, lockPollMs: 2 });
+      const path = join(dir, "locks", `${scope}.${held}`);
+      if (held === "lock") await writeFile(path, JSON.stringify({ pid: process.pid, hostname: hostname(), token: "held", createdAt: 1 }), { mode: 0o600 });
+      else {
+        await mkdir(path, { mode: 0o700 });
+        await writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), token: "held", createdAt: 1 }), { mode: 0o600 });
+      }
+      await expectMonotonicTimeout(() => store.transact(scope, () => { throw new Error("must not enter"); }),
+        10, 2, jump, /timed out/);
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
+  }
+}
