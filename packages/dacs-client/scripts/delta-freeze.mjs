@@ -14,7 +14,7 @@
 // HEAD with one `git rev-list` for the commit graph and one `git log --raw`
 // for the commits and their package changes, and fails closed without it.
 // The checks that need each commit's own diff stay in delta-map.mjs.
-import { readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { assemble } from './delta-assemble.mjs';
 import { BASELINE, blob, expectedBlob } from './delta-map.mjs';
@@ -145,6 +145,25 @@ export function checkDerivedFreeze({ repoRoot, packageDir, pins, files, head, in
     const sides = [['HEAD', head.get(path)?.blob], ['index', index.get(path)?.blob], ['working file', files.has(rel) ? blob(readFileSync(join(packageDir, rel))) : null]];
     const differ = sides.filter(([, actual]) => (actual ?? null) !== want.blob).map(([side]) => side);
     if (differ.length) failures.push(`${path}: ${differ.join(', ')} ${differ.length === 1 ? 'differs' : 'differ'} from ${want.from} (${want.blob ?? 'no file'})`);
+  }
+  return failures;
+}
+
+/** Checks that every historical record file still holds its introducing blob. */
+export function checkRecordFiles(repoRoot, packageDir) {
+  const history = readHistory(repoRoot), failures = [];
+  if (!history) return [`record files need the Git history from ${BASELINE} to HEAD`];
+  const added = addedRecordFiles(history.commits, failures);
+  const git = (...args) => sourceGit(['-C', repoRoot, ...args], { encoding: 'utf8', maxBuffer: MAX_GIT_OUTPUT }).trimEnd();
+  const head = new Map(git('ls-tree', '-r', 'HEAD', '--', PACKAGE_PREFIX + 'records').split('\n').filter(Boolean).map(row => { const [meta, path] = row.split('\t'); return [path, meta.split(' ')[2]]; }));
+  const index = new Map(git('ls-files', '--stage', '--', PACKAGE_PREFIX + 'records').split('\n').filter(Boolean).map(row => { const [meta, path] = row.split('\t'); return [path, meta.split(' ')[1]]; }));
+  const dir = join(packageDir, 'records');
+  const working = existsSync(dir) ? readdirSync(dir, { recursive: true }).filter(name => !lstatSync(join(dir, name)).isDirectory()).map(name => PACKAGE_PREFIX + 'records/' + name) : [];
+  for (const path of new Set([...added.keys(), ...head.keys(), ...index.keys(), ...working])) {
+    if (!isRecordFile(path.slice(PACKAGE_PREFIX.length))) continue;
+    const local = join(packageDir, path.slice(PACKAGE_PREFIX.length)), want = added.get(path);
+    if (want === undefined) { failures.push(`${path}: record file not added by a commit after the baseline`); continue; }
+    if (head.get(path) !== want || index.get(path) !== want || !existsSync(local) || blob(readFileSync(local)) !== want) failures.push(`${path}: record file differs from the blob it was added with`);
   }
   return failures;
 }

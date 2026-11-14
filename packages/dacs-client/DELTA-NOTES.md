@@ -1,6 +1,18 @@
 # client package deltas
 
-Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. The package exports two entries: the root and `./wallet/durable-journal`.
+The package records each change in its own immutable file under `records/`.
+Per-change notes belong in that record's `note`. Render the map and notes with
+`node packages/dacs-client/scripts/delta-map.mjs`; output goes to stdout.
+Do not store the rendered map in the package. Core changes require a reciprocal
+re-pin; other changes keep the controls unchanged. Declare a new lane once in
+`records/ids/`, including its register line and first record subject.
+A later record may supersede an earlier record; both remain immutable and
+continue to supply history and inventory evidence.
+
+The historical notes below describe the frozen archive. They are retained as
+reference text; new per-change notes are rendered from records. Public entry
+points are listed in `package.json`.
+
 Commit subjects below are exact Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. Where two reachable commits share a subject, as when a rebuilt part keeps its earlier published history, each record also names its full commit hash, and the subject must still match. PROVENANCE.json remains the immutable original copy inventory.
 
 ## D10 — Strip unused modes

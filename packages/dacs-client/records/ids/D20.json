@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D20",
+  "registration": "D20: existing client delta lane",
+  "subject": "delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON"
+}

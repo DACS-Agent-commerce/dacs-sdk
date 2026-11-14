@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { assemble } from './delta-assemble.mjs';
+import { assemble, readArchive } from './delta-assemble.mjs';
 import { recordName } from './delta-record.mjs';
 
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -20,6 +20,10 @@ function packageDir(t, ledger = { schema: 'dacs-client-deltas/v2', changes: [] }
   const dir = mkdtempSync(join(tmpdir(), 'TEST-delta-assemble-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   json(join(dir, 'DELTA-LEDGER.json'), ledger); json(join(dir, 'DELTA-COMMITS.json'), commits);
+  for (const row of [...(ledger.supersededChanges ?? []), ...ledger.changes]) {
+    const file = join(dir, 'records/ids', row.delta + '.json');
+    if (!existsSync(file)) json(file, { schema: 'dacs-client-delta-id/v1', delta: row.delta, registration: row.delta + ': fixture lane', subject: row.subject });
+  }
   return dir;
 }
 function record(subject, overrides = {}) {
@@ -28,15 +32,21 @@ function record(subject, overrides = {}) {
     files: [{ path: prefix + 'src/purchases.mjs', before: blobA, after: blobB }], commitFiles: [prefix + 'src/purchases.mjs'], ...overrides,
   };
 }
-const put = (dir, value) => { json(join(dir, 'records', recordName(value)), value); return recordName(value); };
+const put = (dir, value) => {
+  const declaration = join(dir, 'records/ids', value.delta + '.json');
+  if (!existsSync(declaration)) json(declaration, { schema: 'dacs-client-delta-id/v1', delta: value.delta, registration: value.delta + ': fixture lane', subject: value.subject });
+  json(join(dir, 'records', recordName(value)), value); return recordName(value);
+};
 
 test('with no record files the assembled view is the stored archive', t => {
-  assert.deepEqual(assemble(pkg), { ledger: readJson(join(pkg, 'DELTA-LEDGER.json')), commits: readJson(join(pkg, 'DELTA-COMMITS.json')), failures: [] });
+  const archived = readArchive(pkg);
+  const copy = packageDir(t, archived.ledger, archived.commits);
+  assert.deepEqual(assemble(copy), { ...archived, failures: [] });
   const archive = { schema: 'dacs-client-deltas/v2', changes: [{ delta: 'D11', subject: 'one', files: [] }] };
   const dir = packageDir(t, archive, [{ sha: null, subject: 'one', files: ['x'] }]);
   const expected = { ledger: archive, commits: [{ sha: null, subject: 'one', files: ['x'] }], failures: [] };
   assert.deepEqual(assemble(dir), expected);
-  mkdirSync(join(dir, 'records')); writeFileSync(join(dir, 'records/.gitkeep'), '');
+  mkdirSync(join(dir, 'records'), { recursive: true }); writeFileSync(join(dir, 'records/.gitkeep'), '');
   assert.deepEqual(assemble(dir), expected);
 });
 
@@ -124,7 +134,7 @@ async function history(t) {
   }
   mkdirSync(join(fixture, 'scripts'));
   writeFileSync(join(fixture, 'scripts/delta-map.mjs'), checker);
-  for (const name of ['delta-assemble.mjs', 'delta-record.mjs', 'source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(fixture, 'scripts', name));
+  for (const name of ['delta-assemble.mjs', 'delta-record.mjs', 'delta-freeze.mjs', 'source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(fixture, 'scripts', name));
   const { blob, checkDeltas, table, view } = await import(pathToFileURL(join(fixture, 'scripts/delta-map.mjs')));
   json(join(fixture, 'DELTA-LEDGER.json'), { schema: 'dacs-client-deltas/v2', baseline, changes: [] });
   // Commits `edits` ({package path: bytes}) with a record file, as a client change would.
@@ -136,13 +146,15 @@ async function history(t) {
       return { path: prefix + path, before, after: blob(Buffer.from(bytes)) };
     });
     const value = { schema: 'dacs-client-delta-record/v1', delta, subject, kind, files };
-    const name = recordName(value), changed = new Set([...files.map(file => file.path), prefix + 'records/' + name, prefix + 'DELTA-MAP.md', ...extra]);
+    const declaration = join(fixture, 'records/ids', delta + '.json'), added = [];
+    if (!existsSync(declaration)) { json(declaration, { schema: 'dacs-client-delta-id/v1', delta, registration: delta + ': fixture lane', subject }); added.push(prefix + 'records/ids/' + delta + '.json'); }
+    const name = recordName(value), changed = new Set([...files.map(file => file.path), prefix + 'records/' + name, ...added, ...extra]);
     json(join(fixture, 'records', name), { ...value, commitFiles: [...changed].sort() });
-    writeFileSync(join(fixture, 'DELTA-MAP.md'), table());
+
     git('add', '--', ...changed); git('commit', '--quiet', '-m', subject);
     return { name, sha: git('rev-parse', 'HEAD') };
   };
-  return { fixture, git, commit, view, check: () => checkDeltas().failures };
+  return { fixture, git, commit, view, table, check: () => checkDeltas().failures };
 }
 
 test('the delta checker accepts source changes recorded in record files', async t => {
@@ -150,7 +162,7 @@ test('the delta checker accepts source changes recorded in record files', async 
   h.commit({ 'src/example.mjs': 'fixed\n' }, { extra: [prefix + 'DELTA-LEDGER.json'] });
   h.commit({ 'src/example.mjs': 'fixed again\n', 'src/added.mjs': 'added\n' }, { delta: 'D11' });
   assert.deepEqual(h.check(), []);
-  assert.match(readFileSync(join(h.fixture, 'DELTA-MAP.md'), 'utf8'), /\| D11 \| delta\(client\): D11 TEST change 2 \|/);
+  assert.match(h.table(), /\| D11 \| delta\(client\): D11 TEST change 2 \|/);
 });
 
 test('the delta checker orders records by file name, whatever the order of the commits', async t => {
@@ -174,7 +186,8 @@ test('the delta checker refuses a record the schema refuses, a wrong blob and a 
   const { name, sha } = h.commit({ 'src/example.mjs': 'fixed\n' }, { extra: [prefix + 'DELTA-LEDGER.json'] });
   const file = join(h.fixture, 'records', name), good = readJson(file);
   json(file, { ...good, files: [{ ...good.files[0], after: good.files[0].before }] });
-  assert.deepEqual(h.check().filter(failure => failure.includes('records/')), [`${prefix}records/${name}: a change record names no file whose before differs from after`]);
+  assert.ok(h.check().includes(`${prefix}records/${name}: a change record names no file whose before differs from after`));
+  assert.ok(h.check().includes(`${prefix}records/${name}: record file differs from the blob it was added with`));
   assert.ok(h.check().includes(`${prefix}src/example.mjs: unenumerated change in ${sha}`));
   json(file, { ...good, kind: 'checkpoint', files: [{ ...good.files[0], after: blobB }] });
   assert.ok(h.check().includes(`${prefix}src/example.mjs: delta WF blob differs at ${sha}`));

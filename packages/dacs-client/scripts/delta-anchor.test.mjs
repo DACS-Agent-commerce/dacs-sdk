@@ -24,15 +24,14 @@ function scratch(t) {
   return { repo, git, check };
 }
 // Commits a README edit with a record naming only README.md, whose before is
-// `before`, and the regenerated map. Returns the commit.
+// `before`. Returns the commit.
 function recordReadme(s, subject, before) {
   appendFileSync(join(s.repo, README), `\n${subject}\n`);
   const after = s.git('hash-object', '--', README);
   const record = { schema: 'dacs-client-delta-record/v1', delta: 'WF', subject, kind: 'change', files: [{ path: README, before, after }], commitFiles: [] };
   const name = `${P}records/${recordName(record)}`;
-  record.commitFiles = [`${P}DELTA-MAP.md`, README, name].sort();
+  record.commitFiles = [README, name].sort();
   writeFileSync(join(s.repo, name), JSON.stringify(record, null, 2) + '\n');
-  execFileSync(process.execPath, [`${P}scripts/delta-map.mjs`], { cwd: s.repo });
   s.git('add', '--', P); s.git('commit', '-qm', subject);
   return s.git('rev-parse', 'HEAD');
 }

@@ -65,7 +65,7 @@ test('a record may not name a path with an empty, . or .. segment', () => {
 });
 
 test('a commit-only record has no files and stands for a commit that changes only core or record files', () => {
-  const commitOnly = change({ kind: 'commit-only', files: undefined, commitFiles: ['docs/outside.md', at + 'DELTA-MAP.md', at + 'HOLD.json', at + 'records/WF-000000000000.json'] });
+  const commitOnly = change({ kind: 'commit-only', files: undefined, commitFiles: ['docs/outside.md', at + 'HOLD.json', at + 'LICENSE', at + 'records/WF-000000000000.json'] });
   assert.deepEqual(failures(commitOnly), []);
   refuses({ ...commitOnly, files: change().files }, /a commit-only record has no files/);
   refuses({ ...commitOnly, commitFiles: [at + 'HOLD.json', at + 'src/purchases.mjs'] }, /commit changes packages\/dacs-client\/src\/purchases\.mjs/);

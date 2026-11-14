@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// Re-pin an explicitly staged package with reciprocal package-only controls.
+// Re-pin explicitly staged core files with reciprocal controls.
 // This tool never stages or commits.
 //   node packages/dacs-client/scripts/pin-delta.mjs
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { isCorePath } from './delta-record.mjs';
 import { publicationJson } from './publication-text.mjs';
 import { git, pkg, prefix, blob } from './delta-map.mjs';
 const record=JSON.parse(readFileSync(`${pkg}/HOLD.json`,'utf8'));
@@ -14,6 +15,7 @@ for(const row of git('ls-files','--stage','--',prefix).split('\n')) {
   if(!match)throw new Error(`not an ordinary staged file: ${row}`);
   const path=match[3].slice(prefix.length);
   if(blob(readFileSync(`${pkg}/${path}`))!==match[2])throw new Error(`${path}: stage the exact working bytes before re-pinning`);
+  if (!isCorePath(path)) continue;
   files[path]=path==='HOLD.json'?{control:'record'}:path==='scripts/check-hold.mjs'?{control:'gate',blob:'0'.repeat(40)}:{blob:match[2]};
 }
 record.step1Freeze.files=files;

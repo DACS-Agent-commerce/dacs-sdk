@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { recordName } from './delta-record.mjs';
 import { commits, expectedBlob, git, ledger, selects } from './delta-map.mjs';
 
 // The gate reads superseded and active records together and skips selectors
@@ -121,32 +122,24 @@ function scratch(t) {
   assert.ok(source, 'a moved source file must exist');
   return { dir, git, node, check, added, source };
 }
-// Commit the staged edits plus their inventory entry and regenerated map.
-function commitRecord(s, subject, paths) {
-  const files = [...paths, ...['DELTA-COMMITS.json', 'DELTA-LEDGER.json', 'DELTA-MAP.md'].map(name => prefix + name)].sort();
-  const inventoryPath = join(s.dir, prefix + 'DELTA-COMMITS.json'), inventory = JSON.parse(readFileSync(inventoryPath, 'utf8'));
-  inventory.push({ sha: null, subject, files });
-  writeFileSync(inventoryPath, JSON.stringify(inventory, null, 2) + '\n');
-  s.node(prefix + 'scripts/delta-map.mjs'); s.git('add', '--', ...files); s.git('commit', '--quiet', '-m', subject);
+// Commit a newly written record together with the staged source edit.
+function commitRecord(s, subject) {
+  const name = prefix + 'records/' + recordName({ delta: 'D11', subject });
+  s.git('add', '--', name); s.git('commit', '--quiet', '-m', subject);
   return s.git('rev-parse', 'HEAD');
 }
 function recordEdit(s, path, bytes, subject) {
   writeFileSync(join(s.dir, path), bytes); s.git('add', '--', path);
   s.node(prefix + 'scripts/delta-map.mjs', '--record', 'D11', subject);
-  return commitRecord(s, subject, [path]);
+  return commitRecord(s, subject);
 }
-// An identity record: the chosen blob is HEAD's, before and after.
+// A resolution record explicitly chooses HEAD's blob on both sides.
 function recordChoice(s, path, subject) {
-  const ledgerPath = join(s.dir, prefix + 'DELTA-LEDGER.json'), data = JSON.parse(readFileSync(ledgerPath, 'utf8'));
-  const chosen = s.git('rev-parse', `HEAD:${path}`);
-  data.changes.push({ delta: 'D11', subject, files: [{ path, before: chosen, after: chosen }] });
-  writeFileSync(ledgerPath, JSON.stringify(data, null, 2) + '\n');
-  return commitRecord(s, subject, []);
+  const chosen = s.git('rev-parse', `HEAD:${path}`), name = prefix + 'records/' + recordName({ delta: 'D11', subject });
+  writeFileSync(join(s.dir, name), JSON.stringify({ schema: 'dacs-client-delta-record/v1', delta: 'D11', subject, kind: 'resolution', files: [{ path, before: chosen, after: chosen }], commitFiles: [name] }) + '\n');
+  return commitRecord(s, subject);
 }
-// Two branches record different blobs of `path`; the merge keeps the left
-// tree and carries the right branch's record and inventory entry. The right
-// record goes before the left one, so ledger order alone would accept the
-// merge.
+// Carry the right branch's independent record while deliberately keeping the left source.
 function parallelRecords(s) {
   const path = s.source, start = s.git('rev-parse', 'HEAD'), bytes = readFileSync(join(s.dir, path));
   s.git('switch', '--quiet', '-c', 'TEST-right', start);
@@ -154,14 +147,8 @@ function parallelRecords(s) {
   s.git('switch', '--quiet', '-c', 'TEST-left', start);
   const left = recordEdit(s, path, Buffer.concat([bytes, Buffer.from('\n// TEST left\n')]), 'fix(client): D11 TEST left edit');
   s.git('merge', '--quiet', '--no-ff', '--no-commit', '-s', 'ours', 'TEST-right');
-  const ledgerPath = join(s.dir, prefix + 'DELTA-LEDGER.json'), data = JSON.parse(readFileSync(ledgerPath, 'utf8'));
-  data.changes.splice(-1, 0, JSON.parse(s.git('show', `${right}:${prefix}DELTA-LEDGER.json`)).changes.at(-1));
-  writeFileSync(ledgerPath, JSON.stringify(data, null, 2) + '\n');
-  const inventoryPath = join(s.dir, prefix + 'DELTA-COMMITS.json'), inventory = JSON.parse(readFileSync(inventoryPath, 'utf8'));
-  inventory.push(JSON.parse(s.git('show', `${right}:${prefix}DELTA-COMMITS.json`)).at(-1));
-  writeFileSync(inventoryPath, JSON.stringify(inventory, null, 2) + '\n');
-  s.node(prefix + 'scripts/delta-map.mjs');
-  s.git('add', '--', ...['DELTA-COMMITS.json', 'DELTA-LEDGER.json', 'DELTA-MAP.md'].map(name => prefix + name));
+  const name = prefix + 'records/' + recordName({ delta: 'D11', subject: 'fix(client): D11 TEST right edit' });
+  s.git('checkout', right, '--', name);
   s.git('commit', '--quiet', '-m', 'merge: TEST parallel records');
   return { path, left, right };
 }
@@ -184,13 +171,13 @@ test('a merge alone cannot keep the stale parent of a recorded fix or delete the
   assert.deepEqual(s.added(s.check()), []);
   s.git('switch', '--quiet', '-c', 'TEST-rollback', 'TEST-fix');
   s.git('merge', '--quiet', '--no-ff', '--no-commit', 'TEST-stale');
-  writeFileSync(join(s.dir, moved), stale); s.node(prefix + 'scripts/delta-map.mjs');
-  s.git('add', '--', moved, prefix + 'DELTA-MAP.md'); s.git('commit', '--quiet', '-m', 'merge: TEST keep the stale parent');
+  writeFileSync(join(s.dir, moved), stale);
+  s.git('add', '--', moved); s.git('commit', '--quiet', '-m', 'merge: TEST keep the stale parent');
   assert.deepEqual(s.added(s.check()), [`${moved}: current blob differs from enumerated deltas`]);
   s.git('switch', '--quiet', '-c', 'TEST-delete', 'TEST-fix');
   s.git('merge', '--quiet', '--no-ff', '--no-commit', 'TEST-stale');
-  s.git('rm', '--quiet', '--', moved); s.node(prefix + 'scripts/delta-map.mjs');
-  s.git('add', '--', prefix + 'DELTA-MAP.md'); s.git('commit', '--quiet', '-m', 'merge: TEST delete the recorded file');
+  s.git('rm', '--quiet', '--', moved);
+ s.git('commit', '--quiet', '-m', 'merge: TEST delete the recorded file');
   assert.deepEqual(s.added(s.check()), [`${moved}: current blob differs from enumerated deltas`]);
 });
 
@@ -217,11 +204,11 @@ test('after a choice, working, deleted and staged edits are refused', t => {
   assert.deepEqual(s.added(s.check()), []);
   const bytes = readFileSync(join(s.dir, path));
   writeFileSync(join(s.dir, path), Buffer.concat([bytes, Buffer.from('\n// TEST unrecorded edit\n')]));
-  s.node(prefix + 'scripts/delta-map.mjs');
+ 
   assert.deepEqual(s.added(s.check()), [`${path}: current blob differs from enumerated deltas`]);
-  unlinkSync(join(s.dir, path)); s.node(prefix + 'scripts/delta-map.mjs');
+  unlinkSync(join(s.dir, path));
   assert.deepEqual(s.added(s.check()), [`${path}: current blob differs from enumerated deltas`]);
   writeFileSync(join(s.dir, path), Buffer.concat([bytes, Buffer.from('\n// TEST staged edit\n')]));
-  s.git('add', '--', path); writeFileSync(join(s.dir, path), bytes); s.node(prefix + 'scripts/delta-map.mjs');
+  s.git('add', '--', path); writeFileSync(join(s.dir, path), bytes);
   assert.deepEqual(s.added(s.check()), [`${path}: current blob differs from enumerated deltas`, `${path}: index differs from HEAD for moved source/test`]);
 });
