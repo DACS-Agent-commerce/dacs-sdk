@@ -1,20 +1,15 @@
 // K12-H6a / K12-H6b: the signing domain of the seller transport, as the kit's server auth and the client's signer each use it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPublicKey, verify } from 'node:crypto';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
 import { buyer as hostBuyer } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
-import { BUYER, JOB, publicKeyHex, sellerTransportPair } from './fixtures.mjs';
+import { BUYER, JOB } from './fixtures.mjs';
 import { composedKitHost, postHeader, wireSignedRequest } from './kit-host.mjs';
 
 const OLD_DOMAIN = 'dacs-chatgpt-plugin:loopback-seller-peer:v1:';
-const ED25519_SPKI_PREFIX = '302a300506032b6570032100';
 
-const buyerPublicKey = () => createPublicKey({ key: Buffer.from(ED25519_SPKI_PREFIX + publicKeyHex(BUYER), 'hex'), format: 'der', type: 'spki' });
-const decodeHeader = (header) => JSON.parse(Buffer.from(header, 'base64url').toString('utf8'));
 const signedUnder = (domain, payload) => Buffer.from(domain + canonicalize(payload), 'utf8');
-const verifiesUnder = (domain, { payload, signature }) => verify(null, signedUnder(domain, payload), buyerPublicKey(), Buffer.from(signature, 'base64url'));
 /** The header the client would send if `wallet` signed the same payload under `domain`. */
 const headerSignedUnder = (domain, payload, wallet = BUYER) => Buffer.from(canonicalize({ payload, signature: wallet.signBytes(signedUnder(domain, payload)).toString('base64url') })).toString('base64url');
 
@@ -37,10 +32,11 @@ test('K12-H6a control: the composed kit host authenticates the same request sign
   assert.deepEqual({ status: answer.status, error: JSON.parse(answer.text).error, signed: answer.signed }, { status: 404, error: 'peer_unknown_job', signed: true });
 });
 
-
-test("K12-H6b today: the client's request signer emits old-domain signing bytes", async (t) => {
-  const { stateRequest } = await sellerTransportPair(t);
-  const envelope = decodeHeader((await stateRequest()).header);
-  assert.equal(verifiesUnder(OLD_DOMAIN, envelope), true);
-  assert.equal(verifiesUnder(DACS_SELLER_HTTP_DOMAINS.request, envelope), false);
+test("K12-H6b target: the client's request signer output carries the wire domain only", async (t) => {
+  const { world, request } = await import('../../packages/dacs-client/test/helpers/wire-client-fixture.mjs');
+  const w = await world(t);
+  const signed = await request(w);
+  const bytes = w.state.signs[0].toString();
+  assert.equal(bytes, DACS_SELLER_HTTP_DOMAINS.request + canonicalize(signed.payload));
+  assert.equal(bytes.startsWith(OLD_DOMAIN), false);
 });
