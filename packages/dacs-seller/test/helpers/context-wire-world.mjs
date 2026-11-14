@@ -38,8 +38,8 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   state.mono = 0;
   const counts = { validations: 0, holds: [], releases: [], resolves: 0, vetWrites: 0, agreementSignatures: 0, reserveAcquisitions: 0 };
   // What a test can bend: the presentation admission, the policy hold, the provider's steps and answer, the reservation (`recover` answers a recovery
-  // effect the journal never issued), the wire completion (`nullEndFails`, `cutAfterPublish`) and the acceptance (`failAcceptance`).
-  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false };
+  // effect the journal never issued), the wire completion (`nullEndFails`, `cutAfterPublish`), the acceptance (`failAcceptance`) and the kind of effect evidence compensation reads (`evidenceKind`).
+  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false, evidenceKind: 'no-intent' };
   const fakeEffects = new Set(), completions = [];
   // A presentation's profile admission: the agent's own, here a counting stand-in that grants unless a test says otherwise.
   agent.admitSessionPresentation = async ({ jobId, bundle, nonce }) => {
@@ -61,7 +61,7 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     if (outcome !== null && behaviour.cutAfterPublish) throw new Error('TEST cut after the outcome was published');
   };
   const admission = createContextAdmissionTransaction({ store: w.store, policy, capacity,
-    effectEvidence: async (row) => [row.vetAddresses.buyer, row.vetAddresses.seller].map((address) => ({ address, kind: 'no-intent' })),
+    effectEvidence: async (row) => [row.vetAddresses.buyer, row.vetAddresses.seller].map((address) => ({ address, kind: behaviour.evidenceKind })),
     inspectContextOutcome: operationOf, completeWire, now, ready: () => state.ready(), deadlines: { policyMs: POLICY_DEADLINE_MS } });
   const coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target), admissionTransaction: admission });
   const reserved = { calls: 0, ownerships: [] };

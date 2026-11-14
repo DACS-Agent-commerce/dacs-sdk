@@ -215,7 +215,8 @@ check of a party's Agreement contribution; `SellerAgentError` is the seller's
 refusal with its stable code and HTTP status. The other root exports are the
 parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
-`createSellerTransportServerAuth`, `createSellerContextRoute` and the buyer
+`createSellerTransportServerAuth`, `createSellerContextRoute`,
+`createWireSellerContextRoute` (the context step on the wire) and the buyer
 side `createSellerAgentClient`, `createSellerContextClient`,
 `createSellerTransportClientAuth` and `createSellerWireClientAuth`. The host
 answers every route but the challenge and the context step through the wire,
@@ -248,8 +249,8 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `SellerAgentError`, `createPaymentEvidenceWalletJournal`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
-`createSellerContextRoute`, `createSellerContextClient`,
-`createSellerTransportStore`, `createSellerTransportServerAuth`,
+`createSellerContextRoute`, `createWireSellerContextRoute`,
+`createSellerContextClient`, `createSellerTransportStore`, `createSellerTransportServerAuth`,
 `createSellerTransportClientAuth` and `createSellerWireClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 

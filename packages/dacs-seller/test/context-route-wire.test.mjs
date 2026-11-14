@@ -541,17 +541,56 @@ test('a Vet non-pass completes with its non-pass outcome and signs no Agreement'
   assert.deepEqual(w.openHolds(), []);
 });
 
-test('a provider error after the reservation leaves the attempt open and the row running, and answers 503 operation_uncertain', async (t) => {
+test('a provider error after the reservation answers 503 operation_uncertain, writes no end record and completes nothing', async (t) => {
   const w = await contextWireWorld(t), request = await w.startContext();
   w.behaviour.provider = async () => { throw Object.assign(new Error('TEST provider failed'), { code: 'provider_failed' }); };
   const answer = await w.post(request);
   await w.settleJob();
   assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'provider_failed']);
   await request.verify(answer);
-  assert.equal(w.rowOf().state, 'running');
   assert.equal(w.operationOf(WIRE_JOB).state, 'pending', 'no end record');
   assert.equal(w.completions.length, 0);
-  assert.equal(w.openHolds().length, 1, 'the hold is kept');
+});
+
+test('a failed start after an accepted admission ends its row, releases its hold and slot, and a retry is admitted', async (t) => {
+  // Room for one purchase: a second one is admitted only once the first one's slot is free.
+  const oneSlot = { storeOptions: { maxRecords: 100 } };
+  const allocationState = (w) => w.internals.db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(WIRE_JOB).state;
+  const retryAdmitted = async (w) => assert.equal((await w.post(await w.startContext({ jobId: WIRE_JOB2 }))).status, 200);
+  await t.test('a direct request that expires between its acceptance and the reservation', async (t) => {
+    const monotonicBase = performance.now();
+    let elapsedMs = 0;
+    t.mock.method(performance, 'now', () => monotonicBase + elapsedMs);
+    const w = await contextWireWorld(t, oneSlot), request = await w.startContext({ signOptions: { delegated: false, lifetimeMs: 20_000 } });
+    const entered = deferred(), release = deferred();
+    w.behaviour.policyReserve = async () => { entered.resolve(); await release.promise; return null; };
+    const pending = w.post(request);
+    await entered.promise;
+    w.advance(20_000);
+    elapsedMs = 20_000;
+    release.resolve();
+    assert.deepEqual(summary(await pending), [408, 'peer_expired']);
+    await w.settleJob();
+    assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w), w.counts.vetWrites, w.journalFiles()], ['aborted', 0, 'released', 0, 0]);
+    await retryAdmitted(w);
+  });
+  await t.test('a provider that fails before it signs anything', async (t) => {
+    const w = await contextWireWorld(t, oneSlot), request = await w.startContext();
+    w.behaviour.provider = async () => { throw Object.assign(new Error('TEST provider failed'), { code: 'provider_failed' }); };
+    assert.deepEqual([...summary(await w.post(request))], [503, 'operation_uncertain']);
+    await w.settleJob();
+    assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w), w.completions.length], ['aborted', 0, 'released', 0]);
+    w.behaviour.provider = null;
+    await retryAdmitted(w);
+  });
+  await t.test('a provider that fails after its first Vet write keeps the hold and slot of a job whose effect is not ruled out', async (t) => {
+    const w = await contextWireWorld(t, oneSlot), request = await w.startContext();
+    w.behaviour.evidenceKind = 'signed';
+    w.behaviour.afterFirstWrite = async () => { throw Object.assign(new Error('TEST provider failed'), { code: 'provider_failed' }); };
+    assert.deepEqual([...summary(await w.post(request))], [503, 'operation_uncertain']);
+    await w.settleJob();
+    assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w), w.counts.vetWrites], ['compensating', 1, 'live', 1]);
+  });
 });
 
 test('a held or malformed provider answer is never a final outcome: it stays open as operation_uncertain with the answer as its cause', async (t) => {
@@ -748,7 +787,7 @@ test('context first-validation gate × one failing check under an issued nonce',
   assert.equal((await control.post(request)).status, 200, 'the all-valid control succeeds');
 });
 
-test('a context request admitted live but expired when the reservation runs is refused peer_expired and starts no Vet work', async (t) => {
+test('a context request admitted live but expired when the reservation runs is refused peer_expired, starts no Vet work and ends its row', async (t) => {
   // The wire counts the time since its admission on the monotonic clock, which this test moves with the seller clock.
   const monotonicBase = performance.now();
   let elapsedMs = 0;
@@ -768,7 +807,8 @@ test('a context request admitted live but expired when the reservation runs is r
   const { w, request, answer } = await run(20_000);
   assert.deepEqual(summary(answer), [408, 'peer_expired']);
   await request.verify(answer);
-  assert.deepEqual([w.journalFiles(), w.counts.vetWrites, w.rowOf().state, w.counts.holds.length, w.internals.admissionCounts().starts], [0, 0, 'admitted', 1, 1]);
+  await w.settleJob();
+  assert.deepEqual([w.journalFiles(), w.counts.vetWrites, w.rowOf().state, w.counts.holds.length, w.openHolds().length, w.internals.admissionCounts().starts], [0, 0, 'aborted', 1, 0, 1]);
   const control = await run(19_999);
   assert.equal(control.answer.status, 200, 'the same barrier released a millisecond earlier completes');
 });
@@ -892,6 +932,42 @@ test('a first admission keeps the purchase tuple with its acceptance, a failed a
     assert.deepEqual([...summary(answer), answer.body.cause], [500, 'tp1_purchase_profile_mismatch', 'missing']);
     assert.equal(sql.writes(), 0);
     assert.deepEqual({ holds: w.counts.holds.length, files: w.journalFiles(), reserves: w.reserved.calls, challenge: w.challengeOf(request.nonce) }, before);
+  });
+});
+
+test('a job that keeps no purchase tuple because it is pending its hold, aborted or retired is answered with a signed refusal and writes nothing', async (t) => {
+  const answeredWithoutWrite = async (t, w, request, expected) => {
+    const sql = watchSql(t), answer = await w.post(request);
+    assert.deepEqual(summary(answer), expected);
+    await request.verify(answer);
+    assert.equal(sql.writes(), 0, 'no write statement');
+    assert.equal(w.wire.tuple(WIRE_JOB), null);
+  };
+  await t.test('its policy hold is still pending', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext(), entered = deferred(), release = deferred();
+    w.behaviour.policyReserve = async () => { entered.resolve(); await release.promise; return null; };
+    const first = w.post(request);
+    await entered.promise;
+    assert.equal(w.rowOf().state, 'intent');
+    await answeredWithoutWrite(t, w, request, [503, 'context_attempt_pending']);
+    release.resolve();
+    assert.equal((await first).status, 200);
+  });
+  await t.test('it was aborted before its acceptance', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    w.behaviour.policyReserve = async () => 'TEST over budget';
+    assert.deepEqual(summary(await w.post(request)), [409, 'seller_budget_refused']);
+    await w.settleJob();
+    assert.equal(w.rowOf().state, 'aborted');
+    await answeredWithoutWrite(t, w, request, [409, 'context_job_closed']);
+  });
+  await t.test('it was retired after it settled', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    assert.equal((await w.post(request)).status, 200);
+    await w.settleJob();
+    w.internals.db.prepare('DELETE FROM kit_purchase_profiles WHERE job = ?').run(WIRE_JOB);
+    w.internals.db.prepare('INSERT INTO kit_slot_retirements(job, job_retired, context_retired) VALUES (?, 1, 1)').run(WIRE_JOB);
+    await answeredWithoutWrite(t, w, request, [409, 'context_job_closed']);
   });
 });
 
