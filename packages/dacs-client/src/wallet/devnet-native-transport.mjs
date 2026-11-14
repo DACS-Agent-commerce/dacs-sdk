@@ -10,6 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
+import { signerReservationKey } from './signer-reservation.mjs';
 import { createDemosChainReader, nonceFromNode, nodeProjectedNonce } from '../dacs/chain.mjs';
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
 import { observePayDemTransferCore } from '@kynesyslabs/dacs/seller';
@@ -900,6 +901,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       let accepted;
       try {
         accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
+          // A stored evidence CREATE owns the signer's next nonce: a write sent now could take it and leave that CREATE unexecutable.
+          if((await journal.get(signerReservationKey(pinned,tx.content.from)))?.active) fail('signer_lane_busy','a stored payment-evidence write holds this signer; nothing was sent');
           const previous=await journal.get(lane(tx.content.from));
           if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || await journal.get(intent(tx.hash))) fail('outcome_unknown','issued native transfers cannot be resent');
           // Under the lock of the journal claim below: a cancelled transfer is never claimed.
