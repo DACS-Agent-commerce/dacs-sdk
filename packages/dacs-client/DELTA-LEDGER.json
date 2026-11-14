@@ -9176,6 +9176,18 @@
     },
     {
       "delta": "WF",
+      "subject": "Record the merged transport blob",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0c74411ed6b1dd5dd86ad44bd9023c0257e8fec0",
+          "after": "0c74411ed6b1dd5dd86ad44bd9023c0257e8fec0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records",
       "files": [
         {
