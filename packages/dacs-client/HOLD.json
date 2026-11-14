@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "b6039e9f032b8f150012dbcfa4fd9160efc4ca01"
+        "blob": "46fc7ac133b114640fc0c1e58b25541c8a1666df"
       },
       "DELTA-LEDGER.json": {
-        "blob": "13352718eadaa084bc1b2b6f00ab7e04d910b9e0"
+        "blob": "add385b46b6529361836cb3f47356062e94caa5f"
       },
       "DELTA-MAP.md": {
-        "blob": "1e0d83e3d19be391bad1ce2765cc6adbd50b7f8d"
+        "blob": "858b470802126f88eb1ccc46bea28abb09d4d999"
       },
       "DELTA-NOTES.md": {
         "blob": "62a0627c37014d27601ad44e6d60938a79aea8cb"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "4d2486f6e0b7705fd591d777a951fd46c52a6d85"
+        "blob": "07ac9dba7545deb08af64648b78f8566b598df29"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,10 +1058,10 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "59c975deefc503c55762541eae1f5149ef86bd58"
+        "blob": "989f3822e740b411c510673d86330710dcf6556e"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "6ed2b09718f6d4d1a04c2a4684c167b953d0059a"
+        "blob": "2cea25a0352177f2dd63e31f2179dc680529f115"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1316,13 +1316,13 @@
         "blob": "bc36e9f0477613f54e57b1a94424971e42e5c6e1"
       },
       "src/wallet/effect-boundary.mjs": {
-        "blob": "be747aab0f805f37b550920e8acea9c023ac7f93"
+        "blob": "b4d690799d4ea3e95f16278a542759e6f59f15ce"
       },
       "src/wallet/effect-fence.mjs": {
         "blob": "f084d06e7fcac773a024fb36149b1f68b2826403"
       },
       "src/wallet/effect-history.mjs": {
-        "blob": "d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53"
+        "blob": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
@@ -1409,7 +1409,7 @@
         "blob": "c5f91f14575651303e144ec91570d7db728034e1"
       },
       "test/effect-boundary.test.mjs": {
-        "blob": "f948151165e3ba48272216e650df2f9bc3c20480"
+        "blob": "0fd2ace1a4dae5ef01f51650072be5662066a04f"
       },
       "test/effect-history.test.mjs": {
         "blob": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
