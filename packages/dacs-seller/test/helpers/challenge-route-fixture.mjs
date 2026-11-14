@@ -81,7 +81,7 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
   const journal = openWireRequestJournal(journalDirectory, { leaseMs: 300_000, clock: now });
   t.after(() => journal.close?.());
   const agent = { claim: SELLER.claim, listingPin: pin, transportAgreementOf: () => { calls.transportAgreementOf++; return null; },
-    continuationEvidenceOf: () => { calls.continuationEvidenceOf++; return null; }, retainsPaymentClaim: () => true, assertSettlementCredit: () => {} };
+    continuationEvidenceOf: () => { calls.continuationEvidenceOf++; return null; }, retainsPaymentClaim: () => true, retainsPaymentWork: () => true, assertSettlementCredit: () => {} };
   const readCommitmentReceipt = Object.assign(() => { calls.readCommitmentReceipt++; return 'valid'; }, { chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
   /** The wire context over the current store; `overrides` replace only the members they name. */
   const makeWire = (overrides = {}) => createWireContext({ binding, tp1Network: { connection: () => { calls.connection++; return { ...TEST_CONNECTION }; } }, signer: signer(SELLER), store, journal,

@@ -56,7 +56,7 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
   const agent = { claim: seller.claim, listingPin: pin,
     transportAgreementOf: () => proposal?.plan.draft ?? null,
     continuationEvidenceOf: () => null,
-    retainsPaymentClaim: () => false,
+    retainsPaymentClaim: () => false, retainsPaymentWork: () => false,
     assertSettlementCredit: () => {},
     receiveProposal: async (body) => { effects.proposals++; proposal = structuredClone(body.proposal); return { disposition: 'complete' }; },
     agreementState: () => { effects.reads++; return { proposal: structuredClone(proposal), contribution: null }; } };

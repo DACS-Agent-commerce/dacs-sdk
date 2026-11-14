@@ -5,6 +5,7 @@
 // Consumed, opt-in SOURCE/loopback capability. SDK intake's bft-final field
 // describes the fixture node's included view, NOT independent consensus.
 import { contentHash, createPayDemSellerObserver, paymentEvidenceAddress, verifySettlementEvidence } from '@kynesyslabs/dacs';
+import { demosAddressFromClaim, normalizeDemosNativeAddress } from '@kynesyslabs/dacs/rails';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_REPLY_BYTES } from './demos-sr2-adapter.mjs';
 import { agreementTerms, ed25519Deps } from './purchase-protocol.mjs';
 import { isDevnetSettlementTransport } from './devnet-source.mjs';
@@ -78,6 +79,19 @@ export async function checkNativePaymentEvidence({ artifact, agreement, writer, 
     paymentAddress: { railId: terms.rail, phaseIndex: terms.paymentPhaseIndex } }, ed25519Deps);
 }
 
+/**
+ * Whether an observed included transfer is the Agreement's payment, for both settlement profiles: the node attests its execution, the
+ * transaction `txHash`, the buyer as payer, the seller as payee (the payout address must be the seller's own), the exact price and an
+ * inclusion time from `committedAt` up to the deadline. `terms` is `agreementTerms(agreement)`. Returns false for anything else, including
+ * an address that is not a Demos address and an inclusion without confirmed execution.
+ */
+export function observedTransferMatches(observed, { txHash, terms, committedAt }) {
+  const buyer = demosAddressFromClaim(terms.buyer), seller = demosAddressFromClaim(terms.seller);
+  return Number.isSafeInteger(committedAt) && buyer !== null && seller !== null && normalizeDemosNativeAddress(terms.payee) === seller
+    && observed.execution === 'executed' && observed.txHash === txHash && normalizeDemosNativeAddress(observed.payer) === buyer && normalizeDemosNativeAddress(observed.payee) === seller
+    && observed.amountOs === terms.price.amountOs && observed.includedAt >= committedAt && observed.includedAt <= terms.deadline;
+}
+
 // `anchorEvidence` is a narrow operator-owned wallet boundary, never a buyer
 // key or Boolean authority. Tests call the unchanged packaged wallet bridge.
 // Reader and observer always use the actual pinned SDK/adapter on this origin.
@@ -131,11 +145,8 @@ export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability =
         const check = await checkNativePaymentEvidence({ artifact: record.artifact, agreement, writer, txHash, blockNumber });
         if (check.decision !== 'pass') return decided({ disposition: 'rejected', reason: check.reasons.join('; ') });
         const observed = await observer.observeDemosTransfer(txHash);
-        const raw = (claim) => claim.replace(/^did:demos:agent:/, '').replace(/^0x/, '').toLowerCase();
         if (observed.status !== 'included') return { disposition: 'indeterminate', nativeReadStatus: `payment-${observed.status ?? 'missing'}`, reason: observed.reason ?? 'native-payment-observation-not-included' };
-        if (!Number.isSafeInteger(committedAt) || observed.txHash !== txHash || observed.blockNumber !== blockNumber
-            || observed.payer !== raw(terms.buyer) || observed.payee !== raw(terms.payee) || observed.amountOs !== terms.price.amountOs
-            || observed.includedAt < committedAt || observed.includedAt > terms.deadline || record.artifact.observedAt !== observed.includedAt
+        if (!observedTransferMatches(observed, { txHash, terms, committedAt }) || observed.blockNumber !== blockNumber || record.artifact.observedAt !== observed.includedAt
             || record.artifact.settlementFinality.finalityObservedAt !== observed.includedAt) return { disposition: 'indeterminate', reason: 'native-evidence-observed-tuple-time-or-commitment-mismatch' };
         if (!projection) return { disposition:'indeterminate',nativeReadStatus:'public-projection-missing',reason:'original-public-signed-create-projection-unavailable' };
         return { disposition: 'present', artifact: record.artifact, ref: { anchor: { kind: 'storage-program', locator: address }, contentHash: contentHash(record.artifact) }, receipt: record.receipt,

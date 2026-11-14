@@ -1527,7 +1527,7 @@ test('a crash during a first claim that keeps nothing does not bind the job to i
     const tx = p.pay(), answer = await p.claim(tx);
     assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
     assert.equal(answer.delivery?.status, 'delivery-ready', `${label}: ${shown(answer.delivery)}`);
-    assert.equal((await p.claim(first)).error, 'seller_native_evidence_conflict', `${label}: a completed delivery is put to the agent again, which refuses the claim naming another transfer`);
+    assert.equal((await p.claim(first)).error, 'payment_already_recorded', `${label}: a completed delivery answers only its own claim and refuses a claim naming another transfer`);
     assert.equal(w.createsAt(paymentAddress(p)), 1, label);
   }
 });
@@ -2755,7 +2755,7 @@ test('a retained delivery is rechecked by the agent while a repeated wire reques
   assert.ok(refusalSigns[0].startsWith(DACS_SELLER_HTTP_DOMAINS.response));
   assert.deepEqual({ ...w.effects, componentSigns: beforeReplay.componentSigns }, beforeReplay, 'a replay runs no native work');
   assert.equal((await w.refreshPayment(p, tx)).status, 'held', 'a native refresh');
-  assert.equal((await p.claim(tx)).status, 'held', 'a completed delivery is put to the agent again: its answer now is sent, not the saved success');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'a completed delivery is signed again only after its sources are read again: the saved success is withheld while the source is down');
   const agent = await w.agentFor();
   try {
     const retry = await agent.submitPayment({ jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
@@ -3096,7 +3096,7 @@ for (const absence of ['absent', 'unbranded']) test(`an evidence readback that c
   assert.equal(w.createsAt(address), 1);
 });
 
-test('enabling publication after a delivery-ready order publishes the evidence retained while it was off', async (t) => {
+test('enabling publication after a delivery-ready order changes nothing: a replay of the stored answer publishes no evidence', async (t) => {
   const w = await world(t), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
   const first = await p.claim(tx);
   assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
@@ -3107,13 +3107,13 @@ test('enabling publication after a delivery-ready order publishes the evidence r
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
   const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
-  assert.equal(done.delivery?.status, 'delivered', shown(done));
-  assert.equal(done.delivery.evidencePublication, 'native-read-back');
-  assert.equal(w.createsAt(address), 1);
+  assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
+  assert.equal(done.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
+  assert.equal(w.createsAt(address), 0, 'a replay reads its sources and sends no evidence');
   assert.equal(w.effects.deliverySubmit.length, 1, 'the Deliverable is not submitted again');
 });
 
-test('a delivery-ready session retained without its own evidence copy recovers it from the SDK checkpoint', async (t) => {
+test('a delivery-ready session retained without its own evidence copy is replayed from its stored answer and publishes nothing', async (t) => {
   const w = await world(t), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
   assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
 
@@ -3124,9 +3124,9 @@ test('a delivery-ready session retained without its own evidence copy recovers i
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
   const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
-  assert.equal(done.delivery?.status, 'delivered', shown(done));
-  assert.equal(done.delivery.evidencePublication, 'native-read-back');
-  assert.equal(w.createsAt(address), 1);
+  assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
+  assert.equal(done.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
+  assert.equal(w.createsAt(address), 0, 'a replay does not recover the evidence from the SDK checkpoint');
   assert.equal(w.effects.deliverySubmit.length, 1);
 });
 
@@ -3227,7 +3227,7 @@ for (const schemaUrl of [true, false]) test(`a paid order is delivered with the 
   assert.equal(core.sha256Hex(core.canonicalize(w.writtenAt(deliverable))), answer.delivery.contentHash);
 });
 
-test('a delivery the SDK finished before the seller kept its delivery-ready checkpoint is read back from the bytes that were sent, whatever the producer answers after the restart', async (t) => {
+test('a completed delivery whose delivery-ready checkpoint is gone is withheld, never rebuilt by a replay, and sends nothing again', async (t) => {
   let body = 'TEST report body old';
   const w = await world(t, { deliverableProducer: (input) => report({ body: [body] })(input) });
   const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
@@ -3237,8 +3237,7 @@ test('a delivery the SDK finished before the seller kept its delivery-ready chec
   body = 'TEST report body new';
   await w.restart();
   const again = await p.claim(tx);
-  assert.equal(again.delivery?.status, 'delivery-ready', shown(again));
-  assert.equal(again.delivery.contentHash, first.delivery.contentHash, 'the original bytes are verified');
+  assert.equal(again.error, 'seller_unavailable', 'the stored answer is withheld while its checkpoint cannot be read');
   assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is submitted once');
   assert.equal(w.createsAt(deliverable), 1);
 });
@@ -3374,12 +3373,12 @@ for(const failure of ['none','unavailable','changed'])test(`disabling evidence p
  const first=await p.claim(tx);assert.equal(first.delivery?.status,'delivered',shown(first));
  const signed=await w.signedClaim(p,tx);await w.host().close();
  const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
- const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});assert.equal(res.status,200);return res.json();};
+ const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});return{status:res.status,body:await res.json()};};
  if(failure==='unavailable')w.node.faults.transactionDown=hash=>hash===w.signedCreate(address).hash;
  if(failure==='changed')w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
  const observed=await post();
- if(failure==='none')assert.equal(observed.delivery?.status,'delivered',shown(observed));
- else{assert.equal(observed.delivery?.status,'delivery-ready',shown(observed));assert.equal(observed.delivery?.evidencePublication,'held-readback-only');}
+ if(failure==='none'){assert.equal(observed.status,200);assert.equal(observed.body.delivery?.status,'delivered',shown(observed.body));}
+ else{assert.deepEqual([observed.status,observed.body.error],[503,'seller_source_unavailable'],shown(observed.body));assert.equal(observed.body.cause,failure);}
  w.node.faults.transactionDown=()=>false;w.faults.evidenceRead=null;
  for(let refresh=0;refresh<2;refresh++){
   const done=await w.refreshPayment(p,tx);assert.equal(done.delivery?.status,'delivered',shown(done));

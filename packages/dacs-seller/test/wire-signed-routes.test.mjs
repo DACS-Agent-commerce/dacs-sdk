@@ -935,7 +935,7 @@ test("P11a1-T27: a job the agent holds with no kept tuple is refused tp1_purchas
   const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: legacy.buyer.claim, algorithm: 'ed25519', sign: legacy.buyer.sign });
   const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: sha256Hex(canonicalize(material)) };
   const transportIdentity = { jobId: JOBS[0], buyer: legacy.buyer.claim, seller: legacy.seller.claim, agreementHash: plan.agreementHash, planHash: plan.planHash, proposalHash: proposal.proposalHash };
-  const agent = { claim: legacy.seller.claim, listingPin: legacy.pin, transportAgreementOf: () => null, continuationEvidenceOf: () => null, receiveProposal: async () => ({ disposition: 'complete' }), retainsPaymentClaim: () => false, assertSettlementCredit: () => {} };
+  const agent = { claim: legacy.seller.claim, listingPin: legacy.pin, transportAgreementOf: () => null, continuationEvidenceOf: () => null, receiveProposal: async () => ({ disposition: 'complete' }), retainsPaymentClaim: () => false, retainsPaymentWork: () => false, assertSettlementCredit: () => {} };
   const legacyJournal = join(w.directory, 'legacy-journal');
   mkdirSync(legacyJournal, { mode: 0o700 });
   const journal = openWireRequestJournal(legacyJournal, { leaseMs: JOURNAL_LEASE_MS, clock: legacy.now }), { store: rawStore, capacity } = boundPurchaseOf(legacy.store);
