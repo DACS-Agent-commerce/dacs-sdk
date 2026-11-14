@@ -827,6 +827,7 @@ describe("DemosAdapter", () => {
     vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
     vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
       state: "included",
+      blockNumber: 42,
     } as never);
     vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
       status: "confirmed",
@@ -962,6 +963,7 @@ describe("DemosAdapter", () => {
       vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
       vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
         state: "included",
+        blockNumber: 42,
       } as never);
       vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
         status: "confirmed",
