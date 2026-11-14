@@ -18,7 +18,7 @@
 // never `applied`; only successful execution is `applied`.
 //
 // createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
-//   readAccountNonce, readTransactionState, now, readTimeoutMs }):
+//   readAccountNonce, readTransactionState, now, readTimeoutMs, signatureChainId }):
 //  - path: absolute path of the journal's SQLite file (created 0600 when
 //    missing), in a directory owned by this user that no one else can write,
 //    reached through no symbolic link and no ancestor others can write (a
@@ -38,14 +38,23 @@
 //    at input.logicalAddress, with `to` and the operation's storageAddress the
 //    address the writer, the program name and the nonce derive, from the
 //    writer's address (`from` and `from_ed25519_address`), with the writer's
-//    Ed25519 signature over the hash as 0x and lower-case hex. Its amount is 0,
+//    Ed25519 signature as 0x and lower-case hex, over the hash or, when
+//    signatureChainId is set, over `demos-tx:v1:<signatureChainId>:<hash>`
+//    (transaction-signature.mjs). Its amount is 0,
 //    its ACL public and its storage on-chain; its node fee and execution edits
 //    are exactly those demosdk 4.0.16 sign writes (`transaction_fee`: network
 //    and rpc fee, no additional fee or rpc address; `gcr_edits`: the storage fee
 //    burn, the storage program, the gas burn and the nonce increment by 1), as
 //    DEM numbers before the node's denomination fork and OS strings after it
-//    (amount "0"); only the node's fee amounts are not compared. Anything else is
-//    refused (wallet_sign_invalid), and nothing is kept or sent;
+//    (amount "0"). The node's fee amounts are compared only with the per-write
+//    ceiling (WRITE_FEE_CEILING_OS, 50 DEM, effect-boundary.mjs): the whole
+//    debit, the network, rpc and additional fee plus the storage and gas burns,
+//    summed in OS (whole-DEM numbers before the fork), must not be above it, and
+//    a fee that cannot be summed exactly is refused.
+//    Anything else is refused (wallet_sign_invalid), and nothing is kept or
+//    sent. A kept CREATE whose whole debit is above the ceiling is never broadcast
+//    again: every call about its address is refused (write-fee-cap) before
+//    any wallet read, so the agent holds it for the operator;
 //  - broadcast({ signedTransaction, txHash }, { signal }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
 //  - readAccountNonce() -> a non-negative safe integer, or an authenticated
@@ -57,11 +66,17 @@
 //    transaction index (including failed transactions) on the same chain.
 //    Its coverage must reach the nonce snapshot's blockHeight. A bare nonce
 //    or an unfenced absence keeps the original signed CREATE alive.
+//  - signatureChainId: the node's chain id as a decimal string, from the seller's
+//    own network configuration. Left out, only a signature over the bare hash is
+//    accepted; a value that is not a decimal string is refused (TypeError).
 //  Each read, signCreate and broadcast is given readTimeoutMs (default 10 s) to
 //  settle, and is passed { signal } to stop at the deadline. A signCreate that
 //  does not (wallet_sign_timeout) keeps nothing and frees the journal; a
 //  broadcast that does not (wallet_broadcast_timeout) leaves the kept CREATE
 //  live for reconcilePaymentEvidence, which answers `pending` for it.
+//  The reads of a kept CREATE are made before the writer lock is taken, so a
+//  slow node does not make other handles of the file wait; the lock is held to
+//  decide, write and sign. A read is used only for the CREATE it was made for.
 // Returns { anchorEvidence, reconcilePaymentEvidence, readSignedProjection,
 // journalId, close }: the first goes into createNativePaymentEvidenceConsumer,
 // the second is the host option. createSellerAgent (and so startSellerHost)
@@ -90,7 +105,9 @@ import { dirname, isAbsolute } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { setTimeout as delay } from 'node:timers/promises';
 import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
-import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
+import { addressForClaim } from './demos-claims.mjs';
+import { WRITE_FEE_CEILING_OS } from './effect-boundary.mjs';
+import { assertSignatureChainId, verifyTransactionSignature } from './transaction-signature.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
 
@@ -112,6 +129,8 @@ const ZERO_AMOUNTS = [0, '0'];
 // demosdk 4.0.16 signs amounts as DEM numbers before the fork and as canonical OS strings (10^9 OS per DEM) after it.
 const OS_PER_DEM = 1_000_000_000n;
 const OS_AMOUNT = /^(0|[1-9][0-9]*)$/;
+// The ceiling as the effect boundary's write-fee-cap refusal names it.
+const FEE_CEILING = `the ${WRITE_FEE_CEILING_OS / OS_PER_DEM} DEM ceiling per write`;
 // Its storage CREATE burns 1 DEM of gas and 1 DEM of storage fee per started 10240 bytes of the program's JSON.
 const GAS_DEM = 1;
 const STORAGE_FEE_CHUNK_BYTES = 10_240;
@@ -121,6 +140,8 @@ const TX_STATES = new Set(['applied', 'pending', 'absent']);
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const reason = (error) => String(error?.message ?? error).slice(0, 200);
 const nonceOf = (value, least) => (Number.isSafeInteger(value) && value >= least ? value : null);
+// The signed content of a kept CREATE's JSON, or undefined when it has none.
+const signedContent = (signedTransaction) => { try { return JSON.parse(signedTransaction)?.content; } catch { return undefined; } };
 const journalBusy = (cause) => Object.assign(new Error('the wallet journal is busy', { cause }), { code: 'wallet_journal_busy' });
 // Each journal's own anchorEvidence and reconcilePaymentEvidence, mapped to it.
 const journals = new WeakMap();
@@ -135,6 +156,37 @@ export function paymentEvidenceWalletJournalOf(anchorEvidence) {
   return journal?.anchorEvidence === anchorEvidence ? journal : null;
 }
 
+// The fee a CREATE debits its signer, in OS: the network, rpc and additional fee, as whole-DEM numbers before the
+// node's denomination fork (amount 0) and canonical OS strings after it (amount "0"). Null when a field has any
+// other form, which cannot be summed exactly.
+function writeFeeOs(content) {
+  const fee = content?.transaction_fee, postFork = content?.amount === '0';
+  if (!object(fee)) return null;
+  let total = 0n;
+  for (const value of [fee.network_fee, fee.rpc_fee, fee.additional_fee]) {
+    if (postFork ? typeof value !== 'string' || !OS_AMOUNT.test(value) : !Number.isSafeInteger(value) || value < 0) return null;
+    total += postFork ? BigInt(value) : BigInt(value) * OS_PER_DEM;
+  }
+  return total;
+}
+
+// The storage fee in DEM a CREATE of this operation burns: 1 DEM per started chunk of its program's JSON.
+const storageFeeDem = (op) => Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(op.data), 'utf8') / STORAGE_FEE_CHUNK_BYTES));
+
+// The whole debit of a signed CREATE, in OS: its fees plus the storage fee and gas burns. Null when the fee cannot be
+// summed exactly or the content has no operation. The one sum both ceiling checks compare.
+function wholeDebitOs(content) {
+  const feeOs = writeFeeOs(content), op = content?.data?.[1];
+  if (feeOs === null || !object(op) || op.data === undefined) return null;
+  return feeOs + BigInt(storageFeeDem(op) + GAS_DEM) * OS_PER_DEM;
+}
+
+// The whole debit of a kept row when it is above the ceiling (the row is held), else null.
+function heldDebitOs(row) {
+  const debitOs = wholeDebitOs(signedContent(row.signed_transaction));
+  return debitOs !== null && debitOs > WRITE_FEE_CEILING_OS ? debitOs : null;
+}
+
 // Why signCreate's answer is not the signed CREATE it names, or null. The fate
 // of a kept CREATE is read by its hash and nonce, so both must be the bytes'.
 // The bytes must also be what the node executes and the SR-2 readback
@@ -143,14 +195,19 @@ export function paymentEvidenceWalletJournalOf(anchorEvidence) {
 // they would never be superseded.
 // Why the node fee and execution edits are not exactly those demosdk 4.0.16 sign writes for this CREATE, or null: the
 // node's (or the SDK's own) network and rpc fee with no additional fee or rpc address, and the edits GCRGeneration makes,
-// which the node regenerates and compares: storage fee burn, storage program, gas burn, nonce increment by 1.
+// which the node regenerates and compares: storage fee burn, storage program, gas burn, nonce increment by 1. The whole
+// debit (fee plus the storage and gas burns) is compared only with the per-write ceiling: a fee that cannot be summed
+// exactly, or a debit above it, is refused.
 function feeAndEditsProblem(content, from, op) {
   const zero = content.amount, postFork = zero === '0', fee = content.transaction_fee;
   const amount = (value) => (postFork ? typeof value === 'string' && OS_AMOUNT.test(value) : typeof value === 'number' && Number.isFinite(value) && value >= 0);
   if (!object(fee) || Object.keys(fee).join() !== 'network_fee,rpc_fee,additional_fee,rpc_address' || !amount(fee.network_fee) || !amount(fee.rpc_fee)
       || fee.additional_fee !== zero || fee.rpc_address !== null) return 'does not carry the node fee as the SDK signs it';
+  const debitOs = wholeDebitOs(content);
+  if (debitOs === null) return 'carries a fee that cannot be summed exactly';
   const dem = (value) => (postFork ? String(BigInt(value) * OS_PER_DEM) : value);
-  const storageFee = Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(op.data), 'utf8') / STORAGE_FEE_CHUNK_BYTES));
+  const storageFee = storageFeeDem(op);
+  if (debitOs > WRITE_FEE_CEILING_OS) return `carries a debit of ${debitOs} OS (fee, storage fee and gas), above ${FEE_CEILING}`;
   const edits = [{ type: 'balance', operation: 'remove', isRollback: false, account: from, txhash: '', amount: dem(storageFee) },
     { type: 'storageProgram', target: op.storageAddress, isRollback: false, txhash: '', context: { operation: 'CREATE_STORAGE_PROGRAM', sender: from, data: { variables: op, metadata: op.metadata } } },
     { type: 'balance', account: from, operation: 'remove', amount: dem(GAS_DEM), txhash: '', isRollback: false },
@@ -171,7 +228,7 @@ function permitted(authorize) {
   if (typeof answer?.then === 'function') answer.then(undefined, () => {});
   if (answer !== true) throw Object.assign(new Error(`the wallet effect is no longer authorized${answer instanceof Error ? `: ${reason(answer)}` : ''}`), { code: 'wallet_not_authorized' });
 }
-function signedCreateProblem(answer, input) {
+function signedCreateProblem(answer, input, signatureChainId) {
   let signed;
   try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
   const content = signed?.content, op = content?.data?.[1];
@@ -190,7 +247,7 @@ function signedCreateProblem(answer, input) {
       || metadata.contentHash !== input.receiptContentHash || metadata.envelopeHash !== sha256Hex(canonicalize(input.artifact))
       || bindingProblem(metadata, input)) return `is not this ${input.artifactKind === 'Deliverable' ? 'Deliverable' : 'evidence'}'s storage CREATE`;
   if (content.from !== from || content.from_ed25519_address !== from || signed.signature.type !== 'ed25519' || typeof signed.signature.data !== 'string'
-      || !SIGNATURE.test(signed.signature.data) || !verifyDemosSignature({ address: from, message: answer.txHash, signature: signed.signature.data })) return 'is not signed by the writer';
+      || !SIGNATURE.test(signed.signature.data) || !verifyTransactionSignature({ address: from, hash: answer.txHash, signature: signed.signature.data, signatureChainId })) return 'is not signed by the writer';
   const storageAddress = deriveStorageAddress(from, programName, answer.nonce, '');
   if (content.to !== storageAddress || op.storageAddress !== storageAddress) return `is not at the storage address its writer, name and nonce derive (${storageAddress})`;
   if (nonceOf(content.timestamp, 0) === null) return 'has no valid timestamp';
@@ -224,7 +281,8 @@ function assertPrivateDirectory(directory) {
  * readSignedProjection, journalId and close. Throws TypeError for an unusable
  * option, path or file.
  */
-export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000 } = {}) {
+export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000, signatureChainId } = {}) {
+  assertSignatureChainId(signatureChainId);
   if (!TABLE_NAME.test(table)) throw new TypeError('the wallet journal table must be named for its kind of artifact');
   if (typeof path !== 'string' || !isAbsolute(path)) throw new TypeError('the wallet journal path must be absolute');
   if (typeof signCreate !== 'function' || typeof broadcast !== 'function' || typeof now !== 'function') throw new TypeError('the wallet journal needs signCreate, broadcast and now functions');
@@ -303,7 +361,12 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   const keptFor = (input) => {
     if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const kept = rows(input.logicalAddress);
-    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
+    // A kept CREATE whose whole debit is above the ceiling is never sent again, and nothing more is signed for its address.
+    for (const row of kept) {
+      const debitOs = heldDebitOs(row);
+      if (debitOs !== null) throw Object.assign(new Error(`the wallet journal keeps the signed CREATE ${row.tx_hash}, whose debit of ${debitOs} OS (fee, storage fee and gas) is above ${FEE_CEILING}; it is held and never broadcast again`), { code: 'write-fee-cap' });
+    }
+    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input, signatureChainId))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     const live = kept.find((row) => row.superseded_at === null);
     return { live: live ? { signedTransaction: live.signed_transaction, txHash: live.tx_hash, nonce: Number(live.nonce) } : null, highestNonce: kept.length ? Number(kept.at(-1).nonce) : 0 };
   };
@@ -347,26 +410,46 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     }
     return { alive: false, reason: `the kept signed CREATE ${signed.txHash} (nonce ${signed.nonce}) is not executed through block ${state.value.checkedThroughBlock} and the account nonce is ${account.value.nonce}; it can no longer be executed` };
   }
-  // The live kept CREATE after its fate is read; one that can no longer be
+  // The fate of the address's live kept CREATE, read before the writer lock is
+  // taken so a slow node does not hold it. It is a hint for one transaction:
+  // `undefined` when nothing is live, the address holds a write above the
+  // ceiling (keptFor refuses it under the lock before any wallet read), or the
+  // file is busy at this moment, which leaves the read to the lock holder.
+  async function observeFate(input) {
+    if (!object(input) || typeof input.logicalAddress !== 'string') return undefined;
+    let live;
+    try {
+      live = db.prepare(`SELECT tx_hash, nonce FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress);
+      if (live && rows(input.logicalAddress).some((row) => heldDebitOs(row) !== null)) return undefined;
+    } catch (error) { if (error.code === 'SQLITE_BUSY') return undefined; throw error; }
+    return live ? { txHash: live.tx_hash, checked: await fate({ txHash: live.tx_hash, nonce: Number(live.nonce) }) } : undefined;
+  }
+  // Runs `change(observed)` under the writer lock, after the node was read for it.
+  async function lockedAfterObserving(input, change) {
+    const observed = await observeFate(input);
+    return locked(() => change(observed));
+  }
+  // The live kept CREATE after its fate is known; one that can no longer be
   // included is superseded (compare-and-swap on its live row) and none is live.
-  async function liveFor(input) {
+  // `observed` is used only for the very CREATE it was read for.
+  async function liveFor(input, observed) {
     const { live, highestNonce } = keptFor(input);
     if (!live) return { live: null, highestNonce };
-    const checked = await fate(live);
+    const checked = observed?.txHash === live.txHash ? observed.checked : await fate(live);
     if (checked.alive) return { live, highestNonce, applied: checked.applied, reason: checked.reason };
     const swap = db.prepare(`UPDATE ${table} SET superseded_at = ? WHERE logical_address = ? AND tx_hash = ? AND superseded_at IS NULL`).run(now(), input.logicalAddress, live.txHash);
     if (swap.changes !== 1) throw Object.assign(new Error('the wallet journal row changed while it was checked'), { code: 'wallet_journal_conflict' });
     return { live: null, highestNonce, superseded: { txHash: live.txHash, reason: checked.reason } };
   }
 
-  async function prepareAnchor(input, permit = allow) {
-    let { live: signed, highestNonce, applied } = await liveFor(input);
+  async function prepareAnchor(input, observed, permit = allow) {
+    let { live: signed, highestNonce, applied } = await liveFor(input, observed);
     if (!signed) {
       const answer = await withDeadline((signal) => { permit(); return signCreate(structuredClone(input), { signal }); },
         () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
       if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || Buffer.byteLength(answer.signedTransaction, 'utf8') > MAX_SIGNED_TRANSACTION_BYTES
           || typeof answer.txHash !== 'string' || !TX_HASH.test(answer.txHash) || nonceOf(answer.nonce, 1) === null) throw Object.assign(new Error('signCreate answered no signed transaction, hash and nonce'), { code: 'wallet_sign_invalid' });
-      const problem = signedCreateProblem(answer, input);
+      const problem = signedCreateProblem(answer, input, signatureChainId);
       if (problem) throw Object.assign(new Error(`signCreate's signed transaction ${problem}`), { code: 'wallet_sign_invalid' });
       // A new signature must be able to land where the kept ones cannot.
       if (answer.nonce <= highestNonce) throw Object.assign(new Error(`signCreate answered nonce ${answer.nonce}, not above the kept nonce ${highestNonce}`), { code: 'wallet_sign_invalid' });
@@ -379,7 +462,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   }
   async function anchorCreate(input) {
     assertKitOperationAdmitted('anchorEvidence');
-    const signed = await locked(() => prepareAnchor(input));
+    const signed = await lockedAfterObserving(input, (observed) => prepareAnchor(input, observed));
     if (!signed.applied) await sendSigned(signed);
     return { status: signed.applied ? 'applied' : 'submitted', txHash: signed.txHash };
   }
@@ -410,21 +493,26 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
         }
       }
   }
-  // Owner-bound recovery inspects and prepares under the signing lease. A
+  // Owner-bound recovery is refused for another journal before anything is read,
+  // then inspects and prepares under the signing lease. A
   // crashed caller's unnamed attempt cannot override this journal's facts.
   // expectedJournalId must be the immutable checkpoint owner; generic
   // reconciliation still refuses unnamed ambiguous and unkept attempts.
   const assertOwner = (expectedJournalId) => {
     if (expectedJournalId !== journalId) throw Object.assign(new Error('the original wallet journal is required'), { code: 'wallet_journal_changed' });
   };
-  async function ensureEvidence({expectedJournalId,attempt,authorize,...input}) {
+  // recheck() is the awaited part of the authorization: it runs after all of the
+  // wallet's own reads and signing, outside the lease, and a throw sends nothing
+  // (the kept row stays). The broadcast follows it with no wallet wait in between.
+  async function ensureEvidence({expectedJournalId,attempt,authorize,recheck,...input}) {
     assertKitOperationAdmitted('ensureEvidence');
     if(authorize!==undefined&&typeof authorize!=='function')throw new TypeError('evidence authorization must be a function');
+    if(recheck!==undefined&&typeof recheck!=='function')throw new TypeError('evidence re-check must be a function');
     // Asked synchronously with the wallet effect it guards. A refusal the caller throws (a lost job fence) keeps its own
     // code; any other answer than `true` is wallet_not_authorized.
     const permit=authorize?()=>{const answer=authorize();permitted(()=>answer);}:allow;
-    const signed=await locked(async()=>{
-      assertOwner(expectedJournalId);
+    assertOwner(expectedJournalId);
+    const signed=await lockedAfterObserving(input,async(observed)=>{
       permit();
       const key=`ensure:${input.logicalAddress}`,binding=JSON.stringify([input.receiptContentHash,attempt?.answer?.txHash??null]);
       const accepted=db.prepare('SELECT value FROM journal_meta WHERE key = ?').get(key);
@@ -432,9 +520,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       // a lost broadcast answer cannot leave the caller naming a stale row.
       inspectAttempt(input,attempt,true,accepted?.value===binding);
       db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
-      return prepareAnchor(input,permit);
+      return prepareAnchor(input,observed,permit);
     });
-    if(!signed.applied)await sendSigned(signed,permit);
+    if(!signed.applied){await recheck?.();await sendSigned(signed,permit);}
     return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};
   }
 
@@ -444,9 +532,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     // anchored through another journal (a lost or replaced file): its fate is
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
     const attempt = input?.attempt, named = attempt?.answer?.txHash;
-    const kept = await locked(async () => {
+    const kept = await lockedAfterObserving(input, async (observed) => {
       inspectAttempt(input,attempt);
-      return liveFor(input);
+      return liveFor(input, observed);
     });
     return answerFor(input, named, kept);
   }
@@ -478,10 +566,10 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     assertKitOperationAdmitted('guardedCreate');
     if (typeof authorize !== 'function') throw new TypeError('a guarded wallet journal call needs its authorization callback');
     const permit = () => permitted(authorize);
-    const kept = await locked(async () => {
-      assertOwner(expectedJournalId);
+    assertOwner(expectedJournalId);
+    const kept = await lockedAfterObserving(input, async (observed) => {
       permit();
-      return resume ? liveFor(input) : prepareAnchor(input, permit);
+      return resume ? liveFor(input, observed) : prepareAnchor(input, observed, permit);
     });
     if (resume) return answerFor(input, undefined, kept, permit);
     if (!kept.applied) await sendSigned(kept, permit);

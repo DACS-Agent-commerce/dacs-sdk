@@ -15,13 +15,15 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
 import * as transport from '../src/index.mjs';
-const seller={...transport,...listingApi,agreementInput,listingPin};
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { transportOutcome } from '../src/dacs/seller-agent.mjs';
+const seller={...transport,...listingApi,agreementInput,listingPin,createSellerTransportStore};
 import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 
 let walletSequence=60;
 function key() { const w=testWallet(walletSequence++);return {...w,sign:w.signBytes,signWallet:message=>'0x'+w.signBytes(Buffer.from(message)).toString('hex')}; }
 const DELIVERED = { status: 'payment-evidenced', delivery: { status: 'delivered' } };
+const LEASE_MS = 1000;
 
 async function world(t, answers, { proposalAnswers = [{ disposition: 'complete', contribution: null }] } = {}) {
   const retained = await wireContinuationFixture(t);
@@ -33,7 +35,8 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
   const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-')));
-  let time = NOW; const clock = () => time;
+  let time = NOW;
+  const clock = () => time;
   const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:clock });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const calls = [];
@@ -41,22 +44,23 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   // The durable agent already committed this job; the host holds it from the proposal its wire route admitted, which is when the store keeps the tuple.
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => proposalCalls === 0 ? null : retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
-    retainsPaymentClaim:()=>false,
+    retainsPaymentClaim:()=>false, retainsProposalWork: () => false, revalidateCompletedAnswer: async () => {}, assertSettlementCredit: () => {},
     submitPayment: async (body) => {
       calls.push(body.txHash);
       const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
       if (answer === THROW) throw new Error('TEST the claim outcome is unknown');
       return structuredClone(answer);
+    },
+    // An explicit reconciliation-capable double: it runs the command again and classifies the answer as a first run does.
+    reconcileTransport: async ({ request, body, transport }) => {
+      transport.claim();
+      const answer = await (request.path === '/dacs/v1/payments' ? facade.submitPayment(body) : facade.receiveProposal(body));
+      const outcome = transportOutcome(request.path, { answer }, { retained: false });
+      await transport.settle(outcome);
+      return outcome;
     } };
-  facade.reconcileTransport = async ({ request, body, transport }) => {
-    const claimed = transport.claim();
-    assert.equal(claimed.live, true);
-    const answer = request.path.endsWith('/proposals') ? await facade.receiveProposal(body) : await facade.submitPayment(body);
-    const outcome = transportOutcome(request.path, { answer }, { retained: request.path.endsWith('/proposals'), recovering: true });
-    if (outcome.settle) transport.settle(outcome);
-  };
-  const { wire, buyerWire, createBuyer } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock });
-  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,now:clock }) });
+  const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock, leaseMs: LEASE_MS });
+  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,now:()=>NOW }) });
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);
     Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
@@ -65,46 +69,38 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
     await handle(req, res);
     return new Response(res.text, { status: res.status, headers: res.headers });
   };
-  const clientFor = buyer => seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl, authentication: buyer.authentication(() => plan.agreementHash) });
-  const client = clientFor(buyerWire);
+  const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl,
+    authentication: buyerWire.authentication(() => plan.agreementHash) });
   await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
   const claim = { jobId, txHash: 'a1'.repeat(32), payerPayingKey: buyerKey.claim, nativePaymentEvidence: 'sdk-pay-dem-intake-native-evidence/loopback-v1' };
-  const pay = async (body = claim) => {
-    const view = inspectWireOperation(wire.journal, { seller: sellerKey.claim, jobId, path: '/dacs/v1/payments' });
-    if (view.state === 'pending' && calls.at(-1) === body.txHash) time = view.leaseUntil;
-    try { return await clientFor(await createBuyer()).submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
-  return { calls, claim, pay, wire, proposalCalls: () => proposalCalls,
-    propose: async () => {
-      const view = inspectWireOperation(wire.journal, { seller: sellerKey.claim, jobId, path: '/dacs/v1/agreements/proposals' });
-      if (view.state === 'pending') time = view.leaseUntil;
-      return clientFor(await createBuyer()).propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
-    } };
+  const pay = async (body = claim) => { try { return await client.submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
+  // The open attempt's lease ends: the next request recovers it.
+  const lapse = () => { time += LEASE_MS; };
+  return { calls, claim, pay, lapse, wire, proposalCalls: () => proposalCalls,
+    propose: () => client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) };
 }
 
-test('an indeterminate answer before the evidence checkpoint keeps nothing: the same claim reaches intake again and the delivery is then final', async (t) => {
+test('a payment answered indeterminate before the evidence checkpoint ends null, and the next request is recover; with a reconciliation-capable agent double the same claim and a corrected claim reach intake again', async (t) => {
   const w = await world(t, [{ status: 'indeterminate', reason: 'demos-pending' }, DELIVERED]);
   assert.deepEqual(await w.pay(), { status: 'indeterminate', reason: 'demos-pending' });
-  assert.deepEqual(await w.pay(), DELIVERED, 'the transfer, now included, reaches payment intake');
-  assert.deepEqual(await w.pay(), DELIVERED, 'the delivered answer is freshly authenticated');
+  assert.deepEqual(await w.pay(), DELIVERED, 'the null end let the next request recover at once: the transfer, now included, reaches payment intake');
+  assert.deepEqual(await w.pay(), DELIVERED, 'the completed delivery is authenticated again by the agent');
   assert.equal(w.calls.length, 3);
-  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), DELIVERED, 'the same normalized transaction is freshly authenticated');
+  const corrected = await world(t, [{ status: 'indeterminate', reason: 'demos-not-found' }, DELIVERED]);
+  await corrected.pay({ ...corrected.claim, txHash: 'b2'.repeat(32) });
+  assert.deepEqual(await corrected.pay(), DELIVERED, 'nothing was bound to the first body');
+  assert.deepEqual(corrected.calls, ['b2'.repeat(32), corrected.claim.txHash]);
 });
 
-test('a corrected claim after an indeterminate answer is not a conflict: nothing was bound to the first body', async (t) => {
-  const w = await world(t, [{ status: 'indeterminate', reason: 'demos-not-found' }, DELIVERED]);
-  await w.pay({ ...w.claim, txHash: 'b2'.repeat(32) });
-  assert.deepEqual(await w.pay(), DELIVERED);
-  assert.deepEqual(w.calls, ['b2'.repeat(32), w.claim.txHash]);
-});
+const HELD = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
 
 test('a held answer is recovered by the next request on a fresh nonce, without waiting for a lease', async (t) => {
-  const held = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
-  const w = await world(t, [held, held, DELIVERED]);
-  assert.deepEqual(await w.pay(), held);
-  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), held, 'the same transaction in its other form reads back again');
+  const w = await world(t, [HELD, HELD, DELIVERED]);
+  assert.deepEqual(await w.pay(), HELD);
+  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), HELD, 'the same transaction in its other form reads back again');
   assert.deepEqual(await w.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
   assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 4, 'every request reached the agent, and the delivered claim is freshly authenticated');
+  assert.equal(w.calls.length, 4, 'every request reached the agent, and the delivered claim is put to the agent again');
 });
 
 // The journal allows 16 superseded attempts, meant for crashes; a normal "not final yet" answer must never spend one.
@@ -112,9 +108,8 @@ const HELD_POLLS = 20;
 const journalOf = (w) => inspectWireOperation(w.wire.journal, { seller: fixtureSeller.claim, jobId: JOB, path: '/dacs/v1/payments' });
 
 test('a payment held twenty times is answered by the agent each time and then delivered, without spending crash attempts', async (t) => {
-  const held = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
-  const w = await world(t, [...Array(HELD_POLLS).fill(held), DELIVERED]);
-  for (let poll = 0; poll < HELD_POLLS; poll++) assert.deepEqual(await w.pay(), held, `poll ${poll}`);
+  const w = await world(t, [...Array(HELD_POLLS).fill(HELD), DELIVERED]);
+  for (let poll = 0; poll < HELD_POLLS; poll++) assert.deepEqual(await w.pay(), HELD, `poll ${poll}`);
   const view = journalOf(w);
   assert.deepEqual([view.state, view.attempt, view.superseded], ['ended', HELD_POLLS - 1, 0], 'every held poll ended its attempt cleanly');
   assert.deepEqual(await w.pay(), DELIVERED);
@@ -125,8 +120,32 @@ test('an uncertain payment answer keeps its attempt open until the lease, then t
   const w = await world(t, [THROW, DELIVERED]);
   assert.deepEqual(await w.pay(), { error: 'seller_unavailable', status: undefined });
   assert.equal(journalOf(w).state, 'pending', 'an unsettled attempt is not ended by the host');
+  assert.deepEqual(await w.pay(), { error: 'seller_unavailable', status: undefined }, 'inside the lease the open attempt is pending');
+  w.lapse();
   assert.deepEqual(await w.pay(), DELIVERED, 'the lease ran out; the next request recovers');
   assert.equal(journalOf(w).state, 'completed');
+});
+
+test('evidenced payment with a delivery not done yet is retried until the delivery is final', async (t) => {
+  const pending = [
+    { status: 'payment-evidenced', delivery: { status: 'held', reason: 'delivery readback absent' } },
+    { status: 'payment-evidenced', delivery: 'held-missing-consumed-v2-fulfilment-and-Vet-audit' },
+    { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'held-readback-only' } },
+  ];
+  const w = await world(t, [...pending, DELIVERED]);
+  for (const answer of pending) assert.deepEqual(await w.pay(), answer, 'each poll recovers at once');
+  assert.deepEqual(await w.pay(), DELIVERED);
+  assert.deepEqual(await w.pay(), DELIVERED);
+  assert.equal(w.calls.length, 5);
+});
+
+test('a waiting proposal keeps its HTTP retry slot until the durable responder completes', async (t) => {
+  const w = await world(t, [], { proposalAnswers: [{ disposition: 'waiting', stage: 'lease', reason: 'TEST another worker holds the lease' }, { disposition: 'complete', contribution: null }] });
+  assert.equal(w.proposalCalls(), 1);
+  assert.equal((await w.propose()).disposition, 'complete', 'the waiting proposal recovers at once');
+  assert.equal(w.proposalCalls(), 2);
+  assert.equal((await w.propose()).disposition, 'complete');
+  assert.equal(w.proposalCalls(), 2, 'only the completed proposal is stored');
 });
 
 // Only payment claims and durable proposals resume through reconciliation.
@@ -146,19 +165,6 @@ test('the transport store permits retained retries for payment claims and propos
       `${path} passes the guard and is checked against its retained effect`);
   }
   assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/agreements/proposals' }, 200, '{}', { noEffect: true }), error=>error.code==='peer_reconciliation_conflict');
-});
-
-test('evidenced payment with a delivery not done yet is retried until the delivery is final', async (t) => {
-  const pending = [
-    { status: 'payment-evidenced', delivery: { status: 'held', reason: 'delivery readback absent' } },
-    { status: 'payment-evidenced', delivery: 'held-missing-consumed-v2-fulfilment-and-Vet-audit' },
-    { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'held-readback-only' } },
-  ];
-  const w = await world(t, [...pending, DELIVERED]);
-  for (const answer of pending) assert.deepEqual(await w.pay(), answer);
-  assert.deepEqual(await w.pay(), DELIVERED);
-  assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 5);
 });
 
 // An expired session delegation on a wire effect route refuses before reading back
@@ -192,6 +198,7 @@ async function delegatedWorld(t, answers, publication = null) {
   // The durable agent already committed this job; the host holds it from the proposal its wire route admitted, which is when the store keeps the tuple.
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => proposed ? retained.agent().transportAgreementOf(id) : null, continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => { proposed = true; return { disposition: 'complete', contribution: null }; },
+    retainsPaymentClaim: () => false, assertSettlementCredit: () => {},
     submitPayment: async (body) => {
       calls.push(body.txHash);
       const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
@@ -275,13 +282,4 @@ for (const [label, answers, enabled] of [
   }
   assert.equal(w.calls.length, agentCalls, 'the claim never runs again under the expired delegation');
   assert.equal(publication.calls.length, publications, 'no delivery evidence CREATE is asked for after expiry');
-});
-
-test('a waiting proposal keeps its HTTP retry slot until the durable responder completes', async (t) => {
-  const w = await world(t, [], { proposalAnswers: [{ disposition: 'waiting', stage: 'lease', reason: 'TEST another worker holds the lease' }, { disposition: 'complete', contribution: null }] });
-  assert.equal(w.proposalCalls(), 1);
-  assert.equal((await w.propose()).disposition, 'complete');
-  assert.equal(w.proposalCalls(), 2);
-  assert.equal((await w.propose()).disposition, 'complete');
-  assert.equal(w.proposalCalls(), 2, 'only the completed proposal is cached');
 });

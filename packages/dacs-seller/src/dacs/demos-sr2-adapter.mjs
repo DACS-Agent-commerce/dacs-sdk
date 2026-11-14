@@ -14,7 +14,8 @@ import {
   demosWriteEvidenceToAnchorReceipt,
 } from '@kynesyslabs/dacs';
 import { fetchBoundedJson } from '../util/http.mjs';
-import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
+import { addressForClaim } from './demos-claims.mjs';
+import { assertSignatureChainId, verifyTransactionSignature } from './transaction-signature.mjs';
 import { deriveStorageAddress } from './wallet-transactions.mjs';
 
 // Import the pure signed-to-executed projection from the core public root;
@@ -124,7 +125,15 @@ export function demosSr2TxRef(receipt) {
   return { kind: 'storage-program', address: receipt.nativeAddress, writeTxHash: receipt.transactionRef.value };
 }
 
-export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null }) {
+/**
+ * The SR-2 readback over one node. `signatureChainId` is the node's chain id as a
+ * decimal string, from the seller's own network configuration: with it, a
+ * transaction signed over `demos-tx:v1:<signatureChainId>:<hash>` reads back as
+ * well as one signed over the bare hash; without it, only the bare hash does.
+ * Throws TypeError for a `signatureChainId` that is not a decimal string.
+ */
+export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, signatureChainId }) {
+  assertSignatureChainId(signatureChainId);
   if(sourceCapability !== null && (!isDevnetAgreementTransport(sourceCapability)||typeof sourceCapability.observeBinding!=='function')) reject('source-held','an opaque independently supplied Agreement transport is required');
   const endpoint = new URL(rpcUrl);
   if (sourceCapability ? rpcUrl !== sourceCapability.pins.endpoint : (endpoint.protocol !== 'http:' || !LITERAL_LOOPBACK.has(endpoint.hostname) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/')) {
@@ -301,7 +310,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     if (!object(signed) || !object(signed.content) || tx.hash !== txHash || !object(c) || signed.hash !== txHash
       || sha256Hex(JSON.stringify(signed.content)) !== txHash || signed.signature?.type !== 'ed25519' || !object(tx.signature) || canonicalize(tx.signature) !== canonicalize(signed.signature)
       || signed.content.from !== owner || c.from !== owner || c.from_ed25519_address !== owner
-      || !verifyDemosSignature({ address: owner, message: txHash, signature: tx.signature.data })) reject('invalid', 'transaction lacks the exact writer authorization');
+      || !verifyTransactionSignature({ address: owner, hash: txHash, signature: tx.signature.data, signatureChainId })) reject('invalid', 'transaction lacks the exact writer authorization');
     if (!creationProvenanceMatches(native, txHash, Boolean(sourceCapability) && (embedded || projected))) {
       reject('invalid', 'native creation provenance does not bind the authenticated transaction');
     }

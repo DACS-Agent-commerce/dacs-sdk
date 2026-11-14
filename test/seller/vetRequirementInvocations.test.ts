@@ -352,6 +352,52 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     })).toBeNull();
   });
 
+  describe("claims compared by identity rather than by spelling", () => {
+    const withParameter = (claim: string) => `${claim}?alias=other`;
+
+    test("accepts an evaluated party spelled with a parameter variant", () => {
+      const variantBuyer = { ...buyer, vetRecordRef: recordRef(withParameter(buyerClaim), sellerClaim) };
+      const entry = invocation(variantBuyer, sellerClaim);
+      entry.evaluatedParty = withParameter(buyerClaim);
+      expect(sellerFulfilmentVetRequirementsViolation([entry, valid[1]], {
+        jobId, buyer: variantBuyer, seller, buyerRequirement,
+      })).toBeNull();
+    });
+
+    test("accepts a verifier spelled with a parameter variant", () => {
+      const entry = invocation(buyer, withParameter(sellerClaim));
+      entry.vetRecordRef.signer = sellerClaim;
+      expect(check([entry, valid[1]])).toBeNull();
+    });
+
+    test("accepts a record signer spelled with a parameter variant", () => {
+      const variantBuyer = { ...buyer, vetRecordRef: recordRef(buyerClaim, withParameter(sellerClaim)) };
+      expect(sellerFulfilmentVetRequirementsViolation([invocation(variantBuyer, sellerClaim), valid[1]], {
+        jobId, buyer: variantBuyer, seller, buyerRequirement,
+      })).toBeNull();
+    });
+
+    test("refuses a record signer that is a different identity than the verifier", () => {
+      const otherSignerBuyer = { ...buyer, vetRecordRef: recordRef(buyerClaim, withParameter(buyerClaim)) };
+      expect(sellerFulfilmentVetRequirementsViolation([invocation(otherSignerBuyer, sellerClaim), valid[1]], {
+        jobId, buyer: otherSignerBuyer, seller, buyerRequirement,
+      })).toMatch(/differs from its party/);
+    });
+
+    test("refuses a verifier that equals its expected verifier but is not a canonical claim", () => {
+      const uncanonicalSeller = `did:demos:agent:${"5E".repeat(32)}`;
+      const unsignedBuyer = { primaryClaim: buyerClaim, vetRecordRef: structuredClone(buyer.vetRecordRef) };
+      Reflect.deleteProperty(unsignedBuyer.vetRecordRef, "signer");
+      const uncanonicalSellerParty = {
+        primaryClaim: uncanonicalSeller, vetRecordRef: recordRef(uncanonicalSeller, buyerClaim),
+      };
+      expect(sellerFulfilmentVetRequirementsViolation(
+        [invocation(unsignedBuyer, uncanonicalSeller), invocation(uncanonicalSellerParty, buyerClaim)],
+        { jobId, buyer: unsignedBuyer, seller: uncanonicalSellerParty, buyerRequirement },
+      )).toMatch(/differs from its party/);
+    });
+  });
+
   test("does not give an orchestrator-only binding the seller's counterparty verifier", () => {
     const entry = invocation(seller, buyerClaim);
     const context = {
@@ -577,17 +623,15 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
       }
     });
 
-    test("a vetMode member inside an invocation, reference or requirement never selects the orchestrator mode", () => {
-      for (const place of ["invocation", "vetRecordRef", "requirement"] as const) {
-        const entries = structuredClone(sellerSignedPair);
-        Object.assign(place === "invocation" ? entries[1] : entries[1][place], { vetMode: orchestrator });
-        expect(checkIn(entries, undefined)).not.toBeNull();
-        expect(checkIn(entries, counterparty)).not.toBeNull();
-        expect(isSellerFulfilmentVetInvocationMismatch(entries[1], {
-          jobId, buyerClaim, sellerClaim, buyerRequirement,
-          bindings: new Map([[canonicalize(entries[1].vetRecordRef), { primaryClaim: sellerClaim, roles: new Set(["seller"]) }]]),
-        })).toBe(true);
-      }
+    test("a vetMode member inside a requirement never selects the orchestrator mode", () => {
+      const entries = structuredClone(sellerSignedPair);
+      Object.assign(entries[1].requirement, { vetMode: orchestrator });
+      expect(checkIn(entries, undefined)).toMatch(/differs from its party/);
+      expect(checkIn(entries, counterparty)).toMatch(/differs from its party/);
+      expect(isSellerFulfilmentVetInvocationMismatch(entries[1], {
+        jobId, buyerClaim, sellerClaim, buyerRequirement,
+        bindings: new Map([[canonicalize(entries[1].vetRecordRef), { primaryClaim: sellerClaim, roles: new Set(["seller"]) }]]),
+      })).toBe(true);
     });
 
     test("orchestrator mode keeps the shared-record, orchestrator-only and canonical-address rules (JOB2 locator refused)", () => {

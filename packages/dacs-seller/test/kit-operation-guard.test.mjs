@@ -31,9 +31,10 @@ const GUARD_SITES = {
   'src/dacs/seller-challenge-ledger.mjs': ['issue', 'issueForOperator'],
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
   'src/dacs/seller-transport-auth.mjs': ['createSellerTransportServerAuth', 'createSellerTransportClientAuth'],
-  'src/dacs/seller-reservation-accounting.mjs': ['reserveAccounted'],
+  'src/dacs/seller-reservation-accounting.mjs': ['reserveAccounted', 'reserveCoordinated'],
   'src/dacs/seller-wire-client-auth.mjs': ['createSellerWireClientAuth'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
+  'src/dacs/effect-boundary.mjs': ['effectBoundary'],
   'src/dacs/payment-evidence-wallet-journal.mjs': ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'],
   'src/dacs/native-payment-evidence-consumer.mjs': ['createNativePaymentEvidenceConsumer'],
   'src/dacs/native-dem-delivery-consumer.mjs': ['submitNativeDemDelivery'],
@@ -101,6 +102,7 @@ test('while the guard is off, every directly reachable effect entry under ./src/
   assert.equal(answer.anchorJournalRows, 0, 'the refused publish stored no intent');
   assert.equal(answer.readable.durableState, 'function', 'the durable store stays readable');
   assert.equal(answer.readable.signedProjection, null, 'the wallet journal stays readable');
+  assert.equal(answer.readable.evidenceConsumerWithoutAnchor, 'function', 'the read-only payment evidence consumer is still constructed without anchorEvidence');
   assert.notEqual(answer.readable.anchorRead, GUARD_CODE, 'the artifact anchor stays readable');
 });
 

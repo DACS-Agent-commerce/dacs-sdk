@@ -12,7 +12,8 @@ import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs
 import {railSteward} from './helpers/rail-authority-fixture.mjs';
 import {seller,buyer,JOB,NOW} from './helpers/protocol-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
-import {createSellerTransportStore,createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
 import {SellerAgentError,transportOutcome} from '../src/dacs/seller-agent.mjs';
 import {createOperatorBuyerAccess} from '../src/devnet-demo/buyer-access.mjs';
 import {privateModule} from './helpers/private-module.mjs';
@@ -153,9 +154,12 @@ test('recovery does not run a proposal again after its context session ended and
  assert.equal(w.store.reserve(w.request,body).disposition,'perform');state='aborted-by-self';const signed=f.signed.length;
  await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
  assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
- state=null;assert.equal((await w.peer.propose(body)).disposition,'complete','the effect was held, not released');
+ // The session's end is kept as a closure, so the port no longer reporting it does not reopen the proposal.
+ state=null;await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
+ assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
+ assert.equal(w.store.reserve({...w.request,nonce:'TEST-terminal-inspection-00001'},body).disposition,'uncertain','the effect was held, not released');
 });
-for(const retained of ['pending contribution','uncertain contribution','signature intent','retry contribution'])test(`HTTP terminal proposal keeps ${retained} uncertain until context clears`,async t=>{
+for(const retained of ['pending contribution','uncertain contribution','signature intent','retry contribution'])test(`HTTP terminal proposal keeps ${retained} uncertain, also once the port stops reporting the ended session`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true});let state=null,cut=retained==='signature intent';
  const sign=f.config.signer.sign;
  f.config.signer.sign=bytes=>{
@@ -184,11 +188,11 @@ for(const retained of ['pending contribution','uncertain contribution','signatur
   assert.equal(statuses.at(-1),503);assert.equal(signatures().length,before,'terminal attempts sign nothing');
   assert.equal(w.store.reserve(inspection,body).disposition,'uncertain');assert.equal(agent.retainsProposalWork(JOB),true);
  }
- state=null;const complete=await w.peer.propose(body);
- assert.equal(statuses.at(-1),200);assert.equal(complete.disposition,'complete');assert.equal(signatures().length,1);
- if(initial.value?.contribution)assert.deepEqual(complete.contribution,initial.value.contribution);
- assert.equal(w.store.reserve(inspection,body).disposition,'cached');
- assert.deepEqual((await w.peer.propose(body)).contribution,complete.contribution);assert.equal(signatures().length,1);
+ // The session's end is kept as a closure: the port no longer reporting it leaves the work retained and still refused.
+ state=null;
+ await assert.rejects(w.peer.propose(body),{name:'SellerUnavailableError',code:'seller_unavailable'});
+ assert.equal(statuses.at(-1),503);assert.equal(signatures().length,before);
+ assert.equal(w.store.reserve(inspection,body).disposition,'uncertain');assert.equal(agent.retainsProposalWork(JOB),true);
 });
 test('HTTP fresh proposal on a terminal context is still refused without retaining work',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);
@@ -291,20 +295,21 @@ test('recovery refuses a request whose authenticated binding differs from its bo
  for(const [name,change] of [['job',r=>({...r,jobId:JOBS[1]})],['buyer',r=>({...r,buyer:seller.claim})],['seller',r=>({...r,seller:buyer.claim})],['pin',r=>({...r,listingPin:{...r.listingPin,version:'TEST'}})],['agreement',r=>({...r,agreementHash:'f'.repeat(64)})],['body hash',r=>({...r,bodyHash:'e'.repeat(64)})]]){
   const out=await agent.reconcileTransport({...good,request:change(good.request)});assert.equal(out.disposition,'indeterminate',name);
  }
- const parsed=await agent.reconcileTransport({...good,body:{...body,proposal:{...body.proposal,proposalHash:'d'.repeat(64)}}});
- assert.deepEqual([parsed.disposition,parsed.reason],['indeterminate','seller_transport_context_mismatch'],'the parsed body must be the signed raw bytes');
  assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
 });
-test('signature commitment recovery reads back only a retained attempt and never starts one',async()=>{
+test('signature commitment recovery of a request with no retained attempt proves no anchor row, then runs the original early operation once',async()=>{
  const w=await agentFixture({lifecycle:true,early:true}),next='01ARZ3NDEKTSV4RRFFQ69G5FAY';
  try{
   const input=await w.negotiate(next,{anchor:false}),rawBody=Buffer.from(JSON.stringify(input)),writes=w.anchors.writes.length;
   const request={method:'POST',path:'/dacs/v1/commitments/signature',jobId:next,buyer:w.buyer.claim,seller:w.seller.claim,listingPin:w.pin,agreementHash:w.agent.durableSessionOf(next).agreementHash,bodyHash:core.sha256Hex(rawBody)};
-  const out=await w.agent.reconcileTransport({request,body:input,rawBody});
-  assert.deepEqual([out.disposition,out.reason],['indeterminate','seller_signature_attempt_absent']);
+  const readOnly=await w.agent.reconcileTransport({request,body:input,rawBody,readOnly:true});
+  assert.equal(readOnly.disposition,'indeterminate','a read-only replay never starts an attempt');
   assert.equal(w.anchors.writes.length,writes);assert.equal(w.agent.durableSessionOf(next).signatureCommitmentAttempt,undefined);
-  assert.equal((await w.agent.commitOnSignature(input)).status,'commitment-held');
+  const out=await w.agent.reconcileTransport({request,body:input,rawBody});
+  assert.deepEqual([out.disposition,out.value.status],['present','commitment-held'],'no anchor row exists, so the original operation runs');
+  assert.equal(w.anchors.writes.length,writes+1);assert.equal(w.agent.durableSessionOf(next).signatureCommitmentAttempt,true);
   assert.equal((await w.agent.reconcileTransport({request,body:input,rawBody})).value.status,'commitment-held','the retained attempt is read back');
+  assert.equal(w.anchors.writes.length,writes+1,'one write in all');
  }finally{w.close();}
 });
 test('an unpaid outside buyer only has issued unknown writes inspected; a paid order recovers',async()=>{

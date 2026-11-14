@@ -6,7 +6,7 @@ import { PURCHASE_ADMISSION } from './dacs/purchase-admission-state.mjs';
 const ADMITTED_STATE = 'testnet-tp1';
 const ADMISSION_MEMBERS = 'binding,currentLocal';
 const UNTRUSTED_OPTIONS = ['profile', 'record', 'identityRecord', 'actionsAdmitted'];
-const NODE_VERSION = /^v(\d+)\.(\d+)\.\d+$/;
+const NODE_VERSION = /^v(\d+)\.(\d+)\.(\d+)$/;
 
 /** K0's aggregate deadline for the authority read behind one admitted call. */
 export const AUTHORITY_READ_DEADLINE_MS = 10_000;
@@ -23,13 +23,13 @@ export function notAdmittedError(cause) {
 function runtimeSupported(version) {
   const match = NODE_VERSION.exec(version);
   if (!match) return false;
-  const major = Number(match[1]), minor = Number(match[2]);
-  return (major === 22 && minor >= 13) || (major === 23 && minor >= 4) || major >= 24;
+  const major = Number(match[1]), minor = Number(match[2]), patch = Number(match[3]);
+  return (major === 22 && (minor > 22 || (minor === 22 && patch >= 2))) || (major === 24 && minor >= 15);
 }
 
-/** assertPurchaseRuntime(version) returns undefined when `version` (a process.version string) is ^22.13.0 || >=23.4.0, and throws OperationError(runtime_unsupported) naming it otherwise, including for text that is not a version. */
+/** assertPurchaseRuntime(version) returns undefined when `version` (a process.version string) is ^22.22.2 || ^24.15.0, and throws OperationError(runtime_unsupported) naming it otherwise, including for text that is not a version. */
 export function assertPurchaseRuntime(version) {
-  if (!runtimeSupported(version)) throw new OperationError('runtime_unsupported', `purchases need Node ^22.13.0 || >=23.4.0; this is ${String(version)}`);
+  if (!runtimeSupported(version)) throw new OperationError('runtime_unsupported', `purchases need Node ^22.22.2 || ^24.15.0; this is ${String(version)}`);
 }
 
 function readAdmission(options) {
@@ -102,7 +102,7 @@ export function admitPublicFactory(factory, { passive = [], purchase = false, on
     const admission = readAdmission(options);
     if (purchase) assertPurchaseRuntime(process.version);
     const factoryOptions = { ...options };
-    delete factoryOptions.admission;
+    factoryOptions.admission = admission;
     const original = factory(factoryOptions);
     const members = Object.entries(original).map(([name, value]) => [name,
       typeof value !== 'function' || passiveNames.has(name) ? value : function admittedAction(...args) { return callAdmitted(value, original, args, admission, purchase); }]);
