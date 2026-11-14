@@ -392,14 +392,30 @@ test('consume ends the reservation only on an authenticated execution of the exa
   assert.equal((await w.reservations.reserve(args('TEST-evidence-b'))).nonce, 2, 'the floor beats a stale chain answer of 0');
 });
 
-test('consume keeps the executed bytes with their nonce in the same write, and the next claim and its retirement keep them', async t => {
-  const w = world(t, { ledger: ledgerDouble() }), bytes = signed();
-  assert.equal((await w.reservations.reserve(args())).reservation.executed, null, 'a fresh record has no execution');
-  const consumed = await w.reservations.consume(await w.reservations.bindSigned(await approved(w.reservations), bytes), executed(bytes));
-  assert.deepEqual(consumed.executed, { ...bytes, nonce: 1 });
-  const { reservation } = await w.reservations.reserve(args('TEST-evidence-b'));
-  assert.deepEqual(reservation.executed, consumed.executed, 'a new claim keeps the last execution');
-  assert.deepEqual((await w.reservations.retireUnsigned(reservation)).executed, consumed.executed, 'a retirement keeps it');
+test('a consume whose ending write failed has fixed the approval to spend: no other approval is linked for the bytes, and repeating the consume spends the same id', async t => {
+  const ledger = ledgerDouble(), refuse = failOnce(), bytes = signed();
+  const w = world(t, { ledger, wrap: journal => narrow(journal, async (key, value) => { if (value.active === null) refuse(); return journal.put(key, value); }) });
+  const held = await w.reservations.bindSigned(await approved(w.reservations), bytes);
+  assert.equal(await w.reservations.executionSettled(held), false, 'nothing is fixed before an execution');
+  await assert.rejects(w.reservations.consume(held, executed(bytes)), { message: 'TEST-put-refused' });
+  assert.equal(await w.reservations.executionSettled(held), true);
+  await rejectCode(w.reservations.renewApproval(held, { ledgerId: 'TEST-ledger-renewed', requestText: REQUEST }), 'signer_execution_settled');
+  assert.deepEqual(await w.reservations.current(signer), held, 'the refused renewal wrote nothing');
+  const consumed = await w.reservations.consume(held, executed(bytes));
+  assert.equal(consumed.active, null); assert.equal(consumed.executed, undefined, 'the ended record holds no copy of the signed bytes');
+  assert.deepEqual([...new Set(ledger.settled.map(row => row.join('/')))], [`${LEDGER.ledgerId}/spent/executed`]);
+  const next = await w.reservations.reserve(args('TEST-evidence-b'));
+  assert.equal(await w.reservations.executionSettled(next.reservation), false, 'another reservation is not covered by the earlier execution');
+});
+
+test('a consume spends only the approval stored for the bytes: a reservation that names another approval by then has it released, never spent', async t => {
+  const ledger = ledgerDouble(), refuse = failOnce(), bytes = signed();
+  const w = world(t, { ledger, wrap: journal => narrow(journal, async (key, value) => { if (value.active === null) refuse(); return journal.put(key, value); }) });
+  const held = await w.reservations.bindSigned(await approved(w.reservations), bytes);
+  await assert.rejects(w.reservations.consume(held, executed(bytes)), { message: 'TEST-put-refused' });
+  await w.journal.put(recordKey(), { ...held, revision: held.revision + 1, active: { ...held.active, approvalId: 'TEST-ledger-other' } });
+  await w.reservations.consume(await w.reservations.current(signer), executed(bytes));
+  assert.deepEqual([...new Set(ledger.settled.map(row => row.join('/')))], [`${LEDGER.ledgerId}/spent/executed`, 'TEST-ledger-other/released/execution-settled']);
 });
 
 test('consume refuses a reservation without signed bytes', async t => {

@@ -9816,6 +9816,37 @@
           "after": "1bf7311e098d0d06e54b26ec97aea4f9e74cab10"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "a0d3e5804a80767653da0b803b828a8af3bec80a",
+          "after": "0245218b47bdb45775221164100a09ab7ccb2d35"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "27c92266c296ed0bff1653f48a1d42379161817a",
+          "after": "761621e175cb94637425171c512077accb5f7ba6"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "0d89b949c866874d7c578038ddefab825ce69475",
+          "after": "7797647b3bda845b75faa490eef6592949d87847"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "b3df7082b465fc0d9c1206040a9e5ea7b85a652f",
+          "after": "48465811c45148130b612f81f1f7284453161001"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "1bf7311e098d0d06e54b26ec97aea4f9e74cab10",
+          "after": "60dae400c63b663c77a287459b1e47cea57ed3d5"
+        }
+      ]
     }
   ]
 }

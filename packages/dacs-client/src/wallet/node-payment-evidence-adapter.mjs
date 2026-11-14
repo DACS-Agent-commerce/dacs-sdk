@@ -17,8 +17,10 @@
 //
 // `broadcast` acts on the signed bytes the reservation holds, once per call and with no retry:
 //   authorization  the stored approval id is reopened. An id the ledger no longer holds open is first checked against the chain: an
-//                  executed CREATE is `transaction_already_executed`. Otherwise it is replaced by the exact request's open
-//                  authorization or a new one, and the reservation stores the replacement's id before anything is sent.
+//                  executed CREATE is `transaction_already_executed`, and an answer that neither shows the execution nor says the chain
+//                  has not seen the hash refuses. Otherwise it is replaced by the exact request's open authorization or a new one, and
+//                  the reservation stores the replacement's id before anything is sent. Once an execution of the bytes has fixed the
+//                  approval to spend, no replacement is made.
 //   confirmation   `confirmTx` with the exact projection. An answer that is not a valid confirmation of those bytes is unknown and
 //                  never advances; a valid refusal is `confirm_rejected`.
 //   policy         `approval.confirm` runs on every replay against the held authorization; `false` or a throw sends nothing.
@@ -28,8 +30,8 @@
 // its cause kept. It never answers `absent`. The reservation ends inside the queue, so no broadcast is between its authorization
 // lookup and its send when it ends.
 //
-// The reservation is claimed while the native lane's lock is held, and the native transport refuses to broadcast while a reservation
-// is stored for its signer, so no native write takes the reserved nonce.
+// The reservation is claimed while the native lane's lock is held, and the native transport refuses to broadcast for its signer while
+// the chain's account nonce is below the stored reservation's nonce, so no native write takes the reserved nonce.
 import { canonicalize, demosTransactionContentMatches, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { OperationError } from '../client-errors.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../dacs/wallet-transactions.mjs';
@@ -45,6 +47,8 @@ const OPERATION = 'payment-evidence';
 const UNCERTAIN = 'signer_reservation_uncertain';
 const RETAINED_INVALID = 'retained_transaction_invalid';
 const ALREADY_EXECUTED = 'transaction_already_executed';
+const NOT_EXECUTED = 'transaction_not_executed';
+const EXECUTION_SETTLED = 'signer_execution_settled';
 const APPROVAL_UNAVAILABLE = 'approval_reservation_unavailable';
 const NODE_REPLY_MAX_BYTES = 4 * 1024 * 1024;
 const MAX_BLOCK_TRANSACTIONS = 10_000;
@@ -146,11 +150,12 @@ function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem
  * hold exactly these bytes; nothing was sent), `approval_required` (the authorization could not be reopened, renewed or confirmed
  * by current policy; nothing was sent), `confirm_rejected` (the node refused the confirmation), `outcome_unknown` (the
  * confirmation or the dispatch has no valid answer; the cause is kept), `transaction_already_executed` (the stored authorization is
- * no longer open and the chain shows the execution; nothing was sent), `locked`, or an abort's reason before the dispatch starts.
+ * no longer open and the chain shows the execution, or an execution already fixed the approval to spend; nothing was sent), `locked`,
+ * or an abort's reason before the dispatch starts.
  * `readAccountNonce({signal})` resolves the account nonce, or rejects `node_reply_invalid` or `invalid_nonce`.
  * `readTransactionState({signedTransaction, txHash, nonce}, {signal})` resolves `{state: 'applied' | 'pending'}` and never rejects
- * for a failed read; a `pending` answer's cause is `internalCauseOf(answer)`. Given only `{txHash}`, it reads the bytes and nonce
- * the reservation holds for that hash, or those of the signer's most recent execution. It starts no read after an abort.
+ * for a failed read; a `pending` answer's cause is `internalCauseOf(answer)`. The caller passes the bytes and nonce it keeps, also
+ * for a CREATE whose reservation has ended; a hash alone is `pending`. It starts no read after an abort.
  */
 export function createPaymentEvidenceCreateAdapter({ reservations, approval, demos, observer, journal, pins, clock, rpcUrl, isWalletLocked, owner, fetchImpl, stamps, recordCause }) {
   const signer = String(demos.getAddress()).toLowerCase(), inQueue = createQueue();
@@ -265,19 +270,28 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       return committed;
     }
   }
+  // Links a replacement authorization unless an execution of the bytes has already fixed the approval to spend; then it is released.
+  async function linkReplacement(held, binding) {
+    try { await reservations.renewApproval(held, binding); } catch (cause) {
+      if (cause?.code !== EXECUTION_SETTLED) throw cause;
+      await approval.settle(binding.ledgerId, 'released', 'execution-settled');
+      throw refuse(ALREADY_EXECUTED, cause);
+    }
+  }
   // Reopens the stored authorization by id. One the ledger no longer holds open may have been spent by an execution whose reservation
-  // write was lost, so the chain is read before it is replaced: an executed CREATE is `transaction_already_executed`, and a read that
-  // cannot tell refuses. Otherwise the reservation stores the replacement's id before anything is sent. A manual authorization has no
-  // id and is asked for again.
+  // write was lost, so the chain is read before it is replaced: an executed CREATE is `transaction_already_executed`, and an answer that
+  // does not say the chain has not seen the hash refuses. Otherwise the reservation stores the replacement's id before anything is sent.
+  // A manual authorization has no id and is asked for again.
   async function replayApproval(held, tx, signal) {
     const { approvalId, approvalIntent: requestText } = held.active;
     try {
+      if (await reservations.executionSettled(held)) throw refuse(ALREADY_EXECUTED);
       const reopened = approvalId === null ? null : await reopenApproval(approvalId, requestText, signal);
       if (reopened !== null) return reopened;
       if (await executionProven(tx, signal)) throw refuse(ALREADY_EXECUTED);
       const binding = await replacementApproval(requestText, signal);
       if (binding?.requestText !== requestText) throw refuse('approval_mismatch');
-      if (binding.ledgerId !== null && binding.ledgerId !== approvalId) await reservations.renewApproval(held, binding);
+      if (binding.ledgerId !== null && binding.ledgerId !== approvalId) await linkReplacement(held, binding);
       return binding;
     } catch (cause) { throw signal.aborted || cause?.code === ALREADY_EXECUTED ? cause : refuse('approval_required', cause); }
   }
@@ -365,15 +379,17 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
   async function verifyExecution(tx, signal) {
     await observer.observe({ signal });
     const status = await nodeRead('getTransactionStatus', { hash: tx.hash }, signal);
+    if (hasKeys(status, ['state']) && status.state === 'unknown') throw refuse(NOT_EXECUTED);
     if (!hasKeys(status, ['state', 'blockNumber']) || status.state !== 'included' || !Number.isSafeInteger(status.blockNumber) || status.blockNumber < 0) throw refuse('readback_unverified');
     const executed = await nodeRead('getTxByHash', { hash: tx.hash }, signal);
     if (!executedMatches(executed, tx, status.blockNumber)) throw refuse('readback_unverified');
     if (!blockListsHash(await nodeRead('getBlockByNumber', { blockNumber: status.blockNumber }, signal), status.blockNumber, tx.hash)) throw refuse('readback_unverified');
     await verifyStorageProgram(tx, signal);
   }
-  // Whether the chain shows exactly these bytes executed. An answer that does not show it is false; a read that fails is thrown.
+  // Whether the chain shows exactly these bytes executed. It is false only when the chain answers that it has not seen the hash. Any
+  // other answer that does not show the execution, and any read that fails, is thrown: an unclear answer is not proof of non-execution.
   async function executionProven(tx, signal) {
-    try { await verifyExecution(tx, signal); return true; } catch (cause) { if (cause?.code === 'readback_unverified') return false; throw cause; }
+    try { await verifyExecution(tx, signal); return true; } catch (cause) { if (cause?.code === NOT_EXECUTED) return false; throw cause; }
   }
   // Ends the reservation that holds the proven bytes, if one still does. It runs in the queue, so it never falls between a broadcast's
   // authorization lookup and its send, and it reads the reservation again because that broadcast may have changed it.
@@ -381,28 +397,24 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     const held = await reservationHolding(retained);
     if (held !== null) await reservations.consume(held, { status: 'executed', authenticated: true, txHash: tx.hash, projectionText: retained.signedTransaction });
   }
-  // The node must serve the program this CREATE made: its address, its exact data, its program name and the signer as owner.
+  // The node must serve the program this CREATE made: its address, its exact data and metadata, its program name and the signer as owner.
+  // A creating transaction the node names must be this one.
   async function verifyStorageProgram(tx, signal) {
     const operation = tx.content.data[1];
     if (tx.content.to !== deriveStorageAddress(signer, operation.programName, tx.content.nonce, '')) throw refuse('readback_unverified');
     const program = await fetchPinned(`${pins.endpoint.replace(/\/$/, '')}/storage-program/${tx.content.to}`, {}, signal);
     signal.throwIfAborted();
     const programOwner = typeof program?.owner === 'string' ? program.owner.toLowerCase() : null;
-    if (!(program?.success === true && programOwner === signer && program.programName === operation.programName && isObject(program.data) && canonicalize(program.data) === canonicalize(operation.data))) throw refuse('readback_unverified');
-  }
-  // The journal names a kept CREATE by its hash alone; its bytes and nonce are then the ones the reservation holds for that hash, or
-  // the ones of the signer's most recent execution, which the reservation keeps after it ends.
-  async function withHeldBytes(retained) {
-    if (retained?.signedTransaction !== undefined || retained?.nonce !== undefined || retained?.txHash === undefined) return retained;
-    const record = await reservations.current(signer), { signed, nonce } = record?.active ?? {};
-    const kept = signed?.txHash === retained.txHash ? { ...signed, nonce } : record?.executed?.txHash === retained.txHash ? record.executed : null;
-    return kept === null ? retained : { txHash: retained.txHash, signedTransaction: kept.projectionText, nonce: kept.nonce };
+    const matches = program?.success === true && programOwner === signer && program.storageAddress === tx.content.to && program.programName === operation.programName
+      && isObject(program.data) && canonicalize(program.data) === canonicalize(operation.data) && isObject(program.metadata) && canonicalize(program.metadata) === canonicalize(operation.metadata)
+      && (program.createdByTx === undefined || program.createdByTx === tx.hash);
+    if (!matches) throw refuse('readback_unverified');
   }
   // `applied` after the chain proves the execution of exactly the retained bytes; the reservation holding them, if any, ends and its authorization is spent.
-  async function transactionState(asked, signal) {
+  async function transactionState(retained, signal) {
     try {
       signal.throwIfAborted();
-      const retained = await withHeldBytes(asked), tx = parseRetained(retained);
+      const tx = parseRetained(retained);
       await reservationHolding(retained); // refuses other text under a held hash before any node read
       if (retained.nonce !== tx.content.nonce) throw refuse(RETAINED_INVALID);
       await verifyExecution(tx, signal);

@@ -59,7 +59,8 @@
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
 //  - readAccountNonce() -> a non-negative safe integer, or an authenticated
 //    { nonce, blockHeight } snapshot from the qualified wallet reader;
-//  - readTransactionState({ txHash }) -> 'applied', 'pending', or 'absent'.
+//  - readTransactionState({ txHash, signedTransaction, nonce }) -> 'applied', 'pending', or 'absent'.
+//    The journal passes the signed bytes and nonce it keeps for that hash.
 //    An ordinary absent/unknown answer is indeterminate and cannot supersede.
 //    To prove non-execution, a qualified reader must return
 //    { state: 'absent', checkedThroughBlock } from a complete authenticated
@@ -396,7 +397,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       const nonce = nonceOf(object(value) ? value.nonce : value, 0);
       return nonce === null ? null : { nonce, blockHeight: object(value) ? nonceOf(value.blockHeight, 0) : null };
     });
-    const state = await read(() => readTransactionState({ txHash: signed.txHash }), (value) => {
+    const state = await read(() => readTransactionState({ txHash: signed.txHash, signedTransaction: signed.signedTransaction, nonce: signed.nonce }), (value) => {
       if (TX_STATES.has(value)) return { state: value, checkedThroughBlock: null };
       return object(value) && TX_STATES.has(value.state) ? { state: value.state, checkedThroughBlock: nonceOf(value.checkedThroughBlock, 0) } : null;
     });
@@ -419,10 +420,10 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     if (!object(input) || typeof input.logicalAddress !== 'string') return undefined;
     let live;
     try {
-      live = db.prepare(`SELECT tx_hash, nonce FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress);
+      live = db.prepare(`SELECT tx_hash, nonce, signed_transaction FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress);
       if (live && rows(input.logicalAddress).some((row) => heldDebitOs(row) !== null)) return undefined;
     } catch (error) { if (error.code === 'SQLITE_BUSY') return undefined; throw error; }
-    return live ? { txHash: live.tx_hash, checked: await fate({ txHash: live.tx_hash, nonce: Number(live.nonce) }) } : undefined;
+    return live ? { txHash: live.tx_hash, checked: await fate({ txHash: live.tx_hash, signedTransaction: live.signed_transaction, nonce: Number(live.nonce) }) } : undefined;
   }
   // Runs `change(observed)` under the writer lock, after the node was read for it.
   async function lockedAfterObserving(input, change) {

@@ -493,6 +493,21 @@ test('nonce advancement with an unknown transaction keeps the CREATE until its i
   assert.equal(new Set(w.calls.broadcast).size, 1);
 });
 
+test('the state read of a kept CREATE carries the signed bytes and nonce the journal keeps for its hash', async (t) => {
+  const w = wallet(t), asked = [];
+  const journal = w.open({ readAccountNonce: async () => 1, readTransactionState: async (retained) => { asked.push(retained); return 'pending'; } });
+  t.after(() => journal.close());
+  const kept = await journal.anchorEvidence(w.input());
+  await journal.reconcilePaymentEvidence(w.input());
+  const projection = await journal.readSignedProjection({ logicalAddress: w.input().logicalAddress });
+  assert.ok(asked.length > 0);
+  for (const retained of asked) {
+    assert.deepEqual(Object.keys(retained).sort(), ['nonce', 'signedTransaction', 'txHash']);
+    assert.equal(retained.txHash, kept.txHash); assert.equal(retained.nonce, projection.content.nonce);
+    assert.deepEqual(JSON.parse(retained.signedTransaction), projection);
+  }
+});
+
 test('only a complete absence snapshot at or beyond the nonce snapshot releases a CREATE', async (t) => {
   const w = wallet(t);
   let checkedThroughBlock = 7;

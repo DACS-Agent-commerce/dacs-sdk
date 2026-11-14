@@ -31,7 +31,7 @@ export function scriptedNode() {
       const created = [...node.applied.values()].find(tx => tx.content.to === address && tx.content.data?.[0] === 'storageProgram');
       if (!created) return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
       const operation = created.content.data[1];
-      answer = { success: true, data: operation.data, owner: created.content.from, programName: operation.programName };
+      answer = { success: true, data: operation.data, owner: created.content.from, programName: operation.programName, storageAddress: address, metadata: operation.metadata };
     } else if (body.method === 'nodeCall') {
       const { message, data } = call;
       if (message === 'getBlockByNumber') answer = ok(data.blockNumber === 0
