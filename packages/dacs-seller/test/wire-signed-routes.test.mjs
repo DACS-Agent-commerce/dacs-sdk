@@ -26,7 +26,7 @@ import { WIRE_ROUTE_PATHS, createWireContext, wireAuthenticator } from '../src/d
 import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportServerAuth } from '../src/dacs/seller-transport-auth.mjs';
 import { boundPurchaseOf, createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 
-import { PATHS, CONTINUING, continuingWorld, BUYER, SELLER, session, SESSION, PIN, stubAgent, CLAIM_PREFIX, MAX_RESPONSE_BYTES, MAX_BODY_BYTES, MAX_HEADER_CHARS, MAX_REQUEST_LIFETIME_MS, MAX_SIGNED_LIFETIME_MS, SKEW_MS, DAY_MS, JOURNAL_LEASE_MS, derive, jobFor, MUTATING, identityBody, statementsDuring, world, proposeJob } from './helpers/wire-routes-world.mjs';
+import { PATHS, CONTINUING, answeredStatus, continuingWorld, BUYER, SELLER, session, SESSION, PIN, stubAgent, CLAIM_PREFIX, MAX_RESPONSE_BYTES, MAX_BODY_BYTES, MAX_HEADER_CHARS, MAX_REQUEST_LIFETIME_MS, MAX_SIGNED_LIFETIME_MS, SKEW_MS, DAY_MS, JOURNAL_LEASE_MS, derive, jobFor, MUTATING, identityBody, statementsDuring, world, proposeJob } from './helpers/wire-routes-world.mjs';
 
 const OLD_PIN_VERSION = 'dacs-demos-testnet-identity/2026-10-15';
 
@@ -695,13 +695,13 @@ const BARRIER_REQUEST_MS = 10;
  * millisecond short of the expiry it is answered, at the expiry it is refused `peer_expired`, and a withdrawn authority there
  * keeps its own code; both stay charged without publishing or reaching the agent.
  */
-async function assertFinalBarrier(w, path, send) {
+async function assertFinalBarrier(w, path, send, answeredStatus = 200) {
   const start = w.state.authorityReads;
-  assert.equal((await send()).status, 200, `${path}: the unpaused request is answered`);
+  assert.equal((await send()).status, answeredStatus, `${path}: the unpaused request is answered`);
   const readsToReservation = w.state.readsAtReserve - start;
   w.state.lapseMs = BARRIER_REQUEST_MS - 1;
   w.state.lapseAtRead = w.state.authorityReads + readsToReservation;
-  assert.equal((await send()).status, 200, `${path}: 1 ms before the expiry`);
+  assert.equal((await send()).status, answeredStatus, `${path}: 1 ms before the expiry`);
   w.state.lapseMs = BARRIER_REQUEST_MS;
   w.state.lapseAtRead = w.state.authorityReads + readsToReservation;
   await assertRefusedWithoutWork(w, path, send, 'peer_expired');
@@ -715,7 +715,7 @@ test('P11a1-T01: every non-pre-Agreement route answers with a wire response enve
   const w = await continuingWorld(t);
   for (const path of [PATHS.proposals, PATHS.state, PATHS.commitments, PATHS.commitmentSignature, ...CONTINUING, PATHS.bundleBuyerCopy]) {
     const answer = await w.request(path);
-    assert.equal(answer.status, 200, path);
+    assert.equal(answer.status, answeredStatus(path), path);
     await w.verified(answer);
     assert.deepEqual(JSON.parse(Buffer.from(answer.header, 'base64url')).payload.profile, w.buyerWire.binding.profile);
   }
@@ -817,7 +817,7 @@ test('P11a1-T16: when not ready, new-purchase routes are refused signed while st
   }
   for (const path of [PATHS.state, ...CONTINUING]) {
     const answer = await w.request(path);
-    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+    assert.equal(answer.status, answeredStatus(path), JSON.stringify(answer.body));
     await w.verified(answer);
   }
 });
@@ -847,7 +847,7 @@ test('wire-bundle-final-authorization-barrier', async (t) => {
   mock.method(performance, 'now', () => 0);
   const w = await continuingWorld(t);
   for (const path of [PATHS.bundleRequest, PATHS.bundleCountersignature]) {
-    await assertFinalBarrier(w, path, () => w.request(path, { lifetimeMs: BARRIER_REQUEST_MS }));
+    await assertFinalBarrier(w, path, () => w.request(path, { lifetimeMs: BARRIER_REQUEST_MS }), answeredStatus(path));
   }
 });
 
@@ -862,7 +862,7 @@ test("P11a1-T26: payments and the two bundle routes run on the real agent's dura
     for (const path of CONTINUING) {
       const before = w.fixture.controls.calls;
       const answer = await w.request(path);
-      assert.equal(answer.status, 200);
+      assert.equal(answer.status, answeredStatus(path));
       assert.ok(w.fixture.controls.calls > before, 'receipt rechecked each request');
       await w.verified(answer);
       const evidence = w.agent.continuationEvidenceOf;
@@ -972,7 +972,7 @@ test('wire-payment-requires-assembled-settlement: a wire payment is refused whil
   w.agent.assertAuthenticatedPayment = () => { throw new SellerAgentError('settlement_profile_unavailable', 'TEST the settlement profile is not assembled', 503); };
   const refused = await assertRefusedWithoutWork(w, PATHS.payments, () => w.request(PATHS.payments), 'settlement_profile_unavailable');
   assert.equal(refused.status, 503);
-  assert.equal((await w.request(PATHS.bundleRequest)).status, 200);
+  assert.equal((await w.request(PATHS.bundleRequest)).status, answeredStatus(PATHS.bundleRequest));
 });
 
 test("P11a1-T28: table: route (payments with a cached completed answer, commitments, commitments/signature) × delegation (live, expired) × replay (the same body under a fresh request nonce) × live/restarted store, with counting agent, signer and publication doubles. A live delegation answers from the cache as today. An expired delegation's replay answers only its journaled answer (or a held refusal): zero agent, signer and publication calls and no new effect, with checked.readbackOnly read from the wire check, never from the absent old authentication; every counter equals its pre-replay value", async (t) => {

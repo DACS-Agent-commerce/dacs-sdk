@@ -13,11 +13,17 @@ import assert from 'node:assert/strict';
 const CHILD_TIMEOUT_MS = 120_000;
 const FORBIDDEN_ARGUMENT = /^--(?:import|loader|experimental-loader|require)\b/;
 
+// Where Node still marks Web Crypto Ed25519 experimental (23.4.0 and below), the storage-anchor signature check in
+// sdk-provider.mjs makes Node itself print this warning and its hint once. That output is Node's, not the child's.
+const NODE_ED25519_WARNING = /^\(node:\d+\) ExperimentalWarning: The Ed25519 Web Crypto API algorithm is an experimental feature and might change at any time\n/gm;
+const NODE_TRACE_WARNINGS_HINT = /^\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n/gm;
+export function childOwnStderr(stderr) { return stderr.replace(NODE_ED25519_WARNING, '').replace(NODE_TRACE_WARNINGS_HINT, ''); }
+
 /** Returns `{status, stdout, stderr, result}`; `result` is the parsed result.json, or null when the child wrote none. */
-export function runFreshChild(t, source, args = []) {
+export function runFreshChild(t, source, args = [], { directory: consumerDirectory } = {}) {
   for (const arg of args) assert.doesNotMatch(String(arg), FORBIDDEN_ARGUMENT);
-  const directory = mkdtempSync(join(tmpdir(), 'dacs-client-fresh-child-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = consumerDirectory ?? mkdtempSync(join(tmpdir(), 'dacs-client-fresh-child-'));
+  if (!consumerDirectory) t.after(() => rmSync(directory, { recursive: true, force: true }));
   const script = join(directory, 'child.mjs');
   writeFileSync(script, source);
   const env = { ...process.env };
