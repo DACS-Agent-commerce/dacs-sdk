@@ -1521,6 +1521,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | fix(client): enforce effect admission order and signer deadlines | Git commit selector 0f3d432cc8159e5f9daa24df85619930d30da89a |
 | | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355 |
 | | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 91cae7c7150797d80f48f80d9d8b5b65b432ffa8 |
+| WF | fix(client): give the signer its own deadline and call the stop check without arguments | Git commit selector e4a36cde219c0f9b8d899e33e34155a547e49789 |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | a869f29a4462d0e6e79efa2d4c25ecd5bcd686c0 |
+| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 389314001f9655de05dc5c0871199836a2de7183 |
 
 ## Complete commit and file inventory
 
@@ -4578,6 +4581,8 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | 0f3d432cc8159e5f9daa24df85619930d30da89a | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
 | 0f3d432cc8159e5f9daa24df85619930d30da89a | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` |
 | chore(client): record effect boundary admission and deadline checks | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): give the signer its own deadline and call the stop check without arguments | `packages/dacs-client/src/wallet/effect-boundary.mjs:1`<br>`packages/dacs-client/test/effect-boundary-operation.test.mjs:1`<br>`src/wire/validate.ts:1` |
+| chore(client): record signer deadline and stop check changes | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
