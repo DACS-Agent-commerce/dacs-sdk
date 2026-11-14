@@ -276,17 +276,7 @@ const buyer = await createAgent({
   demosWriteJournal: await createFsDemosWriteJournal({
     dir: join(dacsStateDir, "buyer-demos-writes"),
   }),
-  identity: {
-    agentId: buyerId,
-    // The exact authenticated DACS-1 bundle is hashed into the Agreement and
-    // terminal bundle. A bare agent id is not an identity commitment.
-    bundle: buyerIdentityBundle,
-    // Presentation authentication is deliberately bundle-scoped so the same
-    // identity bundle can be reused. Session replay resistance is separate:
-    // its exact bundle hash is committed inside each signed Agreement.
-    verifyPresentation: ({ bundle, signedBytes }) =>
-      verifyBuyerIdentityPresentation(bundle, signedBytes),
-  },
+  identity: { agentId: buyerId },
   bindings: { index: bindings },
 });
 
@@ -308,6 +298,10 @@ const firstPage = await buyer.enumerateListings(agentId);
 The snippet stops before payment. The purchase runs in the role-separated
 coordinators, each over its own durable store; see
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
+A buyer on that path supplies its identity as the `buyer` claim reference in the
+order it passes to `startOrder`. The coordinator checks that it is a canonical
+claim reference and differs from the seller; the application must make sure it
+is the buyer's own identity.
 
 Once the purchase has produced a finalized bundle, anyone can verify it, and
 `getReputation` reads reputation from bundle references. `bundleRef` is the
@@ -966,6 +960,11 @@ explicitly named `LegacyMvp*` read/resume compatibility types and validators.
 Normative producers, including `buildTwoSidedBundle`, reject those legacy
 shapes. The existing buyer-only `runSessionCore` producer remains explicitly
 quarantined on `LegacyMvp*` until its v0.3 migration in #81.
+
+`verifyBundle` and `verifyBundleCore` no longer read artifacts of those early
+shapes: such an input is refused with `not an attestation bundle`, whether it
+is a whole early-shape bundle or a current bundle that carries one early-shape
+reference.
 
 Its deterministic historical names are available as
 `legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit

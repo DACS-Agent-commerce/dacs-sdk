@@ -254,7 +254,7 @@ const RECLAIMABLE_NONCES = `SELECT n.nonce FROM peer_nonces n LEFT JOIN peer_non
  * The one list of the records behind each reservation limit. The old reserve path and reservation accounting
  * count only these, so a record either path writes counts against both. Each source selects `job`, or a unit's
  * `buyer` and `at`; an owner source also selects the buyer, seller and Listing pin that hold the job.
- * Total records use the overlapping old nonce/retention counts plus the accounting rows that have not expired (see RETIRABLE_RESERVATION).
+ * Total records use the overlapping old nonce/retention counts plus the accounting rows that still count (see RETIRABLE_RESERVATION).
  */
 export const RESERVATION_LEDGER = Object.freeze({
   buyerUnits: Object.freeze(['SELECT buyer, created_at AS at FROM peer_nonce_retention', 'SELECT buyer, at FROM kit_reservations']),
@@ -449,10 +449,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   }
   // An accounting row stops counting once its request has expired (a request admitted at `at` is expired by
   // `at` plus one transport lifetime, and the wire journal refuses its nonce key again). It is kept while it is `reserving`
-  // (a crash left it) and while it is the first settled row of its job and route, the witness of that route's one effect
-  // (`accountedSlotWithin`, `terminalStartWithin`). The one parameter is the cutoff time.
+  // (a crash left it) and, while its job is not retired, while it is the first settled row of its job and route, the witness of
+  // that route's one effect (`accountedSlotWithin`, `terminalStartWithin`). Once the job is retired every expired row except
+  // a `reserving` one stops counting, witnesses included; the rows stay in the table and keep answering those two reads.
+  // The one parameter is the cutoff time.
   const reservationRetentionMs = Math.max(MAX_TRANSPORT_LIFETIME_MS, nonceWindowMs);
-  const RETIRABLE_RESERVATION = `at <= ? AND state <> 'reserving' AND (state = 'refused' OR EXISTS (SELECT 1 FROM kit_reservations w
+  const RETIRABLE_RESERVATION = `at <= ? AND state <> 'reserving' AND (state = 'refused'
+    OR EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = kit_reservations.jobId AND r.job_retired = 1)
+    OR EXISTS (SELECT 1 FROM kit_reservations w
     WHERE w.jobId = kit_reservations.jobId AND w.route = kit_reservations.route AND w.state IN ('new', 'recover', 'completed') AND w.key < kit_reservations.key))`;
   // Legacy nonce rows did not carry expiry. Keep them for one full maximum
   // request lifetime from upgrade before considering safe reclamation.
@@ -482,13 +486,15 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     const view = wireOperationView({ seller: p.seller, jobId: p.jobId, path: p.path });
     return ![undefined, null, 'none'].includes(view?.state) && view.binding === wireOperationBinding(p);
   };
+  // The accounting rows that still count at `time`; the purchase capacity's `used` is this count too.
+  const retainedReservationCount = (time) => get(`SELECT COUNT(*) AS n FROM kit_reservations WHERE NOT (${RETIRABLE_RESERVATION})`, time - reservationRetentionMs).n;
   // Every read runs in the caller's transaction.
   const reservationLedger = Object.freeze({
     recordCountWithin: (time) => Math.max(
       get(`SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES})`, time).n,
       get(`SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE expires_at > ? OR created_at > ?
         OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES}))`, time, time - nonceWindowMs, time).n,
-    ) + get(`SELECT COUNT(*) AS n FROM kit_reservations WHERE NOT (${RETIRABLE_RESERVATION})`, time - reservationRetentionMs).n,
+    ) + retainedReservationCount(time),
     buyerUnitsWithin: (buyer, time) => get(`SELECT COUNT(*) AS n FROM (${ledgerSources('buyerUnits').join(' UNION ALL ')})
       WHERE buyer = ? AND at > ?`, buyer, time - nonceWindowMs).n,
     jobHeldWithin: (jobId) => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
@@ -1028,13 +1034,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     close: () => db.close(),
     journaledOnlyReserve: true,
   };
-  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }),
+  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, retainedReservationCount, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }),
     terminalSession, sessionState: contextSessionState, bindTerminalCleanup, flushTerminalObservations }));
   return store;
 }
 
 /**
- * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, limits,
+ * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, retainedReservationCount, limits,
  * terminalSession, sessionState, bindTerminalCleanup, flushTerminalObservations }`, where `limits` are the context-record and unpaid-start
  * limits the ledger enforces at issue. `sessionState({ jobId }, source)` is the one observation adapter: it answers a job's closure, else the
  * port's synchronous DACS-5 name or null, and keeps a terminal name (the closure and the capacity's release) with the work that saw it or,

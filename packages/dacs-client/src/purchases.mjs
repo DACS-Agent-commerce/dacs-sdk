@@ -42,7 +42,7 @@ import { OutboundError } from './util/http.mjs';
 import { nodeProjectedNonce, OS_INTEGER, OS_DIGITS_MAX } from './dacs/chain.mjs';
 import { normalizeDemosAddress } from './signatures.mjs';
 import { projectDiagnostic, projectDiagnosticOperation, DIAGNOSTIC_LIMITS } from './diagnostic-projection.mjs';
-import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView, diagnosticProtocolView, planRunningOf } from './dacs/protocol-purchases.mjs';
+import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView, diagnosticProtocolView, planRunningOf, createSellerRequestRecords } from './dacs/protocol-purchases.mjs';
 import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-consumer.mjs';
 import { PURCHASE_LIMITS } from './purchase-limits.mjs';
 import { buyerFundingError } from './buyer-funding.mjs';
@@ -818,11 +818,21 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // After a verified transfer observation, a DACS purchase drives its seller
   // claim, evidence and delivery checks. Every retry re-claims the same
   // observed transaction; no step here can send or re-send a payment.
-  async function continueProtocol(result) {
+  // A recorded suspension (K8) stops the continuation: the readback stands, and only an explicit request naming it resumes.
+  // A re-hold seen by the continuation suspends queued work; a binding failure while admitted is not a re-hold.
+  async function continueProtocol(result, resumeSuspensionId) {
     const operation = result.operation;
     if (!operation.terms.protocol || !protocol?.available) return result;
     if (operation.status !== 'settled_verified' && operation.status !== 'agreement_pending') return result;
-    const advanced = await protocol.recheck(operation, coordinates.get(operation.id));
+    const stored = ops.get(operation.accountId, operation.id);
+    if (stored?.state?.protocol?.sellerSuspension && !resumeSuspensionId) return { ...result, operation: stored };
+    let advanced;
+    try { advanced = await protocol.recheck(operation, coordinates.get(operation.id), { resumeSuspensionId }); } catch (error) {
+      if (error?.code === 'profile_not_admitted' && stored?.state?.protocol && !purchaseActionsAdmitted()) {
+        try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored ?? operation, set() {} }, now }).suspendQueued(error.code); } catch (cause) { error.cause ??= cause; }
+      }
+      throw error;
+    }
     return { ...result, operation: advanced };
   }
 
@@ -1476,7 +1486,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return { operation: await protocol.countersign(operation, { bundleSignature, anchorSignature }) };
   }
 
-  async function protocolRecheck({ operationId, token }) {
+  async function protocolRecheck({ operationId, token, resumeSuspensionId }) {
     if (diagnostic()) assertPurchaseActionsAdmitted();
     const found = handoffPurchase(operationId, token);
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet,found);}
@@ -1485,7 +1495,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       throw error;
     }
     const operation = protocolOperation(operationId, token);
-    return continueProtocol({ operation, verification: null });
+    return continueProtocol({ operation, verification: null }, resumeSuspensionId);
   }
 
   // A native handoff whose transfer the operator's source refuses for a
