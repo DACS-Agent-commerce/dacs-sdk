@@ -16,7 +16,9 @@
 // A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes and moves the floor past
 // the nonce; `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
 // settles the approval ledger's hold by id (`spent` or `released`), which is idempotent, so a crash between the settlement and the
-// put is finished by repeating the call. Signed bytes are never retired: only an execution frees them.
+// put is finished by repeating the call. Signed bytes are never retired: only an execution frees them. While a retirement has
+// settled the approval `released` and its put has not committed, this instance refuses `bindSigned` for that reservation
+// (`signer_retirement_unfinished`), and the next `reserve` finishes the retirement before it claims.
 //
 // `recover` removes the lock rows of other, dead processes, which changes no record, then retires every reservation without signed
 // bytes, which no live caller can finish. It needs the host's ownership proof (the state lock is held and the journal lies inside
@@ -93,13 +95,16 @@ function validateSigned(signed, signer, nonce) {
  * `retireUnsigned`, `consume`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
  * Throws `signer_reservation_invalid` for a malformed record or argument, `signer_reservation_stale` for a handle that is
  * not the stored record, `signer_reservation_uncertain` when a failed write cannot be read back, `signer_lane_busy`,
- * `invalid_nonce`, `approval_lookup_refused`, `signer_settlement_failed` and `signer_execution_unproven`; journal errors such
+ * `invalid_nonce`, `signer_retirement_unfinished`, `approval_lookup_refused`, `signer_settlement_failed` and `signer_execution_unproven`; journal errors such
  * as `journal-capacity` pass through. Each keeps the original error as its `cause`.
  */
 export function createSignerReservations({ journal, pins, openApproval = refused, settleApproval = refused } = {}) {
   check(['get', 'put', 'withWalletLock'].every(name => typeof journal?.[name] === 'function'), 'durable journal required');
   check(pins?.network === 'demos-testnet' && isHex64(pins.chainIdentity) && isText(pins.pinVersion), 'trusted pins required');
   const manualApprovals = new Map();
+  // signer -> attemptId of a reservation whose approval was settled `released` for a retirement whose put has not committed.
+  // The reservation is still stored, so nothing may sign for it; `reserve` or a repeated `retireUnsigned` finishes it.
+  const unfinishedRetirements = new Map();
   const keyOf = signer => { check(isAddress(signer), 'invalid signer'); return `${KEY_ROOT}/${JSON.stringify([pins.network, pins.chainIdentity, signer])}`; };
 
   function validateActive(active, record) {
@@ -148,13 +153,19 @@ export function createSignerReservations({ journal, pins, openApproval = refused
    * Claims the signer for `operation` and `operationKey` under its lock, before any nonce is chosen. Returns
    * `{reservation, nonce}`: the stored reservation unchanged when this operation already holds the signer (no write and
    * no chain read), else a new claim at `max(chain + 1, floor)`, where `chain` is read through `readChainNonce({signal})`.
-   * Another operation holding the signer is `signer_lane_busy`; a nonce without a safe successor is `invalid_nonce`.
+   * A reservation whose retirement settled its approval but did not commit is finished first (see `retireUnsigned`) and
+   * the claim is then new. Another operation holding the signer is `signer_lane_busy`; a nonce without a safe successor is `invalid_nonce`.
    */
   async function reserve({ signer, operation, operationKey, readChainNonce, signal } = {}) {
     check(isAddress(signer) && OPERATIONS.includes(operation) && isText(operationKey) && typeof readChainNonce === 'function', 'invalid claim');
     return journal.withWalletLock(keyOf(signer), async () => {
       signal?.throwIfAborted();
-      const record = await readRecord(signer);
+      let record = await readRecord(signer);
+      if (record?.active && unfinishedRetirements.get(signer) === record.active.attemptId) {
+        await settleRetirement(record);
+        record = await write({ ...record, revision: record.revision + 1, active: null });
+        unfinishedRetirements.delete(signer);
+      }
       if (record?.active) {
         if (record.active.operation !== operation || record.active.operationKey !== operationKey) fail('signer_lane_busy');
         return { reservation: record, nonce: record.active.nonce };
@@ -201,11 +212,13 @@ export function createSignerReservations({ journal, pins, openApproval = refused
   /**
    * Stores the exact signed projection `{txHash, projectionText, inputDigest}` in one write and returns the reservation
    * holding it. Refuses a stale handle, a reservation without an approval, bytes already bound, and a projection whose
-   * hash, signer, nonce or Ed25519 signature do not match.
+   * hash, signer, nonce or Ed25519 signature do not match. Refuses `signer_retirement_unfinished` for a reservation whose
+   * retirement settled the approval released but did not commit.
    */
   async function bindSigned(reservation, { txHash, projectionText, inputDigest } = {}) {
     return update(reservation, ({ signer, revision, active }) => {
       check(active.signed === null, 'signed bytes already bound');
+      if (unfinishedRetirements.get(signer) === active.attemptId) fail('signer_retirement_unfinished', 'the approval was released and the retirement is not committed');
       check(active.approvalId !== null || (active.approvalIntent !== null && manualApprovals.get(signer) === revision), 'approval required before signed binding');
       const signed = { txHash, inputDigest, projectionText };
       validateSigned(signed, signer, active.nonce);
@@ -236,11 +249,15 @@ export function createSignerReservations({ journal, pins, openApproval = refused
    * keeps the reservation). Refuses signed bytes. The handle is stale afterwards. Returns the stored record, whose `active` is null.
    */
   async function retireUnsigned(reservation) {
-    return update(reservation, async record => {
-      check(record.active.signed === null, 'signed bytes cannot be retired as unsigned');
-      await settle(await approvalOf(record), 'released', 'unsigned-retired');
-      return null;
-    });
+    const retired = await update(reservation, async record => { await settleRetirement(record); return null; });
+    if (unfinishedRetirements.get(retired.signer) === reservation.active.attemptId) unfinishedRetirements.delete(retired.signer);
+    return retired;
+  }
+  // Settles the approval of an unsigned reservation released, then marks the reservation unfinished until its put commits.
+  async function settleRetirement(record) {
+    check(record.active.signed === null, 'signed bytes cannot be retired as unsigned');
+    await settle(await approvalOf(record), 'released', 'unsigned-retired');
+    unfinishedRetirements.set(record.signer, record.active.attemptId);
   }
   /**
    * Ends a reservation on an authenticated execution of its exact signed bytes: `observation` is

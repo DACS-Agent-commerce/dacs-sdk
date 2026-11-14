@@ -8913,6 +8913,22 @@
       ]
     },
     {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep the packed consumer lock installable on Node 24",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/packed-install.mjs",
+          "before": "0519336d2f31674a642da8079aa7365d384f9a95",
+          "after": "85564b54de812d5ae795ea5aca7e567a1819b1e6"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": "fc9f5943d11b41eed2ded177c8e0982f1a5e0360",
+          "after": "cb7e6298b275bb6123561c5afa4a52a4981b72bf"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery",
       "files": [
@@ -9065,18 +9081,40 @@
       ]
     },
     {
-      "delta": "D11",
-      "subject": "fix(client): D11 keep the packed consumer lock installable on Node 24",
+      "delta": "WF",
+      "subject": "delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit",
       "files": [
         {
-          "path": "packages/dacs-client/test/helpers/packed-install.mjs",
-          "before": "0519336d2f31674a642da8079aa7365d384f9a95",
-          "after": "85564b54de812d5ae795ea5aca7e567a1819b1e6"
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "7e54669ad2d3b2af37aee198f8f4de382d598186",
+          "after": "bcb216547421660a2cd0de45415cce9a0ad18ba3"
         },
         {
-          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
-          "before": "fc9f5943d11b41eed2ded177c8e0982f1a5e0360",
-          "after": "cb7e6298b275bb6123561c5afa4a52a4981b72bf"
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9",
+          "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test on the retire commit put part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that reserve repeats an unfinished retirement while its finishing write keeps failing",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-retirement.test.mjs",
+          "before": null,
+          "after": "6175c0421d58d74bf403ee1150a32c750011c455"
         }
       ]
     },
