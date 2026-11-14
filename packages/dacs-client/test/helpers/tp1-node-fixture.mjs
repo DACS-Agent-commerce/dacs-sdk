@@ -69,7 +69,9 @@ export async function world(t, { held = false, journalWrap = x => x, ownerWrap =
     owners.push(owner);
     const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: owner.currentLocal(), readAuthority: authority.read });
     const admission = { binding, currentLocal: owner.currentLocal };
-    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...sessionOptions });
+    // A seller composition requires the host's proof that it owns the state directory.
+    const stateOwnership = createSession === api.createNodeSellerComposition ? { stateOwnership: { directory: dir, held: () => true } } : {};
+    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...stateOwnership, ...sessionOptions });
     sessions.push(session);
     return { owner, admission };
   }

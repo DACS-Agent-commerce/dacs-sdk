@@ -8913,6 +8913,158 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee",
+          "after": "89db1bf53f2e62853119805060587931c6b7078f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "1d687234da2ff434291fcea67c4488d8e6614f4d",
+          "after": "04faef5ff305e1763bfe712d51c396fedd2a7fb3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6",
+          "after": "88f40ad0f47ef2f5e11435175c265e01e7140d19"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a",
+          "after": "ff9732c9168110cae498ead2048d51b36ddbbf9a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "42a1d94960ea6b671d6ed387007bd899a2b4e33b",
+          "after": "b20c12b6561dea8fadb54a7e3c52e9f83e0e72e4"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0e9061d13141e783f3fdb484b97f66f9b45253c",
+          "after": "96968641ddf503280b35d21fc0b0708a51783cb2"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "d3bf2b1e65c8736ccd0c09fe42c1e5c11b0bce49",
+          "after": "15e7ac95a7940b8712e966a83885505142afd796"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "7cf6b00589e4818b4fbd876ab327421a6e90cfba",
+          "after": "3ff282a68f7e0551135e6a663a718f8eb655dade"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 fence audited unsigned reservation revisions",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "04faef5ff305e1763bfe712d51c396fedd2a7fb3",
+          "after": "b8d65ab0a50ab2d37f22da6f5d74a41ffb65207a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "96968641ddf503280b35d21fc0b0708a51783cb2",
+          "after": "bb26d97d15d59c621b149847feebd7c7095dbe7e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF finish the signer reservation's terminal steps and startup recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0d4803b0dcf41dd15566abe589f3756ebf2cabce",
+          "after": "7ca77023b701055eb1bf092ff0ce632846f3702b"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "ed1935c77b265ee31428df33d4d85170d1d08d2b",
+          "after": "7e54669ad2d3b2af37aee198f8f4de382d598186"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "8b03bdb1392424fc58763afdabd38e9a28a82598",
+          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "3048034aa3b7af377e090e62be3f1173c1f06ee0",
+          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f",
+          "after": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying the signer part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74",
+          "after": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test after carrying the exports test fix up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8",
+          "after": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "52730e2159bc80c6265d505e401c89810c3d1a80",
+          "after": "52730e2159bc80c6265d505e401c89810c3d1a80"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "d0e4b92a51189b36931096c70db47ffcf44d42c6",
+          "after": "d0e4b92a51189b36931096c70db47ffcf44d42c6"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74",
+          "after": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the public API test and wallet session merged from the signer part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "486970306e8b48607e190ce43ffd2f6f0b46113c",
+          "after": "486970306e8b48607e190ce43ffd2f6f0b46113c"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "52730e2159bc80c6265d505e401c89810c3d1a80",
+          "after": "52730e2159bc80c6265d505e401c89810c3d1a80"
+        }
+      ]
+    },
+    {
       "delta": "D11",
       "subject": "fix(client): D11 keep the packed consumer lock installable on Node 24",
       "files": [

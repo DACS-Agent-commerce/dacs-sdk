@@ -286,6 +286,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 
 - `P21a3aa` — adds the internal signer reservation. New `src/wallet/signer-reservation.mjs` keeps one record per signer in the client durable journal, under the key of the signer's journal lock, and changes it with one put per step under that lock, so a refused or interrupted put leaves the previous record unchanged. `reserve` claims before a nonce is chosen: another operation or key is `signer_lane_busy`, the same operation gets its stored record back without a write or a chain read, and a new claim takes `max(chain + 1, floor)` with a generated attempt id or refuses `invalid_nonce`. `bindApprovalIntent` stores the exact request text, `bindApproval` attaches the ledger id (a null manual id stays in this instance) and `bindSigned` stores the signed projection after checking its hash, signer, nonce and Ed25519 signature; a put that throws is read back. `current` only reads. The module uses the journal's `get`, `put` and `withWalletLock` only. `node-wallet-session.mjs` creates the instance for each seller composition and exposes no member for it; `package.json` ships the new file and `scripts/release-policy.json` pins the new manifest. Terminal transitions and the adapter are not in this change. A record that names a full commit hash accepts any `fix(<area>): ` subject.
 
+- `P21a3ab` — completes the signer reservation's lifecycle on its one record per signer. `retireUnsigned` ends a reservation that has no signed bytes and keeps the floor, and `consume` ends one on an authenticated execution of its exact signed bytes and moves the floor past the nonce. Each first settles the approval ledger's hold by id (`released` or `spent`), which is idempotent, then makes one put, so a crash between the two is finished by repeating the call; a recorded approval intent without an id is looked up by its exact text first, and an unclear answer keeps the reservation. `recover` removes the lock rows of dead holders and retires every reservation without signed bytes; a reservation with signed bytes stays until an execution ends it. `createNodeSellerComposition` now requires `stateOwnership` and runs `recover` before it returns. `releaseAbandonedJournalLocks` keeps only this instance's rows, other live handles of this process and live holders, so a dead holder that had this process's pid is released. `createSignerReservations` takes `openApproval` and `settleApproval`, which refuse by default. Payment-evidence use of these operations remains with the adapter parts.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -1477,6 +1479,35 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 084ebc66416efef054224c570a539ce3e6561666 |
 | WF | fix(wallet): check that no package export reaches the reservation module | Git commit selector fce7c509715ce94ee9153eaad2efe11d27bdef23 |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 5fe427a4c2f7d293a9a1b925e381a4e24346af95 |
+| WF | delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 89db1bf53f2e62853119805060587931c6b7078f |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 04faef5ff305e1763bfe712d51c396fedd2a7fb3 |
+| | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | 88f40ad0f47ef2f5e11435175c265e01e7140d19 |
+| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | ff9732c9168110cae498ead2048d51b36ddbbf9a |
+| | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` | b20c12b6561dea8fadb54a7e3c52e9f83e0e72e4 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 96968641ddf503280b35d21fc0b0708a51783cb2 |
+| | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | 15e7ac95a7940b8712e966a83885505142afd796 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 3ff282a68f7e0551135e6a663a718f8eb655dade |
+| D11 | fix(client): D11 fence audited unsigned reservation revisions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | b8d65ab0a50ab2d37f22da6f5d74a41ffb65207a |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | bb26d97d15d59c621b149847feebd7c7095dbe7e |
+| WF | delta(client): WF finish the signer reservation's terminal steps and startup recovery | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 7ca77023b701055eb1bf092ff0ce632846f3702b |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 7e54669ad2d3b2af37aee198f8f4de382d598186 |
+| | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | 8b03bdb1392424fc58763afdabd38e9a28a82598 |
+| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 3048034aa3b7af377e090e62be3f1173c1f06ee0 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 705b9c4c787df1e2a6b646fc4f3d596354b4aea9 |
+| WF | delta(client): WF record the merged public API test after carrying the signer part up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74 |
+| WF | delta(client): WF record the merged signer reservation test after carrying the exports test fix up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8 |
+| WF | delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 52730e2159bc80c6265d505e401c89810c3d1a80 |
+| | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | d0e4b92a51189b36931096c70db47ffcf44d42c6 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74 |
+| WF | delta(client): WF record the public API test and wallet session merged from the signer part | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 486970306e8b48607e190ce43ffd2f6f0b46113c |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 52730e2159bc80c6265d505e401c89810c3d1a80 |
 | D11 | fix(client): D11 keep the packed consumer lock installable on Node 24 | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/helpers/packed-install.mjs:1` | 85564b54de812d5ae795ea5aca7e567a1819b1e6 |
 | | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | cb7e6298b275bb6123561c5afa4a52a4981b72bf |
@@ -4463,6 +4494,59 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/README.md:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` |
+| delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/test/public-api.test.mjs:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/README.md:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| delta(client): WF finish the signer reservation's terminal steps and startup recovery | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged public API test after carrying the signer part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged signer reservation test after carrying the exports test fix up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the public API test and wallet session merged from the signer part | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -4470,6 +4554,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/helpers/packed-install.mjs:1` |
 | fix(client): D11 keep the packed consumer lock installable on Node 24 | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` |
+| fix(client): end the delta ledger on the last source change | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): end the delta ledger on the last source change | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): end the delta ledger on the last source change | `packages/dacs-client/HOLD.json:1` |
+| fix(client): end the delta ledger on the last source change | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): list the ledger move in the commit inventory | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): list the ledger move in the commit inventory | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): list the ledger move in the commit inventory | `packages/dacs-client/HOLD.json:1` |
+| fix(client): list the ledger move in the commit inventory | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/HOLD.json:1` |
+| fix(client): order the delta ledger so every path ends at its committed blob | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-MAP.md:1` |

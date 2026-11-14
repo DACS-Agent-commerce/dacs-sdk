@@ -1,5 +1,6 @@
 // Internal durable signer reservation: one live write per signer, claimed before a nonce is chosen or anything is signed.
-// This module signs nothing, sends nothing and settles nothing; it only records who may use a signer's next nonce.
+// This module signs nothing and sends nothing; it records who may use a signer's next nonce and settles the approval ledger's
+// hold for that use.
 //
 // Each signer has one record in the journal, under the same key as the signer's journal lock, so every process on the
 // journal file contends for the same row. A stalled holder is never timed out; the journal reclaims only a holder it can
@@ -12,8 +13,19 @@
 // approval is prepared, `bindApproval` attaches the approval ledger's id (a null manual id is kept by this instance only),
 // and `bindSigned` stores the signed bytes. The caller sends the bytes only after `bindSigned` returns them.
 //
+// A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes and moves the floor past
+// the nonce; `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
+// settles the approval ledger's hold by id (`spent` or `released`), which is idempotent, so a crash between the settlement and the
+// put is finished by repeating the call. Signed bytes are never retired: only an execution frees them.
+//
+// `recover` removes the lock rows of other, dead processes, which changes no record, then retires every reservation without signed
+// bytes, which no live caller can finish. It needs the host's ownership proof (the state lock is held and the journal lies inside
+// its directory), never uses elapsed time, and never touches the rows of a live handle in this process.
+//
 // Lock order: the kit writer lock, then the signer lock; the signer lock is never re-entered.
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, relative, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { verifyDemosSignature } from '../signatures.mjs';
 import { sha256Hex } from '../util/ids.mjs';
@@ -25,6 +37,8 @@ const MAX_ID_BYTES = 256;
 const OPERATIONS = ['payment-evidence', 'native', 'artifact'];
 const SIGNATURE_DATA = /^(?:0x)?[a-f0-9]{128}$/;
 const UNCHANGED = Symbol('unchanged');
+const SPENT = Symbol('spent');
+const refused = () => { throw new Error('approval ledger not configured'); };
 
 const isCount = value => Number.isSafeInteger(value) && value >= 0;
 const isHex64 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -33,6 +47,30 @@ const isText = (value, limit = MAX_ID_BYTES) => typeof value === 'string' && val
 
 function fail(code, detail = code) { throw Object.assign(new Error(code, { cause: detail instanceof Error ? detail : new Error(detail) }), { code }); }
 function check(condition, message) { if (!condition) fail('signer_reservation_invalid', message); }
+
+/**
+ * Removes the lock rows of other, dead processes from a client durable journal and changes no record. Requires the host's
+ * ownership proof `{directory, held()}`: `held()` must resolve true and the journal's real path must lie inside the real
+ * directory. Never removes a row of this journal handle, of another live handle in this process or of a holder that is still
+ * alive, and never by elapsed time. A dead holder that had this process's pid (a restart in a container, or after a reboot) is released.
+ * Returns `{released: [lock keys]}`. Throws `state_ownership_required` (cause kept) without the proof.
+ */
+export async function releaseAbandonedJournalLocks({ journal, stateOwnership } = {}) {
+  let proven = false, reason;
+  try {
+    const inside = relative(realpathSync(stateOwnership.directory), realpathSync(journal.path));
+    proven = (await stateOwnership.held()) === true && inside !== '' && inside !== '..' && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
+  } catch (error) { reason = error; }
+  if (!proven) fail('state_ownership_required', reason);
+  check(['inspectLocks', 'releaseAbandonedLock'].every(name => typeof journal[name] === 'function'), 'journal lock recovery required');
+  const released = [];
+  for (const row of journal.inspectLocks()) {
+    if (row.thisInstance || row.holder === 'this-process' || row.holder === 'live') continue;
+    journal.releaseAbandonedLock({ key: row.key, instance: row.instance, fence: row.fence });
+    released.push(row.key);
+  }
+  return { released };
+}
 
 // The signed projection must be the transaction this signer signed for this nonce: its hash is the digest of its content
 // and its Ed25519 signature over that hash verifies against the signer's key.
@@ -49,13 +87,16 @@ function validateSigned(signed, signer, nonce) {
 
 /**
  * Creates the reservation steps over a durable journal that has `get`, `put` and `withWalletLock`. `pins` supplies the
- * network, chain identity and pin version every record carries. Returns `reserve`, `bindApprovalIntent`, `bindApproval`,
- * `bindSigned` and the read-only `current(signer)`, which returns the signer's record or null.
+ * network, chain identity and pin version every record carries. `openApproval(requestText)` resolves null or the one open
+ * `{ledgerId, requestText}` for those exact bytes; `settleApproval(ledgerId, outcome, reason)` settles by id and is idempotent
+ * for the same outcome. Both refuse until supplied. Returns `reserve`, `bindApprovalIntent`, `bindApproval`, `bindSigned`,
+ * `retireUnsigned`, `consume`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
  * Throws `signer_reservation_invalid` for a malformed record or argument, `signer_reservation_stale` for a handle that is
- * not the stored record, `signer_reservation_uncertain` when a failed write cannot be read back, `signer_lane_busy` and
- * `invalid_nonce`; journal errors such as `journal-capacity` pass through. Each keeps the original error as its `cause`.
+ * not the stored record, `signer_reservation_uncertain` when a failed write cannot be read back, `signer_lane_busy`,
+ * `invalid_nonce`, `approval_lookup_refused`, `signer_settlement_failed` and `signer_execution_unproven`; journal errors such
+ * as `journal-capacity` pass through. Each keeps the original error as its `cause`.
  */
-export function createSignerReservations({ journal, pins } = {}) {
+export function createSignerReservations({ journal, pins, openApproval = refused, settleApproval = refused } = {}) {
   check(['get', 'put', 'withWalletLock'].every(name => typeof journal?.[name] === 'function'), 'durable journal required');
   check(pins?.network === 'demos-testnet' && isHex64(pins.chainIdentity) && isText(pins.pinVersion), 'trusted pins required');
   const manualApprovals = new Map();
@@ -87,17 +128,19 @@ export function createSignerReservations({ journal, pins } = {}) {
     return record;
   }
   // Runs `step` on the stored record under the signer's lock; a handle that is not the stored record is stale.
-  // `step` returns the next `active`, or UNCHANGED to return the stored record without a write.
+  // `step` returns the next `active`, UNCHANGED to return the stored record without a write, null to end the reservation
+  // keeping the floor, or SPENT to end it with the floor past its nonce.
   async function update(reservation, step) {
     check(isAddress(reservation?.signer), 'reservation required');
     return journal.withWalletLock(keyOf(reservation.signer), async () => {
       const record = await readRecord(reservation.signer);
       if (!isDeepStrictEqual(record, reservation)) fail('signer_reservation_stale');
       check(record.active !== null, 'active reservation required');
-      const active = step(record);
+      const active = await step(record);
       if (active === UNCHANGED) return record;
-      check(isCount(record.revision + 1), 'revision exhausted');
-      return write({ ...record, revision: record.revision + 1, active });
+      const spent = active === SPENT;
+      check(isCount(record.revision + 1) && (!spent || isCount(record.active.nonce + 1)), 'revision or nonce exhausted');
+      return write({ ...record, revision: record.revision + 1, floor: spent ? Math.max(record.floor, record.active.nonce + 1) : record.floor, active: spent ? null : active });
     });
   }
 
@@ -169,5 +212,64 @@ export function createSignerReservations({ journal, pins } = {}) {
       return { ...active, signed };
     });
   }
-  return Object.freeze({ reserve, bindApprovalIntent, bindApproval, bindSigned, current: readRecord });
+
+  async function settle(ledgerId, outcome, reason) {
+    if (ledgerId === null) return;
+    try { await settleApproval(ledgerId, outcome, reason); } catch (cause) { fail('signer_settlement_failed', cause); }
+  }
+  // The ledger id to settle for a reservation, or null when it holds none. An unsigned reservation with an intent and no id may
+  // hold an approval whose id a crash left unrecorded: it is looked up by the exact intent text, and an answer that is not one
+  // exact open approval refuses, so a possible hold is never dropped. A signed one without an id was a manual grant.
+  async function approvalOf({ signer, revision, active }) {
+    if (active.approvalId !== null) return active.approvalId;
+    if (active.signed !== null || active.approvalIntent === null || manualApprovals.get(signer) === revision) return null;
+    let found;
+    try { found = await openApproval(active.approvalIntent); } catch (cause) { fail('approval_lookup_refused', cause); }
+    if (found === null) return null;
+    if (!(isText(found?.ledgerId) && found.requestText === active.approvalIntent)) fail('approval_lookup_refused', 'the lookup did not return one exact open approval');
+    return found.ledgerId;
+  }
+
+  /**
+   * Ends a reservation that has no signed bytes: settles its approval released, then in one write clears the claim and keeps
+   * the floor, so the nonce can be chosen again. A recorded intent without an id is looked up first (`approval_lookup_refused`
+   * keeps the reservation). Refuses signed bytes. The handle is stale afterwards. Returns the stored record, whose `active` is null.
+   */
+  async function retireUnsigned(reservation) {
+    return update(reservation, async record => {
+      check(record.active.signed === null, 'signed bytes cannot be retired as unsigned');
+      await settle(await approvalOf(record), 'released', 'unsigned-retired');
+      return null;
+    });
+  }
+  /**
+   * Ends a reservation on an authenticated execution of its exact signed bytes: `observation` is
+   * `{status: 'executed', authenticated: true, txHash, projectionText}` from the lane's reader. Settles the approval spent, then
+   * in one write clears the claim and moves the floor past the nonce. Anything else (pending, failed, unauthenticated, other
+   * bytes) is `signer_execution_unproven` and changes nothing. The handle is stale afterwards. Returns the stored record.
+   */
+  async function consume(reservation, observation) {
+    return update(reservation, async ({ active }) => {
+      check(active.signed !== null, 'signed bytes required');
+      const { txHash, projectionText } = active.signed;
+      if (!(observation?.status === 'executed' && observation.authenticated === true && observation.txHash === txHash && observation.projectionText === projectionText)) fail('signer_execution_unproven');
+      await settle(active.approvalId, 'spent', 'executed');
+      return SPENT;
+    });
+  }
+  /**
+   * Removes the lock rows of dead holders (see `releaseAbandonedJournalLocks`, same proof and refusal), then retires every
+   * reservation without signed bytes. A reservation with signed bytes is kept: it ends only on an execution. Signs and sends
+   * nothing. Throws `state_ownership_required` or the refusal of a retirement.
+   */
+  async function recover({ stateOwnership } = {}) {
+    await releaseAbandonedJournalLocks({ journal, stateOwnership });
+    check(typeof journal.entries === 'function', 'journal entries required');
+    for (const [key, row] of await journal.entries()) {
+      if (!key.startsWith(`${KEY_ROOT}/`) || key !== keyOf(row?.signer)) continue;
+      const record = await readRecord(row.signer);
+      if (record.active?.signed === null) await retireUnsigned(record);
+    }
+  }
+  return Object.freeze({ reserve, bindApprovalIntent, bindApproval, bindSigned, retireUnsigned, consume, recover, current: readRecord });
 }

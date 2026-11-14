@@ -12,15 +12,20 @@ const trap = installNoEgress();
 test.after(() => { trap.restore(); assert.deepEqual(trap.attempts, []); });
 // Imported late so that, before the module exists, each test fails on its own instead of the whole file failing to load.
 const module = await import('../src/wallet/signer-reservation.mjs').catch(error => ({ error }));
-const create = journal => { if (module.error) throw module.error; return module.createSignerReservations(options(journal)); };
+const create = (journal, ledger) => { if (module.error) throw module.error; return module.createSignerReservations({ ...options(journal), ...ledger }); };
 const REQUEST = 'TEST-exact-request';
 const LEDGER = { ledgerId: 'TEST-ledger', requestText: REQUEST };
-function world(t, { wrap = journal => journal, limits = {} } = {}) {
+// The approval ledger's two calls, recorded. `open` answers the lookup; `settle` may throw.
+function ledgerDouble({ open = async () => null, settle = async () => {} } = {}) {
+  const settled = [];
+  return { settled, openApproval: open, settleApproval: async (ledgerId, outcome, reason) => { await settle(ledgerId, outcome, reason); settled.push([ledgerId, outcome, reason]); } };
+}
+function world(t, { wrap = journal => journal, limits = {}, ledger } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'signer-reservation-')), path = join(directory, 'wallet.sqlite');
   const journal = open(path, 'create', limits), handles = [journal];
   const reopen = () => { const next = open(path, 'open', limits); handles.push(next); return next; };
   t.after(() => { for (const handle of handles) handle.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { path, journal, reopen, reservations: create(wrap(journal)) };
+  return { path, journal, reopen, ownership: { directory, held: async () => true }, reservations: create(wrap(journal), ledger) };
 }
 // Only the three members the reservation needs, so every test also shows it uses nothing else of the journal.
 const narrow = (journal, put = (key, value) => journal.put(key, value), get = key => journal.get(key)) => ({ get, put, withWalletLock: (key, work) => journal.withWalletLock(key, work) });
@@ -292,6 +297,177 @@ test('the whole flow fits a journal of one record, and a full journal refuses re
   await full.journal.put('TEST-other-record', { value: 1 });
   await rejectCode(full.reservations.reserve(args()), 'journal-capacity');
   assert.deepEqual((await full.journal.entries()).map(([key]) => key), ['TEST-other-record']);
+});
+
+const executed = (bytes, change = {}) => ({ status: 'executed', authenticated: true, txHash: bytes.txHash, projectionText: bytes.projectionText, ...change });
+const failOnce = () => { let failed = false; return () => { if (failed) return; failed = true; throw new Error('TEST-put-refused'); }; };
+
+test('retireUnsigned settles the approval released, keeps the floor and frees the signer: the nonce is chosen again and the old handle is stale', async t => {
+  const ledger = ledgerDouble(), w = world(t, { ledger });
+  const reservation = await approved(w.reservations), retired = await w.reservations.retireUnsigned(reservation);
+  assert.equal(retired.active, null);
+  assert.equal(retired.floor, 0);
+  assert.deepEqual(ledger.settled, [[LEDGER.ledgerId, 'released', 'unsigned-retired']]);
+  await rejectCode(w.reservations.bindSigned(reservation, signed()), 'signer_reservation_stale');
+  await rejectCode(w.reservations.retireUnsigned(reservation), 'signer_reservation_stale');
+  const next = await w.reservations.reserve(args('TEST-evidence-b'));
+  assert.equal(next.nonce, 1);
+  assert.equal(next.reservation.floor, 0);
+  assert.equal(ledger.settled.length, 1);
+});
+
+test('retireUnsigned refuses signed bytes and changes nothing', async t => {
+  const ledger = ledgerDouble(), w = world(t, { ledger });
+  const reservation = await w.reservations.bindSigned(await approved(w.reservations), signed());
+  await rejectCode(w.reservations.retireUnsigned(reservation), 'signer_reservation_invalid');
+  assert.deepEqual(await w.reservations.current(signer), reservation);
+  assert.deepEqual(ledger.settled, []);
+});
+
+async function withIntent(t, answer) {
+  const looked = [], ledger = ledgerDouble({ open: async text => { looked.push(text); if (answer instanceof Error) throw answer; return answer; } }), w = world(t, { ledger });
+  const { reservation } = await w.reservations.reserve(args());
+  return { w, ledger, looked, intent: await w.reservations.bindApprovalIntent(reservation, REQUEST) };
+}
+
+test('a recorded intent without a ledger id is looked up by its exact text before retirement: the open approval found is released, none found settles nothing', async t => {
+  const found = await withIntent(t, { ...LEDGER });
+  assert.equal((await found.w.reservations.retireUnsigned(found.intent)).active, null);
+  assert.deepEqual(found.looked, [REQUEST]);
+  assert.deepEqual(found.ledger.settled, [[LEDGER.ledgerId, 'released', 'unsigned-retired']]);
+  const none = await withIntent(t, null);
+  assert.equal((await none.w.reservations.retireUnsigned(none.intent)).active, null);
+  assert.deepEqual(none.ledger.settled, []);
+});
+
+test('an unavailable, inexact, empty or malformed lookup answer keeps the reservation and its intent and releases nothing', async t => {
+  const answers = [new Error('TEST-lookup-down'), { ledgerId: 'TEST-other', requestText: REQUEST + ' ' }, { ledgerId: '', requestText: REQUEST }, 'TEST-text', undefined, [{ ...LEDGER }]];
+  for (const answer of answers) {
+    const { w, ledger, intent } = await withIntent(t, answer);
+    await assert.rejects(w.reservations.retireUnsigned(intent), error => error.code === 'approval_lookup_refused' && (!(answer instanceof Error) || error.cause === answer));
+    assert.deepEqual(await w.reservations.current(signer), intent);
+    assert.deepEqual(ledger.settled, []);
+  }
+});
+
+test('a manual grant is retired without a lookup or a settlement', async t => {
+  const { w, ledger, looked, intent } = await withIntent(t, new Error('TEST-lookup-must-not-run'));
+  const manual = await w.reservations.bindApproval(intent, { ledgerId: null, requestText: REQUEST });
+  assert.equal((await w.reservations.retireUnsigned(manual)).active, null);
+  assert.deepEqual(looked, []);
+  assert.deepEqual(ledger.settled, []);
+});
+
+test('consume ends the reservation only on an authenticated execution of the exact bytes: pending, failed, unauthenticated and other bytes change nothing; the real one settles spent and moves the floor', async t => {
+  const ledger = ledgerDouble(), w = world(t, { ledger }), bytes = signed();
+  const reservation = await w.reservations.bindSigned(await approved(w.reservations), bytes);
+  for (const change of [{ status: 'pending' }, { status: 'failed' }, { authenticated: false }, { authenticated: 'true' }, { txHash: '0'.repeat(64) }, { projectionText: bytes.projectionText + ' ' }]) {
+    await rejectCode(w.reservations.consume(reservation, executed(bytes, change)), 'signer_execution_unproven');
+  }
+  await rejectCode(w.reservations.consume(reservation, undefined), 'signer_execution_unproven');
+  assert.deepEqual(await w.reservations.current(signer), reservation);
+  assert.deepEqual(ledger.settled, []);
+  const consumed = await w.reservations.consume(reservation, executed(bytes));
+  assert.equal(consumed.active, null);
+  assert.equal(consumed.floor, 2);
+  assert.deepEqual(ledger.settled, [[LEDGER.ledgerId, 'spent', 'executed']]);
+  await rejectCode(w.reservations.consume(reservation, executed(bytes)), 'signer_reservation_stale');
+  assert.equal(ledger.settled.length, 1, 'a repeated consume settles nothing again');
+  assert.equal((await w.reservations.reserve(args('TEST-evidence-b'))).nonce, 2, 'the floor beats a stale chain answer of 0');
+});
+
+test('consume refuses a reservation without signed bytes', async t => {
+  const w = world(t, { ledger: ledgerDouble() }), reservation = await approved(w.reservations);
+  await rejectCode(w.reservations.consume(reservation, executed(signed())), 'signer_reservation_invalid');
+  assert.deepEqual(await w.reservations.current(signer), reservation);
+});
+
+test('a manual grant is consumed without a settlement', async t => {
+  const ledger = ledgerDouble(), w = world(t, { ledger }), bytes = signed();
+  const { reservation } = await w.reservations.reserve(args()), intent = await w.reservations.bindApprovalIntent(reservation, REQUEST);
+  const manual = await w.reservations.bindSigned(await w.reservations.bindApproval(intent, { ledgerId: null, requestText: REQUEST }), bytes);
+  assert.equal((await w.reservations.consume(manual, executed(bytes))).floor, 2);
+  assert.deepEqual(ledger.settled, []);
+});
+
+test('a put that fails after the settlement leaves the reservation whole, and repeating the call finishes it: the settlement is the same id and outcome', async t => {
+  for (const [name, finish] of [['consume', (reservations, held, bytes) => reservations.consume(held, executed(bytes))], ['retireUnsigned', (reservations, held) => reservations.retireUnsigned(held)]]) {
+    const ledger = ledgerDouble(), refuse = failOnce(), bytes = signed();
+    const w = world(t, { ledger, wrap: journal => narrow(journal, async (key, value) => { if (value.active === null) refuse(); return journal.put(key, value); }) });
+    const approvedHeld = await approved(w.reservations), held = name === 'consume' ? await w.reservations.bindSigned(approvedHeld, bytes) : approvedHeld;
+    await assert.rejects(finish(w.reservations, held, bytes), { message: 'TEST-put-refused' });
+    assert.deepEqual(await w.reservations.current(signer), held, `${name}: the previous record is unchanged`);
+    assert.equal((await finish(w.reservations, held, bytes)).active, null);
+    assert.equal(new Set(ledger.settled.map(row => row.join('/'))).size, 1, `${name}: one id and outcome settled`);
+    assert.equal((await w.reservations.current(signer)).floor, name === 'consume' ? 2 : 0);
+  }
+});
+
+test('a settlement that throws keeps the reservation, the original cause and a way to repeat', async t => {
+  let down = true;
+  const ledger = ledgerDouble({ settle: async () => { if (down) throw new Error('TEST-ledger-down'); } }), w = world(t, { ledger }), bytes = signed();
+  const reservation = await w.reservations.bindSigned(await approved(w.reservations), bytes);
+  await assert.rejects(w.reservations.consume(reservation, executed(bytes)), error => error.code === 'signer_settlement_failed' && error.cause.message === 'TEST-ledger-down');
+  assert.deepEqual(await w.reservations.current(signer), reservation);
+  down = false;
+  assert.equal((await w.reservations.consume(reservation, executed(bytes))).active, null);
+  assert.equal(ledger.settled.length, 1);
+});
+
+test('recover retires every reservation without signed bytes and keeps signed ones; a second recover changes nothing', async t => {
+  const ledger = ledgerDouble(), w = world(t, { ledger }), bytes = signed({ address: otherSigner });
+  await approved(w.reservations);
+  const kept = await w.reservations.bindSigned(await approved(w.reservations, args('TEST-evidence-b', otherSigner)), bytes);
+  const reopened = create(w.reopen(), ledger);
+  await reopened.recover({ stateOwnership: w.ownership });
+  const retired = await reopened.current(signer);
+  assert.equal(retired.active, null);
+  assert.equal(retired.floor, 0);
+  assert.deepEqual(await reopened.current(otherSigner), kept);
+  assert.deepEqual(ledger.settled, [[LEDGER.ledgerId, 'released', 'unsigned-retired']]);
+  await reopened.recover({ stateOwnership: w.ownership });
+  assert.deepEqual(await reopened.current(signer), retired);
+  assert.equal(ledger.settled.length, 1);
+  assert.equal((await reopened.reserve(args('TEST-evidence-c'))).nonce, 1, 'the retired nonce can be reserved again');
+  await rejectCode(reopened.reserve(args('TEST-evidence-c', otherSigner)), 'signer_lane_busy');
+});
+
+test('recover on an empty journal, or one with a record of another chain, writes nothing and reserves nothing', async t => {
+  const w = world(t, { ledger: ledgerDouble() });
+  await w.reservations.recover({ stateOwnership: w.ownership });
+  assert.deepEqual(await w.journal.entries(), []);
+  await w.journal.put(recordKey(signer).replace(/"[a-f0-9]{64}"/, `"${'f'.repeat(64)}"`),{ format: 'dacs-signer-reservation/v3', signer, active: { nonce: 1 } });
+  const before = await w.journal.entries();
+  await w.reservations.recover({ stateOwnership: w.ownership });
+  assert.deepEqual(await w.journal.entries(), before);
+});
+
+test('recover refuses without a valid ownership proof before it changes anything', async t => {
+  const ledger = ledgerDouble(), w = world(t, { ledger }), reservation = await approved(w.reservations), outside = mkdtempSync(join(tmpdir(), 'signer-reservation-outside-'));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  for (const proof of [undefined, {}, { directory: w.ownership.directory }, { ...w.ownership, held: async () => false }, { ...w.ownership, held: async () => { throw new Error('TEST-proof-down'); } },
+    { directory: outside, held: async () => true }, { directory: join(w.ownership.directory, 'missing'), held: async () => true }]) {
+    await rejectCode(w.reservations.recover({ stateOwnership: proof }), 'state_ownership_required');
+  }
+  assert.deepEqual(await w.reservations.current(signer), reservation);
+  assert.deepEqual(ledger.settled, []);
+});
+
+test('a lock row of a dead holder that had this process\'s pid is released; this instance, this process and a live holder are kept', async t => {
+  const w = world(t), row = (key, extra) => ({ key, instance: 'TEST-instance', fence: 1, pid: process.pid, thisInstance: false, holder: 'no-identity', ...extra });
+  const rows = [row('dead'), row('mine', { thisInstance: true, holder: 'this-process' }), row('sibling', { holder: 'this-process' }), row('alive', { holder: 'live' }), row('boot', { holder: 'other-boot' })];
+  const released = [], journal = { path: w.path, inspectLocks: () => rows, releaseAbandonedLock: ({ key }) => released.push(key) };
+  assert.deepEqual(await module.releaseAbandonedJournalLocks({ journal, stateOwnership: w.ownership }), { released: ['dead', 'boot'] });
+  assert.deepEqual(released, ['dead', 'boot']);
+});
+
+test('recovery keeps the lock row of another live handle in this process and releases no reservation', async t => {
+  const w = world(t, { ledger: ledgerDouble() }), reservation = await approved(w.reservations), other = w.reopen();
+  await w.journal.withWalletLock(recordKey(otherSigner), async () => {
+    assert.deepEqual(await module.releaseAbandonedJournalLocks({ journal: other, stateOwnership: w.ownership }), { released: [] });
+    assert.equal(other.inspectLocks().length, 1);
+  });
+  assert.deepEqual(await w.reservations.current(signer), reservation);
 });
 
 test('the package exports expose no reservation member; only the composition reaches it', async t => {
