@@ -27,7 +27,7 @@
     "src/dacs/seller-http.mjs", "src/dacs/seller-response-class.mjs",
     "src/dacs/seller-session-lifecycle.mjs",
     "src/dacs/seller-sr2-agreement-consumer.mjs", "src/dacs/seller-wire-authentication.mjs",
-    "src/dacs/source-demo-seller-transport.mjs", "src/dacs/verification.mjs",
+    "src/dacs/source-demo-seller-transport.mjs", "src/dacs/tp1-authority-label.mjs", "src/dacs/verification.mjs",
     "src/dacs/wallet-transactions.mjs", "src/devnet-demo/commitment-consumer.mjs",
     "src/devnet-demo/deliverable.mjs", "src/devnet-demo/issued-readback.mjs",
     "src/devnet-demo/operator-approval.mjs", "src/devnet-demo/stop-request.mjs",
