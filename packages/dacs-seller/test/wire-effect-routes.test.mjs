@@ -4,7 +4,9 @@ import { spawnSync } from 'node:child_process';
 import DatabaseSync from 'better-sqlite3';
 import { NO_EFFECT_ERRORS, SellerAgentError, transportOutcome } from '../src/dacs/seller-agent.mjs';
 import { NOW, testWallet } from './helpers/protocol-fixture.mjs';
-import { BUYER as WORLD_BUYER, DELIVERED, HELD, LISTING, answeredStatus, PIN as WORLD_PIN, SELLER as WORLD_SELLER, completions, continuingWorld, derive, identityBody, jobFor, operationOf, proposalFor, proposeJob, reconcilingWith, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
+import { BUYER as WORLD_BUYER, DELIVERED, HELD, LISTING, answeredStatus, PIN as WORLD_PIN, SELLER as WORLD_SELLER, completions, continuingWorld, derive, identityBody, jobFor, operationOf, proposalFor, proposeJob, reconcilingWith, SESSION, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
+import { PAYMENT_TX, fixturePaymentWorld } from './helpers/wire-payment-fixture.mjs';
+import { createOperatorBuyerAccess } from '../src/devnet-demo/buyer-access.mjs';
 import { canonicalize, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
 import { fixtureIdentityBundle } from './fixtures/listings.mjs';
 import { agreementInput } from '../src/dacs/purchase-protocol.mjs';
@@ -12,7 +14,7 @@ import { wireBuyer } from './helpers/wire-buyer.mjs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
-import { createOrdinaryCompletionPort, createSellerHttpHandler, endWireAttempt } from '../src/dacs/seller-http.mjs';
+import { createCompletedOutcomeReader, createOrdinaryCompletionPort, createSellerHttpHandler, endWireAttempt } from '../src/dacs/seller-http.mjs';
 import { SellerTransportError, createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { BUYER, JOB, JOB2, PIN, SELLER, T0, accountingFixture, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 
@@ -864,4 +866,57 @@ test('a recovered payment under a changed claim is held and runs no intake', asy
   assert.deepEqual({ status: changed.status, error: changed.body.error, signed: changed.signed }, { status: 503, error: 'operation_uncertain', signed: true }, 'the changed claim is held');
   assert.equal(intake, 1, 'no intake ran for the changed claim');
   assert.equal(completions(w).filter((row) => row.route === PATHS.payments).length, 0, 'nothing was completed');
+});
+
+test('a completed fixture payment at zero free capacity answers the same signed request twice after checking its sources', async t => {
+  const w = await fixturePaymentWorld(t);
+  const first = await w.pay();
+  assert.deepEqual([first.status, first.body.status], [200, 'delivered']);
+  // Another purchase holds one allotment and the records are full to it, so the store has no free capacity.
+  const { used, allotment } = w.handle.capacity.capacityReport();
+  sellerStoreInternals(w.handle.store).transaction(() => w.handle.capacity.allocateWithin({ jobId: jobFor('other-purchase'), buyer: WORLD_BUYER.claim, seller: WORLD_SELLER.claim, listingPin: WORLD_PIN }));
+  w.reopen({ maxRecords: used + allotment });
+  assert.equal(w.handle.capacity.capacityReport().free, 0);
+  const revalidate = w.agent.revalidateCompletedAnswer, credit = w.agent.assertSettlementCredit, revalidated = [], credited = [];
+  w.agent.revalidateCompletedAnswer = async (input) => { revalidated.push(input.outcome.text); return revalidate(input); };
+  w.agent.assertSettlementCredit = (jobId) => { credited.push(jobId); return credit(jobId); };
+  const snapshot = () => ({ rows: w.rows(), files: w.journalFiles(), capacity: w.handle.capacity.capacityReport(), evidence: w.evidenceSignatures(), writes: [w.evidenceCreates(), w.deliverableWrites(), w.deliveryEvidenceWrites()] });
+  const body = w.bodyOf(w.jobId, PAYMENT_TX), agreementHash = w.agreementHashes.get(w.jobId);
+  const signed = await w.buyerWire.signRequest(PATHS.payments, body, { jobId: w.jobId, agreementHash }), before = snapshot();
+  for (let n = 0; n < 2; n++) assert.deepEqual(await w.send(PATHS.payments, signed).then((answer) => [answer.status, answer.text]), [200, first.text], 'the stored bytes are answered');
+  assert.equal(revalidated.length, 2, 'each call read the sources again');
+  assert.equal(credited.length, 2, 'and checked the credit once');
+  assert.deepEqual(snapshot(), before, 'no nonce file, row, unit, attempt or effect');
+  // The reader of settled operations, with the payment revalidator and one awaited credit check as its callback.
+  const reader = createCompletedOutcomeReader({ journal: w.handle.wire.journal, seller: WORLD_SELLER.claim }), { binding } = operationOf(w, w.jobId, PATHS.payments);
+  const settled = () => reader.completedOutcomeWithoutReservation({ path: PATHS.payments, jobId: w.jobId, binding, revalidate: async (outcome) => {
+    await revalidate({ path: PATHS.payments, jobId: w.jobId, outcome });
+    await w.agent.assertSettlementCredit(w.jobId);
+  } });
+  for (let n = 0; n < 2; n++) assert.deepEqual(await settled(), { status: 200, text: first.text });
+  assert.deepEqual(snapshot(), before, 'the reader reserves nothing either');
+  // A source that fails withholds the answer on each call and changes nothing.
+  w.script.observe = async () => ({ status: 'pending', reason: 'demos-pending' });
+  for (let n = 0; n < 2; n++) {
+    const refused = await w.send(PATHS.payments, signed);
+    assert.deepEqual([refused.status, refused.body.error, refused.body.cause, refused.signed], [503, 'seller_source_unavailable', 'unavailable', true]);
+    await assert.rejects(settled(), (error) => error.code === 'seller_source_unavailable');
+  }
+  assert.deepEqual(snapshot(), before);
+  assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed', 'the outcome is unchanged');
+  w.script.observe = null;
+  // Once the delegation has expired the wire refuses the completed replay before any route runs: the stored bytes are not answered.
+  const delegation = w.delegationFor({ jobId: w.jobId, expiresAt: w.state.time + 10_000 });
+  const delegated = await w.buyerWire.signRequest(PATHS.payments, body, { jobId: w.jobId, agreementHash, delegation, signer: SESSION });
+  w.state.time += 15_000;
+  const readback = await w.send(PATHS.payments, delegated);
+  assert.equal(readback.status, 408);
+  assert.notEqual(readback.text, first.text);
+  assert.deepEqual(snapshot(), before);
+  // Closed buyer access withholds the replay with its own refusal.
+  w.f.config.buyerAccess = createOperatorBuyerAccess({ openBuyerAccess: false, custodyBuyer: testWallet(9).claim });
+  await w.f.reopen();
+  const closed = await w.send(PATHS.payments, signed);
+  assert.deepEqual([closed.status, closed.body.error, closed.signed], [409, 'buyer_access_closed', true]);
+  assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed');
 });

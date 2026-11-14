@@ -160,12 +160,18 @@ or `unreadable`); nothing is migrated. A new transport store over a
 Signed effect routes reserve through one reservation coordinator, which commits
 accounting before the wire journal publishes their attempt. A final answer
 completes the operation and returns its route slot; a later request is answered
-from it, after the existing source checks. An answer that is not final yet (a
-`waiting` proposal, a `held` payment) ends the attempt without an outcome, and
-the next request recovers at once, the agent reconciling first. An uncertain
+from it, after the existing source checks. A `waiting` proposal that kept no work
+ends the attempt without an outcome, and the next request recovers at once, the
+agent reconciling first. Retained payment work keeps its attempt open instead: a
+`held` payment, or evidence whose delivery is not done, is not ended and not
+stored. A payment that kept nothing (`indeterminate` before the evidence
+checkpoint, or `rejected`) still ends without an outcome. An uncertain or open
 attempt stays open: a request inside its 300 s lease gets `seller_effect_pending`,
-and the first after it recovers; after 16 lapsed attempts the operation answers
-`seller_effect_unresolved`. Signed reads create no reservation rows or journal files.
+and the first after it recovers, spending one of 16 attempts at each lapse; after
+16 lapsed attempts the operation answers `seller_effect_unresolved`. A final
+payment answer is stored only after its sources are read again, and returns the
+purchase's remaining capacity once. Signed reads create no reservation rows or
+journal files.
 
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
@@ -372,9 +378,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, ends the attempt without an outcome, and the buyer's next request
-  recovers at once and runs the agent's retained work again (reading back
-  first), and a different claim for the job is still
+  done yet, keeps the attempt open: the first request after its 300 s lease
+  recovers and runs the agent's retained work again (reading back first), and a
+  different claim for the job is still
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
   node or name-index outage) is a `held` answer with its cause
@@ -389,15 +395,21 @@ per-client limiter so one client cannot exhaust the shared request budget.
   as on the ordinary path, so the buyer's corrected claim reaches payment
   intake. Until a gate that refuses the claim (a closed buyer access, an
   unusable rail) passes again, its claims answer `503 operation_uncertain` and
-  run again on the next one. Once the agent retains work for a claim, no
-  answer or refusal of it releases its slot: a different claim for the job is
-  refused until it is delivered. A transaction hash is read as core payment
+  run again on the next one. Once the agent retains payment work for a job, no
+  answer or refusal of any claim for it ends the attempt without an outcome: a
+  different claim for the job is refused until it is delivered. A transaction
+  hash is read as core payment
   intake reads it (lower case, with or without `0x`). Under a seller session
-  delegation that has expired, a held claim answers its last answer and an
-  uncertain one stays uncertain: neither runs again, since a run can sign and
-  send. A cached completed payment refresh also rechecks request and delegation
-  expiry inside the job fence and before authorizing a native CREATE; expiry
-  while waiting refuses the refresh without changing its cached claim.
+  delegation that has expired, the wire refuses the request before any route
+  runs: a held claim and an uncertain one do not run again, since a run can sign
+  and send. A completed payment is signed again only after its sources are read
+  again, read only: the original transaction, the permit, the evidence, the
+  Deliverable and the delivery evidence. A source that cannot confirm it answers
+  `503 seller_source_unavailable` with its cause (`absent`, `changed`,
+  `timeout`, `too_large` or `unavailable`) and the stored outcome stays. The same
+  check runs before a final answer is first stored. A completed payment answers
+  only its own claim: another transaction or payer is refused
+  (`payment_already_recorded`).
   The Deliverable is submitted again only on an absence that is
   authoritative (the agent never asked for it, or the delivery reader proved
   nothing was signed); a readback that misses or fails holds the delivery. A

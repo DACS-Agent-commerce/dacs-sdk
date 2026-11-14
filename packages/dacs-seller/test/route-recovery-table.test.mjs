@@ -8,7 +8,10 @@ import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createOperatorBuyerAccess } from '../src/devnet-demo/buyer-access.mjs';
 import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { WIRE_ROUTE_PATHS } from '../src/dacs/seller-wire-requests.mjs';
+import DatabaseSync from 'better-sqlite3';
+import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { JOB, testWallet } from './helpers/protocol-fixture.mjs';
+import { EVIDENCE_SIGNATURE, fixturePaymentWorld } from './helpers/wire-payment-fixture.mjs';
 import { BUYER, SELLER, PIN, continuingWorld, derive, jobFor, proposeJob, world } from './helpers/wire-routes-world.mjs';
 import { BUNDLE_REFUSALS, SHORT_LEASE_MS, bundleWorld, claimedTransport, completions, editSession, markPaid, operationOf, proposalSigningRig, reconcileInput, realWorld, tempDirectory } from './helpers/route-recovery-world.mjs';
 
@@ -491,4 +494,67 @@ test('native passive read and readRetained never recover a pending accepted CREA
     anchor.publish = publish;
     assert.equal((await c.commitmentRequest()).status, 200, 'restored authentic inclusion permits the replay again');
   }
+});
+
+// ---- A final payment's capacity ----
+
+// The seller's allocation for the job of a payment world, with the payments route reserving a purchase slot.
+async function purchaseWorld(t, options) {
+  const w = await fixturePaymentWorld(t, options);
+  w.handle.wireOverrides = { capacity: { retainedAllocated: ({ route }) => route === PATHS.payments } };
+  w.reopen();
+  sellerStoreInternals(w.handle.store).transaction(() => w.handle.capacity.allocateWithin({ jobId: w.jobId, buyer: BUYER.claim, seller: SELLER.claim, listingPin: listingPin(w.f.listing) }));
+  const allocation = () => w.handle.capacity.capacityReport().allocations.find((entry) => entry.jobId === w.jobId);
+  const figures = () => { const { used, allotted } = w.handle.capacity.capacityReport(); return { used, allotted }; };
+  return { ...w, allocation, figures };
+}
+const finished = (w) => completions(w).filter((row) => row.route === PATHS.payments);
+
+test('a final payment returns its route slot and the remaining purchase once', async (t) => {
+  for (const commitOnSignature of [true, false]) for (const recovered of [false, true]) {
+    const w = await purchaseWorld(t, { commitOnSignature }), cell = `commit on signature ${commitOnSignature}, recovered ${recovered}`;
+    const live = w.allocation(), allotted = w.figures().allotted;
+    assert.deepEqual([live.state, live.rev], ['live', 1], cell);
+    if (recovered) {
+      w.script.signFault = EVIDENCE_SIGNATURE;
+      assert.equal((await w.pay()).body.error, 'operation_uncertain', cell);
+      assert.deepEqual([w.allocation().state, w.allocation().rev, w.figures().allotted], [live.state, live.rev, allotted], `${cell}: an open attempt returns nothing`);
+      assert.deepEqual(finished(w), [], cell);
+      w.lapse();
+    }
+    const before = w.figures();
+    assert.equal((await w.pay()).body.status, 'delivered', cell);
+    const settled = w.allocation();
+    assert.deepEqual([settled.state, settled.rev, settled.slots[PATHS.payments].state], ['released', 2, 'returned'], `${cell}: the purchase is released at the new revision`);
+    assert.equal(w.figures().allotted, 0, cell);
+    assert.equal(w.figures().used, before.used + 1, `${cell}: the spent unit is never refunded`);
+    assert.deepEqual(finished(w).map((row) => row.cleanup), ['purchase-final'], cell);
+    for (const restart of [false, true]) {
+      if (restart) await w.restart();
+      assert.equal((await w.pay()).status, 200, `${cell}: the replay answers the stored outcome`);
+      assert.deepEqual([w.allocation().state, w.allocation().rev, finished(w).length], ['released', 2, 1], `${cell}: a replay returns nothing, restart ${restart}`);
+    }
+  }
+});
+
+test('a final payment of the general class is recorded and returns no purchase slot', async (t) => {
+  const w = await fixturePaymentWorld(t);
+  assert.equal((await w.pay()).body.status, 'delivered');
+  assert.deepEqual(finished(w).map((row) => row.cleanup), ['purchase-final']);
+  assert.deepEqual(w.handle.capacity.capacityReport().allocations, [], 'the job holds no purchase');
+});
+
+test('a final payment whose cleanup fails after publication keeps its outcome and returns nothing, and a replay does not repair it', async (t) => {
+  const w = await purchaseWorld(t);
+  const db = new DatabaseSync(w.storePath);
+  t.after(() => db.close());
+  db.exec("CREATE TRIGGER TEST_cut BEFORE UPDATE ON kit_allocations BEGIN SELECT RAISE(ABORT, 'TEST cleanup cut'); END");
+  const cut = await w.pay();
+  assert.notEqual(cut.status, 200, 'the answer was not sent');
+  assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed', 'the outcome is published');
+  assert.deepEqual(finished(w), [], 'no completion is recorded');
+  db.exec('DROP TRIGGER TEST_cut');
+  const kept = w.allocation();
+  assert.equal((await w.pay()).status, 200, 'the stored outcome is answered');
+  assert.deepEqual([w.allocation().state, w.allocation().rev, finished(w).length], [kept.state, kept.rev, 0], 'the replay leaves the cleanup to the startup repair');
 });
