@@ -9424,6 +9424,18 @@
           "after": "d2f826dc1bc3db1138b3d4df9ac61b33ffeed121"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF use recorded blocks for cancellation checks",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9",
+          "after": "f2337a42eebc81e26737556a54eccee74dc3cb3b"
+        }
+      ]
     }
   ]
 }
