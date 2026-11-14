@@ -23,17 +23,50 @@ const held = (disposition, reason) => ({ disposition: HELD.includes(disposition)
 /** Whether a bounded single-line TEST authority may label a capability. */
 export const isDemDeliveryContextAuthority = value => typeof value === 'string' && /^TEST-[A-Za-z0-9._:-]{1,115}$/.test(value);
 
+const HOST_CALLBACKS = ['recoverBuyer', 'resumableBuyer', 'bindRetainedScope'];
+
 /** Register buyer/seller resolvers and optional lifecycle callbacks in one Vet mode
- * (`vetMode`, default counterparty); throws on invalid configuration or an unsupported mode. */
-export function createDemDeliveryContext({ authority, vetMode, resolveBuyer, resolveSeller, release = null, usage = null }) {
-  if (!isDemDeliveryContextAuthority(authority) || typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || (release !== null && typeof release !== 'function') || (usage !== null && typeof usage !== 'function')) {
+ * (`vetMode`, default counterparty); throws on invalid configuration or an unsupported mode.
+ * `recoverBuyer`, `resumableBuyer` and `bindRetainedScope` are the callbacks the seller host
+ * needs (see `demDeliveryContextHost`); each must be a function when given. */
+export function createDemDeliveryContext({ authority, vetMode, resolveBuyer, resolveSeller, release = null, usage = null, recoverBuyer = null, resumableBuyer = null, bindRetainedScope = null }) {
+  const hostCallbacks = { recoverBuyer, resumableBuyer, bindRetainedScope };
+  if (!isDemDeliveryContextAuthority(authority) || typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || (release !== null && typeof release !== 'function') || (usage !== null && typeof usage !== 'function')
+    || HOST_CALLBACKS.some(key => hostCallbacks[key] !== null && typeof hostCallbacks[key] !== 'function')) {
     throw new TypeError('DEM delivery context requires explicit TEST authority and buyer/seller resolvers');
   }
   const mode = sellerFulfilmentVetModeOf(vetMode);
   if (mode === null) throw new TypeError('DEM delivery context vetMode is not a supported fulfilment Vet mode');
   const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority });
-  capabilities.set(capability, { authority, vetMode: mode, resolveBuyer, resolveSeller, release, usage });
+  capabilities.set(capability, { authority, vetMode: mode, resolveBuyer, resolveSeller, release, usage, ...hostCallbacks });
   return capability;
+}
+
+// A host call carries the attempt's write check and cancellation signal; a missing check must never default to "writable".
+const hostCall = callback => async (input, options) => {
+  if (!object(input) || typeof options?.writable !== 'function' || !(options.signal instanceof AbortSignal)) throw new TypeError('a host context call needs its input and a writable check and abort signal');
+  return callback(input, options);
+};
+
+/**
+ * The calls the seller host makes on a registered capability: `resolveBuyer`, `recoverBuyer` and `resumableBuyer`
+ * (each takes `(input, { writable, signal })`, hands both objects to the provider's callback unchanged and rejects
+ * with a TypeError when the options are missing) and `bindRetainedScope(reader)`, which returns the provider's pinned
+ * `{ sellerBundlePresentedBy }`. Throws a TypeError for a copied descriptor or a capability built without the recovery callbacks.
+ */
+export function demDeliveryContextHost(capability) {
+  const configured = capabilities.get(capability);
+  if (!configured || HOST_CALLBACKS.some(key => typeof configured[key] !== 'function')) throw new TypeError('the seller host requires a constructed capability with the recovery and binding callbacks');
+  return Object.freeze({
+    resolveBuyer: hostCall(configured.resolveBuyer),
+    recoverBuyer: hostCall(configured.recoverBuyer),
+    resumableBuyer: hostCall(configured.resumableBuyer),
+    bindRetainedScope(reader) {
+      const bound = configured.bindRetainedScope(reader);
+      if (typeof bound?.sellerBundlePresentedBy !== 'string' || bound.sellerBundlePresentedBy === '') throw new TypeError('the provider named no seller presenter');
+      return Object.freeze({ sellerBundlePresentedBy: bound.sellerBundlePresentedBy });
+    },
+  });
 }
 
 /** Admit a registered capability or explicit absence; throws for a copied descriptor. */
