@@ -9,7 +9,7 @@ export const packageDir = fileURLToPath(new URL('../..', import.meta.url));
 export const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs'];
 
 /** Modules the package ships although no entry point imports them yet. */
-const SHIPPED_NOT_YET_WIRED = ['src/wallet/effect-fence.mjs', 'src/wallet/effect-history.mjs'];
+const SHIPPED_NOT_YET_WIRED = ['src/wallet/effect-fence.mjs', 'src/wallet/effect-history.mjs', 'src/wallet/effect-boundary.mjs'];
 
 /** Package-relative paths of every module reachable from the four entry points, plus the not-yet-wired ones, sorted. Throws if an import leaves `src/`. */
 export function entryPointClosure() {

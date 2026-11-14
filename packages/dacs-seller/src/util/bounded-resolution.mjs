@@ -1,5 +1,14 @@
 import { admitRawJson } from '@kynesyslabs/dacs';
 
+const deadlineErrors = new WeakSet();
+const deadlineError = () => {
+  const error = new Error('resolver-timeout');
+  deadlineErrors.add(error);
+  return error;
+};
+/** True only for the resolver-timeout that resolveWithDeadline itself raised, not for an error a provider threw. */
+export const isResolverDeadline = (error) => deadlineErrors.has(error);
+
 /** Resolve a provider within fixed read limits; throws its error or resolver-timeout.
  * The provider receives a cancellation signal, aborted on every exit. */
 export async function resolveWithDeadline(provider, limits) {
@@ -7,14 +16,14 @@ export async function resolveWithDeadline(provider, limits) {
   let timer;
   const deadline = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      reject(new Error('resolver-timeout'));
+      reject(deadlineError());
       controller.abort();
     }, limits.timeoutMs);
   });
   try {
     return await Promise.race([
       Promise.resolve().then(() => {
-        if (controller.signal.aborted) throw new Error('resolver-timeout');
+        if (controller.signal.aborted) throw deadlineError();
         return provider({ ...limits, signal: controller.signal });
       }),
       deadline,

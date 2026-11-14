@@ -1,6 +1,12 @@
 import type { AnchorResolution, OwnedAnchorScan } from "./anchorResolution.js";
 import type { DemosWriteJournal } from "./demosWriteJournal.js";
 
+/** Expected network: the genesis hash, with an optional genesis-declared id. */
+export interface ExpectedDemosChainIdentity {
+  genesisHash: string;
+  chainId?: string | null;
+}
+
 /** Configuration for the optional Demos-backed adapter. */
 export interface DemosAdapterConfig {
   /** Demos node RPC URL (e.g. https://node2.demos.sh). */
@@ -19,10 +25,11 @@ export interface DemosAdapterConfig {
    */
   writeJournal?: DemosWriteJournal;
   /**
-   * Optional pinned genesis-block hash. When omitted, the adapter reads block
-   * zero from the connected node before its first write.
+   * Optional genesis-block hash, checked against the connected node.
    */
   chainIdentity?: string;
+  /** Expected network, checked before signing or acquiring a write lease. */
+  expectedIdentity?: ExpectedDemosChainIdentity;
 }
 
 /**
@@ -151,7 +158,10 @@ export type AnchorWaitFailureCode =
   | "read-failed"
   | "prepare-failed"
   | "broadcast-failed"
-  | "inclusion-failed";
+  | "inclusion-failed"
+  // A broadcast Demos write whose outcome the node's answers cannot settle.
+  // Its journal entry is kept, so the wallet stays blocked until it resolves.
+  | "demos-write-unresolved";
 
 export interface AnchorWaitOptions {
   /** Confirmation level to reach before returning (default `read-visible`). */

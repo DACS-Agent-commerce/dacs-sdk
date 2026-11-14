@@ -4,19 +4,21 @@
 // state URI-encoded). Each record has its own key and is only ever added,
 // through the journal's appendUnderLock, never `put`, and never to the native
 // transport's own `lane(...)` and `intent(...)` keys. The journal's commit
-// order is the history's order. Internal: not exported by the package.
+// order is the history's order. A lane's records can also be read for one
+// operation across all its artifacts. Internal: not exported by the package.
 import { isDeepStrictEqual } from 'node:util';
 import { OperationError } from '../client-errors.mjs';
 
 const ARTIFACT_HASH = /^[0-9a-f]{64}$/;
 
-const historyPrefix = (lane, artifactHash) => `eb/${encodeURIComponent(lane)}/${artifactHash}/`;
+const lanePrefix = (lane) => `eb/${encodeURIComponent(lane)}/`;
+const historyPrefix = (lane, artifactHash) => `${lanePrefix(lane)}${artifactHash}/`;
 const historyKey = ({ lane, artifactHash, passId, state }) => `${historyPrefix(lane, artifactHash)}${encodeURIComponent(passId)}/${encodeURIComponent(state)}`;
 const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isText = (value) => typeof value === 'string' && value !== '';
 const isArtifact = ({ lane, artifactHash } = {}) => isText(lane) && typeof artifactHash === 'string' && ARTIFACT_HASH.test(artifactHash);
 const unavailable = (message, options) => new OperationError('eb_history_unavailable', `the dispatch history is unavailable: ${message}`, undefined, options);
-const persistFailed = (cause) => new OperationError('eb_persist_failed', 'the dispatch record was not persisted; nothing was transmitted', undefined, { cause });
+const persistFailed = (cause) => new OperationError('eb_persist_failed', 'the dispatch record was not persisted', undefined, { cause });
 
 function checkedRecord(record) {
   if (!isPlainObject(record) || !isArtifact(record) || !isText(record.passId) || !isText(record.state)) {
@@ -25,14 +27,16 @@ function checkedRecord(record) {
   return record;
 }
 
-// The record under `key` when its suffix is exactly an encoded passId and state
-// and its body names the same lane, artifact, pass and state; anything else
-// under this artifact's prefix makes the history unavailable, never shorter.
-function storedRecord(key, value, lane, artifactHash, prefix) {
-  const parts = key.slice(prefix.length).split('/');
+// The record under `key` when its suffix is exactly an artifact hash, an
+// encoded passId and a state, and its body names the same lane, artifact, pass
+// and state; anything else under this lane's prefix makes the history
+// unavailable, never shorter.
+function storedRecord(key, value, lane) {
+  const parts = key.slice(lanePrefix(lane).length).split('/');
+  const artifactHash = parts[0];
   let passId, state;
-  try { [passId, state] = parts.map(decodeURIComponent); } catch { /* reported below */ }
-  if (parts.length !== 2 || !isText(passId) || !isText(state) || key !== historyKey({ lane, artifactHash, passId, state })) throw unavailable(`the key ${key} is not a history record key`);
+  try { [passId, state] = parts.slice(1).map(decodeURIComponent); } catch { /* reported below */ }
+  if (parts.length !== 3 || !ARTIFACT_HASH.test(artifactHash) || !isText(passId) || !isText(state) || key !== historyKey({ lane, artifactHash, passId, state })) throw unavailable(`the key ${key} is not a history record key`);
   if (!isPlainObject(value) || value.lane !== lane || value.artifactHash !== artifactHash || value.passId !== passId || value.state !== state) throw unavailable(`the record at ${key} does not match its key`);
   return value;
 }
@@ -54,12 +58,24 @@ function storedRecord(key, value, lane, artifactHash, prefix) {
  * `cause` when the journal failed) when the stored history cannot be trusted.
  * It throws `TypeError` without a lane and a 64-hex artifactHash, never
  * answering with an empty history.
+ *
+ * `readOperation({ lane, operationId })` resolves the records of every
+ * artifact on that lane whose `operationId` matches, in commit order, with the
+ * same checks and refusals as `read`. It throws `TypeError` without a lane and
+ * an operationId.
  */
 export function createEffectHistory({ journal }) {
   async function classifyExisting(key, record) {
     const stored = await journal.get(key);
     if (!isDeepStrictEqual(stored, JSON.parse(JSON.stringify(record)))) throw new OperationError('eb_history_conflict', `a different ${record.state} record already exists for pass ${record.passId}`);
     return { status: 'existing' };
+  }
+
+  // Every record under `prefix`, each checked against its key, in commit order.
+  async function storedRecords(lane, prefix) {
+    let rows;
+    try { rows = await journal.entries(); } catch (error) { throw unavailable('the journal could not be read', { cause: error }); }
+    return rows.filter(([key]) => key.startsWith(prefix)).map(([key, value]) => storedRecord(key, value, lane));
   }
 
   return {
@@ -76,11 +92,11 @@ export function createEffectHistory({ journal }) {
     },
     async read(artifact) {
       if (!isArtifact(artifact)) throw new TypeError('reading a history needs a lane and a 64-hex artifactHash');
-      const { lane, artifactHash } = artifact;
-      const prefix = historyPrefix(lane, artifactHash);
-      let rows;
-      try { rows = await journal.entries(); } catch (error) { throw unavailable('the journal could not be read', { cause: error }); }
-      return rows.filter(([key]) => key.startsWith(prefix)).map(([key, value]) => storedRecord(key, value, lane, artifactHash, prefix));
+      return storedRecords(artifact.lane, historyPrefix(artifact.lane, artifact.artifactHash));
+    },
+    async readOperation({ lane, operationId } = {}) {
+      if (!isText(lane) || !isText(operationId)) throw new TypeError('reading an operation needs a lane and an operationId');
+      return (await storedRecords(lane, lanePrefix(lane))).filter((record) => record.operationId === operationId);
     },
   };
 }
