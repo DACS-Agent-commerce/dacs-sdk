@@ -23,7 +23,7 @@ needs the `contextSessionState` capability described below.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
-The repository's `engines` require Node.js `^20.19.0 || >=22.12.0`; the
+The repository's `engines` require Node.js `^22.22.2 || ^24.15.0`; the
 durable stores use the native `better-sqlite3` module. Use the same version of
 `@kynesyslabs/dacs` as this kit.
 The private package uses a core tarball built from the same checkout.
@@ -51,14 +51,17 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
-The host's optional `maxRecords` (default 10,000) is the permanent reservation
-budget. A purchase allocation holds 17 units for each of the context, proposals,
-commitments and payments routes (68 units, or 85 when commitments/signature is
-enabled), and admission allots one only while the whole allotment is free. A
-successful context completion returns only the context slot; an aborted start, a
-failed or non-validated context and a terminal DACS-5 session return every open
-slot. Returned units never reduce what has been charged. The host composes a
-reservation coordinator: one
+The host's optional `maxRecords` (default 10,000) is the reservation budget. A purchase allocation holds 17 units for each of the
+context, proposals, commitments and payments routes (68 units, or 85 when
+commitments/signature is enabled), and admission allots one only while the whole
+allotment is free. A successful context completion returns only the context
+slot; an aborted start, a failed or non-validated context and a terminal DACS-5
+session return every open slot. Returned units never reduce what has been
+charged, but a charge stops counting against the budget once its request has
+expired and its job has been retired (the job has ended, all its work is finished and its retention windows have
+passed), unless a crash left it still reserving. Charges that no longer count stay in the store,
+and each admission still scans them; they are never pruned. The host
+composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
 accounting and recording the reservation result. The routes do not yet reserve
 through the coordinator. Admission and accounting accept capacity through their
@@ -105,7 +108,7 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
-  maxRecords: 10000,     // optional permanent reservation budget; a purchase allocation is 68 units
+  maxRecords: 10000,     // optional reservation budget; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
@@ -154,10 +157,41 @@ or `unreadable`); nothing is migrated. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
 
-Signed effect routes commit reservation accounting before the wire journal
-publishes their attempt. Retries reconcile retained work after its 300 s lease;
-completed outcomes use the existing source checks before answering. Signed
-reads create no reservation rows or journal files.
+Signed effect routes reserve through one reservation coordinator, which commits
+accounting before the wire journal publishes their attempt. A final answer
+completes the operation and returns its route slot; a later request is answered
+from it, after the existing source checks. An answer that is not final yet (a
+`waiting` proposal, a `held` payment) ends the attempt without an outcome, and
+the next request recovers at once, the agent reconciling first. An uncertain
+attempt stays open: a request inside its 300 s lease gets `seller_effect_pending`,
+and the first after it recovers; after 16 lapsed attempts the operation answers
+`seller_effect_unresolved`. Signed reads create no reservation rows or journal files.
+
+An operation is one job's request on one route. Its binding is the profile,
+buyer and Agreement hash it was first reserved under. Once the operation has
+completed, a later request under the same binding whose body passes the host's
+body checks is the same operation, not a new reservation. A body the checks
+refuse, such as a proposal with a changed `proposalHash`, is refused 409
+`peer_proposal_mismatch` before the journal is consulted. A completed proposal
+gets the stored answer, and the agent is not called again, even when the new
+body differs in a field the checks do not read, such as the signature inside the
+buyer presentation. A completed commitment is read back with the new request's
+body, and a completed payment whose stored answer reports delivery is put to
+the agent again with that body. The stored answer goes only to a request with the
+buyer's transport signature under the same binding. The host checks the header,
+signature, buyer and Agreement hash before it reserves: a missing header, or one
+whose encoding or outer envelope shape is invalid, gets 401
+`peer_envelope_invalid`. A payload with exactly the other required fields but no
+profile gets 409 `tp1_profile_missing`; a payload with any other field missing
+or extra gets 401 `peer_envelope_invalid`. A header
+that decodes to something other than JSON 401 `wire_json_rejected`, a signature that is
+malformed or by another key 401 `peer_signature_invalid`, a header signed over
+a different body 401 `peer_request_mismatch`, and another buyer or Agreement
+hash 409 `peer_agreement_party_mismatch` or `peer_agreement_mismatch`. The
+reservation then refuses a signed request sent again with 409
+`peer_request_replayed`. The agent's own refusal of a different proposal for a
+job applies only before the proposal has completed; after that, the agent is
+not asked.
 
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
@@ -253,6 +287,13 @@ commitment that is not readback-only), with `authorizeResend` the same seller-st
 check that authorized signing; the capability asks it again right before the send
 and sends the original bytes only when it answers exactly `true`. A `resend` that
 is not a boolean, or `true` without an `authorizeResend` function, is refused.
+A passive read (the default) writes nothing before the source authenticates the
+transaction's inclusion: a seller intent that holds no hash keeps the hash and
+signed bytes it found in the journals as local values, and a pending or failed
+read leaves every journal row, including `demo/recovery`, as it was. Only an
+authenticated inclusion saves that checkpoint. An active read asks `authorizeResend`
+once, under the recovery lock and after the deployment check, so authority that
+closed during that check sends and records nothing.
 `read` takes the same options. The seller's restart of a submitted Deliverable
 passes them (with the same check) to the native delivery `read`, so a Deliverable
 CREATE kept before a crash that is still pending is sent again once; every other
@@ -285,6 +326,15 @@ uncertain.
 Keep both journals across restart; losing or rolling them back invalidates the
 proof. Without a valid proof after a failure before signing, the commitment
 remains held until the operator can reconcile it.
+
+The seller checks every reply of the `nativeDemDelivery` operations against fixed
+limits: 256 KiB, 32768 values, 80 levels deep and 16384 entries in a list. These
+cover any Deliverable the seller can send. A reply over a limit is answered as
+`indeterminate`, never as absent. A reconcile, read or verify that takes longer
+than 30 seconds is also answered as `indeterminate`; a missed deadline does not
+prove that nothing was written. A submit has no deadline. Except for the
+`provenUnsignedAbsence` and `deadRefusedCreate` objects, the caller gets a JSON
+copy of a reply, not the object the capability returned.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -326,7 +376,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `./wire` (domain `dacs-seller-http:v1`, the host's bound TP-1 profile and the
   tuple kept for the job); a request signed under the old domain is refused, so
   `createSellerTransportClientAuth` does not reach these routes. The
-  transport store stays their journal; the two read routes reserve and store
+  wire request journal is their journal; the two read routes reserve and store
   nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
   (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`
   first), and a delegated request for one is refused
@@ -349,14 +399,17 @@ per-client limiter so one client cannot exhaust the shared request budget.
   admitted only by an expired delegation also signs nothing and saves no
   session or anchor state: it answers for a commitment the seller already retained and holds
   (`commitment_readback_required`) rather than adopting one.
-  Agreement state reads use isolated retained snapshots; cached payment and
-  delivery answers require current durable settlement credit (DACS-4 SB-2).
+  Agreement state reads use isolated retained snapshots. A signed 200 on these
+  routes is sent only after it is signed and the agent's settlement-credit
+  check has passed (10 s deadline); otherwise the answer is `503
+  operation_uncertain`.
   A payment answer that is not final is not cached as final:
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, runs the agent's retained work again on the buyer's next request
-  (which reads back first), and a different claim for the job is still
+  done yet, ends the attempt without an outcome, and the buyer's next request
+  recovers at once and runs the agent's retained work again (reading back
+  first), and a different claim for the job is still
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
   node or name-index outage) is a `held` answer with its cause
@@ -510,9 +563,32 @@ per-client limiter so one client cannot exhaust the shared request budget.
   evidence) at this logical address, with `to` and the operation's
   `storageAddress` the address the writer, the program name and the nonce
   derive, from the writer's address (`from` and `from_ed25519_address`), with
-  the writer's Ed25519 signature over the hash as `0x` and lower-case hex.
+  the writer's Ed25519 signature as `0x` and lower-case hex, over the hash or,
+  when the journal is given `signatureChainId`, over
+  `demos-tx:v1:<signatureChainId>:<hash>`. `signatureChainId` is the node's
+  chain id as a decimal string, taken from the seller's own network
+  configuration; without it only the bare hash is accepted, and any other
+  message is refused. `createNativePaymentEvidenceConsumer` takes the same
+  option for the readback.
+  Its fee is the node's to set, up to a ceiling of 50 DEM for the whole debit
+  of the write: the network, rpc and additional fee plus the storage and gas
+  burns, summed in OS (whole DEM numbers before the node's denomination fork,
+  OS strings after it), must not be above 50 DEM, and a fee that cannot be
+  summed exactly is refused. Below the ceiling the fee is not compared with any
+  expected amount.
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
-  sent.
+  sent. A kept CREATE whose whole debit is above the ceiling is never
+  broadcast again: `anchorEvidence`, `reconcilePaymentEvidence`,
+  `ensureEvidence` and the Deliverable journal's `resume` and
+  `submitAuthorized` refuse its address with `write-fee-cap`, naming its hash
+  and debit, before any wallet read or signature. `readSignedProjection` still
+  returns the held write.
+  The operator sees a held write as the `write-fee-cap` reason with the hash
+  and cost of the write. On the payment evidence path it is `anchorError`
+  (`code` and `message`) on the held answer of the seller agent. On the
+  Deliverable path it is the `reason` of the held, pending or indeterminate
+  delivery outcome, which starts with `write-fee-cap:`.
+  There is no operator command to clear a held write.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
@@ -855,6 +931,33 @@ per-client limiter so one client cannot exhaust the shared request budget.
   check): the ST-11 finalizer, which needs finalized and independently
   resolved Vet, commitment, settlement and bundle records, is not part of this
   package. The session ends at delivery.
+- The proposal and bundle routes each end an attempt by their own rule
+  (`src/dacs/seller-effect-routes.mjs`). A proposal answered `waiting`,
+  `indeterminate` or `rejected` ends with no outcome only when nothing of it was
+  signed or kept; once a signature intent is recorded the attempt stays open,
+  and the lease or the next recovery resumes the same responder. A bundle route
+  ends with no outcome only when, under the job's lock, no countersignature
+  work is retained; it then answers its named refusal again (`bundles/request`:
+  `not_delivered` 422 without a payment, `bundle_finalization_unavailable` 503
+  with one; `bundles/countersignature`: `bundle_finalization_unavailable` 503),
+  and it never records a completed bundle. A commitment route (`commitments`, and
+  `commitments/signature` when enabled) ends with no outcome only when the job
+  retains no commitment work at all: no CREATE time, publication request, early
+  attempt marker or commitment. Its recovery reads the CREATE back; it sends the
+  original request again only after a read in passive mode proves that nothing
+  was signed for the address (for an early commitment on a fixture anchor, that
+  no anchor row exists). An attempt marker alone is not that proof, and a signed
+  CREATE whose readback fails stays open with nothing sent or signed again. A
+  completed proposal answer is signed
+  again only after its sources are read again, read only: the retained
+  contribution and Agreement, both Vet records with their receipts, and the
+  buyer's current access. A completed commitment answer is signed again only
+  after the retained commitment's canonical address, record, transaction and
+  finalized receipt are read again from its source in passive mode; an early
+  commitment needs no buyer Agreement anchor for this. A source that fails answers `503
+  seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
+  `too_large` or `unavailable`), a closed buyer access keeps its own refusal,
+  and the stored outcome is never rewritten.
 - It does not mount the Vet and Agreement context route (`createSellerContextRoute`,
   see the root exports above) itself: the challenge
   a session needs is the one `host.issueSessionChallenge` issued, which the
@@ -899,7 +1002,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
 
 ### Seller key custody
 
-`openSellerKey` (`src/seller-key.mjs`; Node ^22.13.0 or >=23.4.0) loads the
+`openSellerKey` (`src/seller-key.mjs`; Node ^22.22.2 or ^24.15.0) loads the
 seller key only through `loadDacsSecretV1`, from one file in the exactly-0700
 data directory holding `{ format: "dacs-seller-key/v1", algorithm: "ed25519",
 mnemonic }`, and zeroes every copy it owns. It signs only through three roles:
@@ -909,7 +1012,9 @@ one read answer, refusal or discovery document, whose `sign` returns a Promise
 of the signature (always `await` both: a Promise is never accepted as signature
 bytes) and checks the TP-1 authority when it signs, and the kit guard for a
 `ready: true` discovery document; and `integritySigner`, for seller-state journal bytes only.
-After `close()` every role refuses. Nothing in this package calls it yet.
+After `close()` every role refuses. The host signs the discovery document it serves at
+`/.well-known/dacs-seller.json` and each read answer through `readOnlyAnswerSigner`, and
+every other answer with `sign`.
 
 This checkout provides source modules. Build the core from the same checkout
 before importing the seller source kit.

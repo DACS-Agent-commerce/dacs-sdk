@@ -50,7 +50,7 @@ import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
-import { createSellerHttpHandler } from './dacs/seller-http.mjs';
+import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
@@ -73,7 +73,7 @@ const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
 // One journal for every seller route; its lease must exceed the 240 s context step.
 const KIT_JOURNAL_LEASE_MS = 300000;
-// The permanent reservation budget of the wire accounting rows.
+// The reservation budget of the wire accounting rows that still count.
 const DEFAULT_MAX_RECORDS = 10000;
 const JOURNAL_DIRECTORY = 'wire-journal';
 const TRANSPORT_STORE_FILE = join('transport', 'transport.sqlite');
@@ -314,10 +314,12 @@ export async function startSellerHost(options) {
     let stopping = false;
     // The seller takes new purchases until it stops. No route allocates purchase capacity yet, so readiness does not read it.
     const sellerReady = () => !stopping;
+    // Every effect route reserves through the coordinator and ends its attempt through the completion port.
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
+    const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.
-    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations });
+    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before

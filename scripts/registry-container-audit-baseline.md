@@ -66,13 +66,16 @@ artifact `dacs-registry-container-275d856a1bbea2de6f666c069878277b23544ff1`:
   dependency spec must be a version, range, tag or `npm:` alias.
 - `engineViolations`: 16 non-optional packages of the sigstore 5 chain
   (demosdk → sigstore → @sigstore/sign → make-fetch-happen → ...) require
-  Node `^22.22.2 || ^24.15.0 || >=26.0.0`, below the generated project's
-  Node 20 floor. `--engine-strict` reports only the first. The disposition
+  Node `^22.22.2 || ^24.15.0 || >=26.0.0`, which that run's Node 20 consumer
+  container did not meet. `--engine-strict` reports only the first. The disposition
   lists them all from the generated lock: it tests every non-optional
   package's `engines.node` and `engines.npm` against the consumer
   container's recorded Node and npm versions, as npm's EBADENGINE check does.
   (`npm ci --no-engine-strict` cannot: npm 11 fails its package.json/lock
-  sync check on the nested Git `avsc`.) A range the scan cannot evaluate, or
+  sync check on the nested Git `avsc`.) With no engine violation,
+  `npm ci --engine-strict` passes its engine check and then fails that sync
+  check (EUSAGE); the disposition reads this as a passed engine check only
+  when the scan also lists no violation. A range the scan cannot evaluate, or
   missing versions, leaves the scan incomplete, which blocks.
 - `lockSbomProblems` / `physicalSbomProblems`: the exact `npm sbom`
   ESBOMPROBLEMS lines for that tree (the Git `avsc`, and peer ranges of
@@ -141,7 +144,9 @@ the version and integrity its source run observed, and matching uses them:
   unlisted even at the same package name and location.
 - SBOM findings match one `npm sbom` line with the installed and required
   versions elided after `invalid:`/`extraneous:` and `required by`. Only these
-  rules ignore installed versions.
+  rules ignore installed versions. An npm alias such as
+  `@ton/core@npm:other@1.0.0` installs another package under the recorded
+  name, so its version is not elided and the line is unlisted.
 
 For Git, engine and image findings, a new patch version, a rebuilt archive or
 any other integrity is therefore unlisted and exits 3 until a reviewed PR

@@ -88,6 +88,25 @@ test('the seller pack ships every source module but the operator ones, and every
   }
 });
 
+test('the seller-effect-routes module ships: the manifest lists every local runtime import and a clean packed install imports seller-http with no source-tree fallback', () => {
+  const effectRoutes = 'src/dacs/seller-effect-routes.mjs', packed = sellerPackFiles();
+  assert.ok(packed.includes(effectRoutes), `${effectRoutes} ships`);
+  for (const file of ['src/dacs/seller-http.mjs', 'src/dacs/seller-wire-requests.mjs', effectRoutes]) {
+    for (const target of relativeImports(file)) assert.ok(packed.includes(target), `${file} imports ${target}, which ships`);
+  }
+  assert.ok(relativeImports('src/dacs/seller-http.mjs').includes(effectRoutes), 'seller-http imports the module');
+  const preparedPath = process.env.DACS_SELLER_SMOKE_DIR;
+  assert.ok(preparedPath, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
+  const installed = join(realpathSync(preparedPath), 'node_modules', '@kynesyslabs', 'dacs-seller');
+  assert.ok(existsSync(join(installed, effectRoutes)), 'the installed package holds the module');
+  const probe = `const http = await import(${JSON.stringify(pathToFileURL(join(installed, 'src/dacs/seller-http.mjs')).href)});
+    const routes = await import(${JSON.stringify(pathToFileURL(join(installed, effectRoutes)).href)});
+    console.log(JSON.stringify({ handler: typeof http.createSellerHttpHandler, rows: Object.keys(routes.SELLER_EFFECT_ROUTES).length }));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { cwd: realpathSync(preparedPath), env: { PATH: process.env.PATH }, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout.trim().split('\n').at(-1)), { handler: 'function', rows: 5 });
+});
+
 test('the packed seller ships the dacs-seller bin, the CLI modules and durable-file.mjs, and the installed bin prints usage', () => {
   const manifest = JSON.parse(readFileSync(join(packageDirectory, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.bin, { 'dacs-seller': './' + SELLER_BIN });
@@ -104,23 +123,18 @@ test('the packed seller ships the dacs-seller bin, the CLI modules and durable-f
   assert.match(child.stdout, /--data-dir/);
 });
 
-// The runtimes the installed bin must run init on: the one running this test, and an explicit Node 20.19 when one is given.
-const INIT_RUNTIMES = [process.execPath, ...(process.env.DACS_SELLER_NODE_20_19 ? [process.env.DACS_SELLER_NODE_20_19] : [])];
-
-test('the packed bin runs init on Node 20.19 and on the purchase range, and the identity entry it imports loads no SQLite', t => {
+test('the packed bin runs init on the running Node, and the identity entry it imports loads no SQLite', t => {
   const app = process.env.DACS_SELLER_SMOKE_DIR;
   assert.ok(app, 'prepare a locked installed consumer');
-  for (const runtime of INIT_RUNTIMES) {
-    const work = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-installed-init-')));
-    t.after(() => rmSync(work, { recursive: true, force: true }));
-    const child = spawnSync(runtime, [join(app, 'node_modules', '.bin', 'dacs-seller'), 'init', '--data-dir', join(work, 'seller')], {
-      cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, env: { ...process.env, NODE_OPTIONS: '' },
-    });
-    assert.equal(child.status, 0, child.stderr);
-    assert.match(child.stdout, /^claim: did:demos:agent:[0-9a-f]{64}\naddress: (?:0x)?[0-9a-f]{64}\n$/);
-    assert.equal(child.stderr, '');
-    assert.deepEqual(readdirSync(join(work, 'seller')).sort(), ['seller-key.json', 'seller.json']);
-  }
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-installed-init-')));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const child = spawnSync(process.execPath, [join(app, 'node_modules', '.bin', 'dacs-seller'), 'init', '--data-dir', join(work, 'seller')], {
+    cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, env: { ...process.env, NODE_OPTIONS: '' },
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /^claim: did:demos:agent:[0-9a-f]{64}\naddress: (?:0x)?[0-9a-f]{64}\n$/);
+  assert.equal(child.stderr, '');
+  assert.deepEqual(readdirSync(join(work, 'seller')).sort(), ['seller-key.json', 'seller.json']);
   const probe = `import { createRequire } from 'node:module';
     const { generateWalletMnemonic, deriveWalletIdentity } = await import('@kynesyslabs/dacs-seller/src/cli/node-identity.mjs');
     await deriveWalletIdentity(await generateWalletMnemonic());
@@ -267,9 +281,9 @@ test('from the packed archive with no hooks, a key opened while off yields its c
     import { writeFileSync } from 'node:fs';
     import { join } from 'node:path';
     import { syncBuiltinESMExports } from 'node:module';
-    // Custody refuses below Node 22.13 (K14); the seller's own floor is Node 20.19, so report a supported version.
-    const [major, minor] = process.version.slice(1).split('.').map(Number);
-    if (!((major === 22 && minor >= 13) || (major === 23 && minor >= 4) || major >= 24)) Object.defineProperty(process, 'version', { value: 'v22.13.0', configurable: true });
+    // Custody refuses Node outside ^22.22.2 || ^24.15.0; on another Node, report a supported version.
+    const [major, minor, patch] = process.version.slice(1).split('.').map(Number);
+    if (!((major === 22 && (minor > 22 || (minor === 22 && patch >= 2))) || (major === 24 && minor >= 15))) Object.defineProperty(process, 'version', { value: 'v22.22.2', configurable: true });
     let signs = 0;
     const realSign = crypto.sign;
     crypto.sign = (...args) => { signs += 1; return realSign(...args); };
