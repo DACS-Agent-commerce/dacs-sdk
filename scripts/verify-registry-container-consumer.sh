@@ -307,8 +307,12 @@ for name in buyer-demos seller-demos buyer-evm seller-evm wallet-token listing-x
   chmod 0600 "$compose_inputs/$name"
 done
 
+# The cleared environment moves HOME, so the caller's Docker config directory
+# (which holds per-user plugins such as compose) is passed in explicitly. With
+# neither DOCKER_CONFIG nor HOME set, the value is empty and Docker uses its own default.
 env \
   -i PATH="$PATH" HOME="$compose_inputs" \
+  DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME:+$HOME/.docker}}" \
   DACS_WALLET_AUTHORITY_URL=http://127.0.0.1:1 \
   DACS_WALLET_AUTHORITY_ID=acceptance-placeholder \
   DACS_WALLET_AUTHORITY_EPOCH=acceptance-placeholder \
