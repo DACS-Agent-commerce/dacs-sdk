@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "fabcb8b97031bf019475ad4f10cead30245c5ea6"
+        "blob": "9641b369786754ecf9cbd1fb05ffa002f0ad48b6"
       },
       "DELTA-LEDGER.json": {
-        "blob": "203b11a679c619795bf94dea6ccf9adca1804e70"
+        "blob": "88fb1ff0ca0782e88d7a2fcd654d8ab77b985cda"
       },
       "DELTA-MAP.md": {
-        "blob": "cab07b5477209e781eccf51bcdbe32e7c2fdfce1"
+        "blob": "ba8160522032648b644e0a9e49983430a7968b9c"
       },
       "DELTA-NOTES.md": {
         "blob": "bfa112eedd3e45242903c9c9de44ddf7d26c1984"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "3d87ecf1cbf41a4fca081b8a037d73d3dd685a0d"
+        "blob": "cdb10d94e50868a194eda640dc7c0173f16443ae"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "5941e5fa90c22104dd3f6c3a0db69a0727850923"
+        "blob": "babbab3705de09153fcd7a35b9423ef4e239f567"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1316,16 +1316,16 @@
         "blob": "7e61b54257846f628b2984bc6bee811470401dc2"
       },
       "src/wallet/durable-journal.mjs": {
-        "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
+        "blob": "222e5a4a849fc84abc994166f530215c2633d300"
       },
       "src/wallet/effect-boundary.mjs": {
         "blob": "796433f8bc1bca0d06a152305289e52f05f03812"
       },
       "src/wallet/effect-fence.mjs": {
-        "blob": "f084d06e7fcac773a024fb36149b1f68b2826403"
+        "blob": "ad0af32dad58fd5d1a0fdec120f6aa789e0d99c6"
       },
       "src/wallet/effect-history.mjs": {
-        "blob": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
+        "blob": "bfab3132db6ef2ac403e424b54cb7680dd7910ed"
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
@@ -1412,10 +1412,10 @@
         "blob": "83bf647eea4cbb4cf4614e97b07b52203356393c"
       },
       "test/effect-boundary.test.mjs": {
-        "blob": "6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1"
+        "blob": "c12c8b24dd02decc22295c0ea6dbb748f80ff0ad"
       },
       "test/effect-history.test.mjs": {
-        "blob": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
+        "blob": "deea6cdc8a67cd9f5fd7b19237bfeb0936aa8497"
       },
       "test/engine-floor-portability.test.mjs": {
         "blob": "8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"
@@ -1580,7 +1580,7 @@
         "blob": "ca236433328acbe239d3662741ce36829723572e"
       },
       "test/helpers/entry-point-closure.mjs": {
-        "blob": "48056110819fef0a22ae0e8bff28e5781ed1bcb6"
+        "blob": "653d3316d3b2ac2d9f77d30e1a3609ab581bef0e"
       },
       "test/helpers/env-contract-view.mjs": {
         "blob": "c275aeb31278349c33e9aa4bd8c562644351dca7"

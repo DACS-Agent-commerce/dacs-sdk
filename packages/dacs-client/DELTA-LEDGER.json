@@ -9396,6 +9396,42 @@
           "after": "6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF preserve effect ownership and native journal capacity",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7",
+          "after": "222e5a4a849fc84abc994166f530215c2633d300"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": "f084d06e7fcac773a024fb36149b1f68b2826403",
+          "after": "ad0af32dad58fd5d1a0fdec120f6aa789e0d99c6"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "c9067c8d3faf5b01d1f2f174280d81877786e2d5",
+          "after": "bfab3132db6ef2ac403e424b54cb7680dd7910ed"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1",
+          "after": "c12c8b24dd02decc22295c0ea6dbb748f80ff0ad"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": "d7894853a7aa7c21b1b993b37d74642856ce1e4c",
+          "after": "deea6cdc8a67cd9f5fd7b19237bfeb0936aa8497"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "48056110819fef0a22ae0e8bff28e5781ed1bcb6",
+          "after": "653d3316d3b2ac2d9f77d30e1a3609ab581bef0e"
+        }
+      ]
     }
   ]
 }

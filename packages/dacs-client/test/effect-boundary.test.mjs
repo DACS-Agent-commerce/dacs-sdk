@@ -2,6 +2,7 @@
 // rule beside the native transport's lane records, and, below, the boundary's
 // passes over that fence and history. No network, no keys.
 import assert from 'node:assert/strict';
+import { AsyncResource } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -549,4 +550,57 @@ test('the boundary signer returns a string signature exactly as the inner signer
   assert.equal(await signer.sign(signedBytes), signature);
   const [stored] = await w.history.read({ lane: w.op.lane, artifactHash: digestBytes(Buffer.from(signature)) });
   assert.equal(stored.state, 'signed'); assert.equal(Buffer.from(stored.bytes, 'base64').toString(), signature);
+});
+
+
+for (const operationId of ['same-operation', undefined]) {
+  test(`a capability cannot cross async scopes even when operation IDs match (${String(operationId)})`, async (t) => {
+    const outside = new AsyncResource('outside-fence');
+    t.after(() => outside.emitDestroy());
+    const world = fakeFence();
+    const fence = createEffectFence(world.options);
+    let ran = 0;
+    await fence.withFence(operationId, async (capability) => {
+      assert.equal(await fence.withFence(operationId, () => 'nested', { capability }), 'nested');
+      await assert.rejects(outside.runInAsyncScope(() => fence.withFence(operationId, () => { ran += 1; }, { capability })), { code: 'tp1_fence_not_owned' });
+    });
+    assert.equal(ran, 0);
+    assert.equal(world.acquisitions, 1);
+    assert.deepEqual(world.released, [1]);
+  });
+}
+
+test('a failed late release is reported by later acquisitions', async () => {
+  const releaseFailure = new Error('late release failed');
+  const world = fakeFence();
+  let grant, acquisitions = 0, ran = 0;
+  const fence = createEffectFence({ ...world.options, acquire: () => {
+    acquisitions += 1;
+    return new Promise((resolve) => { grant = resolve; });
+  } });
+  const late = codeOf(fence.withFence('late', () => { ran += 1; }));
+  world.fire([...world.timers.keys()][0]);
+  assert.equal(await late, 'tp1_fence_timeout');
+  grant({ release: () => { throw releaseFailure; } });
+  await settle();
+  const later = outcomeOf(fence.withFence('later', () => { ran += 1; }));
+  for (const id of world.timers.keys()) world.fire(id);
+  const result = await later;
+  assert.equal(result.error?.code, 'tp1_fence_release_failed');
+  assert.equal(result.error.cause, releaseFailure);
+  assert.equal(acquisitions, 1);
+  assert.equal(ran, 0);
+});
+
+test('failed acquisition cleanup keeps the fence failed', async () => {
+  for (const throwsDigest of [false, true]) {
+    const releaseFailure = new Error('release failed');
+    const workFailure = new Error('work failed');
+    const fence = createEffectFence({ ...fakeFence().options,
+      acquire: async () => ({ release: () => { throw releaseFailure; } }),
+      currentLocal: () => { if (throwsDigest) throw workFailure; return ''; },
+    });
+    await assert.rejects(fence.withFence('first', () => { throw workFailure; }), throwsDigest ? (error) => error === workFailure : { code: 'tp1_fence_invalid' });
+    await assert.rejects(fence.withFence('later', () => assert.fail('failed fence ran work')), (error) => error.code === 'tp1_fence_release_failed' && error.cause === releaseFailure);
+  }
 });
