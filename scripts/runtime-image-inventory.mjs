@@ -71,6 +71,9 @@ export function runtimeImageInventory(root) {
   return { schema: RUNTIME_IMAGE_INVENTORY_SCHEMA, packages };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const entryUrl = (() => {
+  try { return pathToFileURL(realpathSync(process.argv[1])).href; } catch { return null; }
+})();
+if (entryUrl === import.meta.url) {
   process.stdout.write(JSON.stringify(runtimeImageInventory(process.argv[2] ?? "."), null, 2) + "\n");
 }
