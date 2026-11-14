@@ -279,7 +279,7 @@ export interface PayD402RailConfig {
   secret: string;
   /** Network label recorded on the evidence (default "demos"). */
   network?: string;
-  /** Override fetch (tests / custom transport). Defaults to global fetch. */
+  /** Override fetch for the paywall request (tests / custom transport). Defaults to global fetch. The transaction-record read always uses global fetch. */
   fetchImpl?: typeof fetch;
   /**
    * REQUIRED to build the rail: D402 is not node-enabled (§9.4.4 non-`live`), so
