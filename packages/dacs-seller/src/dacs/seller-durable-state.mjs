@@ -426,16 +426,20 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           // Reserve capacity atomically with the job lock, before admission.
           // Concurrent new jobs count as reservations until their lock releases.
           if (!load(jobId)) {
-            // A process can exit before saving a session. Its reservation must
-            // not occupy capacity forever just because this is a different job.
-            // Use the same positive exit proof as takeover, under this write
-            // transaction; live/unproven holders and active sessions stay counted.
-            for (const reservation of db.prepare('SELECT * FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)').all()) {
-              if (holderState(dir, reservation, lockHolder(reservation)) === 'exited') {
-                run('DELETE FROM seller_locks WHERE job=? AND owner=?', reservation.job, reservation.owner);
+            const reserved = () => get('SELECT COUNT(*) AS n FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)').n;
+            if (activeSessionCount() + reserved() >= maxJobs) {
+              // A process can exit before saving a session. Its reservation must
+              // not occupy capacity forever just because this is a different job.
+              // Only at capacity, so the common admission opens no lease probes.
+              // Use the same positive exit proof as takeover, under this write
+              // transaction; live/unproven holders and active sessions stay counted.
+              for (const reservation of db.prepare('SELECT * FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)').all()) {
+                if (holderState(dir, reservation, lockHolder(reservation)) === 'exited') {
+                  run('DELETE FROM seller_locks WHERE job=? AND owner=?', reservation.job, reservation.owner);
+                }
               }
+              if (activeSessionCount() + reserved() >= maxJobs) fail('seller_state_capacity');
             }
-            if (activeSessionCount() + get('SELECT COUNT(*) AS n FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)').n >= maxJobs) fail('seller_state_capacity');
           }
           run('INSERT INTO seller_locks VALUES (?,?,?)', jobId, owner, process.pid);
           return { reclaimed: Boolean(lock), revision: load(jobId)?.revision ?? 0 };
