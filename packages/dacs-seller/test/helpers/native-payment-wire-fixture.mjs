@@ -125,7 +125,7 @@ export async function nativePaymentWorld(t) {
     }
     return { success: true, data: { hash: signed.hash, writeProof: { disposition: 'included' } } };
   };
-  const artifactAnchor = anchors.open();
+  let artifactAnchor = anchors.open();
 
   const walletDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-native-payment-wallet-')));
   const openWallet = () => seller.createPaymentEvidenceWalletJournal({ path: join(walletDirectory, 'wallet-journal.sqlite'),
@@ -216,7 +216,15 @@ export async function nativePaymentWorld(t) {
       claim: async (txHash) => { retrySeam.beforeRetry(); try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
         catch (error) { return { error: error.code, status: error.status, causeCode: error.causeCode }; } } };
   };
-  const restart = async () => { await host.close(); hosts.splice(hosts.indexOf(host), 1); host = await start(); };
+  // A restart closes the host and reopens the wallet journal and the artifact anchor over the same stores, as a new process would.
+  const restart = async () => {
+    await host.close();
+    hosts.splice(hosts.indexOf(host), 1);
+    wallet.close();
+    wallet = openWallet();
+    artifactAnchor = anchors.open();
+    host = await start();
+  };
   // The seller's durable state with the host stopped, then the host started again over it.
   const inDurableState = async (work) => {
     await host.close();
