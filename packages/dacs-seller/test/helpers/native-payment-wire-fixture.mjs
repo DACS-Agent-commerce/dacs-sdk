@@ -116,8 +116,8 @@ export async function nativePaymentWorld(t) {
     }
     if (text.startsWith(DACS_SELLER_HTTP_DOMAINS.response)) {
       // The wire awaits its signer, so a response signature may wait for the test.
-      counts.responseSignatures++;
       if (faults.responseSignature > 0) { faults.responseSignature--; throw new Error('TEST the response signer failed'); }
+      counts.responseSignatures++;
       return holds.has('responseSignature') ? holdHere('responseSignature').then(() => sellerKey.sign(bytes)) : sellerKey.sign(bytes);
     }
     return sellerKey.sign(bytes);

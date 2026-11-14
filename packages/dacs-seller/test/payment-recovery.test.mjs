@@ -530,10 +530,12 @@ test('a native response signer held by the test leaves the attempt open, and a s
 test('a native response signer that fails after the payment is delivered leaves the attempt open, and the next request answers with no second effect', async (t) => {
   const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
   w.faults.responseSignature = 1;
+  const signedBefore = w.counts.responseSignatures;
   const cut = await p.send(txHash);
   assert.deepEqual([cut.status, cut.body.error], [503, 'operation_uncertain']);
   assert.equal(nativeStateOf(w, p), 'pending');
   assertNativeDeliveredOnce(w, p);
+  assert.equal(w.counts.responseSignatures, signedBefore + 1, 'only the signature of the answer to the failure counts, not the one that failed');
   const final = await p.send(txHash);
   assert.deepEqual([final.status, final.body.status], [200, 'payment-evidenced']);
   assert.equal(nativeStateOf(w, p), 'completed');
