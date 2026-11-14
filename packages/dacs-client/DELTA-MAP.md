@@ -1423,6 +1423,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 83bf647eea4cbb4cf4614e97b07b52203356393c |
 | WF | delta(client): WF read client delta records through one assembler | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` | 29ba56b6264d27cebb8cad969408ceb4bc6774af |
+| WF | delta(client): WF order delta records by file name and check every recorded path | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` | 0db3b89514f68fbba88d99345a0ea7089911e3d7 |
 
 ## Complete commit and file inventory
 
@@ -4293,6 +4295,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-record.mjs:1` |
 | delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-record.test.mjs:1` |
 | delta(client): WF read client delta records through one assembler | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
+| delta(client): WF order delta records by file name and check every recorded path | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-assemble.mjs:1`<br>`packages/dacs-client/scripts/delta-assemble.test.mjs:1`<br>`packages/dacs-client/scripts/delta-map.mjs:1`<br>`packages/dacs-client/scripts/delta-record.mjs:1`<br>`packages/dacs-client/scripts/delta-record.test.mjs:1`<br>`packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
 
 ## Original moved files
 

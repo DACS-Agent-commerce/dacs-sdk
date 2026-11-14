@@ -37,23 +37,22 @@ test('with no record files the assembled view is the stored archive', t => {
   const expected = { ledger: archive, commits: [{ sha: null, subject: 'one', files: ['x'] }], failures: [] };
   assert.deepEqual(assemble(dir), expected);
   mkdirSync(join(dir, 'records')); writeFileSync(join(dir, 'records/.gitkeep'), '');
-  assert.deepEqual(assemble(dir, () => { throw new Error('history is read only to order records'); }), expected);
+  assert.deepEqual(assemble(dir), expected);
 });
 
-test('records follow the archive in commit-graph order, ties and unselected records by file name', t => {
+test('records follow the archive in file name order', t => {
   const dir = packageDir(t, { schema: 'dacs-client-deltas/v2', changes: [{ delta: 'D11', subject: 'archived', files: [] }] }, [{ sha: null, subject: 'archived', files: ['x'] }]);
-  const later = put(dir, record('later')), unselected = put(dir, record('unselected'));
-  const first = [put(dir, record('first')), put(dir, record('first', { delta: 'D11' }))].sort();
-  const control = put(dir, record('control', { kind: 'commit-only', files: undefined, commitFiles: [prefix + 'HOLD.json'] }));
-  const history = [{ sha: '1'.repeat(40), subject: 'first' }, { sha: '2'.repeat(40), subject: 'control' }, { sha: '3'.repeat(40), subject: 'later' }];
-  const view = assemble(dir, () => history);
+  const names = [
+    put(dir, record('later')), put(dir, record('unselected')), put(dir, record('first')), put(dir, record('first', { delta: 'D11' })),
+    put(dir, record('control', { kind: 'commit-only', files: undefined, commitFiles: [prefix + 'HOLD.json'] })),
+  ].sort();
+  const view = assemble(dir);
   const byName = name => readJson(join(dir, 'records', name));
   assert.deepEqual(view.failures, []);
-  assert.deepEqual(view.ledger.changes.map(change => change.subject), ['archived', ...[...first, later, unselected].map(name => byName(name).subject)]);
-  assert.deepEqual(view.ledger.changes.slice(1).map(change => change.delta), [...first, later, unselected].map(name => byName(name).delta));
+  assert.deepEqual(view.ledger.changes.map(change => change.subject), ['archived', ...names.filter(name => byName(name).kind === 'change').map(name => byName(name).subject)]);
   assert.deepEqual(view.commits, [
     { sha: null, subject: 'archived', files: ['x'] },
-    ...[...first, control, later, unselected].map(name => ({ sha: null, subject: byName(name).subject, files: byName(name).commitFiles })),
+    ...names.map(name => ({ sha: null, subject: byName(name).subject, files: byName(name).commitFiles })),
   ]);
   assert.equal(view.ledger.supersededChanges, undefined);
 });
@@ -61,7 +60,7 @@ test('records follow the archive in commit-graph order, ties and unselected reco
 test('a record with a sha keeps it in the ledger change and the commit row', t => {
   const dir = packageDir(t), sha = 'c'.repeat(40);
   put(dir, record('hashed', { sha }));
-  const view = assemble(dir, () => []);
+  const view = assemble(dir);
   assert.equal(view.ledger.changes[0].sha, sha);
   assert.equal(view.commits[0].sha, sha);
 });
@@ -70,14 +69,14 @@ test('a superseded record moves to the superseded lists; superseding a missing r
   const dir = packageDir(t, { schema: 'dacs-client-deltas/v2', supersededChanges: [{ delta: 'D11', subject: 'old', files: [] }], supersededCommits: [{ sha: null, subject: 'old', files: ['x'] }], changes: [] });
   const earlier = put(dir, record('earlier'));
   put(dir, record('replacement', { supersedes: [earlier] }));
-  const view = assemble(dir, () => []);
+  const view = assemble(dir);
   assert.deepEqual(view.failures, []);
   assert.deepEqual(view.ledger.changes.map(change => change.subject), ['replacement']);
   assert.deepEqual(view.ledger.supersededChanges.map(change => change.subject), ['old', 'earlier']);
   assert.deepEqual(view.ledger.supersededCommits.map(row => row.subject), ['old', 'earlier']);
   assert.deepEqual(view.commits.map(row => row.subject), ['replacement']);
   const missing = put(dir, record('dangling', { supersedes: ['WF-000000000000.json'] }));
-  assert.deepEqual(assemble(dir, () => []).failures, [`${prefix}records/${missing}: supersedes WF-000000000000.json, which is not a valid record file`]);
+  assert.deepEqual(assemble(dir).failures, [`${prefix}records/${missing}: supersedes WF-000000000000.json, which is not a valid record file`]);
 });
 
 test('a bad file name, invalid JSON, a directory or a record the schema refuses is reported and left out', t => {
@@ -88,7 +87,7 @@ test('a bad file name, invalid JSON, a directory or a record the schema refuses 
   mkdirSync(join(dir, 'records/WF-222222222222.json'));
   const same = record('same bytes', { files: [{ path: prefix + 'README.md', before: blobA, after: blobA }] });
   put(dir, same);
-  const view = assemble(dir, () => []);
+  const view = assemble(dir);
   assert.deepEqual(view.ledger.changes.map(change => change.subject), [readJson(join(dir, 'records', valid)).subject]);
   assert.deepEqual(view.failures.map(failure => failure.replace(/: not valid JSON: .*/, ': not valid JSON')), [
     `${prefix}records/WF-111111111111.json: not valid JSON`,
@@ -124,7 +123,7 @@ async function history(t) {
   mkdirSync(join(fixture, 'scripts'));
   writeFileSync(join(fixture, 'scripts/delta-map.mjs'), checker);
   for (const name of ['delta-assemble.mjs', 'delta-record.mjs', 'source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(fixture, 'scripts', name));
-  const { blob, checkDeltas, table } = await import(pathToFileURL(join(fixture, 'scripts/delta-map.mjs')));
+  const { blob, checkDeltas, table, view } = await import(pathToFileURL(join(fixture, 'scripts/delta-map.mjs')));
   json(join(fixture, 'DELTA-LEDGER.json'), { schema: 'dacs-client-deltas/v2', baseline, changes: [] });
   // Commits `edits` ({package path: bytes}) with a record file, as a client change would.
   let sequence = 0;
@@ -141,7 +140,7 @@ async function history(t) {
     git('add', '--', ...changed); git('commit', '--quiet', '-m', subject);
     return { name, sha: git('rev-parse', 'HEAD') };
   };
-  return { fixture, git, commit, check: () => checkDeltas().failures };
+  return { fixture, git, commit, view, check: () => checkDeltas().failures };
 }
 
 test('the delta checker accepts source changes recorded in record files', async t => {
@@ -150,6 +149,22 @@ test('the delta checker accepts source changes recorded in record files', async 
   h.commit({ 'src/example.mjs': 'fixed again\n', 'src/added.mjs': 'added\n' }, { delta: 'D11' });
   assert.deepEqual(h.check(), []);
   assert.match(readFileSync(join(h.fixture, 'DELTA-MAP.md'), 'utf8'), /\| D11 \| delta\(client\): D11 TEST change 2 \|/);
+});
+
+test('the delta checker orders records by file name, whatever the order of the commits', async t => {
+  const h = await history(t);
+  const first = h.commit({ 'src/example.mjs': 'one\n' }), second = h.commit({ 'src/example.mjs': 'two\n' }, { delta: 'D11' });
+  assert.ok(second.name < first.name);
+  assert.deepEqual(h.view().ledger.changes.map(change => change.delta), ['D11', 'WF']);
+  assert.deepEqual(h.check(), []);
+});
+
+test('the delta checker accepts a record that changes only README.md, and refuses a stale README blob', async t => {
+  const h = await history(t);
+  h.commit({ 'README.md': 'changed readme\n' });
+  assert.deepEqual(h.check(), []);
+  writeFileSync(join(h.fixture, 'README.md'), 'edited after the commit\n');
+  assert.ok(h.check().includes(`${prefix}README.md: current blob differs from enumerated deltas`));
 });
 
 test('the delta checker refuses a record the schema refuses, a wrong blob and a subject the archive already records', async t => {

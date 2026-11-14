@@ -31,11 +31,11 @@ export function locations(path) {
 // commit, whose subject must still match; a record without one selects by exact
 // subject, which must then resolve once. Two commits that share a subject can
 // therefore only be recorded with SHA-qualified selectors.
-export function commits(...order) {
-  return git('log','--no-merges','--reverse',...order,'--format=%H%x09%s',BASELINE+'..HEAD').split('\n').filter(Boolean).map(row => { const at=row.indexOf('\t'); return {sha:row.slice(0,at),subject:row.slice(at+1)}; });
+export function commits() {
+  return git('log','--no-merges','--reverse','--format=%H%x09%s',BASELINE+'..HEAD').split('\n').filter(Boolean).map(row => { const at=row.indexOf('\t'); return {sha:row.slice(0,at),subject:row.slice(at+1)}; });
 }
 // The archive followed by the record files: {ledger, commits, failures}.
-export const view = () => assemble(pkg, () => commits('--topo-order'));
+export const view = () => assemble(pkg);
 export const ledger = () => view().ledger;
 export { selects };
 export const recordFor = (records, commit) => records.find(r => r.sha === commit.sha && r.subject === commit.subject) ?? records.find(r => r.sha == null && r.subject === commit.subject);
@@ -168,11 +168,15 @@ export function checkDeltas(packageDir=pkg) {
   }
   // A staged edit remains a change even when its working file is restored.
   // Compare object identities directly, including deletions and mode changes.
-  const indexRows=git('ls-files','--stage','--',prefix+'src',prefix+'test').split('\n').filter(Boolean);
-  const headRows=git('ls-tree','-r','HEAD','--',prefix+'src',prefix+'test').split('\n').filter(Boolean);
+  // A record may also name a path outside src/ and test/ (README.md, package.json, scripts); those need a HEAD and index entry too.
+  const inSourceTree=path=>path.startsWith(prefix+'src/')||path.startsWith(prefix+'test/');
+  const scope=['--',prefix+'src',prefix+'test',...[...allowed].filter(path=>!inSourceTree(path))];
+  const indexRows=git('ls-files','--stage',...scope).split('\n').filter(Boolean);
+  const headRows=git('ls-tree','-r','HEAD',...scope).split('\n').filter(Boolean);
   const staged=new Map(indexRows.map(row=>{const [meta,path]=row.split('\t');const [mode,hash,stage]=meta.split(' ');return [path,{mode,hash,stage}];}));
   const committed=new Map(headRows.map(row=>{const [meta,path]=row.split('\t');const [mode,,hash]=meta.split(' ');return [path,{mode,hash}];}));
   for(const path of new Set([...committed.keys(),...staged.keys()])){
+    if(!inSourceTree(path))continue;
     const a=staged.get(path),b=committed.get(path);
     if(!a||!b||a.stage!=='0'||a.mode!==b.mode||a.hash!==b.hash)failures.push(`${path}: index differs from HEAD for moved source/test`);
   }

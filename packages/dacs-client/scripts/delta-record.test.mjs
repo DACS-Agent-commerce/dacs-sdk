@@ -56,6 +56,14 @@ test('a record may not name a core path, a record file, a path outside the packa
   ]) refuses(change({ files: [{ path, before: blobA, after: blobB }] }), pattern);
 });
 
+test('a record may not name a path with an empty, . or .. segment', () => {
+  for (const path of ['src/../package.json', '../../package.json', 'src/./purchases.mjs', 'test//purchases.test.mjs', 'scripts/./generate-payload-helpers.mjs', 'src/', 'src/..']) {
+    refuses(change({ files: [{ path: at + path, before: blobA, after: blobB }] }), /is not a canonical path/);
+  }
+  refuses(change({ files: [{ path: at + 'src/../../package.json', before: blobA, after: blobB }] }), /is not a canonical path/);
+  refuses(change({ commitFiles: [at + 'src/purchases.mjs', 'docs//outside.md'] }), /is not a canonical path/);
+});
+
 test('a commit-only record has no files and stands for a commit that changes only core or record files', () => {
   const commitOnly = change({ kind: 'commit-only', files: undefined, commitFiles: ['docs/outside.md', at + 'DELTA-MAP.md', at + 'HOLD.json', at + 'records/WF-000000000000.json'] });
   assert.deepEqual(failures(commitOnly), []);
