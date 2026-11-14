@@ -1621,6 +1621,8 @@ Payment-evidence readback compares the returned storage address and every metada
 | | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | 478ef59d0e9d03b9a461d13b79afe4c4285a1403 |
 | | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` | 368b592d492038d35f4ff4b6d869173160720152 |
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | 84b69de0aaae9b1269bdf8b813a2f9a183fdd336 |
+| WF | delta(client): WF exercise another storage address in readback | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | fa00650470049af3a851da08362bb082f90e86db |
 
 ## Complete commit and file inventory
 
@@ -4874,6 +4876,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): record evidence storage readback verification | `packages/dacs-client/DELTA-NOTES.md:1` |
 | fix(client): record evidence storage readback verification | `packages/dacs-client/HOLD.json:1` |
 | fix(client): record evidence storage readback verification | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF exercise another storage address in readback | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF exercise another storage address in readback | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF exercise another storage address in readback | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF exercise another storage address in readback | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF exercise another storage address in readback | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF exercise another storage address in readback | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
 
 ## Original moved files
 

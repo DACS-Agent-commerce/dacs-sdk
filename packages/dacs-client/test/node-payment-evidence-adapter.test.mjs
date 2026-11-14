@@ -811,7 +811,7 @@ test("a confirmed transaction whose storage program is absent or differs from th
 
 test("storage readback requires the CREATE address and every metadata field before spending approval", async t => {
   const changes = {
-    'another address': program => ({ ...program, storageAddress: `0x${'9'.repeat(64)}` }),
+    'another address': program => ({ ...program, storageAddress: `stor-${'9'.repeat(40)}` }),
     'missing address': ({ storageAddress, ...program }) => program,
     'another logical address': program => ({ ...program, metadata: { ...program.metadata, logicalAddress: 'TEST-other' } }),
     'another artifact kind': program => ({ ...program, metadata: { ...program.metadata, artifactKind: 'TEST-other' } }),

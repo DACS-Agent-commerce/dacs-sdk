@@ -9838,6 +9838,17 @@
           "after": "84b69de0aaae9b1269bdf8b813a2f9a183fdd336"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF exercise another storage address in readback",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "84b69de0aaae9b1269bdf8b813a2f9a183fdd336",
+          "after": "fa00650470049af3a851da08362bb082f90e86db"
+        }
+      ]
     }
   ]
 }
