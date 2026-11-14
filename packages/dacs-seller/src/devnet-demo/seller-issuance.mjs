@@ -50,8 +50,21 @@ async function publishFile(path,text,{replace=false}={}){
   catch(error){await unlink(temporary).catch(()=>{});throw error;}
   await syncDirectory(dirname(path));
 }
+// Why an opener's result is not a usable journal, or null when it is: a plain object (a promise
+// from an async opener is not one) whose journalId is one the binding can hold (the binding reader's own
+// check) and equals expectedJournalId when one was passed.
+const journalRefusal=(value,expectedJournalId)=>{
+  if(value===null||typeof value!=='object'||Object.getPrototypeOf(value)!==Object.prototype||typeof value.journalId!=='string')
+    return 'the journal opener must return a plain object with a string journalId synchronously';
+  if(!sellerIssuanceJournalIds(Object.fromEntries(SELLER_ISSUANCE_JOURNALS.map(name=>[name,value.journalId]))))
+    return 'the journalId must be 32 lowercase hex characters';
+  if(expectedJournalId!==undefined&&value.journalId!==expectedJournalId)return 'the opened journal does not match the bound journal';
+  return null;
+};
 // The caller supplies its durable wallet journal opener: openJournal({path,mode,expectedJournalId})
-// returns {journalId,close} (as dacs-client's openDurableWalletJournal does). This module imports
+// returns {journalId,close} synchronously (as dacs-client's openDurableWalletJournal does); a
+// result that is not a plain object with a string journalId, or whose journalId differs from
+// a passed expectedJournalId, is closed and refused. This module imports
 // only sources present in the seller package, so its issuance lookup always loads.
 export async function openSellerIssuanceJournals({directory,openJournal,opened=[],now=Date.now}){
   if(typeof openJournal!=='function')throw new TypeError('seller issuance journals require a durable wallet journal opener');
@@ -62,6 +75,8 @@ export async function openSellerIssuanceJournals({directory,openJournal,opened=[
     let value;
     try{value=openJournal({path,mode:ids?'open':existsSync(path)?'open':'create',...(ids?{expectedJournalId:ids[name]}:{})});}
     catch(error){error.message=`seller issuance journal ${name} refused: ${error.message}`;throw error;}
+    const refusal=journalRefusal(value,ids?.[name]);
+    if(refusal){try{value?.close?.();}catch{}throw new Error(`seller issuance journal ${name} refused: ${refusal}`);}
     opened.push(()=>value.close());return value;
   });
   // Held until the operator closes (journals.stateLock.release). A start that

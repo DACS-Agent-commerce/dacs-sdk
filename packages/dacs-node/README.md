@@ -446,6 +446,21 @@ sanitized authoritative receipt required for reconciliation; raw wallet keys,
 reusable payment authorization, credentials, and private provider URLs are
 forbidden.
 
+Set `demos.expectedIdentity` beside `demos.rpcUrl` to pin a live network:
+`{ "genesisHash": "<trusted genesis hash>", "chainId": "<optional genesis id>" }`.
+The adapter checks the node's `getChainIdentity` answer against its served genesis
+and the configured pin before signing or writing. A mismatch throws
+`DemosChainIdentityError` with code `chain_identity_mismatch`. Nodes returning
+“Unknown message” or 404 use the genesis read, still checked against the pinned
+hash, unless a `chainId` is pinned: such a node cannot report one, so the
+operation is refused with `chain_identity_unavailable`. Other errors refuse the
+operation; `state_not_ready` is retryable.
+`getChainIdentity()` still returns the genesis hash for journals and guarded
+plans. `getChainIdentityDetails()` also reports `chainId`, `genesisDataHash` and
+`source` (`node-call` or `genesis-read`). Fallback reports null for the id and
+data hash and checks only the genesis hash, which binds the genesis data.
+The adapter's `chainIdentity` string setting is also checked against the node.
+
 The live profile is never inferred. `offline` and `live-demos` configurations
 are closed, non-interchangeable variants and must select their matching SDK
 commerce profile.

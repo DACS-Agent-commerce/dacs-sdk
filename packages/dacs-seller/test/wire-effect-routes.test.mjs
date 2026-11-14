@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import DatabaseSync from 'better-sqlite3';
 import { NO_EFFECT_ERRORS, SellerAgentError, transportOutcome } from '../src/dacs/seller-agent.mjs';
 import { NOW, testWallet } from './helpers/protocol-fixture.mjs';
-import { BUYER as WORLD_BUYER, LISTING, PIN as WORLD_PIN, SELLER as WORLD_SELLER, continuingWorld, derive, identityBody, jobFor, proposalFor, proposeJob, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
+import { BUYER as WORLD_BUYER, DELIVERED, HELD, LISTING, answeredStatus, PIN as WORLD_PIN, SELLER as WORLD_SELLER, completions, continuingWorld, derive, identityBody, jobFor, operationOf, proposalFor, proposeJob, reconcilingWith, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
 import { canonicalize, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
 import { fixtureIdentityBundle } from './fixtures/listings.mjs';
 import { agreementInput } from '../src/dacs/purchase-protocol.mjs';
@@ -13,7 +13,7 @@ import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation } from '@kynesysl
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler, endWireAttempt } from '../src/dacs/seller-http.mjs';
-import { createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { SellerTransportError, createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { BUYER, JOB, JOB2, PIN, SELLER, T0, accountingFixture, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 
 // The ordinary completion port runs on the real reservation coordinator, purchase capacity, SQL store and wire journal: no route
@@ -316,6 +316,75 @@ test('a new proposal runs the agent once and completes its attempt with the exac
   assert.equal(w.agent.calls.proposals, 1);
 });
 
+/** Another buyer's own proposal for `jobId`, signed by `wallet` as its buyer: `{ body, agreementHash }`. */
+async function rivalProposal(jobId, wallet) {
+  const base = agreementInput({ jobId, listing: LISTING, buyerBundle: fixtureIdentityBundle(wallet, NOW), generatedAt: NOW });
+  const plan = createFixedPriceAgreementSigningPlan(deriveFixedPriceAgreement({ ...base, buyer: { ...base.buyer, vetRecordRef: vetRef(jobId, wallet) }, seller: { ...base.seller, vetRecordRef: vetRef(jobId, WORLD_SELLER) } }));
+  const buyerContribution = await createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: wallet.claim, algorithm: 'ed25519', sign: wallet.signBytes });
+  const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: sha256Hex(canonicalize(material)) };
+  const body = { proposal, transportIdentity: { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: wallet.claim, seller: WORLD_SELLER.claim, proposalHash: proposal.proposalHash }, buyerIdentityBundle: base.buyer.identityBundle };
+  return { body, agreementHash: plan.agreementHash };
+}
+
+/** The proposal body with its buyer presentation's signature replaced: a field the host's body checks do not read. */
+const withOtherPresentation = (body) => {
+  const changed = structuredClone(body);
+  changed.buyerIdentityBundle.presentation.signatures[0].signature = Buffer.alloc(64, 7).toString('base64url');
+  return changed;
+};
+
+test('a completed proposal answers the same buyer and Agreement hash with the stored answer when only the signature in its buyer presentation differs, and the agent runs once', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 'same-operation');
+  const first = await job.post();
+  assert.equal(first.status, 200);
+  const again = await w.post(PATHS.proposals, withOtherPresentation(job.body), { jobId: job.jobId, agreementHash: job.agreementHash });
+  assert.equal(again.text, first.text, 'the same operation gets the stored answer');
+  await w.verified(again);
+  assert.equal(w.agent.calls.proposals, 1, 'the agent ran once in total');
+});
+
+test('a completed proposal does not answer a request under the same binding whose body fails the proposal checks', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 'refused-body');
+  const first = await job.post();
+  assert.equal(first.status, 200);
+  const changed = structuredClone(job.body);
+  changed.transportIdentity.proposalHash = sha256Hex('another-proposal');
+  const answer = await w.post(PATHS.proposals, changed, { jobId: job.jobId, agreementHash: job.agreementHash });
+  assert.deepEqual({ status: answer.status, error: answer.body.error }, { status: 409, error: 'peer_proposal_mismatch' });
+  assert.equal(w.agent.calls.proposals, 1, 'the agent is not asked');
+});
+
+test('a completed proposal\'s stored answer is refused to a request that is not a new one signed by its buyer under the same Agreement hash', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 'stored-answer-refusals');
+  const first = await job.post();
+  assert.equal(first.status, 200);
+  const text = JSON.stringify(job.body), signedAs = { jobId: job.jobId, agreementHash: job.agreementHash };
+  const rivalWallet = testWallet(41), rivalSigner = { claim: rivalWallet.claim, sign: rivalWallet.signBytes };
+  const rival = await wireBuyer({ buyer: rivalSigner, seller: WORLD_SELLER, listingPin: WORLD_PIN, clock: w.clock });
+  const rivalOwn = await rivalProposal(job.jobId, rivalWallet), later = await proposalFor(job.jobId, NOW + 1000);
+  const captured = await w.buyerWire.signRequest(PATHS.proposals, job.body, signedAs);
+  assert.equal((await w.send(PATHS.proposals, captured)).text, first.text, 'the buyer\'s own new request gets the stored answer');
+  const cases = [
+    ['a request with no transport header', () => w.send(PATHS.proposals, { text }), 401, 'peer_envelope_invalid'],
+    ['a request with a malformed transport header', () => w.send(PATHS.proposals, { text, header: 'not-a-wire-header' }), 401, 'peer_envelope_invalid'],
+    ['the buyer\'s signed request sent again', () => w.send(PATHS.proposals, captured), 409, 'peer_request_replayed'],
+    ['the buyer\'s header over a body it does not sign', async () => w.send(PATHS.proposals, { ...(await w.buyerWire.signRequest(PATHS.proposals, job.body, signedAs)), text: JSON.stringify(withOtherPresentation(job.body)) }), 401, 'peer_request_mismatch'],
+    ['a request in the buyer\'s name signed by another key', () => w.send(PATHS.proposals, { text, header: w.headerFor(w.payloadFor(PATHS.proposals, text, signedAs), { signer: rivalSigner }) }), 401, 'peer_signature_invalid'],
+    ['another buyer sending the buyer\'s body', async () => w.send(PATHS.proposals, await rival.signRequest(PATHS.proposals, job.body, signedAs)), 409, 'peer_agreement_party_mismatch'],
+    ['another buyer sending its own proposal for the job', async () => w.send(PATHS.proposals, await rival.signRequest(PATHS.proposals, rivalOwn.body, { jobId: job.jobId, agreementHash: rivalOwn.agreementHash })), 409, 'peer_agreement_mismatch'],
+    ['the buyer signing under another Agreement hash', () => w.post(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: derive('another-agreement') }), 409, 'peer_agreement_mismatch'],
+    ['the buyer proposing another Agreement for the job', () => w.post(PATHS.proposals, later.body, { jobId: job.jobId, agreementHash: later.agreementHash }), 409, 'peer_agreement_mismatch'],
+  ];
+  for (const [name, send, status, error] of cases) {
+    await t.test(`${name} is refused ${status} ${error}`, async () => {
+      const answer = await send();
+      assert.deepEqual({ status: answer.status, error: answer.body.error }, { status, error });
+      assert.notEqual(answer.text, first.text);
+      assert.equal(w.agent.calls.proposals, 1, 'the agent is not asked');
+    });
+  }
+});
+
 test('a completed payments operation that reported delivery is put to the agent again, and a later claim gets the answer the agent gives now', async t => {
   const w = await continuingWorld(t);
   const first = await w.request(PATHS.payments);
@@ -342,21 +411,21 @@ test('a delivery refresh of a completed payment is refused once its request expi
 });
 
 for (const route of ['commitments', 'commitmentSignature']) {
-  test(`a completed commitment on ${PATHS[route]} is read again before it is sent again`, async t => {
+  test(`a completed commitment on ${PATHS[route]} is revalidated read only before the stored answer is sent again`, async t => {
     const w = await continuingWorld(t);
     const first = await w.request(PATHS[route]);
     assert.equal(first.body.status, 'committed');
-    const commits = { ...w.agent.calls };
-    w.agent.readCommitment = async ({ jobId }) => ({ status: 'commitment-held', jobId });
-    const held = await w.request(PATHS[route]);
-    assert.deepEqual({ status: held.status, answer: held.body.status }, { status: 200, answer: 'commitment-held' }, 'what the readback answers now is sent');
-    await w.verified(held);
-    for (const [label, read] of [['fails', async () => { throw new Error('TEST the commitment cannot be read'); }], ['answers something else', async () => ({ status: 'refused' })], ['answers nothing', async () => null]]) {
-      w.agent.readCommitment = read;
-      const refused = await w.request(PATHS[route]);
-      assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 503, error: 'commitment_readback_required' }, `a readback that ${label} is retryable`);
-      assert.equal(refused.signed, true);
-    }
+    const commits = { ...w.agent.calls }, revalidated = [];
+    w.agent.readCommitment = async () => assert.fail('a replay never reads the commitment back through the agent');
+    w.agent.revalidateCompletedAnswer = async (input) => { revalidated.push(input); };
+    const replayed = await w.request(PATHS[route]);
+    assert.deepEqual([replayed.status, replayed.text], [200, first.text], 'the stored answer is sent');
+    assert.deepEqual(revalidated, [{ path: PATHS[route], jobId: w.jobId, outcome: { status: 200, text: first.text } }]);
+    await w.verified(replayed);
+    w.agent.revalidateCompletedAnswer = async () => { throw new SellerTransportError('seller_source_unavailable', 503, { cause: 'timeout' }); };
+    const refused = await w.request(PATHS[route]);
+    assert.deepEqual({ status: refused.status, error: refused.body.error, cause: refused.body.cause }, { status: 503, error: 'seller_source_unavailable', cause: 'timeout' }, 'a source that fails withholds the answer');
+    assert.equal(refused.signed, true);
     assert.deepEqual(w.agent.calls, commits, 'no replay ran the commitment again');
   });
 }
@@ -372,7 +441,7 @@ for (const route of ['proposals', 'commitments', 'commitmentSignature', 'payment
     assert.deepEqual(order, ['route']);
     lapse(w);
     const recovered = await send();
-    assert.equal(recovered.status, 200);
+    assert.equal(recovered.status, answeredStatus(PATHS[route]));
     assert.deepEqual(order, ['route', 'reconcile'], 'the reconciliation ran, and no route effect ran again');
   });
 }
@@ -633,7 +702,7 @@ test('no non-context effect route reads or writes the old transport tables', asy
   for (const path of [PATHS.commitments, PATHS.payments, PATHS.state]) assert.equal((await w.request(path)).status, 200, path);
   await leaveOpen(w, () => w.request(PATHS.bundleRequest));
   lapse(w);
-  assert.equal((await w.request(PATHS.bundleRequest)).status, 200, 'one recovery');
+  assert.equal((await w.request(PATHS.bundleRequest)).status, answeredStatus(PATHS.bundleRequest), 'one recovery');
   assert.deepEqual(old(), before);
 });
 
@@ -757,21 +826,6 @@ test('with the guard off, a directly composed handler answers kit_operation_guar
   assert.equal(child.stdout.trim(), 'kit_operation_guard_off', child.stderr);
 });
 
-// The completions the completion port recorded: only a final outcome is recorded, and only it returns a route slot.
-const completions = (w) => {
-  const db = new DatabaseSync(w.storePath, { readonly: true });
-  try { return db.prepare('SELECT route, attempt, status, cleanup FROM kit_ordinary_completions ORDER BY rowid').all(); } finally { db.close(); }
-};
-const operationOf = (w, jobId, path) => inspectWireOperation(w.handle.wire.journal, { seller: WORLD_SELLER.claim, jobId, path });
-const HELD = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
-const DELIVERED = { status: 'payment-evidenced', delivery: { status: 'delivered' } };
-// A recovery that answers as the agent's reconciliation classifies a retained answer.
-const reconcilingWith = (path, resultFor) => async (input) => {
-  input.transport.claim();
-  const outcome = transportOutcome(path, await resultFor(input), { retained: true, recovering: true });
-  if (outcome.settle) await input.transport.settle(outcome);
-};
-
 test('an effect route reserves through the coordinator and ends through the completion port', async t => {
   const w = await routeWorld(t), done = await proposeJob(w, 'port-outcome'), refused = await proposeJob(w, 'port-null');
   const { reservations } = w.handle.wire, coordinated = reservations.reserveCoordinated, inputs = [];
@@ -826,15 +880,9 @@ test('a held payment recovers after one clean restart and completes once without
 
 test('two buyers racing for one job: the first committed claim wins and the other is refused with nothing created or charged', async t => {
   const w = await routeWorld(t), jobId = jobFor('two-buyers'), rivalWallet = testWallet(41);
-  const first = await proposalFor(jobId);
-  // The rival's own proposal for the same job, signed by the rival as its buyer.
-  const base = agreementInput({ jobId, listing: LISTING, buyerBundle: fixtureIdentityBundle(rivalWallet, NOW), generatedAt: NOW });
-  const plan = createFixedPriceAgreementSigningPlan(deriveFixedPriceAgreement({ ...base, buyer: { ...base.buyer, vetRecordRef: vetRef(jobId, rivalWallet) }, seller: { ...base.seller, vetRecordRef: vetRef(jobId, WORLD_SELLER) } }));
-  const buyerContribution = await createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: rivalWallet.claim, algorithm: 'ed25519', sign: rivalWallet.signBytes });
-  const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: sha256Hex(canonicalize(material)) };
-  const rivalBody = { proposal, transportIdentity: { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: rivalWallet.claim, seller: WORLD_SELLER.claim, proposalHash: proposal.proposalHash }, buyerIdentityBundle: base.buyer.identityBundle };
+  const first = await proposalFor(jobId), rivalOwn = await rivalProposal(jobId, rivalWallet);
   const rival = await wireBuyer({ buyer: { claim: rivalWallet.claim, sign: rivalWallet.signBytes }, seller: WORLD_SELLER, listingPin: WORLD_PIN, clock: w.clock });
-  const rivalSigned = await rival.signRequest(PATHS.proposals, rivalBody, { jobId, agreementHash: plan.agreementHash });
+  const rivalSigned = await rival.signRequest(PATHS.proposals, rivalOwn.body, { jobId, agreementHash: rivalOwn.agreementHash });
   const answers = await Promise.all([w.post(PATHS.proposals, first.body, { jobId, agreementHash: first.agreementHash }), w.send(PATHS.proposals, rivalSigned)]);
   const claims = [WORLD_BUYER.claim, rivalWallet.claim], won = answers.findIndex((answer) => answer.status === 200), loser = answers[1 - won];
   assert.notEqual(won, -1, 'the first committed claim wins');

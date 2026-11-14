@@ -1,33 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { installPackedPair } from './helpers/packed-install.mjs';
+import { LOADING_MODULES, entryPointClosure, packageDir } from './helpers/entry-point-closure.mjs';
 
-const packageDir = fileURLToPath(new URL('..', import.meta.url));
-function entryPointClosure() {
-  const files = new Set();
-  function visit(path) {
-    if (files.has(path)) return;
-    assert.ok(path.startsWith('src/') && path.endsWith('.mjs'), path);
-    files.add(path);
-    const source = readFileSync(join(packageDir, path), 'utf8');
-    for (const [, specifier] of source.matchAll(/\b(?:from|import)\s*(?:\(\s*)?['"](\.[^'"]+)['"]/g)) {
-      visit(relative(packageDir, resolve(packageDir, dirname(path), specifier)));
-    }
-  }
-  visit('src/index.mjs');
-  visit('src/wallet/durable-journal.mjs');
-  visit('src/wallet/node-wallet-session.mjs');
-  visit('src/substrate/demos.mjs');
-  return [...files].sort();
-}
-
-// The quiet hook is registered by URL, so no import reaches it; the four entry points determine the rest of the closure.
-const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs'];
 test('npm pack ships the four entry points, their reviewed import closure and the quiet loading hook', t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-pack-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -50,6 +29,9 @@ test('npm pack ships the four entry points, their reviewed import closure and th
     assert.doesNotMatch(path, /(?:^|\/)(?:public|portal|portal-intent|config|seller-agent|seller-durable-state|switch-files|FIX-REPORT|\.fix-tmp|\.rr-tmp|\.stack)(?:[/.]|$)/, path);
   }
   assert.deepEqual(files, [...entryPointClosure(), ...LOADING_MODULES, 'package.json', 'README.md', 'LICENSE'].sort());
+  for (const path of ['src/dacs/seller-agent-error.mjs', 'src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-session-limits.mjs']) {
+    assert.ok(!files.includes(path), `${path} stays outside the buyer closure`);
+  }
   for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs']) assert.ok(files.includes(path), `${path} ships`);
 });
 
@@ -299,4 +281,21 @@ test('documented local packing builds core before skipping pack lifecycle script
   const install = commands.indexOf('npm ci'), build = commands.indexOf('npm run build');
   const pack = commands.findIndex(command => command.startsWith('npm pack --ignore-scripts'));
   assert.ok(install >= 0 && build > install && pack > build, 'fresh clones build dist before packing core');
+});
+
+test("no test double or authority fixture is in the client's files or exports", t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'eb-contents.mjs'), `
+    import assert from 'node:assert/strict';
+    import { readdirSync, readFileSync } from 'node:fs';
+    const root = new URL('./node_modules/@kynesyslabs/dacs-client/', import.meta.url);
+    const files = readdirSync(root, { recursive: true });
+    assert.ok(files.includes('src/wallet/effect-boundary.mjs'));
+    for (const file of files) assert.doesNotMatch(file, /fixture|double|test\\//);
+    const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+    assert.doesNotMatch(JSON.stringify(pkg.exports), /effect-boundary/);
+    const { createEffectBoundary } = await import(new URL('src/wallet/effect-boundary.mjs', root));
+    assert.equal(typeof createEffectBoundary, 'function');
+  `);
+  run(process.execPath, ['eb-contents.mjs'], app);
 });
