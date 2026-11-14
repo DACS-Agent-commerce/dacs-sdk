@@ -15,7 +15,7 @@ import { NOW, buyer, seller, testWallet } from './protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './wire-buyer.mjs';
 import { agreementInput, listingPin } from '../../src/dacs/purchase-protocol.mjs';
-import { transportOutcome } from '../../src/dacs/seller-agent.mjs';
+import { SellerAgentError, transportOutcome } from '../../src/dacs/seller-agent.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
@@ -25,6 +25,8 @@ import { SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth, createSellerT
 
 export const PATHS = DACS_SELLER_HTTP_PATHS;
 export const CONTINUING = [PATHS.payments, PATHS.bundleRequest, PATHS.bundleCountersignature];
+/** The status a signed route answers a valid request with: a bundle route refuses by name (the seller signs no completed bundle), the others succeed. */
+export const answeredStatus = (path) => ([PATHS.bundleRequest, PATHS.bundleCountersignature].includes(path) ? 503 : 200);
 export const BUYER = { claim: buyer.claim, sign: buyer.signBytes };
 export const SELLER = { claim: seller.claim, sign: seller.signBytes };
 export const session = testWallet(3);
@@ -77,6 +79,8 @@ export function stubAgent() {
     calls: { proposals: 0, commits: 0, signatureCommits: 0, states: 0, reconciled: 0, payments: 0 },
     transportAgreementOf: (jobId) => structuredClone(drafts.get(jobId) ?? null),
     retainsProposalWork: (jobId) => agent.retains && drafts.has(jobId),
+    retainsUnfinishedWork: () => false,
+    revalidateCompletedAnswer: async () => {},
     retainsPaymentClaim: () => agent.retains,
     assertSettlementCredit: (jobId) => agent.credit(jobId),
     receiveProposal: async (body, { transport } = {}) => {
@@ -97,6 +101,10 @@ export function stubAgent() {
     reconcileTransport: async ({ request, transport }) => {
       agent.calls.reconciled++;
       transport.claim();
+      if ([PATHS.bundleRequest, PATHS.bundleCountersignature].includes(request.path)) {
+        await transport.settle({ disposition: 'no-effect', status: 503, value: { error: 'bundle_finalization_unavailable', message: 'TEST the seller signs no completed bundle' }, settle: true, retry: false, noEffect: true });
+        return;
+      }
       await transport.settle({ disposition: 'present', status: 200, value: request.path === PATHS.proposals ? { disposition: 'complete', contribution: { signed: true } } : { status: 'committed', jobId: request.jobId }, settle: true });
     },
   };
@@ -137,7 +145,8 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
     } : {} });
   const agent = stubAgent();
   agent.listingPin = pin;
-  agent.bundleRequest = async () => { agent.calls.bundles++; agent.onWork('bundle'); return { status: 'held' }; };
+  // As the real agent does, a bundle route refuses by name: the seller signs no completed bundle.
+  agent.bundleRequest = async () => { agent.calls.bundles++; agent.onWork('bundle'); throw new SellerAgentError('bundle_finalization_unavailable', 'TEST the seller signs no completed bundle', 503); };
   agent.countersign = agent.bundleRequest;
   agent.confirmBuyerCopy = async () => ({ status: 'held' });
   agent.commitOnSignature = agent.commit;
@@ -208,8 +217,8 @@ export const proposeJob = async (w, label) => {
 };
 
 /** A world over a real durable agent's retained commitment, with its proposal completed. */
-export async function continuingWorld(t) {
-  const fixture = await wireContinuationFixture(t), w = await world(t, { fixture });
+export async function continuingWorld(t, options = {}) {
+  const fixture = await wireContinuationFixture(t), w = await world(t, { fixture, ...options });
   const jobId = fixture.agreement.jobId, agreementHash = fixture.request.transportIdentity.agreementHash;
   const bodyFor = (path) => path === PATHS.proposals ? fixture.request : path === PATHS.state ? identityBody(jobId, agreementHash)
     : path === PATHS.payments ? { jobId, txHash: derive('continuing-payment'), payerPayingKey: buyer.claim }

@@ -88,6 +88,25 @@ test('the seller pack ships every source module but the operator ones, and every
   }
 });
 
+test('the seller-effect-routes module ships: the manifest lists every local runtime import and a clean packed install imports seller-http with no source-tree fallback', () => {
+  const effectRoutes = 'src/dacs/seller-effect-routes.mjs', packed = sellerPackFiles();
+  assert.ok(packed.includes(effectRoutes), `${effectRoutes} ships`);
+  for (const file of ['src/dacs/seller-http.mjs', 'src/dacs/seller-wire-requests.mjs', effectRoutes]) {
+    for (const target of relativeImports(file)) assert.ok(packed.includes(target), `${file} imports ${target}, which ships`);
+  }
+  assert.ok(relativeImports('src/dacs/seller-http.mjs').includes(effectRoutes), 'seller-http imports the module');
+  const preparedPath = process.env.DACS_SELLER_SMOKE_DIR;
+  assert.ok(preparedPath, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
+  const installed = join(realpathSync(preparedPath), 'node_modules', '@kynesyslabs', 'dacs-seller');
+  assert.ok(existsSync(join(installed, effectRoutes)), 'the installed package holds the module');
+  const probe = `const http = await import(${JSON.stringify(pathToFileURL(join(installed, 'src/dacs/seller-http.mjs')).href)});
+    const routes = await import(${JSON.stringify(pathToFileURL(join(installed, effectRoutes)).href)});
+    console.log(JSON.stringify({ handler: typeof http.createSellerHttpHandler, rows: Object.keys(routes.SELLER_EFFECT_ROUTES).length }));`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { cwd: realpathSync(preparedPath), env: { PATH: process.env.PATH }, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout.trim().split('\n').at(-1)), { handler: 'function', rows: 3 });
+});
+
 test('the packed seller ships the dacs-seller bin, the CLI modules and durable-file.mjs, and the installed bin prints usage', () => {
   const manifest = JSON.parse(readFileSync(join(packageDirectory, 'package.json'), 'utf8'));
   assert.deepEqual(manifest.bin, { 'dacs-seller': './' + SELLER_BIN });

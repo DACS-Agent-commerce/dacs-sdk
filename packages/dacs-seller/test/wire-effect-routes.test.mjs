@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import DatabaseSync from 'better-sqlite3';
 import { NO_EFFECT_ERRORS, SellerAgentError, transportOutcome } from '../src/dacs/seller-agent.mjs';
 import { NOW, testWallet } from './helpers/protocol-fixture.mjs';
-import { BUYER as WORLD_BUYER, DELIVERED, HELD, LISTING, PIN as WORLD_PIN, SELLER as WORLD_SELLER, completions, continuingWorld, derive, identityBody, jobFor, operationOf, proposalFor, proposeJob, reconcilingWith, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
+import { BUYER as WORLD_BUYER, DELIVERED, HELD, LISTING, answeredStatus, PIN as WORLD_PIN, SELLER as WORLD_SELLER, completions, continuingWorld, derive, identityBody, jobFor, operationOf, proposalFor, proposeJob, reconcilingWith, vetRef, world as routeWorld } from './helpers/wire-routes-world.mjs';
 import { canonicalize, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
 import { fixtureIdentityBundle } from './fixtures/listings.mjs';
 import { agreementInput } from '../src/dacs/purchase-protocol.mjs';
@@ -441,7 +441,7 @@ for (const route of ['proposals', 'commitments', 'commitmentSignature', 'payment
     assert.deepEqual(order, ['route']);
     lapse(w);
     const recovered = await send();
-    assert.equal(recovered.status, 200);
+    assert.equal(recovered.status, answeredStatus(PATHS[route]));
     assert.deepEqual(order, ['route', 'reconcile'], 'the reconciliation ran, and no route effect ran again');
   });
 }
@@ -702,7 +702,7 @@ test('no non-context effect route reads or writes the old transport tables', asy
   for (const path of [PATHS.commitments, PATHS.payments, PATHS.state]) assert.equal((await w.request(path)).status, 200, path);
   await leaveOpen(w, () => w.request(PATHS.bundleRequest));
   lapse(w);
-  assert.equal((await w.request(PATHS.bundleRequest)).status, 200, 'one recovery');
+  assert.equal((await w.request(PATHS.bundleRequest)).status, answeredStatus(PATHS.bundleRequest), 'one recovery');
   assert.deepEqual(old(), before);
 });
 

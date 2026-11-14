@@ -249,16 +249,16 @@ export function wireAuthenticator(wire, agent, authentication) {
         view.binding !== wireOperationBinding(kept.request) || !Number.isSafeInteger(at) || at < 0 || at >= kept.effect.leaseUntil) return refuse();
     return kept;
   };
-  const finish = (reservation, status, text, { noEffect = false, retry = false } = {}) => {
+  const finish = (reservation, status, text, { noEffect = false, retry = false, decision } = {}) => {
     const { receipt } = owned(reservation);
     if (!Number.isSafeInteger(status) || status < 200 || status > 599) return refuse('peer_response_invalid');
     if (noEffect && retry) return refuse('peer_store_conflict');
-    // A final 200 answer is the outcome and returns its route slot. A proven no-effect answer and a retained answer that is not
-    // final yet (progress) end with no outcome: neither is a crash, so neither spends a crash attempt, and the next request
-    // recovers at once and the agent reconciles first. Anything else is uncertain and keeps the lease open: only the lease ends
-    // an attempt whose process may have died, and that spends one of the journal's crash attempts.
-    endWireAttempt(wire.completion, receipt, retry || noEffect ? { kind: 'no-effect' }
-      : status === 200 ? { kind: 'outcome', outcome: { status, text }, cleanup: 'route' } : { kind: 'open' });
+    // A route's row decides its end (`decision`). Otherwise a final 200 answer is the outcome and returns its route slot. A proven
+    // no-effect answer and a retained answer that is not final yet (progress) end with no outcome: neither is a crash, so neither
+    // spends a crash attempt, and the next request recovers at once and the agent reconciles first. Anything else is uncertain and
+    // keeps the lease open: only the lease ends an attempt whose process may have died, and that spends one of the journal's crash attempts.
+    endWireAttempt(wire.completion, receipt, decision ?? (retry || noEffect ? { kind: 'no-effect' }
+      : status === 200 ? { kind: 'outcome', outcome: { status, text }, cleanup: 'route' } : { kind: 'open' }));
   };
   const store = Object.freeze({
     reserve: async (request) => {

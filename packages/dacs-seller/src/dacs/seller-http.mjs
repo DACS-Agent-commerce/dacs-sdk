@@ -9,7 +9,7 @@
 // With the `wire` option, every route but the challenge and the context step opens
 // each request and signs each answer through `./wire` (seller-wire-requests.mjs); the
 // wire journal owns their effects, the reservation coordinator accounts for them, the completion port ends each
-// attempt, and read routes reserve nowhere.
+// attempt (by the rule of the route's row in seller-effect-routes.mjs, where it has one), and read routes reserve nowhere.
 // With `context` and `wire` together the challenge is on the wire too (`context.challengeOnWire`),
 // before any Agreement and with no journal. The context step keeps the old server auth, and so
 // does the challenge of a handler composed without `wire`. Each request has one authenticator,
@@ -24,11 +24,12 @@ import { signedDiscovery } from './seller-wire-discovery.mjs';
 import { WIRE_ROUTE_PATHS, wireAuthenticator } from './seller-wire-requests.mjs';
 import { createCompletionRecords } from './seller-completion-records.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
+import { createSellerEffectRoutes } from './seller-effect-routes.mjs';
 
 const MAX_BODY = 64 * 1024;
 const MAX_RESPONSE_LIST = 256;
 // A refusal whose string `cause` names what the buyer can act on carries it in its answer.
-const CAUSE_ANSWERED_REFUSALS = new Set(['context_challenge_failed', 'seller_stopped']);
+const CAUSE_ANSWERED_REFUSALS = new Set(['context_challenge_failed', 'seller_stopped', 'seller_source_unavailable']);
 // The longest client deadline `boundedCall` accepts (Node's timers hold at most 2^31 - 1 ms).
 const MAX_CLIENT_TIMEOUT_MS = 2 ** 31 - 1;
 // How long a wire route waits for the agent's settlement-credit check before it withholds a signed 200.
@@ -62,6 +63,16 @@ const reportsDeliveryReady = (text) => {
 // A proposal effect is released only on the agent's proof that it signed and kept nothing.
 const retainsProposal = (agent, jobId) => { try { return agent.retainsProposalWork?.(jobId) !== false; } catch { return true; } };
 const retainedBy = (agent, path, jobId, body) => path === PAYMENT_PATH ? retainsClaim(agent, jobId, body) : path === PROPOSAL_PATH && retainsProposal(agent, jobId);
+
+// What the agent holds for a table route's job, for the row's end rule. The agent settles inside its job lock, so a route
+// that retains nothing has no worker either. A route the agent cannot answer for is `unknown`, never `none`.
+function routeEvidence(agent, path, jobId, outcome) {
+  let work;
+  try { work = path === PROPOSAL_PATH ? agent.retainsProposalWork?.(jobId) : agent.retainsUnfinishedWork?.({ jobId, path }); } catch { work = undefined; }
+  const retained = work === true ? 'work' : work === false ? 'none' : 'unknown';
+  return Object.freeze({ retained, workerQuiescent: retained === 'none', signatureIntent: path === PROPOSAL_PATH && retained === 'work', createIntent: false,
+    final: outcome.status === 200 && !outcome.retry && !outcome.noEffect });
+}
 
 const ROUTES = {
   '/dacs/v1/agreements/proposals': (agent, body, options) => agent.receiveProposal(body, options),
@@ -180,6 +191,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   if (![bodyTimeoutMs, maxRequestsPerWindow, rateWindowMs, maxConcurrent].every((n) => Number.isSafeInteger(n) && n > 0)) throw new Error('seller transport limits must be positive integers');
   if (typeof commitOnSignature !== 'boolean') throw new TypeError('commitOnSignature must be boolean');
   const routes = commitOnSignature ? SIGNATURE_ROUTES : ROUTES;
+  const effectRoutes = createSellerEffectRoutes({ commitOnSignature });
   if (authentication && (authentication.seller !== agent.claim || canonicalize(authentication.listingPin) !== canonicalize(agent.listingPin))) throw new Error('seller transport identity must match the independently configured agent');
   if (authentication?.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
   if (context !== null && (!authentication || context?.path !== SELLER_CONTEXT_PATH || context?.challengePath !== SELLER_CONTEXT_CHALLENGE_PATH || typeof authentication.store?.classify !== 'function' || !['challenge', 'reserve', 'perform', 'settled', 'reconcile'].every((name) => typeof context[name] === 'function'))) throw new Error('the seller context route needs the authenticated transport and its admission');
@@ -267,6 +279,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     // A wire attempt is answered once, in this order: sign its exact bytes, await the credit check of a 200, end the attempt
     // through `end` (which first checks the attempt is still current), write. Nothing is awaited between that check and the write.
     const wired = wireAuth !== null && auth === wireAuth;
+    // Only the routes the wire serves have table rows, looked up by their exact path.
+    const rowOfRoute = () => (wired ? effectRoutes[req.url] : undefined);
     let concluded = false, delivered = false;
     const conclude = async (outcome, end) => {
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
@@ -278,8 +292,13 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       settled = outcome; delivered = true;
       write(res, outcome.status, headers, sent);
     };
+    // The options an answer is stored with: its classification and, for a route with a row, the row's end decision for the exact text.
+    const endOptions = (outcome, text) => {
+      const row = rowOfRoute();
+      return { noEffect: outcome.noEffect, retry: outcome.retry, ...(row === undefined ? {} : { decision: row.endAfter({ ...outcome, text }, routeEvidence(agent, req.url, request.jobId, outcome)) }) };
+    };
     const finishWith = (outcome) => {
-      if (wired) return conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, { noEffect: outcome.noEffect, retry: outcome.retry }));
+      if (wired) return conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)));
       if (authentication) auth.store.finish(reservation, outcome.status, auth.encode(JSON.stringify(outcome.value)), { noEffect: outcome.noEffect, retry: outcome.retry });
       return (settled = outcome);
     };
@@ -359,7 +378,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           const answer = await route(agent, body, { transport }), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
         }
-        if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
+        if (reservation.disposition === 'cached') {
+          // A completed answer of a table route is signed again only after its sources are read again; a refusal withholds it and rewrites nothing.
+          await rowOfRoute()?.revalidate({ agent, jobId: request.jobId, outcome: { status: reservation.status, text: reservation.text } });
+          return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
+        }
         if (reservation.disposition === 'uncertain') {
           // A request its expired delegation admits only for readback reconciles read only.
           const readOnly = opened.readbackOnly();
@@ -369,7 +392,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
             // restores or runs anything, and settles it there. Only an answer
             // the store settled is sent; anything else stays uncertain.
             let claimed = null;
-            const reconcile = (outcome) => (text) => auth.store.reconcile(claimed, request, outcome.status, text, { retry: outcome.retry, noEffect: outcome.noEffect });
+            const reconcile = (outcome) => (text) => auth.store.reconcile(claimed, request, outcome.status, text, endOptions(outcome, text));
             const transport = Object.freeze({
               claim: () => (claimed = auth.store.claim(reservation, request, { live: !readOnly })),
               settle: (outcome) => {
@@ -379,7 +402,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
                 settled = outcome;
               },
             });
-            if (typeof agent.reconcileTransport === 'function' && typeof auth.store.claim === 'function') await agent.reconcileTransport({ request, body, rawBody, readOnly, transport });
+            if (typeof agent.reconcileTransport === 'function' && typeof auth.store.claim === 'function') {
+              const row = rowOfRoute();
+              await (row === undefined ? agent.reconcileTransport({ request, body, rawBody, readOnly, transport }) : row.recover({ agent, request, body, rawBody, transport }));
+            }
             if (delivered) return;
             if (!settled) return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; its outcome is not established.' }, request);
             return await send(res, settled.status, settled.value, request, { text: await pointed(settled.status, JSON.stringify(settled.value), request.jobId, req.url) });
