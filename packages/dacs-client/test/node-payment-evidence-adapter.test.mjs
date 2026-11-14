@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
-import { api, mnemonicBytes, ok, setPurchaseAdmission } from './helpers/tp1-node-fixture.mjs';
+import { api, mnemonicBytes, ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
+import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
 import { gateWorld, inPass, openPass, sellerPublications } from './helpers/effect-gate-world.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 import { recordingApproval } from './helpers/payment-evidence-approval-double.mjs';
@@ -37,7 +38,7 @@ const evidenceInput = (w, label = 'a', extra = {}) => ({ logicalAddress: `dacs4:
   writer: `did:demos:agent:${w.session.wallet.getPublicAccount().address.slice(2)}`, artifactKind: 'SettlementEvidence', jobId: `TEST-job-${label}`, receiptContentHash: 'e1'.repeat(32), ...extra });
 const signIn = (w, input, options) => inPass(w, () => w.adapter.signCreate(input, options));
 const recordOf = async w => (await w.journal().entries()).find(([key]) => key.startsWith(RECORD_KEY_PREFIX))?.[1] ?? null;
-const sdkMessage = (w, message, respond) => { w.node.intercept = row => (row.body.params[0].message === message ? respond(row) : undefined); };
+const sdkMessage = (w, message, respond) => { w.node.intercept = row => (row.body?.params[0].message === message ? respond(row) : undefined); };
 const releasedIds = w => w.approval.settlements.filter(call => call.outcome === 'released').map(call => call.ledgerId);
 const assertNothingSent = w => { assert.equal(w.node.confirms.length, 0, 'no confirmation'); assert.equal(w.node.broadcasts.length, 0, 'no broadcast'); };
 const codes = error => causeChain(error).map(link => link.code);
@@ -323,13 +324,14 @@ const successfulConfirmation = (tx, data = {}) => ok({ data: { valid: true, refe
 const responseOf = answer => new Response(JSON.stringify(answer), { headers: { 'content-type': 'application/json' } });
 const spentIds = w => [...w.approval.settled].filter(([, outcome]) => outcome === 'spent').map(([id]) => id);
 const applyWithoutBroadcast = (w, signed) => { w.node.applied.set(signed.txHash, JSON.parse(signed.signedTransaction)); w.node.nonce = signed.nonce; };
-const messageOf = row => row.body.params[0].message || row.body.params[0].extra;
+const messageOf = row => row.body?.params[0].message || row.body?.params[0].extra;
 
 async function replayWorld(t, options) {
   const w = await adapterWorld(t, options);
   w.reply = null;
   w.node.intercept = async row => {
-    const call = row.body.params[0];
+    const call = row.body?.params[0];
+    if (!call) return undefined;
     if (call.extra === 'confirmTx') w.node.confirms.push(structuredClone(call.data));
     if (call.extra === 'broadcastTx') w.node.broadcasts.push(structuredClone(call.data.response.data.transaction));
     const changed = await w.reply?.(row);
@@ -719,6 +721,100 @@ test("broadcast with a never-settling fetch, aborted by the journal deadline: th
   await assert.rejects(broadcastIn(w, signed, { signal: deadline.signal }), error => error.code === 'outcome_unknown' && causeChain(error).some(link => /TEST-deadline/.test(link.message)));
   assert.equal((await recordOf(w)).active.signed.txHash, signed.txHash); assert.deepEqual(w.approval.settlements, []);
   w.reply = null; assert.equal((await broadcastIn(w, signed)).status, 'accepted', 'the queue is free again');
+});
+
+test("a broadcast retried after an executed write whose settlement was not recorded sends nothing and opens no second authorization", async t => {
+  const { faults, wrap } = failingJournal(), w = await replayWorld(t, { journalWrap: wrap }), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed);
+  faults.failPut = (key, value) => key.startsWith(RECORD_KEY_PREFIX) && value?.active === null;
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1'], 'the first authorization is already spent');
+  await assert.rejects(broadcastIn(w, signed), { code: 'transaction_already_executed' });
+  assertNothingSent(w); assert.equal(w.approval.prepared.length, 1, 'no second authorization was prepared');
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1'], 'only the first authorization is ever spent');
+  assert.equal((await recordOf(w)).active, null);
+});
+
+test("the kit journal reads an executed CREATE through the adapter by its hash alone, which frees the signer for the next evidence", async t => {
+  const w = await replayWorld(t), dir = mkdtempSync(join(tmpdir(), 'payment-evidence-adapter-')), first = evidenceInput(w), second = evidenceInput(w, 'b');
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const journal = createPaymentEvidenceWalletJournal({ path: join(dir, 'journal.sqlite'), signCreate: (asked, options) => signIn(w, asked, options),
+    broadcast: (retained, options) => broadcastIn(w, retained, options), readAccountNonce: () => w.adapter.readAccountNonce(), readTransactionState: retained => w.adapter.readTransactionState(retained) });
+  t.after(() => journal.close());
+  await journal.anchorEvidence(first);
+  const kept = await journal.readSignedProjection({ logicalAddress: first.logicalAddress });
+  await journal.anchorEvidence(first);
+  assert.equal((await recordOf(w)).active, null, 'the executed CREATE ended its reservation');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+  await journal.anchorEvidence(second);
+  assert.equal((await journal.readSignedProjection({ logicalAddress: second.logicalAddress })).content.nonce, kept.content.nonce + 1);
+});
+
+test("readTransactionState with a hash alone answers pending when no reservation holds that hash, and applied for the held hash once the chain executed it", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  const unknown = await w.adapter.readTransactionState({ txHash: 'c'.repeat(64) });
+  assert.equal(unknown.state, 'pending'); assert.deepEqual(codes(w.session.internalCauseOf(unknown)).filter(Boolean), ['retained_transaction_invalid']);
+  assert.equal((await w.adapter.readTransactionState({ txHash: signed.txHash })).state, 'pending', 'held, not executed');
+  applyWithoutBroadcast(w, signed);
+  assert.equal((await w.adapter.readTransactionState({ txHash: signed.txHash })).state, 'applied');
+  assert.equal((await recordOf(w)).active, null);
+});
+
+test("a native write is refused while a stored evidence CREATE holds the signer, and succeeds once that CREATE has executed", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  const refused = await inPass(w, () => w.send());
+  assert.equal(refused.success, false); assert.ok(codes(w.session.internalCauseOf(refused)).includes('signer_lane_busy'), 'the refusal keeps its cause');
+  assert.equal(w.node.broadcasts.length, 0, 'the native write sent nothing');
+  assert.equal((await w.journal().entries()).some(([key]) => key.startsWith('devnet/native-wallet/')), false, 'no native lane record was written');
+  applyWithoutBroadcast(w, signed);
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  const next = { method: 'sendTransaction', params: [buildNativeTransferPayload({ from: signerOf(w), to: `0x${'2'.repeat(64)}`, amountOs: '2500000000', nonce: signed.nonce + 1, timestamp: T0, encoding: 'os-string' })] };
+  assert.equal((await inPass(w, () => w.session.wallet.request(next))).success, true);
+  assert.equal(w.node.broadcasts.length, 1, 'the native write goes out once the signer is free');
+});
+
+test("signCreate waits for the native lane lock, then refuses when a native write was retained under it", async t => {
+  const w = await replayWorld(t), signer = signerOf(w), lane = nativeWalletLaneKey(TP1_APPROVED_IDENTITY_RECORD, signer);
+  let startNativeWrite;
+  const nativeWriteStarts = new Promise(resolve => { startNativeWrite = resolve; });
+  const locked = w.journal().withWalletLock(lane, async () => { await nativeWriteStarts; await w.journal().put(lane, { stage: 'broadcast-started', hash: 'a'.repeat(64) }); });
+  await settle();
+  const outcome = assert.rejects(signIn(w, evidenceInput(w)), { code: 'signer_lane_busy' });
+  for (let turn = 0; turn < 20; turn += 1) await settle();
+  assert.equal(await recordOf(w), null, 'nothing is reserved while the native lane is locked');
+  startNativeWrite(); await locked; await outcome;
+  assert.equal(await recordOf(w), null, 'no reservation was made');
+  assert.equal(w.signsInsideSign, 0, 'nothing was signed');
+});
+
+test("a confirmed transaction whose storage program is absent or differs from the CREATE is pending, and the matching program is applied", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), created = JSON.parse(signed.signedTransaction).content, operation = created.data[1];
+  applyWithoutBroadcast(w, signed);
+  const program = answer => { w.node.intercept = row => (row.body === null ? answer(row) : undefined); };
+  const served = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+  for (const [name, answer] of [
+    ['absent', () => new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } })],
+    ['without data', () => served({ success: true })],
+    ['other data', () => served({ success: true, data: { TEST: 'other' }, owner: created.from, programName: operation.programName })],
+    ['other owner', () => served({ success: true, data: operation.data, owner: `0x${'9'.repeat(64)}`, programName: operation.programName })],
+    ['other program name', () => served({ success: true, data: operation.data, owner: created.from, programName: 'TEST-other' })]]) {
+    program(answer);
+    assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending', name);
+    assert.deepEqual(spentIds(w), [], `${name}: nothing is spent`);
+  }
+  w.node.intercept = null;
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.ok(w.node.calls.some(row => row.body === null && row.url.endsWith(`/storage-program/${created.to}`)), 'the program was read at the CREATE\'s storage address');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+});
+
+test("signCreate reads the fees only after the node's chain identity matches the pinned one", async t => {
+  const w = await adapterWorld(t);
+  sdkMessage(w, 'getBlockByNumber', row => (row.body.params[0].data.blockNumber === 0 ? answerWith({ number: 0, status: 'confirmed', hash: 'd'.repeat(64), content: {} }) : undefined));
+  await assert.rejects(signIn(w, evidenceInput(w)));
+  assert.deepEqual(w.node.calls.filter(row => ['getNetworkInfo', 'getNetworkParameters'].includes(row.body?.params[0].message)), [], 'no fee input was read from the foreign chain');
+  assert.equal(await recordOf(w).then(record => record.active), null, 'the reservation was retired'); assert.equal(w.signsInsideSign, 0);
 });
 
 test("no socket or DNS lookup leaves the process in the adapter suite", () => {

@@ -25,7 +25,8 @@
 // bytes, which no live caller can finish. It needs the host's ownership proof (the state lock is held and the journal lies inside
 // its directory), never uses elapsed time, and never touches the rows of a live handle in this process.
 //
-// Lock order: the kit writer lock, then the signer lock; the signer lock is never re-entered.
+// Lock order: the kit writer lock, then the native lane lock (the payment-evidence adapter claims under it), then the signer lock;
+// the signer lock is never re-entered.
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, sep } from 'node:path';
@@ -47,6 +48,9 @@ const isCount = value => Number.isSafeInteger(value) && value >= 0;
 const isHex64 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const isAddress = value => typeof value === 'string' && /^0x[a-f0-9]{64}$/.test(value);
 const isText = (value, limit = MAX_ID_BYTES) => typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= limit && !value.includes('\0');
+
+/** The journal key of a signer's reservation record on this network and chain; the native transport reads it to leave a held signer alone. */
+export const signerReservationKey = ({ network, chainIdentity }, signer) => `${KEY_ROOT}/${JSON.stringify([network, chainIdentity, signer])}`;
 
 function fail(code, detail = code) { throw Object.assign(new Error(code, { cause: detail instanceof Error ? detail : new Error(detail) }), { code }); }
 function check(condition, message) { if (!condition) fail('signer_reservation_invalid', message); }
@@ -106,7 +110,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
   // signer -> attemptId of a reservation whose approval was settled `released` for a retirement whose put has not committed.
   // The reservation is still stored, so nothing may sign for it; `reserve` or a repeated `retireUnsigned` finishes it.
   const unfinishedRetirements = new Map();
-  const keyOf = signer => { check(isAddress(signer), 'invalid signer'); return `${KEY_ROOT}/${JSON.stringify([pins.network, pins.chainIdentity, signer])}`; };
+  const keyOf = signer => { check(isAddress(signer), 'invalid signer'); return signerReservationKey(pins, signer); };
 
   function validateActive(active, record) {
     check(isText(active.attemptId) && OPERATIONS.includes(active.operation) && isText(active.operationKey), 'invalid active identity');

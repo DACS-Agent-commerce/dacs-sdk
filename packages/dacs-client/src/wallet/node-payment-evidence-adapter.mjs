@@ -22,8 +22,13 @@
 //                  never advances; a valid refusal is `confirm_rejected`.
 //   policy         `approval.confirm` runs on every replay against the held authorization; `false` or a throw sends nothing.
 //   dispatch       one `broadcastTx`. Whatever goes wrong after it starts is `outcome_unknown`: the receiver may hold the bytes.
-// `readTransactionState` answers `applied` only when the chain executed exactly these bytes and settles the reservation's
-// authorization spent; every other outcome is `pending` with its cause kept. It never answers `absent`.
+// `readTransactionState` answers `applied` only when the chain executed exactly these bytes, lists the hash in its block and serves
+// the storage program the CREATE made; it then settles the reservation's authorization spent. Every other outcome is `pending` with
+// its cause kept. It never answers `absent`. A reservation whose execution is proven refuses any further `broadcast`, so a spent
+// authorization is never replaced by a new one.
+//
+// The reservation is claimed while the native lane's lock is held, and the native transport refuses to broadcast while a reservation
+// is stored for its signer, so no native write takes the reserved nonce.
 import { canonicalize, demosTransactionContentMatches, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { OperationError } from '../client-errors.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../dacs/wallet-transactions.mjs';
@@ -38,6 +43,7 @@ import { hasKeys } from './payload-helpers.mjs';
 const OPERATION = 'payment-evidence';
 const UNCERTAIN = 'signer_reservation_uncertain';
 const RETAINED_INVALID = 'retained_transaction_invalid';
+const ALREADY_EXECUTED = 'transaction_already_executed';
 const APPROVAL_UNAVAILABLE = 'approval_reservation_unavailable';
 const NODE_REPLY_MAX_BYTES = 4 * 1024 * 1024;
 const MAX_BLOCK_TRANSACTIONS = 10_000;
@@ -138,21 +144,31 @@ function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem
  * after one dispatch of the held bytes and signs nothing. It rejects `retained_transaction_invalid` (the reservation does not
  * hold exactly these bytes; nothing was sent), `approval_required` (the authorization could not be reopened, renewed or confirmed
  * by current policy; nothing was sent), `confirm_rejected` (the node refused the confirmation), `outcome_unknown` (the
- * confirmation or the dispatch has no valid answer; the cause is kept), `locked`, or an abort's reason before the dispatch starts.
+ * confirmation or the dispatch has no valid answer; the cause is kept), `transaction_already_executed` (the chain proved the
+ * execution and the reservation has not ended yet; nothing was sent), `locked`, or an abort's reason before the dispatch starts.
  * `readAccountNonce({signal})` resolves the account nonce, or rejects `node_reply_invalid` or `invalid_nonce`.
  * `readTransactionState({signedTransaction, txHash, nonce}, {signal})` resolves `{state: 'applied' | 'pending'}` and never rejects
- * for a failed read; a `pending` answer's cause is `internalCauseOf(answer)`. It starts no read after an abort.
+ * for a failed read; a `pending` answer's cause is `internalCauseOf(answer)`. Given only `{txHash}`, it reads the bytes and nonce
+ * the reservation holds for that hash. It starts no read after an abort.
  */
 export function createPaymentEvidenceCreateAdapter({ reservations, approval, demos, observer, journal, pins, clock, rpcUrl, isWalletLocked, owner, fetchImpl, stamps, recordCause }) {
   const signer = String(demos.getAddress()).toLowerCase(), inQueue = createQueue();
+  // Attempts whose execution the chain proved and whose reservation has not ended yet.
+  const provenExecuted = new Set();
 
   // The adapter holds its own Demos instance, so the session's lock does not stop it; this check makes a locked wallet sign nothing.
   function assertUnlocked() {
     if (isWalletLocked()) throw new EmbeddedWalletError('locked', 'the wallet is locked; nothing was signed');
   }
-  async function assertNativeLaneIdle() {
-    const lane = await journal.get(nativeWalletLaneKey(pins, signer));
-    if (lane !== undefined && !FINISHED_LANE_STAGES.includes(lane?.stage)) throw refuse('signer_lane_busy');
+  // Claims the signer while holding the native lane's lock, which every native broadcast also takes. A native write is therefore
+  // either finished before this claim (the lane check or the nonce read sees it) or refused by the claim it finds.
+  function claimSignerOnIdleNativeLane(claim) {
+    const laneKey = nativeWalletLaneKey(pins, signer);
+    return journal.withWalletLock(laneKey, async () => {
+      const lane = await journal.get(laneKey);
+      if (lane !== undefined && !FINISHED_LANE_STAGES.includes(lane?.stage)) throw refuse('signer_lane_busy');
+      return reservations.reserve(claim);
+    });
   }
   async function connected() { if (demos.rpc_url !== rpcUrl) await demos.connect(rpcUrl); }
   async function readChainNonce({ signal }) {
@@ -160,7 +176,9 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     return observeWithDeadline(({ signal: stop }) => settleOnAbort(demos.nodeCall('getAddressNonce', { address: signer }), stop),
       { timeoutMs: AUTHORITY_READ_DEADLINE_MS, signal });
   }
+  // The fee inputs are approved and signed over, so they are read only from a node whose chain is the pinned one.
   async function readDebitInputs(signal) {
+    await observer.observe({ signal });
     const info = await observer.readNodeInfo('getNetworkInfo', { signal }), parameters = await observer.readNodeInfo('getNetworkParameters', { signal });
     const postFork = info?.forks?.osDenomination?.activated;
     if (typeof postFork !== 'boolean' || !isWholeDem(parameters?.networkFee) || !isWholeDem(parameters?.rpcFee)) throw refuse('node_reply_invalid');
@@ -269,14 +287,14 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     }
   }
 
-  async function post(body, headers, signal) {
+  async function fetchPinned(url, options, signal) {
     signal.throwIfAborted();
     const context = await owner.getContext();
     if (context.network !== pins.network || context.endpoint !== pins.endpoint || context.transportAuthority !== pins.transportAuthority) throw refuse('transport_mismatch');
     signal.throwIfAborted();
-    return fetchBoundedJson(pins.endpoint, { method: 'POST', body, headers, fetchImpl, signal, timeoutMs: AUTHORITY_READ_DEADLINE_MS,
-      maxBytes: NODE_REPLY_MAX_BYTES, expectedOrigin: new URL(pins.endpoint).origin });
+    return fetchBoundedJson(url, { ...options, fetchImpl, signal, timeoutMs: AUTHORITY_READ_DEADLINE_MS, maxBytes: NODE_REPLY_MAX_BYTES, expectedOrigin: new URL(pins.endpoint).origin });
   }
+  const post = (body, headers, signal) => fetchPinned(pins.endpoint, { method: 'POST', body, headers }, signal);
   // A confirmTx or broadcastTx body with fresh authentication headers from the wallet's stamp source; the effect gate runs in `fetchImpl`.
   async function execute(stage, data, signal) {
     signal.throwIfAborted();
@@ -311,6 +329,7 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     signal.throwIfAborted();
     const tx = parseRetained(retained), held = await reservationHolding(retained);
     if (held === null) throw refuse(RETAINED_INVALID);
+    if (provenExecuted.has(held.active.attemptId)) throw refuse(ALREADY_EXECUTED);
     const binding = await replayApproval(held, signal);
     assertApprovalCovers(binding.requestText, tx.content);
     const validity = await confirmRetained(tx, retained, signal);
@@ -349,16 +368,39 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     const executed = await nodeRead('getTxByHash', { hash: tx.hash }, signal);
     if (!executedMatches(executed, tx, status.blockNumber)) throw refuse('readback_unverified');
     if (!blockListsHash(await nodeRead('getBlockByNumber', { blockNumber: status.blockNumber }, signal), status.blockNumber, tx.hash)) throw refuse('readback_unverified');
+    await verifyStorageProgram(tx, signal);
+  }
+  // Ends the reservation on a proven execution. Until that finishes, the attempt stays in `provenExecuted`: its authorization may already be
+  // settled spent while the record still names it, and `replay` must not replace that authorization with one that would be spent again.
+  async function consumeExecuted(held, tx, retained) {
+    provenExecuted.add(held.active.attemptId);
+    await reservations.consume(held, { status: 'executed', authenticated: true, txHash: tx.hash, projectionText: retained.signedTransaction });
+    provenExecuted.delete(held.active.attemptId);
+  }
+  // The node must serve the program this CREATE made: its address, its exact data, its program name and the signer as owner.
+  async function verifyStorageProgram(tx, signal) {
+    const operation = tx.content.data[1];
+    if (tx.content.to !== deriveStorageAddress(signer, operation.programName, tx.content.nonce, '')) throw refuse('readback_unverified');
+    const program = await fetchPinned(`${pins.endpoint.replace(/\/$/, '')}/storage-program/${tx.content.to}`, {}, signal);
+    signal.throwIfAborted();
+    const programOwner = typeof program?.owner === 'string' ? program.owner.toLowerCase() : null;
+    if (!(program?.success === true && programOwner === signer && program.programName === operation.programName && isObject(program.data) && canonicalize(program.data) === canonicalize(operation.data))) throw refuse('readback_unverified');
+  }
+  // The journal names a kept CREATE by its hash alone; its bytes and nonce are then the ones the reservation holds for that hash.
+  async function withHeldBytes(retained) {
+    if (retained?.signedTransaction !== undefined || retained?.nonce !== undefined) return retained;
+    const held = (await reservations.current(signer))?.active;
+    return held?.signed && held.signed.txHash === retained?.txHash ? { txHash: retained.txHash, signedTransaction: held.signed.projectionText, nonce: held.nonce } : retained;
   }
   // `applied` after the chain proves the execution of exactly the retained bytes; the reservation holding them, if any, ends and its authorization is spent.
-  async function transactionState(retained, signal) {
+  async function transactionState(asked, signal) {
     try {
       signal.throwIfAborted();
-      const tx = parseRetained(retained), held = await reservationHolding(retained);
+      const retained = await withHeldBytes(asked), tx = parseRetained(retained), held = await reservationHolding(retained);
       if (retained.nonce !== tx.content.nonce) throw refuse(RETAINED_INVALID);
       await verifyExecution(tx, signal);
       signal.throwIfAborted();
-      if (held !== null) await reservations.consume(held, { status: 'executed', authenticated: true, txHash: tx.hash, projectionText: retained.signedTransaction });
+      if (held !== null) await consumeExecuted(held, tx, retained);
       return { state: 'applied' };
     } catch (cause) {
       const answer = { state: 'pending' };
@@ -373,8 +415,7 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       const request = checkedInput(input, signer);
       signal.throwIfAborted();
       return inQueue(signal, async () => {
-        await assertNativeLaneIdle();
-        const { reservation, nonce } = await reservations.reserve({ signer, operation: OPERATION, operationKey: request.logicalAddress, readChainNonce, signal });
+        const { reservation, nonce } = await claimSignerOnIdleNativeLane({ signer, operation: OPERATION, operationKey: request.logicalAddress, readChainNonce, signal });
         const { signed, approvalIntent } = reservation.active;
         if (signed !== null) {
           if (signed.inputDigest !== request.inputDigest) throw refuse('signer_lane_busy');

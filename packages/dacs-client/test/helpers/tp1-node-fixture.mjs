@@ -19,13 +19,20 @@ export const ok = response => ({ result: 200, response, require_reply: false, ex
 export function scriptedNode() {
   const node = { calls: [], broadcasts: [], confirms: [], applied: new Map(), mode: 'accept', nonce: 0, intercept: null };
   node.fetch = async (url, init) => {
-    const body = JSON.parse(init.body), call = body.params[0];
+    const body = init.body === undefined ? null : JSON.parse(init.body), call = body?.params[0];
     const row = { url: String(url), body, headers: { ...init.headers }, redirect: init.redirect };
     node.calls.push(row);
     const intercepted = await node.intercept?.(row);
     if (intercepted) return intercepted;
     let answer;
-    if (body.method === 'nodeCall') {
+    if (body === null) {
+      // The storage program read: the program an applied storage CREATE made, or a 404.
+      const address = new URL(url).pathname.split('/storage-program/')[1];
+      const created = [...node.applied.values()].find(tx => tx.content.to === address && tx.content.data?.[0] === 'storageProgram');
+      if (!created) return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+      const operation = created.content.data[1];
+      answer = { success: true, data: operation.data, owner: created.content.from, programName: operation.programName };
+    } else if (body.method === 'nodeCall') {
       const { message, data } = call;
       if (message === 'getBlockByNumber') answer = ok(data.blockNumber === 0
         ? { number: 0, status: 'confirmed', hash: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, content: {} }
