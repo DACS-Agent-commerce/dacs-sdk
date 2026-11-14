@@ -312,5 +312,5 @@ test("node-wallet subpath exports exactly its reviewed names; the root import lo
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
  const api=await import('../src/wallet/node-wallet-session.mjs');
- assert.deepEqual(Object.keys(api).sort(),['createNodeTransportOwner','createNodeWalletSession','createRpcStampSource']);
+ assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource']);
 });
