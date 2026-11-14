@@ -139,7 +139,7 @@ export function checkDeltas(packageDir=pkg) {
     for(const {sha,before} of records) {
       if(!ancestors.has(sha)) ancestors.set(sha,new Set(git('rev-list',`${BASELINE}..${sha}^`).split('\n')));
       const previous=records.filter(record=>ancestors.get(sha).has(record.sha));
-      // Other paths outside src/ and test/ (scripts, say) may change without a record, so their first record starts from its own parent commit. Source, test and anchored paths start from `baseline`.
+      // A path outside src/ and test/ that the anchor does not name (a core file an archived record names) may change without a record, so its first record starts from its own parent commit. Source, test and anchored paths start from `baseline`.
       let parent=null;if(!previous.length&&!inSourceTree(path)&&!anchored(path))try{parent=git('rev-parse','--verify',`${sha}^:${path}`);}catch{}
       const expected=previous.length?expectedBlob(previous,independent):{blob:inSourceTree(path)||anchored(path)?baseline:parent};
       // Divergent newest ancestors require an explicit resolution record.

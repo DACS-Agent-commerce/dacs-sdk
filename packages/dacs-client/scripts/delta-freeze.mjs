@@ -9,7 +9,10 @@
 //     chooses one), else its blob at the anchor (records/ANCHOR.json) for
 //     anchored paths, else its baseline blob. No expected blob means the path
 //     must not exist. A record of an anchored path must select a commit after
-//     the anchor (reachable from HEAD but not from the anchor commit).
+//     the anchor (reachable from HEAD but not from the anchor commit). A branch
+//     cut before the anchor's last change to an anchored file holds an older
+//     copy of it; its record cannot chain from the anchor, so it must be
+//     rebased onto the anchor first (check-provenance refuses it otherwise).
 // Anything else is refused. The rule reads the history from the baseline to
 // HEAD with one `git rev-list` for the commit graph and one `git log --raw`
 // for the commits and their package changes, and fails closed without it.

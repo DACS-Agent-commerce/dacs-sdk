@@ -137,7 +137,9 @@ function recordOldReadmeCommit(s, anchor) {
   return sha;
 }
 
-test('a README record must select a commit after the anchor; a branch cut before the anchor may record README', t => {
+// A branch cut before the anchor's last change to an anchored file holds an older copy of it.
+// Its record cannot chain from the anchor's copy, so check-provenance refuses it until the branch is rebased onto the anchor.
+test('a README record must select a commit after the anchor; a branch cut where README already equals the anchor copy may record it', t => {
   const s = scratch(t), { commit: anchor } = readAnchor(s.dir);
   const old = recordOldReadmeCommit(s, anchor);
   s.git('add', '--', P); s.git('commit', '-qm', 'TEST record a README commit before the anchor');
