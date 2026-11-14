@@ -28,8 +28,6 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
-      // The host loader fixes only demosdk 4.0.16's published extensionless ESM
-      // directory import; generated production services need no TS transformer.
       test: "npm run build && node --import @kynesyslabs/dacs-node/demos-loader --test dist/test/live-bootstrap.test.js",
       "dacs:doctor": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor",
       "dacs:doctor:funded": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js doctor-funded",
@@ -49,7 +47,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
       "@kynesyslabs/dacs-node": SDK_VERSION,
-      "@kynesyslabs/demosdk": "4.0.16",
+      "@kynesyslabs/demosdk": "4.0.19",
       "better-sqlite3": BETTER_SQLITE_VERSION,
       ...(x402 ? {
         "@x402/core": "2.15.0",
@@ -130,6 +128,9 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
   if (persistentConfirmationDetected) {
     throw new Error("write confirmation must not be persisted in .env");
   }
+  if (process.env.DACS_DEMOS_CHAIN_ID && !process.env.DACS_DEMOS_GENESIS_HASH) {
+    throw new Error("DACS_DEMOS_CHAIN_ID requires DACS_DEMOS_GENESIS_HASH");
+  }
   const publicBaseUrl = publicUrl(role === "buyer"
     ? "DACS_BUYER_PUBLIC_BASE_URL" : role === "seller"
       ? "DACS_SELLER_PUBLIC_BASE_URL" : "DACS_VERIFIER_PUBLIC_BASE_URL");
@@ -144,6 +145,11 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     demos: {
       rpcUrl: process.env.DACS_DEMOS_RPC_URL ?? "https://node2.demos.sh",
+      ...(process.env.DACS_DEMOS_GENESIS_HASH ? { expectedIdentity: {
+        genesisHash: process.env.DACS_DEMOS_GENESIS_HASH,
+        ...(process.env.DACS_DEMOS_CHAIN_ID === undefined || process.env.DACS_DEMOS_CHAIN_ID === ""
+          ? {} : { chainId: process.env.DACS_DEMOS_CHAIN_ID }),
+      } } : {}),
       ...(publicUrl("DACS_DEMOS_STORAGE_READ_URL") === undefined
         ? {} : { storageReadUrl: publicUrl("DACS_DEMOS_STORAGE_READ_URL")! }),
     },
@@ -616,6 +622,7 @@ type DoctorActors = Readonly<Record<"buyer" | "seller", Readonly<DoctorActor>>>;
 
 export interface GeneratedDoctorOperationV1 {
   rail: "x402" | "pay-dem";
+  servicesRunning?: boolean;
   listingRef?: string;
   maximumServiceAmount?: string;
   maximumNetworkFeeEth?: string;
@@ -877,6 +884,7 @@ function sqlite() {
 
 async function dockerRuntime(
   context: Readonly<{ phase: DacsLiveDoctorPhaseV1; signal: AbortSignal }>,
+  servicesRunning = false,
 ): Promise<Readonly<DacsLiveDoctorProbeResultV1>> {
   let endpoints: readonly Readonly<{ hostname: string; port: number }>[];
   try {
@@ -904,7 +912,7 @@ async function dockerRuntime(
   if (endpoints[0]!.port === endpoints[1]!.port) {
     return fail("service-port-shared");
   }
-  if (context.phase === "pre-start") {
+  if (context.phase === "pre-start" && !servicesRunning) {
     for (const endpoint of endpoints) {
       const available = await new Promise<boolean>((resolve) => {
         const server = createServer();
@@ -1287,7 +1295,7 @@ function baseProbes(
           : fail("transport-identity-resolution-mismatch");
       } catch { return fail("transport-identity-resolution-failed"); }
     },
-    "local.deployment-runtime": dockerRuntime,
+    "local.deployment-runtime": (context) => dockerRuntime(context, operation?.servicesRunning),
     "demos.rpc-chain": actors === undefined ? actorUnavailable : async () => {
       try {
         await Promise.all([actors.buyer.runtime.networkInfo(), actors.seller.runtime.networkInfo()]);
@@ -1617,7 +1625,7 @@ export async function runGeneratedDoctor(
       "local.package-integrity": inspectDacsNodePackageIntegrityV1,
       "local.version-bindings": versionBindings,
       "local.configuration": () => fail("configuration-invalid"),
-      "local.deployment-runtime": dockerRuntime,
+      "local.deployment-runtime": (context) => dockerRuntime(context, operation?.servicesRunning),
     });
     const report = await runDacsLiveDoctorV1({
       phase,
@@ -3417,6 +3425,8 @@ async function guardedSetup(args: readonly string[]): Promise<number> {
   if (postStart.exitCode !== 0) return postStart.exitCode;
   const preSetup = await runGeneratedDoctor("pre-start", "setup", {
     rail: parsed.selectedRail,
+    // Post-start Doctor checked the services occupying these ports.
+    servicesRunning: true,
   });
   printDoctor(preSetup);
   if (preSetup.exitCode !== 0) return preSetup.exitCode;
@@ -4549,6 +4559,8 @@ const DOCKERIGNORE = `**
 
 const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_DEMOS_RPC_URL: \${DACS_DEMOS_RPC_URL:-https://node2.demos.sh}
+  DACS_DEMOS_GENESIS_HASH: \${DACS_DEMOS_GENESIS_HASH:-}
+  DACS_DEMOS_CHAIN_ID: \${DACS_DEMOS_CHAIN_ID:-}
   DACS_DEMOS_STORAGE_READ_URL: \${DACS_DEMOS_STORAGE_READ_URL:-}
   DACS_RAIL_REGISTRY_INDEX_REF: \${DACS_RAIL_REGISTRY_INDEX_REF:-dacs4:registry:v0.1}
   DACS_RAIL_STEWARD_AUTHORITY: \${DACS_RAIL_STEWARD_AUTHORITY:-}
@@ -4685,6 +4697,8 @@ DACS_RUNTIME_GID=${options.runtimeGid}
 DACS_BUYER_DATA_DIRECTORY=./data/buyer
 DACS_SELLER_DATA_DIRECTORY=./data/seller
 DACS_DEMOS_RPC_URL=https://node2.demos.sh
+DACS_DEMOS_GENESIS_HASH=
+DACS_DEMOS_CHAIN_ID=
 DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:v0.1
 DACS_RAIL_STEWARD_AUTHORITY=
 DACS_X402_RAIL_ID=x402:default

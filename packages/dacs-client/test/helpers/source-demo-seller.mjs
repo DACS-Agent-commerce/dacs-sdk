@@ -10,7 +10,7 @@ import { openDurableWalletJournal } from '../../src/wallet/durable-journal.mjs';
 import { createSellerAgent } from '../../src/dacs/seller-agent.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createSellerTransportClientAuth } from './legacy-seller-client-auth.mjs';
-import { createSellerTransportServerAuth, createSellerTransportStore } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportServerAuth, createSellerTransportStore } from '../../../dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { createFixtureAnchorClient } from '../../src/dacs/fixture-anchors.mjs';
 import { createSellerSr2AgreementAnchor } from '../../src/dacs/seller-sr2-agreement-consumer.mjs';
 import { createDemosSr2WalletBridge } from '../../src/dacs/demos-sr2-wallet-bridge.mjs';

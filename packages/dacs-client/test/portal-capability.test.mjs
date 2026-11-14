@@ -115,6 +115,36 @@ for (const method of METHODS) {
     assert.deepEqual(w.calls, before);
   });
 
+  // An unpaired surrogate encodes as U+FFFD, so it must not match a value stored under that spelling.
+  for (const [field, label, surrogate] of [
+    ['id', 'lone high surrogate id', '\uD800'], ['id', 'lone low surrogate id', '\uDC00'],
+    ['token', 'lone high surrogate token', '\uD800'], ['token', 'lone low surrogate token', '\uDC00'],
+  ]) test(`${method}: ${label} does not match the value stored under its U+FFFD spelling`, async t => {
+    const w = fixture(t);
+    let id = w.op.id, token = w.token;
+    if (field === 'id') {
+      id = `${w.op.id}�`;
+      w.db.prepare('DELETE FROM operation_events WHERE operation_id=?').run(w.op.id);
+      w.patch('id', id);
+    } else {
+      token = 'TEST-�';
+      w.patch('handoff_token_hash', tokenHash(token));
+    }
+    assert.ok(await w.run(method, id, token));
+    const before = w.snapshot();
+    await refused(w, method, field === 'id' ? id.replace('�', surrogate) : id,
+      field === 'token' ? token.replace('�', surrogate) : token);
+    assert.deepEqual(w.snapshot(), before, 'nothing written');
+  });
+
+  test(`${method}: a token surrogate pair at the length limit is accepted and a split pair is refused`, async t => {
+    const w = fixture(t), pair = 't'.repeat(1022) + '\u{1F600}', split = 't'.repeat(1023) + '\uD83D';
+    w.patch('handoff_token_hash', tokenHash(pair));
+    assert.ok(await w.run(method, w.op.id, pair));
+    w.patch('handoff_token_hash', tokenHash('t'.repeat(1023) + '�'));
+    await refused(w, method, w.op.id, split);
+  });
+
   for (const [label, value] of [
     ['NaN', NaN], ['undefined', undefined], ['infinity', Infinity], ['negative infinity', -Infinity],
     ['string', '0'], ['null', null], ['object', {}], ['fraction', 1.5], ['negative', -1],

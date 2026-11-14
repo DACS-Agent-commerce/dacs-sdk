@@ -193,7 +193,8 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // the wallet's sign, broadcast and chain-read primitives on this node; a plain
 // Demos wallet signs a new CREATE whenever it is asked (the node checks only
 // the nonce-derived storage address, so a second CREATE under one name lands).
-// `faults.signCreate`: 'throw' before signing; `faults.broadcast`: 'drop' (the
+// `faults.signCreate`: 'throw' before signing, or a function awaited while the
+// wallet signs; `faults.broadcast`: 'drop' (the
 // node never applies it), 'lost' (applied, then the answer is lost) or 'other'
 // (the node applies instead a seller-signed CREATE of evidence naming another
 // transfer, as another tool holding the seller's key could write);
@@ -435,6 +436,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     signCreate: async ({ logicalAddress, artifact, artifactKind }) => {
       effects.signCreate.push(logicalAddress);
       const fault=faults.signCreate.shift();
+      if (typeof fault === 'function') await fault();
       if (fault === 'throw') throw Object.assign(new Error('TEST wallet failed before signing'), { code: 'TEST-wallet-failed' });
       if (fault === 'invalid') return {signedTransaction:'TEST invalid transaction',txHash:'e'.repeat(64),nonce:1};
       const signed = node.create(sellerKey, { logicalAddress, artifact, artifactKind }, { land: false });
@@ -1220,6 +1222,33 @@ test('settlement credit lost while the wallet reads the account nonce signs no s
   assert.notEqual(answer.status, 'payment-evidenced', shown(answer));
   assert.equal(w.effects.signed.length, 1, 'no successor is signed once the credit is contested');
   assert.equal(new Set(w.effects.broadcast).size, 1, 'only the kept bytes were ever broadcast');
+  assert.equal(w.createsAt(address), 0);
+});
+
+test('a transfer that stops verifying while the wallet reads the account nonce sends no payment evidence', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), plain = (hash) => String(hash).toLowerCase().replace(/^0x/, '');
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).status, 'held');
+  assert.equal(w.effects.broadcast.length, 1);
+  let stopped = false;
+  w.faults.readAccountNonce.push(async () => { stopped = true; w.node.faults.transactionDown = (hash) => plain(hash) === plain(tx); });
+  const answer = await p.claim(tx);
+  assert.ok(stopped, 'the wallet read the account nonce after the transfer was verified');
+  assert.notEqual(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(w.effects.broadcast.length, 1, `no payment evidence is sent once the transfer no longer verifies; the claim answered ${shown(answer)}`);
+  assert.equal(w.createsAt(address), 0, 'no payment evidence CREATE lands once the transfer no longer verifies');
+});
+
+test('a transfer that stops verifying while the wallet signs the payment evidence sends nothing and keeps the claim held', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), plain = (hash) => String(hash).toLowerCase().replace(/^0x/, '');
+  w.faults.signCreate.push(async () => { w.node.faults.transactionDown = (hash) => plain(hash) === plain(tx); });
+  const answer = await p.claim(tx);
+  assert.equal(w.effects.signed.length, 1, 'the wallet signed the payment evidence after the transfer was verified');
+  assert.equal(answer.status, 'held', shown(answer));
+  assert.equal(answer.anchorError?.code, 'payment_readback_required', shown(answer));
+  assert.equal(w.effects.broadcast.length, 0, 'no payment evidence is sent once the transfer no longer verifies');
   assert.equal(w.createsAt(address), 0);
 });
 
@@ -3344,12 +3373,12 @@ for(const failure of ['none','unavailable','changed'])test(`disabling evidence p
  const first=await p.claim(tx);assert.equal(first.delivery?.status,'delivered',shown(first));
  const signed=await w.signedClaim(p,tx);await w.host().close();
  const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
- const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});assert.equal(res.status,200);return res.json();};
+ const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});return{status:res.status,body:await res.json()};};
  if(failure==='unavailable')w.node.faults.transactionDown=hash=>hash===w.signedCreate(address).hash;
  if(failure==='changed')w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
  const observed=await post();
- if(failure==='none')assert.equal(observed.delivery?.status,'delivered',shown(observed));
- else{assert.equal(observed.delivery?.status,'delivery-ready',shown(observed));assert.equal(observed.delivery?.evidencePublication,'held-readback-only');}
+ if(failure==='none'){assert.equal(observed.status,200);assert.equal(observed.body.delivery?.status,'delivered',shown(observed.body));}
+ else{assert.deepEqual([observed.status,observed.body.error],[503,'seller_source_unavailable'],shown(observed.body));assert.equal(observed.body.cause,failure);}
  w.node.faults.transactionDown=()=>false;w.faults.evidenceRead=null;
  for(let refresh=0;refresh<2;refresh++){
   const done=await w.refreshPayment(p,tx);assert.equal(done.delivery?.status,'delivered',shown(done));

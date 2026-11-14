@@ -80,14 +80,15 @@ export async function checkNativePaymentEvidence({ artifact, agreement, writer, 
 }
 
 /**
- * Whether an observed included transfer is the Agreement's payment, for both settlement profiles: the transaction `txHash`, the buyer as
- * payer, the seller as payee (the payout address must be the seller's own), the exact price and an inclusion time from `committedAt`
- * up to the deadline. `terms` is `agreementTerms(agreement)`. Returns false for anything else, including an address that is not a Demos address.
+ * Whether an observed included transfer is the Agreement's payment, for both settlement profiles: the node attests its execution, the
+ * transaction `txHash`, the buyer as payer, the seller as payee (the payout address must be the seller's own), the exact price and an
+ * inclusion time from `committedAt` up to the deadline. `terms` is `agreementTerms(agreement)`. Returns false for anything else, including
+ * an address that is not a Demos address and an inclusion without confirmed execution.
  */
 export function observedTransferMatches(observed, { txHash, terms, committedAt }) {
   const buyer = demosAddressFromClaim(terms.buyer), seller = demosAddressFromClaim(terms.seller);
   return Number.isSafeInteger(committedAt) && buyer !== null && seller !== null && normalizeDemosNativeAddress(terms.payee) === seller
-    && observed.txHash === txHash && normalizeDemosNativeAddress(observed.payer) === buyer && normalizeDemosNativeAddress(observed.payee) === seller
+    && observed.execution === 'executed' && observed.txHash === txHash && normalizeDemosNativeAddress(observed.payer) === buyer && normalizeDemosNativeAddress(observed.payee) === seller
     && observed.amountOs === terms.price.amountOs && observed.includedAt >= committedAt && observed.includedAt <= terms.deadline;
 }
 

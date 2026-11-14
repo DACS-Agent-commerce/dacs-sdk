@@ -50,6 +50,9 @@ it.each(["content", "metadata"] as const)("guards the live listing %s overwrite 
   });
   await lease.release();
   const adapter = new DemosAdapter({ rpc: "https://node.test", chainIdentity: "test-chain", writeJournal });
+  vi.spyOn(adapter, "getChainIdentityDetails").mockResolvedValue({
+    chainId: null, genesisHash: "test-chain", genesisDataHash: null, source: "genesis-read",
+  });
   vi.spyOn(adapter.raw, "connect").mockResolvedValue(true);
   vi.spyOn(adapter.raw, "getAddress").mockReturnValue(wallet);
   const sign = vi.spyOn(adapter.raw.storagePrograms, "sign").mockRejectedValue(new Error("unexpected signing"));

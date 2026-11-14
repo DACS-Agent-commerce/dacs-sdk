@@ -21,7 +21,7 @@ import { createSellerDurableState } from '../../src/dacs/seller-durable-state.mj
 import { createNativePaymentEvidenceConsumer } from '../../src/dacs/native-payment-evidence-consumer.mjs';
 import { createSellerHttpHandler, createSellerAgentClient } from '../../src/dacs/seller-http.mjs';
 import { createSellerTransportClientAuth } from './legacy-seller-client-auth.mjs';
-import { createSellerTransportStore, createSellerTransportServerAuth } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore, createSellerTransportServerAuth } from '../../../dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { buildUnsignedIdentityBundle, attachIdentityPresentation } from '../../src/dacs/listing.mjs';
 import { planAgreement, exchangeAgreement, listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { createEphemeralWallet } from '../fixtures/wallet.mjs';

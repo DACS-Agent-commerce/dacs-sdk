@@ -1,9 +1,8 @@
-// Narrow HTTP transport for the seller agent (seller-agent.mjs) and the
-// buyer-side client the plugin uses to reach it.
+// Buyer-side HTTP transport the plugin uses to reach the seller agent.
 //
-// The server stays loopback-only. The client reaches loopback endpoints, and,
-// when given a wire authentication, a public https origin (`isPublicEndpoint`).
-// Existing unauthenticated fixture callers remain supported. Supplying an
+// The client reaches loopback endpoints, and, when given a wire
+// authentication, a public https origin (`isPublicEndpoint`). Existing
+// unauthenticated fixture callers remain supported. Supplying an
 // authentication adapter enables signed peer requests, independently signed
 // seller responses and a durable intent journal.
 // In that mode an answer is classified (seller-response-class.mjs) only after
@@ -12,154 +11,12 @@
 // ambiguous, held, suspended or readback-only answers are unavailable, with
 // their class and cause kept.
 import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
-import { SellerAgentError } from './seller-agent-error.mjs';
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
-import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
-import { SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
+import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { classifySellerAnswer, SELLER_ANSWER_CLASS, SELLER_EFFECT_UNRESOLVED } from './seller-response-class.mjs';
 
 const MAX_BODY = 64 * 1024;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-export const loopbackSocket = (address) => address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
-// These seller-agent errors occur before an external effect. In particular,
-// commitment_failed is deliberately absent: a write may have happened.
-const NO_EFFECT_ERRORS = new Set(['buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy']);
-
-const ROUTES = {
-  '/dacs/v1/agreements/proposals': (agent, body) => agent.receiveProposal(body),
-  '/dacs/v1/agreements/state': (agent, body) => agent.agreementState(body.transportIdentity),
-  '/dacs/v1/commitments': (agent, body) => agent.commit(body),
-  '/dacs/v1/payments': (agent, body) => agent.submitPayment(body),
-  '/dacs/v1/bundles/request': (agent, body) => agent.bundleRequest(body),
-  '/dacs/v1/bundles/countersignature': (agent, body) => agent.countersign(body),
-  '/dacs/v1/bundles/buyer-copy': (agent, body) => agent.confirmBuyerCopy(body),
-};
-// The routes whose successful answers carry publicSignedCreates (chain readback on).
-// The buyer takes pointers only from these answers. It never reads the answer to
-// /dacs/v1/commitments/signature (DACS_COMMIT_ON_SIGNATURE=on sends it without
-// waiting); its commitment pointer comes with the ordinary commit answer that
-// follows its own Agreement readback, so the early route is not pointed.
-const POINTED_ROUTES = new Set(['/dacs/v1/commitments', '/dacs/v1/payments']);
-// Registered only with DACS_COMMIT_ON_SIGNATURE=on; off keeps main's route table.
-const SIGNATURE_ROUTES = { ...ROUTES, '/dacs/v1/commitments/signature': (agent, body) => agent.commitOnSignature(body) };
-
-function readRequest(req, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    let total = 0;
-    const chunks = [];
-    const cleanup = () => {
-      clearTimeout(timer);
-      req.off('data', data); req.off('end', end); req.off('error', error); req.off('aborted', aborted);
-    };
-    const error = (cause) => { cleanup(); reject(cause); };
-    const aborted = () => error(new SellerTransportError('body_interrupted', 408));
-    const data = (chunk) => {
-      total += chunk.byteLength;
-      if (total > MAX_BODY) { req.pause(); return error(new SellerTransportError('body_too_large', 413)); }
-      chunks.push(chunk);
-    };
-    const end = () => { cleanup(); resolve(Buffer.concat(chunks)); };
-    const timer = setTimeout(() => { req.pause(); error(new SellerTransportError('body_timeout', 408)); }, timeoutMs);
-    req.on('data', data); req.once('end', end); req.once('error', error); req.once('aborted', aborted);
-  });
-}
-
-export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null } = {}) {
-  if (![bodyTimeoutMs, maxRequestsPerWindow, rateWindowMs, maxConcurrent].every((n) => Number.isSafeInteger(n) && n > 0)) throw new Error('seller transport limits must be positive integers');
-  if (typeof commitOnSignature !== 'boolean') throw new TypeError('commitOnSignature must be boolean');
-  const routes = commitOnSignature ? SIGNATURE_ROUTES : ROUTES;
-  if (authentication && (authentication.seller !== agent.claim || canonicalize(authentication.listingPin) !== canonicalize(agent.listingPin))) throw new Error('seller transport identity must match the independently configured agent');
-  if (authentication?.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
-  if (publicSignedCreates !== null && typeof publicSignedCreates !== 'function') throw new Error('publicSignedCreates must be the seller\'s signed CREATE pointer function');
-  // Chain readback: a successful commit or payment answer (the
-  // only answers the buyer takes pointers from) also names the seller's
-  // current verified signed CREATEs for its job, including an answer replayed
-  // from the effect cache. The retained effect and its bytes are unchanged; a
-  // pointer that cannot be looked up, or that would make the answer too large
-  // to send, is left out, never an error. Other routes are sent as they are,
-  // and never run the seller's in-answer readback.
-  const pointed = async (status, text, jobId, path) => {
-    if (!publicSignedCreates || status !== 200 || !POINTED_ROUTES.has(path)) return text;
-    try {
-      const answer = JSON.parse(text), decorated = await publicSignedCreates(jobId, answer);
-      if (decorated === answer) return text;
-      const pointedText = JSON.stringify(decorated);
-      return Buffer.byteLength(pointedText) > SELLER_TRANSPORT_MAX_RESPONSE ? text : pointedText;
-    } catch { return text; }
-  };
-  let windowStart = Date.now();
-  let requests = 0;
-  let active = 0;
-  const send = async (res, status, body, request, { close = false, text = JSON.stringify(body) } = {}) => {
-    const headers = { 'content-type': 'application/json', 'cache-control': 'no-store', ...(close ? { connection: 'close' } : {}) };
-    if (Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) throw new SellerTransportError('seller_response_too_large', 503);
-    if (authentication && request) headers[SELLER_TRANSPORT_HEADER] = await authentication.responseHeader(request, status, text);
-    if (res.destroyed || res.writableEnded) return;
-    res.writeHead(status, headers);
-    res.end(text);
-  };
-  return async (req, res) => {
-    let request;
-    let reservation;
-    let counted = false;
-    try {
-      if (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress)) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
-      if (Date.now() - windowStart >= rateWindowMs) { windowStart = Date.now(); requests = 0; }
-      if (++requests > maxRequestsPerWindow || active >= maxConcurrent) return await send(res, 429, { error: 'seller_rate_limited' }, null, { close: true });
-      active++; counted = true;
-      // Match the raw request target exactly: query strings, alternate paths
-      // and encoded aliases cannot skip the path authenticated by the peer.
-      const route = routes[req.url];
-      if (!route) return await send(res, 404, { error: 'not_found' }, null, { close: true });
-      if (req.method !== 'POST') return await send(res, 405, { error: 'method_not_allowed' }, null, { close: true });
-      if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) return await send(res, 415, { error: 'json_required' }, null, { close: true });
-      if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') return await send(res, 415, { error: 'encoded_body_unsupported' }, null, { close: true });
-      if (req.headers['content-length'] && Number(req.headers['content-length']) > MAX_BODY) return await send(res, 413, { error: 'body_too_large' }, null, { close: true });
-      const rawBody = await readRequest(req, bodyTimeoutMs);
-      let body;
-      try { body = admitRawJson(rawBody, { maxBytes: MAX_BODY }); } catch (error) { return await send(res, 400, { error: 'bad_json', ...(error instanceof RawJsonAdmissionError ? { admissionCode: error.code, admissionStage: error.stage } : {}) }, null); }
-      if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
-      if (authentication) {
-        request = authentication.readRequest(req.headers[SELLER_TRANSPORT_HEADER]);
-        authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId) });
-        reservation = authentication.store.reserve(request, body);
-        if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
-        if (reservation.disposition === 'uncertain') {
-          // Never call the route or resume work here. This seller-owned seam
-          // can only reduce trusted retained state plus fresh authenticated
-          // native records to a response; absent/unknown facts remain fenced.
-          const proof = typeof agent.reconcileTransport === 'function' && typeof authentication.store.reconcile === 'function'
-            ? await agent.reconcileTransport({ request, body, rawBody }) : null;
-          if (proof?.disposition === 'present') {
-            const text = JSON.stringify(proof.value);
-            authentication.store.reconcile(reservation, request, 200, text);
-            return await send(res, 200, proof.value, request, { text: await pointed(200, text, request.jobId, req.url) });
-          }
-          return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; it was not performed again.' }, request);
-        }
-      }
-      const answer = await route(agent, body);
-      const text = JSON.stringify(answer);
-      if (authentication) authentication.store.finish(reservation, 200, text, { noEffect: answer?.status === 'rejected' || answer?.disposition === 'rejected' });
-      return await send(res, 200, answer, request, { text: await pointed(200, text, request?.jobId ?? body.jobId, req.url) });
-    } catch (error) {
-      const beforeEffect = !reservation || reservation.disposition !== 'perform';
-      const refusal = error instanceof SellerTransportError && beforeEffect;
-      const agentRefusal = error instanceof SellerAgentError && NO_EFFECT_ERRORS.has(error.code);
-      const status = refusal ? error.status : agentRefusal ? error.status : 503;
-      const answer = refusal || agentRefusal ? { error: error.code, message: error.message } : { error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' };
-      if (authentication && reservation?.disposition === 'perform') {
-        try { authentication.store.finish(reservation, status, JSON.stringify(answer), { noEffect: agentRefusal }); } catch { /* durable intent remains uncertain */ }
-      }
-      try { return await send(res, status, answer, request, { close: status === 408 || status === 413 }); } catch {
-        // A failed seller signer or journal cannot turn into a definite refusal.
-        if (!res.headersSent && !res.destroyed) { res.writeHead(503, { 'content-type': 'application/json', connection: 'close' }); res.end('{"error":"operation_uncertain"}'); }
-      }
-    } finally {
-      if (counted) active--;
-    }
-  };
-}
 
 // The third argument is the classifier's {answerClass, code}: the class of the seller's answer and its error code.
 export class SellerUnavailableError extends Error {
