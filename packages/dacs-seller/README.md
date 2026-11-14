@@ -527,8 +527,26 @@ per-client limiter so one client cannot exhaust the shared request budget.
   chain id as a decimal string, taken from the seller's own network
   configuration; without it only the bare hash is accepted, and any other
   message is refused. `createNativePaymentEvidenceConsumer` takes the same
-  option for the readback. Anything else is refused (`wallet_sign_invalid`),
-  and nothing is kept or sent.
+  option for the readback.
+  Its fee is the node's to set, up to a ceiling of 50 DEM for the whole debit
+  of the write: the network, rpc and additional fee plus the storage and gas
+  burns, summed in OS (whole DEM numbers before the node's denomination fork,
+  OS strings after it), must not be above 50 DEM, and a fee that cannot be
+  summed exactly is refused. Below the ceiling the fee is not compared with any
+  expected amount.
+  Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
+  sent. A kept CREATE whose whole debit is above the ceiling is never
+  broadcast again: `anchorEvidence`, `reconcilePaymentEvidence`,
+  `ensureEvidence` and the Deliverable journal's `resume` and
+  `submitAuthorized` refuse its address with `write-fee-cap`, naming its hash
+  and debit, before any wallet read or signature. `readSignedProjection` still
+  returns the held write.
+  The operator sees a held write as the `write-fee-cap` reason with the hash
+  and cost of the write. On the payment evidence path it is `anchorError`
+  (`code` and `message`) on the held answer of the seller agent. On the
+  Deliverable path it is the `reason` of the held, pending or indeterminate
+  delivery outcome, which starts with `write-fee-cap:`.
+  There is no operator command to clear a held write.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers

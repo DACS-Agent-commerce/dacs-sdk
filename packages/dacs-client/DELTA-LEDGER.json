@@ -6724,6 +6724,22 @@
       ]
     },
     {
+      "delta": "D40",
+      "subject": "delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/portal-capability.mjs",
+          "before": "d6200b11094df0e624dd644d980ac3bc7444868d",
+          "after": "fb1f631894e79e1139d7d66c8ce2e56d97a40ae5"
+        },
+        {
+          "path": "packages/dacs-client/test/portal-capability.test.mjs",
+          "before": "073700c9a849a4bfc092cb5913498364fd622f0d",
+          "after": "03649eaa13ff185ed7e74c73984df819b417e1ff"
+        }
+      ]
+    },
+    {
       "delta": "D34",
       "subject": "delta(client): D34 report a failed transaction-body read as chain unavailable",
       "files": [
@@ -8032,6 +8048,8 @@
     {"delta":"WF","subject":"delta(client): WF P13c1 remove the unused seller HTTP handler","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"a7bde64bb0b01a411fe520bb19a8d973fb05775c","after":"aac29716e0dcbcfa9c861440893eb3ef4b6d9779"},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"e737b5abec7b991fd5401d943998cd3ce60bc1bc","after":"abd69a0abe22de61c02df544371d1baa542b0c15"},{"path":"packages/dacs-client/test/ingress-admission.test.mjs","before":"bc5df5a139d39697b81a2363c3e2554c0220551e","after":"2bb9dd310f49253c35f2985fff4a653e0b22775e"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"9b3fac5c0509ab6f0e5401c7d76700814a73842d","after":"225f7dbfb61729f33863364013e7dca7d31335a2"}]},
     {"delta":"WF","subject":"delta(client): WF record the merged blobs after the base sync","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"30ca1bb14b9725f274d755d77aaf3300161ff3da","after":"30ca1bb14b9725f274d755d77aaf3300161ff3da"},{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"a2b491d956f5c45d4169ef30fa097c9279f8d420","after":"a2b491d956f5c45d4169ef30fa097c9279f8d420"},{"path":"packages/dacs-client/src/dacs/seller-wire-authentication.mjs","before":"fc66e463671c98bddf7d8da31761a7c79046d88f","after":"fc66e463671c98bddf7d8da31761a7c79046d88f"},{"path":"packages/dacs-client/src/index.mjs","before":"b8234d43cd1d70e1a78029f548e01469f51f0a56","after":"b8234d43cd1d70e1a78029f548e01469f51f0a56"}]},
     {"delta":"WF","sha":"b11192d341dbae97c0fae78bd57d99cfde204995","subject":"fix(client): name the seller transport store plainly in the buyer import test","compact":true,"files":[{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"abd69a0abe22de61c02df544371d1baa542b0c15","after":"9950c7d670fcb21d3855e2a92fc4558249f44427"}]},
+    {"delta":"WF","subject":"delta(client): WF record the merged blobs after the seller handler fixes","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-transport-auth.mjs","before":null,"after":null},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"8c32f5d5d67d96b10c78979703a6b2670fe97295","after":"8c32f5d5d67d96b10c78979703a6b2670fe97295"},{"path":"packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs","before":"754a7e898ef18b3d6fa45fbf9141e9e8107304b7","after":"754a7e898ef18b3d6fa45fbf9141e9e8107304b7"},{"path":"packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs","before":"806ce664bc89af4199f6ab81b5c72bc2e80d47bd","after":"806ce664bc89af4199f6ab81b5c72bc2e80d47bd"},{"path":"packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs","before":"f6938c73a9a3bd7f38c9b2a891fa22ead94d925e","after":"f6938c73a9a3bd7f38c9b2a891fa22ead94d925e"},{"path":"packages/dacs-client/test/helpers/source-demo-seller.mjs","before":"878d1917d335b2a94d1164ed07d2e1b3a4f4048f","after":"878d1917d335b2a94d1164ed07d2e1b3a4f4048f"}]},
+    {"delta":"WF","subject":"delta(client): WF P13c2 delete the client's old seller transport module","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-transport-auth.mjs","before":"cbbff1c08f2b7986c2a55298652234a1b1b6b606","after":null},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"abd69a0abe22de61c02df544371d1baa542b0c15","after":"8c32f5d5d67d96b10c78979703a6b2670fe97295"},{"path":"packages/dacs-client/test/helpers/devnet-live-composition-app.mjs","before":"77d601dbc4ed3c41f5def9397d2960e41f9dbff6","after":"4e78a320bd26fff966f5605da7f3b6dcc0f1e346"},{"path":"packages/dacs-client/test/helpers/entry-point-closure.mjs","before":null,"after":"44000e70295255c1e0af5a5183060835df1fd7bc"},{"path":"packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs","before":"2f963c44c336dd77647d12ced651a9df7bc4b9e4","after":"754a7e898ef18b3d6fa45fbf9141e9e8107304b7"},{"path":"packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs","before":"163637c51827c8cf0c5b04979d0ad008a24b6bfb","after":"806ce664bc89af4199f6ab81b5c72bc2e80d47bd"},{"path":"packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs","before":"a95ef03f4a7088ebf2d776b544529efa9af3bd3b","after":"f6938c73a9a3bd7f38c9b2a891fa22ead94d925e"},{"path":"packages/dacs-client/test/helpers/source-demo-seller.mjs","before":"3ebe27b3481988b9dedeaabec489c44e791a2891","after":"878d1917d335b2a94d1164ed07d2e1b3a4f4048f"},{"path":"packages/dacs-client/test/helpers/start-intent.mjs","before":"f0228e036f7f82a8087caf1c5883419ee18c8491","after":"b401cf5c221e9285f73a923cf90c1a0a291b3f35"},{"path":"packages/dacs-client/test/old-domain-sources.test.mjs","before":null,"after":"a8ccc8f4759f908cabb11fb0aff27f3290e40a74"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"225f7dbfb61729f33863364013e7dca7d31335a2","after":"a83648f5f7606440c1cf56de620e2f3794f6049a"}]},
     {
       "delta": "WF",
       "subject": "delta(client): WF record the merged response classification rebuild in the recorded suspension client and refresh package pins",
@@ -8231,6 +8249,7 @@
       ]
     },
     {"delta":"WF","subject":"delta(client): WF record the merged blobs after the seller handler and suspension merge","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"f6492ec9771611dd72c96e94107384db860ca748","after":"f6492ec9771611dd72c96e94107384db860ca748"},{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"6cffccaa66097ec40d1558133aeab80f8dd3991f","after":"6cffccaa66097ec40d1558133aeab80f8dd3991f"},{"path":"packages/dacs-client/src/dacs/seller-wire-authentication.mjs","before":"6ca61271e2daf5de7781479b88a971723597cc10","after":"6ca61271e2daf5de7781479b88a971723597cc10"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"92bbbdf84d3a0ab730d38daad03632c68e087d12","after":"92bbbdf84d3a0ab730d38daad03632c68e087d12"}]},
+    {"delta":"WF","subject":"delta(client): WF count the demos entry point in the packed closure helper after the merge","compact":true,"files":[{"path":"packages/dacs-client/test/helpers/entry-point-closure.mjs","before":"44000e70295255c1e0af5a5183060835df1fd7bc","after":"2f2c2f648bb095b7812aeac6523ae8cc22602bd8"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"25d796340d239be5de80a55c42ad7bce48755f5e","after":"25d796340d239be5de80a55c42ad7bce48755f5e"}]},
     {
       "delta": "WF",
       "subject": "delta(client): WF test the authenticated loopback seller endpoint and record the merged client blobs",
@@ -8255,6 +8274,133 @@
     },
     {"delta":"WF","subject":"delta(client): WF record the merged seller transport blob after the base sync","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"c2a23d02278639657358480a74e9e933492b0832","after":"c2a23d02278639657358480a74e9e933492b0832"}]},
     {"delta":"WF","sha":"7d49dcae349d6b5ec436c589a2a2673ba464d216","subject":"fix(client): drop the seller HTTP adapter claim from the seller agent header","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-agent.mjs","before":"ddf5ad868bbc84355b181be3a82b276e5c4eb199","after":"2ad03bd530d0b3c497d1cb53fe177de00f7e423a"}]},
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a dispatch history on the durable journal and the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": null,
+          "after": "5e899dc36581ead321d1ddd6597497965ad46af5"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": null,
+          "after": "52d0f92199a96da74567b9b78107fdd5c275cfad"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": null,
+          "after": "0c406f1b30b33f1011df654f7d67282b99309148"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": null,
+          "after": "fad10bcd3acfcb4076653f885de9c4fdcdd14d41"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs",
+          "before": "e40dec6bf6740d4b0bb55e84e38d5428b7d26937",
+          "after": "e3987c120fb08295aa49ab436c627c2823ebe846"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026",
+          "after": "8f8757994d69d512ccbf145bcd2180b622acc962"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": "5e899dc36581ead321d1ddd6597497965ad46af5",
+          "after": "4919d146fb62f67705ae52f4fb553e165a9dfebe"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "0c406f1b30b33f1011df654f7d67282b99309148",
+          "after": "b6402003588457f0340179859466e374237f7fd6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF key each dispatch history record by its pass and state and release the actor fence only when its operation ends",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": "4919d146fb62f67705ae52f4fb553e165a9dfebe",
+          "after": "f084d06e7fcac773a024fb36149b1f68b2826403"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "52d0f92199a96da74567b9b78107fdd5c275cfad",
+          "after": "5ccc8c6f74eb51be885d17dac68c28649b34240b"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6402003588457f0340179859466e374237f7fd6",
+          "after": "2afc55221675d0f677f5553f81c02acbe47e7c87"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": "fad10bcd3acfcb4076653f885de9c4fdcdd14d41",
+          "after": "0eed8f24b66d3497b4f9c0ef23c6847ad56fb770"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "b28b9292f54c3a9d28e5dbc56f144fc33a395303",
+          "after": "f0a35af9f949550e02b20ae2f72dc75067e588d8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged package-contents blob after carrying base/main up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "05f66cefe8444a029f7c26d602c25b6ea25b9202",
+          "after": "05f66cefe8444a029f7c26d602c25b6ea25b9202"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): require a string artifact hash in the dispatch history",
+      "sha": "6387ec98397795aea109a075a4b27cdfc34c1f8a",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "b5e0e3ca4da2cfa9f69cbf46d2b2881f80f6f29a"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": "0eed8f24b66d3497b4f9c0ef23c6847ad56fb770",
+          "after": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a count the dispatch history modules in the packed closure helper after carrying base/main up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "2f2c2f648bb095b7812aeac6523ae8cc22602bd8",
+          "after": "50355ea4059121eac4b97ea068a01be647e8dc24"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "25d796340d239be5de80a55c42ad7bce48755f5e",
+          "after": "25d796340d239be5de80a55c42ad7bce48755f5e"
+        }
+      ]
+    },
     {
       "delta": "WF",
       "subject": "delta(client): WF P21a2aa add the fence-free observer and bounded source reads",
