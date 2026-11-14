@@ -1,15 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
-import { contentHash, listingAddress, logicalToStorageProgramName } from '@kynesyslabs/dacs';
 import { api, agreementRequest, mnemonicBytes, setPurchaseAdmission, world } from './helpers/tp1-node-fixture.mjs';
+import { inPass, sellerPublications as publications } from './helpers/effect-gate-world.mjs';
+import { confirmThroughFacade, listingCreate, retainAcceptedCreate, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
 import { createWorld } from './helpers/native-create-world.mjs';
 import { installNoEgress } from './helpers/no-egress.mjs';
 import * as nativeTransport from '../src/wallet/devnet-native-transport.mjs';
-import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
-import { fixtureListing } from './fixtures/listings.mjs';
-import { STORAGE_WRITE_SUBMISSION_PROFILE } from '../src/devnet-demo/storage-write-recovery.mjs';
 
 const trap = installNoEgress();
 test.after(() => trap.restore());
@@ -20,55 +17,10 @@ const PASSIVE = ['pins', 'transportBinding', 'journal', 'settlementPublication',
   'readRpc', 'observeBinding', 'chainReader', 'nativeTransferClaimed', 'nativeTransferCancelled', 'nativeTransferRefused',
   'nativeNonceConsumer', 'isWalletIdle', 'profile', 'onPurchaseStep', 'onStorageWriteResend', 'reserveRpcAuth', 'close'];
 const PHASES = ['bind', 'signature', 'release', 'broadcast', 'TEST-unknown'];
-const publications = () => ({
-  settlementPublication: { artifactKind: 'SettlementEvidence', authority: 'TEST-seller-settlement', phase: 'pay-dem', phaseIndex: 2, policy: api.DEVNET_SETTLEMENT_POLICY, railId: 'demos-native:DEM' },
-  deliveryPublication: { artifactKind: 'Deliverable', authority: 'TEST-seller-delivery', phase: 'deliver-storage-program', phaseIndex: 3, policy: api.DEVNET_DELIVERY_POLICY },
-  demoArtifactPublication: { authority: 'TEST-RUN-seller-parts-0001', policy: api.DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...api.DEVNET_DEMO_ARTIFACT_TYPES] },
-});
 async function seller(t, options = {}) {
   assert.equal(typeof api.createNodeSellerComposition, 'function');
   return world(t, { ...options, createSession: api.createNodeSellerComposition,
     sessionOptions: { approveConfirmedWrite: null, publications: publications(), ...options.sessionOptions } });
-}
-
-const sha = value => createHash('sha256').update(value).digest('hex');
-async function signingWallet(w) {
-  const { Demos } = await (await import('../src/wallet/node-demos-loading.mjs')).loadNodeDemos();
-  const demos = new Demos();
-  await demos.connectWallet(new TextDecoder().decode(mnemonicBytes()));
-  const key = createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), Buffer.from(demos.keypair.privateKey).subarray(0, 32)]), format: 'der', type: 'pkcs8' });
-  const address = '0x' + Buffer.from(createPublicKey(key).export({ format: 'jwk' }).x, 'base64url').toString('hex');
-  assert.equal(address, w.session.wallet.getPublicAccount().address);
-  return { address, claim: 'did:demos:agent:' + address.slice(2), signBytes: bytes => sign(null, bytes, key) };
-}
-function signedTransaction(wallet, payload) {
-  const tx = structuredClone(payload);
-  tx.hash = sha(JSON.stringify(tx.content));
-  tx.signature = { type: 'ed25519', data: '0x' + wallet.signBytes(Buffer.from(tx.hash)).toString('hex') };
-  return tx;
-}
-function listingCreate(w, wallet) {
-  const artifact = fixtureListing(wallet, { now: w.clock.now() });
-  artifact.seller.publicEndpoint = 'https://seller.example.invalid/agent';
-  // Re-sign the fixture after changing its endpoint to the reserved test domain.
-  const { signature, ...unsigned } = artifact;
-  artifact.signature = { ...signature, value: wallet.signBytes(Buffer.from('dacs-listing:v1:' + contentHash(unsigned))).toString('base64url') };
-  const logicalAddress = listingAddress(wallet.claim, artifact.listingId, artifact.listingVersion), programName = logicalToStorageProgramName(logicalAddress);
-  const tx = buildStorageProgramCreatePayload({ from: wallet.address, storageAddress: deriveStorageAddress(wallet.address, programName, 1, ''), programName, logicalAddress, signedListing: artifact, nonce: 1, timestamp: w.clock.now() });
-  const f = w.session.transport;
-  Object.assign(tx.content, { network: f.pins.network, chainIdentity: f.pins.chainIdentity });
-  Object.assign(tx.content.data[1].metadata, { artifactKind: 'Listing', contentHash: contentHash(artifact), networkBinding: f.transportBinding,
-    artifactBinding: { version: '1', policy: api.DEVNET_DEMO_ARTIFACT_POLICY, authority: f.demoArtifactPublication.authority, artifactKind: 'Listing', jobId: `listing:${artifact.listingId}`, logicalAddress, writer: wallet.claim } });
-  return signedTransaction(wallet, tx);
-}
-async function confirmThroughFacade(w, wallet, tx) {
-  const f = w.session.transport, address = wallet.address;
-  const { binding } = await f.binding({ phase: 'bind', address });
-  const lease = await f.binding({ phase: 'signature', address, binding });
-  const identity = 'ed25519:' + address, timestamp = String(w.clock.now() + 1);
-  const headers = { identity, timestamp, signature: wallet.signBytes(Buffer.from(sha(`${identity}:${timestamp}`))).toString('hex') };
-  const answer = await f.rpc({ method: 'execute', params: [{ extra: 'confirmTx', data: tx }] }, headers);
-  return { answer, lease };
 }
 
 test('held, each active facade member (rpc, walletBinding, binding bind/signature/release, recoverStorageWrite, cancelNativeTransfer) rejects profile_not_admitted with node calls 0', async t => {
@@ -139,8 +91,8 @@ test("the facade's member inventory equals the separately documented complete in
 test('the node-wallet entry and every composition it returns expose no raw transport and no unwrapped effect method', async t => {
   const w = await seller(t, { held: true }), buyer = await world(t, { held: true });
   for (const name of Object.keys(api)) assert.doesNotMatch(name, /^(?:createDevnet|registerHeld)/);
-  assert.deepEqual(Object.keys(w.session).sort(), ['close', 'internalCauseOf', 'observer', 'transport', 'wallet', 'walletFactory']);
-  assert.deepEqual(Object.keys(buyer.session).sort(), ['close', 'internalCauseOf', 'wallet', 'walletFactory']);
+  assert.deepEqual(Object.keys(w.session).sort(), ['close', 'effectPass', 'internalCauseOf', 'observer', 'runInEffectPass', 'transport', 'wallet', 'walletFactory']);
+  assert.deepEqual(Object.keys(buyer.session).sort(), ['close', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'wallet', 'walletFactory']);
   for (const composition of [w.session, buyer.session]) {
     for (const wallet of [composition.wallet, composition.walletFactory({ anchorJournal: w.journal() })]) {
       assert.deepEqual(Object.keys(wallet).sort(), ['actionsAdmitted', 'getPublicAccount', 'getWriteProfile', 'isLocked', 'lock', 'request']);
@@ -157,7 +109,7 @@ test("the confirmed-write callback is installed with the seller/Listing routing:
     const sentinel = new Error('TEST-policy-refused');
     const confirm = async () => { calls++; if (outcome === 'throw') throw sentinel; return outcome === 'allow'; };
     const w = await seller(t, { sessionOptions: { approveConfirmedWrite: outcome === 'manual' ? null : confirm } });
-    const result = await w.send();
+    const result = await inPass(w, () => w.send());
     assert.equal(calls, outcome === 'manual' ? 0 : 1);
     assert.equal(result.success, ['allow', 'manual'].includes(outcome), JSON.stringify(result));
     assert.equal(w.node.broadcasts.length, result.success ? 1 : 0);
@@ -173,12 +125,12 @@ test("the confirmed-write callback is installed with the seller/Listing routing:
   let calls = 0;
   const w = await seller(t, { sessionOptions: { approveConfirmedWrite: () => { calls++; return false; } } });
   const wallet = await signingWallet(w), tx = listingCreate(w, wallet);
-  const { answer, lease } = await confirmThroughFacade(w, wallet, tx);
+  const { answer, lease } = await inPass(w, () => confirmThroughFacade(w, wallet, tx));
   assert.equal(answer.response.data.valid, true);
   await w.session.transport.binding({ phase: 'release', address: wallet.address, leaseId: lease.leaseId });
   const other = createWorld({ journal: w.journal() });
   const otherTx = signedTransaction(other.wallet, { ...w.request.params[0], content: { ...w.request.params[0].content, from: other.wallet.address } });
-  assert.equal((await confirmThroughFacade(w, other.wallet, otherTx)).answer.response.data.valid, true);
+  assert.equal((await inPass(w, () => confirmThroughFacade(w, other.wallet, otherTx))).answer.response.data.valid, true);
   await other.capability.close();
   assert.equal(calls, 0);
   assert.equal(w.node.broadcasts.length, 0);
@@ -197,9 +149,9 @@ test('seller confirmation routing keeps its imported identity after wallet lock 
       w.session.wallet.lock();
       assert.equal(w.session.wallet.getPublicAccount(), null);
       if (outcome === 'allow' || outcome === 'manual') {
-        assert.equal((await confirmThroughFacade(w, wallet, tx)).answer.response.data.valid, true);
+        assert.equal((await inPass(w, () => confirmThroughFacade(w, wallet, tx))).answer.response.data.valid, true);
       } else {
-        await assert.rejects(confirmThroughFacade(w, wallet, tx), error =>
+        await assert.rejects(inPass(w, () => confirmThroughFacade(w, wallet, tx)), error =>
           error.code === 'approval_required' && (outcome !== 'throw' || error.cause === cause));
       }
       assert.equal(calls, outcome === 'manual' ? 0 : 1);
@@ -214,7 +166,7 @@ test('an own Listing confirmation skips seller policy after wallet lock', async 
   const wallet = await signingWallet(w), tx = listingCreate(w, wallet);
   w.session.wallet.lock();
   assert.equal(w.session.wallet.getPublicAccount(), null);
-  assert.equal((await confirmThroughFacade(w, wallet, tx)).answer.response.data.valid, true);
+  assert.equal((await inPass(w, () => confirmThroughFacade(w, wallet, tx))).answer.response.data.valid, true);
   assert.equal(calls, 0);
   assert.equal(w.node.broadcasts.length, 0);
 });
@@ -229,7 +181,7 @@ test('foreign native and storage confirmations skip seller policy after wallet l
       : signedTransaction(other.wallet, { ...w.request.params[0], content: { ...w.request.params[0].content, from: other.wallet.address } });
     w.session.wallet.lock();
     assert.equal(w.session.wallet.getPublicAccount(), null);
-    assert.equal((await confirmThroughFacade(w, other.wallet, tx)).answer.response.data.valid, true);
+    assert.equal((await inPass(w, () => confirmThroughFacade(w, other.wallet, tx))).answer.response.data.valid, true);
     assert.equal(calls, 0);
     assert.equal(w.node.broadcasts.length, 0);
   });
@@ -260,7 +212,7 @@ test('native metadata cannot masquerade as a Listing to bypass the confirmed-wri
   const wallet = await signingWallet(w), payload = structuredClone(w.request.params[0]);
   payload.content.data[1].metadata = { artifactKind: 'Listing' };
   const tx = signedTransaction(wallet, payload);
-  await assert.rejects(confirmThroughFacade(w, wallet, tx), { code: 'approval_required' });
+  await assert.rejects(inPass(w, () => confirmThroughFacade(w, wallet, tx)), { code: 'approval_required' });
   assert.equal(calls, 1);
   assert.equal(w.node.broadcasts.length, 0);
 });
@@ -271,7 +223,7 @@ test('close approval after confirmation callback and refuse broadcast through th
   let confirmations = 0;
   const w = await seller(t, { sessionOptions: { approveConfirmedWrite: async () => { confirmations++; setPurchaseAdmission('held'); return true; } } });
   const wallet = await signingWallet(w), tx = signedTransaction(wallet, w.request.params[0]);
-  const { lease } = await confirmThroughFacade(w, wallet, tx);
+  const { lease } = await inPass(w, () => confirmThroughFacade(w, wallet, tx));
   await assert.rejects(w.session.transport.binding({ phase: 'broadcast', address: wallet.address, leaseId: lease.leaseId, hash: tx.hash }), refused);
   assert.equal(confirmations, 1);
   assert.equal(w.node.broadcasts.length, 0);
@@ -279,10 +231,7 @@ test('close approval after confirmation callback and refuse broadcast through th
 
 test('reopen held composition with pending artifact CREATE, allow readback and refuse recovery resend', async t => {
   const w = await seller(t), wallet = await signingWallet(w), tx = listingCreate(w, wallet);
-  const row = { hash: tx.hash, nonce: tx.content.nonce, stage: 'broadcast-accepted', signedTransaction: tx, networkBinding: await w.session.transport.observeBinding(),
-    storageWriteSubmission: 'accepted', storageWriteSubmissionProfile: STORAGE_WRITE_SUBMISSION_PROFILE, storageWriteGas: null };
-  await w.journal().put(`devnet/native-wallet/${JSON.stringify([w.session.transport.pins.network, w.session.transport.pins.chainIdentity, wallet.address])}`, row);
-  await w.journal().put('devnet/native-transfer/' + tx.hash, row);
+  await retainAcceptedCreate(w, wallet, tx);
   const before = await w.journal().entries();
   await w.restart();
   setPurchaseAdmission('held');

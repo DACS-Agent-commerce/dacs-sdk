@@ -8638,6 +8638,136 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/tp1-authority-label.mjs",
+          "before": null,
+          "after": "a60b854660f4dbcb427d6ffe918c1974faaa1d0a"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "acaa5486c9fafb7d178aa37f16d517d80919fa47",
+          "after": "1561f9d46da0be7ddfa2f45a3ca5d5d52bac82fe"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": null,
+          "after": "793feb91d7aff472458e7463b9442f09697c74e3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/seller-facade-confirm.mjs",
+          "before": null,
+          "after": "fbe4e61ed581878e2dd912a9e2b2b486009f9742"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-authority-token.test.mjs",
+          "before": null,
+          "after": "59ec4a406d02df29293034d44d466202fd68dde1"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": null,
+          "after": "b6c87c9639a25759561443cf9014e3e0f402bf94"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "116879d4872c10a8d0c65ad5bb3cada05e5052aa",
+          "after": "d3bf2b1e65c8736ccd0c09fe42c1e5c11b0bce49"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "d54a02c9580fe133738ec19c3ec19b323be0a66c",
+          "after": "7cf6b00589e4818b4fbd876ab327421a6e90cfba"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 let an effect pass share its fence with the transport and re-pin the release manifest",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "1561f9d46da0be7ddfa2f45a3ca5d5d52bac82fe",
+          "after": "d7936b2ba890b2431ce8681de72fe572ed1119b4"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "793feb91d7aff472458e7463b9442f09697c74e3",
+          "after": "10beba68fcc095df465df8e74e5e0e27fe8dd251"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "b6c87c9639a25759561443cf9014e3e0f402bf94",
+          "after": "beb390b8c98523aeaa14210e43c207be82bf4696"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a2b check effect pass inputs first and run the gate tests on the exported owner",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "d7936b2ba890b2431ce8681de72fe572ed1119b4",
+          "after": "24cc435cbbd3e319a867bfb0d1759014dd077272"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "10beba68fcc095df465df8e74e5e0e27fe8dd251",
+          "after": "d4a27b230ade392782c331f6100640e1c5742baf"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-authority-token.test.mjs",
+          "before": "59ec4a406d02df29293034d44d466202fd68dde1",
+          "after": "87f4ce20d1db5d2b032876da56d94c263b421a5f"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "beb390b8c98523aeaa14210e43c207be82bf4696",
+          "after": "757b60148d789e59fc2db8b9350176f6fd859ce8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "d3bf2b1e65c8736ccd0c09fe42c1e5c11b0bce49",
+          "after": "e79fd458fc4120e07f82142805d6e01f93513019"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "f5bea631bd02f0505bde239e10be38970474caf6",
+          "after": "f5bea631bd02f0505bde239e10be38970474caf6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the public API test merged from the held part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "0463873a7b94a988da064525e1285747019c3c1c",
+          "after": "0463873a7b94a988da064525e1285747019c3c1c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF run the gate tests on the exported owner with only currentLocal replaced",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "d4a27b230ade392782c331f6100640e1c5742baf",
+          "after": "b9340992077b4fd90675cb50762e57f5abc0c558"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "757b60148d789e59fc2db8b9350176f6fd859ce8",
+          "after": "8336e5393f66bcf9184b1b22b44911a9a1a32fbc"
+        }
+      ]
+    },
+    {
       "delta": "D11",
       "subject": "fix(client): D11 keep the packed consumer lock installable on Node 24",
       "files": [

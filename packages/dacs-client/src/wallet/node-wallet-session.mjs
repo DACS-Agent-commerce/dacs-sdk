@@ -8,10 +8,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalize } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+import { assertTp1Binding, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
-import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory } from '../public-admission.mjs';
-import { observeWithDeadline, OutboundError } from '../util/http.mjs';
+import { isTp1AuthorityLabel } from '../dacs/tp1-authority-label.mjs';
+import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
+import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
 import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError } from '../public/portal/embedded-wallet/sdk-provider.mjs';
@@ -34,6 +35,11 @@ const RPC_INVALID = 'node_wallet_rpc_invalid';
 const STAGE_NOT_DISPATCHED = 'not_dispatched';
 const STAGE_DISPATCHED_NO_ACK = 'dispatched_no_ack';
 const OS_AMOUNT = /^(?:0|[1-9][0-9]*)$/;
+const POSITIVE_OS_AMOUNT = /^[1-9][0-9]*$/;
+// The `extra` values of a JSON-RPC `execute` body that put a transaction in front of the node; the gate runs at each.
+const GATED_EXECUTE_STAGES = ['confirmTx', 'broadcastTx'];
+const TP1_LABEL_PREFIX = 'TP1-';
+const TP1_LABEL_DIGEST_LENGTH = 32;
 const SIGNATURE_DOMAIN = Buffer.from('demos-tx:v1:');
 const CHAIN_ID_FIELD = /^[0-9]+:$/;
 const TRANSACTION_HASH_SHAPE = /^(?:demos-tx:v1:[0-9]+:)?[0-9a-f]{64}$/i;
@@ -46,6 +52,10 @@ const refuseContent = cause => new EmbeddedWalletError('payload_mismatch', 'the 
 
 // Every lease an owner hands out and has not yet seen released; `release` removes it.
 const liveLeases = new WeakSet();
+// The fence of the effect pass whose work is running: a fence acquisition inside it reuses that fence instead of queueing behind it.
+const passFence = new AsyncLocalStorage();
+// Every token `admitTp1Authority` has made; a copy of one is not in it.
+const tokens = new WeakSet();
 
 const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
 
@@ -97,7 +107,8 @@ function readCanonicalRoot(endpoint) {
 
 /**
  * Returns the owner of the one connection to `endpoint`: `{local, currentLocal(), getContext(), acquireConnectionFence(claim), fetchImpl, close()}`.
- * Fences are granted one at a time in request order; `release` frees a fence once. `fetchImpl` reaches only the endpoint origin and refuses redirects.
+ * Fences are granted one at a time in request order; `release` frees a fence once. Inside `runInEffectPass`, an acquisition shares the pass's own fence
+ * and is granted at once; its `release` frees nothing. `fetchImpl` reaches only the endpoint origin and refuses redirects.
  * Throws OperationError(transport_mismatch) for an endpoint that is not a canonical HTTPS root or an authority that is not a plain token. After `close()`,
  * `currentLocal`, `getContext`, `fetchImpl` and `acquireConnectionFence` throw transport_closed and queued waiters are rejected.
  */
@@ -111,6 +122,8 @@ export function createNodeTransportOwner({ endpoint, transportAuthority, fetchIm
   const currentLocal = () => { if (closed) fail('transport_closed'); return local; };
   async function acquireConnectionFence() {
     currentLocal();
+    // Inside an effect pass that holds this owner's fence, the transport's own acquisitions share it; its release frees nothing.
+    if (held.has(passFence.getStore())) return Object.freeze({ context, release() {} });
     const preceding = tail;
     let unlock;
     tail = new Promise(resolve => { unlock = resolve; });
@@ -133,8 +146,15 @@ export function createNodeTransportOwner({ endpoint, transportAuthority, fetchIm
     close() { closed = true; for (const lease of held) lease.release(); } });
 }
 
-// A transport failure seen by the SDK: a closed public message, the transport's own error as `cause`,
-// and whether the request reached the network (`stage`).
+// Runs one authority or node read under the 10 s deadline; a timeout is tp1_authority_timeout with the timer's error as cause.
+async function withinAuthorityDeadline(read, signal) {
+  try { return await observeWithDeadline(read, { timeoutMs: AUTHORITY_READ_DEADLINE_MS, signal }); }
+  catch (error) {
+    if (error instanceof OutboundError && error.kind === 'timeout') throw new OperationError('tp1_authority_timeout', 'the authority read did not answer within the deadline', undefined, { cause: error });
+    throw error;
+  }
+}
+
 /**
  * Returns the fence-free, read-only observer for a node owner: {observe({signal}),
  * readNodeInfo(message, {signal}), provenance()}. Its expected identity and block-one fallback
@@ -152,28 +172,58 @@ export function createNodeTransportOwner({ endpoint, transportAuthority, fetchIm
 export function createNodeObserver({ owner, clock = { now: () => Date.now() } } = {}) {
   const source = createSourceObserver({ record: TP1_APPROVED_IDENTITY_RECORD, owner, now: () => clock.now(), timeoutMs: AUTHORITY_READ_DEADLINE_MS });
   const provenanceOf = connectionId => `${OBSERVER_PROVENANCE_PREFIX}:${connectionId}`;
-  async function withinDeadline(read, signal) {
-    try { return await observeWithDeadline(read, { timeoutMs: AUTHORITY_READ_DEADLINE_MS, signal }); }
-    catch (error) {
-      if (error instanceof OutboundError && error.kind === 'timeout') throw new OperationError('tp1_authority_timeout', 'the node did not answer within the observation deadline', undefined, { cause: error });
-      throw error;
-    }
-  }
   return Object.freeze({
     provenance: () => provenanceOf(owner.currentLocal().connectionId),
-    observe: ({ signal } = {}) => withinDeadline(async ({ signal: stop }) => {
+    observe: ({ signal } = {}) => withinAuthorityDeadline(async ({ signal: stop }) => {
       const { endpoint, transportAuthority, connectionId, chainIdentity } = await source.bind({ signal: stop });
       return { local: { endpoint, transportAuthority, connectionId }, chainIdentity, provenance: provenanceOf(connectionId) };
     }, signal),
     async readNodeInfo(message, { signal } = {}) {
       if (!NODE_INFO_MESSAGES.includes(message)) fail('readonly_only');
-      const answer = await withinDeadline(({ signal: stop }) => source.post({ method: 'nodeCall', params: [{ message, data: {} }] }, {}, { signal: stop }), signal);
+      const answer = await withinAuthorityDeadline(({ signal: stop }) => source.post({ method: 'nodeCall', params: [{ message, data: {} }] }, {}, { signal: stop }), signal);
       if (answer?.result !== 200) fail('upstream_unavailable');
       return answer.response;
     },
   });
 }
 
+/**
+ * Returns the label `TP1-` plus the first 32 hex digits of `binding.recordDigest`, which is stable across restarts and connections.
+ * Throws tp1_binding_required when the digest does not yield a canonical label. A label names an authority and grants none.
+ */
+export function tp1AuthorityLabel(binding) {
+  const label = TP1_LABEL_PREFIX + String(binding?.recordDigest).slice(0, TP1_LABEL_DIGEST_LENGTH);
+  if (!isTp1AuthorityLabel(label)) fail('tp1_binding_required');
+  return label;
+}
+
+/**
+ * Resolves a frozen, registered token {label} once the wire's binding check passes for `binding` on `currentLocal()` within 10 s and the
+ * connection is unchanged afterwards. Rejects tp1_binding_required (a missing binding or reader), the wire's binding refusal codes, tp1_local_binding_changed or
+ * tp1_authority_timeout (cause kept). A token is not current authority: every effect still runs its own checks.
+ */
+export async function admitTp1Authority({ binding, currentLocal } = {}) {
+  if (!binding || typeof currentLocal !== 'function') fail('tp1_binding_required');
+  const local = currentLocal();
+  await withinAuthorityDeadline(({ signal }) => settleOnAbort(assertTp1Binding(binding, local), signal));
+  if (canonicalize(currentLocal()) !== canonicalize(local)) fail('tp1_local_binding_changed');
+  const token = Object.freeze({ label: tp1AuthorityLabel(binding) });
+  tokens.add(token);
+  return token;
+}
+
+/** Returns true only for a token made by `admitTp1Authority`; a label string, a copy or any other value is false. Never throws. */
+export const isTp1AuthorityToken = value => tokens.has(value);
+
+/** Returns the label string of a token, or a canonical `TP1-` or `TEST-` label unchanged. Throws authority_unbound for anything else. */
+export function authorityLabelOf(value) {
+  if (tokens.has(value)) return value.label;
+  if (typeof value === 'string' && (isTp1AuthorityLabel(value) || value.startsWith('TEST-'))) return value;
+  return fail('authority_unbound');
+}
+
+// A transport failure seen by the SDK: a closed public message, the transport's own error as `cause`,
+// and whether the request reached the network (`stage`).
 class NodeRpcFailure extends Error {
   constructor(cause, stage) {
     super(RPC_FAILED, { cause });
@@ -199,23 +249,108 @@ function hasTransactionHashShape(message) {
 
 const isOsAmount =value => typeof value === 'string' && OS_AMOUNT.test(value);
 
-// Runs synchronously, so nothing can change the transaction between these checks and the inner signature.
+// Runs synchronously, so nothing can change the transaction between these checks and the inner signature. Returns the approved debit.
 function checkFinalContent({ transaction, finalContent }, message) {
   if (typeof transaction?.hash !== 'string' || !(message instanceof Uint8Array) || !signsTransactionHash(message, transaction.hash)) throw new Error('the signed message is not the transaction hash');
   if (createHash('sha256').update(JSON.stringify(transaction.content)).digest('hex') !== transaction.hash) throw new Error('the transaction hash is not the SHA-256 of its content');
   const debit = finalContent(transaction.content);
   if (!isOsAmount(debit?.totalDebitOs) || !isOsAmount(debit.feeDebitOs)) throw new Error('the finalized debit is not canonical OS amounts');
+  if (BigInt(debit.feeDebitOs) > BigInt(debit.totalDebitOs)) throw new Error('the finalized fee debit exceeds the total debit');
+  return debit;
 }
 
-// The SDK's crypto, except that a signature made inside `sign` is first checked against the approval;
+const refuseGate = (code, message, cause) => new EmbeddedWalletError(code, message, cause === undefined ? {} : { cause });
+// A host step's own error keeps its code and becomes the cause; the session's sign catch then passes it on instead of sdk_error.
+const gateRefusal = error => (error instanceof EmbeddedWalletError ? error
+  : refuseGate(typeof error?.code === 'string' ? error.code : 'effect_gate_refused', 'the effect gate refused; nothing was signed or sent', error));
+const assertSynchronousCheck = result => {
+  if (typeof result?.then !== 'function') return;
+  result.then(undefined, () => {});
+  throw refuseGate('effect_gate_refused', 'a synchronous effect check must not be asynchronous');
+};
+const assertFeeWithinCeiling = ({ feeDebitOs }, ceilingOs) => {
+  if (BigInt(feeDebitOs) > BigInt(ceilingOs)) throw refuseGate('write-fee-cap', 'the finalized fee is above the ceiling for this write; nothing was signed');
+};
+// The gated stage of a JSON-RPC `execute` body, or null for every other request (reads, other methods, a body that is not JSON).
+const executeStageOf = body => {
+  try {
+    const request = JSON.parse(body), stage = request?.params?.[0]?.extra;
+    return request?.method === 'execute' && GATED_EXECUTE_STAGES.includes(stage) ? stage : null;
+  } catch { return null; }
+};
+
+/**
+ * The composition's one effect gate: `{effectPass, runInEffectPass, pass}`. `pass({phase, signal, checkContent}, inner)` finds the current pass and, after
+ * SDK preparation, awaits `qualify`, the pass's refreshAuthority and its finalStop on the pass's remaining deadline. Then, in the same synchronous run, it
+ * checks the hold, the connection, the lease, the pass's synchronous checks and (when given) the final content against the fee ceiling, and invokes
+ * `inner()`. Any refusal throws before `inner`. With no pass the awaits are skipped, and `passRequired` refuses that case.
+ */
+function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired }) {
+  const scope = new AsyncLocalStorage(), passes = new WeakMap();
+  const liveFence = fence => { try { return liveLeases.has(fence) && fence.context === owner.getContext(); } catch { return false; } };
+  const effectPass = options => {
+    const { fence, deadline, refreshAuthority, finalStop, synchronousChecks, feeCeilingOs } = options ?? {};
+    // Array.from turns a hole into undefined, which the function check below refuses.
+    const checks = Array.isArray(synchronousChecks) ? Array.from(synchronousChecks) : [undefined];
+    const remainingMs = typeof deadline === 'number' ? deadline - clock.now() : NaN;
+    if (!liveFence(fence) || ![refreshAuthority, finalStop, ...checks].every(step => typeof step === 'function')
+      || !(remainingMs > 0 && remainingMs <= AUTHORITY_READ_DEADLINE_MS) || typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs)) fail('effect_pass_invalid');
+    const handle = Object.freeze({});
+    passes.set(handle, Object.freeze({ fence, deadline, refreshAuthority, finalStop, synchronousChecks: Object.freeze(checks), feeCeilingOs }));
+    return handle;
+  };
+  const runInEffectPass = (handle, work) => {
+    if (typeof work !== 'function') fail('invalid_params');
+    return scope.run(handle, () => passFence.run(passes.get(handle)?.fence, work));
+  };
+  async function awaitStep(step, { deadline, phase, signal, timeoutCode }) {
+    const late = cause => refuseGate(timeoutCode, 'the effect pass deadline passed', cause);
+    const remainingMs = deadline - clock.now();
+    if (remainingMs <= 0) throw late();
+    let result;
+    try { result = await observeWithDeadline(({ signal: stop }) => settleOnAbort(step({ phase, signal: stop }), stop), { timeoutMs: remainingMs, signal }); }
+    catch (error) { throw error instanceof OutboundError && error.kind === 'timeout' ? late(error) : error; }
+    if (clock.now() > deadline) throw late();
+    return result;
+  }
+  // Returns the connection generation `qualify` observed, or undefined when none is installed.
+  async function awaitSteps(pass, { phase, signal }) {
+    const run = (step, timeoutCode) => awaitStep(step, { deadline: pass.deadline, phase, signal, timeoutCode });
+    const generation = qualify ? await run(qualify, 'deployment_unqualified') : undefined;
+    await run(pass.refreshAuthority, 'tp1_authority_timeout');
+    await run(pass.finalStop, 'stop_check_timeout');
+    return generation;
+  }
+  function admitSynchronously(pass, generation, { phase, checkContent }) {
+    if (!purchaseActionsAdmitted()) throw notAdmittedError();
+    const local = owner.currentLocal();
+    if (canonicalize(local) !== canonicalize(expectedLocal) || (qualify && generation !== local.connectionId)) fail('tp1_local_binding_changed');
+    if (pass && !liveFence(pass.fence)) fail('effect_pass_invalid');
+    for (const check of pass?.synchronousChecks ?? []) assertSynchronousCheck(check({ phase }));
+    const debit = checkContent?.();
+    if (pass && debit) assertFeeWithinCeiling(debit, pass.feeCeilingOs);
+  }
+  async function pass(request, inner) {
+    try {
+      const handle = scope.getStore(), current = passes.get(handle);
+      if (handle === undefined && passRequired) throw refuseGate('effect_pass_required', 'an effect pass is required; nothing was signed or sent');
+      if (handle !== undefined && !(current && liveFence(current.fence))) throw refuseGate('effect_pass_invalid', 'the effect pass is not registered to this composition or its fence is no longer live');
+      const generation = current ? await awaitSteps(current, request) : undefined;
+      admitSynchronously(current, generation, request);
+    } catch (error) { throw gateRefusal(error); }
+    return inner();
+  }
+  return { effectPass, runInEffectPass, pass };
+}
+
+// The SDK's crypto, except that a transaction signature made inside `sign` runs through the effect gate, its content check first;
 // outside `sign` (RPC authentication) every call passes through.
-function guardedCrypto(inner, signScope) {
+function guardedCrypto(inner, signScope, gate) {
   const sign = (algorithm, message) => {
     const scope = signScope.getStore();
-    if (scope) {
-      try { checkFinalContent(scope, message); } catch (cause) { throw cause instanceof EmbeddedWalletError ? cause : refuseContent(cause); }
-    }
-    return inner.sign(algorithm, message);
+    if (!scope) return inner.sign(algorithm, message);
+    const checkContent = () => { try { return checkFinalContent(scope, message); } catch (cause) { throw cause instanceof EmbeddedWalletError ? cause : refuseContent(cause); } };
+    return gate.pass({ phase: 'sign', checkContent }, () => inner.sign(algorithm, message));
   };
   return new Proxy(inner, { get(target, key) {
     if (key === 'sign') return sign;
@@ -224,7 +359,7 @@ function guardedCrypto(inner, signScope) {
   } });
 }
 
-function nodeDemosClass(Demos, transport, rpcUrl, stamps, attempts) {
+function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate }) {
   const signScope = new AsyncLocalStorage(), guards = new WeakMap();
   return class NodeDemos extends Demos {
     constructor() {
@@ -233,7 +368,7 @@ function nodeDemosClass(Demos, transport, rpcUrl, stamps, attempts) {
     }
 
     get crypto() { return guards.get(this) ?? null; }
-    set crypto(inner) { guards.set(this, inner && guardedCrypto(inner, signScope)); }
+    set crypto(inner) { guards.set(this, inner && guardedCrypto(inner, signScope, gate)); }
 
     /** Signs like the SDK, but refuses before the inner signature unless `options.finalContent(content)` accepts the finalized content. */
     sign(transaction, { finalContent, ...sdkOptions } = {}) {
@@ -318,7 +453,8 @@ function createBindingRelay(transport) {
 const checkConstruction = admitPublicFactory(options => ({ options }), { purchase: true });
 
 /**
- * Returns a Promise for `{wallet, walletFactory({anchorJournal}), internalCauseOf(envelope), close()}`. `wallet.request` is wrapped by the admission wrapper and the four
+ * Returns a Promise for `{wallet, walletFactory({anchorJournal}), internalCauseOf(envelope), effectPass(pass), runInEffectPass(handle, work), close()}`.
+ * `effectPass` and `runInEffectPass` are the effect gate's host contract (see `createEffectGate`); a buyer may sign and send without a pass. `wallet.request` is wrapped by the admission wrapper and the four
  * passive methods keep their signatures. `walletFactory` is synchronous and returns another view of the same wallet that records anchors in the
  * selected caller-owned journal. `internalCauseOf` returns the error a failed request's envelope was closed over (its `cause` chain holds the original
  * failure, which the public envelope never carries), or undefined. Before the SDK's inner transaction signature the session checks that the signed message
@@ -326,7 +462,7 @@ const checkConstruction = admitPublicFactory(options => ({ options }), { purchas
  * fails `payload_mismatch` and nothing is signed. A general `sign` request for a transaction-hash-shaped message (bare or signatureDomain-prefixed
  * SHA-256 hex) also fails `payload_mismatch`, because that signature would be a valid transaction signature. `close()` locks the wallet and closes its transport; the host closes its owner and journal.
  * Options: `{admission, owner, journal, key, approve, clock}`; `key` is the UTF-8 mnemonic as a Uint8Array, and it and every copy of it are zero-filled
- * on every outcome. Rejects with TypeError(admission_required | admission_input_untrusted), OperationError(runtime_unsupported | invalid_mnemonic |
+ * on every outcome. Rejects with TypeError(admission_required | admission_input_untrusted), OperationError(runtime_unsupported | invalid_mnemonic | invalid_params (any `qualify`) |
  * node_wallet_sdk_unreviewed | node_wallet_sdk_preloaded | transport errors), or the SDK session's own refusal.
  */
 export function createNodeWalletSession(options = {}) {
@@ -351,12 +487,14 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
 }
 
 /**
- * Returns a Promise for `{wallet, walletFactory, transport, observer, internalCauseOf, close}`: the session of `createNodeWalletSession` over a seller transport.
+ * Returns a Promise for `{wallet, walletFactory, transport, observer, internalCauseOf, effectPass, runInEffectPass, close}`: the session of `createNodeWalletSession` over a seller transport.
  * `transport` is the registered held facade of `createHeldTransportFacade`; `observer` is `createNodeObserver({owner, clock})` over the same owner, with no fence.
- * Options are those of `createNodeWalletSession` plus `publications: {settlementPublication, deliveryPublication, demoArtifactPublication}` and the required
- * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed). A confirmation by another sender, or of a Listing CREATE,
- * is answered `true` without calling it; every other seller confirmation calls it once, and `false` or a throw (kept as `cause`) refuses `approval_required`.
- * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value or the transport's own refusal of the publications.
+ * Options are those of `createNodeWalletSession` plus `publications: {settlementPublication, deliveryPublication, demoArtifactPublication}`, the required
+ * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed), and the optional `qualify({phase, signal})` the effect gate awaits
+ * first. A confirmation by another sender, or of a Listing CREATE, is answered `true` without calling the policy; every other seller confirmation calls it once,
+ * and `false` or a throw (kept as `cause`) refuses `approval_required`. Every signature and execute transmission needs a current effect pass (`effect_pass_required`).
+ * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value, OperationError(invalid_params) for a `qualify`
+ * that is not a function, or the transport's own refusal of the publications.
  */
 export function createNodeSellerComposition(options = {}) {
   return buildNodeComposition(options, true);
@@ -366,15 +504,25 @@ async function buildNodeComposition(options, seller) {
   const key = options?.key;
   let keyCopy, transport, session, sellerAddress;
   try {
-    const { owner, journal, approve, approveConfirmedWrite, publications, clock = { now: () => Date.now() } } = checkConstruction(options).options;
+    const { owner, journal, approve, approveConfirmedWrite, publications, qualify, clock = { now: () => Date.now() } } = checkConstruction(options).options;
     const admission = { ...options.admission };
     if (seller && approveConfirmedWrite !== null && typeof approveConfirmedWrite !== 'function') throw new TypeError('approveConfirmedWrite must be a function or an explicit null');
     if (!(key instanceof Uint8Array)) fail('invalid_mnemonic');
     keyCopy = Uint8Array.from(key);
+    if (qualify !== undefined && (!seller || typeof qualify !== 'function')) fail('invalid_params');
     const { Demos, validateMnemonic } = await loadNodeDemos();
     const expected = readExpectedPins(admission.binding, owner);
     const attempts = new AsyncLocalStorage(), selectedJournal = new AsyncLocalStorage();
-    const fetchImpl = (...args) => { const attempt = attempts.getStore(); if (attempt) attempt.dispatched = true; return owner.fetchImpl(...args); };
+    const gate = createEffectGate({ owner, expectedLocal: admission.binding.local, clock, qualify, passRequired: seller });
+    // A confirmTx or broadcastTx body is gated and the real fetch runs synchronously after the gate. A refused body is not dispatched, although
+    // this attempt's earlier reads (the nonce check) were; an effect body this attempt already sent stays dispatched.
+    const fetchImpl = (input, init) => {
+      const attempt = attempts.getStore(), stage = executeStageOf(init?.body);
+      const send = () => { if (attempt) attempt.dispatched = true; return owner.fetchImpl(input, init); };
+      if (!stage) return send();
+      if (attempt) attempt.dispatched = attempt.effectSent === true;
+      return gate.pass({ phase: stage, signal: init.signal }, () => { if (attempt) attempt.effectSent = true; return send(); });
+    };
     const transportOptions = { expected, transportOwner: owner, journal, fetchImpl, now: () => clock.now(),
       fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation } };
     transport = seller
@@ -385,7 +533,7 @@ async function buildNodeComposition(options, seller) {
     const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const stamps = createRpcStampSource(clock);
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));
-    session = createSdkWalletSession({ DemosCtor: nodeDemosClass(Demos, transport, transactionTransport.rpcUrl, stamps, attempts), approve, transactionTransport,
+    session = createSdkWalletSession({ DemosCtor: nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate }), approve, transactionTransport,
       validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
     await session.importMnemonic(decodeMnemonic(keyCopy));
     // Routing identity outlives signing custody, which passive wallet.lock() clears.
@@ -394,7 +542,7 @@ async function buildNodeComposition(options, seller) {
       request: request => selectedJournal.run(selected, () => session.request(request)),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
-    return Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf,
+    return Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass,
       ...(seller ? { transport: createHeldTransportFacade({ admission, transport }), observer: createNodeObserver({ owner, clock }) } : {}),
       async close() { session.lock(); await transport.close(); } });
   } catch (error) {
