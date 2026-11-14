@@ -700,6 +700,31 @@ test('clearHeldWrite repeated returns the stored outcome without reading the cha
   assert.equal(w.calls.reads.length, reads);
   assert.equal(first.txHash, kept.hash);
 });
+test('a cleared held evidence CREATE stays cleared when the journal is reopened', async (t) => {
+  const w = wallet(t); let journal = w.open();
+  const { input, kept, ask } = await keepHeldCreate(w);
+  w.other();
+  await journal.clearHeldWrite(ask);
+  journal.close();
+  journal = w.open(); t.after(() => journal.close());
+  assert.deepEqual(await journal.clearHeldWrite(ask), { status: 'superseded', txHash: kept.hash });
+  assert.notEqual((await journal.anchorEvidence(input)).txHash, kept.hash);
+});
+test('a clear whose mark cannot be written leaves the held evidence CREATE live and held, and it clears once the mark can be written', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  const { input, kept, ask } = await keepHeldCreate(w);
+  w.other();
+  const blocker = new DatabaseSync(w.path);
+  blocker.exec("CREATE TRIGGER block_clear_mark BEFORE INSERT ON journal_meta WHEN NEW.key LIKE 'held-cleared:%' BEGIN SELECT RAISE(ABORT, 'TEST mark refused'); END");
+  blocker.close();
+  await assert.rejects(journal.clearHeldWrite(ask), /TEST mark refused/);
+  assert.equal((await journal.readSignedProjection(input))?.hash, kept.hash, 'the held row is still the live one');
+  await assert.rejects(journal.anchorEvidence(input), { code: 'write-fee-cap' });
+  const unblocker = new DatabaseSync(w.path);
+  unblocker.exec('DROP TRIGGER block_clear_mark');
+  unblocker.close();
+  assert.equal((await journal.clearHeldWrite(ask)).status, 'superseded');
+});
 test('clearHeldWrite refuses a hash the journal never kept and a write that is not held', async (t) => {
   const w = wallet(t), journal = w.open(); t.after(() => journal.close());
   const { ask } = await keepHeldCreate(w);
