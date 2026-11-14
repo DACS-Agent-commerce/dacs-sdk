@@ -9396,6 +9396,23 @@
           "after": "6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "sha": "0f3d432cc8159e5f9daa24df85619930d30da89a",
+      "subject": "fix(client): enforce effect admission order and signer deadlines",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "796433f8bc1bca0d06a152305289e52f05f03812",
+          "after": "c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "83bf647eea4cbb4cf4614e97b07b52203356393c",
+          "after": "91cae7c7150797d80f48f80d9d8b5b65b432ffa8"
+        }
+      ]
     }
   ]
 }

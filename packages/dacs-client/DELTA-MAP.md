@@ -1518,6 +1518,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/effect-boundary.mjs:1`: 796433f8bc1bca0d06a152305289e52f05f03812<br>`packages/dacs-client/test/effect-boundary.test.mjs:1`: ba95a19ef6fa3331bb54536fa0910d058d2956f8 | |
 | WF | delta(client): WF test that two passes resuming one held artifact send it once | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1`: 6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1 | |
+| WF | fix(client): enforce effect admission order and signer deadlines | Git commit selector 0f3d432cc8159e5f9daa24df85619930d30da89a |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355 |
+| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 91cae7c7150797d80f48f80d9d8b5b65b432ffa8 |
 
 ## Complete commit and file inventory
 
@@ -4572,6 +4575,9 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): record the single-dispatch change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF record the merged effect-boundary.mjs and effect-boundary.test.mjs blobs after merging 472193167d6f | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF test that two passes resuming one held artifact send it once | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| 0f3d432cc8159e5f9daa24df85619930d30da89a | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| 0f3d432cc8159e5f9daa24df85619930d30da89a | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` |
+| chore(client): record effect boundary admission and deadline checks | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
