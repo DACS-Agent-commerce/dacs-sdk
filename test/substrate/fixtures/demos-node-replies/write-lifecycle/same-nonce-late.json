@@ -1,0 +1,48 @@
+{
+  "recording": {
+    "recordedAt": "2026-11-10",
+    "node": "https://node2.demos.sh/",
+    "demosdk": "4.0.16",
+    "values": "what each demosdk method returned to its caller; rows keep only the fields the adapter reads",
+    "writes": "W (1 DEM) and L (2 DEM), both signed at nonce 10; L sent after W was in block 74956"
+  },
+  "sender": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+  "writes": {
+    "W": {
+      "hash": "52367f2565a9cb68d8c1ef8d8d4b23c54505a34c3148e6b1fb7b7569f2251f3e",
+      "nonce": 10,
+      "amountOs": "1000000000"
+    },
+    "L": {
+      "hash": "e06a19e986be3c54bac2a91fb392194086237457598e3679e17f4718e4eea082",
+      "nonce": 10,
+      "amountOs": "2000000000"
+    }
+  },
+  "confirmL": {
+    "httpStatus": 200,
+    "callReturned": {
+      "result": 200,
+      "response": {
+        "data": {
+          "valid": false,
+          "reference_block": 74958,
+          "message": "[Tx Validation] [NONCE ERROR] Transaction nonce error. Expected >=11, got: 10"
+        }
+      }
+    },
+    "sdkThrew": "[Confirm] Transaction is not valid: [Tx Validation] [NONCE ERROR] Transaction nonce error. Expected >=11, got: 10"
+  },
+  "rounds": {
+    "B1": {
+      "L": {
+        "getTransactionStatus": {
+          "state": "unknown"
+        },
+        "getTxByHash": null
+      },
+      "getAddressNonce": 10,
+      "getLastBlockNumber": 74958
+    }
+  }
+}

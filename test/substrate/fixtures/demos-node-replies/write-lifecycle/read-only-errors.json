@@ -1,0 +1,17 @@
+{
+  "recording": {
+    "recordedAt": "2026-11-10",
+    "node": "https://node2.demos.sh/",
+    "demosdk": "4.0.16",
+    "values": "what each demosdk method returned to its caller; rows keep only the fields the adapter reads",
+    "run": "read-only reads with malformed inputs; nothing was sent"
+  },
+  "returned": {
+    "getTransactionStatusEmptyHash": {
+      "error": "Missing or invalid 'hash' field"
+    },
+    "getTxByHashEmptyHash": "No hash specified",
+    "getAddressInfoMalformedAddress": "error",
+    "getAddressNonceMalformedAddress": 0
+  }
+}
