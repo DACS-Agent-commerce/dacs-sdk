@@ -16,7 +16,8 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { createDeliverableWalletJournal, createPaymentEvidenceWalletJournal } from '../src/index.mjs';
 import { deliverableJournalFor } from '../src/dacs/deliverable-wallet-journal.mjs';
 import { createNativeDemDeliveryCapability, submitNativeDemDelivery } from '../src/dacs/native-dem-delivery-consumer.mjs';
-import { deliverableInput, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
+import { deliverableInput, keepUncheckedCreate, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
+import { sdkSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 
 // The journal's two operations as the agent calls them: for the journal it
 // recorded for the order, with an authorization (by default, one that holds).
@@ -171,6 +172,75 @@ test('a signed CREATE that is not this Deliverable is refused and nothing is kep
     refusing.close();
   }
   assert.equal(w.calls.broadcast.length, 0, 'nothing is sent');
+});
+
+// The per-write ceiling (50 DEM) holds for the Deliverable as for evidence, on the whole debit: the fees plus
+// 1 DEM of gas and 1 DEM of storage fee per started 10240 bytes of the report.
+const CEILING_FEE = { networkFee: 18, rpcFee: 30 }, TWO_CHUNK_CEILING_FEE = { networkFee: 17, rpcFee: 30 };
+const twoChunkReport = (w) => {
+  const report = { ...w.input().report, body: ['e'.repeat(12_000)] }, payloadHash = sha256Hex(canonicalize(report));
+  return { report, receiptContentHash: payloadHash, deliveryBinding: { ...w.input().deliveryBinding, payloadHash } };
+};
+const signingWith = (w, change) => w.open(w.path, (options) => createDeliverableWalletJournal({ ...options, signCreate: (asked) => w.node.signCreate(asked, change) }));
+const oneOsMore = (content) => { content.transaction_fee.rpc_fee = String(BigInt(content.transaction_fee.rpc_fee) + 1n); };
+for (const [label, change, twoChunk] of [
+  ['before the denomination fork', { nodeFee: CEILING_FEE }],
+  ['after the denomination fork', { postFork: true, nodeFee: CEILING_FEE }],
+  ['for a two-chunk report before the denomination fork', { nodeFee: TWO_CHUNK_CEILING_FEE }, true],
+  ['for a two-chunk report after the denomination fork', { postFork: true, nodeFee: TWO_CHUNK_CEILING_FEE }, true],
+]) test(`a Deliverable CREATE whose whole debit is exactly at the ceiling ${label} is kept and sent`, async (t) => {
+  const w = wallet(t), journal = signingWith(w, change), input = w.input(twoChunk ? twoChunkReport(w) : {});
+  t.after(() => journal.close());
+  const { reconciliationId } = await submit(journal, input);
+  assert.equal((await journal.readSignedProjection(input)).hash, reconciliationId);
+  assert.equal(w.calls.broadcast.length, 1);
+});
+for (const [label, change, debitOs, twoChunk] of [
+  ['one DEM above the ceiling before the denomination fork', { nodeFee: { ...CEILING_FEE, rpcFee: 31 } }, '51000000000'],
+  ['one OS above the ceiling after the denomination fork', { postFork: true, nodeFee: CEILING_FEE, edit: oneOsMore }, '50000000001'],
+  ['one DEM above the ceiling for a two-chunk report before the denomination fork', { nodeFee: { ...TWO_CHUNK_CEILING_FEE, rpcFee: 31 } }, '51000000000', true],
+  ['one OS above the ceiling for a two-chunk report after the denomination fork', { postFork: true, nodeFee: TWO_CHUNK_CEILING_FEE, edit: oneOsMore }, '50000000001', true],
+]) test(`a Deliverable CREATE whose whole debit is ${label} is refused: nothing is kept or sent`, async (t) => {
+  const w = wallet(t), journal = signingWith(w, change), input = w.input(twoChunk ? twoChunkReport(w) : {});
+  t.after(() => journal.close());
+  await assert.rejects(submit(journal, input), { code: 'wallet_sign_invalid', message: new RegExp(`a debit of ${debitOs} OS \\(fee, storage fee and gas\\), above the 50 DEM ceiling per write`) });
+  assert.equal(await journal.readSignedProjection(input), null);
+  assert.equal(w.calls.broadcast.length, 0);
+  assert.equal((await resume(journal, input)).status, 'unsigned');
+});
+for (const [label, nodeFee, debitOs] of [
+  ['whose fee is above the ceiling', { networkFee: 20, rpcFee: 31 }, '53000000000'],
+  ['whose fee is exactly the ceiling and whose storage fee and gas are on top', { networkFee: 20, rpcFee: 30 }, '52000000000'],
+]) test(`a kept Deliverable CREATE ${label} is held: resume and submit refuse it, and nothing is sent or signed`, async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const asked = w.input(), input = { ...asked, artifact: asked.report, artifactKind: 'Deliverable' };
+  const kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1, nodeFee });
+  keepUncheckedCreate(w.path, 'deliverable_creates', input, kept);
+  const held = { code: 'write-fee-cap', message: new RegExp(`signed CREATE ${kept.hash}, whose debit of ${debitOs} OS \\(fee, storage fee and gas\\) is above the 50 DEM ceiling per write; it is held`) };
+  await assert.rejects(resume(journal, asked), held, 'resume');
+  await assert.rejects(submit(journal, asked), held, 'submit');
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
+test('a kept Deliverable CREATE without a data field is refused as a journal conflict', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const asked = w.input(), input = { ...asked, artifact: asked.report, artifactKind: 'Deliverable' };
+  const kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1 });
+  delete kept.content.data[1].data;
+  keepUncheckedCreate(w.path, 'deliverable_creates', input, kept);
+  await assert.rejects(resume(journal, asked), { code: 'wallet_journal_conflict' });
+  await assert.rejects(submit(journal, asked), { code: 'wallet_journal_conflict' });
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
+test('a kept Deliverable CREATE whose whole debit is exactly the ceiling is not held and is sent', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const asked = w.input(), input = { ...asked, artifact: asked.report, artifactKind: 'Deliverable' };
+  const kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1, nodeFee: CEILING_FEE });
+  keepUncheckedCreate(w.path, 'deliverable_creates', input, kept);
+  assert.equal((await submit(journal, asked)).reconciliationId, kept.hash);
+  assert.equal(w.calls.broadcast.length, 1);
 });
 
 test('a report that is not hashed as its receiptContentHash, or no report, is refused before the wallet is asked', async (t) => {
