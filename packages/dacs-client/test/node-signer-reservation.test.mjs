@@ -358,6 +358,22 @@ test('a manual grant is retired without a lookup or a settlement', async t => {
   assert.deepEqual(ledger.settled, []);
 });
 
+test('renewApproval replaces the approval id of signed bytes in one write, so the execution settles the new id spent; an unsigned or stale handle, another request text and a null id are refused', async t => {
+  const ledger = ledgerDouble(), w = world(t, { ledger }), bytes = signed(), renewed = { ledgerId: 'TEST-ledger-renewed', requestText: REQUEST };
+  const unsigned = await approved(w.reservations);
+  await rejectCode(w.reservations.renewApproval(unsigned, renewed), 'signer_reservation_invalid');
+  const reservation = await w.reservations.bindSigned(unsigned, bytes);
+  for (const bad of [{ ledgerId: null, requestText: REQUEST }, { ledgerId: 'TEST-ledger-renewed', requestText: 'TEST-other-request' }, undefined]) {
+    await rejectCode(w.reservations.renewApproval(reservation, bad), 'signer_reservation_invalid');
+  }
+  const next = await w.reservations.renewApproval(reservation, renewed);
+  assert.equal(next.active.approvalId, 'TEST-ledger-renewed'); assert.equal(next.revision, reservation.revision + 1);
+  assert.deepEqual((await w.reservations.renewApproval(next, renewed)), next, 'the same id again writes nothing');
+  await rejectCode(w.reservations.renewApproval(reservation, renewed), 'signer_reservation_stale');
+  await w.reservations.consume(next, executed(bytes));
+  assert.deepEqual(ledger.settled, [['TEST-ledger-renewed', 'spent', 'executed']]);
+});
+
 test('consume ends the reservation only on an authenticated execution of the exact bytes: pending, failed, unauthenticated and other bytes change nothing; the real one settles spent and moves the floor', async t => {
   const ledger = ledgerDouble(), w = world(t, { ledger }), bytes = signed();
   const reservation = await w.reservations.bindSigned(await approved(w.reservations), bytes);

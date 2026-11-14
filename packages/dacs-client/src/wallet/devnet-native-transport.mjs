@@ -206,7 +206,7 @@ export function createSourceObserver({ record, owner, blockZeroErrorEnvelope = n
   return Object.freeze({ bind, post });
 }
 function constructTransport({ expected, transportOwner, journal, fallback = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
-  fetchImpl = globalThis.fetch, now = () => Date.now(), timeoutMs = 10000,
+  fetchImpl = globalThis.fetch, now = () => Date.now(), stamps = { next: () => now() }, timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
   if (!transportOwner || typeof transportOwner.getContext !== 'function' || typeof transportOwner.acquireConnectionFence !== 'function') throw new TypeError('actual transport-owner context and connection fencing are required');
@@ -753,7 +753,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           binding=await storageRecoveryBinder.recover(r.networkBinding);
           if(!await absent()) return {disposition:'pending',hash,noResend:true};
           const headers=async()=>{
-            const identity=`ed25519:${address}`,timestamp=String(now());
+            const identity=`ed25519:${address}`,timestamp=String(stamps.next(identity));
             return {identity,timestamp,signature:await signRpc(sha(`${identity}:${timestamp}`))};
           };
           const confirmBody={method:'execute',params:[{extra:'confirmTx',data:clone(tx)}]},auth=await headers();

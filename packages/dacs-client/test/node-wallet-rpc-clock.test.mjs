@@ -20,6 +20,17 @@ test("wallet_auth_replayed or wallet_auth_stale on a broadcast means that call s
 for(const mode of ['auth-refuse','auth-stale']) { const w=await world(t); w.node.mode=mode; const result=await w.send(); assert.equal(result.success,false);assert.equal(w.node.applied.size,0); assert.equal((await w.lane()).stage,'broadcast-answered'); await w.restart(); await w.send(); assert.equal(w.node.broadcasts.length,1); }
 });
 
+test("a transport recovery stamp comes from the session's sequencer, so it is above the stamp the session just used and the recovery is not refused for a collision", async t => {
+const stamps=api.createRpcStampSource({now:()=>NOW}), sessionWorld=await world(t); const w=createWorld({journal:sessionWorld.journal(),stamps});t.after(()=>w.capability.close());
+const tx=await w.makeCreate(JOB_IDS[0],1);await w.retain(tx,'broadcast-accepted');
+const identity=`ed25519:${w.wallet.address}`,timestamp=String(stamps.next(identity));
+const signature=w.wallet.signText(createHash('sha256').update(`${identity}:${timestamp}`).digest('hex'));
+await w.capability.walletBinding({phase:'bind',address:w.wallet.address},{identity,timestamp,signature});
+const messages=[]; await w.capability.recoverStorageWrite({signedTransaction:tx,signRpc:async message=>{messages.push(message);return w.wallet.signHex(message);}});
+assert.equal(messages[0],createHash('sha256').update(`${identity}:${NOW+1}`).digest('hex'),'the recovery stamp is the sequencer\'s next one');
+assert.deepEqual(w.sent.confirms,[tx.hash],'the recovery authenticated and reached the confirmation');
+});
+
 test("a transport recovery stamp colliding with a session stamp ends pending with noResend and no second send", async t => {
 const sessionWorld=await world(t); const w=createWorld({journal:sessionWorld.journal()});t.after(()=>w.capability.close());
 const tx=await w.makeCreate(JOB_IDS[0],1);await w.retain(tx,'broadcast-accepted');
