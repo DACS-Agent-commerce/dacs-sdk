@@ -11,9 +11,10 @@
 // wire journal owns their effects, the reservation coordinator accounts for them, the completion port ends each
 // attempt (by the rule of the route's row in seller-effect-routes.mjs, where it has one), and read routes reserve nowhere.
 // With `context` and `wire` together the challenge is on the wire too (`context.challengeOnWire`),
-// before any Agreement and with no journal. The context step keeps the old server auth, and so
-// does the challenge of a handler composed without `wire`. Each request has one authenticator,
-// chosen by its route.
+// before any Agreement and with no journal. A `context` that also carries `handleContext`
+// (`createWireSellerContextRoute`) serves the context step on the wire as well and signs its answer here;
+// without it the context step keeps the old server auth, and so does the challenge of a handler
+// composed without `wire`. Each request has one authenticator, chosen by its route.
 import { completeWireEffect, DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_PATHS, inspectWireOperation, isReadRoute, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome, UNCERTAIN } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';

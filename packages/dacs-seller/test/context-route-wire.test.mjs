@@ -687,6 +687,19 @@ test('a provider result at 239,999 ms completes normally', async (t) => {
   assert.deepEqual([w.counts.vetWrites, w.completions.length, w.rowOf().state, w.rowOf().contextOutcome], [2, 1, 'settled', 'success']);
 });
 
+test('closing the attempts while a provider runs answers with the given cause, keeps the hold and the open attempt, and lets the late work sign nothing', async (t) => {
+  const { w, request, pending, release } = await stalledProvider(t, 'start');
+  w.route.closeAttempts(new SellerTransportError('seller_stopped', 503));
+  const answer = await pending;
+  assert.deepEqual(summary(answer), [503, 'seller_stopped']);
+  await request.verify(answer);
+  assert.deepEqual([w.openHolds().length, w.operationOf(WIRE_JOB).state], [1, 'pending']);
+  release.resolve();
+  await w.settleJob();
+  assert.equal(w.counts.vetWrites, 0);
+  assertNoOutcome(w);
+});
+
 // ---- the first validation ------------------------------------------------------------------------------------------------
 
 const refusal = (code, status) => () => { throw new SellerAgentError(code, 'TEST refusal', status); };
