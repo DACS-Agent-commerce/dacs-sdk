@@ -1,6 +1,10 @@
 import type { SettleRequest, SettleResult } from "./settlementTypes.js";
 import { CounterpartyError, DacsError } from "../errors.js";
+import { isRecord } from "../wire/validate.js";
+import { normalizeDemosNativeAddress } from "./demosAddress.js";
 import { createDemosClient } from "./demosClient.js";
+import { readDemosTransactionRecord } from "./demosRpc.js";
+import { canonicalDemosTxHash } from "./payDem.js";
 
 /**
  * pay-d402 settlement rail — the D402 HTTP-402 protocol on Demos (SR-4).
@@ -10,8 +14,10 @@ import { createDemosClient } from "./demosClient.js";
  * (recipient + amount in native units + a resource id). Unlike x402 — where the
  * facilitator settles on-chain and hands back a tx via a response header — the
  * D402 buyer signs and broadcasts a gasless `d402_payment` transaction itself,
- * so `settle()` returns the settlement tx hash directly (that hash IS the
- * payment proof).
+ * so `settle()` gets the settlement tx hash back directly. The node's
+ * acknowledgement is not proof of payment: the rail reads the transaction back
+ * by that hash and reports `ok` only when the node's own record is a confirmed
+ * `d402_payment` from the buyer to the advertised recipient for the agreed amount.
  *
  * Per DACS §4.1 the buyer MUST abort before paying if the 402's advertised
  * terms don't match the negotiated agreement (termsMatchD402) — otherwise
@@ -29,8 +35,8 @@ import { createDemosClient } from "./demosClient.js";
  * the spec's `pay-dem` (§9.5.9) — the plain `demos.transfer` native rail, which
  * is a separate, live-proven path (evidence `txRef` kind `demos`, `bft-final`).
  *
- * payD402SettleCore is pure over a minimal client interface + an injected fetch,
- * so it's unit-tested without a Demos node; createPayD402Rail() is the thin
+ * payD402SettleCore is pure over a minimal client interface, an injected fetch
+ * and an injected transaction reader, so it's unit-tested without a Demos node; createPayD402Rail() is the thin
  * wiring that constructs the real demosdk D402Client from a connected wallet.
  */
 
@@ -144,6 +150,59 @@ export interface PayD402SettleCoreDeps {
   fetchImpl: typeof fetch;
   /** The buyer's Demos address (recorded as `payer` on the result). */
   payerAddress: string;
+  /**
+   * Reads the node's record of a transaction by hash. It must cap the reply
+   * size and enforce a deadline; a rejection leaves the payment unconfirmed.
+   */
+  readTransaction(hash: string): Promise<unknown>;
+}
+
+/** Deadline for the one transaction-record read that follows a settle acknowledgement. */
+const RECORD_READ_TIMEOUT_MS = 10_000;
+const CONFIRMED_RECORD_STATUS = "confirmed";
+const D402_PAYMENT_TYPE = "d402_payment";
+const BASE_UNITS = /^(?:0|[1-9][0-9]*)$/;
+
+/**
+ * True when the node's record is a confirmed `d402_payment` with this hash,
+ * paid by `payer` to `payee` for `amount` base units. The signed payload holds
+ * `to` and `amount`; anything missing or shaped differently is not a match.
+ */
+function recordShowsTransfer(
+  record: unknown,
+  expected: { txHash: string; payer: string; payee: string; amount: string },
+): boolean {
+  if (!isRecord(record) || record["status"] !== CONFIRMED_RECORD_STATUS) return false;
+  const hash = canonicalDemosTxHash(record["hash"]);
+  if (hash === null || hash !== canonicalDemosTxHash(expected.txHash)) return false;
+  const content = record["content"];
+  if (!isRecord(content) || content["type"] !== D402_PAYMENT_TYPE) return false;
+  const payer = normalizeDemosNativeAddress(expected.payer);
+  if (payer === null || typeof content["from"] !== "string" ||
+      normalizeDemosNativeAddress(content["from"]) !== payer) {
+    return false;
+  }
+  const data = content["data"];
+  if (!Array.isArray(data) || data.length !== 2 || data[0] !== D402_PAYMENT_TYPE || !isRecord(data[1])) {
+    return false;
+  }
+  const payee = normalizeDemosNativeAddress(expected.payee);
+  const { to, amount } = data[1];
+  return payee !== null && typeof to === "string" && normalizeDemosNativeAddress(to) === payee &&
+    typeof amount === "string" && BASE_UNITS.test(amount) && BASE_UNITS.test(expected.amount) &&
+    BigInt(amount) === BigInt(expected.amount);
+}
+
+/** Reads the transaction back; a failed or timed-out read is "not shown". */
+async function transferIsRecorded(
+  readTransaction: PayD402SettleCoreDeps["readTransaction"],
+  expected: Parameters<typeof recordShowsTransfer>[1],
+): Promise<boolean> {
+  try {
+    return recordShowsTransfer(await readTransaction(expected.txHash), expected);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -181,15 +240,21 @@ export async function payD402SettleCore(
   const payment = await client.createPayment(requirement);
 
   // 4. Sign + broadcast; the buyer gets the settlement tx hash back directly.
-  //    A money-safe receipt needs a verifiable on-chain tx id, so success
-  //    REQUIRES both the node's success flag and a non-empty hash — a settle
-  //    that reports success without a parseable hash is reported ok:false
-  //    rather than an unverifiable "success".
+  //    The node's acknowledgement is not enough for success: it needs the
+  //    success flag and a non-empty hash, and then the node's own record for
+  //    that hash must show this payment. Anything less is reported ok:false
+  //    with the hash kept, and nothing is broadcast again.
   const result = await client.settle(payment);
   const txHash = (result?.hash ?? "").trim();
+  const acknowledged = result?.success === true && txHash.length > 0;
 
   return {
-    ok: result?.success === true && txHash.length > 0,
+    ok: acknowledged && await transferIsRecorded(deps.readTransaction, {
+      txHash,
+      payer: payerAddress,
+      payee: requirement.recipient,
+      amount: String(requirement.amount),
+    }),
     txHash,
     chainId: params.network,
     payer: payerAddress,
@@ -265,13 +330,15 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
   const client = new D402Client(demos) as unknown as D402ClientLike;
   const fetchImpl = config.fetchImpl ?? fetch;
   const network = config.network ?? "demos";
+  const readTransaction = (hash: string) =>
+    readDemosTransactionRecord(config.rpc, hash, RECORD_READ_TIMEOUT_MS, fetch);
 
   return {
     address: demos.getAddress(),
     settle: (params) =>
       payD402SettleCore(
         { ...params, network: params.network ?? network },
-        { client, fetchImpl, payerAddress: demos.getAddress() },
+        { client, fetchImpl, payerAddress: demos.getAddress(), readTransaction },
       ),
   };
 }

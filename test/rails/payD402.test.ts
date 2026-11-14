@@ -12,8 +12,9 @@ import {
   type PayD402Rail,
 } from "../../src/rails/payD402.js";
 
-const RECIPIENT = "demos1recipientaddress0000000000000000000000";
-const PAYER = "demos1payeraddress00000000000000000000000000";
+const RECIPIENT = `0x${"cd".repeat(32)}`;
+const PAYER = "ab".repeat(32);
+const TX_HASH = "ef".repeat(32);
 const URL = "https://seller.example/premium";
 
 describe("termsMatchD402 (§4.1 abort guard, native DEM)", () => {
@@ -52,7 +53,7 @@ function fakeClient(
       return { tx: "unsigned", requirement };
     },
     async settle() {
-      return over.result ?? { success: true, hash: "0xdemhash", blockNumber: 42 };
+      return over.result ?? { success: true, hash: `0x${TX_HASH}`, blockNumber: 42 };
     },
   };
   return self;
@@ -75,6 +76,34 @@ const params = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/** The node's record of a confirmed d402 payment for the happy-path terms. */
+function recordedPayment(over: { status?: string; hash?: string; content?: Record<string, unknown> } = {}) {
+  return {
+    status: "confirmed",
+    hash: `0x${TX_HASH}`,
+    ...over,
+    content: {
+      type: "d402_payment",
+      from: `0x${PAYER}`,
+      data: ["d402_payment", { to: RECIPIENT, amount: "1500000000", memo: "resourceId:res-1" }],
+      ...over.content,
+    },
+  };
+}
+
+const confirmingRead = async () => recordedPayment();
+
+const ADVERTISED_REQUIREMENT = { recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" };
+
+async function settleWithRecord(readTransaction: (hash: string) => Promise<unknown>) {
+  return payD402SettleCore(params(), {
+    client: fakeClient(),
+    fetchImpl: fetch402(ADVERTISED_REQUIREMENT),
+    payerAddress: PAYER,
+    readTransaction,
+  });
+}
+
 describe("payD402SettleCore", () => {
   test("happy path: pays the advertised requirement and returns the settlement hash", async () => {
     const client = fakeClient();
@@ -82,9 +111,10 @@ describe("payD402SettleCore", () => {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
+      readTransaction: confirmingRead,
     });
     expect(res.ok).toBe(true);
-    expect(res.txHash).toBe("0xdemhash");
+    expect(res.txHash).toBe(`0x${TX_HASH}`);
     expect(res.payer).toBe(PAYER);
     expect(res.payee).toBe(RECIPIENT);
     expect(res.chainId).toBe("demos:testnet");
@@ -99,6 +129,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({ recipient: "demos1attacker", amount: "1500000000", resourceId: "res-1" }),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/does not match negotiated agreement/);
     expect(created).toBe(0); // never signed
@@ -111,6 +142,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: "999", resourceId: "res-1" }),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/amount mismatch/);
   });
@@ -122,6 +154,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({}, 200),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/expected HTTP 402/);
   });
@@ -133,6 +166,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000" }),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/resourceId/);
   });
@@ -143,6 +177,7 @@ describe("payD402SettleCore", () => {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
+      readTransaction: confirmingRead,
     });
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe("");
@@ -154,9 +189,86 @@ describe("payD402SettleCore", () => {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
+      readTransaction: confirmingRead,
     });
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe("0xtried");
+  });
+
+  test("a settle that is not acknowledged is not read back", async () => {
+    let reads = 0;
+    const client = fakeClient({ result: { success: false, hash: "0xtried" } });
+    await payD402SettleCore(params(), {
+      client,
+      fetchImpl: fetch402(ADVERTISED_REQUIREMENT),
+      payerAddress: PAYER,
+      readTransaction: async () => {
+        reads += 1;
+        return recordedPayment();
+      },
+    });
+    expect(reads).toBe(0);
+  });
+
+  test("a matching confirmed record is read back by the acknowledged hash", async () => {
+    const hashes: string[] = [];
+    const res = await settleWithRecord(async (hash) => {
+      hashes.push(hash);
+      return recordedPayment();
+    });
+    expect(res.ok).toBe(true);
+    expect(hashes).toEqual([`0x${TX_HASH}`]);
+  });
+
+  test("a node that acknowledges a settle but records no transfer is not reported ok", async () => {
+    const res = await settleWithRecord(async () => ({}));
+    expect(res.ok).toBe(false);
+    expect(res.txHash).toBe(`0x${TX_HASH}`);
+    expect(res.payee).toBe(RECIPIENT);
+  });
+
+  test("a recorded transfer from another payer is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ content: { from: `0x${"11".repeat(32)}` } }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a recorded transfer to another payee is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({
+        content: { data: ["d402_payment", { to: `0x${"22".repeat(32)}`, amount: "1500000000" }] },
+      }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a recorded transfer of another amount is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ content: { data: ["d402_payment", { to: RECIPIENT, amount: "1" }] } }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a record for a different hash is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ hash: `0x${"33".repeat(32)}` }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a record that is not confirmed is not reported ok", async () => {
+    const res = await settleWithRecord(async () => recordedPayment({ status: "pending" }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a record that is not a d402 payment is not reported ok", async () => {
+    const res = await settleWithRecord(async () => recordedPayment({ content: { type: "native" } }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a failed record read is not reported ok", async () => {
+    const res = await settleWithRecord(async () => {
+      throw new Error("Demos transaction record read timed out");
+    });
+    expect(res.ok).toBe(false);
+    expect(res.txHash).toBe(`0x${TX_HASH}`);
   });
 
   test("a bare-DEM number amount (pre-fork) is rejected — OS base-unit string required", async () => {
@@ -167,6 +279,7 @@ describe("payD402SettleCore", () => {
         // 402 advertises `amount: 2` (pre-fork DEM) instead of OS base units.
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: 2, resourceId: "res-1" }),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/bare number|OS base units/);
   });
