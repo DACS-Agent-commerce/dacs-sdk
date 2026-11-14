@@ -56,6 +56,8 @@ export { SELLER_PRE_EFFECT_REFUSALS } from './seller-agent.mjs';
 // claim releases its slot, so another claim cannot take it.
 const PROPOSAL_PATH = '/dacs/v1/agreements/proposals';
 const PAYMENT_PATH = '/dacs/v1/payments';
+const COMMITMENT_PATH = '/dacs/v1/commitments';
+const COMMITMENT_SIGNATURE_PATH = '/dacs/v1/commitments/signature';
 const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
 const reportsDeliveryReady = (text) => {
   try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && ['delivery-ready','delivered'].includes(answer.delivery?.status); } catch { return false; }
@@ -67,10 +69,11 @@ const retainedBy = (agent, path, jobId, body) => path === PAYMENT_PATH ? retains
 // What the agent holds for a table route's job, for the row's end rule. The agent settles inside its job lock, so a route
 // that retains nothing has no worker either. A route the agent cannot answer for is `unknown`, never `none`.
 function routeEvidence(agent, path, jobId, outcome) {
+  const commitment = path === COMMITMENT_PATH || path === COMMITMENT_SIGNATURE_PATH;
   let work;
-  try { work = path === PROPOSAL_PATH ? agent.retainsProposalWork?.(jobId) : agent.retainsUnfinishedWork?.({ jobId, path }); } catch { work = undefined; }
+  try { work = path === PROPOSAL_PATH ? agent.retainsProposalWork?.(jobId) : commitment ? agent.retainsCommitmentWork?.(jobId) : agent.retainsUnfinishedWork?.({ jobId, path }); } catch { work = undefined; }
   const retained = work === true ? 'work' : work === false ? 'none' : 'unknown';
-  return Object.freeze({ retained, workerQuiescent: retained === 'none', signatureIntent: path === PROPOSAL_PATH && retained === 'work', createIntent: false,
+  return Object.freeze({ retained, workerQuiescent: retained === 'none', signatureIntent: path === PROPOSAL_PATH && retained === 'work', createIntent: commitment && retained === 'work',
     final: outcome.status === 200 && !outcome.retry && !outcome.noEffect });
 }
 
@@ -345,8 +348,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         // reservation keeps the job's TP-1 tuple in the same transaction.
         reservation = contextStep ? await context.reserve(request, body, authentication.store) : await auth.store.reserve(request, body, opened.reserveOptions);
         if (reservation.disposition === 'cached' && !wired) agent.assertSettlementCredit?.(request.jobId);
-        if (reservation.disposition === 'cached' && reservation.status === 200 && ['/dacs/v1/commitments','/dacs/v1/commitments/signature'].includes(req.url)) {
-          // The commitment is already anchored: a failed readback (closed buyer access, an Agreement
+        if (reservation.disposition === 'cached' && reservation.status === 200 && rowOfRoute() === undefined && ['/dacs/v1/commitments','/dacs/v1/commitments/signature'].includes(req.url)) {
+          // Without a table row (a handler composed without the wire), the commitment is already anchored: a failed readback (closed buyer access, an Agreement
           // not readable now) cannot refuse it, so it answers retryable, never as a definite refusal.
           let answer;
           try { answer = await agent.readCommitment({jobId:request.jobId,signedProjection:body.signedProjection,

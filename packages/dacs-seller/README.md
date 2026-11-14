@@ -287,6 +287,13 @@ commitment that is not readback-only), with `authorizeResend` the same seller-st
 check that authorized signing; the capability asks it again right before the send
 and sends the original bytes only when it answers exactly `true`. A `resend` that
 is not a boolean, or `true` without an `authorizeResend` function, is refused.
+A passive read (the default) writes nothing before the source authenticates the
+transaction's inclusion: a seller intent that holds no hash keeps the hash and
+signed bytes it found in the journals as local values, and a pending or failed
+read leaves every journal row, including `demo/recovery`, as it was. Only an
+authenticated inclusion saves that checkpoint. An active read asks `authorizeResend`
+once, under the recovery lock and after the deployment check, so authority that
+closed during that check sends and records nothing.
 `read` takes the same options. The seller's restart of a submitted Deliverable
 passes them (with the same check) to the native delivery `read`, so a Deliverable
 CREATE kept before a crash that is still pending is sent again once; every other
@@ -933,10 +940,21 @@ per-client limiter so one client cannot exhaust the shared request budget.
   work is retained; it then answers its named refusal again (`bundles/request`:
   `not_delivered` 422 without a payment, `bundle_finalization_unavailable` 503
   with one; `bundles/countersignature`: `bundle_finalization_unavailable` 503),
-  and it never records a completed bundle. A completed proposal answer is signed
+  and it never records a completed bundle. A commitment route (`commitments`, and
+  `commitments/signature` when enabled) ends with no outcome only when the job
+  retains no commitment work at all: no CREATE time, publication request, early
+  attempt marker or commitment. Its recovery reads the CREATE back; it sends the
+  original request again only after a read in passive mode proves that nothing
+  was signed for the address (for an early commitment on a fixture anchor, that
+  no anchor row exists). An attempt marker alone is not that proof, and a signed
+  CREATE whose readback fails stays open with nothing sent or signed again. A
+  completed proposal answer is signed
   again only after its sources are read again, read only: the retained
   contribution and Agreement, both Vet records with their receipts, and the
-  buyer's current access. A source that fails answers `503
+  buyer's current access. A completed commitment answer is signed again only
+  after the retained commitment's canonical address, record, transaction and
+  finalized receipt are read again from its source in passive mode; an early
+  commitment needs no buyer Agreement anchor for this. A source that fails answers `503
   seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
   `too_large` or `unavailable`), a closed buyer access keeps its own refusal,
   and the stored outcome is never rewritten.

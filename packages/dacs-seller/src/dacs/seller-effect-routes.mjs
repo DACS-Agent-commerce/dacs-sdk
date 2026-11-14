@@ -29,6 +29,18 @@ const bundleRow = (path) => row(path, {
   endAfter: (answer, evidence) => (answer.noEffect && noWorkRetained(evidence) && evidence.workerQuiescent ? NO_EFFECT : OPEN),
 });
 
+// A commitment route's sink is the finality commitment CREATE. Its attempt ends with no outcome only when the job's lock shows no
+// commitment work of any kind (no CREATE time, publication request, early attempt or commitment); once the CREATE may have been
+// asked for, the attempt stays open until a read of the source settles it.
+const commitmentRow = (path) => row(path, {
+  sink: 'the finality commitment CREATE at its canonical address',
+  idempotenceKey: 'commitment:<canonical address of the job>',
+  endAfter: (answer, evidence) => {
+    if (answer.retry || answer.noEffect) return noWorkRetained(evidence) && evidence.workerQuiescent ? NO_EFFECT : OPEN;
+    return answer.status === 200 && evidence.final ? Object.freeze({ kind: 'outcome', outcome: { status: answer.status, text: answer.text }, cleanup: 'route' }) : OPEN;
+  },
+});
+
 /** The table of the routes this module owns, by exact request path. Each row is `{ sink, idempotenceKey, recover, endAfter, revalidate }`.
  * `recover(input)` runs the agent's locked recovery once. `endAfter(answer, evidence)` returns the end decision of the wire attempt
  * (`{ kind: 'outcome', outcome, cleanup }`, `{ kind: 'no-effect' }` or `{ kind: 'open' }`) from the classified answer, which carries the
@@ -46,10 +58,14 @@ export const SELLER_EFFECT_ROUTES = Object.freeze({
   }),
   [PATHS.bundleRequest]: bundleRow(PATHS.bundleRequest),
   [PATHS.bundleCountersignature]: bundleRow(PATHS.bundleCountersignature),
+  [PATHS.commitments]: commitmentRow(PATHS.commitments),
+  [PATHS.commitmentSignature]: commitmentRow(PATHS.commitmentSignature),
 });
 
-/** The rows enabled for one host. Throws a TypeError unless `commitOnSignature` is a boolean. */
+const ROUTES_WITHOUT_SIGNATURE = Object.freeze(Object.fromEntries(Object.entries(SELLER_EFFECT_ROUTES).filter(([path]) => path !== PATHS.commitmentSignature)));
+
+/** The rows enabled for one host: the commitments/signature row only when `commitOnSignature` is true. Throws a TypeError unless it is a boolean. */
 export function createSellerEffectRoutes({ commitOnSignature } = {}) {
   if (typeof commitOnSignature !== 'boolean') throw new TypeError('commitOnSignature must be boolean');
-  return SELLER_EFFECT_ROUTES;
+  return commitOnSignature ? SELLER_EFFECT_ROUTES : ROUTES_WITHOUT_SIGNATURE;
 }

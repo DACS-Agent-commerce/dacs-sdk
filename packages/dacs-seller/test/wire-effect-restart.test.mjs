@@ -9,7 +9,12 @@ import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createOperatorBuyerAccess } from '../src/devnet-demo/buyer-access.mjs';
 import { PATHS, proposalFor, proposeJob, world } from './helpers/wire-routes-world.mjs';
 import { BUNDLE_REFUSALS, SHORT_LEASE_MS, bundleWorld, claimedTransport, completions, editSession, markPaid, operationOf, proposalSigningRig, reconcileInput, realWorld, tempDirectory } from './helpers/route-recovery-world.mjs';
-import { JOB, NOW, testWallet } from './helpers/protocol-fixture.mjs';
+import { JOB, NOW, buyer, seller as sellerKey, testWallet } from './helpers/protocol-fixture.mjs';
+import { FINALITY_COMMITMENT_SEPARATOR, sha256Hex } from '@kynesyslabs/dacs';
+import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
+import { provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
+import { commitmentFixture } from './helpers/commitment-fixture.mjs';
+import { agreementCreateProjection } from './helpers/agreement-create-projection.mjs';
 
 // The durable responder's worker lease, which a killed worker leaves behind (60 s, with a margin).
 const RESPONDER_LEASE_MS = 61_000;
@@ -163,4 +168,174 @@ test('NEW-D1a-buyer-access-restart', async (t) => {
   w.reopen();
   await w.fixture.reopen();
   assert.equal((await w.request(PATHS.proposals)).text, first.text, 'open access again replays the exact stored bytes');
+});
+
+const COMMITMENT_ROUTES = [['commitments', false], ['commitments/signature', true]];
+const answerOf = (early) => (early ? 'commitment-held' : 'committed');
+
+/**
+ * A seller over the commitment fixture and its durable directory. `abortAt(cut)` makes the next commitment attempt stop at that point
+ * and restarts the agent over the same files, as a killed process leaves them. Cuts: `before-reservation` (the early route's wire
+ * reservation exists, its buyer slot and attempt marker do not), `after-attempt-marker` (the marker is saved, no CREATE intent exists) and
+ * `after-create` (the CREATE is on the source, the session holds no commitment). The source's reader proves nothing was signed for an
+ * absent address, as the native reader does with no intent in either signed journal. `sent` logs each CREATE sent, `signatures()`
+ * counts the seller's signatures and `beforePublish` may fail or observe a send. `recover()` runs the agent's recovery of the request.
+ */
+async function commitmentSeller(t, { early }) {
+  const f = await commitmentFixture(t, { early });
+  const cut = { name: null }, sent = [], { publish, readRetained } = f.native;
+  const killed = () => new Error('TEST the process was killed');
+  const seller = { f, sent, early, signatures: () => f.signed.filter((text) => text.startsWith(FINALITY_COMMITMENT_SEPARATOR)).length, beforePublish: async () => {} };
+  f.native.publish = async (input) => {
+    await seller.beforePublish(input);
+    const out = await publish(input);
+    sent.push(input.logicalAddress);
+    if (cut.name === 'after-create') throw killed();
+    return out;
+  };
+  f.native.readRetained = async (input, options) => {
+    if (cut.name === 'after-attempt-marker') throw killed();
+    const read = await readRetained(input, options);
+    return input.proofOfNoIntent && read.status === 'absent' ? provenUnsignedAbsence('TEST no signed CREATE is retained') : read;
+  };
+  f.config.signatureCommitmentReady = async () => { if (cut.name === 'before-reservation') throw killed(); };
+  const prepared = await f.prepare();
+  seller.agent = prepared.agent;
+  seller.body = early ? { jobId: JOB, agreement: prepared.agreement, signedProjection: agreementCreateProjection(prepared.agreement) } : { jobId: JOB };
+  seller.commit = () => (early ? seller.agent.commitOnSignature(seller.body) : seller.agent.commit(seller.body));
+  seller.recover = () => {
+    const rawBody = Buffer.from(JSON.stringify(seller.body));
+    const request = { method: 'POST', path: early ? PATHS.commitmentSignature : PATHS.commitments, jobId: JOB, buyer: buyer.claim, seller: sellerKey.claim,
+      listingPin: seller.agent.listingPin, agreementHash: seller.agent.durableSessionOf(JOB).agreementHash, bodyHash: sha256Hex(rawBody) };
+    return seller.agent.reconcileTransport({ request, body: seller.body, rawBody, transport: claimedTransport });
+  };
+  /** The agent restarted over the same files, with the clock moved on. */
+  seller.restart = async (advanceMs = 0) => {
+    seller.agent.close();
+    f.advance(advanceMs);
+    seller.agent = await f.open();
+  };
+  seller.fails = async () => assert.rejects(seller.commit());
+  seller.abortAt = async (name) => {
+    cut.name = name;
+    await seller.fails();
+    cut.name = null;
+    await seller.restart();
+  };
+  return seller;
+}
+
+test('K5-R3 SIGKILL between the commitment CREATE and completion, on commitments and on commitments/signature: recover reads it back finalized and publishes nothing more', async (t) => {
+  for (const [route, early] of COMMITMENT_ROUTES) {
+    const seller = await commitmentSeller(t, { early });
+    await seller.abortAt('after-create');
+    assert.equal(seller.sent.length, 1, `${route}: one CREATE was sent before the cut`);
+    assert.equal(seller.agent.retainsCommitmentWork(JOB), true, `${route}: the retained work keeps the attempt open`);
+    assert.equal(seller.agent.durableSessionOf(JOB).commitment ?? null, null, `${route}: the session holds no commitment yet`);
+    const signatures = seller.signatures(), recovered = await seller.recover();
+    assert.deepEqual([recovered.disposition, recovered.value.status], ['present', answerOf(early)], `${route}: the CREATE is read back finalized`);
+    assert.deepEqual([seller.sent.length, seller.signatures()], [1, signatures], `${route}: nothing more was published or signed`);
+    await seller.restart();
+    assert.equal((await seller.recover()).value.status, answerOf(early), `${route}: a second restart answers the same`);
+    assert.equal(seller.sent.length, 1, `${route}: still the one CREATE`);
+  }
+});
+
+test('commitments recover resumes only the exact retained CREATE under its replay and supersession policy', async (t) => {
+  const asked = async () => {
+    const seller = await commitmentSeller(t, { early: false });
+    seller.beforePublish = async () => { throw new Error('TEST the publisher died before any intent'); };
+    await seller.fails();
+    seller.beforePublish = async () => {};
+    assert.equal(seller.agent.retainsCommitmentWork(JOB), true);
+    return seller;
+  };
+  // A request asked of the publisher with no proof that nothing was signed is read back only.
+  const unproven = await asked(), { readRetained } = unproven.f.native;
+  unproven.f.native.readRetained = async (input, options) => { const read = await readRetained(input, options); return read.status === 'absent' ? { status: 'absent', reason: 'TEST no proof' } : read; };
+  assert.equal((await unproven.recover()).disposition, 'indeterminate');
+  assert.deepEqual(unproven.sent, [], 'an absent read with no proof sends nothing');
+  // With the proof, the original operation runs once and resumes the same CREATE.
+  const proven = await asked(), recovered = await proven.recover();
+  assert.deepEqual([recovered.disposition, recovered.value.status, proven.sent.length], ['present', 'committed', 1]);
+  assert.equal((await proven.recover()).value.status, 'committed');
+  assert.equal(proven.sent.length, 1, 'a repeated recovery sends no second CREATE');
+  // An unknown dispatch (a signed CREATE retained, its readback indeterminate) is never sent again.
+  const unknown = await asked();
+  unknown.f.native.readRetained = async () => ({ status: 'indeterminate', reason: 'TEST signed CREATE retained, readback unknown' });
+  const signatures = unknown.signatures();
+  assert.equal((await unknown.recover()).disposition, 'indeterminate');
+  assert.deepEqual([unknown.sent, unknown.signatures()], [[], signatures], 'nothing is sent or signed over an unknown dispatch');
+});
+
+test('commitments/signature cut after the wire reservation, before the early-attempt marker: recover proves no intent and no worker, runs the original early commitment once and completes', async (t) => {
+  for (const afterSlot of [false, true]) {
+    const seller = await commitmentSeller(t, { early: true });
+    await seller.abortAt('before-reservation');
+    if (afterSlot) {
+      // The buyer's slot was reserved durably before the cut: the same retained state with its slot and no marker.
+      const { listingPin } = seller.agent;
+      seller.agent.close();
+      const state = await createSellerDurableState({ dir: seller.f.dir, signer: seller.f.config.signer, listingPin });
+      await state.withJob(JOB, () => state.reserveSignatureCommitment(buyer.claim, JOB));
+      state.close();
+      await seller.restart();
+    }
+    assert.equal(seller.agent.durableSessionOf(JOB).signatureCommitmentAttempt, undefined, 'no attempt marker was saved');
+    const recovered = await seller.recover();
+    assert.deepEqual([recovered.disposition, recovered.value.status, seller.sent.length], ['present', 'commitment-held', 1], `slot reserved before the cut ${afterSlot}: the original operation ran once`);
+    await seller.restart();
+    assert.equal((await seller.recover()).value.status, 'commitment-held', 'a second restart answers the stored outcome');
+    assert.equal(seller.sent.length, 1, 'still one CREATE');
+  }
+});
+
+test('commitments/signature cut after the early-attempt marker, before any CREATE intent: the marker alone is not proof of transmission; recover proves no intent and runs the original operation once', async (t) => {
+  const seller = await commitmentSeller(t, { early: true });
+  await seller.abortAt('after-attempt-marker');
+  assert.deepEqual([seller.sent, seller.agent.durableSessionOf(JOB).signatureCommitmentAttempt], [[], true], 'the attempt marker was saved, no CREATE was sent');
+  const recovered = await seller.recover();
+  assert.deepEqual([recovered.disposition, recovered.value.status, seller.sent.length], ['present', 'commitment-held', 1], 'it is not held readback-only');
+  assert.equal((await seller.recover()).value.status, 'commitment-held');
+  assert.equal(seller.sent.length, 1, 'one CREATE in all');
+});
+
+test('commitments/signature cut after a durable unsent CREATE is retained: recover uses only the exact-byte replay policy; an unknown dispatch stays readback-only and open', async (t) => {
+  const seller = await commitmentSeller(t, { early: true });
+  await seller.abortAt('after-attempt-marker');
+  // A signed CREATE is retained for the address but its readback is unknown.
+  seller.f.native.readRetained = async () => ({ status: 'indeterminate', reason: 'TEST signed CREATE retained, readback unknown' });
+  const signatures = seller.signatures();
+  for (const repeat of [1, 2]) {
+    const held = await seller.recover();
+    assert.deepEqual([held.disposition, held.status, held.value.error], ['indeterminate', 503, 'operation_uncertain'], `repeat ${repeat}: held`);
+  }
+  assert.deepEqual([seller.sent, seller.signatures()], [[], signatures], 'no transmission and no second commitment signature');
+  assert.equal(seller.agent.retainsCommitmentWork(JOB), true, 'the attempt stays open');
+});
+
+const LEASE_MS = 61_000;
+
+test('commitments and commitments/signature × publisher state {a pre-intent read fails after the publish-asked marker is saved, wallet captured without signing} × retry {same process, after a restart with both clocks advanced past the lease}', async (t) => {
+  for (const [route, early] of COMMITMENT_ROUTES) for (const state of ['pre-intent read fails', 'wallet captured without signing', 'unknown dispatch']) for (const retry of ['same process', 'after a restart']) {
+    const cell = `${route} × ${state} × ${retry}`, seller = await commitmentSeller(t, { early }), wallet = { requests: 0 };
+    seller.beforePublish = async () => {
+      if (state !== 'pre-intent read fails') wallet.requests++;
+      throw new Error(state === 'pre-intent read fails' ? 'TEST the nonce read failed before any intent' : 'TEST the wallet answered capture-without-signing');
+    };
+    await seller.fails();
+    seller.beforePublish = async () => { wallet.requests++; };
+    assert.equal(seller.agent.durableSessionOf(JOB).commitmentPublishAsked, true, `${cell}: the publish-asked marker was saved`);
+    assert.equal(wallet.requests, state === 'pre-intent read fails' ? 0 : 1, `${cell}: wallet requests before the retry`);
+    if (state === 'unknown dispatch') seller.f.native.readRetained = async () => ({ status: 'indeterminate', reason: 'TEST signed CREATE retained, readback unknown' });
+    if (retry === 'after a restart') await seller.restart(LEASE_MS);
+    const signatures = seller.signatures(), retried = await seller.recover();
+    if (state === 'unknown dispatch') {
+      assert.deepEqual([retried.disposition, seller.sent.length, seller.signatures()], ['indeterminate', 0, signatures], `${cell}: held, nothing sent or signed`);
+      continue;
+    }
+    assert.deepEqual([retried.disposition, retried.value.status, seller.sent.length], ['present', answerOf(early), 1], `${cell}: the original operation ran once and completed`);
+    assert.equal((await seller.recover()).value.status, answerOf(early), `${cell}: a repeated retry answers the stored outcome`);
+    assert.equal(seller.sent.length, 1, `${cell}: one CREATE in all`);
+  }
 });

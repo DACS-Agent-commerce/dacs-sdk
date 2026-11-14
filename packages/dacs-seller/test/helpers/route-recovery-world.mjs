@@ -14,6 +14,7 @@ import { fixtureProposal } from './seller-agent-isolated-fixture.mjs';
 import { localAnchor } from './local-anchor-fixture.mjs';
 import { SELLER, continuingWorld, world } from './wire-routes-world.mjs';
 import { wireContinuationFixture } from './wire-continuation-fixture.mjs';
+import { agreementCreateProjection } from './agreement-create-projection.mjs';
 
 export const SHORT_LEASE_MS = 1000;
 /** Each bundle route × payment present: the refusal it names, and its status. */
@@ -43,9 +44,12 @@ export async function editSession(fixture, jobId, change) {
   await fixture.reopen();
 }
 
-/** A seller whose handler runs the real durable agent over a committed job; the stand-in keeps the host's retained-Agreement bookkeeping. */
-export async function realWorld(t, options) {
-  const fixture = await wireContinuationFixture(t), w = await world(t, { fixture, ...options });
+/**
+ * A seller whose handler runs the real durable agent over a committed job; the stand-in keeps the host's retained-Agreement bookkeeping.
+ * `early: true` makes the job's commitment an early commitment on signature.
+ */
+export async function realWorld(t, { early = false, ...options } = {}) {
+  const fixture = await wireContinuationFixture(t, { early }), w = await world(t, { fixture, ...options });
   const real = () => fixture.agent(), calls = { receive: 0 };
   Object.assign(w.agent, {
     receiveProposal: (body, settings) => { calls.receive++; return real().receiveProposal(body, settings); },
@@ -53,10 +57,17 @@ export async function realWorld(t, options) {
     retainsProposalWork: (id) => real().retainsProposalWork(id),
     retainsUnfinishedWork: (target) => real().retainsUnfinishedWork(target),
     revalidateCompletedAnswer: (input) => real().revalidateCompletedAnswer(input),
+    retainsCommitmentWork: (id) => real().retainsCommitmentWork(id),
+    commit: (body, settings) => real().commit(body, settings),
+    commitOnSignature: (body) => real().commitOnSignature(body),
   });
   const jobId = fixture.agreement.jobId, agreementHash = fixture.request.transportIdentity.agreementHash;
   const request = (path, settings = {}) => w.post(path, path === PATHS.proposals ? fixture.request : { jobId }, { jobId, agreementHash, ...settings });
-  return { ...w, fixture, calls, jobId, agreementHash, request };
+  // The commitment route of this job and its request: the early route carries the buyer's signed Agreement.
+  const commitmentPath = early ? PATHS.commitmentSignature : PATHS.commitments;
+  const commitmentBody = early ? { jobId, agreement: fixture.agreement, signedProjection: agreementCreateProjection(fixture.agreement) } : { jobId };
+  const commitmentRequest = (settings = {}) => w.post(commitmentPath, commitmentBody, { jobId, agreementHash, ...settings });
+  return { ...w, fixture, calls, jobId, agreementHash, request, commitmentPath, commitmentBody, commitmentRequest };
 }
 
 /** A private directory for a seller's data, removed after the test: `{ directory, data }`. */

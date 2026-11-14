@@ -80,6 +80,7 @@ export function stubAgent() {
     transportAgreementOf: (jobId) => structuredClone(drafts.get(jobId) ?? null),
     retainsProposalWork: (jobId) => agent.retains && drafts.has(jobId),
     retainsUnfinishedWork: () => false,
+    retainsCommitmentWork: (jobId) => agent.retains && drafts.has(jobId),
     revalidateCompletedAnswer: async () => {},
     retainsPaymentClaim: () => agent.retains,
     assertSettlementCredit: (jobId) => agent.credit(jobId),
@@ -161,7 +162,7 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
   const mount = () => {
     if (fixture) fixture.admittedListing = admitWireArtifact(Buffer.from(JSON.stringify(fixture.listing)));
     const store = createUnboundStore({ path: storePath, maxJobs, maxRecords, now: clock, contextSessionState: () => state.session });
-    const capacity = createPurchaseCapacity({ store, now: clock, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
+    const capacity = createPurchaseCapacity({ store, now: clock, maxRecords, commitOnSignature, sessionState: sellerStoreInternals(store).sessionState });
     // A restart reopens the same journal.
     const journalDirectory = join(directory, 'wire-journal');
     if (state.journals.length === 0) { mkdirSync(journalDirectory, { mode: 0o700 }); state.journals.push(journalDirectory); }

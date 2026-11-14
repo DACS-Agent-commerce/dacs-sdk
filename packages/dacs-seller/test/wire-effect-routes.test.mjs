@@ -13,7 +13,7 @@ import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation } from '@kynesysl
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler, endWireAttempt } from '../src/dacs/seller-http.mjs';
-import { createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { SellerTransportError, createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { BUYER, JOB, JOB2, PIN, SELLER, T0, accountingFixture, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 
 // The ordinary completion port runs on the real reservation coordinator, purchase capacity, SQL store and wire journal: no route
@@ -411,21 +411,21 @@ test('a delivery refresh of a completed payment is refused once its request expi
 });
 
 for (const route of ['commitments', 'commitmentSignature']) {
-  test(`a completed commitment on ${PATHS[route]} is read again before it is sent again`, async t => {
+  test(`a completed commitment on ${PATHS[route]} is revalidated read only before the stored answer is sent again`, async t => {
     const w = await continuingWorld(t);
     const first = await w.request(PATHS[route]);
     assert.equal(first.body.status, 'committed');
-    const commits = { ...w.agent.calls };
-    w.agent.readCommitment = async ({ jobId }) => ({ status: 'commitment-held', jobId });
-    const held = await w.request(PATHS[route]);
-    assert.deepEqual({ status: held.status, answer: held.body.status }, { status: 200, answer: 'commitment-held' }, 'what the readback answers now is sent');
-    await w.verified(held);
-    for (const [label, read] of [['fails', async () => { throw new Error('TEST the commitment cannot be read'); }], ['answers something else', async () => ({ status: 'refused' })], ['answers nothing', async () => null]]) {
-      w.agent.readCommitment = read;
-      const refused = await w.request(PATHS[route]);
-      assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 503, error: 'commitment_readback_required' }, `a readback that ${label} is retryable`);
-      assert.equal(refused.signed, true);
-    }
+    const commits = { ...w.agent.calls }, revalidated = [];
+    w.agent.readCommitment = async () => assert.fail('a replay never reads the commitment back through the agent');
+    w.agent.revalidateCompletedAnswer = async (input) => { revalidated.push(input); };
+    const replayed = await w.request(PATHS[route]);
+    assert.deepEqual([replayed.status, replayed.text], [200, first.text], 'the stored answer is sent');
+    assert.deepEqual(revalidated, [{ path: PATHS[route], jobId: w.jobId, outcome: { status: 200, text: first.text } }]);
+    await w.verified(replayed);
+    w.agent.revalidateCompletedAnswer = async () => { throw new SellerTransportError('seller_source_unavailable', 503, { cause: 'timeout' }); };
+    const refused = await w.request(PATHS[route]);
+    assert.deepEqual({ status: refused.status, error: refused.body.error, cause: refused.body.cause }, { status: 503, error: 'seller_source_unavailable', cause: 'timeout' }, 'a source that fails withholds the answer');
+    assert.equal(refused.signed, true);
     assert.deepEqual(w.agent.calls, commits, 'no replay ran the commitment again');
   });
 }
