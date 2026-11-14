@@ -961,6 +961,11 @@ Normative producers, including `buildTwoSidedBundle`, reject those legacy
 shapes. The existing buyer-only `runSessionCore` producer remains explicitly
 quarantined on `LegacyMvp*` until its v0.3 migration in #81.
 
+`verifyBundle` and `verifyBundleCore` no longer read artifacts of those early
+shapes: such an input is refused with `not an attestation bundle`, whether it
+is a whole early-shape bundle or a current bundle that carries one early-shape
+reference.
+
 Its deterministic historical names are available as
 `legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit
 prefix is intentional: these strings must not be used as the current DACS

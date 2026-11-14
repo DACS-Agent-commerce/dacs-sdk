@@ -9,25 +9,27 @@
 // With the `wire` option, every route but the challenge and the context step opens
 // each request and signs each answer through `./wire` (seller-wire-requests.mjs); the
 // wire journal owns their effects, the reservation coordinator accounts for them, the completion port ends each
-// attempt, and read routes reserve nowhere.
+// attempt (by the rule of the route's row in seller-effect-routes.mjs, where it has one), and read routes reserve nowhere.
 // With `context` and `wire` together the challenge is on the wire too (`context.challengeOnWire`),
 // before any Agreement and with no journal. The context step keeps the old server auth, and so
 // does the challenge of a handler composed without `wire`. Each request has one authenticator,
 // chosen by its route.
-import { completeWireEffect, WireError } from '@kynesyslabs/dacs/wire';
+import { completeWireEffect, DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_PATHS, inspectWireOperation, isReadRoute, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome, UNCERTAIN } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
-import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
+import { signedDiscovery } from './seller-wire-discovery.mjs';
 import { WIRE_ROUTE_PATHS, wireAuthenticator } from './seller-wire-requests.mjs';
 import { createCompletionRecords } from './seller-completion-records.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
+import { createSellerEffectRoutes } from './seller-effect-routes.mjs';
 
 const MAX_BODY = 64 * 1024;
 const MAX_RESPONSE_LIST = 256;
 // A refusal whose string `cause` names what the buyer can act on carries it in its answer.
-const CAUSE_ANSWERED_REFUSALS = new Set(['context_challenge_failed', 'seller_stopped']);
+const CAUSE_ANSWERED_REFUSALS = new Set(['context_challenge_failed', 'seller_stopped', 'seller_source_unavailable']);
 // The longest client deadline `boundedCall` accepts (Node's timers hold at most 2^31 - 1 ms).
 const MAX_CLIENT_TIMEOUT_MS = 2 ** 31 - 1;
 // How long a wire route waits for the agent's settlement-credit check before it withholds a signed 200.
@@ -54,6 +56,8 @@ export { SELLER_PRE_EFFECT_REFUSALS } from './seller-agent.mjs';
 // claim releases its slot, so another claim cannot take it.
 const PROPOSAL_PATH = '/dacs/v1/agreements/proposals';
 const PAYMENT_PATH = '/dacs/v1/payments';
+const COMMITMENT_PATH = '/dacs/v1/commitments';
+const COMMITMENT_SIGNATURE_PATH = '/dacs/v1/commitments/signature';
 const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
 const reportsDeliveryReady = (text) => {
   try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && ['delivery-ready','delivered'].includes(answer.delivery?.status); } catch { return false; }
@@ -61,6 +65,17 @@ const reportsDeliveryReady = (text) => {
 // A proposal effect is released only on the agent's proof that it signed and kept nothing.
 const retainsProposal = (agent, jobId) => { try { return agent.retainsProposalWork?.(jobId) !== false; } catch { return true; } };
 const retainedBy = (agent, path, jobId, body) => path === PAYMENT_PATH ? retainsClaim(agent, jobId, body) : path === PROPOSAL_PATH && retainsProposal(agent, jobId);
+
+// What the agent holds for a table route's job, for the row's end rule. The agent settles inside its job lock, so a route
+// that retains nothing has no worker either. A route the agent cannot answer for is `unknown`, never `none`.
+function routeEvidence(agent, path, jobId, outcome) {
+  const commitment = path === COMMITMENT_PATH || path === COMMITMENT_SIGNATURE_PATH;
+  let work;
+  try { work = path === PROPOSAL_PATH ? agent.retainsProposalWork?.(jobId) : commitment ? agent.retainsCommitmentWork?.(jobId) : agent.retainsUnfinishedWork?.({ jobId, path }); } catch { work = undefined; }
+  const retained = work === true ? 'work' : work === false ? 'none' : 'unknown';
+  return Object.freeze({ retained, workerQuiescent: retained === 'none', signatureIntent: path === PROPOSAL_PATH && retained === 'work', createIntent: commitment && retained === 'work',
+    final: outcome.status === 200 && !outcome.retry && !outcome.noEffect });
+}
 
 const ROUTES = {
   '/dacs/v1/agreements/proposals': (agent, body, options) => agent.receiveProposal(body, options),
@@ -145,6 +160,37 @@ export function endWireAttempt(completion, reservation, decision) {
   port.records.complete(held, { status: decision.outcome.status, cleanup: decision.cleanup });
 }
 
+const OPERATION_BINDING = /^[0-9a-f]{64}$/;
+const EFFECT_PATHS = new Set(Object.values(DACS_SELLER_HTTP_PATHS).filter((path) => !isReadRoute(path)));
+
+/**
+ * Creates the reader of completed operations that answers without a reservation. `journal` is the wire journal and `seller` the
+ * seller's claim. The returned `completedOutcomeWithoutReservation({ path, jobId, binding, revalidate })` inspects the operation
+ * and resolves with its stored `{ status, text }` after `revalidate` accepted a detached copy of it, with null when the operation
+ * is not completed, and never reserves, records a nonce, completes, repairs or changes anything: the same signed request may be
+ * answered again. Throws a TypeError for a malformed path, job, binding or callback before it reads anything,
+ * SellerTransportError peer_operation_mismatch (409) for a completed operation under another binding, and
+ * seller_source_unavailable (503) with the callback's own error as its cause when `revalidate` throws or rejects. The journal's own errors propagate.
+ */
+export function createCompletedOutcomeReader({ journal, seller }) {
+  if (typeof journal !== 'object' || journal === null || typeof seller !== 'string' || seller.length === 0) throw new TypeError('a completed-outcome reader needs the wire journal and the seller claim');
+  return Object.freeze({
+    async completedOutcomeWithoutReservation({ path, jobId, binding, revalidate }) {
+      if (!EFFECT_PATHS.has(path) || !isCanonicalJobId(jobId) || !OPERATION_BINDING.test(binding) || typeof revalidate !== 'function') {
+        throw new TypeError('a completed outcome is read for an effect path, a canonical job id, a binding and a revalidation');
+      }
+      const view = inspectWireOperation(journal, { seller, jobId, path });
+      if (view.state !== 'completed') return null;
+      if (view.binding !== binding) throw new SellerTransportError('peer_operation_mismatch', 409);
+      const { status, text } = view.outcome;
+      try { await revalidate({ status, text }); } catch (cause) {
+        throw cause instanceof SellerTransportError && cause.code === 'seller_source_unavailable' ? cause : new SellerTransportError('seller_source_unavailable', 503, { cause });
+      }
+      return { status, text };
+    },
+  });
+}
+
 function readRequest(req, timeoutMs) {
   return new Promise((resolve, reject) => {
     let total = 0;
@@ -169,7 +215,8 @@ function readRequest(req, timeoutMs) {
 // `context` (seller-context-route.mjs, seller context route) mounts the
 // Vet and Agreement-context route. Without it the route table is unchanged.
 // `wire` (a createWireContext context) moves the mounted routes of WIRE_ROUTE_PATHS onto `./wire`, with
-// the raw transport store as their only journal. It needs `authentication`, naming the same seller and delegation rule and
+// the raw transport store as their only journal, and, when the context has a `publicEndpoint`, serves the signed discovery
+// document at DACS_SELLER_DISCOVERY_PATH. It needs `authentication`, naming the same seller and delegation rule and
 // made over the context's store, for the challenge and the context step; the context must be made for this `agent`.
 export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire = null } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
@@ -178,6 +225,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   if (![bodyTimeoutMs, maxRequestsPerWindow, rateWindowMs, maxConcurrent].every((n) => Number.isSafeInteger(n) && n > 0)) throw new Error('seller transport limits must be positive integers');
   if (typeof commitOnSignature !== 'boolean') throw new TypeError('commitOnSignature must be boolean');
   const routes = commitOnSignature ? SIGNATURE_ROUTES : ROUTES;
+  const effectRoutes = createSellerEffectRoutes({ commitOnSignature });
   if (authentication && (authentication.seller !== agent.claim || canonicalize(authentication.listingPin) !== canonicalize(agent.listingPin))) throw new Error('seller transport identity must match the independently configured agent');
   if (authentication?.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
   if (context !== null && (!authentication || context?.path !== SELLER_CONTEXT_PATH || context?.challengePath !== SELLER_CONTEXT_CHALLENGE_PATH || typeof authentication.store?.classify !== 'function' || !['challenge', 'reserve', 'perform', 'settled', 'reconcile'].every((name) => typeof context[name] === 'function'))) throw new Error('the seller context route needs the authenticated transport and its admission');
@@ -243,6 +291,14 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     }
     write(res, status, headers, text);
   };
+  // The discovery document is public, so it is signed as a document and carries no response envelope; a GET with a body is refused.
+  const serveDiscovery = async (req, res) => {
+    const unsent = sender(null);
+    if (req.method !== 'GET') return await unsent(res, 405, { error: 'method_not_allowed' }, null, { close: true });
+    if ((req.headers['content-length'] ?? '0') !== '0' || req.headers['transfer-encoding'] !== undefined) return await unsent(res, 413, { error: 'body_too_large' }, null, { close: true });
+    const text = Buffer.from(await signedDiscovery(wire, agent.listingPin)).toString('utf8');
+    write(res, 200, await signedHeaders(null, 200, text, null), text);
+  };
   return async (req, res) => {
     // One authenticator per route, chosen here: the wire's for the routes it opens, the old server auth for every other.
     const wireChallenge = wireAuth !== null && context !== null && req.url === SELLER_CONTEXT_CHALLENGE_PATH;
@@ -257,6 +313,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     // A wire attempt is answered once, in this order: sign its exact bytes, await the credit check of a 200, end the attempt
     // through `end` (which first checks the attempt is still current), write. Nothing is awaited between that check and the write.
     const wired = wireAuth !== null && auth === wireAuth;
+    // Only the routes the wire serves have table rows, looked up by their exact path.
+    const rowOfRoute = () => (wired ? effectRoutes[req.url] : undefined);
     let concluded = false, delivered = false;
     const conclude = async (outcome, end) => {
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
@@ -268,8 +326,13 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       settled = outcome; delivered = true;
       write(res, outcome.status, headers, sent);
     };
+    // The options an answer is stored with: its classification and, for a route with a row, the row's end decision for the exact text.
+    const endOptions = (outcome, text) => {
+      const row = rowOfRoute();
+      return { noEffect: outcome.noEffect, retry: outcome.retry, ...(row === undefined ? {} : { decision: row.endAfter({ ...outcome, text }, routeEvidence(agent, req.url, request.jobId, outcome)) }) };
+    };
     const finishWith = (outcome) => {
-      if (wired) return conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, { noEffect: outcome.noEffect, retry: outcome.retry }));
+      if (wired) return conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)));
       if (authentication) auth.store.finish(reservation, outcome.status, auth.encode(JSON.stringify(outcome.value)), { noEffect: outcome.noEffect, retry: outcome.retry });
       return (settled = outcome);
     };
@@ -278,6 +341,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (Date.now() - windowStart >= rateWindowMs) { windowStart = Date.now(); requests = 0; }
       if (++requests > maxRequestsPerWindow || active >= maxConcurrent) return await send(res, 429, { error: 'seller_rate_limited' }, null, { close: true });
       active++; counted = true;
+      if (wire?.publicEndpoint != null && req.url === DACS_SELLER_DISCOVERY_PATH) return await serveDiscovery(req, res);
       // Match the raw request target exactly: query strings, alternate paths
       // and encoded aliases cannot evade the path authenticated by the peer.
       const contextChallenge = context !== null && req.url === SELLER_CONTEXT_CHALLENGE_PATH;
@@ -315,8 +379,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         // reservation keeps the job's TP-1 tuple in the same transaction.
         reservation = contextStep ? await context.reserve(request, body, authentication.store) : await auth.store.reserve(request, body, opened.reserveOptions);
         if (reservation.disposition === 'cached' && !wired) agent.assertSettlementCredit?.(request.jobId);
-        if (reservation.disposition === 'cached' && reservation.status === 200 && ['/dacs/v1/commitments','/dacs/v1/commitments/signature'].includes(req.url)) {
-          // The commitment is already anchored: a failed readback (closed buyer access, an Agreement
+        if (reservation.disposition === 'cached' && reservation.status === 200 && rowOfRoute() === undefined && ['/dacs/v1/commitments','/dacs/v1/commitments/signature'].includes(req.url)) {
+          // Without a table row (a handler composed without the wire), the commitment is already anchored: a failed readback (closed buyer access, an Agreement
           // not readable now) cannot refuse it, so it answers retryable, never as a definite refusal.
           let answer;
           try { answer = await agent.readCommitment({jobId:request.jobId,signedProjection:body.signedProjection,
@@ -348,7 +412,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           const answer = await route(agent, body, { transport }), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
         }
-        if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
+        if (reservation.disposition === 'cached') {
+          // A completed answer of a table route is signed again only after its sources are read again; a refusal withholds it and rewrites nothing.
+          await rowOfRoute()?.revalidate({ agent, jobId: request.jobId, outcome: { status: reservation.status, text: reservation.text } });
+          return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
+        }
         if (reservation.disposition === 'uncertain') {
           // A request its expired delegation admits only for readback reconciles read only.
           const readOnly = opened.readbackOnly();
@@ -358,7 +426,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
             // restores or runs anything, and settles it there. Only an answer
             // the store settled is sent; anything else stays uncertain.
             let claimed = null;
-            const reconcile = (outcome) => (text) => auth.store.reconcile(claimed, request, outcome.status, text, { retry: outcome.retry, noEffect: outcome.noEffect });
+            const reconcile = (outcome) => (text) => auth.store.reconcile(claimed, request, outcome.status, text, endOptions(outcome, text));
             const transport = Object.freeze({
               claim: () => (claimed = auth.store.claim(reservation, request, { live: !readOnly })),
               settle: (outcome) => {
@@ -368,7 +436,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
                 settled = outcome;
               },
             });
-            if (typeof agent.reconcileTransport === 'function' && typeof auth.store.claim === 'function') await agent.reconcileTransport({ request, body, rawBody, readOnly, transport });
+            if (typeof agent.reconcileTransport === 'function' && typeof auth.store.claim === 'function') {
+              const row = rowOfRoute();
+              await (row === undefined ? agent.reconcileTransport({ request, body, rawBody, readOnly, transport }) : row.recover({ agent, request, body, rawBody, transport }));
+            }
             if (delivered) return;
             if (!settled) return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; its outcome is not established.' }, request);
             return await send(res, settled.status, settled.value, request, { text: await pointed(settled.status, JSON.stringify(settled.value), request.jobId, req.url) });
