@@ -212,10 +212,13 @@ export function walletSignatureBytes(value: unknown, code = "peer_delegation_sig
   return fail(code);
 }
 
-/** A signer holds one Ed25519 key; `claim` names it. It never sees anything but bytes. */
+/**
+ * A signer holds one Ed25519 key; `claim` names it. It sees the bytes to sign and,
+ * optionally, an abort signal that fires when the caller stops waiting for the signature.
+ */
 export interface WireSigner {
   readonly claim: string;
-  sign(bytes: Uint8Array): Uint8Array | string | Promise<Uint8Array | string>;
+  sign(bytes: Uint8Array, options?: { readonly signal?: AbortSignal }): Uint8Array | string | Promise<Uint8Array | string>;
 }
 
 // Every object and array inside a value the wire's own CF-5 admission returned

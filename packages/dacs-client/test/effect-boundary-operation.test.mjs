@@ -285,7 +285,7 @@ test('an invalid send is refused without changing signed history, leaving a vali
 });
 
 for (const via of ['signPass', 'signerFor']) {
-  test(`a stalled ${via} is aborted on its remaining deadline and releases the fence without retaining late bytes`, async (t) => {
+  test(`a stalled ${via} is aborted on its own deadline and releases the fence without retaining late bytes`, async (t) => {
     const w = await boundaryWorld(t);
     let signal, finish, entered;
     const started = new Promise(resolve => { entered = resolve; });
@@ -296,9 +296,9 @@ for (const via of ['signPass', 'signerFor']) {
     let outcome;
     const settled = pending.then(result => { outcome = result; }, error => { outcome = error; });
     await started;
-    // The nested signing pass has its own budget; the enclosing precheck is separate.
-    const remainingMs = via === 'signPass' ? 8000 : 9000;
-    w.clock.advance(remainingMs - 1); await flush();
+    // The signer's deadline is its own, whatever the earlier authority reads used.
+    const deadlineMs = 10000;
+    w.clock.advance(deadlineMs - 1); await flush();
     assert.equal(outcome, undefined);
     w.clock.advance(1); await flush();
     assert.equal(outcome?.code, 'eb_sign_timeout');
@@ -316,6 +316,29 @@ for (const via of ['signPass', 'signerFor']) {
     assert.equal(w.signatures, 2);
   });
 }
+
+test('a signer that returns before its deadline is not refused for the time it used, even when authority reads are slow', async (t) => {
+  const w = await boundaryWorld(t);
+  let finish, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  w.authority.state.gate = async () => { w.clock.advance(1000); };
+  const pending = w.boundary.signPass(w.op, () => { entered(); return new Promise(resolve => { finish = resolve; }); });
+  await started;
+  w.clock.advance(7500); finish(signedBytes);
+  const artifact = await pending;
+  assert.equal(artifact.artifactHash, digestBytes(signedBytes));
+  assert.deepEqual(await passStates(w), ['p1/signed']);
+  assert.equal(w.held, false);
+});
+
+test('the stop check is called with no arguments', async (t) => {
+  const w = await boundaryWorld(t);
+  const calls = [];
+  w.resetBoundary({ stopped: (...args) => { calls.push(args); return args.length > 0; } });
+  await w.sign();
+  assert.ok(calls.length > 0);
+  assert.deepEqual(calls.filter(args => args.length > 0), []);
+});
 
 test('a fence release failure after the boundary signer retains its signature, cause and records and refuses another sign', async (t) => {
   const { w, releaseFailure } = await worldWithFailingRelease(t);

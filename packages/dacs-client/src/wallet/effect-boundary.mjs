@@ -42,9 +42,10 @@ function requireSources({ binding, currentLocal, stopped, history, fence, clock 
   if (!['now', 'setTimer', 'clearTimer'].every((name) => typeof clock?.[name] === 'function')) throw new TypeError('the effect boundary needs now, setTimer and clearTimer');
 }
 
-// One pass's authority reads, stop checks and signer share AUTHORITY_READ_DEADLINE_MS
-// of work time (waiting for the fence has its own deadline). A read that does not finish inside
-// what is left refuses with its timeout code, and a result that arrives later is ignored.
+// One pass's authority reads and stop checks share AUTHORITY_READ_DEADLINE_MS of read
+// time (waiting for the fence has its own deadline). A read that does not finish inside
+// what is left refuses with its timeout code, aborts the `signal` its task is given, and
+// a result that arrives later is ignored.
 function createReadBudget(clock) {
   let remainingMs = AUTHORITY_READ_DEADLINE_MS;
   return async function read(task, timeoutCode) {
@@ -113,8 +114,8 @@ function createKeyedQueue() {
 
 /**
  * Builds the client's effect boundary. Required host sources, each a TypeError when
- * missing: `binding` (from bindTp1Profile), `currentLocal()`, `stopped()` (boolean or
- * promise), the dispatch `history` and the actor `fence`. `feeCeilingOs` (decimal OS,
+ * missing: `binding` (from bindTp1Profile), `currentLocal()`, `stopped()` (called with no
+ * arguments; returns a boolean or a promise), the dispatch `history` and the actor `fence`. `feeCeilingOs` (decimal OS,
  * no default) is needed by a paid write and refuses `fee_ceiling_required` without it.
  * `clock` is `{ now, setTimer, clearTimer }`, monotonic by default. An operation
  * carrying an `approvalRef` `{ rev }` needs a synchronous `currentApproval(approvalRef)`
@@ -136,8 +137,9 @@ function createKeyedQueue() {
  *
  * - `signPass(operation, sign)`: refuses `eb_operation_signed` (with the recorded
  *   `artifactHash` in `details`) once the operation has a record on its lane, without
- *   calling `sign`. Calls `sign({ signal })` with the remaining read budget; expiry
- *   aborts the signal and refuses `eb_sign_timeout`, ignoring late bytes. Resolves
+ *   calling `sign`. Calls `sign({ signal })` with a deadline of its own
+ *   (AUTHORITY_READ_DEADLINE_MS, apart from the reads' budget); expiry aborts the
+ *   signal and refuses `eb_sign_timeout`, ignoring late bytes. Resolves
  *   the artifact `{ ...operation, artifactHash }` after the signer's
  *   bytes are durable; a refusal after that leaves `signed-held`. Calls for one operation
  *   and lane that run together are queued: a later one is refused as above once the
@@ -171,7 +173,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
 
   async function checkStop(read) {
     let isStopped;
-    try { isStopped = await read(stopped, 'stop_check_timeout'); } catch (cause) {
+    try { isStopped = await read(() => stopped(), 'stop_check_timeout'); } catch (cause) {
       throw cause?.code === 'stop_check_timeout' ? cause : refusal('stop_check_failed', cause);
     }
     if (typeof isStopped !== 'boolean') throw refusal('stop_check_invalid');
@@ -292,7 +294,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
       await refuseSignedOperation(operation);
       await refresh(read, operation);
       gate(frame, operation);
-      const bytes = await read(sign, 'eb_sign_timeout');
+      const bytes = await createReadBudget(clock)(sign, 'eb_sign_timeout');
       if (!(bytes instanceof Uint8Array) || bytes.length === 0) throw new TypeError('the signer must return a non-empty Uint8Array');
       await refuseSignedOperation(operation);
       const stored = Buffer.from(bytes);
