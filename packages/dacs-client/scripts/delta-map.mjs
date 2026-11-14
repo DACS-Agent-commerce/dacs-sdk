@@ -132,13 +132,16 @@ export function checkDeltas(packageDir=pkg) {
   // parent or the terminal blob. Resolve all records first: ledger order and
   // unrelated sibling records must not determine continuity.
   const independent=shas=>git('merge-base','--independent',...shas).split('\n');
+  const inSourceTree=path=>path.startsWith(prefix+'src/')||path.startsWith(prefix+'test/');
   const ancestors=new Map();
   for(const [path,records] of recorded) {
     let baseline=anchor.files[path]??null;if(!anchored(path))try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
     for(const {sha,before} of records) {
       if(!ancestors.has(sha)) ancestors.set(sha,new Set(git('rev-list',`${BASELINE}..${sha}^`).split('\n')));
       const previous=records.filter(record=>ancestors.get(sha).has(record.sha));
-      const expected=previous.length?expectedBlob(previous,independent):{blob:baseline};
+      // Other paths outside src/ and test/ (scripts, say) may change without a record, so their first record starts from its own parent commit. Source, test and anchored paths start from `baseline`.
+      let parent=null;if(!previous.length&&!inSourceTree(path)&&!anchored(path))try{parent=git('rev-parse','--verify',`${sha}^:${path}`);}catch{}
+      const expected=previous.length?expectedBlob(previous,independent):{blob:inSourceTree(path)||anchored(path)?baseline:parent};
       // Divergent newest ancestors require an explicit resolution record.
       // Its actual parent/commit bytes are checked above; once recorded,
       // that resolution constrains every descendant in turn.
