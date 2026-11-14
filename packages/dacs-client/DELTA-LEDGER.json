@@ -8652,6 +8652,155 @@
           "after": "cb7e6298b275bb6123561c5afa4a52a4981b72bf"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": null,
+          "after": "ea9e892b09ac6333d8cec727575d5879c875f298"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-barriers.test.mjs",
+          "before": null,
+          "after": "a63d589030296a4ce2afe05b377351748a6bf250"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6402003588457f0340179859466e374237f7fd6",
+          "after": "867b80b2a25f2f8c8ceafce8f72d22561446d173"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs",
+          "before": null,
+          "after": "aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "8f8757994d69d512ccbf145bcd2180b622acc962",
+          "after": "abe08190196e3a17ccbb29ce6785df334c20d080"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "83e1364efe976f2b3125cd8466c459d1600f6795",
+          "after": "83e1364efe976f2b3125cd8466c459d1600f6795"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
+          "after": "4e5486337d9cddb235f415cfe4bd819c78ae6593"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF check that the effect boundary module is not exported without listing every export",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "eed744fccb73e1c4c24346fffa91172a1d9029a1",
+          "after": "db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF give the effect boundary one effect per operation and lane",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "ea9e892b09ac6333d8cec727575d5879c875f298",
+          "after": "be747aab0f805f37b550920e8acea9c023ac7f93"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "ffe644ce654cbfd530822f3b5cd173295aba480f"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-barriers.test.mjs",
+          "before": "a63d589030296a4ce2afe05b377351748a6bf250",
+          "after": "f3d0560be2447f1a5195f646001e74f7454aa6c9"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": null,
+          "after": "c5f91f14575651303e144ec91570d7db728034e1"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
+          "after": "f948151165e3ba48272216e650df2f9bc3c20480"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs",
+          "before": "aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6",
+          "after": "1b83d2a67290fc5fb683667e993dbf498ecaf269"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the package-contents blob merged with the dispatch history",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "fa141114c1adc59dfed04b1e17830e8f2cfc866f",
+          "after": "fa141114c1adc59dfed04b1e17830e8f2cfc866f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the dispatch history blob merged with the string artifact hash fix",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53",
+          "after": "d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF name the packed contents test without a plan abbreviation",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "fa141114c1adc59dfed04b1e17830e8f2cfc866f",
+          "after": "e159d0cb9ca487ba30500a5a3da40ea5bfab4b32"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF count the effect boundary module in the packed closure helper after carrying the dispatch history up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "50355ea4059121eac4b97ea068a01be647e8dc24",
+          "after": "48056110819fef0a22ae0e8bff28e5781ed1bcb6"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "683f3a9c22c09a4207d1f588e0108cb327b579f2",
+          "after": "683f3a9c22c09a4207d1f588e0108cb327b579f2"
+        }
+      ]
     }
   ]
 }

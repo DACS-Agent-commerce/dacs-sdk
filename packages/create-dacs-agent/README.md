@@ -33,6 +33,13 @@ DEM-only projects omit the EVM key, EVM RPC, x402 packages and x402 secret
 mounts. Dual projects generate rail-specific listing drafts and require an
 explicit `--rail x402` or `--rail pay-dem` for guarded setup and purchase.
 
+Set `DACS_DEMOS_GENESIS_HASH` beside `DACS_DEMOS_RPC_URL` in the generated live
+project to pin its network. `DACS_DEMOS_CHAIN_ID` optionally pins the genesis id
+and requires `DACS_DEMOS_GENESIS_HASH`. The same settings apply to native DEM and
+dual-rail profiles. A wrong network is refused before a buyer or seller signs;
+nodes without `getChainIdentity` use a genesis read checked against the
+configured hash, and are refused when a chain id is pinned.
+
 Live generation runs the complete read-only pre-start doctor after install.
 Exit 5 is retained as a successful, visibly blocked bootstrap when credentials,
 funding, signed registries, endpoints or reviewed effect adapters are absent.
