@@ -16,6 +16,7 @@ const LIVE_STATES = ['intent', 'admitted', 'running'], HASH = /^[0-9a-f]{64}$/;
 // The rows whose context outcome a pass inspects first, and the most one sweep waits on one row's pass before it moves on.
 const OUTCOME_STATES = ['admitted', 'running', 'compensating'], SWEEP_ROW_TIMEOUT_MS = 30_000;
 const DELEGATION_GRACE_MS = 30_000;
+const DIRECT_REQUEST_LIFETIME_MS = 5 * 60 * 1000;
 // C3 kinds that prove no effect; every other kind, absence and age included, is undetermined.
 const NO_EFFECT_KINDS = ['no-intent', 'proven-unsigned'];
 // K1's triggers (a) to (d) and the cause each leaves on the fenced row.
@@ -105,7 +106,8 @@ function contextOutcomeClass(row, outcome) {
  * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`). It waits at most 10,000 ms for a
  * row's lease and 30,000 ms for its pass, records a row it could not finish on that row and goes on to the next; it rejects with an AggregateError
  * after visiting every row when it could not record one. A periodic sweep called while one runs answers that one; a startup sweep rejects with
- * TypeError while a begin is live or a sweep runs, and a periodic one leaves a live begin's intent alone. `cleanupPending()` is true while a row is
+ * TypeError while a begin is live or a sweep runs, and a periodic one leaves a live begin's intent alone. Direct admissions are fenced after
+ * five minutes from acceptance; only fresh no-effect evidence permits abort and release. `cleanupPending()` is true while a row is
  * compensating, or holds a pending release, a pending policy call or a cleanup cause. `admissionRecord(jobId)` is the frozen read-only projection, or null.
  * Throws TypeError for an unusable option; operations reject with a SellerTransportError (guard errors keep their own class) that keeps its cause.
  */
@@ -554,6 +556,16 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
       if (row?.state === 'intent' && (startup || !ownedByLiveBegin(row))) fenceWithin(jobId, row.rev, new SellerTransportError(ORPHANED_INTENT_CODE, 409));
     });
   }
+  // Age permits compensation, never release: the job lease excludes live provider work and reconciliation still requires journal evidence.
+  function fenceExpiredDirect(jobId) {
+    return transaction(() => {
+      const row = read(jobId);
+      if (!['admitted', 'running'].includes(row?.state) || row.delegationExpiresAt !== null) return false;
+      const expiresAt = row.admittedAt + DIRECT_REQUEST_LIFETIME_MS;
+      if (!isUint(expiresAt)) fail('peer_clock_invalid', 503);
+      return clock() >= expiresAt && fenceWithin(jobId, row.rev, new SellerTransportError('context_direct_expired', 409));
+    });
+  }
   // One row of the sweep, with its own lease wait and pass deadline: a row that hangs keeps its lease and its pass, is recorded with its
   // cause, and never holds up the rows after it. Throws only when that record itself cannot be written.
   async function sweepRow(jobId, startup) {
@@ -563,7 +575,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     const pass = boundedWork(async () => {
       fenceOrphanedIntent(jobId, startup);
       await reconcile(jobId);
-      if (fenceForTrigger(jobId, 'c')) await reconcile(jobId);
+      if (fenceExpiredDirect(jobId) || fenceForTrigger(jobId, 'c')) await reconcile(jobId);
     }, { timeoutMs: SWEEP_ROW_TIMEOUT_MS });
     void pass.settled.then(() => lease.release());
     try { await pass.result; } catch (cause) {
