@@ -943,8 +943,9 @@ test('P09b-T15 trigger (c) fires at delegation expiry plus 30,000 ms, not one mi
   assert.deepEqual(w.row(p.input.jobId), admitted); assert.equal(w.calls.release, 0);
   w.control.clock = T0 + HOUR + 30000; await w.admission.compensate(p.input.jobId, 'c');
   assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1);
-  const direct = world(t), q = direct.prepare(0x22); q.input.delegationExpiresAt = null; await direct.admission.begin(q.input);
-  direct.control.clock = Number.MAX_SAFE_INTEGER - SESSION_CHALLENGE_LIFETIME_MS; await sweepTwice(direct); await direct.admission.compensate(q.input.jobId, 'c');
+  const direct = world(t); direct.control.clock = Number.MAX_SAFE_INTEGER - SESSION_CHALLENGE_LIFETIME_MS;
+  const q = direct.prepare(0x22); q.input.delegationExpiresAt = null; await direct.admission.begin(q.input);
+  await sweepTwice(direct); await direct.admission.compensate(q.input.jobId, 'c');
   assert.equal(direct.row(q.input.jobId).state, 'admitted'); assert.equal(direct.row(q.input.jobId).cleanup.cause, null);
   const unsafe = world(t), r = unsafe.prepare(0x33); r.input.delegationExpiresAt = Number.MAX_SAFE_INTEGER - 5; await unsafe.admission.begin(r.input);
   await unsafe.admission.compensate(r.input.jobId, 'c');
