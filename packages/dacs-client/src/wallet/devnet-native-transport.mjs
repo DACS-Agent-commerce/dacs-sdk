@@ -901,8 +901,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       let accepted;
       try {
         accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
-          // A stored evidence CREATE owns the signer's next nonce: a write sent now could take it and leave that CREATE unexecutable.
-          if((await journal.get(signerReservationKey(pinned,tx.content.from)))?.active) fail('signer_lane_busy','a stored payment-evidence write holds this signer; nothing was sent');
+          // A stored evidence CREATE owns the signer's next nonce until the chain has used it: a write sent before could take it and leave that CREATE unexecutable.
+          const reserved=(await journal.get(signerReservationKey(pinned,tx.content.from)))?.active;
+          if(reserved && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))<reserved.nonce) fail('signer_lane_busy','a stored payment-evidence write holds this signer; nothing was sent');
           const previous=await journal.get(lane(tx.content.from));
           if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || await journal.get(intent(tx.hash))) fail('outcome_unknown','issued native transfers cannot be resent');
           // Under the lock of the journal claim below: a cancelled transfer is never claimed.

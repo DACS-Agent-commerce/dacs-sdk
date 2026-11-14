@@ -392,6 +392,16 @@ test('consume ends the reservation only on an authenticated execution of the exa
   assert.equal((await w.reservations.reserve(args('TEST-evidence-b'))).nonce, 2, 'the floor beats a stale chain answer of 0');
 });
 
+test('consume keeps the executed bytes with their nonce in the same write, and the next claim and its retirement keep them', async t => {
+  const w = world(t, { ledger: ledgerDouble() }), bytes = signed();
+  assert.equal((await w.reservations.reserve(args())).reservation.executed, null, 'a fresh record has no execution');
+  const consumed = await w.reservations.consume(await w.reservations.bindSigned(await approved(w.reservations), bytes), executed(bytes));
+  assert.deepEqual(consumed.executed, { ...bytes, nonce: 1 });
+  const { reservation } = await w.reservations.reserve(args('TEST-evidence-b'));
+  assert.deepEqual(reservation.executed, consumed.executed, 'a new claim keeps the last execution');
+  assert.deepEqual((await w.reservations.retireUnsigned(reservation)).executed, consumed.executed, 'a retirement keeps it');
+});
+
 test('consume refuses a reservation without signed bytes', async t => {
   const w = world(t, { ledger: ledgerDouble() }), reservation = await approved(w.reservations);
   await rejectCode(w.reservations.consume(reservation, executed(signed())), 'signer_reservation_invalid');

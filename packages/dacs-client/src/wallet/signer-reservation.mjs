@@ -14,8 +14,9 @@
 // and `bindSigned` stores the signed bytes. The caller sends the bytes only after `bindSigned` returns them. If the
 // approval ends while signed bytes are kept, `renewApproval` stores the id of a replacement for the same request text.
 //
-// A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes and moves the floor past
-// the nonce; `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
+// A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes, moves the floor past
+// the nonce and keeps those bytes as the record's `executed`, so a later read by hash can still compare them with the chain.
+// `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
 // settles the approval ledger's hold by id (`spent` or `released`), which is idempotent, so a crash between the settlement and the
 // put is finished by repeating the call. Signed bytes are never retired: only an execution frees them. While a retirement has
 // settled the approval `released` and its put has not committed, this instance refuses `bindSigned` for that reservation
@@ -34,7 +35,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { verifyDemosSignature } from '../signatures.mjs';
 import { sha256Hex } from '../util/ids.mjs';
 
-const FORMAT = 'dacs-signer-reservation/v3';
+const FORMAT = 'dacs-signer-reservation/v4';
 const KEY_ROOT = 'devnet/signer-reservation';
 const MAX_TEXT_BYTES = 256 * 1024;
 const MAX_ID_BYTES = 256;
@@ -126,6 +127,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
     check(record.network === pins.network && record.chainIdentity === pins.chainIdentity, 'chain mismatch');
     check(isCount(record.revision) && record.revision > 0 && isCount(record.floor), 'invalid revision or floor');
     if (record.active !== null) validateActive(record.active, record);
+    if (record.executed !== null) { check(isCount(record.executed.nonce), 'invalid executed nonce'); validateSigned(record.executed, record.signer, record.executed.nonce); }
     return record;
   }
   async function write(record) {
@@ -150,7 +152,8 @@ export function createSignerReservations({ journal, pins, openApproval = refused
       if (active === UNCHANGED) return record;
       const spent = active === SPENT;
       check(isCount(record.revision + 1) && (!spent || isCount(record.active.nonce + 1)), 'revision or nonce exhausted');
-      return write({ ...record, revision: record.revision + 1, floor: spent ? Math.max(record.floor, record.active.nonce + 1) : record.floor, active: spent ? null : active });
+      return write({ ...record, revision: record.revision + 1, floor: spent ? Math.max(record.floor, record.active.nonce + 1) : record.floor, active: spent ? null : active,
+        executed: spent ? { ...record.active.signed, nonce: record.active.nonce } : record.executed });
     });
   }
 
@@ -183,7 +186,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
       const nonce = Math.max(chain + 1, floor), revision = (record?.revision ?? 0) + 1;
       check(isCount(revision), 'revision exhausted');
       const reservation = await write({ format: FORMAT, network: pins.network, chainIdentity: pins.chainIdentity, pinVersion: pins.pinVersion,
-        signer, revision, floor, active: { attemptId: randomUUID(), operation, operationKey, nonce, approvalIntent: null, approvalId: null, signed: null } });
+        signer, revision, floor, executed: record?.executed ?? null, active:{ attemptId: randomUUID(), operation, operationKey, nonce, approvalIntent: null, approvalId: null, signed: null } });
       return { reservation, nonce };
     });
   }
@@ -280,7 +283,8 @@ export function createSignerReservations({ journal, pins, openApproval = refused
   /**
    * Ends a reservation on an authenticated execution of its exact signed bytes: `observation` is
    * `{status: 'executed', authenticated: true, txHash, projectionText}` from the lane's reader. Settles the approval spent, then
-   * in one write clears the claim and moves the floor past the nonce. Anything else (pending, failed, unauthenticated, other
+   * in one write clears the claim, moves the floor past the nonce and keeps the signed bytes with their nonce as `executed`
+   * (the most recent execution only). Anything else (pending, failed, unauthenticated, other
    * bytes) is `signer_execution_unproven` and changes nothing. The handle is stale afterwards. Returns the stored record.
    */
   async function consume(reservation, observation) {

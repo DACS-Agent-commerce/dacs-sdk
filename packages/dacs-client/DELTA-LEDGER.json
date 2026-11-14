@@ -9785,6 +9785,37 @@
           "after": "0b989c5e744a70bad045af597167b8361bef9c23"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "4991e78befed2c4fa613097dab62b615e1923f76",
+          "after": "fa13b14b9c7b97996f756a48b650e483b6be7824"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "8f28044a570d8190098920a5ee14174a0eb17dbf",
+          "after": "a0d3e5804a80767653da0b803b828a8af3bec80a"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "34996af117c3c89777095afe54d6fc503f6049c0",
+          "after": "27c92266c296ed0bff1653f48a1d42379161817a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "0b989c5e744a70bad045af597167b8361bef9c23",
+          "after": "b3df7082b465fc0d9c1206040a9e5ea7b85a652f"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "fd5942a7d5ff71be33366dd8c04bd757e9f85ce6",
+          "after": "1bf7311e098d0d06e54b26ec97aea4f9e74cab10"
+        }
+      ]
     }
   ]
 }
