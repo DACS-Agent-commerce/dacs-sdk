@@ -12,14 +12,16 @@ import { createOrdinaryCompletionPort } from '../../src/dacs/seller-http.mjs';
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
 import { boundPurchaseOf } from './bound-transport-store.mjs';
 import { commitmentFixture } from './commitment-fixture.mjs';
+import { agreementCreateProjection } from './agreement-create-projection.mjs';
 import { NOW, seller } from './protocol-fixture.mjs';
 
 export function receiptReader(read = () => 'valid') {
   return Object.assign(read, { chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
 }
 
-export async function wireContinuationFixture(t) {
-  const f = await commitmentFixture(t, { publicEndpoint: 'https://seller.example.invalid' });
+/** `early: true` commits on the buyer's signature, so the job holds an early commitment and no ordinary one. */
+export async function wireContinuationFixture(t, { early = false } = {}) {
+  const f = await commitmentFixture(t, { publicEndpoint: 'https://seller.example.invalid', early });
   const rows = new Map(), publications = [];
   const readRetained = async ({ logicalAddress }) => structuredClone(rows.get(logicalAddress) ?? { status: 'absent' });
   f.config.nativeArtifactAnchor = {
@@ -39,7 +41,9 @@ export async function wireContinuationFixture(t) {
   };
   const prepared = await f.prepare();
   let agent = prepared.agent;
-  assert.equal((await agent.commit({ jobId: prepared.agreement.jobId })).status, 'committed');
+  const { jobId } = prepared.agreement;
+  if (early) assert.equal((await agent.commitOnSignature({ jobId, agreement: prepared.agreement, signedProjection: agreementCreateProjection(prepared.agreement) })).status, 'commitment-held');
+  else assert.equal((await agent.commit({ jobId })).status, 'committed');
   t.after(() => agent.close());
   const controls = { verdict: 'valid', calls: 0 };
   const readCommitmentReceipt = receiptReader((commitment) => {
@@ -48,7 +52,7 @@ export async function wireContinuationFixture(t) {
     if (controls.verdict instanceof Error) throw controls.verdict;
     return controls.verdict;
   });
-  return { ...f, ...prepared, listing: f.listing, publications, controls, readCommitmentReceipt,
+  return { ...f, ...prepared, listing: f.listing, publications, rows, controls, readCommitmentReceipt,
     agent: () => agent, reopen: async () => { agent.close(); agent = await f.open(); } };
 }
 

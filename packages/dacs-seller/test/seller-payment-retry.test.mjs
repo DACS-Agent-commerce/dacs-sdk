@@ -44,7 +44,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   // The durable agent already committed this job; the host holds it from the proposal its wire route admitted, which is when the store keeps the tuple.
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => proposalCalls === 0 ? null : retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
-    retainsPaymentClaim:()=>false, assertSettlementCredit: () => {},
+    retainsPaymentClaim:()=>false, retainsProposalWork: () => false, revalidateCompletedAnswer: async () => {}, assertSettlementCredit: () => {},
     submitPayment: async (body) => {
       calls.push(body.txHash);
       const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
