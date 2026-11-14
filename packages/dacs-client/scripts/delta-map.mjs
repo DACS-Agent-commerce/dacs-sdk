@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assemble, readArchive } from './delta-assemble.mjs';
-import { selects } from './delta-record.mjs';
+import { isAnchored, readAnchor, selects } from './delta-record.mjs';
 import { publicationJson, publicationText } from './publication-text.mjs';
 import { sourceGit } from './source-git.mjs';
 export const root = join(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -78,6 +78,11 @@ export function expectedBlob(records, independent) {
 }
 export function checkDeltas(packageDir=pkg) {
   const assembled=view(); const failures=[...assembled.failures]; const active=assembled.ledger; const data={...active,changes:[...(active.supersededChanges??[]),...active.changes]}; const history=commits();
+  // Record-named paths outside src/ and test/ start from the anchor, not the
+  // baseline: its blob is their first expected blob, their records select
+  // commits after it, and their changes are checked from it on.
+  const anchor=readAnchor(pkg), anchored=path=>isAnchored(path.slice(prefix.length)), afterAnchor=new Set(git('rev-list',`${anchor.commit}..HEAD`).split('\n'));
+  const covered=(path,sha)=>/^packages\/dacs-client\/(src|test)\//.test(path)||(anchored(path)&&(sha==null||afterAnchor.has(sha)));
   // Records are checked one by one by their schema; this rule binds the archive.
   const last=readArchive(pkg).ledger.changes.at(-1);
   if(last && !last.files.some(file=>/^packages\/dacs-client\/(src|test)\//.test(file.path))) failures.push(`${prefix}DELTA-LEDGER.json: last record names no source or test change`);
@@ -113,7 +118,8 @@ export function checkDeltas(packageDir=pkg) {
     if(matches.length===1) {
       const sha=matches[0].sha;
       for(const f of c.files) {
-        recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,before:f.before,after:f.after}]);
+        if(anchored(f.path)&&!afterAnchor.has(sha)) failures.push(`${f.path}: delta ${c.delta} selects ${sha}, which the anchor already contains`);
+        else recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,before:f.before,after:f.after}]);
         for(const [rev,want] of [[`${sha}^`,f.before],[sha,f.after]]) {
           let actual=null;try{actual=git('rev-parse','--verify',`${rev}:${f.path}`);}catch{}
           if(actual!==want) failures.push(`${f.path}: delta ${c.delta} blob differs at ${rev}`);
@@ -128,7 +134,7 @@ export function checkDeltas(packageDir=pkg) {
   const independent=shas=>git('merge-base','--independent',...shas).split('\n');
   const ancestors=new Map();
   for(const [path,records] of recorded) {
-    let baseline=null;try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
+    let baseline=anchor.files[path]??null;if(!anchored(path))try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
     for(const {sha,before} of records) {
       if(!ancestors.has(sha)) ancestors.set(sha,new Set(git('rev-list',`${BASELINE}..${sha}^`).split('\n')));
       const previous=records.filter(record=>ancestors.get(sha).has(record.sha));
@@ -160,21 +166,21 @@ export function checkDeltas(packageDir=pkg) {
     if(!item || (item.sha!==null && item.sha!==h.sha) || JSON.stringify([...item.files].sort())!==JSON.stringify(files)) failures.push(`complete commit/file inventory differs for ${h.sha}`);
   }
   const originals=JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'),'utf8')).files.map(f=>f.path);
-  const allowed=new Set([...originals,...evidence.deltas.changes.flatMap(c=>c.files.map(f=>f.path)),...data.changes.flatMap(c=>c.files.map(f=>f.path))]);
+  const allowed=new Set([...originals,...evidence.deltas.changes.flatMap(c=>c.files.map(f=>f.path)),...data.changes.flatMap(c=>c.files.map(f=>f.path)),...Object.keys(anchor.files)]);
   for(const h of history) {
-    const changed=git('diff','--no-renames','--name-only',h.sha+'^',h.sha,'--',prefix+'src',prefix+'test').split('\n').filter(Boolean);
+    const changed=git('diff','--no-renames','--name-only',h.sha+'^',h.sha,'--',prefix).split('\n').filter(path=>path&&covered(path,h.sha));
     const record=recordFor(data.changes,h);
     for(const path of changed) if(!record?.files.some(f=>f.path===path)) failures.push(`${path}: unenumerated change in ${h.sha}`);
   }
   // A staged edit remains a change even when its working file is restored.
   // Compare object identities directly, including deletions and mode changes.
-  const indexRows=git('ls-files','--stage','--',prefix+'src',prefix+'test').split('\n').filter(Boolean);
-  const headRows=git('ls-tree','-r','HEAD','--',prefix+'src',prefix+'test').split('\n').filter(Boolean);
+  const indexRows=git('ls-files','--stage','--',prefix).split('\n').filter(Boolean);
+  const headRows=git('ls-tree','-r','HEAD','--',prefix).split('\n').filter(Boolean);
   const staged=new Map(indexRows.map(row=>{const [meta,path]=row.split('\t');const [mode,hash,stage]=meta.split(' ');return [path,{mode,hash,stage}];}));
   const committed=new Map(headRows.map(row=>{const [meta,path]=row.split('\t');const [mode,,hash]=meta.split(' ');return [path,{mode,hash}];}));
   for(const path of new Set([...committed.keys(),...staged.keys()])){
     const a=staged.get(path),b=committed.get(path);
-    if(!a||!b||a.stage!=='0'||a.mode!==b.mode||a.hash!==b.hash)failures.push(`${path}: index differs from HEAD for moved source/test`);
+    if(covered(path)&&(!a||!b||a.stage!=='0'||a.mode!==b.mode||a.hash!==b.hash))failures.push(`${path}: index differs from HEAD for ${anchored(path)?'a record-named file':'moved source/test'}`);
   }
   // Merges are not record subjects, so HEAD, the index and the working bytes
   // must all hold the newest recorded blob; a merge that keeps a stale side,
@@ -185,7 +191,8 @@ export function checkDeltas(packageDir=pkg) {
       const result=expectedBlob(recorded.get(path),independent);
       if(result.conflict) { failures.push(`${path}: newest records disagree (${result.conflict.join(', ')}); record the chosen blob after the merge`); continue; }
       expected=result.blob;
-    } else try{expected=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
+    } else if(anchored(path)) expected=anchor.files[path]??null;
+    else try{expected=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
     const rel=path.slice(prefix.length); const local=join(packageDir,rel);
     const actual=existsSync(local)?blob(readFileSync(local)):null;
     const head=committed.get(path)?.hash??null, index=staged.get(path)?.hash??null;

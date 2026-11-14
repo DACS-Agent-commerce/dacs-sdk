@@ -4293,6 +4293,21 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-record.mjs:1` |
 | delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-record.test.mjs:1` |
 | delta(client): WF read client delta records through one assembler | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/records/ANCHOR.json:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/core-imports.test.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/delta-anchor.test.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/delta-assemble.test.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/delta-continuity.test.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/delta-freeze.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/delta-freeze.test.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): WF check the client freeze rule derived from delta records beside the pins | `packages/dacs-client/scripts/delta-record.mjs:1` |
 
 ## Original moved files
 

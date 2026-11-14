@@ -18,7 +18,7 @@ async function fixture(t, initial = 'original\n') {
   const dir = mkdtempSync(join(tmpdir(), 'TEST-delta-continuity-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const pkg = join(dir, prefix);
-  for (const name of ['src', 'scripts', 'evidence']) mkdirSync(join(pkg, name), { recursive: true });
+  for (const name of ['src', 'scripts', 'evidence', 'records']) mkdirSync(join(pkg, name), { recursive: true });
   const git = (...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' }).trimEnd();
   git('init', '--quiet');
   const json = (name, value) => writeFileSync(join(pkg, name), JSON.stringify(value, null, 2) + '\n');
@@ -41,6 +41,7 @@ async function fixture(t, initial = 'original\n') {
   git('add', '--', ...['PROVENANCE.json', ...controls, 'DELTA-NOTES.md', 'evidence/publication-history.json'].map(name => prefix + name), ...(initial === null ? [] : [path]));
   git('commit', '--quiet', '-m', 'TEST baseline');
   const baseline = git('rev-parse', 'HEAD');
+  json('records/ANCHOR.json', { schema: 'dacs-client-anchor/v1', commit: baseline, files: { [`${prefix}DELTA-NOTES.md`]: git('rev-parse', `HEAD:${prefix}DELTA-NOTES.md`) } });
   const digest = createHash('sha256').update(readFileSync(join(pkg, 'evidence/publication-history.json'))).digest('hex');
   let checker = readFileSync(join(scripts, 'delta-map.mjs'), 'utf8');
   for (const [name, value] of [['BASELINE', baseline], ['PUBLICATION_HEAD', baseline], ['HISTORY_SHA256', digest]]) {

@@ -114,6 +114,8 @@ async function history(t) {
   for (const [name, text] of [['DELTA-NOTES.md', 'Fixture provenance\n'], ['DELTA-MAP.md', ''], ['README.md', 'Fixture readme\n'], ['src/example.mjs', 'original\n']]) writeFileSync(join(fixture, name), text);
   git('add', '--', prefix); git('commit', '--quiet', '-m', 'TEST baseline');
   const baseline = git('rev-parse', 'HEAD');
+  const anchored = Object.fromEntries(['DELTA-NOTES.md', 'README.md'].map(name => [prefix + name, git('rev-parse', `HEAD:${prefix}${name}`)]));
+  json(join(fixture, 'records/ANCHOR.json'), { schema: 'dacs-client-anchor/v1', commit: baseline, files: anchored });
   const digest = createHash('sha256').update(readFileSync(join(fixture, 'evidence/publication-history.json'))).digest('hex');
   let checker = readFileSync(join(scripts, 'delta-map.mjs'), 'utf8');
   for (const [name, value] of [['BASELINE', baseline], ['PUBLICATION_HEAD', baseline], ['HISTORY_SHA256', digest]]) {

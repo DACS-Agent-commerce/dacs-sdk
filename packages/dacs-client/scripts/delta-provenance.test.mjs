@@ -9,6 +9,8 @@ import { assemble } from './delta-assemble.mjs';
 const root=join(dirname(fileURLToPath(import.meta.url)),'../../..');
 function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));execFileSync('git',['clone','--quiet','--shared',root,dir]);t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;}
 function check(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-provenance.mjs'),'--local-only'],{encoding:'utf8'});return {status:result.status,text:result.stdout+result.stderr};}
+// The archive is a core pin: check-hold refuses any edit of the ledger.
+function refusedByArchivePin(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-hold.mjs')],{encoding:'utf8'});assert.equal(result.status,1,result.stdout+result.stderr);assert.match(result.stderr,/^FAIL packages\/dacs-client\/DELTA-LEDGER\.json: changed bytes; package is frozen$/m);}
 const moved='packages/dacs-client/src/dacs/buyer-chain-readback.mjs';
 test('committed delta history and generated per-file table agree',t=>{const r=check(scratch(t));assert.equal(r.status,0,r.text);});
 function checkCallbackHistory(dir) {
@@ -92,6 +94,7 @@ test('removing a bookkeeping checkpoint is also refused', t => {
   const result = check(dir);
   assert.equal(result.status, 1, result.text);
   assert.match(result.text, /differs from generated Git table/);
+  refusedByArchivePin(dir);
 });
 test('a later commit with an unlisted moved-file edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST later commit\n');execFileSync('git',['-C',dir,'add',moved]);execFileSync('git',['-C',dir,'-c','user.name=the SDK maintainer','-c','user.email=maintainer@example.invalid','commit','--quiet','-m','delta(client): D15 TEST unlisted change']);const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/unenumerated change/);});
 test('the per-file Markdown table is checked, not trusted',t=>{const dir=scratch(t);appendFileSync(join(dir,'packages/dacs-client/DELTA-MAP.md'),'TEST drift\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/differs from generated Git table/);});
@@ -291,5 +294,6 @@ test('the ledger gate refuses each fault in a PR\'s own delta records, one table
   const dir=scratch(t),file=join(dir,control[1]),data=JSON.parse(readFileSync(file,'utf8'));
   fault.edit(data);writeFileSync(file,JSON.stringify(data));
   const r=check(dir);assert.equal(r.status,1,`${fault.name}: ${r.text}`);assert.match(r.text,fault.message,fault.name);
+  refusedByArchivePin(dir);
  }
 });
