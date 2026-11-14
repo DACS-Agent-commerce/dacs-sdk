@@ -8944,6 +8944,23 @@
           "after": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d"
         }
       ]
+    },
+    {
+      "delta": "D37",
+      "subject": "delta(client): D37 refuse approvals expired on either clock in approve, pay, cancel and the purchase limits",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "d6b4b8f97ac305d867dbc3c1436aa63dae0d1123",
+          "after": "0862419d2002cc0910e531cd0426cbd044ba21cf"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-expiry-clocks.test.mjs",
+          "before": null,
+          "after": "fd0b0dd51c4fc12d8ab7c83f2b89c87b391047d1"
+        }
+      ]
     }
   ]
 }

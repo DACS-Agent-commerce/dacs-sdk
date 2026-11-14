@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "f9154615ed84ccf0481602f7aa404a1b2096b1c9"
+        "blob": "8954d489a8a013d4cd5712cdbaf5a9365da4f454"
       },
       "DELTA-LEDGER.json": {
-        "blob": "3c5309ab722d0ad144201609f4fc9fa3f633dc15"
+        "blob": "3837be25a317823db233fa69e17be1738432daf8"
       },
       "DELTA-MAP.md": {
-        "blob": "370246103deadb69fecf15b410d511331cae187d"
+        "blob": "210336f29f87e0b97fe5982dcf05b74e76490b5f"
       },
       "DELTA-NOTES.md": {
         "blob": "62a0627c37014d27601ad44e6d60938a79aea8cb"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "0b505e8fcd2be12d23f368b3e30cb3a2b81e1572"
+        "blob": "af956f12d3bde02448738066fb93d8bb537dfe77"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "85eeb96b4d2e9abbf22d56da55e43215f1389706"
+        "blob": "53fc7d791fb49d011c16e73d615aac6b573232f9"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1256,7 +1256,7 @@
         "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "d6b4b8f97ac305d867dbc3c1436aa63dae0d1123"
+        "blob": "0862419d2002cc0910e531cd0426cbd044ba21cf"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1926,6 +1926,9 @@
       },
       "test/purchase-executed-only.test.mjs": {
         "blob": "72479ddb615e6ad1f1002f588eabbb9e0dab4d1a"
+      },
+      "test/purchase-expiry-clocks.test.mjs": {
+        "blob": "fd0b0dd51c4fc12d8ab7c83f2b89c87b391047d1"
       },
       "test/purchase-integrity.test.mjs": {
         "blob": "174d67c16132706497904b28250c6135e97d1497"

@@ -281,7 +281,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   const starts = db.prepare("SELECT count(*) AS n FROM operations WHERE kind = 'purchase' AND account_id = ? AND created_at > ?");
 
   function assertPurchaseLimits(accountId, wallet, exceptId = '', starting = false) {
-    const at = new Date(now()).toISOString();
+    const at = new Date(expiryClock()).toISOString();
     if (unpaidAccount.get(exceptId, at, accountId).n >= limits.maxUnpaidPerAccount) {
       throw new OperationError('unpaid_purchase_account_limit', `This account already has ${limits.maxUnpaidPerAccount} unpaid purchase(s) open. Pay or cancel an open purchase before starting another; no seller write or wallet approval was requested.`);
     }
@@ -323,19 +323,19 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return operation;
   }
 
-  function approvalElapsed(operation, at = now()) {
-    return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= at;
+  // An approval has expired once either the service clock or the wall clock
+  // has reached its expiry. The wall clock is read directly, as for handoff
+  // expiry, so an injected clock cannot hold an elapsed approval open.
+  const expiryClock = () => Math.max(now(), Date.now());
+
+  function approvalElapsed(operation) {
+    return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= expiryClock();
   }
 
-  // Read-side projection only: status, portal evidence and readback show an
-  // approval as expired once either the service clock or the wall clock has
-  // reached its expiry. Nothing is saved. The wall clock is read directly, as
-  // for handoff expiry, so an injected clock cannot hold an elapsed approval
-  // open in a read. Approve and pay still decide with expireIfNeeded, which
-  // uses the service clock alone. With a stale injected clock a read can
-  // report expired while the approval can still be approved and paid.
+  // Read-side projection: reads show an elapsed approval as expired without
+  // saving the transition. Actions use the same check through expireIfNeeded.
   function projectExpiry(operation) {
-    return approvalElapsed(operation) || approvalElapsed(operation, Date.now()) ? { ...operation, status: 'expired' } : operation;
+    return approvalElapsed(operation) ? { ...operation, status: 'expired' } : operation;
   }
 
   function selectWallet(accountId, requested) {
