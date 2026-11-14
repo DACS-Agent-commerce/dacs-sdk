@@ -127,7 +127,10 @@ function createKeyedQueue() {
  * and approval, the binding and the stop seam again, then checks admission, fee,
  * connection and revision with no await before the effect. Every method rejects with
  * the signer's, transport's or authority reader's own error, or an OperationError
- * carrying a refusal code, and always releases the fence it acquired.
+ * carrying a refusal code, and always releases the fence it acquired. When the work
+ * succeeded but the fence release failed, the method rejects `eb_fence_release_failed`
+ * instead: the work's return value (a send's result, a signed artifact) is
+ * `error.details.result` and the release failure is `error.cause`.
  *
  * - `signPass(operation, sign)`: refuses `eb_operation_signed` (with the recorded
  *   `artifactHash` in `details`) once the operation has a record on its lane, without
@@ -226,10 +229,19 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
       return fence.withFence(operation.operationId, () => work(enclosing, read), { capability: enclosing.capability });
     }
     await precheck(read, operation);
-    return fence.withFence(operation.operationId, (capability) => {
-      const frame = { operationId: operation.operationId, capability };
-      return operations.run(frame, () => work(frame, read));
-    });
+    let finished;
+    try {
+      return await fence.withFence(operation.operationId, async (capability) => {
+        const frame = { operationId: operation.operationId, capability };
+        const result = await operations.run(frame, () => work(frame, read));
+        finished = { result };
+        return result;
+      });
+    } catch (cause) {
+      // The work succeeded, so only the release failed. Its result may be a send that already left.
+      if (finished) throw new OperationError('eb_fence_release_failed', 'the work finished but the actor fence could not be released', finished, { cause });
+      throw cause;
+    }
   }
 
   async function persist(record) {

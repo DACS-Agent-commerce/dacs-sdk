@@ -8647,6 +8647,23 @@
           "after": "d0771ba60ff24d68a635598c833f0ad7e0fa76b8"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "client: report a failed fence release after a successful effect with its result",
+      "sha": "5769d48c87ef6bed3094adb442d35ad4b0c6e538",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "10533f72e4ce2b3fe0ad791d92797796fd1a8221",
+          "after": "796433f8bc1bca0d06a152305289e52f05f03812"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "d0771ba60ff24d68a635598c833f0ad7e0fa76b8",
+          "after": "83bf647eea4cbb4cf4614e97b07b52203356393c"
+        }
+      ]
     }
   ]
 }
