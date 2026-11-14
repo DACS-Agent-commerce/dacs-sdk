@@ -9305,6 +9305,29 @@
           "after": "26523776589d9fbb6681a585ce59031a0dcdf48b"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF preserve key checks in the relocated transport fixture",
+      "sha": null,
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": null,
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs",
+          "before": "754a7e898ef18b3d6fa45fbf9141e9e8107304b7",
+          "after": "5da731a690d6648591afd34a50ed0017d508b998"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-transport-key-validation.test.mjs",
+          "before": "26523776589d9fbb6681a585ce59031a0dcdf48b",
+          "after": "55dfd5c220077e110aa6d72115c236f5b8c68a79"
+        }
+      ]
     }
   ]
 }

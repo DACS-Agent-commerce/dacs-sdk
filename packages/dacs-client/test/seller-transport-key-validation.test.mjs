@@ -5,10 +5,10 @@ import {
   canonicalize, ed25519Verify, privateKeyFromSeed, publicKeyFromRaw, publicKeyFromSeed,
   rawPublicKey, sha256Hex,
 } from '@kynesyslabs/dacs';
+import { createSellerTransportClientAuth } from './helpers/legacy-seller-client-auth.mjs';
 import {
-  createSellerTransportClientAuth, sellerSessionDelegationSigningBytes,
-  verifySellerSessionDelegation,
-} from '../src/dacs/seller-transport-auth.mjs';
+  sellerSessionDelegationSigningBytes, verifySellerSessionDelegation,
+} from '../../dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { verifyEmbeddedEd25519 } from '../src/public/portal/embedded-wallet/sdk-provider.mjs';
 
 globalThis.crypto ??= webcrypto;
