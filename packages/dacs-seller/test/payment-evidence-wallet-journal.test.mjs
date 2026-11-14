@@ -647,6 +647,74 @@ test('a kept evidence CREATE whose whole debit is exactly the ceiling is not hel
   assert.equal(w.calls.broadcast.length, 1);
 });
 
+// An operator clears a held CREATE with clearHeldWrite, only on proof from the
+// chain: it was applied, or its nonce is overtaken and a complete index shows it
+// was not executed. Any other answer leaves it held.
+const HELD_FEE = { networkFee: 20, rpcFee: 31 };
+async function keepHeldCreate(w) {
+  const input = w.input(), kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1, nodeFee: HELD_FEE });
+  keepUncheckedCreate(w.path, 'evidence_creates', input, kept);
+  w.chain.signed[kept.hash] = kept.content.nonce;
+  return { input, kept, ask: { logicalAddress: input.logicalAddress, txHash: kept.hash } };
+}
+test('clearHeldWrite supersedes a held evidence CREATE the chain can no longer execute, and the address is signed anew', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  const { input, kept, ask } = await keepHeldCreate(w);
+  w.other();
+  const cleared = await journal.clearHeldWrite(ask);
+  assert.deepEqual([cleared.status, cleared.txHash], ['superseded', kept.hash]);
+  assert.equal((await journal.reconcilePaymentEvidence(input)).status, 'unsigned');
+  const anchored = await journal.anchorEvidence(input);
+  assert.equal(anchored.status, 'submitted');
+  assert.notEqual(anchored.txHash, kept.hash);
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [1, 1], 'only the new CREATE is sent, never the held one');
+});
+test('clearHeldWrite keeps a held evidence CREATE the chain applied, and sends nothing', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  const { input, kept, ask } = await keepHeldCreate(w);
+  w.chain.applied.push(kept.hash); w.chain.accountNonce = 1;
+  assert.deepEqual([(await journal.clearHeldWrite(ask)).status, (await journal.clearHeldWrite(ask)).txHash], ['applied', kept.hash]);
+  assert.deepEqual(await journal.anchorEvidence(input), { status: 'applied', txHash: kept.hash });
+  assert.deepEqual(await journal.reconcilePaymentEvidence(input), { status: 'applied', txHash: kept.hash });
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
+for (const [label, prepare, readers] of [
+  ['it is pending', (w, kept) => { w.chain.pending.push(kept.hash); w.other(); }, {}],
+  ['its nonce is not overtaken', () => {}, {}],
+  ['the absence is not fenced by a block', (w) => { w.other(); }, { readTransactionState: async () => 'absent' }],
+  ['the transaction read fails', (w) => { w.other(); }, { readTransactionState: async () => { throw new Error('TEST state read failed'); } }],
+]) test(`clearHeldWrite refuses a held evidence CREATE and leaves it held when ${label}`, async (t) => {
+  const w = wallet(t), journal = w.open(readers); t.after(() => journal.close());
+  const { input, kept, ask } = await keepHeldCreate(w);
+  prepare(w, kept);
+  await assert.rejects(journal.clearHeldWrite(ask), { code: 'held_write_still_live' });
+  await assert.rejects(journal.anchorEvidence(input), { code: 'write-fee-cap' });
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
+test('clearHeldWrite repeated returns the stored outcome without reading the chain', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  const { kept, ask } = await keepHeldCreate(w);
+  w.other();
+  const first = await journal.clearHeldWrite(ask), reads = w.calls.reads.length;
+  assert.deepEqual(await journal.clearHeldWrite(ask), first);
+  assert.equal(w.calls.reads.length, reads);
+  assert.equal(first.txHash, kept.hash);
+});
+test('clearHeldWrite refuses a hash the journal never kept and a write that is not held', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  const { ask } = await keepHeldCreate(w);
+  await assert.rejects(journal.clearHeldWrite({ ...ask, txHash: 'ab'.repeat(32) }), { code: 'held_write_unknown' });
+  const ordinary = await journal.anchorEvidence(w.input({ logicalAddress: 'dacs4:payment:TEST-job:demos-native:DEM:3' }));
+  await assert.rejects(journal.clearHeldWrite({ logicalAddress: 'dacs4:payment:TEST-job:demos-native:DEM:3', txHash: ordinary.txHash }), { code: 'held_write_not_held' });
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'write-fee-cap' });
+});
+test('clearHeldWrite refuses a request without a hash or an address', async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  for (const ask of [undefined, {}, { logicalAddress: 'dacs4:payment:TEST-job:demos-native:DEM:2' }, { logicalAddress: 'x', txHash: 'TEST-invalid' }]) {
+    await assert.rejects(journal.clearHeldWrite(ask), TypeError);
+  }
+});
+
 for (const [label, change] of [
   ['artifact envelope', { artifact: { TEST: 'evidence', signatures: [{ TEST: 'changed envelope' }] } }],
   ['artifact kind', { artifactKind: 'TEST-other-kind' }],
