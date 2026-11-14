@@ -11,8 +11,9 @@ import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { deliverableAddress, deliveryEvidenceAddress } from '../src/dacs/purchase-protocol.mjs';
 import { EVIDENCE_SIGNATURE, OTHER_TX, PAYMENT_TX, WORK_SAVE_SIGNATURE, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
 
-// The deadline of one bounded source read.
+// The deadline of one bounded source read, and how many turns of the event loop a test waits for a read to start.
 const SOURCE_READ_TIMEOUT_MS = 10000;
+const EVENT_LOOP_TURNS = 1000;
 const stateOf = (w, id = w.jobId) => operationOf(w, id, PATHS.payments).state;
 const pending = async () => ({ status: 'pending', reason: 'demos-pending' });
 const underpaid = (txHash) => includedTransfer(txHash, { amountOs: '1' });
@@ -198,7 +199,10 @@ test('a first completion source check that times out during recovery leaves the 
     return new Promise(() => {});
   };
   const answering = w.pay();
-  while (!hung) await new Promise((resolve) => setImmediate(resolve));
+  for (let turns = 0; !hung; turns++) {
+    assert.ok(turns < EVENT_LOOP_TURNS, 'the source check never read the transfer again');
+    await new Promise((resolve) => setImmediate(resolve));
+  }
   t.mock.timers.tick(SOURCE_READ_TIMEOUT_MS);
   const answer = await answering;
   assert.deepEqual([answer.status, answer.body.error, answer.body.cause, answer.signed], [503, 'seller_source_unavailable', 'timeout', true]);
