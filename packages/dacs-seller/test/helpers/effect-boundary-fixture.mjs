@@ -6,11 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD, bindTp1Profile } from '@kynesyslabs/dacs/wire';
 import * as guard from '../../src/kit-operation-guard.mjs';
-import { createEffectBoundary } from '../../src/dacs/effect-boundary.mjs';
+import { WRITE_FEE_CEILING_OS, createEffectBoundary } from '../../src/dacs/effect-boundary.mjs';
 import { createEffectHistory } from '../../src/dacs/effect-history.mjs';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
 
-export const FEE_CEILING_OS = '50000000000';
+export const FEE_CEILING_OS = String(WRITE_FEE_CEILING_OS);
 export const SIGNED_BYTES = Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]);
 export const NEVER = new Promise(() => {});
 

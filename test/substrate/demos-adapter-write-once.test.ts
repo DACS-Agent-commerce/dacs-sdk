@@ -65,7 +65,18 @@ async function startNode(failures: Record<string, Failure[]>) {
           }
         : key === "nodeCall:getTransactionStatus"
           ? { result: 200, response: { state: "included", blockNumber: 42 } }
-          : { result: 200, response: {} };
+          : key === "nodeCall:getChainIdentity"
+            ? {
+                result: 200,
+                response: {
+                  chainId: null,
+                  genesisHash: "test-chain",
+                  genesisDataHash: "test-data",
+                },
+              }
+            : key === "nodeCall:getBlockByNumber"
+              ? { result: 200, response: { hash: "test-chain", number: 0 } }
+              : { result: 200, response: {} };
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(reply));
     });

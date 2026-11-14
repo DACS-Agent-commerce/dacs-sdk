@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StorageProgram } from "@kynesyslabs/demosdk/storage";
 import { Identities } from "@kynesyslabs/demosdk/abstraction";
 import type { Demos } from "@kynesyslabs/demosdk/websdk";
@@ -29,13 +29,21 @@ const searchReply = (response: unknown) =>
   new Response(JSON.stringify({ result: 200, response }));
 const makeAdapter = (
   writeJournal = createInMemoryDemosWriteJournal(),
-) => new DemosAdapter({
-  rpc: RPC,
-  chainIdentity: "test-chain",
-  writeJournal,
-});
+) => {
+  const adapter = new DemosAdapter({ rpc: RPC, chainIdentity: "test-chain", writeJournal });
+  vi.spyOn(adapter, "getChainIdentityDetails").mockResolvedValue({
+    chainId: null, genesisHash: "test-chain", genesisDataHash: null, source: "genesis-read",
+  });
+  return adapter;
+};
 
 describe("DemosAdapter", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      result: 400, response: "Unknown message: getChainIdentity",
+    }))));
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -112,65 +120,209 @@ describe("DemosAdapter", () => {
     expect(connectWallet).toHaveBeenCalledOnce();
   });
 
+  describe("chain identity pin", () => {
+    const genesisHash = "a".repeat(64);
+    const nodeIdentity = { chainId: "demos-test", genesisHash, genesisDataHash: "b".repeat(64) };
+
+    function identityAdapter(
+      response: unknown = nodeIdentity,
+      expectedIdentity?: DemosAdapterConfig["expectedIdentity"],
+      servedHash = genesisHash,
+      status = 200,
+      chainIdentity?: string,
+    ) {
+      const writeJournal = createInMemoryDemosWriteJournal();
+      const adapter = new DemosAdapter({ rpc: RPC, writeJournal, expectedIdentity, chainIdentity });
+      Object.assign(adapter, { connected: true });
+      vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+      vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue({ number: 0, hash: servedHash } as never);
+      const fetch = vi.fn(async (_url: unknown, options: RequestInit) => {
+        const call = JSON.parse(String(options.body)).params[0];
+        return call.message === "getChainIdentity"
+          ? new Response(JSON.stringify(response), { status })
+          : searchReply({ number: 0, hash: servedHash });
+      });
+      vi.stubGlobal("fetch", fetch);
+      return { adapter, fetch, writeJournal };
+    }
+
+    it("resolves node identity without changing the journal key", async () => {
+      const { adapter, fetch, writeJournal } = identityAdapter({ result: 200, response: nodeIdentity }, nodeIdentity);
+      await expect(adapter.getChainIdentityDetails()).resolves.toEqual({ ...nodeIdentity, source: "node-call" });
+      await expect(adapter.getChainIdentity()).resolves.toBe(genesisHash);
+      expect(JSON.parse(String(fetch.mock.calls[0]?.[1].body))).toEqual({
+        method: "nodeCall", params: [{ message: "getChainIdentity", data: {} }],
+      });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      const acquire = vi.spyOn(writeJournal, "acquire").mockRejectedValueOnce(new Error("journal unavailable"));
+      await expect(adapter.anchorWriteOnce("listing-v1", { serviceId: "svc" })).rejects.toThrow("journal unavailable");
+      expect(acquire).toHaveBeenCalledWith({ chainIdentity: genesisHash, wallet: "0xwriter" });
+    });
+
+    it.each([
+      { genesisHash: "c".repeat(64) },
+      { genesisHash, chainId: "another-chain" },
+      { genesisHash, chainId: null },
+    ])("refuses mismatched configured identity before effects: %j", async (expected) => {
+      const { adapter, writeJournal } = identityAdapter({ result: 200, response: nodeIdentity }, expected);
+      const acquire = vi.spyOn(writeJournal, "acquire");
+      const sign = vi.spyOn(adapter.raw.storagePrograms, "sign");
+      const crypto = vi.spyOn((adapter.raw as unknown as Demos).crypto, "getIdentity");
+      const broadcast = vi.spyOn(adapter.raw.tx, "broadcast");
+      await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_mismatch", category: "permanent" });
+      await expect(adapter.sign(new Uint8Array([1]))).rejects.toMatchObject({ code: "chain_identity_mismatch" });
+      await expect(adapter.anchorWriteOnce("listing-v1", { serviceId: "svc" })).rejects.toMatchObject({ code: "chain_identity_mismatch" });
+      expect(acquire).not.toHaveBeenCalled();
+      expect(sign).not.toHaveBeenCalled();
+      expect(crypto).not.toHaveBeenCalled();
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+
+    it("checks the existing chainIdentity setting against the node", async () => {
+      const { adapter } = identityAdapter({ result: 200, response: nodeIdentity }, undefined, genesisHash, 200, "wrong-genesis");
+      await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_mismatch" });
+    });
+
+    it("refuses a node identity inconsistent with its genesis", async () => {
+      const { adapter } = identityAdapter({ result: 200, response: nodeIdentity }, undefined, "c".repeat(64));
+      await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_mismatch" });
+    });
+
+    it("accepts a node whose genesis declares no chain id", async () => {
+      const { adapter } = identityAdapter({ result: 200, response: { ...nodeIdentity, chainId: null } }, { genesisHash, chainId: null });
+      await expect(adapter.getChainIdentityDetails()).resolves.toMatchObject({ chainId: null, source: "node-call" });
+    });
+
+    it.each([
+      [200, { result: 400, response: "Unknown message: getChainIdentity" }],
+      [200, { result: 404, response: "not found" }],
+      [404, "not found"],
+    ])("falls back only for an unsupported identity call: %s %j", async (status, response) => {
+      const { adapter } = identityAdapter(response, { genesisHash }, genesisHash, status);
+      await expect(adapter.getChainIdentityDetails()).resolves.toEqual({
+        chainId: null, genesisHash, genesisDataHash: null, source: "genesis-read",
+      });
+      await expect(adapter.getChainIdentity()).resolves.toBe(genesisHash);
+    });
+
+    it("accepts an identity reply with an extra key", async () => {
+      const { adapter } = identityAdapter({ result: 200, response: { ...nodeIdentity, unexpected: true } }, nodeIdentity);
+      await expect(adapter.getChainIdentityDetails()).resolves.toEqual({ ...nodeIdentity, source: "node-call" });
+    });
+
+    it.each([{ genesisHash, chainId: "demos-test" }, { genesisHash, chainId: null }])(
+      "refuses a pinned chain id when the node cannot report one: %j", async (expected) => {
+        const { adapter } = identityAdapter("not found", expected, genesisHash, 404);
+        await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_unavailable" });
+        await expect(adapter.sign(new Uint8Array([1]))).rejects.toMatchObject({ code: "chain_identity_unavailable" });
+      });
+
+    it("refuses a wrong genesis during fallback", async () => {
+      const { adapter } = identityAdapter({ result: 404, response: "not found" }, { genesisHash: "c".repeat(64) });
+      await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_mismatch" });
+    });
+
+    it.each([
+      [200, { result: 503, response: "not ready", extra: { reason: "state_not_ready" } }],
+      [503, { result: 503, response: "Unknown message", extra: { reason: "state_not_ready" } }],
+      [200, { result: 500, response: "lookup_failed" }],
+      [500, { result: 400, response: "Unknown message" }],
+    ])("preserves unavailable identity reads without fallback: %s %j", async (status, response) => {
+      const { adapter, fetch } = identityAdapter(response, undefined, genesisHash, status);
+      await expect(adapter.getChainIdentity()).rejects.toMatchObject({ category: "transient" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries readiness failures without caching a fallback", async () => {
+      const { adapter, fetch } = identityAdapter({ result: 200, response: nodeIdentity });
+      fetch.mockResolvedValueOnce(searchReply(undefined));
+      fetch.mockResolvedValueOnce(new Response(JSON.stringify({ result: 503, extra: { reason: "state_not_ready" } })));
+      await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_invalid" });
+      await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "state_not_ready", category: "transient" });
+      await expect(adapter.getChainIdentity()).resolves.toBe(genesisHash);
+    });
+
+    it.each([
+      null, [], {}, { ...nodeIdentity, genesisHash: undefined },
+      { ...nodeIdentity, genesisHash: 5 }, { ...nodeIdentity, genesisHash: " " },
+      { ...nodeIdentity, chainId: 5 }, { ...nodeIdentity, chainId: undefined },
+      { ...nodeIdentity, genesisDataHash: [] }, { ...nodeIdentity, genesisDataHash: undefined },
+    ])("refuses malformed identity replies: %j", async (response) => {
+      const { adapter, fetch } = identityAdapter({ result: 200, response });
+      await expect(adapter.getChainIdentity()).rejects.toMatchObject({ code: "chain_identity_invalid" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not fall back after a transport failure", async () => {
+      const { adapter, fetch } = identityAdapter();
+      fetch.mockRejectedValueOnce(new Error("connection reset"));
+      await expect(adapter.getChainIdentity()).rejects.toMatchObject({ category: "transient", cause: { message: "connection reset" } });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("bounds identity response bytes", async () => {
+      const { adapter, fetch } = identityAdapter();
+      fetch.mockResolvedValueOnce(new Response("x".repeat(64 * 1024 + 1)));
+      await expect(adapter.getChainIdentity()).rejects.toThrow(/maxResponseBytes/);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("times out an identity read", async () => {
+      vi.useFakeTimers();
+      try {
+        const { adapter, fetch } = identityAdapter();
+        fetch.mockImplementationOnce(() => new Promise(() => {}));
+        const rejected = expect(adapter.getChainIdentity()).rejects.toMatchObject({ category: "transient" });
+        await vi.advanceTimersByTimeAsync(15_000);
+        await rejected;
+        expect(fetch).toHaveBeenCalledTimes(1);
+      } finally { vi.useRealTimers(); }
+    });
+  });
+
   it("uses the directly queryable genesis block as the journal chain identity", async () => {
     const adapter = new DemosAdapter({
       rpc: RPC,
       writeJournal: createInMemoryDemosWriteJournal(),
     });
-    const getBlock = vi.spyOn(adapter.raw, "getBlockByNumber").mockResolvedValue({
-      number: 0,
-      hash: "GENESIS-HASH",
-      status: "confirmed",
-    } as never);
-
-    await expect(
-      (adapter as unknown as { resolveChainIdentity(): Promise<string> })
-        .resolveChainIdentity(),
-    ).resolves.toBe("genesis-hash");
-    expect(getBlock).toHaveBeenCalledTimes(1);
-    expect(getBlock).toHaveBeenCalledWith(0);
+    const fetch = vi.fn(async (_url: unknown, options: RequestInit) => {
+      const call = JSON.parse(String(options.body)).params[0];
+      return call.message === "getChainIdentity"
+        ? new Response(JSON.stringify({ result: 400, response: "Unknown message" }))
+        : searchReply({ number: 0, hash: "GENESIS-HASH", status: "confirmed" });
+    });
+    vi.stubGlobal("fetch", fetch);
+    await expect(adapter.getChainIdentity()).resolves.toBe("genesis-hash");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1].body)).params[0])
+      .toEqual({ message: "getBlockByNumber", data: { blockNumber: 0 } });
   });
 
-  it("derives the genesis identity from confirmed block one when block zero is not queryable", async () => {
-    const adapter = new DemosAdapter({
-      rpc: RPC,
-      writeJournal: createInMemoryDemosWriteJournal(),
-    });
-    const getBlock = vi.spyOn(adapter.raw, "getBlockByNumber")
-      .mockResolvedValueOnce("error" as never)
-      .mockResolvedValueOnce({
-        number: 1,
-        hash: "BLOCK-ONE",
-        status: "confirmed",
+  it.each([200, 400])("derives the genesis identity from confirmed block one when block zero is not queryable: %s", async (result) => {
+    const adapter = new DemosAdapter({ rpc: RPC });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ result: 400, response: "Unknown message" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ result, response: "error" })))
+      .mockResolvedValueOnce(searchReply({
+        number: 1, hash: "BLOCK-ONE", status: "confirmed",
         content: { previousHash: "GENESIS-PREDECESSOR" },
-      } as never);
-
-    await expect(
-      (adapter as unknown as { resolveChainIdentity(): Promise<string> })
-        .resolveChainIdentity(),
-    ).resolves.toBe("genesis-predecessor");
-    expect(getBlock).toHaveBeenNthCalledWith(1, 0);
-    expect(getBlock).toHaveBeenNthCalledWith(2, 1);
+      }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(adapter.getChainIdentity()).resolves.toBe("genesis-predecessor");
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1].body)).params[0].data).toEqual({ blockNumber: 0 });
+    expect(JSON.parse(String(fetch.mock.calls[2]?.[1].body)).params[0].data).toEqual({ blockNumber: 1 });
   });
 
   it("rejects an unauthenticated block-one genesis fallback", async () => {
-    const adapter = new DemosAdapter({
-      rpc: RPC,
-      writeJournal: createInMemoryDemosWriteJournal(),
-    });
-    vi.spyOn(adapter.raw, "getBlockByNumber")
-      .mockResolvedValueOnce("error" as never)
-      .mockResolvedValueOnce({
-        number: 1,
-        hash: "BLOCK-ONE",
-        status: "pending",
+    const adapter = new DemosAdapter({ rpc: RPC });
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ result: 400, response: "Unknown message" })))
+      .mockResolvedValueOnce(searchReply("error"))
+      .mockResolvedValueOnce(searchReply({
+        number: 1, hash: "BLOCK-ONE", status: "pending",
         content: { previousHash: "GENESIS-PREDECESSOR" },
-      } as never);
-
-    await expect(
-      (adapter as unknown as { resolveChainIdentity(): Promise<string> })
-        .resolveChainIdentity(),
-    ).rejects.toThrow(/no valid chain identity/);
+      })));
+    await expect(adapter.getChainIdentity()).rejects.toThrow(/no valid chain identity/);
   });
 
   it("refuses a write before preparation when no durable journal is configured", async () => {

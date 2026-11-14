@@ -3,7 +3,7 @@ import { operatorBuyerAccessConfig } from '../seams/buyer-access-not-wired.mjs';
 import { addressForClaim } from '../signatures.mjs';
 // Seller agent for one verified fixed-price DEM Listing, acting as phase
 // orchestrator (seller-as-phase-orchestrator-v1). Transport-neutral: every
-// method takes and returns plain JSON; seller-http.mjs is a narrow adapter.
+// method takes and returns plain JSON.
 //
 // The seller identity is supplied by the operator as a signing callback over
 // raw bytes (never the plugin buyer's key; the agent never sees a buyer key).

@@ -193,7 +193,8 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // the wallet's sign, broadcast and chain-read primitives on this node; a plain
 // Demos wallet signs a new CREATE whenever it is asked (the node checks only
 // the nonce-derived storage address, so a second CREATE under one name lands).
-// `faults.signCreate`: 'throw' before signing; `faults.broadcast`: 'drop' (the
+// `faults.signCreate`: 'throw' before signing, or a function awaited while the
+// wallet signs; `faults.broadcast`: 'drop' (the
 // node never applies it), 'lost' (applied, then the answer is lost) or 'other'
 // (the node applies instead a seller-signed CREATE of evidence naming another
 // transfer, as another tool holding the seller's key could write);
@@ -435,6 +436,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     signCreate: async ({ logicalAddress, artifact, artifactKind }) => {
       effects.signCreate.push(logicalAddress);
       const fault=faults.signCreate.shift();
+      if (typeof fault === 'function') await fault();
       if (fault === 'throw') throw Object.assign(new Error('TEST wallet failed before signing'), { code: 'TEST-wallet-failed' });
       if (fault === 'invalid') return {signedTransaction:'TEST invalid transaction',txHash:'e'.repeat(64),nonce:1};
       const signed = node.create(sellerKey, { logicalAddress, artifact, artifactKind }, { land: false });
@@ -1220,6 +1222,33 @@ test('settlement credit lost while the wallet reads the account nonce signs no s
   assert.notEqual(answer.status, 'payment-evidenced', shown(answer));
   assert.equal(w.effects.signed.length, 1, 'no successor is signed once the credit is contested');
   assert.equal(new Set(w.effects.broadcast).size, 1, 'only the kept bytes were ever broadcast');
+  assert.equal(w.createsAt(address), 0);
+});
+
+test('a transfer that stops verifying while the wallet reads the account nonce sends no payment evidence', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), plain = (hash) => String(hash).toLowerCase().replace(/^0x/, '');
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).status, 'held');
+  assert.equal(w.effects.broadcast.length, 1);
+  let stopped = false;
+  w.faults.readAccountNonce.push(async () => { stopped = true; w.node.faults.transactionDown = (hash) => plain(hash) === plain(tx); });
+  const answer = await p.claim(tx);
+  assert.ok(stopped, 'the wallet read the account nonce after the transfer was verified');
+  assert.notEqual(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(w.effects.broadcast.length, 1, `no payment evidence is sent once the transfer no longer verifies; the claim answered ${shown(answer)}`);
+  assert.equal(w.createsAt(address), 0, 'no payment evidence CREATE lands once the transfer no longer verifies');
+});
+
+test('a transfer that stops verifying while the wallet signs the payment evidence sends nothing and keeps the claim held', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), plain = (hash) => String(hash).toLowerCase().replace(/^0x/, '');
+  w.faults.signCreate.push(async () => { w.node.faults.transactionDown = (hash) => plain(hash) === plain(tx); });
+  const answer = await p.claim(tx);
+  assert.equal(w.effects.signed.length, 1, 'the wallet signed the payment evidence after the transfer was verified');
+  assert.equal(answer.status, 'held', shown(answer));
+  assert.equal(answer.anchorError?.code, 'payment_readback_required', shown(answer));
+  assert.equal(w.effects.broadcast.length, 0, 'no payment evidence is sent once the transfer no longer verifies');
   assert.equal(w.createsAt(address), 0);
 });
 
