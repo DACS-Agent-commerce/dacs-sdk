@@ -3344,12 +3344,12 @@ for(const failure of ['none','unavailable','changed'])test(`disabling evidence p
  const first=await p.claim(tx);assert.equal(first.delivery?.status,'delivered',shown(first));
  const signed=await w.signedClaim(p,tx);await w.host().close();
  const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
- const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});assert.equal(res.status,200);return res.json();};
+ const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});return{status:res.status,body:await res.json()};};
  if(failure==='unavailable')w.node.faults.transactionDown=hash=>hash===w.signedCreate(address).hash;
  if(failure==='changed')w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
  const observed=await post();
- if(failure==='none')assert.equal(observed.delivery?.status,'delivered',shown(observed));
- else{assert.equal(observed.delivery?.status,'delivery-ready',shown(observed));assert.equal(observed.delivery?.evidencePublication,'held-readback-only');}
+ if(failure==='none'){assert.equal(observed.status,200);assert.equal(observed.body.delivery?.status,'delivered',shown(observed.body));}
+ else{assert.deepEqual([observed.status,observed.body.error],[503,'seller_source_unavailable'],shown(observed.body));assert.equal(observed.body.cause,failure);}
  w.node.faults.transactionDown=()=>false;w.faults.evidenceRead=null;
  for(let refresh=0;refresh<2;refresh++){
   const done=await w.refreshPayment(p,tx);assert.equal(done.delivery?.status,'delivered',shown(done));

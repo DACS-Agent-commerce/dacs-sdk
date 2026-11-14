@@ -9,7 +9,7 @@ import { buyer, seller, protocolFixture, NOW } from './helpers/protocol-fixture.
 
 const json = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json', 'x-dacs-simulation': 'fixture' } });
 
-async function consumerFixture({ evidence = {}, transfer = {}, respond } = {}) {
+async function consumerFixture({ evidence = {}, transfer = {}, bodyStatus = 'confirmed', respond } = {}) {
   const { agreement, observed: payment } = await protocolFixture();
   const observed = { ...payment, txHash: payment.txHash.replace(/^0x/, '') };
   const artifact = await signComponentArtifact({ evidenceVersion: '1', jobId: agreement.jobId, phase: 'pay-dem', outcome: 'success', observedAt: NOW,
@@ -23,7 +23,7 @@ async function consumerFixture({ evidence = {}, transfer = {}, respond } = {}) {
       const { message, data } = JSON.parse(init.body).params[0];
       if (message === 'getTransactionStatus') return json({ result: 200, response: { state: 'included', blockNumber: observed.blockNumber } });
       if (message === 'getTxByHash' && data.hash.replace(/^0x/, '') === observed.txHash.replace(/^0x/, '')) return json({ result: 200, response: {
-        hash: observed.txHash, status: 'confirmed', blockNumber: observed.blockNumber,
+        hash: observed.txHash, status: bodyStatus, blockNumber: observed.blockNumber,
         content: { type: 'native', from: buyer.address, to: seller.address, amount: '2500000000', nonce: FIXTURE_SIGNED_NONCE,
           data: ['native', { nativeOperation: 'send', args: [seller.address, '2500000000'] }], ...transfer } } });
       if (message === 'getBlockByNumber' && data.blockNumber === observed.blockNumber) return json({ result: 200, response: {
@@ -73,6 +73,15 @@ for (const [label, transfer] of [['payer', { from: seller.address }], ['payee', 
     assert.equal(result.reason, 'native-evidence-observed-tuple-time-or-commitment-mismatch');
   });
 }
+
+for (const bodyStatus of ['included', 'finalized']) test(`an included transfer whose record is labelled ${bodyStatus} without confirmed execution is not the payment`, async () => {
+  const f = await consumerFixture({ bodyStatus });
+  const observed = await f.consumer.observeDemosTransfer(f.input.txHash);
+  assert.equal(observed.status, 'included'); assert.equal(observed.execution, undefined, 'the node record does not attest execution');
+  const result = await f.consumer.readEvidence(f.input);
+  assert.equal(result.disposition, 'indeterminate'); assert.notEqual(result.authenticated, true);
+  assert.equal(result.reason, 'native-evidence-observed-tuple-time-or-commitment-mismatch');
+});
 
 test('an authenticated signed artifact with the wrong payment amount remains rejected', async () => {
   const f = await consumerFixture({ evidence: { paymentAmount: { amount: '3', currency: 'DEM' } } });
