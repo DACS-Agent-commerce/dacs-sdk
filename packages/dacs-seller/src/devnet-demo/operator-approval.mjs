@@ -337,7 +337,8 @@ const withinConfirmationBound=(validity)=>{try{return Buffer.byteLength(JSON.str
  * (decision.requestBytes); a request that no longer matches them is not asked about and its attempt is released
  * (policy.releaseHeld), as is a hold outside the table. Policy errors reject; a manual answer or sign gate that
  * throws first releases the held attempt (policy.releaseHeld). confirm checks the one policy-approved write in flight
- * at the policy's confirmation gate, and is false for any other approval.
+ * at the policy's confirmation gate, and is false for any other approval. A repeat of a confirmation whose line is
+ * already appended runs the same checks, syncs the ledger again and is true, so a line whose sync failed can be retried.
  * approve.retained = {prepare, open, reopen, confirm, settle} is the lifecycle of a payment-evidence SettlementEvidence
  * write whose exact bytes the caller retains for replay. Its authorization is held until settle(binding, outcome) ends
  * it: a replacement, a mismatched or refused confirmation, or another write never releases it, and it never enters the
@@ -663,8 +664,14 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const record=records.get(request),ids=record?.reservation;
     if(!ids)return false;
     const copy=JSON.parse(record.bytes),row=await openSignLine(record);
-    if(row.confirmed!==null)return false;
     const checks=await confirmationChecks(copy,validity,HOLD_REASONS.has(record.reason));
+    // A line already appended for this request: its file sync may have failed, so a repeat syncs it again and
+    // appends nothing. A repeat the checks refuse is false and leaves the line and the reservation as they are.
+    if(row.confirmed!==null){
+      if(checks.reason)return false;
+      syncContextLedger(evidencePath);
+      return true;
+    }
     if(checks.reason){completeReservation(request,record,row,'released',checks.reason==='confirmation-mismatch'?checks.reason:'confirmation-refused');return false;}
     appendConfirmation(record.bytes,copy,ids,validity,checks,record);
     return true;
