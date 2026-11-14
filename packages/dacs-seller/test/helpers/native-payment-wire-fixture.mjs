@@ -6,9 +6,11 @@ import { mkdtempSync, realpathSync, rmSync, readdirSync, readFileSync, existsSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
+import DatabaseSync from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
-import { inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
-import { NOW, testWallet } from './protocol-fixture.mjs';
+import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { testWallet } from './protocol-fixture.mjs';
+import { T0 } from './reservation-accounting-fixture.mjs';
 import { sellerApi as seller } from './seller-internal-api.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
 import { scriptedDemosNode } from './native-payment-node.mjs';
@@ -31,7 +33,12 @@ const AUTHORITY = 'TEST-native-payment-wire';
 const PAYMENTS_PATH = '/dacs/v1/payments';
 const CLIENT_TIMEOUT_MS = 60_000;
 const JOURNAL_LEASE_MS = 300_000;
+const DELEGATION_MS = 21_600_000;
+const SESSION_NOT_BEFORE_SKEW_MS = 30_000;
 const PRICE_DEM = '2.5';
+const ACCOUNTING_TABLES = ['peer_effects', 'peer_nonces', 'peer_slots', 'kit_reservations'];
+/** The world's clock starts here; a session delegation lasts `DELEGATION_MS` from it, and the Agreement deadline is later still. */
+export { T0, DELEGATION_MS };
 const clone = (value) => structuredClone(value);
 const demToOs = (amount) => { const [whole, fraction = ''] = amount.split('.'); return (BigInt(whole) * 10n ** 9n + BigInt(fraction.padEnd(9, '0'))).toString(); };
 const walletOf = (tag) => { const wallet = testWallet(tag); return { ...wallet, sign: wallet.signBytes, signWallet: (message) => `0x${wallet.signBytes(Buffer.from(message)).toString('hex')}` }; };
@@ -47,22 +54,34 @@ const presentChallenge = (party, presentedAt, sessionNonce) => {
 let jobSequence = 0;
 
 /**
- * One native seller on its own directories. Returns `purchase()` (a signed, committed Agreement with its payment ready), `claim(p, txHash)`
- * (the buyer's signed payment request), `restart()` and `lapse()` (the open attempt's lease ends), the `faults` that fail the seller's next
- * evidence signature, and what the seller really did: `counts`, `evidenceCreates`, `deliverableWrites`, `deliveryEvidenceWrites`, `work`.
+ * One native seller on its own directories, with its clock at `T0` and the host's own 300000 ms journal lease. `advance(ms)` moves the clock
+ * and `beforeRetry()` moves it to the end of the open attempt's lease.
+ *
+ * `purchase()` returns a signed, committed Agreement with its payment ready: `p.pay()` makes the buyer's transfer; `p.claim(txHash)` sends the
+ * payment request through the client library; `p.sign(txHash, options)` signs one request and `p.post(signed)` sends exactly those bytes, so
+ * the same signed request can go twice; `p.send(txHash, options)` does both. `restart()` closes and reopens the seller over the same stores.
+ *
+ * `faults.evidenceSignature`, `faults.walletSignature`, `faults.walletBroadcast` and `faults.responseSignature` each fail that many next steps
+ * (the wallet faults fail before the step, so nothing is signed or sent). `hold(point)` stops the seller after that step until `release()`.
+ *
+ * What the seller really did: `counts` (evidence, wallet, broadcast and response signatures), `evidenceCreates`, `deliverableWrites`,
+ * `deliveryEvidenceWrites`, `work`, `sessionOf`, `wireState`, `steps` (each node read and wallet step in order, with the jobs whose durable lock
+ * was held), `transferReads()`, `lockedJobs()`, `grantedReceipts()`, `leaseUntil()` and `snapshot(p)`, which holds what a repeated request must
+ * leave as it was.
  */
 export async function nativePaymentWorld(t) {
   const sellerKey = walletOf(17), buyerKey = walletOf(12);
-  let wallClock = NOW, advancedMs = 0;
+  const sessionKey = walletOf(3);
+  let wallClock = T0, advancedMs = 0;
   // The host's clock is wall time and never behind the node's latest block, which the node stamps two seconds apart.
   let node = null;
   const clock = () => Math.max(wallClock, node?.latestBlockMs() ?? 0);
   node = scriptedDemosNode(clock);
   const advance = (milliseconds) => { wallClock = clock() + milliseconds; advancedMs += milliseconds; };
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: clock });
-  const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, NOW - 1000), displayName: 'Native payment seller', publicEndpoint: 'https://seller.invalid',
+  const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, T0 - 1000), displayName: 'Native payment seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'native-payment-wire', listingVersion: 1, title: 'Native payment report', description: 'A paid report delivered through the wire handler.',
-    category: 'services.market-report', tags: ['native'], priceDem: PRICE_DEM, notBefore: NOW - 60000 });
+    category: 'services.market-report', tags: ['native'], priceDem: PRICE_DEM, notBefore: T0 - 60000, deadlineSecAfterCommit: DELEGATION_MS / 1000 + 1 });
   delete draft.offering.deliverable.schemaUrl;
   const pinOf = (listing) => ({ listingId: listing.listingId, version: listing.listingVersion, contentHash: core.contentHash(listing) });
   const produce = createDevnetPurchasedReportProducer({ producer: sellerKey.claim, produce: () => 'A report bought through the wire handler.' });
@@ -70,13 +89,36 @@ export async function nativePaymentWorld(t) {
   draft.offering.deliverable.expectedSizeBytes = Buffer.byteLength(core.canonicalize(sample));
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
 
-  const counts = { evidenceSignatures: 0, walletSignatures: 0, walletBroadcasts: 0 };
-  const faults = { evidenceSignature: 0, walletSignature: 0, walletBroadcast: 0 };
+  const counts = { evidenceSignatures: 0, walletSignatures: 0, walletBroadcasts: 0, responseSignatures: 0 };
+  const faults = { evidenceSignature: 0, walletSignature: 0, walletBroadcast: 0, responseSignature: 0 };
+  // `hold(point)` stops the next step at that point once the step has happened and counted, until the test calls `release()`. It returns
+  // `reached`, which settles when the seller is stopped there. The points are `responseSignature`, `walletSignature` and `walletBroadcast`.
+  const holds = new Map();
+  const hold = (point) => {
+    const held = {};
+    held.reached = new Promise((resolve) => { held.reach = resolve; });
+    held.released = new Promise((resolve) => { held.release = resolve; });
+    holds.set(point, held);
+    return { reached: held.reached, release: held.release };
+  };
+  const holdHere = async (point) => {
+    const held = holds.get(point);
+    if (!held) return;
+    holds.delete(point);
+    held.reach();
+    await held.released;
+  };
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     const text = Buffer.from(bytes).toString('utf8');
     if (text.startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence)) {
       counts.evidenceSignatures++;
       if (faults.evidenceSignature > 0) { faults.evidenceSignature--; throw new Error('TEST the seller signer failed'); }
+    }
+    if (text.startsWith(DACS_SELLER_HTTP_DOMAINS.response)) {
+      // The wire awaits its signer, so a response signature may wait for the test.
+      counts.responseSignatures++;
+      if (faults.responseSignature > 0) { faults.responseSignature--; throw new Error('TEST the response signer failed'); }
+      return holds.has('responseSignature') ? holdHere('responseSignature').then(() => sellerKey.sign(bytes)) : sellerKey.sign(bytes);
     }
     return sellerKey.sign(bytes);
   } };
@@ -85,7 +127,7 @@ export async function nativePaymentWorld(t) {
   const buyerBundleFor = async (jobId) => {
     if (!buyerBundles.has(jobId)) {
       const challenge = await host.issueSessionChallenge({ jobId, buyer: buyerKey.claim });
-      buyerBundles.set(jobId, presentChallenge(buyerKey, NOW, challenge.sessionNonce));
+      buyerBundles.set(jobId, presentChallenge(buyerKey, T0, challenge.sessionNonce));
     }
     return buyerBundles.get(jobId);
   };
@@ -127,6 +169,9 @@ export async function nativePaymentWorld(t) {
   };
   let artifactAnchor = anchors.open();
 
+  // What the seller did around the wallet and the node, in order, each with the jobs whose durable lock was held at that moment.
+  const steps = [];
+  node.script.onRead = ({ message, hash }) => steps.push({ step: message, hash, locks: lockedJobs() });
   const walletDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-native-payment-wallet-')));
   const openWallet = () => seller.createPaymentEvidenceWalletJournal({ path: join(walletDirectory, 'wallet-journal.sqlite'),
     signCreate: async ({ logicalAddress, artifact, artifactKind }) => {
@@ -134,15 +179,18 @@ export async function nativePaymentWorld(t) {
       if (faults.walletSignature > 0) { faults.walletSignature--; throw new Error('TEST wallet failed before signing'); }
       counts.walletSignatures++;
       const signed = node.create(sellerKey, { logicalAddress, artifact, artifactKind }, { land: false });
+      await holdHere('walletSignature');
       return { signedTransaction: JSON.stringify(signed), txHash: signed.hash, nonce: signed.content.nonce };
     },
     readAccountNonce: async () => ({ nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() }),
-    readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
+    readTransactionState: async ({ txHash }) => { steps.push({ step: 'walletRead', locks: lockedJobs() }); return { state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }; },
     broadcast: async ({ signedTransaction, txHash }) => {
+      steps.push({ step: 'walletBroadcast', locks: lockedJobs() });
       counts.walletBroadcasts++;
       // A broadcast that fails before the node receives anything: the signed CREATE stays in the wallet journal.
       if (faults.walletBroadcast > 0) { faults.walletBroadcast--; throw new Error('TEST wallet broadcast failed'); }
       if (JSON.parse(signedTransaction).hash === txHash) node.rebroadcast(txHash);
+      await holdHere('walletBroadcast');
     } });
   let wallet = openWallet();
   const demDeliveryContext = createDemDeliveryContext({ authority: AUTHORITY, vetMode: KIT_TP1_VET_MODE,
@@ -157,6 +205,14 @@ export async function nativePaymentWorld(t) {
     logicalAddress: commitment.anchorReceipt.logicalAddress, artifact: commitment.record, artifactKind: 'FinalityCommitmentRecord', receipt: commitment.anchorReceipt,
     signedProjection: await artifactAnchor.retainedSignedCreate({ logicalAddress: commitment.anchorReceipt.logicalAddress, artifactKind: 'FinalityCommitmentRecord' }) }), { chainIdentity: FIXTURE_PROFILE.chainIdentity });
   const dataDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-native-payment-seller-')));
+  // Reads one of the host's SQLite stores while it runs. A store that does not exist yet reads as `empty`.
+  const readStore = (file, empty, read) => {
+    const path = join(dataDirectory, file);
+    if (!existsSync(path)) return empty;
+    const db = new DatabaseSync(path, { readonly: true });
+    try { return read(db); } finally { db.close(); }
+  };
+  const lockedJobs = () => readStore(join('seller', 'seller-state.sqlite'), [], (db) => db.prepare('SELECT job FROM seller_locks ORDER BY job').all().map((row) => row.job));
   const rails = { authority: railSteward().railAuthority() };
   const hosts = [];
   t.after(async () => { try { for (const running of hosts) await running.close(); } finally { wallet.close(); rmSync(dataDirectory, { recursive: true, force: true }); rmSync(walletDirectory, { recursive: true, force: true }); } });
@@ -186,6 +242,11 @@ export async function nativePaymentWorld(t) {
     return leases.length === 0 ? null : Math.max(...leases);
   };
   const retrySeam = createNativeRetrySeam({ wallNow: clock, monotonicNow: () => advancedMs, advance, leaseUntil: openLeaseUntil, mode: 'wire', establishCut: async () => {} });
+  const delegationFor = (jobId, profile) => {
+    const payload = { version: '1', kind: 'seller-session-delegation', buyer: buyerKey.claim, seller: sellerKey.claim, sessionPublicKey: sessionKey.claim.replace(/^did:demos:agent:/, ''), listingPin: pin, jobId,
+      notBefore: T0 - SESSION_NOT_BEFORE_SKEW_MS, expiresAt: T0 + DELEGATION_MS, profile };
+    return { payload, signature: buyerKey.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + core.canonicalize(payload))).toString('base64url') };
+  };
   const purchase = async () => {
     const jobId = `01J8N4YV7YVYQ4DB7M8T${String(++jobSequence).padStart(6, '0')}`;
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
@@ -201,19 +262,26 @@ export async function nativePaymentWorld(t) {
     agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
     assert.equal((await client().commit(jobId)).status, 'committed');
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
-    // The same signed request without the client library, so a test sees the status and the body the seller signed.
-    const send = async (txHash) => {
-      retrySeam.beforeRetry();
+    // A signed payment request without the client library. By default the open attempt's lease ends first, as for a retry; `lapse: false` keeps
+    // it live. `delegated` signs with a session key the buyer delegated for `DELEGATION_MS` from the start of the clock.
+    const sign = async (txHash, { lapse = true, delegated = false } = {}) => {
+      if (lapse) retrySeam.beforeRetry();
       const body = { jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }, text = JSON.stringify(body);
       const buyerWire = await wireBuyer({ buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint });
-      const { header } = await buyerWire.signRequest(PAYMENTS_PATH, body, { jobId, agreementHash: plan.agreementHash, text });
+      const delegation = delegated ? delegationFor(jobId, buyerWire.binding.profile) : null;
+      const { header } = await buyerWire.signRequest(PAYMENTS_PATH, body, { jobId, agreementHash: plan.agreementHash, text, delegation, signer: delegated ? sessionKey : buyerKey });
+      return { header, text, delegation };
+    };
+    // Sends the exact bytes of a signed request, as often as it is called, and returns the status and the body the seller signed.
+    const post = async ({ header, text }) => {
+      steps.push({ step: 'request' });
       const response = await fetch(`${host.url}${PAYMENTS_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: header }, body: text });
       const answerText = await response.text();
       return { status: response.status, text: answerText, body: JSON.parse(answerText) };
     };
-    return { jobId, agreement, agreementHash: plan.agreementHash, payout, amountOs, send,
+    return { jobId, agreement, agreementHash: plan.agreementHash, payout, amountOs, sign, post, send: async (txHash, options) => post(await sign(txHash, options)),
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
-      claim: async (txHash) => { retrySeam.beforeRetry(); try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
+      claim: async (txHash) => { retrySeam.beforeRetry(); steps.push({ step: 'request' }); try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
         catch (error) { return { error: error.code, status: error.status, causeCode: error.causeCode }; } } };
   };
   // A restart closes the host and reopens the wallet journal and the artifact anchor over the same stores, as a new process would.
@@ -234,7 +302,29 @@ export async function nativePaymentWorld(t) {
   };
   const createsAt = (logicalAddress) => node.applied.filter((entry) => entry.logicalAddress === logicalAddress).length;
   const receiptsFile = join(dataDirectory, 'seller', 'sdk-receipts', 'seller-receipts.json');
+  const grantedReceipts = () => (existsSync(receiptsFile) ? Object.keys(JSON.parse(readFileSync(receiptsFile, 'utf8')).records).length : 0);
+  const journalHash = () => {
+    const directory = join(dataDirectory, 'wire-journal');
+    return core.sha256Hex(readdirSync(directory).sort().map((name) => `${name}:${readFileSync(join(directory, name), 'utf8')}`).join('\n'));
+  };
+  // Everything a repeated request must leave as it was: the receipts granted, the wire journal's bytes, the transactions the node holds for
+  // the job's three artifacts, the transport store's accounting rows, job holds and releases, and the job's allocation id, state and revision.
+  const snapshot = (p) => ({ receipts: grantedReceipts(), journal: journalHash(),
+    sources: [core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex), `dacs4:deliverable:${p.jobId}`, `dacs4:evidence:${p.jobId}`]
+      .map((address) => node.applied.filter((entry) => entry.logicalAddress === address).map((entry) => entry.hash)),
+    ...readStore(join('transport', 'transport.sqlite'), {}, (db) => ({
+      rows: Object.fromEntries(ACCOUNTING_TABLES.map((table) => [table, db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n])),
+      holds: db.prepare('SELECT count(*) AS n FROM kit_job_holds').get().n,
+      releases: db.prepare('SELECT count(*) AS n FROM kit_slot_retirements WHERE job_retired = 1').get().n,
+      allocations: db.prepare('SELECT allocationId, state, rev FROM kit_allocations WHERE jobId = ?').all(p.jobId) })) });
   return { node, anchors, artifactAnchor, purchase, restart, faults, counts, dataDirectory, listing, sellerKey, buyerKey, advance, host: () => host, beforeRetry: retrySeam.beforeRetry,
+    hold, steps, lockedJobs, snapshot, leaseMs: JOURNAL_LEASE_MS, leaseUntil: openLeaseUntil, clock, grantedReceipts,
+    /** For each payment request sent so far, the jobs whose durable lock was held at each read of the transfer the seller made for it. */
+    transferReads: () => steps.reduce((requests, entry) => {
+      if (entry.step === 'request') requests.push([]);
+      else if (entry.step === 'getTransactionStatus') requests.at(-1)?.push(entry.locks);
+      return requests;
+    }, []),
     sessionOf: (p) => inDurableState((state) => state.withJob(p.jobId, (session) => clone(session))),
     work: (p) => inDurableState((state) => state.withJob(p.jobId, (session) => clone(session.nativeEvidenceWork))),
     /** Another job takes the transfer's settlement, so this job loses its settlement credit. */

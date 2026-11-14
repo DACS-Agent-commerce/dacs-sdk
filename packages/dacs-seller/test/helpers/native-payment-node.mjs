@@ -32,10 +32,12 @@ export function scriptedDemosNode(now) {
     return number;
   };
   // `script.transferRead(hash, record)` answers a read of a transaction in place of the node's record (null reads as not found; a throw as an
-  // unreachable node); `script.programRead(record)` does the same for a storage program; `counts.transactionReads` counts transaction reads.
-  const script = { transferRead: null, programRead: null }, counts = { transactionReads: 0 };
-  const transactionRecord = (hash) => {
+  // unreachable node); `script.programRead(record)` does the same for a storage program; `script.onRead({ message, hash })` is told of each
+  // transaction read before it is answered; `counts.transactionReads` counts transaction reads.
+  const script = { transferRead: null, programRead: null, onRead: null }, counts = { transactionReads: 0 };
+  const transactionRecord = (message, hash) => {
     counts.transactionReads++;
+    script.onRead?.({ message, hash });
     const record = transactions.get(hash) ?? null;
     return script.transferRead ? script.transferRead(hash, record && clone(record)) : clone(record);
   };
@@ -43,8 +45,8 @@ export function scriptedDemosNode(now) {
     switch (message) {
       case 'getBlockByNumber': return clone(blocks[data.blockNumber] ?? null);
       case 'getAddressNonce': return accountNonces.get(data.address) ?? 0;
-      case 'getTransactionStatus': { const found = transactionRecord(String(data.hash).toLowerCase()); return found ? { state: 'included', blockNumber: found.blockNumber } : { state: 'not-found' }; }
-      case 'getTxByHash': return transactionRecord(String(data.hash).toLowerCase());
+      case 'getTransactionStatus': { const found = transactionRecord(message, String(data.hash).toLowerCase()); return found ? { state: 'included', blockNumber: found.blockNumber } : { state: 'not-found' }; }
+      case 'getTxByHash': return transactionRecord(message, String(data.hash).toLowerCase());
       case 'searchStoragePrograms': return [...programs.values()].filter((program) => program.programName === data.query).map(({ storageAddress, programName }) => ({ storageAddress, programName }));
       default: return undefined;
     }
