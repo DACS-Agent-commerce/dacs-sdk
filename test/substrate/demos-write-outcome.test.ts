@@ -85,6 +85,9 @@ function answerAt<T>(answers: readonly T[], index: number): T | undefined {
 /** An adapter whose node answers from `script` and records the order of reads. */
 function scriptedAdapter(script: NodeScript) {
   const adapter = new DemosAdapter({ rpc: RPC, chainIdentity: CHAIN });
+  vi.spyOn(adapter, "getChainIdentityDetails").mockResolvedValue({
+    chainId: null, genesisHash: CHAIN, genesisDataHash: null, source: "genesis-read",
+  });
   Object.assign(adapter, { connected: true });
   const reads: string[] = [];
   let statusReads = 0;
