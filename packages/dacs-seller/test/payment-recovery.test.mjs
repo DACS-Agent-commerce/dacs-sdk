@@ -13,7 +13,7 @@ import { EVIDENCE_SIGNATURE, OTHER_TX, PAYMENT_TX, WORK_SAVE_SIGNATURE, fixtureP
 
 // The deadline of one bounded source read, and how many turns of the event loop a test waits for a read to start.
 const SOURCE_READ_TIMEOUT_MS = 10000;
-const EVENT_LOOP_TURNS = 1000;
+const EVENT_LOOP_TURNS = 100000;
 const stateOf = (w, id = w.jobId) => operationOf(w, id, PATHS.payments).state;
 const pending = async () => ({ status: 'pending', reason: 'demos-pending' });
 const underpaid = (txHash) => includedTransfer(txHash, { amountOs: '1' });

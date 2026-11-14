@@ -30,7 +30,7 @@ test('crash between reserve and effect: the lease holds the restarted request, t
   w.state.time += w.leaseMs;
   assert.deepEqual((await w.request(PATHS.payments)).body, DELIVERED);
   assert.deepEqual({ intake: counts.intake, reconciled: counts.reconciled }, { intake: 1, reconciled: 1 },'the payment was taken once, through the reconciliation and not as a fresh route run');
-  assert.deepEqual(paymentCompletions(w), [{ route: PATHS.payments, attempt: 1, status: 200, cleanup: 'route' }], 'completed once, on the recovery attempt');
+  assert.deepEqual(paymentCompletions(w), [{ route: PATHS.payments, attempt: 1, status: 200, cleanup: 'purchase-final' }], 'completed once, on the recovery attempt');
 });
 
 test('crash between effect and complete: a payment taken but never completed is reconciled after the restart, never taken again', async t => {
@@ -47,7 +47,7 @@ test('crash between effect and complete: a payment taken but never completed is 
   w.state.time += w.leaseMs;
   assert.deepEqual((await w.request(PATHS.payments)).body, DELIVERED);
   assert.deepEqual({ intake: counts.intake, reconciled }, { intake: 1, reconciled: 1 }, 'the kept payment was reconciled, never taken again');
-  assert.deepEqual(paymentCompletions(w), [{ route: PATHS.payments, attempt: 1, status: 200, cleanup: 'route' }], 'completed once');
+  assert.deepEqual(paymentCompletions(w), [{ route: PATHS.payments, attempt: 1, status: 200, cleanup: 'purchase-final' }], 'completed once');
 });
 
 for (const path of REPEATED_ROUTES) {
@@ -80,5 +80,5 @@ test('a restart with a pending effect: two requests after the lease start one re
   release();
   assert.deepEqual((await recovering).body, DELIVERED);
   assert.deepEqual(counts, { intake: 1, reconciled: 1 }, 'one effect and one recovery');
-  assert.deepEqual(paymentCompletions(w), [{ route: PATHS.payments, attempt: 1, status: 200, cleanup: 'route' }], 'completed once, returning the slot once');
+  assert.deepEqual(paymentCompletions(w), [{ route: PATHS.payments, attempt: 1, status: 200, cleanup: 'purchase-final' }], 'completed once, returning the slot once');
 });

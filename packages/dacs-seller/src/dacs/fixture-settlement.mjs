@@ -6,6 +6,8 @@ import { agreementTerms, deliverableAddress, deliveryEvidenceAddress, DEM_RAIL_D
 const TX_HASH_SHAPE = /^(?:0[xX])?[0-9a-fA-F]{64}$/;
 const normalized = value => String(value).toLowerCase().replace(/^0x/, '');
 const same = (left, right) => canonicalize(left) === canonicalize(right);
+// What an intake answer holds beyond the authorization its permit was claimed with.
+const INTAKE_RESULT_KEYS = new Set(['disposition', 'fulfilment', 'reason', 'permitId']);
 // Fixture settlement uses current authenticated job facts and one retained
 // authorization. Saved progress constrains bytes; it never grants credit.
 export function createFixtureSettlement({ listing, validation, sellerBundle, claim, anchors, observer, receiptStore, sessionFor, commit, sign, signEvidence, reportFor, persist, durable, bindSettlement, assertCredit, heldFor, now, error, unavailable }) {
@@ -104,7 +106,7 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
             permit = await receiptStore.inspectPermit(intake.permitId);
         } catch (cause) { throw unavailable(cause); }
         if (observed?.status !== 'included' || observed.execution === undefined) throw unavailable(observed?.status === 'not-found' ? 'absent' : 'unavailable');
-        const { disposition, fulfilment, reason, permitId, ...authorization } = intake;
+        const authorization = Object.fromEntries(Object.entries(intake).filter(([key]) => !INTAKE_RESULT_KEYS.has(key)));
         if (!observedTransferMatches(observed, { txHash: identity.txHash, terms, committedAt: session.commitment.committedAt }) || observed.blockNumber !== identity.blockNumber
             || permit?.status !== 'available' || permit.claim?.jobId !== session.jobId || !same(permit.claim.authorization, authorization)) throw unavailable('changed');
         try { await verifyCompleted(session, identity); } catch (cause) { throw unavailable(cause?.code === 'payment_readback_required' ? 'changed' : cause); }
