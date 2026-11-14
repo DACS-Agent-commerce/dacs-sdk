@@ -82,7 +82,7 @@ async function step(name, command, commandArgs, options) {
   const started = Date.now();
   const result = spawnSync(command, commandArgs, {
     cwd: options.cwd,
-    env: { ...process.env, NO_COLOR: "1", npm_config_update_notifier: "false" },
+    env: { ...process.env, NO_COLOR: "1", npm_config_update_notifier: "false", ...options.env },
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024,
     timeout: options.timeoutMs,
@@ -280,6 +280,12 @@ try {
         "install", "--no-audit", "--no-save", "--ignore-scripts", "--omit=optional",
         tarballs.core.path, tarballs.host.path, TYPESCRIPT, NODE_TYPES,
       ], { cwd: generated, timeoutMs: 20 * MINUTE });
+      for (const entry of ["websdk", "storage", "abstraction"]) {
+        await step(`${rail}-import-${entry}`, process.execPath, [
+          "--input-type=module", "--eval",
+          `await import("@kynesyslabs/demosdk/${entry}");`,
+        ], { cwd: generated, env: { NODE_OPTIONS: "" }, timeoutMs: MINUTE });
+      }
       await step(`${rail}-rebuild-sqlite`, "npm", ["rebuild", "better-sqlite3"],
         { cwd: generated, timeoutMs: 15 * MINUTE });
       railReport.installed = {
