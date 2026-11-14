@@ -122,6 +122,22 @@ describe("packed archive files", () => {
     const archive = gzipSync(tarArchive([{ ...valid, pax: { size: String(Buffer.byteLength(valid.body ?? "")) } }]));
     expect(text(packedFiles(archive))).toEqual({ "package.json": valid.body });
   });
+  it("accepts a file size written in base-256, as npm does", async () => {
+    const tar = Buffer.from(complete);
+    tar.fill(0, 124, 136);
+    tar[124] = 0x80;
+    tar.writeUInt32BE(Buffer.byteLength(valid.body ?? ""), 132);
+    tar.write("        ", 148);
+    tar.write(tar.subarray(0, 512).reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, "0") + "\0 ", 148);
+    const archive = gzipSync(tar);
+    const directory = temporaryDirectory();
+    const path = join(directory, "archive.tgz");
+    writeFileSync(path, archive);
+    await createRequire(npmToolchain().cli)("pacote").extract(path, join(directory, "expected"),
+      { offline: true, ignoreScripts: true, cache: join(directory, "cache") });
+    expect(readFileSync(join(directory, "expected/package.json"), "utf8")).toBe(valid.body);
+    expect(text(packedFiles(archive))).toEqual({ "package.json": valid.body });
+  });
   it.each(["00000000001", "00000002000"])("refuses a directory header with nonzero size %s", size => {
     const archive = gzipSync(tarArchive([valid, { name: "package/lib/", type: "5", size }]));
     expect(() => packedFiles(archive)).toThrow("packed tarball directory has a nonzero size");
