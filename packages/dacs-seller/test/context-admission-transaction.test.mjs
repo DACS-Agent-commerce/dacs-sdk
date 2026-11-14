@@ -691,6 +691,44 @@ test('a stale direct admission keeps uncertain effects compensating until fresh 
   assert.equal(w.calls.release, 1);
 });
 
+for (const state of ['admitted', 'running']) {
+  for (const evidence of ['undetermined', 'read-failure']) {
+    test(`a stale direct ${state} admission keeps its hold and slots after restart with ${evidence} evidence`, async t => {
+      const w = world(t), p = w.prepare();
+      p.input.delegationExpiresAt = null;
+      await w.admission.begin(p.input);
+      if (state === 'running') await w.admission.reserveContext(p.input.jobId, w.reserveWire);
+      const occupied = w.capacity.capacityReport().allotted;
+      w.control.evidence = row => {
+        if (evidence === 'read-failure') throw new Error('journal read failed');
+        return w.evidenceOf(row, evidence);
+      };
+      w.control.clock += DIRECT_LIFETIME_MS;
+      w.reopen();
+      await w.admission.sweep({ startup: true });
+      assert.equal(w.row(p.input.jobId).state, 'compensating');
+      assert.equal(w.row(p.input.jobId).compensation.proof, null);
+      assert.equal(w.holds.size, 1);
+      assert.equal(w.capacity.capacityReport().allotted, occupied);
+      assert.equal(w.calls.release, 0);
+      assert.equal(w.row(p.input.jobId).cleanup.cause.code, 'context_compensation_undetermined');
+      assert.equal(w.row(p.input.jobId).cleanup.cause.status, 503);
+      await w.admission.sweep({ startup: false });
+      assert.equal(w.row(p.input.jobId).state, 'compensating');
+      assert.equal(w.holds.size, 1);
+      assert.equal(w.capacity.capacityReport().allotted, occupied);
+      w.control.evidence = row => w.evidenceOf(row, 'proven-unsigned');
+      await w.admission.sweep({ startup: false });
+      assert.equal(w.row(p.input.jobId).state, 'aborted');
+      assert.equal(w.row(p.input.jobId).compensation.proof, 'no-effect');
+      assert.equal(w.holds.size, 0);
+      assert.equal(w.capacity.capacityReport().allotted, 0);
+      assert.equal(w.calls.release, 1);
+      assert.equal(w.calls.wire, state === 'running' ? 1 : 0);
+    });
+  }
+}
+
 test('a stale direct admission settles a completed journal outcome after an uncertain compensation pass', async t => {
   const w = world(t), p = w.prepare();
   p.input.delegationExpiresAt = null;
