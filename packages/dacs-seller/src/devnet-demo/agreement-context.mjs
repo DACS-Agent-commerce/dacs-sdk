@@ -250,7 +250,7 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
 // writes this seller's Vets.
 // retainedScope({jobId,buyer}) (seller context route, seller-context-route.mjs
 // createSellerContextRecords): the scope of that buyer's completed route step
-// from the seller's durable records, or null.
+// from the seller's durable records, or null. Without a constructor reader, `bindRetainedScope(reader)` sets it once.
 // vetMode: `counterparty` (absent) has the buyer verify and sign the seller's own
 // Vet record; `tp1-g3-orchestrator` has this seller wallet sign both records, with
 // the Listing's exact seller bundle, and never calls `counterparty`. It is fixed
@@ -272,6 +272,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     access?.assertWallet(addressForClaim(buyer));
   };
   const state=partyVetState(store,wallet.claim);
+  // The retained-scope reader is the one given at construction, or the one bound once before the first request.
+  let readRetainedScope=retainedScope,requested=false;
+  const sellerPresentedBy=listing.seller.identity.presentedBy;
   const ownTerms=t=>Boolean((!orchestrator||purchaseSupport(listing).supported)&&t?.listingPin&&t.price&&same(t.listingPin,listingPin(listing))&&t.seller===wallet.claim&&t.payee===addressForClaim(wallet.claim)&&same(t.price,purchaseSupport(listing).price));
   const contexts=new Map(),invocations=[],vets=new Map(),running=new Map(),drops=new Set(),releasing=new Map();
   const rememberInvocation=value=>{invocations.push(value);if(invocations.length>INVOCATION_DIAGNOSTIC_LIMIT)invocations.shift();};
@@ -967,7 +970,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   const buyerAnswer=value=>({disposition:'present',value:{scope:clone(value.scope),input:clone(value.input)}});
   // writable must re-read the caller's durable purchase state before effects.
   async function resolveBuyer({scope,buyerIdentityBundle},{writable}={}){
-    validate(scope);
+    requested=true;validate(scope);
     if(typeof writable!=='function')throw new TypeError('a durable purchase-state check is required');
     if(writable()!==true)fail('not-pending','the purchase is no longer pending');
     assertAccess(buyerIdentityBundle.presentedBy);
@@ -995,18 +998,19 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     try{return await finish(scope.jobId,ticket,candidate);}catch(error){if(!['context_released','binding-changed','conflict'].includes(error?.code))throw error;return null;}
   }
   async function recoverBuyer({scope,buyerIdentityBundle}){
+    requested=true;
     const candidate=await readCandidate(scope,buyerIdentityBundle);return candidate?.refused??(candidate?buyerAnswer(candidate):null);
   }
   async function resolveSeller({jobId,listingPin:pin,buyerIdentityBundle,generatedAt}){
-    validate({jobId,generatedAt});assertAccess(buyerIdentityBundle.presentedBy);
+    requested=true;validate({jobId,generatedAt});assertAccess(buyerIdentityBundle.presentedBy);
     const row=await state.read(jobId);
     if(!row?.binding||!row.lifecycle)return{disposition:'indeterminate',reason:'buyer context is not retained'};
     const ticket=ticketFor(row,generatedAt);
     if(!eligible(row,ticket))return{disposition:'rejected',reason:'the context request was released'};
     if(!same(row.binding.buyerIdentityBundle,buyerIdentityBundle)||!same(row.binding.scope.listingPin,pin))return{disposition:'rejected',reason:'seller context differs from buyer context'};
     // A completed route can only identify an already admitted candidate.
-    if(!row.seller&&retainedScope){
-      const scope=await retainedScope({jobId,buyer:buyerIdentityBundle.presentedBy});
+    if(!row.seller&&readRetainedScope){
+      const scope=await readRetainedScope({jobId,buyer:buyerIdentityBundle.presentedBy});
       if(!scope||!same(bindingFor(scope,buyerIdentityBundle),row.binding)||scope.generatedAt!==generatedAt)return{disposition:'indeterminate',reason:'completed route differs'};
     }
     let candidate;
@@ -1051,6 +1055,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     return writes&&resumableRow(current,scope,buyerIdentityBundle)&&same(cutState(current),cutState(row))?{writes}:null;
   }
   async function resumableBuyer({scope,buyerIdentityBundle}){
+    requested=true;
     if(!ownTerms(scope))return null;
     validate(scope);assertAccess(buyerIdentityBundle.presentedBy);
     const row=await state.read(scope.jobId);if(!resumableRow(row,scope,buyerIdentityBundle))return null;
@@ -1126,7 +1131,16 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     void completion.then(settled,error=>{settled();logged('release',jobId)(error);});return completion;
   }
   async function sweep(ended){let deleted=0;for(const jobId of await state.jobs())if(ended(jobId)===true&&await drop(jobId))deleted++;return{deleted,usage:store.usage?.()??null};}
-  return{vetMode,resolveBuyer,recoverBuyer,resumableBuyer,resolveSeller,release,sweep,usage:()=>store.usage?.()??null,assertBuyerAccess:assertAccess,contexts,invocations};
+  // Sets the reader resolveSeller consults for a completed route: once, before any request, and only when none was given at
+  // construction. Returns the seller presenter this provider was built for. Any other call throws a TypeError and changes nothing.
+  function bindRetainedScope(reader){
+    if(typeof reader!=='function')throw new TypeError('the retained scope reader must be a function');
+    if(readRetainedScope)throw new TypeError('the retained scope reader is already set');
+    if(requested)throw new TypeError('the retained scope reader cannot be set after the first request');
+    readRetainedScope=reader;
+    return Object.freeze({sellerBundlePresentedBy:sellerPresentedBy});
+  }
+  return{vetMode,resolveBuyer,recoverBuyer,resumableBuyer,resolveSeller,release,sweep,bindRetainedScope,usage:()=>store.usage?.()??null,assertBuyerAccess:assertAccess,contexts,invocations};
 
 }
 
