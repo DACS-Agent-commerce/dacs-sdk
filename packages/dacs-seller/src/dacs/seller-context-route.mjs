@@ -461,7 +461,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   const { sellerBundlePresentedBy } = provider.bindRetainedScope(records.completedScope);
   if (!sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) throw new TypeError('the provider is pinned to a seller presenter other than the Listing\'s');
 
-  // Everything before the attempt: a refusal here consumes nothing.
+  // Everything before the attempt: a refusal here consumes nothing. Resolves with the wire's admission of the request, whose body is the one to use.
   async function openRequest({ rawBody, header, method, path }, onOpened) {
     const body = admitWireRequestBody(rawBody);
     const opened = await openWireRequest(wire, header, onOpened);
@@ -477,9 +477,8 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
     if (row === null && !isCanonicalClaimReference(body.scope.buyer)) refuse('peer_agreement_party_mismatch');
     const retained = row === null ? { jobId: request.jobId, agreementHash: sellerContextScopeHash(body.scope), buyer: body.scope.buyer, seller, accepted: false }
       : { jobId: row.jobId, agreementHash: row.contextScopeHash, buyer: row.buyer, seller: row.seller, accepted: false };
-    const admitted = await admitPreAgreementRequest(opened, { route: 'context', binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId), seller, listingPin: pin,
+    return admitPreAgreementRequest(opened, { route: 'context', binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId), seller, listingPin: pin,
       method, path, rawBody, now: now(), requireDelegation: wire.requireDelegation, ready: ready(), requestJournal: wire.journal, retained });
-    return { request, admitted };
   }
 
   // The nonce attempt: this caller owns the challenge until it accepts or fails it. An accepted presentation sent again is not served yet.
@@ -537,8 +536,8 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   async function handleContext(input) {
     let request = null;
     try {
-      const opened = await openRequest(input, (payload) => { request = payload; });
-      const { admitted } = opened, { body } = admitted;
+      const admitted = await openRequest(input, (payload) => { request = payload; });
+      const { body } = admitted;
       const challenge = attemptChallenge(request, body);
       try { await admitFirstContact(request, admitted, challenge); } catch (error) {
         const { code, status } = refusalOf(error);
