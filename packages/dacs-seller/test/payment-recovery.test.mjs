@@ -11,6 +11,7 @@ import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { deliverableAddress, deliveryEvidenceAddress } from '../src/dacs/purchase-protocol.mjs';
 import { EVIDENCE_SIGNATURE, OTHER_TX, PAYMENT_TX, WORK_SAVE_SIGNATURE, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
 import { DELEGATION_MS, T0, nativePaymentWorld } from './helpers/native-payment-wire-fixture.mjs';
+import { killAndReopen } from './helpers/payment-restart-process.mjs';
 
 // The deadline of one bounded source read, and how many turns of the event loop a test waits for a read to start.
 const SOURCE_READ_TIMEOUT_MS = 10000;
@@ -572,4 +573,60 @@ test('a native payment sent under a six-hour session delegation delivers once, a
   assert.deepEqual([answer.status, answer.body.status], [200, 'payment-evidenced']);
   assertNativeDeliveredOnce(w, p);
 });
+
+// ---- A real seller process killed at one event and reopened in a new process ----
+
+// Each case kills the child once the event has happened, then reopens the same directories in a new process, which recovers the payment.
+// The parent keeps the signed source records and the counters across the kill. `workRetained` is whether the reopened seller finds the
+// payment work saved.
+const assertRealKillDelivered = (run, killAt, { delivered, workRetained }) => {
+  assert.deepEqual([run.killed.signal, run.killed.at], ['SIGKILL', killAt], 'the seller process was killed at the event');
+  assert.equal(run.reopened.delivered, delivered, `the reopened seller delivers: ${JSON.stringify(run.reopened.answer)}`);
+  assert.equal(run.reopened.workRetained, workRetained);
+  assert.deepEqual(run.writes, { evidenceCreates: 1, deliverableWrites: 1, deliveryEvidenceWrites: 1 }, 'one evidence CREATE, one Deliverable and one delivery evidence in all');
+  assert.equal(Object.keys(run.grants.atKill).length, 1, 'the permit was granted before the kill');
+  assert.deepEqual(run.grants.final, run.grants.atKill, 'the reopened seller grants no second permit and keeps the original authorization');
+};
+
+for (const [title, killAt, workRetained] of [
+  ['a seller process killed after the receipt grant and before the work save resumes with its original permit and grants nothing twice', 'receiptGranted', false],
+  ['a seller process killed after the payment work save delivers once when it is reopened', 'workSaved', true],
+  ['a seller process killed after the evidence CREATE is written delivers once when it is reopened', 'createBroadcast', true],
+  ['a seller process killed after the delivery is written delivers once when it is reopened', 'deliveryWritten', true],
+]) {
+  test(title, async (t) => {
+    const run = await killAndReopen(t, { world: 'fixture', killAt });
+    assertRealKillDelivered(run, killAt, { delivered: 'delivered', workRetained });
+  });
+}
+
+// The durable store keeps an intent before it sends a CREATE and never sends a kept intent again: recovery only reads. A fixture seller killed
+// between the intent and the write cannot tell whether the CREATE went out, so it holds the payment and sends nothing.
+test('a fixture seller process killed after the evidence is signed and before its CREATE is written holds the payment and sends nothing when it is reopened', async (t) => {
+  const run = await killAndReopen(t, { world: 'fixture', killAt: 'evidenceSigned' });
+  assert.deepEqual([run.killed.signal, run.killed.at], ['SIGKILL', 'evidenceSigned']);
+  assert.deepEqual([run.reopened.answer.status, run.reopened.answer.body.error], [503, 'operation_uncertain']);
+  assert.equal(run.reopened.attempt, 'pending', 'the attempt stays open');
+  assert.equal(run.reopened.workRetained, true);
+  assert.deepEqual(run.writes, { evidenceCreates: 0, deliverableWrites: 0, deliveryEvidenceWrites: 0 }, 'nothing is written');
+  assert.equal(Object.keys(run.grants.atKill).length, 1);
+  assert.deepEqual(run.grants.final, run.grants.atKill, 'no second permit is granted');
+});
+
+// The native seller reaches the work save, the wallet's signed CREATE, its broadcast and the delivery. The receipt grant and the work save are
+// synchronous writes inside the agent with no point to stop at, so the native world has no kill there.
+for (const [title, killAt, signedBeforeKill] of [
+  ['a native seller process killed after the payment work save delivers once when it is reopened', 'workSaved', 0],
+  ['a native seller process killed with the signed evidence CREATE kept broadcasts those exact bytes once when it is reopened', 'evidenceSigned', 1],
+  ['a native seller process killed after the evidence CREATE is broadcast sends it no second time when it is reopened', 'createBroadcast', 1],
+  ['a native seller process killed after the delivery is written delivers once when it is reopened', 'deliveryWritten', 1],
+]) {
+  test(title, async (t) => {
+    const run = await killAndReopen(t, { world: 'native', killAt });
+    assertRealKillDelivered(run, killAt, { delivered: 'payment-evidenced', workRetained: true });
+    assert.equal(run.signedBeforeKill, signedBeforeKill, 'the wallet had signed the CREATE before the kill, or signs it after the reopen');
+    assert.equal(run.signedCreates.length, 1, 'the wallet signs the evidence CREATE once in all');
+    assert.deepEqual(run.broadcastCreates, run.signedCreates, 'the node received once, and exactly the bytes the wallet signed');
+  });
+}
 
