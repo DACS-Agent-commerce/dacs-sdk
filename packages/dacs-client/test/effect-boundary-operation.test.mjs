@@ -238,3 +238,128 @@ test('a send that fails keeps its own error when the fence release also fails', 
   const sendFailure = new Error('TEST-send-failed');
   await assert.rejects(w.boundary.dispatchPass(artifact, () => { throw sendFailure; }), (error) => error === sendFailure);
 });
+
+for (const path of ['sign', 'dispatch']) {
+  test(`a nested ${path} while held refuses before reading or changing history`, async (t) => {
+    const w = await boundaryWorld(t);
+    await w.boundary.withOperation(w.op, async () => {
+      const artifact = await w.sign();
+      let reads = 0;
+      const read = w.history.readOperation;
+      w.history.readOperation = (...args) => { reads++; return read(...args); };
+      setPurchaseAdmission('held');
+      await assert.rejects(path === 'sign' ? w.sign() : w.send(artifact), code('profile_not_admitted'));
+      assert.equal(reads, 0);
+      assert.deepEqual(await passStates(w), ['p1/signed']);
+    });
+    assert.equal(w.sent.length, 0);
+    assert.equal(w.signatures, 1);
+  });
+}
+
+for (const barrier of ['history read', 'fresh signed write']) {
+  test(`a hold during the dispatch ${barrier} refuses before intent is saved`, async (t) => {
+    const w = await boundaryWorld(t), artifact = await w.sign();
+    await w.history.append({ ...artifact, passId: 'p1', state: 'signed-held' });
+    if (barrier === 'history read') {
+      const read = w.history.readOperation;
+      w.history.readOperation = async (...args) => { const records = await read(...args); setPurchaseAdmission('held'); return records; };
+    } else {
+      cutAppend(w, 'signed', { mutate: () => setPurchaseAdmission('held') });
+    }
+    await assert.rejects(w.send(artifact, { explicit: true }), code('profile_not_admitted'));
+    assert.equal(w.sent.length, 0);
+    assert.deepEqual(await passStates(w), barrier === 'history read'
+      ? ['p1/signed', 'p1/signed-held'] : ['p1/signed', 'p1/signed-held', 'p2/signed']);
+  });
+}
+
+test('an invalid send is refused without changing signed history, leaving a valid dispatch available', async (t) => {
+  const w = await boundaryWorld(t), artifact = await w.sign();
+  for (const send of [undefined, null, {}, 'TEST-send']) {
+    await assert.rejects(w.boundary.dispatchPass(artifact, send), TypeError);
+    assert.deepEqual(await passStates(w), ['p1/signed']);
+  }
+  await w.send(artifact);
+  assert.deepEqual(w.sent, [signedBytes]);
+});
+
+for (const via of ['signPass', 'signerFor']) {
+  test(`a stalled ${via} is aborted on its remaining deadline and releases the fence without retaining late bytes`, async (t) => {
+    const w = await boundaryWorld(t);
+    let signal, finish, entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    w.authority.state.gate = async () => { w.clock.advance(1000); };
+    const sign = (options) => { signal = options?.signal; entered(); return new Promise(resolve => { finish = resolve; }); };
+    const pending = via === 'signPass' ? w.boundary.signPass(w.op, sign)
+      : w.boundary.signerFor(w.op, { claim: 'TEST-claim', sign: (_bytes, options) => sign(options) }).sign(Buffer.from('TEST-request'));
+    let outcome;
+    const settled = pending.then(result => { outcome = result; }, error => { outcome = error; });
+    await started;
+    // The nested signing pass has its own budget; the enclosing precheck is separate.
+    const remainingMs = via === 'signPass' ? 8000 : 9000;
+    w.clock.advance(remainingMs - 1); await flush();
+    assert.equal(outcome, undefined);
+    w.clock.advance(1); await flush();
+    assert.equal(outcome?.code, 'eb_sign_timeout');
+    await settled;
+    assert.equal(signal.aborted, true);
+    assert.equal(signal.reason, outcome);
+    assert.equal(w.held, false);
+    assert.deepEqual(await passStates(w), []);
+    finish(signedBytes); await flush();
+    assert.deepEqual(await passStates(w), []);
+    assert.equal(w.clock.timers.size, 0);
+    w.authority.state.gate = null;
+    await w.sign();
+    await w.sign({ ...w.op, operationId: 'TEST-next', lane: 'TEST-next' });
+    assert.equal(w.signatures, 2);
+  });
+}
+
+test('a fence release failure after the boundary signer retains its signature, cause and records and refuses another sign', async (t) => {
+  const { w, releaseFailure } = await worldWithFailingRelease(t);
+  const operation = { ...w.op, operationId: 'TEST-signer', lane: 'TEST-signer' };
+  let signatures = 0;
+  const signature = 'TEST-signature';
+  const signer = w.boundary.signerFor(operation, { claim: 'TEST-claim', sign: () => { signatures++; return signature; } });
+  const failed = await signer.sign(Buffer.from('TEST-request')).catch(error => error);
+  assert.equal(failed.code, 'eb_fence_release_failed');
+  assert.equal(failed.details.result, signature);
+  assert.equal(failed.cause, releaseFailure);
+  const records = await w.history.readOperation(operation);
+  assert.deepEqual(records.map(record => record.state), ['signed', 'dispatch-started']);
+  assert.equal(records[0].bytes, Buffer.from(signature).toString('base64'));
+  await assert.rejects(signer.sign(Buffer.from('TEST-request')), code('eb_operation_signed'));
+  assert.equal(signatures, 1);
+});
+
+test('connection replacement preserves the fence release error after the replacement succeeds', async (t) => {
+  const { w, releaseFailure } = await worldWithFailingRelease(t);
+  let replaced = false;
+  await assert.rejects(w.boundary.replaceConnection(() => { replaced = true; return 'TEST-result'; }), error => error === releaseFailure);
+  assert.equal(replaced, true);
+});
+
+test('a queued nested sign checks admission before reading history when the earlier signer fails', async (t) => {
+  const w = await boundaryWorld(t);
+  await w.boundary.withOperation(w.op, async () => {
+    let entered, fail;
+    const started = new Promise(resolve => { entered = resolve; });
+    const first = w.boundary.signPass(w.op, () => { entered(); return new Promise((_resolve, reject) => { fail = reject; }); });
+    const firstRefused = assert.rejects(first, /TEST-sign-failed/);
+    await started;
+    let reads = 0;
+    const read = w.history.readOperation;
+    w.history.readOperation = (...args) => { reads++; return read(...args); };
+    const second = w.sign();
+    await flush();
+    setPurchaseAdmission('held');
+    fail(new Error('TEST-sign-failed'));
+    await firstRefused;
+    await assert.rejects(second, code('profile_not_admitted'));
+    assert.equal(reads, 0);
+    assert.equal(w.signatures, 0);
+    assert.deepEqual(await passStates(w), []);
+  });
+});

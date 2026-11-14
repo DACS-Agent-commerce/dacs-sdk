@@ -42,8 +42,8 @@ function requireSources({ binding, currentLocal, stopped, history, fence, clock 
   if (!['now', 'setTimer', 'clearTimer'].every((name) => typeof clock?.[name] === 'function')) throw new TypeError('the effect boundary needs now, setTimer and clearTimer');
 }
 
-// One pass's authority reads and stop checks share AUTHORITY_READ_DEADLINE_MS of read
-// time (waiting for the fence has its own deadline). A read that does not finish inside
+// One pass's authority reads, stop checks and signer share AUTHORITY_READ_DEADLINE_MS
+// of work time (waiting for the fence has its own deadline). A read that does not finish inside
 // what is left refuses with its timeout code, and a result that arrives later is ignored.
 function createReadBudget(clock) {
   let remainingMs = AUTHORITY_READ_DEADLINE_MS;
@@ -51,10 +51,12 @@ function createReadBudget(clock) {
     if (remainingMs <= 0) throw refusal(timeoutCode);
     const startedAt = clock.now();
     let timer;
+    const controller = new AbortController();
+    const timeout = () => { const error = refusal(timeoutCode); controller.abort(error); return error; };
     try {
-      const expired = new Promise((_resolve, reject) => { timer = clock.setTimer(() => reject(refusal(timeoutCode)), remainingMs); });
-      const result = await Promise.race([new Promise((resolve) => resolve(task())), expired]);
-      if (clock.now() - startedAt >= remainingMs) throw refusal(timeoutCode);
+      const expired = new Promise((_resolve, reject) => { timer = clock.setTimer(() => reject(timeout()), remainingMs); });
+      const result = await Promise.race([new Promise((resolve) => resolve(task({ signal: controller.signal }))), expired]);
+      if (clock.now() - startedAt >= remainingMs) throw timeout();
       return result;
     } finally {
       clock.clearTimer(timer);
@@ -125,21 +127,24 @@ function createKeyedQueue() {
  * pinVersion }`. Right before each effect (calling `sign()`, handing out a signature or
  * an artifact, calling `send()`) the boundary re-reads admission, the stop seam, the fee
  * and approval, the binding and the stop seam again, then checks admission, fee,
- * connection and revision with no await before the effect. Every method rejects with
+ * connection and revision with no await before the effect. Pass entry points reject with
  * the signer's, transport's or authority reader's own error, or an OperationError
  * carrying a refusal code, and always releases the fence it acquired. When the work
- * succeeded but the fence release failed, the method rejects `eb_fence_release_failed`
+ * succeeded but the fence release failed, the pass rejects `eb_fence_release_failed`
  * instead: the work's return value (a send's result, a signed artifact) is
  * `error.details.result` and the release failure is `error.cause`.
  *
  * - `signPass(operation, sign)`: refuses `eb_operation_signed` (with the recorded
  *   `artifactHash` in `details`) once the operation has a record on its lane, without
- *   calling `sign`. Resolves the artifact `{ ...operation, artifactHash }` after `sign()`'s
+ *   calling `sign`. Calls `sign({ signal })` with the remaining read budget; expiry
+ *   aborts the signal and refuses `eb_sign_timeout`, ignoring late bytes. Resolves
+ *   the artifact `{ ...operation, artifactHash }` after the signer's
  *   bytes are durable; a refusal after that leaves `signed-held`. Calls for one operation
  *   and lane that run together are queued: a later one is refused as above once the
  *   earlier one has recorded its artifact, and signs if the earlier one failed.
  * - `dispatchPass(artifact, send, { explicit })`: passes the retained bytes to `send(bytes)`
  *   once, after recording `dispatch-started`; a refusal then records `dispatch-withheld`.
+ *   A non-callable `send` rejects TypeError before reading or writing history.
  *   A held or withheld artifact needs `explicit: true`, which a composition sets only for
  *   a fresh request of its own; a possible dispatch refuses `eb_readback_required`; an
  *   artifact that is not the operation's one signed artifact refuses `eb_history_unavailable`.
@@ -151,8 +156,10 @@ function createKeyedQueue() {
  *   Do not await `replaceConnection` inside it.
  * - `signerFor(operation, signer)`: a wire signer whose `sign` signs the operation once
  *   and releases the signature like a send: it is recorded as `dispatch-started`, so the
- *   artifact is never sent again by a later `dispatchPass`.
- * - `replaceConnection(replace)`: the fence's connection replacement.
+ *   artifact is never sent again by a later `dispatchPass`. Calls the underlying
+ *   `signer.sign(bytes, { signal })` with the signing pass's abort signal.
+ * - `replaceConnection(replace)`: the fence's connection replacement; rejects the
+ *   fence's own release error if release fails after a successful replacement.
  */
 export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilingOs, history, fence, clock = systemClock, currentApproval, currentRevision, replayPolicy } = {}) {
   requireSources({ binding, currentLocal, stopped, history, fence, clock });
@@ -222,6 +229,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
 
   // One pass under the operation's fence capability, its own or the enclosing operation's.
   async function runPass(operation, work) {
+    assertPurchaseActionsAdmitted();
     const read = createReadBudget(clock);
     const enclosing = operations.getStore();
     if (enclosing) {
@@ -280,10 +288,11 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
   async function signPass(input, sign) {
     const operation = snapshotOperation(input);
     return runPass(operation, (frame, read) => signingQueue(JSON.stringify([operation.lane, operation.operationId]), async () => {
+      assertPurchaseActionsAdmitted();
       await refuseSignedOperation(operation);
       await refresh(read, operation);
       gate(frame, operation);
-      const bytes = await sign();
+      const bytes = await read(sign, 'eb_sign_timeout');
       if (!(bytes instanceof Uint8Array) || bytes.length === 0) throw new TypeError('the signer must return a non-empty Uint8Array');
       await refuseSignedOperation(operation);
       const stored = Buffer.from(bytes);
@@ -301,12 +310,15 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     if (state === 'none') throw refusal('eb_history_unavailable');
     if (state === 'possible' && (!REPLAYABLE_KINDS.has(operation.kind) || replayPolicy?.(operation, records) !== true)) throw refusal('eb_readback_required');
     if (state === 'held' && explicit !== true) throw refusal('eb_explicit_resume_required');
+    assertPurchaseActionsAdmitted();
     if (fresh) await persist({ ...signed, passId, state: 'signed' });
+    assertPurchaseActionsAdmitted();
     await persist({ ...operation, passId, state: 'dispatch-started' });
     return authorizeOrHold(frame, read, operation, passId, 'dispatch-withheld', () => release(Buffer.from(signed.bytes, 'base64'), passId));
   }
 
   async function dispatchPass(input, send, { explicit = false } = {}) {
+    if (typeof send !== 'function') throw new TypeError('the effect boundary needs a callable send');
     const operation = snapshotOperation(input);
     return runPass(operation, (frame, read) => dispatchRetained(frame, read, operation, explicit, async (bytes, passId) => {
       // An unpaired dispatch-started stays a possible dispatch if the unknown record is lost too; the first cause is the one reported.
@@ -338,8 +350,8 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
         claim: signer.claim,
         sign: (bytes) => runPass(operation, async () => {
           let signature;
-          const artifact = await signPass(operation, async () => {
-            signature = await signer.sign(bytes);
+          const artifact = await signPass(operation, async ({ signal }) => {
+            signature = await signer.sign(bytes, { signal });
             return typeof signature === 'string' ? Buffer.from(signature) : signature;
           });
           return runPass(artifact, (frame, read) => dispatchRetained(frame, read, artifact, false, () => signature));
