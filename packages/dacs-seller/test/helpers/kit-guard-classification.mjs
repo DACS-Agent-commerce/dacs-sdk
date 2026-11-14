@@ -70,7 +70,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/public/portal/seller-session-limits.mjs': { effect: {  }, pure: ['assertSellerSessionLifetime'] },
   'src/seller-diagnostics.mjs': { effect: {  }, pure: ['sellerDiagnostic'] },
   'src/seller-key.mjs': { effect: { openSellerKey: ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'] }, pure: ['SellerKeyError', 'loadKeyFile', 'parseSellerKeyRecord'] },
-  'src/util/bounded-resolution.mjs': { effect: {  }, pure: ['boundedResolutionValue', 'resolveWithDeadline'] },
+  'src/util/bounded-resolution.mjs': { effect: {  }, pure: ['boundedResolutionValue', 'isResolverDeadline', 'resolveWithDeadline'] },
   'src/util/http.mjs': { effect: {  }, pure: ['OutboundError', 'fetchBoundedJson'] },
   'src/util/immutable-readbacks.mjs': { effect: {  }, pure: ['createImmutableReadbacks'] },
   'src/util/text.mjs': { effect: {  }, pure: ['cutText'] },

@@ -125,6 +125,9 @@ function operationState(records, operation, pinVersion) {
  *   A held or withheld artifact needs `explicit: true`, which a composition sets only for
  *   a fresh request of its own; a possible dispatch refuses `eb_readback_required`; an
  *   artifact that is not the operation's one signed artifact refuses `eb_history_unavailable`.
+ *   When `send` returned but the acknowledgement record could not be written, it rejects
+ *   `eb_ack_not_persisted`: the artifact was sent, the send's return value is
+ *   `error.details.result`, and the write failure is `error.cause`.
  * - `withOperation(operation, work)`: holds the fence across `work`; passes made inside
  *   for the same operation reuse it, another operation is refused `tp1_fence_not_owned`.
  *   Do not await `replaceConnection` inside it.
@@ -275,15 +278,22 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
   async function dispatchPass(input, send, { explicit = false } = {}) {
     const operation = snapshotOperation(input);
     return runPass(operation, (frame, read) => dispatchRetained(frame, read, operation, explicit, async (bytes, passId) => {
+      // An unpaired dispatch-started stays a possible dispatch if the unknown record is lost too; the first cause is the one reported.
+      const recordUnknown = (cause) => persist({ ...operation, passId, state: 'dispatch-unknown', cause: failureCode(cause) }).catch(() => {});
+      let result;
       try {
-        const result = await send(bytes);
-        await persist({ ...operation, passId, state: 'dispatch-acknowledged' });
-        return result;
+        result = await send(bytes);
       } catch (cause) {
-        // An unpaired dispatch-started stays unknown if this record is lost too; the first cause is the one reported.
-        await persist({ ...operation, passId, state: 'dispatch-unknown', cause: failureCode(cause) }).catch(() => {});
+        await recordUnknown(cause);
         throw cause;
       }
+      try {
+        await persist({ ...operation, passId, state: 'dispatch-acknowledged' });
+      } catch (cause) {
+        await recordUnknown(cause);
+        throw new OperationError('eb_ack_not_persisted', 'the artifact was sent but its acknowledgement record was not persisted', { result }, { cause });
+      }
+      return result;
     }));
   }
 

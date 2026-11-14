@@ -8649,6 +8649,87 @@
           "after": "683f3a9c22c09a4207d1f588e0108cb327b579f2"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "b4d690799d4ea3e95f16278a542759e6f59f15ce",
+          "after": "b4d690799d4ea3e95f16278a542759e6f59f15ce"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "14cb1447457b9203e63d5a18e8a58da5d36784e6",
+          "after": "14cb1447457b9203e63d5a18e8a58da5d36784e6"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "Report a lost acknowledgement record after a successful send as eb_ack_not_persisted",
+      "sha": "a66660e64790f27c86c47cc1c39e69b236784086",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "ea9e892b09ac6333d8cec727575d5879c875f298",
+          "after": "c6a536f8fee883abd654907537ce728a0245155b"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "52c03f2dddbee806d14b94b223fc2fac459e7bc6"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
+          "after": "8881f3e8ce7a766a3162f5dc6afe79d2360884c4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the dispatch history blob merged with the lower branch fixes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "c9067c8d3faf5b01d1f2f174280d81877786e2d5",
+          "after": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the effect boundary blobs merged with the lower branch fixes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "b4d690799d4ea3e95f16278a542759e6f59f15ce",
+          "after": "b4d690799d4ea3e95f16278a542759e6f59f15ce"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test a lost acknowledgement write with and without its unknown record",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "0fd2ace1a4dae5ef01f51650072be5662066a04f"
+        }
+      ]
     }
   ]
 }
