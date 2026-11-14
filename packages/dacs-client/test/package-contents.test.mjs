@@ -282,3 +282,20 @@ test('documented local packing builds core before skipping pack lifecycle script
   const pack = commands.findIndex(command => command.startsWith('npm pack --ignore-scripts'));
   assert.ok(install >= 0 && build > install && pack > build, 'fresh clones build dist before packing core');
 });
+
+test("no test double or authority fixture is in the client's files or exports", t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'eb-contents.mjs'), `
+    import assert from 'node:assert/strict';
+    import { readdirSync, readFileSync } from 'node:fs';
+    const root = new URL('./node_modules/@kynesyslabs/dacs-client/', import.meta.url);
+    const files = readdirSync(root, { recursive: true });
+    assert.ok(files.includes('src/wallet/effect-boundary.mjs'));
+    for (const file of files) assert.doesNotMatch(file, /fixture|double|test\\//);
+    const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+    assert.doesNotMatch(JSON.stringify(pkg.exports), /effect-boundary/);
+    const { createEffectBoundary } = await import(new URL('src/wallet/effect-boundary.mjs', root));
+    assert.equal(typeof createEffectBoundary, 'function');
+  `);
+  run(process.execPath, ['eb-contents.mjs'], app);
+});

@@ -1,6 +1,8 @@
-// The actor fence over an injected acquire, and the dispatch history's
-// append-only rule beside the native transport's lane records. No network, no keys.
+// The actor fence over an injected acquire, the dispatch history's append-only
+// rule beside the native transport's lane records, and, below, the boundary's
+// passes over that fence and history. No network, no keys.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +10,8 @@ import { test } from 'node:test';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
 import { createEffectFence, FENCE_ACQUIRE_TIMEOUT_MS } from '../src/wallet/effect-fence.mjs';
 import { createEffectHistory } from '../src/wallet/effect-history.mjs';
+import { boundaryWorld, createEffectBoundary, setPurchaseAdmission, flush,
+  code, signedBytes, states, cutAppend, noEffects } from './helpers/effect-boundary-fixture.mjs';
 
 // A mutex standing in for the transport owner's connection fence, with timers
 // the test fires by hand.
@@ -208,4 +212,284 @@ test('the dispatch history is append-only and never rewrites the native transpor
   for (const [key, value] of nativeRecords) assert.deepEqual(await restarted.get(key), value, 'a native lane record is never rewritten');
   assert.deepEqual(puts, [], 'the history never used put');
   assert.deepEqual((await history.read({ lane, artifactHash })).map((r) => [r.passId, r.state]), [['pass-1', 'dispatch-started'], ['pass-1', 'dispatch-withheld'], ['pass-2', 'dispatch-started']]);
+});
+
+// The boundary's passes. Test-only admission seam; real durable history/fence.
+const digestBytes = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+test("each effect is authorized right before it in a fixed order, and refusals come as profile_not_admitted, writes_stopped, fee_ceiling_required, write-fee-cap, then the binding's code", async t => {
+  const w = await boundaryWorld(t);
+  w.authority.state.gate = async () => w.events.push('authority');
+  const append = w.history.append;
+  w.history.append = async record => { w.events.push(record.state); return append(record); };
+  await w.run();
+  const authorized = ['stop', 'authority', 'stop'];
+  assert.deepEqual(w.events, ['stop', 'authority', ...authorized, 'sign', 'signed', ...authorized, 'dispatch-started', ...authorized, 'send', 'dispatch-acknowledged']);
+  assert.equal(w.acquired, 1); assert.equal(w.released, 1);
+  for (const [held, stopped, fee, binding, expected] of [
+    [true, true, undefined, {}, 'profile_not_admitted'], [false, true, undefined, {}, 'writes_stopped'],
+    [false, false, undefined, {}, 'fee_ceiling_required'], [false, false, '1', {}, 'write-fee-cap'],
+    [false, false, '50000000000', {}, 'tp1_binding_required'],
+  ]) {
+    setPurchaseAdmission(held ? 'held' : 'testnet-tp1'); w.stopped = stopped;
+    w.resetBoundary({ feeCeilingOs: fee, binding });
+    await assert.rejects(w.sign(), code(expected));
+  }
+});
+
+test("crash cuts before persistence, after persistence, after dispatch intent and after transmission leave their states, and a restart signs again, sends once or reads back", async t => {
+  for (const [state, after, retained] of [['signed', false, []], ['signed', true, ['signed']],
+    ['dispatch-started', true, ['signed', 'dispatch-started']], ['dispatch-acknowledged', false, ['signed', 'dispatch-started', 'dispatch-unknown']]]) {
+    const w = await boundaryWorld(t);
+    cutAppend(w, state, { after });
+    const artifact = { ...w.op, artifactHash: digestBytes(signedBytes) };
+    await assert.rejects(w.run());
+    w.reopen();
+    assert.deepEqual(await states(w, artifact), retained);
+    if (state === 'signed' && !after) await w.run();
+    else if (state === 'signed') await w.send(artifact);
+    else await assert.rejects(w.send(artifact), code('eb_readback_required'));
+    assert.equal(w.sent.length, state === 'dispatch-started' ? 0 : 1);
+    for (const bytes of w.sent) assert.deepEqual(bytes, signedBytes);
+  }
+});
+
+test("a failed persistence write transmits nothing and refuses eb_persist_failed with EIO as its cause", async t => {
+  const w = await boundaryWorld(t), failure = Object.assign(new Error('TEST-disk-failed'), { code: 'EIO' });
+  cutAppend(w, 'signed', { error: failure });
+  await assert.rejects(w.run(), error => error.code === 'eb_persist_failed' && error.cause === failure);
+  assert.equal(w.sent.length, 0); assert.equal(w.held, false);
+});
+
+test("a stop observed between persistence and the release check keeps the signature signed-held, also after restart", async t => {
+  const w = await boundaryWorld(t);
+  cutAppend(w, 'signed', { mutate: () => { w.stopped = true; } });
+  await assert.rejects(w.run(), code('writes_stopped'));
+  const artifact = { ...w.op, artifactHash: digestBytes(signedBytes) };
+  w.reopen(); w.stopped = false;
+  assert.deepEqual(await states(w, artifact), ['signed', 'signed-held']);
+  await assert.rejects(w.send(artifact), code('eb_explicit_resume_required'));
+  assert.equal(w.sent.length, 0);
+});
+
+test("a transport that throws after the receiver recorded the bytes is dispatch-unknown, and readback moves it to observed", async t => {
+  const w = await boundaryWorld(t), artifact = await w.sign(), failure = new Error('TEST-answer-lost');
+  await assert.rejects(w.boundary.dispatchPass(artifact, bytes => { w.sent.push(Buffer.from(bytes)); throw failure; }), error => error === failure);
+  w.reopen();
+  assert.deepEqual(await states(w, artifact), ['signed', 'dispatch-started', 'dispatch-unknown']);
+  // A composition's authenticated readback adds observation; a saved ack is never send authority.
+  await w.history.append({ ...artifact, passId: 'TEST-readback', state: 'observed', result: 'TEST-source-found' });
+  await assert.rejects(w.send(artifact), code('eb_readback_required'));
+  assert.equal(w.sent.length, 1); assert.equal((await states(w, artifact)).at(-1), 'observed');
+});
+
+test("an acknowledged confirmation then a crash broadcasts once on restart; a lost confirmation answer is confirm-unknown", async t => {
+  for (const lost of [false, true]) {
+    const w = await boundaryWorld(t), confirmed = await w.sign({ ...w.op, lane: 'TEST-confirm', kind: 'confirm' });
+    const dispatch = w.boundary.dispatchPass(confirmed, bytes => { assert.deepEqual(bytes, signedBytes); if (lost) throw new Error('TEST-confirm-answer-lost'); return 'TEST-confirmed'; });
+    if (lost) await assert.rejects(dispatch); else await dispatch;
+    w.reopen();
+    assert.equal((await states(w, confirmed)).at(-1), lost ? 'dispatch-unknown' : 'dispatch-acknowledged');
+    // A composition's lane policy: only an acknowledged confirm advances.
+    if ((await states(w, confirmed)).at(-1) === 'dispatch-acknowledged') {
+      const broadcast = { ...w.op, lane: 'TEST-broadcast', kind: 'native', artifactHash: confirmed.artifactHash };
+      const original = (await w.history.read(confirmed)).find(record => record.state === 'signed');
+      await w.history.append({ ...broadcast, passId: 'TEST-broadcast-original', state: 'signed', bytes: original.bytes });
+      await w.send(broadcast); w.reopen();
+      await assert.rejects(w.send(broadcast), code('eb_readback_required'));
+      assert.deepEqual(w.sent, [signedBytes]); assert.equal(w.signatures, 1, 'broadcast retains the original transaction without signing again');
+    } else { await assert.rejects(w.send(confirmed), code('eb_readback_required')); assert.equal(w.sent.length, 0); }
+  }
+});
+
+test("authority reads that reject, stall, resolve late or exceed their byte or list bound sign nothing and keep their cause", async t => {
+  for (const variant of ['reject', 'stall', 'late', 'bytes', 'list']) {
+    const w = await boundaryWorld(t), failure = new Error('TEST-authority-' + variant);
+    let answer;
+    w.authority.state.gate = async () => {
+      if (variant === 'reject') throw failure;
+      if (variant === 'stall' || variant === 'late') await new Promise(resolve => { answer = resolve; });
+      if (variant === 'bytes' || variant === 'list') {
+        // The composition reader owns byte bounds before decode and list bounds afterward.
+        const bytes = Buffer.from(variant === 'bytes' ? 'oversized' : '[1,2]');
+        if (bytes.length > 8) throw failure;
+        if (JSON.parse(bytes).length > 1) throw failure;
+      }
+    };
+    const result = w.sign().catch(error => error);
+    await flush();
+    if (answer) { w.clock.advance(10_001); if (variant === 'late') answer(); }
+    const error = await result;
+    if (answer) assert.equal(error.code, 'tp1_authority_timeout'); else assert.equal(error, failure);
+    assert.equal(w.signatures, 0); assert.equal(w.sent.length, 0); assert.equal(w.held, false);
+    assert.equal(w.clock.timers.size, 0);
+  }
+});
+
+test("a stop check that rejects, stalls or answers a non-boolean counts as stopped with its cause", async t => {
+  for (const variant of ['reject', 'stall', 'invalid']) {
+    const w = await boundaryWorld(t), failure = new Error('TEST-stop-failed');
+    w.resetBoundary({ stopped: () => { if (variant === 'reject') throw failure; if (variant === 'stall') return new Promise(() => {}); return 'false'; } });
+    const result = w.sign().catch(error => error); await flush();
+    if (variant === 'stall') w.clock.advance(10_001);
+    const error = await result;
+    assert.equal(error.code, 'stop_check_' + (variant === 'reject' ? 'failed' : variant === 'stall' ? 'timeout' : 'invalid'));
+    if (variant === 'reject') assert.equal(error.cause, failure);
+    assert.equal(w.signatures, 0); assert.equal(w.sent.length, 0);
+  }
+});
+
+test("two purchases on one connection never interleave sign-to-dispatch, and when its fence changes the second binds to the new generation", async t => {
+  const w = await boundaryWorld(t);
+  await Promise.all([w.run(), w.run({ ...w.op, operationId: 'TEST-second', lane: 'TEST-second' })]);
+  assert.deepEqual(w.events.filter(e => e === 'sign' || e === 'send'), ['sign', 'send', 'sign', 'send']);
+  assert.equal(w.acquired, 2); assert.equal(w.released, 2);
+  await w.boundary.replaceConnection(() => {});
+  await w.run({ ...w.op, operationId: 'TEST-third', lane: 'TEST-third' });
+  assert.equal(w.fence.connectionGeneration, 1);
+  const late = await boundaryWorld(t);
+  let release;
+  const holder = late.fence.withFence('TEST-holder', () => new Promise(resolve => { release = resolve; }));
+  await flush();
+  const waiting = late.sign().catch(error => error);
+  await flush(); late.clock.advance(10_001);
+  assert.equal((await waiting).code, 'tp1_fence_timeout');
+  release(); await holder; await flush();
+  assert.equal(late.released, 2, 'the timed-out boundary acquisition is released when it arrives');
+  assert.equal(late.signatures, 0); assert.equal(late.sent.length, 0);
+});
+
+test("authority reads take no fence and call no signer", async t => {
+  const w = await boundaryWorld(t);
+  w.authority.state.gate = async () => { const before = [w.acquired, w.signatures]; await Promise.resolve(); assert.deepEqual([w.acquired, w.signatures], before); };
+  await w.run();
+  assert.equal(w.acquired, 1); assert.equal(w.signatures, 1);
+});
+
+test("with no host fee ceiling a pass refuses fee_ceiling_required; a debit equal to a supplied 50 DEM passes and 50 DEM plus 1 OS refuses", async t => {
+  const w = await boundaryWorld(t);
+  for (const feeCeilingOs of [undefined, null, '', '1.5', '-1', 50_000_000_000, '050']) {
+    w.resetBoundary({ feeCeilingOs }); await noEffects(w, w.sign(), 'fee_ceiling_required');
+  }
+  w.resetBoundary();
+  w.approval = { rev: 1, open: false };
+  await noEffects(w, w.sign({ ...w.op, approvalRef: { ...w.approval } }), 'write-fee-cap');
+  w.approval = { rev: 1, open: true };
+  await noEffects(w, w.sign({ ...w.op, debitOs: '50000000001' }), 'write-fee-cap');
+  for (const debitOs of [undefined, '-1', '1e9', '00']) await noEffects(w, w.sign({ ...w.op, debitOs }), 'write-fee-cap');
+  await w.run(); assert.equal(w.sent.length, 1);
+});
+
+test("a lane stamped with another pin version is readback-only: pin_version_retired", async t => {
+  const w = await boundaryWorld(t);
+  await noEffects(w, w.sign({ ...w.op, pinVersion: 'TEST-retired' }), 'pin_version_retired');
+  const artifact = await w.sign(); w.reopen();
+  await assert.rejects(w.send({ ...artifact, pinVersion: 'TEST-retired' }), code('pin_version_retired'));
+  // A lane the history stamped with an older pin is refused even when the caller names the current one.
+  const retired = { ...w.op, lane: 'TEST-retired-lane', pinVersion: 'TEST-retired', artifactHash: digestBytes(signedBytes) };
+  await w.history.append({ ...retired, passId: 'TEST-old-pass', state: 'signed', bytes: signedBytes.toString('base64') });
+  await assert.rejects(w.send({ ...retired, pinVersion: w.op.pinVersion }), code('pin_version_retired'));
+  assert.equal(w.sent.length, 0);
+});
+
+test("while held, every pass refuses profile_not_admitted before any read", async t => {
+  const w = await boundaryWorld(t); setPurchaseAdmission('held');
+  const artifact = { ...w.op, artifactHash: digestBytes(signedBytes) };
+  for (const run of [() => w.sign(), () => w.send(artifact), () => w.boundary.signerFor(w.op, { claim: 'TEST-claim', sign: () => signedBytes }).sign(signedBytes)]) {
+    await noEffects(w, run(), 'profile_not_admitted');
+  }
+  assert.deepEqual(w.events, []); assert.equal(w.acquired, 0);
+});
+
+test('missing boundary sources throw TypeError and caller admission cannot lift the package hold', async t => {
+  const w = await boundaryWorld(t);
+  for (const field of ['binding', 'currentLocal', 'history', 'fence', 'stopped']) assert.throws(() => createEffectBoundary({ ...w.options(), [field]: undefined }), TypeError);
+  w.resetBoundary({ admitted: () => true }); setPurchaseAdmission('held');
+  await noEffects(w, w.sign(), 'profile_not_admitted');
+});
+
+
+test('released async operation contexts cannot sign or send and a foreign nested operation cannot borrow the fence', async t => {
+  const w = await boundaryWorld(t);
+  let escaped, release;
+  const go = new Promise(resolve => { release = resolve; });
+  await w.boundary.withOperation(w.op, async () => {
+    escaped = go.then(() => w.sign());
+    await assert.rejects(w.boundary.signPass({ ...w.op, operationId: 'TEST-foreign' }, () => signedBytes), code('tp1_fence_not_owned'));
+  });
+  release(); await noEffects(w, escaped, 'tp1_fence_not_owned');
+});
+
+test('missing, mismatched or malformed retained history never permits transmission', async t => {
+  for (const variant of ['missing', 'metadata', 'bytes', 'state']) {
+    const w = await boundaryWorld(t), artifact = await w.sign();
+    const read = w.history.readOperation;
+    w.history.readOperation = async op => { const records = await read(op); if (variant === 'missing') return []; const last = records.at(-1);
+      if (variant === 'metadata') last.operationId = 'TEST-other';
+      if (variant === 'bytes') last.bytes = Buffer.from('TEST-wrong-bytes').toString('base64');
+      if (variant === 'state') last.state = 'TEST-unknown-state';
+      return records;
+    };
+    await assert.rejects(w.send(artifact), code('eb_history_unavailable'));
+    assert.equal(w.sent.length, 0); assert.equal(w.held, false);
+  }
+});
+
+test('a signer failure and a failed dispatch-intent append release the fence without sending', async t => {
+  const w = await boundaryWorld(t), failure = new Error('TEST-sign-failed');
+  await assert.rejects(w.boundary.signPass(w.op, () => { throw failure; }), error => error === failure);
+  assert.equal(w.held, false);
+  const artifact = await w.sign();
+  cutAppend(w, 'dispatch-started', { error: failure });
+  await assert.rejects(w.send(artifact), error => error.code === 'eb_persist_failed' && error.cause === failure);
+  assert.equal(w.held, false); assert.equal(w.sent.length, 0);
+  w.reopen(); await w.send(artifact); assert.equal(w.sent.length, 1);
+});
+
+test('caller mutations during an authority await cannot change retained operation authorization', async t => {
+  const w = await boundaryWorld(t), original = structuredClone(w.op);
+  w.authority.state.gate = async () => { w.op.debitOs = '0'; w.op.approvalRef.rev = 2; w.op.k1Rev = 99; };
+  const artifact = await w.sign();
+  assert.deepEqual({ ...artifact, artifactHash: undefined }, { ...original, artifactHash: undefined });
+  const records = await w.history.read(artifact);
+  assert.equal(records[0].debitOs, original.debitOs); assert.equal(records[0].approvalRef.rev, 1);
+});
+
+
+test('CREATE and wire replay require their composition policy while a possible native dispatch is never repeated', async t => {
+  for (const kind of ['native', 'create', 'wire']) {
+    const w = await boundaryWorld(t), artifact = await w.sign({ ...w.op, kind });
+    await w.send(artifact);
+    for (const replayPolicy of [undefined, () => false, async () => true]) {
+      w.resetBoundary({ replayPolicy });
+      await assert.rejects(w.send(artifact), code('eb_readback_required'));
+    }
+    w.resetBoundary({ replayPolicy: (op, records) => { assert.equal(op.kind, kind); assert.equal(records.at(-1).state, 'dispatch-acknowledged'); return true; } });
+    if (kind === 'native') await assert.rejects(w.send(artifact), code('eb_readback_required'));
+    else await w.send(artifact);
+    assert.equal(w.sent.length, kind === 'native' ? 1 : 2);
+    for (const bytes of w.sent) assert.deepEqual(bytes, signedBytes);
+  }
+});
+
+
+test("identical bytes on another lane do not reuse the first lane's post-sign authorization", async t => {
+  const w = await boundaryWorld(t);
+  const other = await w.sign({ ...w.op, lane: 'TEST-other' });
+  await w.boundary.withOperation(w.op, async () => {
+    await w.sign();
+    let reads = 0;
+    w.authority.state.gate = async () => { reads++; w.stopped = true; };
+    await assert.rejects(w.send(other), code('writes_stopped'));
+    assert.equal(reads, 1, 'the other lane refreshes its authority before dispatch');
+  });
+  assert.equal(w.sent.length, 0);
+});
+
+test('the boundary signer returns a string signature exactly as the inner signer gave it and persists its bytes', async t => {
+  const w = await boundaryWorld(t), signature = 'TEST-string-signature';
+  const signer = w.boundary.signerFor(w.op, { claim: 'TEST-claim', sign: () => signature });
+  assert.equal(await signer.sign(signedBytes), signature);
+  const [stored] = await w.history.read({ lane: w.op.lane, artifactHash: digestBytes(Buffer.from(signature)) });
+  assert.equal(stored.state, 'signed'); assert.equal(Buffer.from(stored.bytes, 'base64').toString(), signature);
 });

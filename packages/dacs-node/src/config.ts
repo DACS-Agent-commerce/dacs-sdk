@@ -1,3 +1,4 @@
+import type { ExpectedDemosChainIdentity } from "@kynesyslabs/dacs/substrate";
 import { canonicalizeDecimal } from "@kynesyslabs/dacs/canonical";
 
 export const DACS_NODE_OFFLINE_PROFILE =
@@ -35,6 +36,7 @@ export interface DacsLiveAgentConfig extends DacsAgentConfigBase {
   role: "buyer" | "seller" | "verifier";
   demos: Readonly<{
     rpcUrl: string;
+    expectedIdentity?: ExpectedDemosChainIdentity;
     storageReadUrl?: string;
   }>;
   rail: Readonly<{
@@ -179,11 +181,17 @@ function assertDacsAgentConfig(value: unknown): asserts value is DacsAgentConfig
       "limits",
     ], ["publicBaseUrl"]) || value.profile !== DACS_NODE_LIVE_PROFILE ||
       value.role === "demo-all" || !validBase(value) || !record(value.demos) ||
-      !keys(value.demos, ["rpcUrl"], ["storageReadUrl"]) ||
+      !keys(value.demos, ["rpcUrl"], ["storageReadUrl", "expectedIdentity"]) ||
       !validLiveEndpointUrl(
         value.demos.rpcUrl,
         new Set(["http:", "https:", "ws:", "wss:"]),
       ) ||
+      (value.demos.expectedIdentity !== undefined &&
+        (!record(value.demos.expectedIdentity) ||
+          !keys(value.demos.expectedIdentity, ["genesisHash"], ["chainId"]) ||
+          !text(value.demos.expectedIdentity.genesisHash) ||
+          (value.demos.expectedIdentity.chainId !== undefined &&
+            value.demos.expectedIdentity.chainId !== null && !text(value.demos.expectedIdentity.chainId)))) ||
       (value.demos.storageReadUrl !== undefined &&
         !validLiveEndpointUrl(
           value.demos.storageReadUrl,

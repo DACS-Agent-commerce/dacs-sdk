@@ -27,6 +27,7 @@ import {
 } from "../identity/index.js";
 import type { AnchorReceipt as ProtocolAnchorReceipt } from "../artifacts/types.js";
 import { AnchorWaitError } from "./AnchorWaitError.js";
+import { DemosChainIdentityError, readDemosChainCall, type DemosChainIdentity } from "./demosChainIdentity.js";
 import { createDemosHistoryPageFetcher } from "./demosHistory.js";
 import {
   assertDemosWriteEvidence,
@@ -524,7 +525,7 @@ export class DemosAdapter implements SubstrateAdapter {
   #pendingWalletSecret?: string;
   #connectionFailed = false;
   private connected = false;
-  private chainIdentity?: string;
+  private chainIdentity?: Readonly<DemosChainIdentity>;
   private activeWriteLease?: DemosWriteJournalLease;
   private activeWriteRecord?: DemosWriteJournalRecord;
 
@@ -845,14 +846,11 @@ export class DemosAdapter implements SubstrateAdapter {
   }
 
   private async resolveChainIdentity(): Promise<string> {
-    if (this.chainIdentity) return this.chainIdentity;
-    if (this.config.chainIdentity) {
-      const pinned = this.config.chainIdentity.trim().toLowerCase();
-      if (!pinned) throw new DacsError("Demos chainIdentity must not be empty");
-      this.chainIdentity = pinned;
-      return pinned;
-    }
-    const genesisResult = await this.#demos.getBlockByNumber(0) as unknown;
+    return (await this.getChainIdentityDetails()).genesisHash;
+  }
+
+  private async readGenesisHash(): Promise<string> {
+    const genesisResult = await readDemosChainCall(this.config.rpc, "getBlockByNumber", { blockNumber: 0 });
     const genesis = isRecord(genesisResult) && isRecord(genesisResult.response)
       ? genesisResult.response
       : genesisResult;
@@ -862,15 +860,14 @@ export class DemosAdapter implements SubstrateAdapter {
         : "";
       const number = genesis.number ?? genesis.id;
       if (hash && (number === undefined || number === 0)) {
-        this.chainIdentity = hash;
         return hash;
       }
     }
 
     // Some deployed Demos nodes number their first queryable block as one and
     // return the literal `"error"` for block zero. In that layout, block one's
-    // authenticated predecessor is the stable genesis/chain identifier.
-    const firstResult = await this.#demos.getBlockByNumber(1) as unknown;
+    // predecessor supplies the stable genesis/chain identifier.
+    const firstResult = await readDemosChainCall(this.config.rpc, "getBlockByNumber", { blockNumber: 1 });
     const first = isRecord(firstResult) && isRecord(firstResult.response)
       ? firstResult.response
       : firstResult;
@@ -890,11 +887,41 @@ export class DemosAdapter implements SubstrateAdapter {
     ) {
       throw new DacsError("Demos genesis block has no valid chain identity");
     }
-    this.chainIdentity = previousHash;
     return previousHash;
   }
 
-  /** Stable authenticated Demos chain identity used to bind guarded plans. */
+  /** Resolve and check the network; throws DemosChainIdentityError on refusal. */
+  async getChainIdentityDetails(): Promise<Readonly<DemosChainIdentity>> {
+    if (this.chainIdentity) return this.chainIdentity;
+    const node = await readDemosChainCall(this.config.rpc, "getChainIdentity");
+    if (node !== undefined && (!isJsonObject(node) ||
+        !(node.chainId === null || typeof node.chainId === "string") ||
+        typeof node.genesisHash !== "string" || !node.genesisHash.trim() ||
+        typeof node.genesisDataHash !== "string" || !node.genesisDataHash.trim())) {
+      throw new DemosChainIdentityError("chain_identity_invalid");
+    }
+    if (node === undefined && this.config.expectedIdentity?.chainId !== undefined) {
+      throw new DemosChainIdentityError("chain_identity_unavailable");
+    }
+    const genesisHash = await this.readGenesisHash();
+    const identity: DemosChainIdentity = {
+      chainId: isJsonObject(node) ? node.chainId as string | null : null,
+      genesisHash,
+      genesisDataHash: isJsonObject(node) ? (node.genesisDataHash as string).trim().toLowerCase() : null,
+      source: node === undefined ? "genesis-read" : "node-call",
+    };
+    const expected = this.config.expectedIdentity;
+    if ((isJsonObject(node) && (node.genesisHash as string).trim().toLowerCase() !== genesisHash) ||
+        (expected && expected.genesisHash.trim().toLowerCase() !== genesisHash) ||
+        (expected?.chainId !== undefined && expected.chainId !== identity.chainId) ||
+        (this.config.chainIdentity !== undefined && this.config.chainIdentity.trim().toLowerCase() !== genesisHash)) {
+      throw new DemosChainIdentityError("chain_identity_mismatch");
+    }
+    this.chainIdentity = Object.freeze(identity);
+    return this.chainIdentity;
+  }
+
+  /** Checked Demos genesis hash used to bind guarded plans. */
   async getChainIdentity(): Promise<string> {
     return this.resolveChainIdentity();
   }
@@ -1088,6 +1115,7 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     this.config = Object.freeze({
       rpc,
+      ...(config.expectedIdentity === undefined ? {} : { expectedIdentity: Object.freeze({ ...config.expectedIdentity }) }),
       ...(writeJournal === undefined
         ? {}
         : { writeJournal: writeJournal as DemosWriteJournal }),
@@ -1618,6 +1646,7 @@ export class DemosAdapter implements SubstrateAdapter {
     if (!(bytes instanceof Uint8Array)) {
       throw new SubstrateError("Demos Ed25519 signer input is invalid");
     }
+    if (this.config.expectedIdentity || this.config.chainIdentity !== undefined) await this.resolveChainIdentity();
     const identity = await (this.#demos as any).crypto.getIdentity("ed25519") as {
       privateKey?: unknown;
       publicKey?: unknown;
