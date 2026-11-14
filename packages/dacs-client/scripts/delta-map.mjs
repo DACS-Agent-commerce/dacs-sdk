@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assemble, readArchive } from './delta-assemble.mjs';
+import { selects } from './delta-record.mjs';
 import { publicationJson, publicationText } from './publication-text.mjs';
 import { sourceGit } from './source-git.mjs';
 export const root = join(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -24,18 +26,20 @@ export function locations(path) {
   const starts = [...new Set([...diff.matchAll(/^@@ -[0-9,]+ \+(\d+)(?:,\d+)? @@/gm)].map(m => Math.max(1, Number(m[1]))))];
   return (starts.length ? starts : [1]).map(line => `\`${path}:${line}\``).join(', ');
 }
-export const ledger = () => JSON.parse(readFileSync(join(pkg,'DELTA-LEDGER.json'),'utf8'));
 // Every reachable non-merge commit is audited, including commits reached only
 // through a merge's later parents. A record with a full `sha` selects that
 // commit, whose subject must still match; a record without one selects by exact
 // subject, which must then resolve once. Two commits that share a subject can
 // therefore only be recorded with SHA-qualified selectors.
-export function commits() {
-  return git('log','--no-merges','--reverse','--format=%H%x09%s',BASELINE+'..HEAD').split('\n').filter(Boolean).map(row => { const at=row.indexOf('\t'); return {sha:row.slice(0,at),subject:row.slice(at+1)}; });
+export function commits(...order) {
+  return git('log','--no-merges','--reverse',...order,'--format=%H%x09%s',BASELINE+'..HEAD').split('\n').filter(Boolean).map(row => { const at=row.indexOf('\t'); return {sha:row.slice(0,at),subject:row.slice(at+1)}; });
 }
-export const selects = (record, commit) => record.subject === commit.subject && (record.sha == null || record.sha === commit.sha);
+// The archive followed by the record files: {ledger, commits, failures}.
+export const view = () => assemble(pkg, () => commits('--topo-order'));
+export const ledger = () => view().ledger;
+export { selects };
 export const recordFor = (records, commit) => records.find(r => r.sha === commit.sha && r.subject === commit.subject) ?? records.find(r => r.sha == null && r.subject === commit.subject);
-export function table(data = ledger()) {
+export function table({ ledger: data, commits: inventory } = view()) {
   const files=JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'),'utf8')).files;
   const history=commits();
   const coordinates = new Map();
@@ -46,7 +50,6 @@ export function table(data = ledger()) {
     if(change.compact) lines.push(`| | ${change.files.map(f=>`${locate(f.path)}: ${f.after??'deleted'}`).join('<br>')} | |`);
     else for(const f of change.files) lines.push(`| | ${locate(f.path)} | ${f.after===null?'deleted':f.after} |`);
   }
-  const inventory=JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'));
   lines.push('', '## Complete commit and file inventory', '', 'Full hashes below bind completed commits. Unhashed record commits use unique exact subjects to avoid self-referential hashes. Source/test coordinates are generated from baseline-to-current Git hunks, so they name changed ranges at the current head; metadata starts at line 1 and deletions are explicit. The delta sections explain the reason for each group.', '', '| Commit / exact selector | Touched file:line |', '|---|---|');
   for(const c of inventory) {
     if(c.compact) lines.push(`| ${c.sha??c.subject} | ${c.files.map(locate).join('<br>')} |`);
@@ -74,8 +77,9 @@ export function expectedBlob(records, independent) {
   return blobs.size===1?{blob:[...blobs][0]}:{conflict:newest};
 }
 export function checkDeltas(packageDir=pkg) {
-  const failures=[]; const active=ledger(); const data={...active,changes:[...(active.supersededChanges??[]),...active.changes]}; const history=commits();
-  const last=active.changes.at(-1);
+  const assembled=view(); const failures=[...assembled.failures]; const active=assembled.ledger; const data={...active,changes:[...(active.supersededChanges??[]),...active.changes]}; const history=commits();
+  // Records are checked one by one by their schema; this rule binds the archive.
+  const last=readArchive(pkg).ledger.changes.at(-1);
   if(last && !last.files.some(file=>/^packages\/dacs-client\/(src|test)\//.test(file.path))) failures.push(`${prefix}DELTA-LEDGER.json: last record names no source or test change`);
   const archived=readFileSync(join(pkg,'evidence/publication-history.json'));
   if(createHash('sha256').update(archived).digest('hex')!==HISTORY_SHA256) failures.push('archived source/delta evidence digest differs');
@@ -135,7 +139,7 @@ export function checkDeltas(packageDir=pkg) {
       if(!expected.conflict&&before!==expected.blob) failures.push(`${path}: delta parent is discontinuous at ${sha}`);
     }
   }
-  const inventory=[...(data.supersededCommits??[]),...JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'))];
+  const inventory=[...(data.supersededCommits??[]),...assembled.commits];
   // Each row selects at most one reachable commit, and no commit is selected by
   // two rows; a hashed row must name a reachable commit with its exact subject.
   const reachable=new Map(history.map(h=>[h.sha,h.subject])), selected=new Map();
@@ -187,12 +191,12 @@ export function checkDeltas(packageDir=pkg) {
     const head=committed.get(path)?.hash??null, index=staged.get(path)?.hash??null;
     if(actual!==expected||head!==expected||index!==expected) failures.push(`${path}: current blob differs from enumerated deltas`);
   }
-  if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(active)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
+  if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(assembled)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
   return {failures,allowed};
 }
 if(process.argv[1]===fileURLToPath(import.meta.url)) {
   if(process.argv[2]==='--record') {
-    const [delta,...words]=process.argv.slice(3); const subject=words.join(' '); const data=ledger();
+    const [delta,...words]=process.argv.slice(3); const subject=words.join(' '); const data=readArchive(pkg).ledger;
     const paths=git('diff','--cached','--no-renames','--name-only','--',prefix+'src',prefix+'test').split('\n').filter(Boolean);
     if(!paths.length) throw new Error('stage moved/new source and tests first');
     data.changes.push({delta,subject,files:paths.map(path=>{let before=null;try{before=git('rev-parse','--verify',`HEAD:${path}`);}catch{}return {path,before,after:localBlob(path)};})});

@@ -49,7 +49,7 @@ async function fixture(t, initial = 'original\n') {
     checker = checker.replace(pin, `export const ${name} = '${value}';`);
   }
   writeFileSync(join(pkg, 'scripts/delta-map.mjs'), checker);
-  for (const name of ['source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(pkg, 'scripts', name));
+  for (const name of ['delta-assemble.mjs', 'delta-record.mjs', 'source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(pkg, 'scripts', name));
   const { blob, checkDeltas, table } = await import(pathToFileURL(join(pkg, 'scripts/delta-map.mjs')));
   json('DELTA-LEDGER.json', { schema: 'dacs-client-deltas/v2', baseline, changes: [] });
   const render = () => writeFileSync(join(pkg, 'DELTA-MAP.md'), table());

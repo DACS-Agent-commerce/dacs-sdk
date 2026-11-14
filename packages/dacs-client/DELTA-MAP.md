@@ -1421,6 +1421,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | client: report a failed fence release after a successful effect with its result | Git commit selector 5769d48c87ef6bed3094adb442d35ad4b0c6e538 |
 | | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | 796433f8bc1bca0d06a152305289e52f05f03812 |
 | | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 83bf647eea4cbb4cf4614e97b07b52203356393c |
+| WF | delta(client): WF read client delta records through one assembler | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` | 29ba56b6264d27cebb8cad969408ceb4bc6774af |
 
 ## Complete commit and file inventory
 
@@ -4276,6 +4278,21 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | a3aa0ac2212ab8da24ad5cc9d0e6ad2bdc3bb1e6 | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): re-render the delta ledger after the phase0-completion merge | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/records/.gitkeep:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/core-imports.test.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-assemble.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-assemble.test.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-continuity.test.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-record.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-record.test.mjs:1` |
+| delta(client): WF read client delta records through one assembler | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
 
 ## Original moved files
 
