@@ -514,7 +514,7 @@ test('an explicit resume of a held artifact sends it once and a later resume is 
   assert.deepEqual(w.sent, [signedBytes]);
 });
 
-test('two boundaries with their own fences resuming one held artifact at once send it once; the later pass is withheld eb_readback_required', async t => {
+test('two boundaries with their own fences resuming one held artifact at once send it once; the later pass fails eb_persist_failed and writes no record', async t => {
   const { w, artifact } = await heldArtifact(t);
   const fence = createEffectFence({ currentLocal: () => digest(w.currentLocal()), acquire: async () => ({ release: () => {} }),
     setTimer: w.clock.setTimer, clearTimer: w.clock.clearTimer });
@@ -522,10 +522,11 @@ test('two boundaries with their own fences resuming one held artifact at once se
   const send = bytes => { w.sent.push(Buffer.from(bytes)); return 'TEST-ack'; };
   const outcomes = await Promise.all([w.boundary.dispatchPass(artifact, send, { explicit: true }), other.dispatchPass(artifact, send, { explicit: true })].map(outcomeOf));
   assert.deepEqual(w.sent, [signedBytes]);
-  assert.deepEqual(outcomes.map(outcome => outcome.resolved ? outcome.value : outcome.error.code).sort(), ['TEST-ack', 'eb_readback_required']);
+  assert.deepEqual(outcomes.map(outcome => outcome.resolved ? outcome.value : outcome.error.code).sort(), ['TEST-ack', 'eb_persist_failed']);
   const resumed = (await states(w, artifact)).slice(3);
+  assert.equal(resumed.filter(state => state === 'dispatch-started').length, 1);
   assert.equal(resumed.filter(state => state === 'dispatch-acknowledged').length, 1);
-  assert.equal(resumed.filter(state => state === 'dispatch-withheld').length, 1);
+  assert.equal(resumed.filter(state => state === 'dispatch-withheld').length, 0);
 });
 
 

@@ -9063,6 +9063,18 @@
           "after": "ba95a19ef6fa3331bb54536fa0910d058d2956f8"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that two passes resuming one held artifact send it once",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "ba95a19ef6fa3331bb54536fa0910d058d2956f8",
+          "after": "6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1"
+        }
+      ]
     }
   ]
 }
