@@ -126,13 +126,16 @@ export function checkDeltas(packageDir=pkg) {
   // parent or the terminal blob. Resolve all records first: ledger order and
   // unrelated sibling records must not determine continuity.
   const independent=shas=>git('merge-base','--independent',...shas).split('\n');
+  const inSourceTree=path=>path.startsWith(prefix+'src/')||path.startsWith(prefix+'test/');
   const ancestors=new Map();
   for(const [path,records] of recorded) {
     let baseline=null;try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
     for(const {sha,before} of records) {
       if(!ancestors.has(sha)) ancestors.set(sha,new Set(git('rev-list',`${BASELINE}..${sha}^`).split('\n')));
       const previous=records.filter(record=>ancestors.get(sha).has(record.sha));
-      const expected=previous.length?expectedBlob(previous,independent):{blob:baseline};
+      // Paths outside src/ and test/ (README.md, package.json, scripts) may change without a record, so their first record starts from its own parent commit.
+      let parent=null;try{parent=git('rev-parse','--verify',`${sha}^:${path}`);}catch{}
+      const expected=previous.length?expectedBlob(previous,independent):{blob:inSourceTree(path)?baseline:parent};
       // Divergent newest ancestors require an explicit resolution record.
       // Its actual parent/commit bytes are checked above; once recorded,
       // that resolution constrains every descendant in turn.
@@ -169,7 +172,6 @@ export function checkDeltas(packageDir=pkg) {
   // A staged edit remains a change even when its working file is restored.
   // Compare object identities directly, including deletions and mode changes.
   // A record may also name a path outside src/ and test/ (README.md, package.json, scripts); those need a HEAD and index entry too.
-  const inSourceTree=path=>path.startsWith(prefix+'src/')||path.startsWith(prefix+'test/');
   const scope=['--',prefix+'src',prefix+'test',...[...allowed].filter(path=>!inSourceTree(path))];
   const indexRows=git('ls-files','--stage',...scope).split('\n').filter(Boolean);
   const headRows=git('ls-tree','-r','HEAD',...scope).split('\n').filter(Boolean);

@@ -4296,6 +4296,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF read client delta records through one assembler | `packages/dacs-client/scripts/delta-record.test.mjs:1` |
 | delta(client): WF read client delta records through one assembler | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
 | delta(client): WF order delta records by file name and check every recorded path | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-assemble.mjs:1`<br>`packages/dacs-client/scripts/delta-assemble.test.mjs:1`<br>`packages/dacs-client/scripts/delta-map.mjs:1`<br>`packages/dacs-client/scripts/delta-record.mjs:1`<br>`packages/dacs-client/scripts/delta-record.test.mjs:1`<br>`packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
+| delta(client): WF start the first record of a path outside src and test from its parent commit | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-assemble.test.mjs:1`<br>`packages/dacs-client/scripts/delta-map.mjs:1` |
 
 ## Original moved files
 
