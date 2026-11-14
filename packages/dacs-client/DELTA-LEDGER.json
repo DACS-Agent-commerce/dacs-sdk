@@ -9022,6 +9022,59 @@
           "after": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "test(client): two concurrent resumes of one held artifact send it once",
+      "sha": "46d0d8b49f50a136d295e97bb666c4fb1fd8c893",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "8881f3e8ce7a766a3162f5dc6afe79d2360884c4",
+          "after": "f46d3e410597600af548d6dc5c52d0ec78858b81"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): send a held artifact once when two passes resume it at once",
+      "sha": "4451a92f7120ca03f6df4100048c0a0709d4f6c9",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "c6a536f8fee883abd654907537ce728a0245155b",
+          "after": "c235b85c61fab739e2eb29c1388130bd7d24cdd8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged effect-boundary.mjs and effect-boundary.test.mjs blobs after merging 472193167d6f",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "796433f8bc1bca0d06a152305289e52f05f03812",
+          "after": "796433f8bc1bca0d06a152305289e52f05f03812"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "ba95a19ef6fa3331bb54536fa0910d058d2956f8",
+          "after": "ba95a19ef6fa3331bb54536fa0910d058d2956f8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that two passes resuming one held artifact send it once",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "ba95a19ef6fa3331bb54536fa0910d058d2956f8",
+          "after": "6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1"
+        }
+      ]
     }
   ]
 }
