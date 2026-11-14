@@ -9816,6 +9816,28 @@
           "after": "1bf7311e098d0d06e54b26ec97aea4f9e74cab10"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "sha": "b4d5c1f7d99f1650c437b3a8d266bc82f23c119b",
+      "subject": "fix(client): verify evidence storage address and metadata",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "a0d3e5804a80767653da0b803b828a8af3bec80a",
+          "after": "478ef59d0e9d03b9a461d13b79afe4c4285a1403"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "0d89b949c866874d7c578038ddefab825ce69475",
+          "after": "368b592d492038d35f4ff4b6d869173160720152"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "b3df7082b465fc0d9c1206040a9e5ea7b85a652f",
+          "after": "84b69de0aaae9b1269bdf8b813a2f9a183fdd336"
+        }
+      ]
     }
   ]
 }

@@ -294,6 +294,11 @@ Client commits that move the buyer client onto the new wire and its public API u
 
 - Late fixes to the payment-evidence adapter, from the whole-group review. `readTransactionState` accepts `{txHash}` alone, as the seller journal calls it, and reads the bytes and nonce the reservation holds for that hash, or those of the signer's most recent execution, which the reservation record keeps after it ends; it answers `applied` only when the node also serves the storage program the CREATE made, and it ends the reservation in the same queue as `broadcast`. When the stored authorization is no longer open, `broadcast` reads the chain before replacing it and refuses `transaction_already_executed` for an executed CREATE, so an authorization already spent is never replaced by a new one, also after a restart. The native transport lets a write pass once the chain has used the reserved nonce. `signCreate` claims the signer while holding the native lane's lock and reads the fee inputs only after the node's chain identity is bound; the native transport refuses to broadcast while a reservation is stored for its signer. `signer-reservation.mjs` exports the record's key for that check. The test fixture's scripted node serves the storage program read.
 
+
+## Evidence storage readback
+
+Payment-evidence readback compares the returned storage address and every metadata field with the retained signed CREATE before reporting applied or spending approval. Missing or different fields leave the reservation unchanged. The same check serves execution recognition during replay; JSON member order does not change the result.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -1612,6 +1617,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 27c92266c296ed0bff1653f48a1d42379161817a |
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | b3df7082b465fc0d9c1206040a9e5ea7b85a652f |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 1bf7311e098d0d06e54b26ec97aea4f9e74cab10 |
+| WF | fix(client): verify evidence storage address and metadata | Git commit selector b4d5c1f7d99f1650c437b3a8d266bc82f23c119b |
+| | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | 478ef59d0e9d03b9a461d13b79afe4c4285a1403 |
+| | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` | 368b592d492038d35f4ff4b6d869173160720152 |
+| | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | 84b69de0aaae9b1269bdf8b813a2f9a183fdd336 |
 
 ## Complete commit and file inventory
 
@@ -4855,6 +4864,16 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
 | delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
 | delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| b4d5c1f7d99f1650c437b3a8d266bc82f23c119b | `packages/dacs-client/README.md:1` |
+| b4d5c1f7d99f1650c437b3a8d266bc82f23c119b | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
+| b4d5c1f7d99f1650c437b3a8d266bc82f23c119b | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` |
+| b4d5c1f7d99f1650c437b3a8d266bc82f23c119b | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| fix(client): record evidence storage readback verification | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): record evidence storage readback verification | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): record evidence storage readback verification | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): record evidence storage readback verification | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): record evidence storage readback verification | `packages/dacs-client/HOLD.json:1` |
+| fix(client): record evidence storage readback verification | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
