@@ -108,6 +108,13 @@ export const isDevnetSettlementTransport = (v) => Boolean(v && (settlementCapabi
 export const isDevnetDeliveryTransport = (v) => Boolean(v && (deliveryCapabilities.has(v) || demoCapabilities.has(v)));
 export const isDevnetDemoTransport = (v) => Boolean(v && demoCapabilities.has(v));
 
+/** Registers `facade` in the capability set that holds `inner`, so the is* checks accept it; throws TypeError unless `inner` is registered. Not in the package `exports` map. */
+export function registerHeldTransportFacade(facade, inner) {
+  const set = [capabilities, agreementCapabilities, settlementCapabilities, deliveryCapabilities, demoCapabilities].find(candidate => candidate.has(inner));
+  if (!set) throw new TypeError('a registered inner transport is required');
+  set.add(facade);
+}
+
 // transportOwner owns the ACTUAL endpoint/connection. acquireConnectionFence()
 // returns { context, release() }, holding that connection until release; its
 // { address } argument names the wallet the fence is for, if any. The
