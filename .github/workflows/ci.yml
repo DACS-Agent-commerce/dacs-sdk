@@ -599,8 +599,17 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           test "$PLAN_RESULT" = success || { echo "build-test plan: $PLAN_RESULT"; exit 1; }
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
-            --jq '.jobs[] | {name, status, conclusion}' > "$RUNNER_TEMP/jobs.jsonl"
+          # Every job this one needs has finished, but the jobs API can report a just-finished job as still running for a
+          # few seconds. While any other build-test job reads as unfinished, read the list again (up to 12
+          # times, 15 s apart, about 3 minutes) before verify decides; a job that really failed fails verify the same way on every read.
+          for attempt in $(seq 1 13); do
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[] | {name, status, conclusion}' > "$RUNNER_TEMP/jobs.jsonl"
+            unfinished=$(jq -r 'select(.status != "completed" and (.name | test("^build-test")) and (.name | test("^build-test \\(node [0-9]+\\)$") | not)) | .name' "$RUNNER_TEMP/jobs.jsonl")
+            if [ -z "$unfinished" ] || [ "$attempt" = 13 ]; then break; fi
+            echo "jobs still reading as unfinished (attempt $attempt): $(echo "$unfinished" | tr '\n' ' ')"
+            sleep 15
+          done
           node scripts/ci-shards.mjs verify --node "$NODE_VERSION" --event "$EVENT_NAME" --jobs "$RUNNER_TEMP/jobs.jsonl"
 
   postgres-wallet-authority:
