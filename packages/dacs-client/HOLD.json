@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "e97cc4bf3bc45a67d804fa6cce5c071c343dad66"
+        "blob": "c1270e8f1e16ff4eac4542acb245bdd1665ab593"
       },
       "DELTA-LEDGER.json": {
-        "blob": "b8fe0c0c9cccd02f798d256b04e67ac448ad1800"
+        "blob": "145858264b38f9d639e7881527292938134a1a6f"
       },
       "DELTA-MAP.md": {
-        "blob": "65d0e97b9f444c447752f4999bb8176c7b2c6529"
+        "blob": "4d0deabc2782e45bc93b37dbcb486ad64d02d07f"
       },
       "DELTA-NOTES.md": {
-        "blob": "cd7d46ba4bbe06b57097fbb824a80c6694b6e917"
+        "blob": "62a0627c37014d27601ad44e6d60938a79aea8cb"
       },
       "HOLD.json": {
         "control": "record"
@@ -1030,11 +1030,11 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "e936bc14dde8062988c293d8bd67002c387b97e8"
+        "blob": "c35d385d50d9059aeb2ab09b2772d95ff4d9fe02"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "94f6ca9b0e8db89955e43559ba4386fb7dbb6bf4"
+        "blob": "caa7b2f695b9fbc676b428bf752880e190ecd7aa"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,10 +1058,10 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "f06a7f5285832492e860594281efac41d94f6080"
+        "blob": "0df97b3b081e7b4ec09314276b00ed45ec3ae1a9"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "6ed2b09718f6d4d1a04c2a4684c167b953d0059a"
+        "blob": "2cea25a0352177f2dd63e31f2179dc680529f115"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1315,6 +1315,15 @@
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
       },
+      "src/wallet/effect-boundary.mjs": {
+        "blob": "b4d690799d4ea3e95f16278a542759e6f59f15ce"
+      },
+      "src/wallet/effect-fence.mjs": {
+        "blob": "f084d06e7fcac773a024fb36149b1f68b2826403"
+      },
+      "src/wallet/effect-history.mjs": {
+        "blob": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
+      },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
       },
@@ -1392,6 +1401,18 @@
       },
       "test/durable-journal-rejections.test.mjs": {
         "blob": "4f259862831e602f05118d5aa005a73e7d676320"
+      },
+      "test/effect-boundary-barriers.test.mjs": {
+        "blob": "f3d0560be2447f1a5195f646001e74f7454aa6c9"
+      },
+      "test/effect-boundary-operation.test.mjs": {
+        "blob": "c5f91f14575651303e144ec91570d7db728034e1"
+      },
+      "test/effect-boundary.test.mjs": {
+        "blob": "0fd2ace1a4dae5ef01f51650072be5662066a04f"
+      },
+      "test/effect-history.test.mjs": {
+        "blob": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
       },
       "test/engine-floor-portability.test.mjs": {
         "blob": "8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"
@@ -1535,10 +1556,13 @@
         "blob": "6aaf563599fcc9d34f30baf9afeb0dc6caa5b813"
       },
       "test/helpers/durable-wallet-journal-child.mjs": {
-        "blob": "e40dec6bf6740d4b0bb55e84e38d5428b7d26937"
+        "blob": "e3987c120fb08295aa49ab436c627c2823ebe846"
       },
       "test/helpers/durable-wallet-journal-sr2-fixture.mjs": {
         "blob": "c35e7affc754a58a39a4dfc983733fed171cbb21"
+      },
+      "test/helpers/effect-boundary-fixture.mjs": {
+        "blob": "1b83d2a67290fc5fb683667e993dbf498ecaf269"
       },
       "test/helpers/embedded-wallet-fixtures.mjs": {
         "blob": "c8083057ae6b2a507d5cf009b2d2b54a153f6bc4"
@@ -1550,7 +1574,7 @@
         "blob": "ca236433328acbe239d3662741ce36829723572e"
       },
       "test/helpers/entry-point-closure.mjs": {
-        "blob": "2f2c2f648bb095b7812aeac6523ae8cc22602bd8"
+        "blob": "48056110819fef0a22ae0e8bff28e5781ed1bcb6"
       },
       "test/helpers/env-contract-view.mjs": {
         "blob": "c275aeb31278349c33e9aa4bd8c562644351dca7"
@@ -1853,7 +1877,7 @@
         "blob": "da57bb91604b30e2b60a4edb7011a473fd9e5d3a"
       },
       "test/package-contents.test.mjs": {
-        "blob": "25d796340d239be5de80a55c42ad7bce48755f5e"
+        "blob": "683f3a9c22c09a4207d1f588e0108cb327b579f2"
       },
       "test/packed-consumer.test.mjs": {
         "blob": "8e433835a01a81de01ea3a4d6f377270905ae434"

@@ -16,6 +16,32 @@ const limits = Object.freeze({
 });
 
 describe("DACS node configuration", () => {
+  function pinnedConfig(expectedIdentity: unknown) {
+    return {
+      mode: "live-demos", profile: DACS_NODE_LIVE_PROFILE, role: "buyer",
+      dataDirectory: "/var/lib/dacs/buyer",
+      demos: { rpcUrl: "https://rpc.example", expectedIdentity },
+      rail: { registryIndexRef: "dacs4:registry:v0.1", requestedNetwork: "demos", enabledProfiles: ["pay-dem"] },
+      limits: { ...limits, maxServiceAmount: { asset: "DEM", amount: "1" } },
+    };
+  }
+
+  it("accepts and detaches an expected Demos identity", () => {
+    const expectedIdentity = { genesisHash: "a".repeat(64), chainId: "demos-test" };
+    const admitted = validateDacsAgentConfig(pinnedConfig(expectedIdentity));
+    expectedIdentity.chainId = "changed";
+    expect(admitted).toMatchObject({ demos: { expectedIdentity: { genesisHash: "a".repeat(64), chainId: "demos-test" } } });
+    expect(validateDacsAgentConfig(pinnedConfig({ genesisHash: "a".repeat(64) }))).toBeDefined();
+    expect(validateDacsAgentConfig(pinnedConfig({ genesisHash: "a".repeat(64), chainId: null }))).toBeDefined();
+  });
+
+  it.each([null, {}, [], { genesisHash: 1 }, { genesisHash: " " },
+    { genesisHash: "a", chainId: 3 }, { genesisHash: "a", extra: true }])(
+    "rejects malformed expected Demos identities: %j", (value) => {
+      expect(() => validateDacsAgentConfig(pinnedConfig(value))).toThrow();
+    },
+  );
+
   it("admits detached, closed offline and live variants", () => {
     const offline = {
       mode: "offline",
