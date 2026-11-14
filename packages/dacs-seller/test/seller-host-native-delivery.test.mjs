@@ -3067,7 +3067,7 @@ for (const absence of ['absent', 'unbranded']) test(`an evidence readback that c
   assert.equal(w.createsAt(address), 1);
 });
 
-test('enabling publication after a delivery-ready order publishes the evidence retained while it was off', async (t) => {
+test('enabling publication after a delivery-ready order changes nothing: a replay of the stored answer publishes no evidence', async (t) => {
   const w = await world(t), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
   const first = await p.claim(tx);
   assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
@@ -3078,13 +3078,13 @@ test('enabling publication after a delivery-ready order publishes the evidence r
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
   const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
-  assert.equal(done.delivery?.status, 'delivered', shown(done));
-  assert.equal(done.delivery.evidencePublication, 'native-read-back');
-  assert.equal(w.createsAt(address), 1);
+  assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
+  assert.equal(done.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
+  assert.equal(w.createsAt(address), 0, 'a replay reads its sources and sends no evidence');
   assert.equal(w.effects.deliverySubmit.length, 1, 'the Deliverable is not submitted again');
 });
 
-test('a delivery-ready session retained without its own evidence copy recovers it from the SDK checkpoint', async (t) => {
+test('a delivery-ready session retained without its own evidence copy is replayed from its stored answer and publishes nothing', async (t) => {
   const w = await world(t), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
   assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
 
@@ -3095,9 +3095,9 @@ test('a delivery-ready session retained without its own evidence copy recovers i
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
   const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
-  assert.equal(done.delivery?.status, 'delivered', shown(done));
-  assert.equal(done.delivery.evidencePublication, 'native-read-back');
-  assert.equal(w.createsAt(address), 1);
+  assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
+  assert.equal(done.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
+  assert.equal(w.createsAt(address), 0, 'a replay does not recover the evidence from the SDK checkpoint');
   assert.equal(w.effects.deliverySubmit.length, 1);
 });
 
@@ -3198,7 +3198,7 @@ for (const schemaUrl of [true, false]) test(`a paid order is delivered with the 
   assert.equal(core.sha256Hex(core.canonicalize(w.writtenAt(deliverable))), answer.delivery.contentHash);
 });
 
-test('a delivery the SDK finished before the seller kept its delivery-ready checkpoint is read back from the bytes that were sent, whatever the producer answers after the restart', async (t) => {
+test('a completed delivery whose delivery-ready checkpoint is gone is withheld, never rebuilt by a replay, and sends nothing again', async (t) => {
   let body = 'TEST report body old';
   const w = await world(t, { deliverableProducer: (input) => report({ body: [body] })(input) });
   const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
@@ -3208,8 +3208,7 @@ test('a delivery the SDK finished before the seller kept its delivery-ready chec
   body = 'TEST report body new';
   await w.restart();
   const again = await p.claim(tx);
-  assert.equal(again.delivery?.status, 'delivery-ready', shown(again));
-  assert.equal(again.delivery.contentHash, first.delivery.contentHash, 'the original bytes are verified');
+  assert.equal(again.error, 'seller_unavailable', 'the stored answer is withheld while its checkpoint cannot be read');
   assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is submitted once');
   assert.equal(w.createsAt(deliverable), 1);
 });
