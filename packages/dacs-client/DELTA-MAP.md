@@ -1415,6 +1415,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9 |
 | WF | delta(client): WF test a lost acknowledgement write with and without its unknown record | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 0fd2ace1a4dae5ef01f51650072be5662066a04f |
+| WF | client: queue signPass calls of one operation so only one artifact is signed | Git commit selector f1ae63ab3f9ff3c5ba0eca09c21285135d7139ca |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | 10533f72e4ce2b3fe0ad791d92797796fd1a8221 |
+| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | d0771ba60ff24d68a635598c833f0ad7e0fa76b8 |
 
 ## Complete commit and file inventory
 
@@ -4254,6 +4257,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF test a lost acknowledgement write with and without its unknown record | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF test a lost acknowledgement write with and without its unknown record | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF test a lost acknowledgement write with and without its unknown record | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| f1ae63ab3f9ff3c5ba0eca09c21285135d7139ca | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| f1ae63ab3f9ff3c5ba0eca09c21285135d7139ca | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| fix(client): record the signing queue change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
