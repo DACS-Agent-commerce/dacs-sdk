@@ -1,5 +1,5 @@
 // The payments row on the wire journal, with the real fixture-profile agent behind the handler: states, retention, recovery and the sources a
-// final answer is read against.
+// final answer is read against. The native profile runs the same controls on the native wire world at the end of the file.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -10,6 +10,7 @@ import { PATHS, completions, operationOf } from './helpers/wire-routes-world.mjs
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { deliverableAddress, deliveryEvidenceAddress } from '../src/dacs/purchase-protocol.mjs';
 import { EVIDENCE_SIGNATURE, OTHER_TX, PAYMENT_TX, WORK_SAVE_SIGNATURE, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
+import { nativePaymentWorld } from './helpers/native-payment-wire-fixture.mjs';
 
 // The deadline of one bounded source read, and how many turns of the event loop a test waits for a read to start.
 const SOURCE_READ_TIMEOUT_MS = 10000;
@@ -324,3 +325,151 @@ test('a payment whose settlement credit is withdrawn just before its evidence is
   assert.deepEqual([w.evidenceCreates(), w.deliverableWrites(), w.deliveryEvidenceWrites()], [0, 0, 0], 'nothing is written');
   assert.equal(stateOf(w), 'pending');
 });
+
+// ---- The native profile on the native wire world ----
+
+const nativeStateOf = (w, p) => w.wireState(p).state;
+// The seller's own steps of a payment that was delivered once: one payment evidence CREATE, one Deliverable, one delivery evidence, and the two
+// evidence signatures that go with the first and the last.
+const assertNativeDeliveredOnce = (w, p) => {
+  assert.deepEqual([w.evidenceCreates(p), w.deliverableWrites(p), w.deliveryEvidenceWrites(p)], [1, 1, 1]);
+  assert.equal(w.counts.walletSignatures, 1, 'the wallet signed the payment evidence once');
+};
+// The node answers a read of this transfer in place of its record; every other read is the node's own.
+const readTransferAs = (w, txHash, answer) => { w.node.script.transferRead = (hash, record) => (hash === txHash ? answer(record) : record); };
+const unreadableTransfer = () => { throw new Error('TEST node unreachable'); };
+const changedTransfer = (record) => ({ ...record, content: { ...record.content, amount: '1', data: ['native', { nativeOperation: 'send', args: [record.content.to, '1'] }] } });
+const recordReceiptEdit = (w, change) => {
+  const state = JSON.parse(readFileSync(w.receiptsFile, 'utf8'));
+  change(state);
+  writeFileSync(w.receiptsFile, JSON.stringify(state));
+};
+
+for (const [title, unfinished, reason, firstRead] of [
+  ['a native payment whose transfer cannot be found ends without an outcome and recovery reruns intake', 'indeterminate', 'demos-not-found', () => null],
+  ['a native payment with a rejected transfer lets recovery authenticate the original or a corrected claim', 'rejected', 'payment-amount-mismatch', changedTransfer],
+]) {
+  test(title, async (t) => {
+    for (const restart of [false, true]) for (const corrected of [false, true]) {
+      const w = await nativePaymentWorld(t), p = await w.purchase(), label = `restart ${restart}, corrected ${corrected}`;
+      const original = p.pay();
+      readTransferAs(w, original, firstRead);
+      const early = await p.claim(original);
+      assert.deepEqual([early.status, early.reason], [unfinished, reason], label);
+      assert.equal(nativeStateOf(w, p), 'ended', `${label}: no work was kept, so the attempt ends with no outcome`);
+      // Reading the retained work stops the host and starts it again over the same state.
+      if (restart) assert.equal(await w.work(p), undefined, `${label}: no work is retained across the restart`);
+      w.node.script.transferRead = null;
+      const final = await p.claim(corrected ? p.pay() : original);
+      assert.equal(final.status, 'payment-evidenced', label);
+      assert.equal(nativeStateOf(w, p), 'completed', label);
+      assertNativeDeliveredOnce(w, p);
+    }
+  });
+}
+
+// A payment cut after its work is saved and before the wallet signs the evidence CREATE: the work is retained and the wallet did nothing.
+const cutBeforeWalletSignature = async (w, p, txHash) => {
+  w.faults.walletSignature = 1;
+  const cut = await p.claim(txHash);
+  assert.notEqual(cut.status, 'payment-evidenced', 'the payment is not delivered at the cut');
+  assert.equal(nativeStateOf(w, p), 'pending', 'the attempt stays open');
+  assert.deepEqual([w.counts.walletSignatures, w.counts.walletBroadcasts, w.evidenceCreates(p)], [0, 0, 0], 'the wallet signed and sent nothing');
+  return cut;
+};
+
+for (const restart of [false, true]) for (const [label, answer] of [
+  ['the transfer read fails', unreadableTransfer], ['the transfer cannot be found', () => null], ['the transfer amount changed', changedTransfer],
+]) {
+  test(`native payment recovery authenticates the original transfer again before the wallet signs or sends: ${label}, restart ${restart}`, async (t) => {
+    const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
+    await cutBeforeWalletSignature(w, p, txHash);
+    if (restart) await w.restart();
+    readTransferAs(w, txHash, answer);
+    const held = await p.claim(txHash);
+    assert.notEqual(held.status, 'payment-evidenced', 'recovery does not deliver while the transfer is unreadable or changed');
+    assert.equal(nativeStateOf(w, p), 'pending', 'no end record');
+    assert.deepEqual([w.counts.walletSignatures, w.counts.walletBroadcasts, w.evidenceCreates(p), w.deliverableWrites(p)], [0, 0, 0, 0], 'the wallet signs and sends nothing');
+    w.node.script.transferRead = null;
+    const final = await p.claim(txHash);
+    assert.equal(final.status, 'payment-evidenced', 'once the transfer reads as the original, recovery delivers');
+    assertNativeDeliveredOnce(w, p);
+  });
+}
+
+test('a native payment whose settlement credit is withdrawn before the wallet signs signs and sends nothing', async (t) => {
+  const w = await nativePaymentWorld(t), p = await w.purchase(), other = await w.purchase(), txHash = p.pay();
+  await cutBeforeWalletSignature(w, p, txHash);
+  const signedAtCut = w.counts.evidenceSignatures;
+  // Another job takes the transfer's settlement, so this job loses its credit.
+  await w.withdrawCredit(p, other.jobId);
+  const withheld = await p.claim(txHash);
+  assert.notEqual(withheld.status, 'payment-evidenced');
+  assert.equal(nativeStateOf(w, p), 'pending');
+  assert.equal(w.counts.evidenceSignatures, signedAtCut, 'no evidence is signed');
+  assert.deepEqual([w.counts.walletSignatures, w.counts.walletBroadcasts, w.evidenceCreates(p), w.deliverableWrites(p), w.deliveryEvidenceWrites(p)], [0, 0, 0, 0, 0], 'nothing is signed, sent or written');
+});
+
+test('native recovery sends the retained evidence CREATE once and delivers without a second grant', async (t) => {
+  const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
+  w.faults.walletBroadcast = 1;
+  const cut = await p.claim(txHash);
+  assert.notEqual(cut.status, 'payment-evidenced');
+  assert.equal(nativeStateOf(w, p), 'pending', 'the attempt stays open');
+  assert.deepEqual([w.counts.walletSignatures, w.counts.walletBroadcasts, w.evidenceCreates(p)], [1, 1, 0], 'the evidence CREATE is signed and kept; the node has not received it');
+  const granted = Object.keys(JSON.parse(readFileSync(w.receiptsFile, 'utf8')).records);
+  await w.restart();
+  const final = await p.claim(txHash);
+  assert.equal(final.status, 'payment-evidenced');
+  assertNativeDeliveredOnce(w, p);
+  assert.equal(w.counts.walletSignatures, 1, 'recovery sends the retained bytes and signs nothing new');
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(w.receiptsFile, 'utf8')).records), granted, 'no second permit is granted');
+});
+
+// The sources a completed native answer is read against again: the transfer, the Deliverable and the delivery evidence.
+const NATIVE_SOURCE_CELLS = [
+  ['the transfer read fails', (w, txHash) => readTransferAs(w, txHash, unreadableTransfer)],
+  ['the transfer cannot be found', (w, txHash) => readTransferAs(w, txHash, () => null)],
+  ['the Deliverable is gone', (w) => { w.node.script.programRead = (record) => (record?.metadata.artifactKind === 'Deliverable' ? null : record); }],
+  ['the delivery evidence cannot be read', (w) => { w.node.script.programRead = (record) => { if (record?.metadata.logicalAddress.startsWith('dacs4:evidence:')) throw new Error('TEST node unreachable'); return record; }; }],
+];
+
+test('a completed native payment answers the same request again from its stored outcome after its sources read the same', async (t) => {
+  const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
+  const delivered = await p.claim(txHash), stored = w.wireState(p);
+  assert.equal(delivered.status, 'payment-evidenced');
+  const again = await p.claim(txHash);
+  assert.deepEqual(again, delivered, 'the stored answer is returned unchanged');
+  assert.deepEqual(w.wireState(p), stored, 'the outcome is unchanged');
+  assertNativeDeliveredOnce(w, p);
+});
+
+test('a completed native payment withholds its stored answer when a source cannot be read and leaves the outcome unchanged', async (t) => {
+  for (const [label, arrange] of NATIVE_SOURCE_CELLS) {
+    const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
+    assert.equal((await p.claim(txHash)).status, 'payment-evidenced', label);
+    const stored = w.wireState(p);
+    arrange(w, txHash);
+    const withheld = await p.send(txHash);
+    assert.deepEqual([withheld.status, withheld.body.error], [503, 'seller_source_unavailable'], label);
+    assert.deepEqual(w.wireState(p), stored, `${label}: the stored outcome is unchanged`);
+    assertNativeDeliveredOnce(w, p);
+  }
+});
+
+test('a completed native payment reads changed when its permit is gone or its spent permit authorizes a different rail registry version', async (t) => {
+  for (const [label, change] of [
+    ['the permit is gone from the receipt state', (state) => { state.records = {}; state.permits = {}; }],
+    // Delivery spent the permit, so the authorization the seller reads is the one the spent record carries.
+    ['the spent permit authorizes a different rail registry version', (state) => { Object.values(state.records)[0].consumed.claim.authorization.railRegistryVersion = 2; }],
+  ]) {
+    const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
+    assert.equal((await p.claim(txHash)).status, 'payment-evidenced', label);
+    const stored = w.wireState(p);
+    recordReceiptEdit(w, change);
+    const withheld = await p.send(txHash);
+    assert.deepEqual([withheld.status, withheld.body.error, withheld.body.cause], [503, 'seller_source_unavailable', 'changed'], label);
+    assert.deepEqual(w.wireState(p), stored, `${label}: the stored outcome is unchanged`);
+  }
+});
+
