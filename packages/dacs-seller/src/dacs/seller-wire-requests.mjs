@@ -9,6 +9,7 @@ import { boundedCall } from './bounded-call.mjs';
 import { isSmallOrderPublicKey } from './demos-claims.mjs';
 import { paymentTxHash } from './seller-agent.mjs';
 import { endWireAttempt } from './seller-http.mjs';
+import { SELLER_EFFECT_ROUTES } from './seller-effect-routes.mjs';
 import { requestNonceKey } from './seller-reservation-accounting.mjs';
 import { SellerTransportError, sellerStoreInternals, transportStoreOf, validateBody } from './seller-transport-auth.mjs';
 
@@ -249,16 +250,16 @@ export function wireAuthenticator(wire, agent, authentication) {
         view.binding !== wireOperationBinding(kept.request) || !Number.isSafeInteger(at) || at < 0 || at >= kept.effect.leaseUntil) return refuse();
     return kept;
   };
-  const finish = (reservation, status, text, { noEffect = false, retry = false } = {}) => {
+  const finish = (reservation, status, text, { noEffect = false, retry = false, decision } = {}) => {
     const { receipt } = owned(reservation);
     if (!Number.isSafeInteger(status) || status < 200 || status > 599) return refuse('peer_response_invalid');
     if (noEffect && retry) return refuse('peer_store_conflict');
-    // A final 200 answer is the outcome and returns its route slot. A proven no-effect answer and a retained answer that is not
-    // final yet (progress) end with no outcome: neither is a crash, so neither spends a crash attempt, and the next request
-    // recovers at once and the agent reconciles first. Anything else is uncertain and keeps the lease open: only the lease ends
-    // an attempt whose process may have died, and that spends one of the journal's crash attempts.
-    endWireAttempt(wire.completion, receipt, retry || noEffect ? { kind: 'no-effect' }
-      : status === 200 ? { kind: 'outcome', outcome: { status, text }, cleanup: 'route' } : { kind: 'open' });
+    // A route's row decides its end (`decision`). Otherwise a final 200 answer is the outcome and returns its route slot. A proven
+    // no-effect answer and a retained answer that is not final yet (progress) end with no outcome: neither is a crash, so neither
+    // spends a crash attempt, and the next request recovers at once and the agent reconciles first. Anything else is uncertain and
+    // keeps the lease open: only the lease ends an attempt whose process may have died, and that spends one of the journal's crash attempts.
+    endWireAttempt(wire.completion, receipt, decision ?? (retry || noEffect ? { kind: 'no-effect' }
+      : status === 200 ? { kind: 'outcome', outcome: { status, text }, cleanup: 'route' } : { kind: 'open' }));
   };
   const store = Object.freeze({
     reserve: async (request) => {
@@ -270,9 +271,14 @@ export function wireAuthenticator(wire, agent, authentication) {
         return checked.reserve();
       } };
       const effect = await wire.reservations.reserveCoordinated({ checked: current, payload: request, route: request.path,
-        operationId: wireOperationId(request), keepProfile: request.profile, retainedWork,
+        operationId: wireOperationId(request), keepProfile: request.profile, retainedWork, answersCompletedAtCapacity: Object.hasOwn(SELLER_EFFECT_ROUTES, request.path),
         paymentTx: request.path === DACS_SELLER_HTTP_PATHS.payments ? paymentTxHash(checked.body.txHash) : null });
-      if (effect.state === 'completed') return Object.freeze({ disposition: 'cached', ...effect.outcome });
+      if (effect.state === 'completed') {
+        // A completed answer given at capacity skipped the journal's reservation, which is where an expired request is refused.
+        const code = lapse(request);
+        if (code !== null) return refuse(code, 408);
+        return Object.freeze({ disposition: 'cached', ...effect.outcome });
+      }
       const receipt = wire.completion.capture({ effect, key: requestNonceKey(request) });
       const reservation = Object.freeze({ disposition: effect.state === 'new' ? 'perform' : 'uncertain', effectKey: effect.operationId });
       reservations.set(reservation, { effect, request, receipt });

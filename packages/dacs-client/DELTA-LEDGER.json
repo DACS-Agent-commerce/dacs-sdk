@@ -8044,12 +8044,184 @@
         }
       ]
     },
-    {"delta":"WF","subject":"delta(client): WF record the merged seller HTTP handler removal blob","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"aac29716e0dcbcfa9c861440893eb3ef4b6d9779","after":"aac29716e0dcbcfa9c861440893eb3ef4b6d9779"}]},
-    {"delta":"WF","subject":"delta(client): WF P13c1 remove the unused seller HTTP handler","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"a7bde64bb0b01a411fe520bb19a8d973fb05775c","after":"aac29716e0dcbcfa9c861440893eb3ef4b6d9779"},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"e737b5abec7b991fd5401d943998cd3ce60bc1bc","after":"abd69a0abe22de61c02df544371d1baa542b0c15"},{"path":"packages/dacs-client/test/ingress-admission.test.mjs","before":"bc5df5a139d39697b81a2363c3e2554c0220551e","after":"2bb9dd310f49253c35f2985fff4a653e0b22775e"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"9b3fac5c0509ab6f0e5401c7d76700814a73842d","after":"225f7dbfb61729f33863364013e7dca7d31335a2"}]},
-    {"delta":"WF","subject":"delta(client): WF record the merged blobs after the base sync","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"30ca1bb14b9725f274d755d77aaf3300161ff3da","after":"30ca1bb14b9725f274d755d77aaf3300161ff3da"},{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"a2b491d956f5c45d4169ef30fa097c9279f8d420","after":"a2b491d956f5c45d4169ef30fa097c9279f8d420"},{"path":"packages/dacs-client/src/dacs/seller-wire-authentication.mjs","before":"fc66e463671c98bddf7d8da31761a7c79046d88f","after":"fc66e463671c98bddf7d8da31761a7c79046d88f"},{"path":"packages/dacs-client/src/index.mjs","before":"b8234d43cd1d70e1a78029f548e01469f51f0a56","after":"b8234d43cd1d70e1a78029f548e01469f51f0a56"}]},
-    {"delta":"WF","sha":"b11192d341dbae97c0fae78bd57d99cfde204995","subject":"fix(client): name the seller transport store plainly in the buyer import test","compact":true,"files":[{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"abd69a0abe22de61c02df544371d1baa542b0c15","after":"9950c7d670fcb21d3855e2a92fc4558249f44427"}]},
-    {"delta":"WF","subject":"delta(client): WF record the merged blobs after the seller handler fixes","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-transport-auth.mjs","before":null,"after":null},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"8c32f5d5d67d96b10c78979703a6b2670fe97295","after":"8c32f5d5d67d96b10c78979703a6b2670fe97295"},{"path":"packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs","before":"754a7e898ef18b3d6fa45fbf9141e9e8107304b7","after":"754a7e898ef18b3d6fa45fbf9141e9e8107304b7"},{"path":"packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs","before":"806ce664bc89af4199f6ab81b5c72bc2e80d47bd","after":"806ce664bc89af4199f6ab81b5c72bc2e80d47bd"},{"path":"packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs","before":"f6938c73a9a3bd7f38c9b2a891fa22ead94d925e","after":"f6938c73a9a3bd7f38c9b2a891fa22ead94d925e"},{"path":"packages/dacs-client/test/helpers/source-demo-seller.mjs","before":"878d1917d335b2a94d1164ed07d2e1b3a4f4048f","after":"878d1917d335b2a94d1164ed07d2e1b3a4f4048f"}]},
-    {"delta":"WF","subject":"delta(client): WF P13c2 delete the client's old seller transport module","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-transport-auth.mjs","before":"cbbff1c08f2b7986c2a55298652234a1b1b6b606","after":null},{"path":"packages/dacs-client/test/d11-import-boundary.test.mjs","before":"abd69a0abe22de61c02df544371d1baa542b0c15","after":"8c32f5d5d67d96b10c78979703a6b2670fe97295"},{"path":"packages/dacs-client/test/helpers/devnet-live-composition-app.mjs","before":"77d601dbc4ed3c41f5def9397d2960e41f9dbff6","after":"4e78a320bd26fff966f5605da7f3b6dcc0f1e346"},{"path":"packages/dacs-client/test/helpers/entry-point-closure.mjs","before":null,"after":"44000e70295255c1e0af5a5183060835df1fd7bc"},{"path":"packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs","before":"2f963c44c336dd77647d12ced651a9df7bc4b9e4","after":"754a7e898ef18b3d6fa45fbf9141e9e8107304b7"},{"path":"packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs","before":"163637c51827c8cf0c5b04979d0ad008a24b6bfb","after":"806ce664bc89af4199f6ab81b5c72bc2e80d47bd"},{"path":"packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs","before":"a95ef03f4a7088ebf2d776b544529efa9af3bd3b","after":"f6938c73a9a3bd7f38c9b2a891fa22ead94d925e"},{"path":"packages/dacs-client/test/helpers/source-demo-seller.mjs","before":"3ebe27b3481988b9dedeaabec489c44e791a2891","after":"878d1917d335b2a94d1164ed07d2e1b3a4f4048f"},{"path":"packages/dacs-client/test/helpers/start-intent.mjs","before":"f0228e036f7f82a8087caf1c5883419ee18c8491","after":"b401cf5c221e9285f73a923cf90c1a0a291b3f35"},{"path":"packages/dacs-client/test/old-domain-sources.test.mjs","before":null,"after":"a8ccc8f4759f908cabb11fb0aff27f3290e40a74"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"225f7dbfb61729f33863364013e7dca7d31335a2","after":"a83648f5f7606440c1cf56de620e2f3794f6049a"}]},
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged seller HTTP handler removal blob",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "aac29716e0dcbcfa9c861440893eb3ef4b6d9779",
+          "after": "aac29716e0dcbcfa9c861440893eb3ef4b6d9779"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13c1 remove the unused seller HTTP handler",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "a7bde64bb0b01a411fe520bb19a8d973fb05775c",
+          "after": "aac29716e0dcbcfa9c861440893eb3ef4b6d9779"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": "e737b5abec7b991fd5401d943998cd3ce60bc1bc",
+          "after": "abd69a0abe22de61c02df544371d1baa542b0c15"
+        },
+        {
+          "path": "packages/dacs-client/test/ingress-admission.test.mjs",
+          "before": "bc5df5a139d39697b81a2363c3e2554c0220551e",
+          "after": "2bb9dd310f49253c35f2985fff4a653e0b22775e"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "9b3fac5c0509ab6f0e5401c7d76700814a73842d",
+          "after": "225f7dbfb61729f33863364013e7dca7d31335a2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged blobs after the base sync",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "30ca1bb14b9725f274d755d77aaf3300161ff3da",
+          "after": "30ca1bb14b9725f274d755d77aaf3300161ff3da"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "a2b491d956f5c45d4169ef30fa097c9279f8d420",
+          "after": "a2b491d956f5c45d4169ef30fa097c9279f8d420"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "fc66e463671c98bddf7d8da31761a7c79046d88f",
+          "after": "fc66e463671c98bddf7d8da31761a7c79046d88f"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "b11192d341dbae97c0fae78bd57d99cfde204995",
+      "subject": "fix(client): name the seller transport store plainly in the buyer import test",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": "abd69a0abe22de61c02df544371d1baa542b0c15",
+          "after": "9950c7d670fcb21d3855e2a92fc4558249f44427"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged blobs after the seller handler fixes",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": null,
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": "8c32f5d5d67d96b10c78979703a6b2670fe97295",
+          "after": "8c32f5d5d67d96b10c78979703a6b2670fe97295"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs",
+          "before": "754a7e898ef18b3d6fa45fbf9141e9e8107304b7",
+          "after": "754a7e898ef18b3d6fa45fbf9141e9e8107304b7"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs",
+          "before": "806ce664bc89af4199f6ab81b5c72bc2e80d47bd",
+          "after": "806ce664bc89af4199f6ab81b5c72bc2e80d47bd"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs",
+          "before": "f6938c73a9a3bd7f38c9b2a891fa22ead94d925e",
+          "after": "f6938c73a9a3bd7f38c9b2a891fa22ead94d925e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-demo-seller.mjs",
+          "before": "878d1917d335b2a94d1164ed07d2e1b3a4f4048f",
+          "after": "878d1917d335b2a94d1164ed07d2e1b3a4f4048f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13c2 delete the client's old seller transport module",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "cbbff1c08f2b7986c2a55298652234a1b1b6b606",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": "abd69a0abe22de61c02df544371d1baa542b0c15",
+          "after": "8c32f5d5d67d96b10c78979703a6b2670fe97295"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/devnet-live-composition-app.mjs",
+          "before": "77d601dbc4ed3c41f5def9397d2960e41f9dbff6",
+          "after": "4e78a320bd26fff966f5605da7f3b6dcc0f1e346"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": null,
+          "after": "44000e70295255c1e0af5a5183060835df1fd7bc"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs",
+          "before": "2f963c44c336dd77647d12ced651a9df7bc4b9e4",
+          "after": "754a7e898ef18b3d6fa45fbf9141e9e8107304b7"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs",
+          "before": "163637c51827c8cf0c5b04979d0ad008a24b6bfb",
+          "after": "806ce664bc89af4199f6ab81b5c72bc2e80d47bd"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs",
+          "before": "a95ef03f4a7088ebf2d776b544529efa9af3bd3b",
+          "after": "f6938c73a9a3bd7f38c9b2a891fa22ead94d925e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-demo-seller.mjs",
+          "before": "3ebe27b3481988b9dedeaabec489c44e791a2891",
+          "after": "878d1917d335b2a94d1164ed07d2e1b3a4f4048f"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/start-intent.mjs",
+          "before": "f0228e036f7f82a8087caf1c5883419ee18c8491",
+          "after": "b401cf5c221e9285f73a923cf90c1a0a291b3f35"
+        },
+        {
+          "path": "packages/dacs-client/test/old-domain-sources.test.mjs",
+          "before": null,
+          "after": "a8ccc8f4759f908cabb11fb0aff27f3290e40a74"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "225f7dbfb61729f33863364013e7dca7d31335a2",
+          "after": "a83648f5f7606440c1cf56de620e2f3794f6049a"
+        }
+      ]
+    },
     {
       "delta": "WF",
       "subject": "delta(client): WF record the merged response classification rebuild in the recorded suspension client and refresh package pins",
@@ -8248,8 +8420,50 @@
         }
       ]
     },
-    {"delta":"WF","subject":"delta(client): WF record the merged blobs after the seller handler and suspension merge","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"f6492ec9771611dd72c96e94107384db860ca748","after":"f6492ec9771611dd72c96e94107384db860ca748"},{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"6cffccaa66097ec40d1558133aeab80f8dd3991f","after":"6cffccaa66097ec40d1558133aeab80f8dd3991f"},{"path":"packages/dacs-client/src/dacs/seller-wire-authentication.mjs","before":"6ca61271e2daf5de7781479b88a971723597cc10","after":"6ca61271e2daf5de7781479b88a971723597cc10"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"92bbbdf84d3a0ab730d38daad03632c68e087d12","after":"92bbbdf84d3a0ab730d38daad03632c68e087d12"}]},
-    {"delta":"WF","subject":"delta(client): WF count the demos entry point in the packed closure helper after the merge","compact":true,"files":[{"path":"packages/dacs-client/test/helpers/entry-point-closure.mjs","before":"44000e70295255c1e0af5a5183060835df1fd7bc","after":"2f2c2f648bb095b7812aeac6523ae8cc22602bd8"},{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"25d796340d239be5de80a55c42ad7bce48755f5e","after":"25d796340d239be5de80a55c42ad7bce48755f5e"}]},
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged blobs after the seller handler and suspension merge",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f6492ec9771611dd72c96e94107384db860ca748",
+          "after": "f6492ec9771611dd72c96e94107384db860ca748"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "6cffccaa66097ec40d1558133aeab80f8dd3991f",
+          "after": "6cffccaa66097ec40d1558133aeab80f8dd3991f"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "6ca61271e2daf5de7781479b88a971723597cc10",
+          "after": "6ca61271e2daf5de7781479b88a971723597cc10"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "92bbbdf84d3a0ab730d38daad03632c68e087d12",
+          "after": "92bbbdf84d3a0ab730d38daad03632c68e087d12"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF count the demos entry point in the packed closure helper after the merge",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "44000e70295255c1e0af5a5183060835df1fd7bc",
+          "after": "2f2c2f648bb095b7812aeac6523ae8cc22602bd8"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "25d796340d239be5de80a55c42ad7bce48755f5e",
+          "after": "25d796340d239be5de80a55c42ad7bce48755f5e"
+        }
+      ]
+    },
     {
       "delta": "WF",
       "subject": "delta(client): WF test the authenticated loopback seller endpoint and record the merged client blobs",
@@ -8272,8 +8486,31 @@
         }
       ]
     },
-    {"delta":"WF","subject":"delta(client): WF record the merged seller transport blob after the base sync","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"c2a23d02278639657358480a74e9e933492b0832","after":"c2a23d02278639657358480a74e9e933492b0832"}]},
-    {"delta":"WF","sha":"7d49dcae349d6b5ec436c589a2a2673ba464d216","subject":"fix(client): drop the seller HTTP adapter claim from the seller agent header","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-agent.mjs","before":"ddf5ad868bbc84355b181be3a82b276e5c4eb199","after":"2ad03bd530d0b3c497d1cb53fe177de00f7e423a"}]},
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged seller transport blob after the base sync",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "c2a23d02278639657358480a74e9e933492b0832",
+          "after": "c2a23d02278639657358480a74e9e933492b0832"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "7d49dcae349d6b5ec436c589a2a2673ba464d216",
+      "subject": "fix(client): drop the seller HTTP adapter claim from the seller agent header",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent.mjs",
+          "before": "ddf5ad868bbc84355b181be3a82b276e5c4eb199",
+          "after": "2ad03bd530d0b3c497d1cb53fe177de00f7e423a"
+        }
+      ]
+    },
     {
       "delta": "WF",
       "subject": "delta(client): WF P16a1a dispatch history on the durable journal and the actor fence",
@@ -8403,62 +8640,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF P21a2aa add the fence-free observer and bounded source reads",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
-          "after": "e081789da16ac68bfbb76978b8cea7000a0bb9a4"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
-          "before": "4ba56c73af306778fef8531dd80bf48404d581b6",
-          "after": "c24bb9c6d829d4ead3c806eab84268c64047961c"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
-          "before": "e8eb401ca45efce0cc79b1f5b2cc8f8cee657015",
-          "after": "11db4783591d76f54036ef9c5d176ef9f54cc62e"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/queued-owner.mjs",
-          "before": null,
-          "after": "99a66f8772b4b5df092c71a16b32fa78bef08199"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/source-read-crash-child.mjs",
-          "before": null,
-          "after": "7c8a4c6aed3fa1972facb04dac75ae9fcec13db9"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/source-read-transport.mjs",
-          "before": null,
-          "after": "1cf670f33c82826d75e6c58edfcb89b9531906d6"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/source-read-world.mjs",
-          "before": null,
-          "after": "84e7b1a92a3ba4082e775ba1aa4671958168a027"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
-          "before": null,
-          "after": "aa905dcb3de4fe3f4fffd2d2a30c422bd98df2ff"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
-          "before": null,
-          "after": "dc910b5daebea851fa7dda232bce86bf82ca6115"
-        },
-        {
-          "path": "packages/dacs-client/test/public-api.test.mjs",
-          "before": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2",
-          "after": "f85d5b731a200483b9c5e95efa5f818b947e0e60"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence",
       "files": [
         {
@@ -8490,40 +8671,12 @@
     },
     {
       "delta": "WF",
-      "subject": "fix(client): drop unused parameters in the observer and source-read tests",
-      "sha": "609f5627549b546407d87cc8292ee1349f65e965",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
-          "before": "aa905dcb3de4fe3f4fffd2d2a30c422bd98df2ff",
-          "after": "5dd4a76396883d20a1bd2146a60a4df89baa0d20"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
-          "before": "dc910b5daebea851fa7dda232bce86bf82ca6115",
-          "after": "4734c66eb0b25db13d505cc6cc9df63f4237d09c"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up",
       "files": [
         {
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "83e1364efe976f2b3125cd8466c459d1600f6795",
           "after": "83e1364efe976f2b3125cd8466c459d1600f6795"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the merged public API test after carrying base/main up",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/public-api.test.mjs",
-          "before": "fd6d1efda44695f2e160927a08b0ba7295cdced6",
-          "after": "fd6d1efda44695f2e160927a08b0ba7295cdced6"
         }
       ]
     },
@@ -8540,49 +8693,12 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF record the public API test merged with the engines range change",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/public-api.test.mjs",
-          "before": "04b9b695052d43d73b6437653b830f55f903d8a4",
-          "after": "04b9b695052d43d73b6437653b830f55f903d8a4"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF check that the effect boundary module is not exported without listing every export",
       "files": [
         {
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "eed744fccb73e1c4c24346fffa91172a1d9029a1",
           "after": "db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF merge the source-read transport helper into the source-read world fixture",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/helpers/source-read-crash-child.mjs",
-          "before": "7c8a4c6aed3fa1972facb04dac75ae9fcec13db9",
-          "after": "df503bf02fa05bb270f3917138d7b46423ebd704"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/source-read-transport.mjs",
-          "before": "1cf670f33c82826d75e6c58edfcb89b9531906d6",
-          "after": null
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/source-read-world.mjs",
-          "before": "84e7b1a92a3ba4082e775ba1aa4671958168a027",
-          "after": "d99dfa33ba877ff2fdcefcce104abe9cf9727e88"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
-          "before": "4734c66eb0b25db13d505cc6cc9df63f4237d09c",
-          "after": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
         }
       ]
     },
@@ -8668,6 +8784,242 @@
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "683f3a9c22c09a4207d1f588e0108cb327b579f2",
           "after": "683f3a9c22c09a4207d1f588e0108cb327b579f2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged effect-boundary blobs after carrying the one-effect-per-operation rebuild up",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "b4d690799d4ea3e95f16278a542759e6f59f15ce",
+          "after": "b4d690799d4ea3e95f16278a542759e6f59f15ce"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "14cb1447457b9203e63d5a18e8a58da5d36784e6",
+          "after": "14cb1447457b9203e63d5a18e8a58da5d36784e6"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "Report a lost acknowledgement record after a successful send as eb_ack_not_persisted",
+      "sha": "a66660e64790f27c86c47cc1c39e69b236784086",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "ea9e892b09ac6333d8cec727575d5879c875f298",
+          "after": "c6a536f8fee883abd654907537ce728a0245155b"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "52c03f2dddbee806d14b94b223fc2fac459e7bc6"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
+          "after": "8881f3e8ce7a766a3162f5dc6afe79d2360884c4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the dispatch history blob merged with the lower branch fixes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "c9067c8d3faf5b01d1f2f174280d81877786e2d5",
+          "after": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the effect boundary blobs merged with the lower branch fixes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "b4d690799d4ea3e95f16278a542759e6f59f15ce",
+          "after": "b4d690799d4ea3e95f16278a542759e6f59f15ce"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test a lost acknowledgement write with and without its unknown record",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6001a22cd0f490fe10d214c28ed7e6e6f36f6a9",
+          "after": "0fd2ace1a4dae5ef01f51650072be5662066a04f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "client: queue signPass calls of one operation so only one artifact is signed",
+      "sha": "f1ae63ab3f9ff3c5ba0eca09c21285135d7139ca",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "b4d690799d4ea3e95f16278a542759e6f59f15ce",
+          "after": "10533f72e4ce2b3fe0ad791d92797796fd1a8221"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "c5f91f14575651303e144ec91570d7db728034e1",
+          "after": "d0771ba60ff24d68a635598c833f0ad7e0fa76b8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "client: report a failed fence release after a successful effect with its result",
+      "sha": "5769d48c87ef6bed3094adb442d35ad4b0c6e538",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "10533f72e4ce2b3fe0ad791d92797796fd1a8221",
+          "after": "796433f8bc1bca0d06a152305289e52f05f03812"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "d0771ba60ff24d68a635598c833f0ad7e0fa76b8",
+          "after": "83bf647eea4cbb4cf4614e97b07b52203356393c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a2aa add the fence-free observer and bounded source reads",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "e081789da16ac68bfbb76978b8cea7000a0bb9a4"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "4ba56c73af306778fef8531dd80bf48404d581b6",
+          "after": "c24bb9c6d829d4ead3c806eab84268c64047961c"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "e8eb401ca45efce0cc79b1f5b2cc8f8cee657015",
+          "after": "11db4783591d76f54036ef9c5d176ef9f54cc62e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/queued-owner.mjs",
+          "before": null,
+          "after": "99a66f8772b4b5df092c71a16b32fa78bef08199"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-crash-child.mjs",
+          "before": null,
+          "after": "7c8a4c6aed3fa1972facb04dac75ae9fcec13db9"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-transport.mjs",
+          "before": null,
+          "after": "1cf670f33c82826d75e6c58edfcb89b9531906d6"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-world.mjs",
+          "before": null,
+          "after": "84e7b1a92a3ba4082e775ba1aa4671958168a027"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": null,
+          "after": "aa905dcb3de4fe3f4fffd2d2a30c422bd98df2ff"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": null,
+          "after": "dc910b5daebea851fa7dda232bce86bf82ca6115"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2",
+          "after": "f85d5b731a200483b9c5e95efa5f818b947e0e60"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): drop unused parameters in the observer and source-read tests",
+      "sha": "609f5627549b546407d87cc8292ee1349f65e965",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "aa905dcb3de4fe3f4fffd2d2a30c422bd98df2ff",
+          "after": "5dd4a76396883d20a1bd2146a60a4df89baa0d20"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "dc910b5daebea851fa7dda232bce86bf82ca6115",
+          "after": "4734c66eb0b25db13d505cc6cc9df63f4237d09c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying base/main up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "fd6d1efda44695f2e160927a08b0ba7295cdced6",
+          "after": "fd6d1efda44695f2e160927a08b0ba7295cdced6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the public API test merged with the engines range change",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "04b9b695052d43d73b6437653b830f55f903d8a4",
+          "after": "04b9b695052d43d73b6437653b830f55f903d8a4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF merge the source-read transport helper into the source-read world fixture",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-crash-child.mjs",
+          "before": "7c8a4c6aed3fa1972facb04dac75ae9fcec13db9",
+          "after": "df503bf02fa05bb270f3917138d7b46423ebd704"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-transport.mjs",
+          "before": "1cf670f33c82826d75e6c58edfcb89b9531906d6",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-world.mjs",
+          "before": "84e7b1a92a3ba4082e775ba1aa4671958168a027",
+          "after": "d99dfa33ba877ff2fdcefcce104abe9cf9727e88"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "4734c66eb0b25db13d505cc6cc9df63f4237d09c",
+          "after": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
         }
       ]
     }
