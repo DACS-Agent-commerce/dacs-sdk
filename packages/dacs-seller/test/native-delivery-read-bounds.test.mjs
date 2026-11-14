@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import {
   createNativeDemDeliveryCapability, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery,
-  verifyNativeDemDeliveryReceipt, provenUnsignedAbsence, mayPublishAgain,
+  verifyNativeDemDeliveryReceipt, provenUnsignedAbsence, deadRefusedCreate, mayPublishAgain,
 } from '../src/dacs/native-dem-delivery-consumer.mjs';
 
 const DEADLINE_MS = 30_000;
@@ -97,6 +97,22 @@ test('a proven unsigned absence whose toJSON hides an oversized reason answers i
   assert.equal(answer.status, 'indeterminate');
   assert.equal(mayPublishAgain(answer), false);
 });
+
+for (const [kind, makeProof] of [['unsigned absence', provenUnsignedAbsence], ['dead refused create', deadRefusedCreate]]) {
+  for (const [form, reason] of [['no reason', undefined], ['an Error reason', new Error('TEST gone')]]) {
+    test(`a proven ${kind} with ${form} returns the capability's own reply object`, async () => {
+      const proof = makeProof(reason);
+      const answer = await readNativeDemDelivery(capabilityWhere('read', async () => proof), {});
+      assert.equal(answer, proof);
+      assert.equal(mayPublishAgain(answer), true);
+    });
+  }
+  test(`a proven ${kind} with an Error reason whose message is over the byte limit answers indeterminate`, async () => {
+    const answer = await readNativeDemDelivery(capabilityWhere('read', async () => makeProof(new Error(OVER_BYTE_LIMIT))), {});
+    assert.equal(answer.status, 'indeterminate');
+    assert.equal(mayPublishAgain(answer), false);
+  });
+}
 
 test('a read reply holding the largest report the seller sends, twice, is returned', async () => {
   const wide = Array.from({ length: 8000 }, () => 0);

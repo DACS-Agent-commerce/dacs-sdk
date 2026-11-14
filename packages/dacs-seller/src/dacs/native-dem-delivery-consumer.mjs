@@ -80,6 +80,8 @@ export const mayPublishAgain = (value) => isProvenUnsignedAbsence(value) || isDe
 // the report twice, the second copy a few levels down.
 const NATIVE_DEM_DELIVERY_LIMITS = Object.freeze({ timeoutMs: 30_000, maxBytes: 256 * 1024, maxValues: 32_768, maxDepth: 80, maxListEntries: 16_384 });
 
+const measuredProofReason = (reason) => (reason === undefined ? '' : reason instanceof Error ? `${reason.name}: ${reason.message}` : reason);
+
 /**
  * Check a reply against NATIVE_DEM_DELIVERY_LIMITS. A reply over them is answered with
  * `indeterminate(reason)`: it proves neither that nothing was written nor that the Deliverable is
@@ -87,13 +89,15 @@ const NATIVE_DEM_DELIVERY_LIMITS = Object.freeze({ timeoutMs: 30_000, maxBytes: 
  * and that checked copy is what the caller gets, so nothing unchecked passes through. Only the
  * unsigned-absence and dead-refusal objects are returned as they are, because their proofs are
  * carried by object identity; the object itself is checked too, so a `toJSON` cannot hide a field.
+ * A proof may leave its reason out or give an Error: the check measures the text that is kept
+ * (the Error's name and message) in its place.
  */
 function boundedReply(reply, indeterminate) {
   try {
     const plain = JSON.parse(JSON.stringify(reply));
     boundedResolutionValue(plain, NATIVE_DEM_DELIVERY_LIMITS);
     if (!isProvenUnsignedAbsence(reply) && !isDeadRefusedCreate(reply)) return plain;
-    boundedResolutionValue(reply, NATIVE_DEM_DELIVERY_LIMITS);
+    boundedResolutionValue({ ...reply, reason: measuredProofReason(reply.reason) }, NATIVE_DEM_DELIVERY_LIMITS);
     return reply;
   } catch (error) {
     return indeterminate(`native delivery reply exceeds its read limits: ${error.message}`);
