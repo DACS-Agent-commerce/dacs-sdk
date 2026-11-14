@@ -4,7 +4,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { boundaryWorld, setPurchaseAdmission, code, signedBytes, states, cutAppend } from './helpers/effect-boundary-fixture.mjs';
+import { createEffectFence } from '../src/wallet/effect-fence.mjs';
+import { boundaryWorld, setPurchaseAdmission, code, digest, signedBytes, states, cutAppend, flush } from './helpers/effect-boundary-fixture.mjs';
 
 const digestBytes = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const passStates = async (w) => (await w.history.readOperation(w.op)).map((record) => `${record.passId}/${record.state}`);
@@ -163,9 +164,77 @@ test('a failed signed-held write rejects with the original refusal, and the next
   assert.equal(w.sent.length, 0);
 });
 
+test('two signPass calls running together in one withOperation sign one artifact: the later one is refused eb_operation_signed, and the artifact still dispatches', async (t) => {
+  const w = await boundaryWorld(t);
+  const append = w.history.append;
+  w.history.append = async (record) => { await flush(); return append(record); };
+  const signAs = (bytes) => w.boundary.signPass(w.op, async () => { await flush(); w.signatures++; return Buffer.from(bytes); });
+  const outcomes = await w.boundary.withOperation(w.op, () => Promise.allSettled([signAs('TEST-bytes-a'), signAs('TEST-bytes-b')]));
+  assert.deepEqual(outcomes.map((outcome) => outcome.status), ['fulfilled', 'rejected']);
+  assert.equal(outcomes[1].reason.code, 'eb_operation_signed');
+  assert.equal(w.signatures, 1, 'the later signer is never called');
+  assert.deepEqual(await passStates(w), ['p1/signed']);
+  await w.send(outcomes[0].value);
+  assert.deepEqual(w.sent, [Buffer.from('TEST-bytes-a')]);
+});
+
+test('a signPass that fails leaves its operation free: the next signPass signs it', async (t) => {
+  const w = await boundaryWorld(t);
+  const outcomes = await w.boundary.withOperation(w.op, () => Promise.allSettled([
+    w.boundary.signPass(w.op, async () => { await flush(); throw new Error('TEST-signer-failed'); }),
+    w.boundary.signPass(w.op, () => signedBytes),
+  ]));
+  assert.deepEqual(outcomes.map((outcome) => outcome.status), ['rejected', 'fulfilled']);
+  assert.match(outcomes[0].reason.message, /TEST-signer-failed/);
+  assert.deepEqual(await passStates(w), ['p1/signed']);
+});
+
 test('withOperation rejects a malformed operation instead of throwing', async (t) => {
   const w = await boundaryWorld(t);
   let result;
   assert.doesNotThrow(() => { result = w.boundary.withOperation({ lane: 'TEST-lane' }, () => {}); });
   await assert.rejects(result, TypeError);
+});
+
+// The boundary over a fence whose release fails after the work ran. The history is shared
+// with the world's own boundary, so an artifact is signed through the healthy one first.
+async function worldWithFailingRelease(t) {
+  const w = await boundaryWorld(t), releaseFailure = new Error('TEST-release-failed');
+  const fence = createEffectFence({ currentLocal: () => digest(w.currentLocal()), acquire: async () => ({ release: () => { throw releaseFailure; } }) });
+  const artifact = await w.sign();
+  w.resetBoundary({ fence });
+  return { w, artifact, releaseFailure };
+}
+
+test('a fence release that fails after a successful send reports eb_fence_release_failed with the send result, and a retry reads back instead of sending again', async (t) => {
+  const { w, artifact, releaseFailure } = await worldWithFailingRelease(t);
+  await assert.rejects(w.send(artifact), (error) => error.code === 'eb_fence_release_failed' && error.details?.result === 'TEST-ack' && error.cause === releaseFailure);
+  assert.deepEqual(await passStates(w), ['p1/signed', 'p1/dispatch-started', 'p1/dispatch-acknowledged']);
+  w.reopen();
+  await assert.rejects(w.send(artifact), code('eb_readback_required'));
+  assert.deepEqual(w.sent, [signedBytes]);
+});
+
+test('a fence release that fails after withOperation work reports eb_fence_release_failed with the work result', async (t) => {
+  const { w, releaseFailure } = await worldWithFailingRelease(t);
+  const operation = { ...w.op, operationId: 'TEST-other-operation', lane: 'TEST-other-lane' };
+  const failed = await w.boundary.withOperation(operation, async () => ({ sentBy: 'TEST-work' })).catch((error) => error);
+  assert.equal(failed.code, 'eb_fence_release_failed');
+  assert.deepEqual(failed.details, { result: { sentBy: 'TEST-work' } });
+  assert.equal(failed.cause, releaseFailure);
+});
+
+test('a fence release that fails after a successful signPass reports eb_fence_release_failed with the artifact, which stays signed', async (t) => {
+  const { w } = await worldWithFailingRelease(t);
+  const operation = { ...w.op, operationId: 'TEST-other-operation', lane: 'TEST-other-lane' };
+  const failed = await w.boundary.signPass(operation, () => signedBytes).catch((error) => error);
+  assert.equal(failed.code, 'eb_fence_release_failed');
+  assert.equal(failed.details.result.artifactHash, digestBytes(signedBytes));
+  await assert.rejects(w.boundary.signPass(operation, () => signedBytes), code('eb_operation_signed'));
+});
+
+test('a send that fails keeps its own error when the fence release also fails', async (t) => {
+  const { w, artifact } = await worldWithFailingRelease(t);
+  const sendFailure = new Error('TEST-send-failed');
+  await assert.rejects(w.boundary.dispatchPass(artifact, () => { throw sendFailure; }), (error) => error === sendFailure);
 });

@@ -287,6 +287,13 @@ commitment that is not readback-only), with `authorizeResend` the same seller-st
 check that authorized signing; the capability asks it again right before the send
 and sends the original bytes only when it answers exactly `true`. A `resend` that
 is not a boolean, or `true` without an `authorizeResend` function, is refused.
+A passive read (the default) writes nothing before the source authenticates the
+transaction's inclusion: a seller intent that holds no hash keeps the hash and
+signed bytes it found in the journals as local values, and a pending or failed
+read leaves every journal row, including `demo/recovery`, as it was. Only an
+authenticated inclusion saves that checkpoint. An active read asks `authorizeResend`
+once, under the recovery lock and after the deployment check, so authority that
+closed during that check sends and records nothing.
 `read` takes the same options. The seller's restart of a submitted Deliverable
 passes them (with the same check) to the native delivery `read`, so a Deliverable
 CREATE kept before a crash that is still pending is sent again once; every other
@@ -319,6 +326,15 @@ uncertain.
 Keep both journals across restart; losing or rolling them back invalidates the
 proof. Without a valid proof after a failure before signing, the commitment
 remains held until the operator can reconcile it.
+
+The seller checks every reply of the `nativeDemDelivery` operations against fixed
+limits: 256 KiB, 32768 values, 80 levels deep and 16384 entries in a list. These
+cover any Deliverable the seller can send. A reply over a limit is answered as
+`indeterminate`, never as absent. A reconcile, read or verify that takes longer
+than 30 seconds is also answered as `indeterminate`; a missed deadline does not
+prove that nothing was written. A submit has no deadline. Except for the
+`provenUnsignedAbsence` and `deadRefusedCreate` objects, the caller gets a JSON
+copy of a reply, not the object the capability returned.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -915,6 +931,33 @@ per-client limiter so one client cannot exhaust the shared request budget.
   check): the ST-11 finalizer, which needs finalized and independently
   resolved Vet, commitment, settlement and bundle records, is not part of this
   package. The session ends at delivery.
+- The proposal and bundle routes each end an attempt by their own rule
+  (`src/dacs/seller-effect-routes.mjs`). A proposal answered `waiting`,
+  `indeterminate` or `rejected` ends with no outcome only when nothing of it was
+  signed or kept; once a signature intent is recorded the attempt stays open,
+  and the lease or the next recovery resumes the same responder. A bundle route
+  ends with no outcome only when, under the job's lock, no countersignature
+  work is retained; it then answers its named refusal again (`bundles/request`:
+  `not_delivered` 422 without a payment, `bundle_finalization_unavailable` 503
+  with one; `bundles/countersignature`: `bundle_finalization_unavailable` 503),
+  and it never records a completed bundle. A commitment route (`commitments`, and
+  `commitments/signature` when enabled) ends with no outcome only when the job
+  retains no commitment work at all: no CREATE time, publication request, early
+  attempt marker or commitment. Its recovery reads the CREATE back; it sends the
+  original request again only after a read in passive mode proves that nothing
+  was signed for the address (for an early commitment on a fixture anchor, that
+  no anchor row exists). An attempt marker alone is not that proof, and a signed
+  CREATE whose readback fails stays open with nothing sent or signed again. A
+  completed proposal answer is signed
+  again only after its sources are read again, read only: the retained
+  contribution and Agreement, both Vet records with their receipts, and the
+  buyer's current access. A completed commitment answer is signed again only
+  after the retained commitment's canonical address, record, transaction and
+  finalized receipt are read again from its source in passive mode; an early
+  commitment needs no buyer Agreement anchor for this. A source that fails answers `503
+  seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
+  `too_large` or `unavailable`), a closed buyer access keeps its own refusal,
+  and the stored outcome is never rewritten.
 - It does not mount the Vet and Agreement context route (`createSellerContextRoute`,
   see the root exports above) itself: the challenge
   a session needs is the one `host.issueSessionChallenge` issued, which the
