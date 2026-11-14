@@ -167,6 +167,32 @@ attempt stays open: a request inside its 300 s lease gets `seller_effect_pending
 and the first after it recovers; after 16 lapsed attempts the operation answers
 `seller_effect_unresolved`. Signed reads create no reservation rows or journal files.
 
+An operation is one job's request on one route. Its binding is the profile,
+buyer and Agreement hash it was first reserved under. Once the operation has
+completed, a later request under the same binding whose body passes the host's
+body checks is the same operation, not a new reservation. A body the checks
+refuse, such as a proposal with a changed `proposalHash`, is refused 409
+`peer_proposal_mismatch` before the journal is consulted. A completed proposal
+gets the stored answer, and the agent is not called again, even when the new
+body differs in a field the checks do not read, such as the signature inside the
+buyer presentation. A completed commitment is read back with the new request's
+body, and a completed payment whose stored answer reports delivery is put to
+the agent again with that body. The stored answer goes only to a request with the
+buyer's transport signature under the same binding. The host checks the header,
+signature, buyer and Agreement hash before it reserves: a missing header, or one
+whose encoding or outer envelope shape is invalid, gets 401
+`peer_envelope_invalid`. A payload with exactly the other required fields but no
+profile gets 409 `tp1_profile_missing`; a payload with any other field missing
+or extra gets 401 `peer_envelope_invalid`. A header
+that decodes to something other than JSON 401 `wire_json_rejected`, a signature that is
+malformed or by another key 401 `peer_signature_invalid`, a header signed over
+a different body 401 `peer_request_mismatch`, and another buyer or Agreement
+hash 409 `peer_agreement_party_mismatch` or `peer_agreement_mismatch`. The
+reservation then refuses a signed request sent again with 409
+`peer_request_replayed`. The agent's own refusal of a different proposal for a
+job applies only before the proposal has completed; after that, the agent is
+not asked.
+
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
 build the signed Listing; a wallet signs the returned messages. A buyer
@@ -293,6 +319,15 @@ uncertain.
 Keep both journals across restart; losing or rolling them back invalidates the
 proof. Without a valid proof after a failure before signing, the commitment
 remains held until the operator can reconcile it.
+
+The seller checks every reply of the `nativeDemDelivery` operations against fixed
+limits: 256 KiB, 32768 values, 80 levels deep and 16384 entries in a list. These
+cover any Deliverable the seller can send. A reply over a limit is answered as
+`indeterminate`, never as absent. A reconcile, read or verify that takes longer
+than 30 seconds is also answered as `indeterminate`; a missed deadline does not
+prove that nothing was written. A submit has no deadline. Except for the
+`provenUnsignedAbsence` and `deadRefusedCreate` objects, the caller gets a JSON
+copy of a reply, not the object the capability returned.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -527,8 +562,26 @@ per-client limiter so one client cannot exhaust the shared request budget.
   chain id as a decimal string, taken from the seller's own network
   configuration; without it only the bare hash is accepted, and any other
   message is refused. `createNativePaymentEvidenceConsumer` takes the same
-  option for the readback. Anything else is refused (`wallet_sign_invalid`),
-  and nothing is kept or sent.
+  option for the readback.
+  Its fee is the node's to set, up to a ceiling of 50 DEM for the whole debit
+  of the write: the network, rpc and additional fee plus the storage and gas
+  burns, summed in OS (whole DEM numbers before the node's denomination fork,
+  OS strings after it), must not be above 50 DEM, and a fee that cannot be
+  summed exactly is refused. Below the ceiling the fee is not compared with any
+  expected amount.
+  Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
+  sent. A kept CREATE whose whole debit is above the ceiling is never
+  broadcast again: `anchorEvidence`, `reconcilePaymentEvidence`,
+  `ensureEvidence` and the Deliverable journal's `resume` and
+  `submitAuthorized` refuse its address with `write-fee-cap`, naming its hash
+  and debit, before any wallet read or signature. `readSignedProjection` still
+  returns the held write.
+  The operator sees a held write as the `write-fee-cap` reason with the hash
+  and cost of the write. On the payment evidence path it is `anchorError`
+  (`code` and `message`) on the held answer of the seller agent. On the
+  Deliverable path it is the `reason` of the held, pending or indeterminate
+  delivery outcome, which starts with `write-fee-cap:`.
+  There is no operator command to clear a held write.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers

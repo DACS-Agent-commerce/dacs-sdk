@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "0533a8eb2fee9bbb1bb83c4cd8bfa95498e3ab1d"
+        "blob": "cd2aa6f15d6b88c90fe7f2b22d2398711780f1f0"
       },
       "DELTA-LEDGER.json": {
-        "blob": "530e38ee5ab870821d06a416e287acfe3505d3ef"
+        "blob": "0ba3bba232f12229e743f81604c68c92a7996e79"
       },
       "DELTA-MAP.md": {
-        "blob": "147919ae5e0372306cb74c38f5977fd0d6515ce2"
+        "blob": "df94be0b5c7a199578b5dde00b78793c26bcc536"
       },
       "DELTA-NOTES.md": {
         "blob": "62a0627c37014d27601ad44e6d60938a79aea8cb"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "038d3cb5fe09b2149ea47cdd3978da8d13e2252c"
+        "blob": "ab4adc648bfef205b8bcaf3de0e123d6292eea1e"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "7f2b545aea171c58d2806425030a2d16cde72ad9"
+        "blob": "642c2f05eafc1e6d5c104f55eecb48cc7cc03db7"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "2cea25a0352177f2dd63e31f2179dc680529f115"
@@ -1229,7 +1229,7 @@
         "blob": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
       },
       "src/portal-capability.mjs": {
-        "blob": "d6200b11094df0e624dd644d980ac3bc7444868d"
+        "blob": "fb1f631894e79e1139d7d66c8ce2e56d97a40ae5"
       },
       "src/public-admission.mjs": {
         "blob": "8c0c6666bc10a902c9459f67953ebcd3fdcc13e0"
@@ -1883,7 +1883,7 @@
         "blob": "cf4497afe1bd896a8d18a55993bb8b38f4896c16"
       },
       "test/portal-capability.test.mjs": {
-        "blob": "073700c9a849a4bfc092cb5913498364fd622f0d"
+        "blob": "03649eaa13ff185ed7e74c73984df819b417e1ff"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
