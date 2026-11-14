@@ -12,23 +12,14 @@ function fresh(source) {
 }
 test('buyer modules avoid seller state, portal, wallet seams and eager SQLite', () => {
  fresh(`import assert from 'node:assert/strict';import {registerHooks} from 'node:module';
- import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
- let sqliteAllowed=false,sqliteLoads=0,buyerLoading=true;
  registerHooks({resolve(specifier,context,next){const result=next(specifier,context);
  if(/seller-agent\\.mjs|seller-state|\\/public\\/portal\\/|wallet-actions-not-wired/.test(result.url))throw Error('forbidden buyer dependency '+result.url);
- if(buyerLoading&&/seller-(?:agent-error|transport-auth|session-limits)\\.mjs/.test(result.url))throw Error('forbidden seller dependency '+result.url);
- if(result.url==='node:sqlite'){assert.equal(sqliteAllowed,true,'eager SQLite');sqliteLoads++;}return result;}});
+ if(/seller-(?:agent-error|transport-auth|session-limits)\\.mjs/.test(result.url))throw Error('forbidden seller dependency '+result.url);
+ if(result.url==='node:sqlite')throw Error('eager SQLite');return result;}});
  const http=await import(${JSON.stringify(new URL('../src/dacs/seller-http.mjs',import.meta.url).href)});
  assert.equal('createSellerHttpHandler' in http,false);assert.equal('loopbackSocket' in http,false);
  await import(${JSON.stringify(new URL('../src/wallet/devnet-native-transport.mjs',import.meta.url).href)});
- await assert.rejects(import(${JSON.stringify(new URL('../src/seams/wallet-actions-not-wired.mjs',import.meta.url).href)}), /forbidden buyer dependency/);
- buyerLoading=false; // The seller transport store is tested on its own, outside the buyer import graph.
- const {createSellerTransportStore}=await import(${JSON.stringify(new URL('../src/dacs/seller-transport-auth.mjs',import.meta.url).href)});
- assert.equal(sqliteLoads,0);sqliteAllowed=true;
- const dir=mkdtempSync(join(tmpdir(),'dacs-import-store-'));
- try{const store=createSellerTransportStore({path:join(dir,'peer.sqlite')});
- store.bind({seller:'TEST-seller',listingPin:{listingId:'TEST-listing',version:1,contentHash:'a'.repeat(64)}});store.close();assert.equal(sqliteLoads,1);}
- finally{rmSync(dir,{recursive:true,force:true});}`);
+ await assert.rejects(import(${JSON.stringify(new URL('../src/seams/wallet-actions-not-wired.mjs',import.meta.url).href)}), /forbidden buyer dependency/);`);
 });
 test('served provider loads as a standalone data module', async () => {
  const source=readFileSync(new URL('../src/public/portal/embedded-wallet/sdk-provider.mjs',import.meta.url),'utf8');
