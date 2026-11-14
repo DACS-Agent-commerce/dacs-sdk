@@ -4274,6 +4274,8 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
 | fix(client): record the fence release change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a3aa0ac2212ab8da24ad5cc9d0e6ad2bdc3bb1e6 | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): re-render the delta ledger after the phase0-completion merge | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
