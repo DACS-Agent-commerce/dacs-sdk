@@ -9283,6 +9283,119 @@
           "after": "8336e5393f66bcf9184b1b22b44911a9a1a32fbc"
         }
       ]
+    },
+    {
+      "delta": "D37",
+      "subject": "delta(client): D37 project elapsed approvals against the wall clock in diagnostic reads",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a",
+          "after": "353259d6d98e8d809bf95bd11c79ab5cb6739793"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4",
+          "after": "1534c01cc8e7959911d59cf24b3192eecd217c4a"
+        }
+      ]
+    },
+    {
+      "delta": "D37",
+      "subject": "delta(client): D37 say the expiry projection is read-side only",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "353259d6d98e8d809bf95bd11c79ab5cb6739793",
+          "after": "583d6115c7df3e00f7ae35ec3a69a0f38d943027"
+        }
+      ]
+    },
+    {
+      "delta": "D37",
+      "subject": "delta(client): D37 say that a read and an action can disagree under a stale clock",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "3f4cdf6d4b097234428b540e0b3bde4a3688edab",
+          "after": "0763f1fa7289764702c38cfafe1143575cc210d8"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d",
+          "after": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d"
+        }
+      ]
+    },
+    {
+      "delta": "D37",
+      "subject": "delta(client): D37 refuse approvals expired on either clock in approve, pay, cancel and the purchase limits",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "d6b4b8f97ac305d867dbc3c1436aa63dae0d1123",
+          "after": "0862419d2002cc0910e531cd0426cbd044ba21cf"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-expiry-clocks.test.mjs",
+          "before": null,
+          "after": "fd0b0dd51c4fc12d8ab7c83f2b89c87b391047d1"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "test(client): two concurrent resumes of one held artifact send it once",
+      "sha": "46d0d8b49f50a136d295e97bb666c4fb1fd8c893",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "8881f3e8ce7a766a3162f5dc6afe79d2360884c4",
+          "after": "f46d3e410597600af548d6dc5c52d0ec78858b81"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): send a held artifact once when two passes resume it at once",
+      "sha": "4451a92f7120ca03f6df4100048c0a0709d4f6c9",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "c6a536f8fee883abd654907537ce728a0245155b",
+          "after": "c235b85c61fab739e2eb29c1388130bd7d24cdd8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged effect-boundary.mjs and effect-boundary.test.mjs blobs after merging 472193167d6f",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "796433f8bc1bca0d06a152305289e52f05f03812",
+          "after": "796433f8bc1bca0d06a152305289e52f05f03812"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "ba95a19ef6fa3331bb54536fa0910d058d2956f8",
+          "after": "ba95a19ef6fa3331bb54536fa0910d058d2956f8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that two passes resuming one held artifact send it once",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "ba95a19ef6fa3331bb54536fa0910d058d2956f8",
+          "after": "6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1"
+        }
+      ]
     }
   ]
 }

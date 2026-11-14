@@ -158,7 +158,10 @@ export type AnchorWaitFailureCode =
   | "read-failed"
   | "prepare-failed"
   | "broadcast-failed"
-  | "inclusion-failed";
+  | "inclusion-failed"
+  // A broadcast Demos write whose outcome the node's answers cannot settle.
+  // Its journal entry is kept, so the wallet stays blocked until it resolves.
+  | "demos-write-unresolved";
 
 export interface AnchorWaitOptions {
   /** Confirmation level to reach before returning (default `read-visible`). */
