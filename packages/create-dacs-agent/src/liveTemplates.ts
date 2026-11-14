@@ -24,7 +24,7 @@ function packageJson(options: LiveProjectTemplateOptions): string {
     version: "0.1.0",
     private: true,
     type: "module",
-    engines: { node: "^20.19.0 || >=22.12.0" },
+    engines: { node: "^22.22.2 || ^24.15.0" },
     scripts: {
       build: "tsc -p tsconfig.json",
       typecheck: "tsc --noEmit -p tsconfig.json",
@@ -130,6 +130,9 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
   if (persistentConfirmationDetected) {
     throw new Error("write confirmation must not be persisted in .env");
   }
+  if (process.env.DACS_DEMOS_CHAIN_ID && !process.env.DACS_DEMOS_GENESIS_HASH) {
+    throw new Error("DACS_DEMOS_CHAIN_ID requires DACS_DEMOS_GENESIS_HASH");
+  }
   const publicBaseUrl = publicUrl(role === "buyer"
     ? "DACS_BUYER_PUBLIC_BASE_URL" : role === "seller"
       ? "DACS_SELLER_PUBLIC_BASE_URL" : "DACS_VERIFIER_PUBLIC_BASE_URL");
@@ -144,6 +147,11 @@ export function generatedRoleConfig(role: GeneratedLiveRole): DacsLiveAgentConfi
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     demos: {
       rpcUrl: process.env.DACS_DEMOS_RPC_URL ?? "https://node2.demos.sh",
+      ...(process.env.DACS_DEMOS_GENESIS_HASH ? { expectedIdentity: {
+        genesisHash: process.env.DACS_DEMOS_GENESIS_HASH,
+        ...(process.env.DACS_DEMOS_CHAIN_ID === undefined || process.env.DACS_DEMOS_CHAIN_ID === ""
+          ? {} : { chainId: process.env.DACS_DEMOS_CHAIN_ID }),
+      } } : {}),
       ...(publicUrl("DACS_DEMOS_STORAGE_READ_URL") === undefined
         ? {} : { storageReadUrl: publicUrl("DACS_DEMOS_STORAGE_READ_URL")! }),
     },
@@ -778,7 +786,8 @@ function supportedNode(): boolean {
   if (match === null) return false;
   const major = Number(match[1]);
   const minor = Number(match[2]);
-  return major === 20 ? minor >= 19 : major === 22 ? minor >= 12 : major > 22;
+  const patch = Number(match[3]);
+  return major === 22 ? minor > 22 || (minor === 22 && patch >= 2) : major === 24 && minor >= 15;
 }
 
 async function privateDirectory(role: "buyer" | "seller") {
@@ -4511,7 +4520,7 @@ test("upgrade check blocks an unfinished irreversible effect", async () => {
 });
 `;
 
-const DOCKERFILE = `FROM node:20.19.1-bookworm-slim AS build
+const DOCKERFILE = `FROM node:22.22.2-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --omit=optional
@@ -4522,7 +4531,7 @@ COPY test ./test
 RUN npm run build
 RUN npm prune --omit=dev --omit=optional --ignore-scripts
 
-FROM node:20.19.1-bookworm-slim
+FROM node:22.22.2-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
 RUN groupadd --system --gid 10001 dacs && useradd --system --uid 10001 --gid dacs --home-dir /app dacs \\
@@ -4548,6 +4557,8 @@ const DOCKERIGNORE = `**
 
 const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_DEMOS_RPC_URL: \${DACS_DEMOS_RPC_URL:-https://node2.demos.sh}
+  DACS_DEMOS_GENESIS_HASH: \${DACS_DEMOS_GENESIS_HASH:-}
+  DACS_DEMOS_CHAIN_ID: \${DACS_DEMOS_CHAIN_ID:-}
   DACS_DEMOS_STORAGE_READ_URL: \${DACS_DEMOS_STORAGE_READ_URL:-}
   DACS_RAIL_REGISTRY_INDEX_REF: \${DACS_RAIL_REGISTRY_INDEX_REF:-dacs4:registry:v0.1}
   DACS_RAIL_STEWARD_AUTHORITY: \${DACS_RAIL_STEWARD_AUTHORITY:-}
@@ -4684,6 +4695,8 @@ DACS_RUNTIME_GID=${options.runtimeGid}
 DACS_BUYER_DATA_DIRECTORY=./data/buyer
 DACS_SELLER_DATA_DIRECTORY=./data/seller
 DACS_DEMOS_RPC_URL=https://node2.demos.sh
+DACS_DEMOS_GENESIS_HASH=
+DACS_DEMOS_CHAIN_ID=
 DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:v0.1
 DACS_RAIL_STEWARD_AUTHORITY=
 DACS_X402_RAIL_ID=x402:default

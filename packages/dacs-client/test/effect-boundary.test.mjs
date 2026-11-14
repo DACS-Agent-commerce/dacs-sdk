@@ -214,16 +214,17 @@ test('the dispatch history is append-only and never rewrites the native transpor
   assert.deepEqual((await history.read({ lane, artifactHash })).map((r) => [r.passId, r.state]), [['pass-1', 'dispatch-started'], ['pass-1', 'dispatch-withheld'], ['pass-2', 'dispatch-started']]);
 });
 
-// P16a1b K0 pass vectors. Test-only admission seam; real durable history/fence.
+// The boundary's passes. Test-only admission seam; real durable history/fence.
 const digestBytes = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-test("an EB pass runs EB1 to EB9 in order and refuses with profile_not_admitted, writes_stopped, fee_ceiling_required and the tp1 codes in K0's order", async t => {
+test("each effect is authorized right before it in a fixed order, and refusals come as profile_not_admitted, writes_stopped, fee_ceiling_required, write-fee-cap, then the binding's code", async t => {
   const w = await boundaryWorld(t);
   w.authority.state.gate = async () => w.events.push('authority');
   const append = w.history.append;
   w.history.append = async record => { w.events.push(record.state); return append(record); };
   await w.run();
-  assert.deepEqual(w.events, ['stop', 'authority', 'stop', 'authority', 'stop', 'sign', 'signed', 'stop', 'authority', 'dispatch-started', 'stop', 'send', 'dispatch-acknowledged']);
+  const authorized = ['stop', 'authority', 'stop'];
+  assert.deepEqual(w.events, ['stop', 'authority', ...authorized, 'sign', 'signed', ...authorized, 'dispatch-started', ...authorized, 'send', 'dispatch-acknowledged']);
   assert.equal(w.acquired, 1); assert.equal(w.released, 1);
   for (const [held, stopped, fee, binding, expected] of [
     [true, true, undefined, {}, 'profile_not_admitted'], [false, true, undefined, {}, 'writes_stopped'],
@@ -236,13 +237,13 @@ test("an EB pass runs EB1 to EB9 in order and refuses with profile_not_admitted,
   }
 });
 
-test("crash cuts before persistence, after persistence, after dispatch intent and after transmission leave K0's states and restart actions", async t => {
+test("crash cuts before persistence, after persistence, after dispatch intent and after transmission leave their states, and a restart signs again, sends once or reads back", async t => {
   for (const [state, after, retained] of [['signed', false, []], ['signed', true, ['signed']],
     ['dispatch-started', true, ['signed', 'dispatch-started']], ['dispatch-acknowledged', false, ['signed', 'dispatch-started', 'dispatch-unknown']]]) {
     const w = await boundaryWorld(t);
     cutAppend(w, state, { after });
     const artifact = { ...w.op, artifactHash: digestBytes(signedBytes) };
-    await assert.rejects(w.run());
+    await assert.rejects(w.run(), state === 'dispatch-acknowledged' ? code('eb_ack_not_persisted') : undefined);
     w.reopen();
     assert.deepEqual(await states(w, artifact), retained);
     if (state === 'signed' && !after) await w.run();
@@ -253,18 +254,20 @@ test("crash cuts before persistence, after persistence, after dispatch intent an
   }
 });
 
-test("a failed acknowledgement write after a successful send reports eb_ack_not_persisted with the send result and the write failure as its cause", async t => {
-  const w = await boundaryWorld(t), failure = Object.assign(new Error('TEST-disk-failed'), { code: 'EIO' });
-  const artifact = await w.sign();
-  cutAppend(w, 'dispatch-acknowledged', { error: failure });
-  cutAppend(w, 'dispatch-unknown', { error: failure });
-  await assert.rejects(w.send(artifact), error => error.code === 'eb_ack_not_persisted' && error.details?.result === 'TEST-ack'
-    && error.cause.code === 'eb_persist_failed' && error.cause.cause === failure && !/nothing was transmitted/.test(error.message));
-  assert.equal(w.sent.length, 1); assert.equal(w.held, false);
-  w.reopen();
-  assert.deepEqual(await states(w, artifact), ['signed', 'dispatch-started']);
-  await assert.rejects(w.send(artifact), code('eb_readback_required'));
-  assert.equal(w.sent.length, 1);
+test("a failed acknowledgement write after a successful send reports eb_ack_not_persisted with the send result and the write failure as its cause, whether or not the unknown record is written", async t => {
+  for (const unknownWritten of [true, false]) {
+    const w = await boundaryWorld(t), failure = Object.assign(new Error('TEST-disk-failed'), { code: 'EIO' });
+    const artifact = await w.sign();
+    cutAppend(w, 'dispatch-acknowledged', { error: failure });
+    if (!unknownWritten) cutAppend(w, 'dispatch-unknown', { error: failure });
+    await assert.rejects(w.send(artifact), error => error.code === 'eb_ack_not_persisted' && error.details?.result === 'TEST-ack'
+      && error.cause.code === 'eb_persist_failed' && error.cause.cause === failure && !/nothing was transmitted/.test(error.message));
+    assert.equal(w.sent.length, 1); assert.equal(w.held, false);
+    w.reopen();
+    assert.deepEqual(await states(w, artifact), unknownWritten ? ['signed', 'dispatch-started', 'dispatch-unknown'] : ['signed', 'dispatch-started']);
+    await assert.rejects(w.send(artifact), code('eb_readback_required'));
+    assert.equal(w.sent.length, 1);
+  }
 });
 
 test("a failed send still refuses with the send's own error and a lost unknown record does not replace it", async t => {
@@ -283,7 +286,7 @@ test("a failed persistence write transmits nothing and refuses eb_persist_failed
   assert.equal(w.sent.length, 0); assert.equal(w.held, false);
 });
 
-test("a stop observed between persistence and EB7 keeps the signature signed-held, also after restart", async t => {
+test("a stop observed between persistence and the release check keeps the signature signed-held, also after restart", async t => {
   const w = await boundaryWorld(t);
   cutAppend(w, 'signed', { mutate: () => { w.stopped = true; } });
   await assert.rejects(w.run(), code('writes_stopped'));
@@ -312,7 +315,7 @@ test("an acknowledged confirmation then a crash broadcasts once on restart; a lo
     if (lost) await assert.rejects(dispatch); else await dispatch;
     w.reopen();
     assert.equal((await states(w, confirmed)).at(-1), lost ? 'dispatch-unknown' : 'dispatch-acknowledged');
-    // Simulate the lane policy that P16a2ba wires: only an acknowledged confirm advances.
+    // A composition's lane policy: only an acknowledged confirm advances.
     if ((await states(w, confirmed)).at(-1) === 'dispatch-acknowledged') {
       const broadcast = { ...w.op, lane: 'TEST-broadcast', kind: 'native', artifactHash: confirmed.artifactHash };
       const original = (await w.history.read(confirmed)).find(record => record.state === 'signed');
@@ -445,8 +448,8 @@ test('released async operation contexts cannot sign or send and a foreign nested
 test('missing, mismatched or malformed retained history never permits transmission', async t => {
   for (const variant of ['missing', 'metadata', 'bytes', 'state']) {
     const w = await boundaryWorld(t), artifact = await w.sign();
-    const read = w.history.read;
-    w.history.read = async op => { const records = await read(op); if (variant === 'missing') return []; const last = records.at(-1);
+    const read = w.history.readOperation;
+    w.history.readOperation = async op => { const records = await read(op); if (variant === 'missing') return []; const last = records.at(-1);
       if (variant === 'metadata') last.operationId = 'TEST-other';
       if (variant === 'bytes') last.bytes = Buffer.from('TEST-wrong-bytes').toString('base64');
       if (variant === 'state') last.state = 'TEST-unknown-state';
@@ -526,7 +529,7 @@ test('two boundaries with their own fences resuming one held artifact at once se
 });
 
 
-test('identical bytes on another lane do not reuse the first lanes post-sign authorization', async t => {
+test("identical bytes on another lane do not reuse the first lane's post-sign authorization", async t => {
   const w = await boundaryWorld(t);
   const other = await w.sign({ ...w.op, lane: 'TEST-other' });
   await w.boundary.withOperation(w.op, async () => {
@@ -539,7 +542,7 @@ test('identical bytes on another lane do not reuse the first lanes post-sign aut
   assert.equal(w.sent.length, 0);
 });
 
-test('the EB signer returns a string signature exactly as the inner signer gave it and persists its bytes', async t => {
+test('the boundary signer returns a string signature exactly as the inner signer gave it and persists its bytes', async t => {
   const w = await boundaryWorld(t), signature = 'TEST-string-signature';
   const signer = w.boundary.signerFor(w.op, { claim: 'TEST-claim', sign: () => signature });
   assert.equal(await signer.sign(signedBytes), signature);

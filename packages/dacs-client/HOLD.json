@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "d5d22672810147eb1eaf5c0d78a78dcc939a763d"
+        "blob": "fc1fd9c3708c98231554620cdb8957f4ff176e86"
       },
       "DELTA-LEDGER.json": {
-        "blob": "4b99daea039a07a17ffd53fa2d29435dd8ff20c8"
+        "blob": "f68a9e81d9f82333f76df36339e9f3f05ac5cf05"
       },
       "DELTA-MAP.md": {
-        "blob": "fbe2624a298b7ecfe5751ae75ab8d53ff9bbecc1"
+        "blob": "f6636765abc128988a77788c86128e93471a114c"
       },
       "DELTA-NOTES.md": {
-        "blob": "bcb11c44cb4c9dcba7f9fbb6ba5eb43daa6f7bb9"
+        "blob": "1e0cb0fa803f611494bbd2db65ae2162bb2df38e"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "39f616e000c9d143e67b2fd62cddd1a365529477"
+        "blob": "f7c5904ad1cfc306322a03ef921a0a16534b5676"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1030,11 +1030,11 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "7c46d5d477464d948667e82a41e6d97c0862fcd3"
+        "blob": "c35d385d50d9059aeb2ab09b2772d95ff4d9fe02"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "27d3116f9117eafc57d62fd2b023099337514d56"
+        "blob": "67b74b987dec50b7091c0f0864a2a4a4e4cd6afa"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1052,16 +1052,16 @@
         "blob": "eed33b7b83034ba0e364c4b8d09de0b5261b133e"
       },
       "scripts/delta-continuity.test.mjs": {
-        "blob": "ada92a9e928b640e60d4646ddd242ba50022ba11"
+        "blob": "81626f32cdd4170631a50320a60b77e20498216d"
       },
       "scripts/delta-frontier.test.mjs": {
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "19d21b12171a162ed18aecc0c13211a38b94c863"
+        "blob": "642c2f05eafc1e6d5c104f55eecb48cc7cc03db7"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "ae6474ca4c5e2f953802b878b50b18ebdaa5090f"
+        "blob": "2cea25a0352177f2dd63e31f2179dc680529f115"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1106,16 +1106,19 @@
         "blob": "952ac02702744b259d0fc493a96e82acb134e504"
       },
       "src/dacs/buyer-chain-readback.mjs": {
-        "blob": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2"
+        "blob": "540cf6a903cdb9d0f40bef3c22a70ee61c2b0540"
       },
       "src/dacs/chain.mjs": {
         "blob": "4918f9b53808ff1f9311b70ef892155ed5659eef"
       },
       "src/dacs/commit-on-signature.mjs": {
-        "blob": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
+        "blob": "e8e7037514829c256308b6b24339178d90fe1881"
       },
       "src/dacs/completion-readiness.mjs": {
         "blob": "56c7e6150b5db9b61730373385d9a5214e4518f1"
+      },
+      "src/dacs/continuation-evidence.mjs": {
+        "blob": "2f1540dbcd68897c5e95ae7c588684172c0eaf42"
       },
       "src/dacs/delivery-deadline-watch.mjs": {
         "blob": "78f5bdad942ded0146bb3b8f82cf24f7ce17ff43"
@@ -1154,7 +1157,7 @@
         "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "615dbe0271963189f792d967d3b1acf6c2fc678f"
+        "blob": "f6492ec9771611dd72c96e94107384db860ca748"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1166,13 +1169,16 @@
         "blob": "a701b193b0b8e1b01237d684ca33c4ee8ea001b6"
       },
       "src/dacs/seller-agent.mjs": {
-        "blob": "ddf5ad868bbc84355b181be3a82b276e5c4eb199"
+        "blob": "2ad03bd530d0b3c497d1cb53fe177de00f7e423a"
       },
       "src/dacs/seller-durable-state.mjs": {
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "eb89bc99364dc00d325530e5249981917b9cdb87"
+        "blob": "c2a23d02278639657358480a74e9e933492b0832"
+      },
+      "src/dacs/seller-response-class.mjs": {
+        "blob": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
       },
       "src/dacs/seller-session-lifecycle.mjs": {
         "blob": "86fd5777a41c76183f2b3383898400469bdc60b3"
@@ -1183,11 +1189,11 @@
       "src/dacs/seller-sr2-agreement-consumer.mjs": {
         "blob": "14a0693cb2484eb39c9db122914b46ef31503757"
       },
-      "src/dacs/seller-transport-auth.mjs": {
-        "blob": "68a8a8946386f010d7a157a25e184bfb52370108"
+      "src/dacs/seller-wire-authentication.mjs": {
+        "blob": "6ca61271e2daf5de7781479b88a971723597cc10"
       },
       "src/dacs/source-demo-seller-transport.mjs": {
-        "blob": "208a59efea2ceed0f8b76d96aaf66444ac51cc40"
+        "blob": "14350d302f2efcecf790150cd2fcaec4244982d0"
       },
       "src/dacs/verification.mjs": {
         "blob": "de51f5bc8faf3b14b707783e03bc8e303fb44ca5"
@@ -1220,13 +1226,13 @@
         "blob": "0dcfab473d1256f9de295bc65c0f04926e1ceb62"
       },
       "src/index.mjs": {
-        "blob": "8eef30db35c285a915231522e0b73a8c407e9384"
+        "blob": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
       },
       "src/portal-capability.mjs": {
-        "blob": "d6200b11094df0e624dd644d980ac3bc7444868d"
+        "blob": "fb1f631894e79e1139d7d66c8ce2e56d97a40ae5"
       },
       "src/public-admission.mjs": {
-        "blob": "3f31bdea587a0f038d5a8fcc892b053dbd129fff"
+        "blob": "8c0c6666bc10a902c9459f67953ebcd3fdcc13e0"
       },
       "src/public-guidance.mjs": {
         "blob": "3e30100bbe51407035a50afcb5f1ef2c991040fa"
@@ -1250,7 +1256,7 @@
         "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a"
+        "blob": "1426fa081a61f904773ce02cb38d9c7184851839"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1266,6 +1272,9 @@
       },
       "src/signatures.mjs": {
         "blob": "ea2845c8b7caf1b411be2e29a70005a94e4218c0"
+      },
+      "src/substrate/demos.mjs": {
+        "blob": "1210a631918cb1b11824b80770e1497c52738180"
       },
       "src/switch-files.mjs": {
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
@@ -1301,19 +1310,19 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e"
+        "blob": "e081789da16ac68bfbb76978b8cea7000a0bb9a4"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
       },
       "src/wallet/effect-boundary.mjs": {
-        "blob": "c235b85c61fab739e2eb29c1388130bd7d24cdd8"
+        "blob": "796433f8bc1bca0d06a152305289e52f05f03812"
       },
       "src/wallet/effect-fence.mjs": {
         "blob": "f084d06e7fcac773a024fb36149b1f68b2826403"
       },
       "src/wallet/effect-history.mjs": {
-        "blob": "52c03f2dddbee806d14b94b223fc2fac459e7bc6"
+        "blob": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
@@ -1322,7 +1331,7 @@
         "blob": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
       },
       "src/wallet/node-wallet-session.mjs": {
-        "blob": "4ba56c73af306778fef8531dd80bf48404d581b6"
+        "blob": "c24bb9c6d829d4ead3c806eab84268c64047961c"
       },
       "src/wallet/payload-helpers.mjs": {
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
@@ -1352,7 +1361,7 @@
         "blob": "d2502b88a4b1bf5763ba381a771ede78882325da"
       },
       "test/d11-import-boundary.test.mjs": {
-        "blob": "e737b5abec7b991fd5401d943998cd3ce60bc1bc"
+        "blob": "8c32f5d5d67d96b10c78979703a6b2670fe97295"
       },
       "test/d11-purchase-actions.test.mjs": {
         "blob": "4c560fe287e70b36a42569e63614a44f00ab14fe"
@@ -1367,7 +1376,7 @@
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
       },
       "test/delta-ledger-gate.test.mjs": {
-        "blob": "9ba32690269d501dbd268aa6d6baab4f73e8c176"
+        "blob": "d268285a6a256119ca07a0d87557610764f5afa8"
       },
       "test/diagnostic-bounds.test.mjs": {
         "blob": "14c3d2e35b5834c3e7ec0d9571e490f4403209f7"
@@ -1394,13 +1403,16 @@
         "blob": "4f259862831e602f05118d5aa005a73e7d676320"
       },
       "test/effect-boundary-barriers.test.mjs": {
-        "blob": "a63d589030296a4ce2afe05b377351748a6bf250"
+        "blob": "f3d0560be2447f1a5195f646001e74f7454aa6c9"
+      },
+      "test/effect-boundary-operation.test.mjs": {
+        "blob": "83bf647eea4cbb4cf4614e97b07b52203356393c"
       },
       "test/effect-boundary.test.mjs": {
-        "blob": "f46d3e410597600af548d6dc5c52d0ec78858b81"
+        "blob": "ba95a19ef6fa3331bb54536fa0910d058d2956f8"
       },
       "test/effect-history.test.mjs": {
-        "blob": "0eed8f24b66d3497b4f9c0ef23c6847ad56fb770"
+        "blob": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
       },
       "test/engine-floor-portability.test.mjs": {
         "blob": "8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"
@@ -1475,7 +1487,7 @@
         "blob": "0dfaa97df64033fb3e15553fae6649b3c626a90d"
       },
       "test/helpers/buyer-chain-readback-flow.mjs": {
-        "blob": "f2895f71dc8e79dc7359522fe48af6a59e7921d6"
+        "blob": "836362d71eb834d43f168eec3aca5b617018946d"
       },
       "test/helpers/buyer-chain-readback-identity.mjs": {
         "blob": "318991bcfc372a7dde19bd2eadd128b7352b5432"
@@ -1487,7 +1499,7 @@
         "blob": "7b01073b114cfa4def9f44dbe1f6b795eab207dd"
       },
       "test/helpers/commitment-node-junk.mjs": {
-        "blob": "d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4"
+        "blob": "4dda0ebff0f1a5312c4337040ed7b5308461f8b8"
       },
       "test/helpers/current-broker-interactions.mjs": {
         "blob": "2926448f6d3377e2de395be177a6bd71aa9ba92e"
@@ -1508,7 +1520,7 @@
         "blob": "c024181ec4c4e94c802062e05b81cd00442f8aac"
       },
       "test/helpers/devnet-live-composition-app.mjs": {
-        "blob": "77d601dbc4ed3c41f5def9397d2960e41f9dbff6"
+        "blob": "4e78a320bd26fff966f5605da7f3b6dcc0f1e346"
       },
       "test/helpers/devnet-live-composition-transport.mjs": {
         "blob": "66061142400a621a8520bea29aa2938615439a2e"
@@ -1550,7 +1562,7 @@
         "blob": "c35e7affc754a58a39a4dfc983733fed171cbb21"
       },
       "test/helpers/effect-boundary-fixture.mjs": {
-        "blob": "aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6"
+        "blob": "1b83d2a67290fc5fb683667e993dbf498ecaf269"
       },
       "test/helpers/embedded-wallet-fixtures.mjs": {
         "blob": "c8083057ae6b2a507d5cf009b2d2b54a153f6bc4"
@@ -1560,6 +1572,9 @@
       },
       "test/helpers/embedded-wallet-transaction-chain.mjs": {
         "blob": "ca236433328acbe239d3662741ce36829723572e"
+      },
+      "test/helpers/entry-point-closure.mjs": {
+        "blob": "48056110819fef0a22ae0e8bff28e5781ed1bcb6"
       },
       "test/helpers/env-contract-view.mjs": {
         "blob": "c275aeb31278349c33e9aa4bd8c562644351dca7"
@@ -1578,6 +1593,9 @@
       },
       "test/helpers/journal-child-process.mjs": {
         "blob": "89b2de8333c1d4f31e0e38b0db45aaa1f7a17c39"
+      },
+      "test/helpers/legacy-seller-client-auth.mjs": {
+        "blob": "754a7e898ef18b3d6fa45fbf9141e9e8107304b7"
       },
       "test/helpers/listener-guard.mjs": {
         "blob": "7915bac5268baf9bfafa259cbe710f1731caf917"
@@ -1598,7 +1616,7 @@
         "blob": "a2ee2468f0dbae5c68043a50a73b404691b36ba5"
       },
       "test/helpers/native-create-world.mjs": {
-        "blob": "e8eb401ca45efce0cc79b1f5b2cc8f8cee657015"
+        "blob": "11db4783591d76f54036ef9c5d176ef9f54cc62e"
       },
       "test/helpers/native-dem-delivery-provider.mjs": {
         "blob": "a900bb837a031e97a9fc34f80705bba17f52f3fb"
@@ -1654,6 +1672,12 @@
       "test/helpers/public-composition-world.mjs": {
         "blob": "6671b70cf3fad1b68f2e4085c67352d4102a04d4"
       },
+      "test/helpers/public-demos-reader-node.mjs": {
+        "blob": "d96f4f1c7bf7ac0e485b8cc0f366eb778f561cd5"
+      },
+      "test/helpers/public-demos-reader-purchase.mjs": {
+        "blob": "a128c6978a07bd5f9b8d1e3ed72898565fe31533"
+      },
       "test/helpers/public-sr2-projection-flow.mjs": {
         "blob": "808721834f1b1bc10178322f7f9c1ec2ef51cba8"
       },
@@ -1681,6 +1705,9 @@
       "test/helpers/purchased-report-dom.mjs": {
         "blob": "4d3ed905bcb93e2c82e33a669c1008de7aa99c73"
       },
+      "test/helpers/queued-owner.mjs": {
+        "blob": "99a66f8772b4b5df092c71a16b32fa78bef08199"
+      },
       "test/helpers/readback-review-loader.mjs": {
         "blob": "62c46293df16bbd4ffc8fbddde460a12406dbda2"
       },
@@ -1688,10 +1715,10 @@
         "blob": "ac95f05b892947a1e4f7f514eefdc800f9a70d3f"
       },
       "test/helpers/review-commit-phase-coverage-world.mjs": {
-        "blob": "37ab6d1fe442415929f81c40d6a56651b6dd530e"
+        "blob": "806ce664bc89af4199f6ab81b5c72bc2e80d47bd"
       },
       "test/helpers/review-commit-retry-coverage-world.mjs": {
-        "blob": "8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc"
+        "blob": "f6938c73a9a3bd7f38c9b2a891fa22ead94d925e"
       },
       "test/helpers/review-native-delivery-coverage-reader.mjs": {
         "blob": "1c72fcb289c3e50dc7309e449ed192c0d0032490"
@@ -1742,10 +1769,16 @@
         "blob": "af55ec94a37734d03db8c1d6d9c1330dc49d3065"
       },
       "test/helpers/source-demo-flow.mjs": {
-        "blob": "407e9d3ccb1db981727e9c22a2c0b9ca96443421"
+        "blob": "40670eef3d1060b4690ecf90343f5cd4d4153176"
       },
       "test/helpers/source-demo-seller.mjs": {
-        "blob": "fe1c4055b77e3a13b3cf24492a645f08fb2b190b"
+        "blob": "878d1917d335b2a94d1164ed07d2e1b3a4f4048f"
+      },
+      "test/helpers/source-read-crash-child.mjs": {
+        "blob": "df503bf02fa05bb270f3917138d7b46423ebd704"
+      },
+      "test/helpers/source-read-world.mjs": {
+        "blob": "d99dfa33ba877ff2fdcefcce104abe9cf9727e88"
       },
       "test/helpers/sqlite-engine-floor.mjs": {
         "blob": "eac4f2e9c7337c76fb7478050fc95c617f5fb999"
@@ -1757,7 +1790,16 @@
         "blob": "1633af546a5bd3b089850161102f4f21949a3df3"
       },
       "test/helpers/start-intent.mjs": {
-        "blob": "f0228e036f7f82a8087caf1c5883419ee18c8491"
+        "blob": "b401cf5c221e9285f73a923cf90c1a0a291b3f35"
+      },
+      "test/helpers/stored-request-fixture.mjs": {
+        "blob": "b09dba88259bd7dbdade6509e31e40a86727a13a"
+      },
+      "test/helpers/stored-request-flow-loader.mjs": {
+        "blob": "1b650e43fbb462da68e37017465f8f106f778a39"
+      },
+      "test/helpers/stored-request-flows.mjs": {
+        "blob": "b59171dbbc86f4612ba57ae203e0fc3822ac7a1c"
       },
       "test/helpers/tp1-node-fixture.mjs": {
         "blob": "768ebf54a4154a3474b684f4e564c174b34dd29e"
@@ -1771,11 +1813,17 @@
       "test/helpers/wallet-write-batch-child.mjs": {
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
+      "test/helpers/wire-client-fixture.mjs": {
+        "blob": "71a70d307b2be21ea10fca0a15de1d8eb27f2912"
+      },
+      "test/helpers/wire-committed-purchase.mjs": {
+        "blob": "c458b4582cc4b2aef338c9525dd0b69a0ec1ff57"
+      },
       "test/host-observations.test.mjs": {
-        "blob": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4"
+        "blob": "340d541daecd3e501767c1cf341ea1e7c2c1683f"
       },
       "test/ingress-admission.test.mjs": {
-        "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
+        "blob": "2bb9dd310f49253c35f2985fff4a653e0b22775e"
       },
       "test/intent-canonical-depth.test.mjs": {
         "blob": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
@@ -1819,6 +1867,9 @@
       "test/node-wallet-lanes.test.mjs": {
         "blob": "ad4e44d9bf20ae4274b06491c97cf5190504da5c"
       },
+      "test/node-wallet-observer.test.mjs": {
+        "blob": "5dd4a76396883d20a1bd2146a60a4df89baa0d20"
+      },
       "test/node-wallet-rpc-bounds.test.mjs": {
         "blob": "5c56b94ba23578c1e6116dba5eae1296beb0155a"
       },
@@ -1826,22 +1877,28 @@
         "blob": "026f7fffb6ac5e064067f5352eb021788490322c"
       },
       "test/node-wallet-session.test.mjs": {
-        "blob": "9cdd17e0eceae6b901b2c075823c6dce714496c9"
+        "blob": "e84121241791b080837b9e2fbff8161aa1936889"
+      },
+      "test/node-wallet-source-reads.test.mjs": {
+        "blob": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
+      },
+      "test/old-domain-sources.test.mjs": {
+        "blob": "a8ccc8f4759f908cabb11fb0aff27f3290e40a74"
       },
       "test/operator-approval-request-bytes.test.mjs": {
         "blob": "da57bb91604b30e2b60a4edb7011a473fd9e5d3a"
       },
       "test/package-contents.test.mjs": {
-        "blob": "db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa"
+        "blob": "683f3a9c22c09a4207d1f588e0108cb327b579f2"
       },
       "test/packed-consumer.test.mjs": {
-        "blob": "8a0d5f40a09ba49a79011580142ef137bc9db113"
+        "blob": "8e433835a01a81de01ea3a4d6f377270905ae434"
       },
       "test/passive-observation.test.mjs": {
         "blob": "cf4497afe1bd896a8d18a55993bb8b38f4896c16"
       },
       "test/portal-capability.test.mjs": {
-        "blob": "073700c9a849a4bfc092cb5913498364fd622f0d"
+        "blob": "03649eaa13ff185ed7e74c73984df819b417e1ff"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
@@ -1853,10 +1910,28 @@
         "blob": "f83e3553639f67784ef7eb8c68a902ba2aa543a6"
       },
       "test/public-api.test.mjs": {
-        "blob": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2"
+        "blob": "04b9b695052d43d73b6437653b830f55f903d8a4"
       },
       "test/public-composition.test.mjs": {
         "blob": "a1a3b50c91d405fc00d7a92fc7ff75de650d1a32"
+      },
+      "test/public-demos-reader-construction.test.mjs": {
+        "blob": "c9bb95cb0d3ce5b24fb1f43015bc828db1d995c0"
+      },
+      "test/public-demos-reader-consumers.test.mjs": {
+        "blob": "1abbf24badfff4341a1746a121e70079bb27105e"
+      },
+      "test/public-demos-reader-errors.test.mjs": {
+        "blob": "1b8071e6367724b5b4ca7120b5a9effc7280f6a5"
+      },
+      "test/public-demos-reader-first-read.test.mjs": {
+        "blob": "bb916bc970fc5e7dba074ae95e9edf98b84137d0"
+      },
+      "test/public-demos-reader-purchase-observation.test.mjs": {
+        "blob": "402f6c02881cd173bda5b8b974d481122072251f"
+      },
+      "test/public-demos-reader-surface.test.mjs": {
+        "blob": "042048f96e210c436f14068e67636a078e46e8ca"
       },
       "test/public-guidance.test.mjs": {
         "blob": "46737251b71eda167149709f7ac8ddb004411861"
@@ -1895,7 +1970,7 @@
         "blob": "a386503425d34dab08feb52f89c8c92ec9f188fd"
       },
       "test/readback-review-decisions.test.mjs": {
-        "blob": "aa0be667f8a71c8b7a687588757106bef3ca3cd8"
+        "blob": "6ef2bd3df352fcca8200df647c7d0345cd5eac8f"
       },
       "test/readme-contract.test.mjs": {
         "blob": "2f55d19d20546e56045fdac4ccb201635a30a0b5"
@@ -1904,10 +1979,31 @@
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
       },
       "test/runtime-floor.test.mjs": {
-        "blob": "6c920248367b799050ce5f473574a6a9ca927f1e"
+        "blob": "c8133057b9b84685e1227cbb72fd1e1e8467f6ef"
+      },
+      "test/seller-public-endpoint.test.mjs": {
+        "blob": "97f99b5f286658c793fe6cb44de12ff39951dab7"
+      },
+      "test/seller-response-classification.test.mjs": {
+        "blob": "35f0ac9deae8e0b1c8c1a3057fe8dad6da32a55d"
+      },
+      "test/seller-retry-authentication.test.mjs": {
+        "blob": "8ba0a6e6ffdfbc2d23c9a6dc9ce241160774447a"
+      },
+      "test/seller-retry-deadline.test.mjs": {
+        "blob": "5b241e100f8f1a6c6c654a7b9ef4ef498d5cebc3"
       },
       "test/seller-session-delegation-job-id.test.mjs": {
         "blob": "b0777e30c7cf6efedd45f3b645329057b18025e5"
+      },
+      "test/seller-storage-boundaries.test.mjs": {
+        "blob": "d8fa7c318c181091f7c9d6793942d5288733362e"
+      },
+      "test/seller-stored-request.test.mjs": {
+        "blob": "e6286d5490face166248a41c993be87823af8fdc"
+      },
+      "test/seller-suspension.test.mjs": {
+        "blob": "c3f5dac05fd2af76c65238f819d636869f7919fb"
       },
       "test/signatures-claim-ref.test.mjs": {
         "blob": "f0696e4cc8a8d54e4833adde9e465638d792a03c"
@@ -1952,7 +2048,22 @@
         "blob": "8cb570e3a627217ee42631ff4ea5e105edfef014"
       },
       "test/sweep-contracts.test.mjs": {
-        "blob": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
+        "blob": "49d984bfcf705c7d3d1928720d9f8f0d759f8c0b"
+      },
+      "test/wire-authentication.test.mjs": {
+        "blob": "b349f17995247e1105a92d00a42d0ea8d3f9ec88"
+      },
+      "test/wire-continuation-evidence.test.mjs": {
+        "blob": "d6407d953cdd85617b4bcce9c409d3d18beed67c"
+      },
+      "test/wire-delegation.test.mjs": {
+        "blob": "cd60876eb390082bbb372c2fe29f3827488e0af5"
+      },
+      "test/wire-purchase-format.test.mjs": {
+        "blob": "abee1bf19ddddb09fe8660d71e5487bde4fbdc8a"
+      },
+      "test/wire-request-signing.test.mjs": {
+        "blob": "38eeb443a089821c4d313f54db21022689d7b1ff"
       }
     },
     "plannedRepins": {

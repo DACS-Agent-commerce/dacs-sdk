@@ -20,7 +20,7 @@ import { SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem } from '../src/d
 import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
-import { createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { testNetwork } from './helpers/wire-authority-fixture.mjs';
 
 let nextWallet=90;
@@ -428,7 +428,7 @@ async function httpSeller(t, w, { gate = {} } = {}) {
     return agent[name](body, options);
   };
   const facade = { claim: w.signer.claim, listingPin: pin, transportAgreementOf: id => agent.transportAgreementOf(id), continuationEvidenceOf: id => agent.continuationEvidenceOf(id), reconcileTransport: (input) => agent.reconcileTransport(input), agreementState: (identity) => agent.agreementState(identity),
-    retainsProposalWork: (jobId) => agent.retainsProposalWork(jobId), retainsPaymentClaim: (jobId, body) => agent.retainsPaymentClaim(jobId, body),
+    retainsProposalWork: (jobId) => agent.retainsProposalWork(jobId), retainsPaymentClaim: (jobId, body) => agent.retainsPaymentClaim(jobId, body), assertSettlementCredit: (jobId) => agent.assertSettlementCredit(jobId),
     receiveProposal: gated('receiveProposal'), commit: gated('commit'), submitPayment: gated('submitPayment') };
   const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.signer, store, now: () => w.now });
   const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });

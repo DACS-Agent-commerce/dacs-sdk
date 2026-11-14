@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
+import type { SettleRequest, SettleResult } from "../../src/rails/settlementTypes.js";
 import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
 import {
   createIdempotencyStore,
@@ -589,9 +589,9 @@ describe("the resume registry", () => {
   test("an SDK bridge is registered and a bare function is not", () => {
     const x402Rail: X402Rail = { address: "0xme", finalityBlocks: 12, settle: vi.fn() };
     const bridges = [
-      payDemSettle({ address: payer, settle: vi.fn() }),
-      evmErc20Settle(countingEvmRail(), evmCfg),
-      x402Settle(x402Rail, x402Cfg),
+      payDemSettle({ address: payer, settle: vi.fn() }, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
+      evmErc20Settle(countingEvmRail(), evmCfg, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
+      x402Settle(x402Rail, x402Cfg, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
     ];
     expect(bridges.map(isSettlementBridge)).toEqual([true, true, true]);
     expect(isSettlementBridge(async () => ({}))).toBe(false);

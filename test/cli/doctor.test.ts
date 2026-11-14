@@ -37,13 +37,20 @@ describe("dacs doctor", () => {
   });
 
   it("accepts the exact supported Node runtime ranges", async () => {
-    expect((await runDoctor({ offline: true, nodeVersion: "v20.19.0" })).checks[0]?.status).toBe(
+    expect((await runDoctor({ offline: true, nodeVersion: "v22.22.2" })).checks[0]?.status).toBe(
       "pass",
     );
-    expect((await runDoctor({ offline: true, nodeVersion: "v22.12.0" })).checks[0]?.status).toBe(
+    expect((await runDoctor({ offline: true, nodeVersion: "v24.15.0" })).checks[0]?.status).toBe(
       "pass",
     );
   });
+
+  it.each(["v20.19.0", "v22.12.0", "v22.22.1", "v23.4.0", "v24.14.0", "v25.0.0", "v26.0.0"])(
+    "fails %s, outside the supported Node runtime ranges",
+    async (nodeVersion) => {
+      expect((await runDoctor({ offline: true, nodeVersion })).checks[0]?.status).toBe("fail");
+    },
+  );
 
   it("redacts wallet secrets in report JSON", async () => {
     const secret = "abcd-secret-material-1234";
