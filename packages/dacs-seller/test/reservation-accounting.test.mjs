@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect, inspectWireOperation, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
-import { RESERVATION_LEDGER, sellerStoreInternals, SellerTransportError, createSellerTransportStore, sellerContextChallengeScope, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
+import { RESERVATION_LEDGER, sellerStoreInternals, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 import { createReservationAccounting } from '../src/dacs/seller-reservation-accounting.mjs';
 import DatabaseSync from 'better-sqlite3';
@@ -1306,6 +1307,7 @@ for (const restart of [false, true]) test(`completed retired replays respect the
     input.checkCapacityWithin = () => { charges++; return { class: 'general', allocationId: null }; };
     return f.reserve(input);
   };
+  assert.equal((await replay()).state, 'completed', 'the retired job\'s expired witness row no longer fills the limit');
   const before = { rows: f.rows(), holds: f.holds(), files: f.files() };
   await assert.rejects(replay(), { code: 'peer_store_capacity', status: 503 });
   assert.deepEqual({ rows: f.rows(), holds: f.holds(), files: f.files() }, before);

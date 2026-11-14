@@ -4,16 +4,18 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateCanonicalJobId } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_PATHS as PATHS, openWireRequestJournal, signWireResponse } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation, openWireRequestJournal, signWireResponse } from '@kynesyslabs/dacs/wire';
 import { fixtureIdentityBundle, fixtureListing } from './fixtures/listings.mjs';
 import { testWallet } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
-import { createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { createSellerAgentClient as createBuyerSellerAgentClient } from '../../dacs-client/src/dacs/seller-http.mjs';
 import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
 import { createWireContext } from '../src/dacs/seller-wire-requests.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportStore, createSellerTransportServerAuth } from '../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth } from '../src/dacs/seller-transport-auth.mjs';
+import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
+import { boundPurchaseOf, createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from '../../dacs-client/test/helpers/purchase-admission-hook.mjs';
 
 installPurchaseAdmissionHook();
@@ -54,6 +56,7 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
   const agent = { claim: seller.claim, listingPin: pin,
     transportAgreementOf: () => proposal?.plan.draft ?? null,
     continuationEvidenceOf: () => null,
+    retainsPaymentClaim: () => false,
     assertSettlementCredit: () => {},
     receiveProposal: async (body) => { effects.proposals++; proposal = structuredClone(body.proposal); return { disposition: 'complete' }; },
     agreementState: () => { effects.reads++; return { proposal: structuredClone(proposal), contribution: null }; } };
@@ -61,13 +64,16 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
   t.after(() => store.close());
   const serverAuth = createSellerTransportServerAuth({ sellerSigner, listingPin: pin, store, now: clock });
   const journal = openWireRequestJournal(await mkdtemp(join(directory, 'wire-')), { leaseMs: JOURNAL_LEASE_MS, clock });
+  const { store: rawStore, capacity } = boundPurchaseOf(store);
+  const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
   const hostWire = createWireContext({ binding: wire.binding, tp1Network: { connection, readAuthority: authorityReader() }, signer: sellerSigner,
-    journal, store, ready: () => true, now: clock, agent, requireDelegation: false,
+    journal, store, ready: () => true, now: clock, agent, requireDelegation: false, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }),
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
   const handler = createSellerHttpHandler(agent, { authentication: serverAuth, wire: hostWire });
   const client = (clientPackage ? createBuyerSellerAgentClient : createSellerAgentClient)({ url: 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
     request: async (...args) => { const signed = await authentication.request(...args); request = signed.payload; return signed; },
-    verifyResponse: (...args) => faults.verify(authentication, ...args),
+    // The buyer client hands over `{header, status, body}`; the seller package's adapter reads the same bytes as `responseBytes`.
+    verifyResponse: (request, received) => faults.verify(authentication, request, clientPackage ? { header: received.header, status: received.status, responseBytes: received.body } : received),
   }, fetchImpl: async (url, options) => {
     const path = new URL(url).pathname;
     await faults.before(path);

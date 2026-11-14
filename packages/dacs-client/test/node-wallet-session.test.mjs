@@ -54,12 +54,12 @@ test("options carrying profile, record, identityRecord or actionsAdmitted throw 
 const w = await world(t); for (const name of ['profile','record','identityRecord','actionsAdmitted']) { const key=mnemonicBytes(); await assert.rejects(api.createNodeWalletSession({admission:w.admission,key,[name]:{}}), refusal('admission_input_untrusted')); assert.ok(key.every(v=>v===0)); } assert.equal(w.node.calls.length,0);
 });
 
-test("runtime floor refuses v22.12.0 and v23.3.0 before any file opens and admits v22.13.0 and v23.4.0", async t => {
+test("runtime floor refuses v22.22.1 and v24.14.0 before any file opens and admits v22.22.2 and v24.15.0", async t => {
 const original = Object.getOwnPropertyDescriptor(process,'version'); t.after(()=>Object.defineProperty(process,'version',original));
-const w = await world(t); for (const version of ['v22.12.0','v23.3.0','v22.13.0','v23.4.0']) {
+const w = await world(t); for (const version of ['v22.22.1','v24.14.0','v22.22.2','v24.15.0']) {
  Object.defineProperty(process,'version',{value:version,configurable:true}); const key=mnemonicBytes();
  const construction = api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),approve:async()=>true,clock:w.clock,key});
- if(version==='v22.12.0'||version==='v23.3.0')await assert.rejects(construction,refusal('runtime_unsupported'));
+ if(version==='v22.22.1'||version==='v24.14.0')await assert.rejects(construction,refusal('runtime_unsupported'));
  else { const session=await construction;assert.equal(session.wallet.isLocked(),false);await session.close(); }
  assert.ok(key.every(v=>v===0)); }
 });

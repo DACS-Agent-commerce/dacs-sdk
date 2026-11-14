@@ -69,9 +69,18 @@ export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required',
 // admission did not admit (or could not answer for) kept nothing either.
 // A payment claim other than the one whose work the agent retains
 // (seller_native_evidence_conflict) is refused before anything of it runs, and
-// so is a payment whose transaction hash is not a string (payment_tx_hash_invalid).
-const NO_EFFECT_ERRORS = new Set(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_agreement_invalid', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'seller_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', 'payment_tx_hash_invalid', ...SELLER_PRE_EFFECT_REFUSALS]);
-const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
+// so is a payment whose transaction hash is not 64 hexadecimal digits (payment_tx_hash_invalid).
+export const NO_EFFECT_ERRORS = Object.freeze(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_agreement_invalid', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'seller_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', 'payment_tx_hash_invalid', ...SELLER_PRE_EFFECT_REFUSALS]);
+const NO_EFFECT_CODES = new Set(NO_EFFECT_ERRORS);
+// The two bundle routes that run an attempt; the buyer-copy route is a read.
+const BUNDLE_PATHS = new Set(['/dacs/v1/bundles/request', '/dacs/v1/bundles/countersignature']);
+// The cause a failed read of a retained source gives a withheld replay; any other failure of the read is `unavailable`.
+const SOURCE_CAUSE_BY_READ_FAILURE = Object.freeze({ timeout: 'timeout', 'reply-limit': 'too_large' });
+const sourceCauseOf = (readError) => SOURCE_CAUSE_BY_READ_FAILURE[readFailureCode(readError)] ?? 'unavailable';
+const sourceUnavailable = (cause) => new SellerTransportError('seller_source_unavailable', 503, { cause });
+// What a completed commitment answer says, by route.
+const COMMITMENT_ANSWER_STATUS = Object.freeze({ '/dacs/v1/commitments': 'committed', '/dacs/v1/commitments/signature': 'commitment-held' });
+export const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
 const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
 /** The one classification of an authenticated seller command's result
@@ -84,21 +93,22 @@ const paymentPending = (answer) => answer?.status === 'held' || (answer?.status 
 export function transportOutcome(path, result = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
   const { answer, error, held, cause = error } = result;
   const failed = Object.hasOwn(result, 'error');
-  const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals';
-  const refusal = error instanceof SellerAgentError && NO_EFFECT_ERRORS.has(error.code);
+  const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals', bundle = BUNDLE_PATHS.has(path);
+  const refusal = error instanceof SellerAgentError && NO_EFFECT_CODES.has(error.code);
   const rejected = refusal || ((proposal || answer?.code !== 'party_vet_non_pass') && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
   if (held !== undefined || (failed && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
     ...(failed || cause !== undefined ? { cause, causeCode: readFailureCode(cause) } : {}) };
   const noEffect = rejected && !resumed && !retained;
   const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
   const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
-  if (recovering && !(readOnly ? !retry && !noEffect && !rejected : retry || noEffect ? proposal || payment : !rejected)) {
+  if (recovering && !(readOnly ? !retry && !noEffect && !rejected : retry || noEffect ? proposal || payment || bundle : !rejected)) {
     return { disposition: 'indeterminate', reason: String(refusal ? error.code : answer?.reason ?? 'seller_transport_work_retained').slice(0, 240), status: 503, value: UNCERTAIN, settle: false, retry: false, noEffect: false };
   }
   return { disposition: noEffect ? 'no-effect' : retry ? 'retry' : 'present', status: refusal ? error.status : 200,
     value: refusal ? { error: error.code, message: error.message } : answer, settle: true, retry, noEffect };
 }
 import { proposalTimeProblem } from './seller-proposal-time.mjs';
+import { SellerTransportError } from './seller-transport-auth.mjs';
   // A miss allows consulting the journal; it is no execution-absence proof.
 const NATIVE_READ_MISSES = Object.freeze(['name-index-miss', 'native-address-miss']);
 // Readback failures of retained native evidence work (the commitment and
@@ -106,7 +116,7 @@ const NATIVE_READ_MISSES = Object.freeze(['name-index-miss', 'native-address-mis
 const RETAINED_READBACK_FAILURES = new Set(['commitment_failed', 'commitment_readback_required', 'substrate_unavailable', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'seller_agreement_readback_required']);
 // A claimed pay-dem transaction hash as core payment intake reads it
 // (lower case, without `0x`): the transport admits either form.
-const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, '');
+export const paymentTxHash = (txHash) => String(txHash).toLowerCase().replace(/^0x/, '');
 // What is kept of a wallet answer: its status, transaction hash and reason, bounded.
 const walletAnswer = (answer) => ({ status: typeof answer?.status === 'string' ? answer.status.slice(0, 32) : 'missing',
   ...(typeof answer?.txHash === 'string' ? { txHash: answer.txHash.slice(0, 128) } : {}), ...(typeof answer?.reason === 'string' ? { reason: answer.reason.slice(0, 240) } : {}) });
@@ -578,7 +588,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (!transport) return fn(input);
     let result, failed = false;
     try { transport.check();const answer=await transportAuthority.run(transport,()=>fn(input,{transport}));transport.check();result={answer}; } catch (error) { failed = true; result = { error }; }
-    transport.settle?.(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
+    await transport.settle?.(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
     if (failed) throw result.error;
     return result.answer;
   }).catch((error) => {
@@ -1304,13 +1314,53 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // command from this seller's retained state plus a fresh native readback. It
   // never signs or publishes to complete an uncertain effect: a finalized (or
   // early held) commitment answers what the same request would answer now.
-  // Only a native read that proves nothing was ever signed, or that a refused
-  // CREATE can no longer be included, may hand the request back to its
-  // ordinary start once, under the same job lock.
+  // Only a read that proves nothing was ever signed (a native proof of no intent
+  // in both signed journals, or for an early commitment on a fixture anchor, no
+  // anchor row), or that a refused CREATE can no longer be included, may hand
+  // the request back to its original start once, under the same job lock.
   const COMMITMENT_PATHS = new Set(['/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
-  // Answers `{ proven }`; a read that fails is never a proof, and its error is passed out as `failure`.
-  const provenUnsignedCommitment = async (jobId) => {
-    if (!nativeArtifactAnchor) return { proven: false };
+  // The commitment CREATE as its source holds it now, read in passive mode: `{ anchored, projection }`. Throws SellerTransportError
+  // `seller_source_unavailable` unless the source answers with the one present commitment.
+  async function readCommitmentSource(logicalAddress) {
+    let readFailure, resolved;
+    try {
+      if (nativeArtifactAnchor) {
+        const read = await readRetainedBounded(nativeArtifactAnchor, { logicalAddress, artifactKind: 'FinalityCommitmentRecord', fresh: true }, PASSIVE_RETAINED_READ);
+        resolved = read.status === 'present'
+          ? { disposition: 'present', projection: read.signedProjection, anchored: { record: read.artifact, anchorTxRef: read.txRef, anchorReceipt: read.receipt } }
+          : { disposition: read.status };
+      } else resolved = await commitmentReader(anchors, claim, (cause) => { readFailure = cause; }).resolve(logicalAddress);
+    } catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+    if (resolved.disposition === 'present') return resolved;
+    throw sourceUnavailable(readFailure ? sourceCauseOf(readFailure) : { absent: 'absent', rejected: 'changed' }[resolved.disposition] ?? 'unavailable');
+  }
+  // Reads a completed commitment answer's sources again, read only: no `commit`, durable anchor read, phase change or slot release.
+  async function revalidateCommitmentAnswer({ path, jobId, outcome }) {
+    let session;
+    try { session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId)); }
+    catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+    const retained = session?.commitment, logicalAddress = finalityCommitmentAddress(jobId);
+    // An early commitment holds no ordinary commitment yet: its retained evidence is the CREATE at its address and the Agreement hash.
+    if (!session?.agreementHash || !(retained || (path === '/dacs/v1/commitments/signature' && session.signatureCommitmentHeld))) throw sourceUnavailable('absent');
+    let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
+    if (stored?.status !== COMMITMENT_ANSWER_STATUS[path] || stored.address !== logicalAddress ||
+        (retained && (retained.logicalAddress !== logicalAddress || retained.agreementHash !== session.agreementHash))) throw sourceUnavailable('changed');
+    const { anchored, projection } = await readCommitmentSource(logicalAddress);
+    if (anchored.record?.agreementHash !== session.agreementHash || anchored.anchorReceipt?.logicalAddress !== logicalAddress ||
+        (retained && (contentHash(retained.record) !== contentHash(anchored.record) || canonicalize(retained.anchorTxRef) !== canonicalize(anchored.anchorTxRef) ||
+          !sameNativeCommitmentReceipt(retained.anchorReceipt, anchored.anchorReceipt)))) throw sourceUnavailable('changed');
+    let verdict;
+    try {
+      verdict = nativeArtifactAnchor
+        ? await readAdmissionCapability(nativeArtifactAnchor, 'verifyReceipt', { logicalAddress, artifact: anchored.record, artifactKind: 'FinalityCommitmentRecord', receipt: anchored.anchorReceipt, signedProjection: projection, fresh: true })
+        : commitmentReader(anchors, claim).verifyAnchorReceipt(anchored);
+    } catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+    if (verdict !== 'valid') throw sourceUnavailable(verdict === 'invalid' ? 'changed' : 'unavailable');
+  }
+  // Answers `{ proven }`; a read that fails is never a proof, and its error is passed out as `failure`. The fixture anchors keep an
+  // anchor row before they write, so an early commitment with no row never started its CREATE.
+  const provenUnsignedCommitment = async (jobId, early) => {
+    if (!nativeArtifactAnchor) return { proven: early && Boolean(durable) && !durable.hasAnchor(finalityCommitmentAddress(jobId)) };
     try {
       const read = await readRetainedBounded(nativeArtifactAnchor, { logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true }, PASSIVE_RETAINED_READ);
       return { proven: mayPublishAgain(read) };
@@ -1339,15 +1389,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // fall through to the ordinary commitment path: a body without one was
     // never a signature commitment request.
     if (early && (!body.agreement || typeof body.agreement !== 'object' || Array.isArray(body.agreement))) return held('the signature commitment request has no Agreement');
-    // Recovery never starts an early attempt or reserves its buyer slot.
-    if (early && !session.signatureCommitmentAttempt) return held('seller_signature_attempt_absent');
     const input = { jobId: request.jobId, signedProjection: body.signedProjection };
     const options = { readbackOnly: true, adopt: !early, noLocalWrites: readOnly, ...(early ? { signatureAgreement: body.agreement } : {}) };
     let answer;
     try { answer = await commit(input, options); }
     catch (error) {
-      if (readOnly || early || session.commitment || session.signatureCommitmentHeld) return failed(error);
-      const unsigned = await provenUnsignedCommitment(request.jobId);
+      if (readOnly || session.commitment || session.signatureCommitmentHeld) return failed(error);
+      // An early attempt marker alone is no proof that its CREATE was sent: the proof of no intent decides.
+      const unsigned = await provenUnsignedCommitment(request.jobId, early);
       if (!unsigned.proven) return failed(error, unsigned.failure ?? error);
       try { answer = await commit(input, early ? { signatureAgreement: body.agreement } : {}); }
       catch (retryError) { return failed(retryError); }
@@ -2009,19 +2058,26 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
   }
 
+  // Throws payment_readback_required unless the node still verifies the transfer as the checkpoint's payment.
+  async function assertPaymentStillVerifies(session,work) {
+    const terms=agreementTerms(session.agreement);
+    const current=await verifySellerPaymentIntake({jobId:session.jobId,phaseIndex:terms.paymentPhaseIndex,railId:terms.rail,payerPayingKey:work.payerPayingKey,receipt:{kind:'pay-dem',txHash:work.txHash}},intakeDepsFor(session.jobId));
+    if(current.disposition!=='verified'||!['claim','already-claimed'].includes(current.fulfilment)||current.settlementId!==work.intake.settlementId||current.permitId!==work.intake.permitId||current.evidenceHash!==work.intake.evidenceHash
+      ||canonicalize(current.evidenceInput)!==canonicalize(work.intake.evidenceInput))throw new SellerAgentError('payment_readback_required',current.reason??'payment is not freshly authenticated',503);
+  }
+
   async function ensureNativePaymentEvidence(session,work) {
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
     // Bind only an older checkpoint that demonstrably predates its first call.
     if(!work.walletJournal&&work.anchorOutcome==='not-sent'&&!work.anchorAttempts&&!work.anchorAnswer){work.walletJournal=walletJournal.journalId;persist(session);}
     if(work.walletJournal!==walletJournal.journalId)throw new SellerAgentError('wallet_journal_changed','restore the original evidence journal',503);
-    const terms=agreementTerms(session.agreement);
-    const current=await verifySellerPaymentIntake({jobId:session.jobId,phaseIndex:terms.paymentPhaseIndex,railId:terms.rail,payerPayingKey:work.payerPayingKey,receipt:{kind:'pay-dem',txHash:work.txHash}},intakeDepsFor(session.jobId));
-    if(current.disposition!=='verified'||!['claim','already-claimed'].includes(current.fulfilment)||current.settlementId!==work.intake.settlementId||current.permitId!==work.intake.permitId||current.evidenceHash!==work.intake.evidenceHash
-      ||canonicalize(current.evidenceInput)!==canonicalize(work.intake.evidenceInput))throw new SellerAgentError('payment_readback_required',current.reason??'payment is not freshly authenticated',503);
+    await assertPaymentStillVerifies(session,work);
     durable.assertHeld(session.jobId);assertSettlementCredit(session.jobId);
     work.anchorAttempts=(work.anchorAttempts??0)+1;persist(session);
     try {
-      const answer=await walletJournal.ensureEvidence({expectedJournalId:work.walletJournal,authorize:()=>{assertSettlementCredit(session.jobId);return heldFor(session.jobId)();},logicalAddress:work.address,artifact:structuredClone(work.evidence),writer:claim,artifactKind:'SettlementEvidence',jobId:session.jobId,
+      // The transfer is read again after the wallet's own reads and signing, right before the evidence is sent.
+      const answer=await walletJournal.ensureEvidence({expectedJournalId:work.walletJournal,recheck:()=>assertPaymentStillVerifies(session,work),
+        authorize:()=>{assertSettlementCredit(session.jobId);return heldFor(session.jobId)();},logicalAddress:work.address,artifact:structuredClone(work.evidence),writer:claim,artifactKind:'SettlementEvidence',jobId:session.jobId,
         receiptContentHash:work.intake.evidenceHash,...(work.journalVersion===1?{}:{attempt:{outcome:work.anchorOutcome,answer:structuredClone(work.anchorAnswer??null)}})});
       work.journalVersion=1;work.anchorAnswer=walletAnswer(answer);work.anchorOutcome='sent';delete work.anchorError;
     } catch(error) {work.anchorError={code:String(error?.code??'unknown').slice(0,64),message:String(error?.message??error).slice(0,240)};}
@@ -2109,14 +2165,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // through the command's own durable reducer, whose journals replay what was
   // signed or sent; under an expired delegation, read back only.
   const proposalWork = (jobId) => { const s = durable?.loadSession(jobId) ?? sessions.get(jobId); return Boolean(s?.agreementSignatureKey || s?.sellerContribution || s?.commitment); };
+  // Countersignature work a bundle route must finish: kept for the buyer's signature, with no seller copy anchored yet.
+  const unfinishedBundleWork = (session) => Boolean(session?.countersignatureWork && !session.sellerCopy);
   // Work of exactly this command that forbids releasing its effect.
-  const retainedWork = (path, jobId, body) => path === '/dacs/v1/agreements/proposals' ? proposalWork(jobId) : path === '/dacs/v1/payments' && api.retainsPaymentClaim(jobId, body);
+  const retainedWork = (path, jobId, body) => path === '/dacs/v1/agreements/proposals' ? proposalWork(jobId) : path === '/dacs/v1/payments' ? api.retainsPaymentClaim(jobId, body)
+    : BUNDLE_PATHS.has(path) && unfinishedBundleWork(durable?.loadSession(jobId) ?? sessions.get(jobId));
   async function recoverTransport({ request, body, rawBody, readOnly, transport }) {
     const same = (a, b) => canonicalize(a) === canonicalize(b);
     const proposal = request.path === '/dacs/v1/agreements/proposals', session = sessions.get(request.jobId) ?? null;
     const identity = proposal ? body.transportIdentity : session?.transportIdentity;
-    let decoded; try { decoded = JSON.parse(Buffer.from(rawBody).toString('utf8')); } catch { /* differs below */ }
-    if (request.method !== 'POST' || request.seller !== claim || !same(request.listingPin, pin) || sha256Hex(rawBody) !== request.bodyHash || decoded === undefined || !same(decoded, body) ||
+    // The body is the admitted one; the exact bytes it was admitted from are bound to the request by their hash.
+    if (request.method !== 'POST' || request.seller !== claim || !same(request.listingPin, pin) || sha256Hex(rawBody) !== request.bodyHash ||
         request.jobId !== (body.transportIdentity?.jobId ?? body.jobId) || identity?.seller !== claim || request.buyer !== identity?.buyer || request.agreementHash !== identity?.agreementHash ||
         (proposal ? request.buyer !== body.buyerIdentityBundle?.presentedBy : request.agreementHash !== session?.agreementHash)) return { held: 'seller_transport_context_mismatch' };
     try {
@@ -2158,7 +2217,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!readOnly) return { answer: await submitPayment(body) };
           return fixtureSettlement ? { answer: await fixtureSettlement.readPayment(body) } : { held: 'seller_payment_readback_unavailable' };
         }
-        case '/dacs/v1/bundles/request': case '/dacs/v1/bundles/countersignature': case '/dacs/v1/bundles/buyer-copy': return { held: 'bundle_finalization_unavailable' };
+        // Recovery runs under the job's lock, so a job with no retained countersignature work has no worker: the route's own refusal answers.
+        case '/dacs/v1/bundles/request': case '/dacs/v1/bundles/countersignature':
+          if (unfinishedBundleWork(session)) return { held: 'seller_bundle_work_retained' };
+          return { answer: await (request.path === '/dacs/v1/bundles/request' ? bundleRequest : countersign)({ jobId: request.jobId }) };
+        case '/dacs/v1/bundles/buyer-copy': return { held: 'bundle_finalization_unavailable' };
         default: return { held: 'seller_transport_reconciliation_unsupported' };
       }
     } catch (error) { return { error }; }
@@ -2211,7 +2274,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         result = { held: await readIssued?.(jobId, { unknownOnly: true }) ? 'buyer_access_closed; issued unknown writes inspected read-only; retained outcome unchanged' : 'buyer_access_closed; no unknown issued write, nothing was read; retained outcome unchanged' };
       } else { sessions.delete(jobId); await restore(session); result = await recoverTransport({ ...input, readOnly, transport:typeof claimed?.check==='function'?claimed:undefined }); }
       const outcome = transportOutcome(path, result, { retained: retainedWork(path, jobId, input.body), recovering: true, readOnly });
-      if (outcome.settle) transport?.settle(outcome);
+      if (outcome.settle) await transport?.settle(outcome);
       return outcome;
     }) : undefined,
     commitOnSignature: recoveryCall((input) => {
@@ -2246,13 +2309,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     durableSessionOf: durable ? (jobId) => sessionView(durable.loadSession(jobId)) : undefined,
     // Whether this seller retains payment work for exactly this claim (its
     // transaction and payer): the transport then never releases the claim's
-    // effect as one that started nothing. Synchronous and read only.
+    // effect as one that started nothing. Synchronous and read only. Throws
+    // seller_state_unverified (503) for a retained session it cannot verify.
     retainsPaymentClaim: (jobId, { txHash, payerPayingKey } = {}) => {
       if (!isCanonicalJobId(jobId)) return false;
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
-      // An unverified retained session retains nothing: the transport may
-      // release the claim's effect rather than keep work it cannot attribute.
-      if (session && (retainedSnapshotProblem(session) ?? retainedSessionProblem(session))) return false;
+      // A retained session that cannot be verified is unknown work, never no work.
+      const problem = session && (retainedSnapshotProblem(session) ?? retainedSessionProblem(session));
+      if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
       const work = session?.nativeEvidenceWork ?? session?.paymentWork;
       return Boolean(work) && work.txHash === paymentTxHash(txHash) && work.payerPayingKey === payerPayingKey;
     },
@@ -2267,8 +2331,45 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // retires the job on that attempt. Synchronous and read only.
     retainsUnfinishedWork: ({ jobId, path }) => {
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
-      return Boolean((session?.commitCreatedAt && !session.commitment && !session.signatureCommitmentHeld) ||
+      return Boolean((session?.commitCreatedAt && !session.commitment && !session.signatureCommitmentHeld) || (BUNDLE_PATHS.has(path) && unfinishedBundleWork(session)) ||
         (path === '/dacs/v1/payments' && (session?.payment || session?.paymentWork || session?.nativeEvidenceWork || durable?.settlementBoundTo(jobId))));
+    },
+    /**
+     * Reads the sources of a completed proposal or commitment answer again, read only, before the stored answer is signed again.
+     * A proposal: the current buyer access, the retained contribution and Agreement, the stored answer against that contribution,
+     * and both Vet records with their receipts. A commitment (or early commitment): the retained commitment, its canonical address,
+     * its record, transaction and finalized receipt, read from the commitment's source in passive mode, against the stored answer.
+     * Resolves with nothing when every one authenticates. Throws SellerTransportError `seller_source_unavailable`
+     * (503) with a cause of `absent`, `changed`, `timeout`, `too_large` or `unavailable`, the closed-access refusal as its own
+     * SellerTransportError, and a TypeError for a path that has no completed answer here. It writes nothing and signs nothing.
+     */
+    revalidateCompletedAnswer: async ({ path, jobId, outcome }) => {
+      if (COMMITMENT_PATHS.has(path)) return revalidateCommitmentAnswer({ path, jobId, outcome });
+      if (path !== '/dacs/v1/agreements/proposals') throw new TypeError(`a completed ${path} answer is not revalidated here`);
+      let session;
+      try { session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId)); }
+      catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+      if (!session?.proposal || !session.sellerContribution) throw sourceUnavailable('absent');
+      try { assertBuyer(session.buyerBundle.presentedBy, jobId, { proposal: true }); }
+      catch (error) { throw error?.code === 'buyer_access_closed' ? new SellerTransportError(error.code, error.status) : error; }
+      let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
+      const agreement = await finalizeFixedPriceAgreementContributions(session.proposal.plan, [session.proposal.buyerContribution, session.sellerContribution], contributionVerifier).catch(() => null);
+      if (stored?.disposition !== 'complete' || canonicalize(stored.contribution) !== canonicalize(session.sellerContribution) ||
+          agreement === null || contentHash(agreement) !== session.agreementHash || retainedVetModeProblem(session) !== null) throw sourceUnavailable('changed');
+      let problem;
+      try { problem = verifiesRetainedVet(session) ? await retainedVetEvidenceProblem(session) : null; }
+      catch (error) { throw sourceUnavailable(sourceCauseOf(error)); }
+      if (problem) throw sourceUnavailable('changed');
+    },
+    // Whether this seller retains commitment work for the job (a CREATE time, a publication request, an early attempt or a
+    // commitment): the transport then never ends the commitment attempt with no outcome. Synchronous and read only.
+    // Throws seller_state_unverified (503) for a retained session it cannot verify.
+    retainsCommitmentWork: (jobId) => {
+      if (!isCanonicalJobId(jobId)) return false;
+      const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      const problem = session && (retainedSnapshotProblem(session) ?? retainedSessionProblem(session));
+      if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
+      return Boolean(session && (session.commitCreatedAt !== undefined || session.commitment || session.signatureCommitmentAttempt || session.commitmentPublishAsked));
     },
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
     // For the host that holds the seller state lock: releases the job lock rows

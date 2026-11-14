@@ -12,7 +12,7 @@ Normative source: DACS-Standard `next` at
 | `PhaseSummaryEntry` | DACS-1 §6.3 `PhaseType`; DACS-5 §10.4 | New `FaultAttestationBundle` writes accept only the closed phase set and exact `ChainTxRef` / `AttestationRef` values. Historical `AttestationBundle` phase labels remain readable. |
 | `FaultAttestationBundle` / `isFaultAttestationBundle` | DACS-5 §10.4–§10.4.3 | Requires the fault discriminator, absolute permissible `faultedParty`, current references, current phases, role provenance, and signatures. Unknown discriminators/outcomes fail closed. |
 | `verifyBundleCore.resolveAttestationRef` | DACS-2 §7.5.2 resolution; DACS-5 §10.4.3 | Receives the entire signed reference, including `anchor.locator`; a missing normative resolver yields `unresolved`, never an inferred SDK artifact address. |
-| `LegacyMvp*` compatibility | DACS-5 §10.4.1 legacy-read policy; CORE §11.1.2 | Early SDK `{kind,id}` / flat transaction records are named as legacy and kept off normative write surfaces. They can be resumed/read through the deprecated legacy resolver but are excluded from normative reputation inputs. |
+| `LegacyMvp*` compatibility | DACS-5 §10.4.1 legacy-read policy; CORE §11.1.2 | Early SDK `{kind,id}` / flat transaction records are named as legacy and kept off normative write surfaces. `verifyBundleCore` and `Agent.verifyBundle` refuse a bundle that carries them (`not an attestation bundle`), so they are never reputation inputs. |
 | Unknown artifact-level fields | CORE §B.7 SIG-5 | Retained in the signed scope. Known unsupported discriminators, forbidden legacy fields, and malformed nested variants still fail closed. |
 
 The upstream oracle/prose divergence previously tracked by

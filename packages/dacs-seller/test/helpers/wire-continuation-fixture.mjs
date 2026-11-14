@@ -7,16 +7,21 @@ import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { wireBuyer } from './wire-buyer.mjs';
 import assert from 'node:assert/strict';
 import { contentHash } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, admitWireArtifact, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { TP1_APPROVED_IDENTITY_RECORD, admitWireArtifact, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { createOrdinaryCompletionPort } from '../../src/dacs/seller-http.mjs';
+import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
+import { boundPurchaseOf } from './bound-transport-store.mjs';
 import { commitmentFixture } from './commitment-fixture.mjs';
+import { agreementCreateProjection } from './agreement-create-projection.mjs';
 import { NOW, seller } from './protocol-fixture.mjs';
 
 export function receiptReader(read = () => 'valid') {
   return Object.assign(read, { chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
 }
 
-export async function wireContinuationFixture(t) {
-  const f = await commitmentFixture(t, { publicEndpoint: 'https://seller.example.invalid' });
+/** `early: true` commits on the buyer's signature, so the job holds an early commitment and no ordinary one. */
+export async function wireContinuationFixture(t, { early = false } = {}) {
+  const f = await commitmentFixture(t, { publicEndpoint: 'https://seller.example.invalid', early });
   const rows = new Map(), publications = [];
   const readRetained = async ({ logicalAddress }) => structuredClone(rows.get(logicalAddress) ?? { status: 'absent' });
   f.config.nativeArtifactAnchor = {
@@ -36,7 +41,9 @@ export async function wireContinuationFixture(t) {
   };
   const prepared = await f.prepare();
   let agent = prepared.agent;
-  assert.equal((await agent.commit({ jobId: prepared.agreement.jobId })).status, 'committed');
+  const { jobId } = prepared.agreement;
+  if (early) assert.equal((await agent.commitOnSignature({ jobId, agreement: prepared.agreement, signedProjection: agreementCreateProjection(prepared.agreement) })).status, 'commitment-held');
+  else assert.equal((await agent.commit({ jobId })).status, 'committed');
   t.after(() => agent.close());
   const controls = { verdict: 'valid', calls: 0 };
   const readCommitmentReceipt = receiptReader((commitment) => {
@@ -45,14 +52,14 @@ export async function wireContinuationFixture(t) {
     if (controls.verdict instanceof Error) throw controls.verdict;
     return controls.verdict;
   });
-  return { ...f, ...prepared, listing: f.listing, publications, controls, readCommitmentReceipt,
+  return { ...f, ...prepared, listing: f.listing, publications, rows, controls, readCommitmentReceipt,
     agent: () => agent, reopen: async () => { agent.close(); agent = await f.open(); } };
 }
 
-/** The wire context of a seller over `store` and `agent`, with the buyer that signs for it. Passing `journal` reuses retained host operations. */
-export async function wireRouteFixture(t, { agent, listing, buyer, seller, store, now, readCommitmentReceipt = receiptReader(), requireDelegation = false, journal = null }) {
-  const directory = journal === null ? await mkdtemp(join(tmpdir(), 'TEST-wire-fixture-')) : null;
-  if (directory !== null) t.after(() => rm(directory, { recursive: true, force: true }));
+/** The wire context of a seller over `store` and `agent`, made by `createWireContext` as the handler requires, with the buyer that signs for it. */
+export async function wireRouteFixture(t, { agent, listing, buyer, seller, store, now, readCommitmentReceipt = receiptReader(), leaseMs = 300000, requireDelegation = false }) {
+  const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-fixture-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
   const evidenceFor = async (path, id) => {
     if (!['/dacs/v1/payments', '/dacs/v1/bundles/request', '/dacs/v1/bundles/countersignature', '/dacs/v1/bundles/buyer-copy'].includes(path)) return {};
     const texts = agent.continuationEvidenceOf(id);
@@ -61,7 +68,10 @@ export async function wireRouteFixture(t, { agent, listing, buyer, seller, store
   const createBuyer = () => wireBuyer({ buyer, seller, listingPin: listingPin(listing), clock: now, publicEndpoint: new URL(listing.seller.publicEndpoint).origin, readCommitmentReceipt, evidenceFor });
   const buyerWire = await createBuyer();
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing)));
+  const journal = openWireRequestJournal(directory, { leaseMs, clock: now });
+  const { store: rawStore, capacity } = boundPurchaseOf(store);
+  const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
   const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection: buyerWire.connection }, signer: seller, store, ready: () => true, now, agent, requireDelegation,
-    journal: journal ?? openWireRequestJournal(directory, { leaseMs: 300000, clock: now }), signedListing, readCommitmentReceipt });
+    journal, signedListing, readCommitmentReceipt, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }) });
   return { wire, buyerWire, createBuyer };
 }
