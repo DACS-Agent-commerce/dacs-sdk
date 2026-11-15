@@ -9645,6 +9645,18 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged journal blob",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "bc36e9f0477613f54e57b1a94424971e42e5c6e1",
+          "after": "bc36e9f0477613f54e57b1a94424971e42e5c6e1"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "fix(wallet): check that no package export reaches the reservation module",
       "sha": "fce7c509715ce94ee9153eaad2efe11d27bdef23",
       "files": [
