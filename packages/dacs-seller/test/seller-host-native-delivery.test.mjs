@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import {testWallet,NOW}from './helpers/protocol-fixture.mjs';
+import { HOST_CONTEXT_CALLBACKS } from './helpers/host-context-callbacks.mjs';
 import * as core from '@kynesyslabs/dacs';
 import {sellerApi as seller}from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
@@ -466,7 +467,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const evidenceConsumer = (anchorEvidence) => createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl, anchorEvidence, now: clock,
     ...(projectionReader ? { readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) } : {}) });
   const demDeliveryContext = createDemDeliveryContext({ authority: 'TEST-host-native-delivery', vetMode: KIT_TP1_VET_MODE,
-    resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
+    resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); }, ...HOST_CONTEXT_CALLBACKS,
     resolveSeller: async ({ jobId }) => {
       const input = await vettedInput(jobId);
       // One requirement invocation per Vet record the Agreement references,

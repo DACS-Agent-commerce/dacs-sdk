@@ -13,6 +13,7 @@ import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
 import {createSellerTransportStore} from './bound-transport-store.mjs';
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
+import {HOST_CONTEXT_CALLBACKS} from './host-context-callbacks.mjs';
 import {createNativePaymentEvidenceConsumer} from '../../src/dacs/native-payment-evidence-consumer.mjs';
 // `ledger` is a function returning the challenge ledger the agent uses; by default one transport store lives as long as the fixture.
 // `vetMode` selects the records and capability the fixture builds: the TP-1 G3
@@ -32,7 +33,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
  const listing=await core.signComponentArtifact(listingDraft,core.ARTIFACT_SEPARATORS.Listing,{signer:seller.claim,algorithm:'ed25519',sign:seller.signBytes}),admission=createSessionAdmissionFixture({seller:{claim:seller.claim,sign:seller.signBytes},buyer:{claim:buyer.claim,sign:buyer.signBytes},now:()=>time});
  const orchestrated=vetMode===ORCHESTRATOR_MODE,sellerParty={claim:seller.claim,sign:seller.signBytes};
  const resolveSeller=async({jobId})=>contexts.has(jobId)?{disposition:'present',value:structuredClone(contexts.get(jobId))}:{disposition:'indeterminate',reason:'TEST context unavailable'};
- const capability=mode=>createDemDeliveryContext({authority:'TEST-admission',vetMode:mode,resolveBuyer:unreachable,resolveSeller});
+ const capability=mode=>createDemDeliveryContext({authority:'TEST-admission',vetMode:mode,resolveBuyer:unreachable,resolveSeller,...HOST_CONTEXT_CALLBACKS});
  const config={get challengeLedger(){return ledger===null?store.challenges:ledger();},maxJobs,...vetMode===undefined?{}:{vetMode},signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
   agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,
   nativePaymentEvidence:createNativePaymentEvidenceConsumer({rpcUrl:'http://127.0.0.1:1',anchorEvidence:unreachable,fetchImpl:unreachable}),demDeliveryContext:capability(vetMode)};

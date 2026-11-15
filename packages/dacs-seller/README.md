@@ -668,8 +668,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   - **Issuing.** `host.issueSessionChallenge({ jobId, buyer })` keeps a fresh
     256-bit nonce for that job and buyer, valid for ten minutes, in the one
     challenge ledger the host's transport store keeps (the same ledger the
-    context route issues into; this operator entry stays until the host mounts
-    that route) before it returns `{ jobId, buyer, sessionNonce, issuedAt,
+    context route issues into) before it returns `{ jobId, buyer, sessionNonce, issuedAt,
     expiresAt }`. The operator hands it to the buyer, whose bundle carries it
     as `sessionNonce` (CORE SN-1..SN-3; delivering the challenge to the buyer
     is up to the operator). An open challenge for the same job and buyer is
@@ -971,10 +970,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
   `too_large` or `unavailable`), a closed buyer access keeps its own refusal,
   and the stored outcome is never rewritten.
-- It does not mount the Vet and Agreement context route (`createSellerContextRoute`,
-  see the root exports above) itself: the challenge
-  a session needs is the one `host.issueSessionChallenge` issued, which the
-  operator delivers to the buyer. The host keeps every issued challenge
+- It mounts the signed challenge route and the Vet and Agreement context route on
+  the wire. A buyer asks for a challenge, then presents it in the context request,
+  which the host admits, reserves and answers through the operator's
+  `demDeliveryContext`. A challenge is the one that route issued or the one
+  `host.issueSessionChallenge` issued, which the operator delivers to the
+  buyer. The host keeps every issued challenge
   in the transport store's one challenge ledger, beside the seller state.
   Expired unattempted challenges may be reclaimed; accepted presentations
   retain their exact admission checkpoint and their job binding for replay.
