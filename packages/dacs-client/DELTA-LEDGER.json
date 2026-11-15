@@ -10114,6 +10114,28 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF record the blobs chosen for the transport, wallet session and embedded wallet provider after carrying the retire commit put part up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "10714c8e99468837c2ebc47cd666ec638488bf33",
+          "after": "10714c8e99468837c2ebc47cd666ec638488bf33"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "cb7be1026524f82794127d071ed37bc9e3a8c549",
+          "after": "cb7be1026524f82794127d071ed37bc9e3a8c549"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4",
+          "after": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4"
+        }
+      ]
+    },
+    {
       "delta": "D11",
       "subject": "fix(client): D11 test that unsent signed bytes hold the signer until their execution",
       "files": [
