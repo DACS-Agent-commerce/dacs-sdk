@@ -39,9 +39,9 @@ export const contextCapability = (overrides = {}) => createDemDeliveryContext({ 
 export async function contextHostFixture(t) {
   const f = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-host-context-'));
-  const { durableDirectory, commitOnSignature, nativeArtifactAnchor, ...config } = f.config;
-  delete config.vetMode;
-  delete config.challengeLedger;
+  // The agent options the host does not take: it owns its directory, Vet mode and challenge ledger and has no early commit.
+  const { nativeArtifactAnchor, ...config } = f.config;
+  for (const key of ['durableDirectory', 'commitOnSignature', 'vetMode', 'challengeLedger']) delete config[key];
   const hosts = [];
   const start = async (changes = {}) => {
     const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), demDeliveryContext: contextCapability(), ...changes });
