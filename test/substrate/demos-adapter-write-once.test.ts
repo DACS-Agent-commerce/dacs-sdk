@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { TransactionPostNotSentError } from "../../src/rails/demosClient.js";
 import {
   AnchorWaitError,
   DemosAdapter,
@@ -12,9 +13,13 @@ import {
 } from "../../src/substrate/index.js";
 
 const WALLET = `0x${"ab".repeat(32)}`;
+const BROADCAST = "execute:broadcastTx";
+const ACCEPTED = { completion: "accepted", timeoutMs: 1_500, pollMs: 5 } as const;
+const WRITE_ONCE = { timeoutMs: 500, pollMs: 5 } as const;
 const servers: Server[] = [];
 
-type Failure = 502 | "reset";
+/** 521 is answered as a Cloudflare edge does when the origin refused it. */
+type Failure = 502 | 521 | "reset";
 
 interface NodePost {
   key: string;
@@ -24,11 +29,19 @@ interface NodePost {
 /**
  * A Demos node on loopback. Each POST is keyed by its RPC method and the
  * `execute` extra or `nodeCall` message; the first answers for a key follow
- * `failures`, later ones succeed.
+ * `failures`, later ones succeed. With `downAfter`, the node stops listening
+ * as it answers the first post of that key, so the next connection is
+ * refused, until `reopen()`. Every answer closes its connection, so no later
+ * post can ride an open one.
  */
-async function startNode(failures: Record<string, Failure[]>) {
+async function startNode(
+  failures: Record<string, Failure[]>,
+  { downAfter }: { downAfter?: string } = {},
+) {
   const posts: NodePost[] = [];
+  let stopped: Promise<void> | undefined;
   const server: Server = createServer((req, res) => {
+    res.setHeader("Connection", "close");
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
@@ -47,6 +60,9 @@ async function startNode(failures: Record<string, Failure[]>) {
         : `${request.method}:${content.message}`;
       const index = posts.filter((post) => post.key === key).length;
       posts.push({ key, body });
+      if (key === downAfter && index === 0) {
+        stopped = new Promise((resolve) => server.close(() => resolve()));
+      }
       const failure = failures[key]?.[index];
       if (failure === "reset") {
         req.socket.destroy();
@@ -54,6 +70,10 @@ async function startNode(failures: Record<string, Failure[]>) {
       }
       if (failure === 502) {
         res.writeHead(502).end();
+        return;
+      }
+      if (failure === 521) {
+        res.writeHead(521, { "cf-ray": "test-ray" }).end();
         return;
       }
       const reply = key === "execute:confirmTx"
@@ -88,7 +108,27 @@ async function startNode(failures: Record<string, Failure[]>) {
     url: `http://127.0.0.1:${port}`,
     posts,
     count: (key: string) => posts.filter((post) => post.key === key).length,
+    async reopen() {
+      await stopped;
+      await new Promise<void>((resolve) =>
+        server.listen(port, "127.0.0.1", resolve));
+    },
   };
+}
+
+/** The last journal stage of each write, in the order the writes started. */
+function finalStages(puts: DemosWriteJournalRecord[]): string[] {
+  const stages = new Map<string, string>();
+  for (const record of puts) stages.set(record.writeId, record.stage);
+  return [...stages.values()];
+}
+
+/** The transport error code under a broadcast that never reached the node. */
+function unsentCause(error: AnchorWaitError): unknown {
+  const answer = error.cause as { response?: unknown };
+  expect(answer.response).toBeInstanceOf(TransactionPostNotSentError);
+  const sent = (answer.response as Error).cause as { cause?: { code?: unknown } };
+  return sent.cause?.code;
 }
 
 /**
@@ -155,6 +195,22 @@ async function anchorError(adapter: DemosAdapter, name: string) {
   return error as AnchorWaitError;
 }
 
+async function acceptedError(adapter: DemosAdapter, name: string) {
+  const error = await adapter
+    .anchorAndWait(name, { value: 1 }, ACCEPTED)
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(AnchorWaitError);
+  return error as AnchorWaitError;
+}
+
+async function writeOnceError(adapter: DemosAdapter, name: string) {
+  const error = await adapter
+    .anchorWriteOnce(name, { value: 1 }, WRITE_ONCE)
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(AnchorWaitError);
+  return error as AnchorWaitError;
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(
@@ -188,6 +244,7 @@ describe("DemosAdapter transaction posts", () => {
         txRef: "tx-write-once",
         signedTransaction: expect.any(String),
       });
+      expect(finalStages(puts)).toEqual(["broadcast-intent"]);
     },
   );
 
@@ -230,6 +287,118 @@ describe("DemosAdapter transaction posts", () => {
         }),
       ).resolves.toEqual({ state: "included", blockNumber: 42 });
       expect(node.count("nodeCall:getTransactionStatus")).toBe(2);
+    },
+  );
+});
+
+describe("DemosAdapter broadcasts that never reached the node", () => {
+  it("releases the wallet when the node refuses the broadcast connection, and sends the next write once", async () => {
+    const node = await startNode({}, { downAfter: "execute:confirmTx" });
+    const { adapter, puts } = await makeAdapter(node.url);
+
+    const refused = await acceptedError(adapter, "refused");
+
+    expect(refused).toMatchObject({
+      code: "broadcast-failed",
+      receipt: { state: "not-broadcast", txRef: "tx-write-once" },
+    });
+    expect(unsentCause(refused)).toBe("ECONNREFUSED");
+    expect(node.count(BROADCAST)).toBe(0);
+    expect(finalStages(puts)).toEqual(["canonical-failed"]);
+
+    await node.reopen();
+    const next = await adapter.anchorAndWait("after-refused", { value: 2 }, ACCEPTED);
+
+    expect(next).toMatchObject({ state: "accepted", txRef: "tx-write-once" });
+    expect(node.count(BROADCAST)).toBe(1);
+    expect(finalStages(puts)).toEqual(["canonical-failed", "broadcast-intent"]);
+    // The refused write's nonce was never used, so the next write takes it.
+    expect(new Set(puts.map((record) => record.nonce))).toEqual(new Set([1]));
+  });
+
+  it("releases the wallet when the node refuses an included-mode broadcast connection", async () => {
+    const node = await startNode({}, { downAfter: "execute:confirmTx" });
+    const { adapter, puts } = await makeAdapter(node.url);
+
+    const refused = await anchorError(adapter, "refused-included");
+
+    expect(refused).toMatchObject({
+      code: "broadcast-failed",
+      receipt: { state: "not-broadcast" },
+    });
+    expect(unsentCause(refused)).toBe("ECONNREFUSED");
+    expect(finalStages(puts)).toEqual(["canonical-failed"]);
+
+    await node.reopen();
+    const next = await anchorError(adapter, "after-refused-included");
+
+    expect(next).toMatchObject({ code: "timeout", receipt: { state: "accepted" } });
+    expect(node.count(BROADCAST)).toBe(1);
+    expect(finalStages(puts)).toEqual(["canonical-failed", "broadcast-intent"]);
+  });
+
+  it("releases the wallet when the node refuses a write-once broadcast connection", async () => {
+    const node = await startNode({}, { downAfter: "execute:confirmTx" });
+    const { adapter, puts } = await makeAdapter(node.url);
+
+    const refused = await writeOnceError(adapter, "refused-once");
+
+    expect(refused).toMatchObject({ code: "broadcast-failed" });
+    expect(finalStages(puts)).toEqual(["canonical-failed"]);
+
+    await node.reopen();
+    await writeOnceError(adapter, "after-refused-once");
+
+    expect(node.count(BROADCAST)).toBe(1);
+    expect(finalStages(puts)).toEqual(["canonical-failed", "broadcast-intent"]);
+  });
+
+  it("releases the wallet when a Cloudflare edge answers 521 to the broadcast", async () => {
+    // The loopback server stands in for the edge: it answers 521 itself.
+    const node = await startNode({ [BROADCAST]: [521] });
+    const { adapter, puts } = await makeAdapter(node.url);
+
+    const refused = await acceptedError(adapter, "edge-521");
+
+    expect(refused).toMatchObject({
+      code: "broadcast-failed",
+      receipt: { state: "not-broadcast" },
+    });
+    expect(finalStages(puts)).toEqual(["canonical-failed"]);
+
+    const next = await adapter.anchorAndWait("after-edge-521", { value: 2 }, ACCEPTED);
+
+    expect(next).toMatchObject({ state: "accepted" });
+    expect(finalStages(puts)).toEqual(["canonical-failed", "broadcast-intent"]);
+  });
+
+  it.each<Failure>([502, "reset"])(
+    "keeps an accepted-mode write unresolved when the node answers %s to its broadcast",
+    async (failure) => {
+      const node = await startNode({ [BROADCAST]: [failure] });
+      const { adapter, puts } = await makeAdapter(node.url);
+
+      const error = await acceptedError(adapter, `accepted-${failure}`);
+
+      expect(node.count(BROADCAST)).toBe(1);
+      expect(error).toMatchObject({
+        code: "broadcast-failed",
+        receipt: { state: "broadcast-unknown" },
+      });
+      expect(finalStages(puts)).toEqual(["broadcast-intent"]);
+    },
+  );
+
+  it.each<Failure>([502, "reset"])(
+    "keeps a write-once write unresolved when the node answers %s to its broadcast",
+    async (failure) => {
+      const node = await startNode({ [BROADCAST]: [failure] });
+      const { adapter, puts } = await makeAdapter(node.url);
+
+      await writeOnceError(adapter, `once-${failure}`);
+
+      expect(node.count(BROADCAST)).toBe(1);
+      expect(finalStages(puts)).toEqual(["broadcast-intent"]);
     },
   );
 });
