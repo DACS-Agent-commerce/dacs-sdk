@@ -144,7 +144,7 @@ const host = await startSellerHost({
 // journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
 // deliveryJournal = createDeliverableWalletJournal(...) (below); the host refuses any other pair.
 // host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
-// host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
+// A buyer gets its challenge from the host's signed challenge route and presents it on the context route.
 ```
 
 The host keeps three state directories under `dataDirectory`: `seller/`,
@@ -665,19 +665,22 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - It opens a new session only for a presentation of a challenge it issued,
   on a Listing its own revocation check finds not revoked, and only under
   `sessionAdmission`, before anything of it is kept, read, signed or sent.
-  - **Issuing.** `host.issueSessionChallenge({ jobId, buyer })` keeps a fresh
+  A proposal never opens a session: the context route admits the presentation
+  first, and a proposal, commitment, payment or bundle step runs only for a job
+  whose context admission settled with a success outcome
+  (`context_admission_closed` 409 otherwise, `session_admission_unavailable`
+  503 while the admission is still running).
+  - **Issuing.** The signed challenge route keeps a fresh
     256-bit nonce for that job and buyer, valid for ten minutes, in the one
     challenge ledger the host's transport store keeps (the same ledger the
-    context route issues into) before it returns `{ jobId, buyer, sessionNonce, issuedAt,
-    expiresAt }`. The operator hands it to the buyer, whose bundle carries it
-    as `sessionNonce` (CORE SN-1..SN-3; delivering the challenge to the buyer
-    is up to the operator). An open challenge for the same job and buyer is
+    context route consumes it from) before it answers `{ sessionNonce, expiresAt }`.
+    The buyer's bundle carries it
+    as `sessionNonce` (CORE SN-1..SN-3). An open challenge for the same job and buyer is
     returned again; the ledger's hourly limits apply (five per buyer, twelve
     overall), and a job whose challenge was consumed takes no new one
-    (`context_job_closed`). Without a `sessionAdmission` the issuer refuses
-    `session_admission_unavailable` before anything is kept.
+    (`context_job_closed`).
   - **Generation.** Only the seller generates the nonce, using its own CSPRNG.
-    Supplying `sessionNonce` to the issuer is refused. The buyer copies the
+    The buyer copies the
     returned value into its bundle and signs afterward (CORE SN-1..SN-3).
   - **Consumption.** A presentation attempt for a new session consumes the
     nonce its bundle carries, durably and before the attempt is validated:
@@ -973,13 +976,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - It mounts the signed challenge route and the Vet and Agreement context route on
   the wire. A buyer asks for a challenge, then presents it in the context request,
   which the host admits, reserves and answers through the operator's
-  `demDeliveryContext`. A challenge is the one that route issued or the one
-  `host.issueSessionChallenge` issued, which the operator delivers to the
-  buyer. The host keeps every issued challenge
+  `demDeliveryContext`. The host keeps every issued challenge
   in the transport store's one challenge ledger, beside the seller state.
   Expired unattempted challenges may be reclaimed; accepted presentations
   retain their exact admission checkpoint and their job binding for replay.
-  The operator issues challenges only for buyers about to present.
 - The signed challenge route is composed directly, not by the host:
   `createSellerHttpHandler(agent, { authentication, context, wire })` serves
   `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the

@@ -681,7 +681,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // (this store's own callers), the final liveness check is a no-op: the guarded store of the server auth passes its own.
   const challenges = Object.freeze({ ...ledger, acceptWithin,
     issue: (request, challengeScopeHash, authorization = NO_DELEGATION) => ledger.issue({ jobId: request?.jobId, buyer: request?.buyer }, challengeScopeHash, authorization),
-    issueForOperator: request => ledger.issueForOperator({ jobId: request?.jobId, buyer: request?.buyer }),
     accept: (owner, nonce, record) => transaction(() => acceptWithin(owner, nonce, record)) });
   // Profiles retain purchase identity without holding an execution slot.
   const retainedJobs = () => ledgerJobs('jobs');
@@ -1087,7 +1086,6 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     challenges: Object.freeze({ ...store.challenges,
       issue: (request, challengeScopeHash) => isReadbackOnly(request) ? refuseExpired(request)
         : store.challenges.issue(request, challengeScopeHash, { assertStillLive: () => { if (isReadbackOnly(request)) refuseExpired(request); } }),
-      issueForOperator: request => isReadbackOnly(request) ? refuseExpired(request) : store.challenges.issueForOperator(request),
       attempt: input => isReadbackOnly(input.request) ? refuseExpired(input.request) : store.challenges.attempt(input),
     }),
     reserve: (request, body, options = {}) => store.reserve(request, body, isReadbackOnly(request) ? { ...options, journaledOnly: true } : options),
