@@ -602,6 +602,7 @@ import {
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
+import { generatedRoleConfig } from "../dacs.config.js";
 
 const ROLES = Object.freeze(["buyer", "seller"] as const);
 const AUTHORITY_RE = /^did:demos:agent:[0-9a-f]{64}$/;
@@ -1617,6 +1618,11 @@ export async function runGeneratedDoctor(
     enabledRailProfiles = dacsLiveRailProfiles(buyer);
     dacsLiveRailProfiles(seller);
   } catch {
+    let networkRefused = false;
+    try {
+      const network = generatedRoleConfig("buyer").rail.requestedNetwork;
+      networkRefused = network !== "eip155:84532" && network !== "demos";
+    } catch { /* the network cannot be read, so only the generic reason applies */ }
     const probes: DacsLiveDoctorProbesV1 = Object.freeze({
       "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
         : fail("node-version-unsupported"),
@@ -1624,6 +1630,9 @@ export async function runGeneratedDoctor(
       "local.version-bindings": versionBindings,
       "local.configuration": () => fail("configuration-invalid"),
       "local.deployment-runtime": dockerRuntime,
+      ...(networkRefused
+        ? { "x402.testnet-policy": () => fail("x402-mainnet-or-unsupported-network") }
+        : {}),
     });
     const report = await runDacsLiveDoctorV1({
       phase,
