@@ -4912,6 +4912,8 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 test that unsent signed bytes hold the signer until their execution | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| fix(client): place the merged transport blob record before the part's last source change | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): list the moved transport blob record in the commit inventory | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
