@@ -25,7 +25,7 @@ const callers = {
 };
 const cancellation = reason => { const controller = new AbortController(); return { signal: controller.signal, abort: () => controller.abort(reason) }; };
 const flushLateWork = () => new Promise(resolve => setImmediate(resolve));
-// Block reads for the reviewed Node2 layout: block zero refused, then block one and block two.
+// Block reads for the reviewed Node2 layout: numeric block zero refused, the string "0" read answered with the genesis projection, then block one and block two.
 const observations = new URL('../../../conformance/', import.meta.url);
 const reviewedBlocks = ['tp1-node-observations/block0-2026-10-20.json', 'tp1-node-observations/block1-2026-10-20.json',
   'tp1-node-observations-2026-11-08/block2-2026-11-08.json'].map(file => JSON.parse(readFileSync(new URL(file, observations))).body);
