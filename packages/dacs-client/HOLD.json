@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "b15165822d81f2da991152fd73425e08d1850036"
+        "blob": "9f3173a062dd19dee29708a0324e72adbfaba5f7"
       },
       "DELTA-LEDGER.json": {
-        "blob": "94b4db045368b180eca4d7204bcd0f3238077ffd"
+        "blob": "a1c12d54b0d9d9dece6bd63d44f266e3aeafdc50"
       },
       "DELTA-MAP.md": {
-        "blob": "4ea17301a8635bbaf2eecf13ee648bfa78e8a182"
+        "blob": "8342ab397e1c510a9512aac7196a921a4214359c"
       },
       "DELTA-NOTES.md": {
         "blob": "9c7cafaab58379b2465ee9be76d12dfe834e89c2"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "f6019807c5670d0d751b846fee9f181f58f523cf"
+        "blob": "d65894df2514ffd8e10cfdac0eaa619ef893b06f"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "cb69a09deeb9be888805048c0fcaf689afa1eac5"
+        "blob": "aa25a9d3573c174eb5684d96cc6ff2c2dc310851"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "f91a9f6504d7601ab2ceefa0c33e087ee24a08b1"
@@ -1313,7 +1313,7 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "7e61b54257846f628b2984bc6bee811470401dc2"
+        "blob": "abf4b0a8fcce97c05fdd573460f27c25cf216716"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
@@ -1928,7 +1928,7 @@
         "blob": "8e433835a01a81de01ea3a4d6f377270905ae434"
       },
       "test/passive-observation.test.mjs": {
-        "blob": "cf4497afe1bd896a8d18a55993bb8b38f4896c16"
+        "blob": "4b2d301177a3d336f1976f1bafaae1fc00e98c70"
       },
       "test/portal-capability.test.mjs": {
         "blob": "03649eaa13ff185ed7e74c73984df819b417e1ff"

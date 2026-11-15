@@ -9541,6 +9541,73 @@
           "after": "5fe427a4c2f7d293a9a1b925e381a4e24346af95"
         }
       ]
+    },
+    {
+      "delta": "D38",
+      "subject": "delta(client): D38 end passive lock and fence waits at the deadline",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "53cb946760c16418ef295626bbce65c9c1042987"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "cf4497afe1bd896a8d18a55993bb8b38f4896c16",
+          "after": "2a6f47ebfb1788974642eb560643ceeaad52b2bf"
+        }
+      ]
+    },
+    {
+      "delta": "D38",
+      "subject": "delta(client): D38 share the lock and fence abort wiring and narrow the abort comments",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "53cb946760c16418ef295626bbce65c9c1042987",
+          "after": "330883bdd1e897b9d630a6fdb21d8fd61b05871f"
+        }
+      ]
+    },
+    {
+      "delta": "D38",
+      "subject": "delta(client): D38 release a connection fence granted just before an abort",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "330883bdd1e897b9d630a6fdb21d8fd61b05871f",
+          "after": "aaa4e6e61e0b041c6ceb9a63f4ce6cd2e3421d2f"
+        },
+        {
+          "path": "packages/dacs-client/test/passive-observation.test.mjs",
+          "before": "2a6f47ebfb1788974642eb560643ceeaad52b2bf",
+          "after": "4b2d301177a3d336f1976f1bafaae1fc00e98c70"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs blob after merging d2bb4429468e",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0f2dfd45f46bad38b1cf646182703db508aaf917",
+          "after": "0f2dfd45f46bad38b1cf646182703db508aaf917"
+        }
+      ]
+    },
+    {
+      "delta": "D38",
+      "subject": "delta(client): D38 say that an abandoned lock wait also ends when the journal gives up with journal-busy",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0f2dfd45f46bad38b1cf646182703db508aaf917",
+          "after": "abf4b0a8fcce97c05fdd573460f27c25cf216716"
+        }
+      ]
     }
   ]
 }
