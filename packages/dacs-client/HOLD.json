@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "a7749c8aee523393b06f85be6b1548530a67113f"
+        "blob": "c16c401056216f25b6ba16fef722417495e54f11"
       },
       "DELTA-LEDGER.json": {
-        "blob": "477f3382ca7250b1e82c057a7fda698c9ceee715"
+        "blob": "fc8df3354e581dfbceb8235968ead54fa6ffa99c"
       },
       "DELTA-MAP.md": {
-        "blob": "c1f6dc8209c762e6a44e521123eae387ad95261c"
+        "blob": "65a095243a9040b694dcb1121e4780300f3ad86b"
       },
       "DELTA-NOTES.md": {
         "blob": "f9227d9a8c63161861dc3784ef9bc082afdddf3a"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "047a4122e1cd3c1e30f3ec424d987b6ed61b8487"
+        "blob": "1bc8a1161d61b24a8f66500fc47a07181b87a981"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1133,7 +1133,7 @@
         "blob": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7"
       },
       "src/dacs/demos-sr2-adapter.mjs": {
-        "blob": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868"
+        "blob": "da760633c415a79c635121fe311b4ef47df6496d"
       },
       "src/dacs/demos-sr2-wallet-bridge.mjs": {
         "blob": "aae9cc8e17848ff796c10b1c2289b7da798eefa0"
@@ -1334,7 +1334,7 @@
         "blob": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
       },
       "src/wallet/node-payment-evidence-adapter.mjs": {
-        "blob": "0245218b47bdb45775221164100a09ab7ccb2d35"
+        "blob": "abe5cea422327278732c707b1e8957274677ea44"
       },
       "src/wallet/node-wallet-session.mjs": {
         "blob": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
@@ -1343,7 +1343,7 @@
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
       },
       "src/wallet/signer-reservation.mjs": {
-        "blob": "761621e175cb94637425171c512077accb5f7ba6"
+        "blob": "82d3054cde61baac5a4638e991fc67c4cedc03d3"
       },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
@@ -1880,10 +1880,10 @@
         "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
       },
       "test/node-payment-evidence-adapter.test.mjs": {
-        "blob": "48465811c45148130b612f81f1f7284453161001"
+        "blob": "c9957a6b9c243c285b85d8fc2991c91fb1c4ec7e"
       },
       "test/node-signer-reservation.test.mjs": {
-        "blob": "60dae400c63b663c77a287459b1e47cea57ed3d5"
+        "blob": "ff3a9f0c8230954e2a0425e7195f4c38503fd514"
       },
       "test/node-signer-retirement.test.mjs": {
         "blob": "6175c0421d58d74bf403ee1150a32c750011c455"

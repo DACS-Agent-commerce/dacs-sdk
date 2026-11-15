@@ -34,6 +34,7 @@
 // the chain's account nonce is below the stored reservation's nonce, so no native write takes the reserved nonce.
 import { canonicalize, demosTransactionContentMatches, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { OperationError } from '../client-errors.mjs';
+import { creationProvenanceMatches } from '../dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../dacs/wallet-transactions.mjs';
 import { classifyStorageWriteSubmission, rpcEnvelope, storageWriteAccountNonce, storageWriteConfirmationMatches, storageWriteIdentityMatches } from '../devnet-demo/storage-write-recovery.mjs';
 import { AUTHORITY_READ_DEADLINE_MS } from '../public-admission.mjs';
@@ -393,9 +394,17 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
   }
   // Ends the reservation that holds the proven bytes, if one still does. It runs in the queue, so it never falls between a broadcast's
   // authorization lookup and its send, and it reads the reservation again because that broadcast may have changed it.
-  async function consumeExecuted(tx, retained) {
+  // An authorization the operator released cannot be settled spent, and it would keep the signer reserved for an execution that has
+  // happened: when the ledger refuses the spend and no longer holds the authorization open, the reservation ends without one.
+  async function consumeExecuted(tx, retained, signal) {
     const held = await reservationHolding(retained);
-    if (held !== null) await reservations.consume(held, { status: 'executed', authenticated: true, txHash: tx.hash, projectionText: retained.signedTransaction });
+    if (held === null) return;
+    const observation = { status: 'executed', authenticated: true, txHash: tx.hash, projectionText: retained.signedTransaction };
+    try { await reservations.consume(held, observation); } catch (cause) {
+      const { approvalId, approvalIntent } = held.active;
+      if (cause?.code !== 'signer_settlement_failed' || approvalId === null || await reopenApproval(approvalId, approvalIntent, signal) !== null) throw cause;
+      await reservations.consume(held, observation, { approvalEnded: true });
+    }
   }
   // The node must serve the program this CREATE made: its address, its exact data and metadata, its program name and the signer as owner.
   // A creating transaction the node names must be this one.
@@ -407,7 +416,7 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     const programOwner = typeof program?.owner === 'string' ? program.owner.toLowerCase() : null;
     const matches = program?.success === true && programOwner === signer && program.storageAddress === tx.content.to && program.programName === operation.programName
       && isObject(program.data) && canonicalize(program.data) === canonicalize(operation.data) && isObject(program.metadata) && canonicalize(program.metadata) === canonicalize(operation.metadata)
-      && (program.createdByTx === undefined || program.createdByTx === tx.hash);
+      && creationProvenanceMatches(program, tx.hash, true);
     if (!matches) throw refuse('readback_unverified');
   }
   // `applied` after the chain proves the execution of exactly the retained bytes; the reservation holding them, if any, ends and its authorization is spent.
@@ -419,7 +428,7 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       if (retained.nonce !== tx.content.nonce) throw refuse(RETAINED_INVALID);
       await verifyExecution(tx, signal);
       signal.throwIfAborted();
-      await inQueue(signal, () => consumeExecuted(tx, retained));
+      await inQueue(signal, () => consumeExecuted(tx, retained, signal));
       return { state: 'applied' };
     } catch (cause) {
       const answer = { state: 'pending' };

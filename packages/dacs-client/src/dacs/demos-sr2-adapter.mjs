@@ -61,7 +61,7 @@ function sourceBoundStorageComparison({ sourceCapability, expectedIdentity, auth
 // CREATE still supplies the hash, and the transaction plus containing block
 // are authenticated below. Rich public projections remain byte-for-byte
 // strict, while partial or present-invalid projections are never upgraded.
-function creationProvenanceMatches(native, txHash, allowPairedAbsence) {
+export function creationProvenanceMatches(native, txHash, allowPairedAbsence) {
   const hasCreatedByTx = Object.hasOwn(native, 'createdByTx');
   const hasInteractionTxs = Object.hasOwn(native, 'interactionTxs');
   if (!hasCreatedByTx && !hasInteractionTxs) return allowPairedAbsence;

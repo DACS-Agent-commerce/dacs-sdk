@@ -295,9 +295,11 @@ export function createSignerReservations({ journal, pins, openApproval = refused
    * `{status: 'executed', authenticated: true, txHash, projectionText}` from the lane's reader. Stores the approval to spend (the
    * one an earlier consume of these bytes stored, else the reservation's), settles that approval spent and any other one held for
    * the bytes released, then in one write clears the claim and moves the floor past the nonce. Anything else (pending, failed,
-   * unauthenticated, other bytes) is `signer_execution_unproven` and changes nothing. The handle is stale afterwards. Returns the stored record.
+   * unauthenticated, other bytes) is `signer_execution_unproven` and changes nothing. With `approvalEnded: true` the caller has shown
+   * that the ledger no longer holds the approval to spend open (an operator released it): that approval is not settled spent and the
+   * reservation ends all the same. The handle is stale afterwards. Returns the stored record.
    */
-  async function consume(reservation, observation) {
+  async function consume(reservation, observation, { approvalEnded = false } = {}) {
     return update(reservation, async ({ signer, active }) => {
       check(active.signed !== null, 'signed bytes required');
       const { txHash, projectionText } = active.signed;
@@ -305,7 +307,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
       const stored = await readSettlement(signer);
       const spend = stored?.txHash === txHash ? stored.approvalId
         : (await write({ format: SETTLEMENT_FORMAT, signer, txHash, approvalId: active.approvalId }, settlementKeyOf(signer))).approvalId;
-      await settle(spend, 'spent', 'executed');
+      if (!approvalEnded) await settle(spend, 'spent', 'executed');
       if (active.approvalId !== spend) await settle(active.approvalId, 'released', 'execution-settled');
       return SPENT;
     });

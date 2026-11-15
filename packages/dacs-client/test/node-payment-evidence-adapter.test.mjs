@@ -791,7 +791,7 @@ test("signCreate waits for the native lane lock, then refuses when a native writ
 });
 
 test("a confirmed transaction whose storage program is absent or differs from the CREATE is pending, and the matching program is applied", async t => {
-  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), created = JSON.parse(signed.signedTransaction).content, operation = created.data[1];
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), { hash, content: created } = JSON.parse(signed.signedTransaction), operation = created.data[1];
   applyWithoutBroadcast(w, signed);
   const program = answer => { w.node.intercept = row => (row.body === null ? answer(row) : undefined); };
   const served = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
@@ -806,11 +806,17 @@ test("a confirmed transaction whose storage program is absent or differs from th
     ['other storage address', () => served(complete({ storageAddress: `stor-${'9'.repeat(40)}` }))],
     ['other metadata', () => served(complete({ metadata: { ...operation.metadata, logicalAddress: 'dacs4:other' } }))],
     ['other content hash in the metadata', () => served(complete({ metadata: { ...operation.metadata, contentHash: 'f1'.repeat(32) } }))],
-    ['another creating transaction', () => served(complete({ createdByTx: 'c'.repeat(64) }))]]) {
+    ['another creating transaction', () => served(complete({ createdByTx: 'c'.repeat(64) }))],
+    ['interactions without the hash', () => served(complete({ createdByTx: hash, interactionTxs: ['c'.repeat(64)] }))],
+    ['interactions alone', () => served(complete({ interactionTxs: [hash] }))],
+    ['creating transaction alone', () => served(complete({ createdByTx: hash }))]]) {
     program(answer);
     assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending', name);
     assert.deepEqual(spentIds(w), [], `${name}: nothing is spent`);
   }
+  program(() => served(complete({ createdByTx: hash, interactionTxs: ['c'.repeat(64), hash] })));
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied', 'both provenance fields naming the CREATE');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
   w.node.intercept = null;
   assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
   assert.ok(w.node.calls.some(row => row.body === null && row.url.endsWith(`/storage-program/${created.to}`)), 'the program was read at the CREATE\'s storage address');
@@ -924,6 +930,35 @@ test("a replacement authorization prepared while another process fixes the appro
   assertNothingSent(w); assert.equal(w.approval.prepared.length, 2);
   assert.deepEqual(releasedIds(w), ['TEST-ledger-1', 'TEST-ledger-2']); assert.deepEqual(spentIds(w), []);
   assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1', 'the replacement was not linked');
+});
+
+test("an executed CREATE whose authorization the operator released ends its reservation without a spend, also after a restart, and the next evidence signs at the next nonce", async t => {
+  for (const restart of [false, true]) {
+    const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w, `released-${restart}`));
+    applyWithoutBroadcast(w, signed);
+    await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+    if (restart) await w.restart();
+    const state = await w.adapter.readTransactionState(signed);
+    assert.equal(state.state, 'applied', `restart ${restart}`);
+    assert.equal((await recordOf(w)).active, null, 'the reservation ended'); assert.deepEqual(spentIds(w), [], 'the released authorization is never spent');
+    assert.equal(w.approval.prepared.length, 1, 'no second authorization was prepared');
+    assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied', 'a repeated readback changes nothing');
+    assert.equal((await signIn(w, evidenceInput(w, `next-${restart}`))).nonce, signed.nonce + 1);
+  }
+});
+
+test("an executed CREATE whose authorization the ledger still holds open stays reserved when the spend fails, and a released one is found only by the ledger's answer", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed);
+  const { settle, reopen } = w.approval; w.approval.settle = async () => { throw new Error('TEST-ledger-down'); };
+  const first = await w.adapter.readTransactionState(signed);
+  assert.equal(first.state, 'pending'); assert.equal(w.session.internalCauseOf(first).code, 'signer_settlement_failed');
+  assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1', 'the reservation is kept');
+  w.approval.reopen = async () => { throw Object.assign(new Error('TEST-ledger-down'), { code: 'TEST-other' }); };
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending', 'an unreadable ledger never ends the reservation');
+  assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1');
+  w.approval.reopen = reopen; w.approval.settle = settle;
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied'); assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
 });
 
 test("a 55 KB evidence executes and the next 55 KB evidence signs at the next nonce", async t => {

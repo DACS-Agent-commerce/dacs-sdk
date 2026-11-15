@@ -1618,6 +1618,12 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` | 7797647b3bda845b75faa490eef6592949d87847 |
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | 48465811c45148130b612f81f1f7284453161001 |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 60dae400c63b663c77a287459b1e47cea57ed3d5 |
+| WF | delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/demos-sr2-adapter.mjs:64` | da760633c415a79c635121fe311b4ef47df6496d |
+| | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | abe5cea422327278732c707b1e8957274677ea44 |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 82d3054cde61baac5a4638e991fc67c4cedc03d3 |
+| | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | c9957a6b9c243c285b85d8fc2991c91fb1c4ec7e |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | ff3a9f0c8230954e2a0425e7195f4c38503fd514 |
 
 ## Complete commit and file inventory
 
@@ -4879,6 +4885,16 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/HOLD.json:1` |
 | fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/src/dacs/demos-sr2-adapter.mjs:64` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
 
 ## Original moved files
 
@@ -4896,7 +4912,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/dacs/delivery-readback.mjs` | `http-mcp/src/dacs/delivery-readback.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/src/dacs/dem-delivery-consumer.mjs` | `http-mcp/src/dacs/dem-delivery-consumer.mjs` | bc94796472c3c44d3f640a5ef1c2dfd0086e535c | changed by D16 | 597a1a6205e46cfb4e1a1a44b768ace3239f0843 |
 | `packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs` | `http-mcp/src/dacs/dem-delivery-context-consumer.mjs` | 3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7 | unchanged | 3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7 |
-| `packages/dacs-client/src/dacs/demos-sr2-adapter.mjs` | `http-mcp/src/dacs/demos-sr2-adapter.mjs` | aec7ffb01c037b98772be53a7d4c6d1b32aa3868 | unchanged | aec7ffb01c037b98772be53a7d4c6d1b32aa3868 |
+| `packages/dacs-client/src/dacs/demos-sr2-adapter.mjs` | `http-mcp/src/dacs/demos-sr2-adapter.mjs` | aec7ffb01c037b98772be53a7d4c6d1b32aa3868 | changed by WF | da760633c415a79c635121fe311b4ef47df6496d |
 | `packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs` | `http-mcp/src/dacs/demos-sr2-wallet-bridge.mjs` | aae9cc8e17848ff796c10b1c2289b7da798eefa0 | unchanged | aae9cc8e17848ff796c10b1c2289b7da798eefa0 |
 | `packages/dacs-client/src/dacs/devnet-purchase-consumer.mjs` | `http-mcp/src/dacs/devnet-purchase-consumer.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/src/dacs/directory.mjs` | `http-mcp/src/dacs/directory.mjs` | 7501cb68e65b07831eda5ce1723e870864656c69 | changed by D16 | c91e7f4769c14fa8b8306ef38647c65230cce881 |

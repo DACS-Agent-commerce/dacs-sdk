@@ -9847,6 +9847,37 @@
           "after": "60dae400c63b663c77a287459b1e47cea57ed3d5"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868",
+          "after": "da760633c415a79c635121fe311b4ef47df6496d"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "0245218b47bdb45775221164100a09ab7ccb2d35",
+          "after": "abe5cea422327278732c707b1e8957274677ea44"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "761621e175cb94637425171c512077accb5f7ba6",
+          "after": "82d3054cde61baac5a4638e991fc67c4cedc03d3"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "48465811c45148130b612f81f1f7284453161001",
+          "after": "c9957a6b9c243c285b85d8fc2991c91fb1c4ec7e"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "60dae400c63b663c77a287459b1e47cea57ed3d5",
+          "after": "ff3a9f0c8230954e2a0425e7195f4c38503fd514"
+        }
+      ]
     }
   ]
 }
