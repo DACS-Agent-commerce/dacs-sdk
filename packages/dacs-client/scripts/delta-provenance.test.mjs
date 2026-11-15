@@ -6,10 +6,18 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 const root=join(dirname(fileURLToPath(import.meta.url)),'../../..');
-function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));execFileSync('git',['clone','--quiet','--shared',root,dir]);t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;}
+// A `git commit` may start `git maintenance run --auto`, which can detach and keep writing into the clone's .git
+// after the commit returns; that races the cleanup below (ENOTEMPTY). A scratch clone never starts it.
+function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));execFileSync('git',['clone','--quiet','--shared',root,dir]);for(const [key,value] of [['maintenance.auto','false'],['gc.auto','0'],['gc.autoDetach','false']])execFileSync('git',['-C',dir,'config','--local',key,value]);t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;}
 function check(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-provenance.mjs'),'--local-only'],{encoding:'utf8'});return {status:result.status,text:result.stdout+result.stderr};}
 const moved='packages/dacs-client/src/dacs/buyer-chain-readback.mjs';
 test('committed delta history and generated per-file table agree',t=>{const r=check(scratch(t));assert.equal(r.status,0,r.text);});
+test('a commit in a scratch clone starts no background git maintenance that could outlive the test',t=>{
+ const dir=scratch(t);writeFileSync(join(dir,'maintenance-probe.txt'),'probe\n');execFileSync('git',['-C',dir,'add','-A']);
+ const commit=spawnSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false','commit','-qm','test: probe'],{encoding:'utf8',env:{...process.env,GIT_TRACE:'1'}});
+ assert.equal(commit.status,0,commit.stderr);
+ assert.doesNotMatch(commit.stderr,/git maintenance run|git gc --auto/,'git commit must not start automatic maintenance in a scratch clone');
+});
 function checkCallbackHistory(dir) {
   const pkg = join(dir, 'packages/dacs-client');
   const notes = readFileSync(join(pkg, 'DELTA-NOTES.md'), 'utf8');
@@ -243,9 +251,10 @@ test('a WF delta record is accepted and an unlisted delta id is still refused',t
 });
 
 // A published fix commit cannot be renamed to carry the delta id, so its record names the full hash.
-test('a WF record selected by its full commit hash may carry a fix(client) subject; the same subject without the hash is refused',t=>{
+for(const subject of ['fix(client): TEST published fix without a delta id','TEST published fix with a plain subject'])
+test(`a WF record selected by its full commit hash may carry the subject "${subject}"; the same subject without the hash is refused`,t=>{
  const dir=scratch(t),git=scratchGit(dir);useThisChecker(dir);
- const subject='fix(client): TEST published fix without a delta id',record='delta(client): WF TEST record the published fix';
+ const record='delta(client): WF TEST record the published fix';
  appendFileSync(join(dir,moved),'\n// TEST published fix\n');git('add','--',moved);git('commit','-qm',subject);
  const sha=git('rev-parse','HEAD'),ledgerFile=join(dir,control[1]),inventoryFile=join(dir,control[0]);
  const data=JSON.parse(readFileSync(ledgerFile,'utf8')),rows=JSON.parse(readFileSync(inventoryFile,'utf8'));
@@ -255,7 +264,7 @@ test('a WF record selected by its full commit hash may carry a fix(client) subje
  execFileSync(process.execPath,['packages/dacs-client/scripts/delta-map.mjs'],{cwd:dir});git('add','--',...control);git('commit','-qm',record);
  let r=check(dir);assert.equal(r.status,0,r.text);
  data.changes.at(-1).sha=null;writeFileSync(ledgerFile,JSON.stringify(data));
- r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/invalid delta fix\(client\): TEST published fix without a delta id/);
+ r=check(dir);assert.equal(r.status,1,r.text);assert.ok(r.text.includes(`invalid delta ${subject}`),r.text);
 });
 
 // Each fault edits only the PR's own records, in a scratch clone of the checked head.

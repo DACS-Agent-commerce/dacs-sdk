@@ -1,0 +1,82 @@
+{
+  "recording": {
+    "recordedAt": "2026-11-10",
+    "node": "https://node2.demos.sh/",
+    "demosdk": "4.0.16",
+    "values": "what each demosdk method returned to its caller; rows keep only the fields the adapter reads",
+    "write": "one 1 DEM self-transfer signed at nonce 8"
+  },
+  "sender": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+  "write": {
+    "hash": "e091f1b547e412df2dc8de2c293a602c6460d17c2c6eca4f693316eb9e73fa0c",
+    "nonce": 8,
+    "amountOs": "1000000000"
+  },
+  "broadcast": {
+    "result": 200,
+    "response": {
+      "message": "Transaction applied, waiting for confirmation"
+    }
+  },
+  "rounds": {
+    "A": {
+      "getAddressNonce": 7,
+      "getLastBlockNumber": 74918
+    },
+    "B1": {
+      "getTransactionStatus": {
+        "state": "pending"
+      },
+      "getTxByHash": null,
+      "getAddressNonce": 7
+    },
+    "B36": {
+      "getTransactionStatus": {
+        "state": "pending"
+      },
+      "getTxByHash": null,
+      "getAddressNonce": 8,
+      "getLastBlockNumber": 74919
+    },
+    "C": {
+      "getTransactionStatus": {
+        "state": "included",
+        "blockNumber": 74920
+      },
+      "getTxByHash": {
+        "content": {
+          "type": "native",
+          "from": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+          "to": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+          "from_ed25519_address": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+          "amount": 1000000000,
+          "nonce": "8",
+          "data": [
+            "native",
+            {
+              "nativeOperation": "send",
+              "args": [
+                "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+                "1000000000"
+              ]
+            }
+          ]
+        },
+        "hash": "e091f1b547e412df2dc8de2c293a602c6460d17c2c6eca4f693316eb9e73fa0c",
+        "status": "confirmed",
+        "blockNumber": 74920
+      },
+      "getAddressNonce": 8,
+      "getLastBlockNumber": 74920
+    }
+  },
+  "neverSeen": {
+    "hash": "2242969325b6911593794d6aa4a3fbbda3d68b5e7041b0590d889ab937072f6f",
+    "B1": {
+      "getTransactionStatus": {
+        "state": "unknown"
+      },
+      "getTxByHash": null
+    }
+  }
+}

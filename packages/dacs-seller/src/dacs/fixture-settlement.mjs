@@ -1,13 +1,16 @@
 import { canonicalize, contentHash, identityBundleHash, paymentEvidenceAddress, sameCanonicalClaimIdentity, sha256Hex, verifySellerPaymentIntake, verifySettlementEvidence } from '@kynesyslabs/dacs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord } from './fixture-anchors.mjs';
 import { readAdmissionCapability } from './session-admission.mjs';
+import { observedTransferMatches } from './native-payment-evidence-consumer.mjs';
 import { agreementTerms, deliverableAddress, deliveryEvidenceAddress, DEM_RAIL_DEFINITION, ed25519Deps, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
 const TX_HASH_SHAPE = /^(?:0[xX])?[0-9a-fA-F]{64}$/;
 const normalized = value => String(value).toLowerCase().replace(/^0x/, '');
 const same = (left, right) => canonicalize(left) === canonicalize(right);
+// What an intake answer holds beyond the authorization its permit was claimed with.
+const INTAKE_RESULT_KEYS = new Set(['disposition', 'fulfilment', 'reason', 'permitId']);
 // Fixture settlement uses current authenticated job facts and one retained
 // authorization. Saved progress constrains bytes; it never grants credit.
-export function createFixtureSettlement({ listing, validation, sellerBundle, claim, anchors, observer, receiptStore, sessionFor, commit, sign, signEvidence, reportFor, persist, durable, bindSettlement, assertCredit, heldFor, now, error }) {
+export function createFixtureSettlement({ listing, validation, sellerBundle, claim, anchors, observer, receiptStore, sessionFor, commit, sign, signEvidence, reportFor, persist, durable, bindSettlement, assertCredit, heldFor, now, error, unavailable }) {
     if (observer !== undefined && typeof observer !== 'function')
         throw new TypeError('observeDemosTransfer must be a function');
     const intents = new Set(), paying = new Set(), pin ={ listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) };
@@ -73,7 +76,8 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
         guard(jobId);
         return { ref: fixtureRef(address, contentHash(artifact)), receipt: record.receipt };
     }
-    async function verifyCompleted(session, intake) {
+    // The retained evidence, Deliverable and delivery evidence, read and verified against the observed transfer `settlementIdentity`.
+    async function verifyCompleted(session, settlementIdentity) {
         const payment = session.payment;
         const records = await Promise.all([payment.ref, payment.deliverableRef, payment.deliveryRef].map(ref => read(ref.anchor.locator)));
         const [paymentRecord, deliverable, evidenceRecord] = records;
@@ -83,11 +87,29 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
             if (refs[index].anchor.locator !== addresses[index] || records[index]?.status !== 'present' || contentHash(records[index].artifact) !== refs[index].contentHash
                 || verifyFixtureRecord(records[index], { logicalAddress: addresses[index], expectedWriter: claim }) !== 'valid')
                 error('payment_readback_required', 'retained fixture artifacts changed');
-        const checked = await verifyPaymentEvidence({ agreement: session.agreement, record: paymentRecord, observed: intake.settlementIdentity });
+        const checked = await verifyPaymentEvidence({ agreement: session.agreement, record: paymentRecord, observed: settlementIdentity });
         const delivery = await verifyDelivery({ agreement: session.agreement, deliverable, evidenceRecord });
         if (checked.status !== 'verified' || delivery.status !== 'verified')
             error('payment_readback_required', 'retained fixture evidence is not authenticated');
-        guard(session.jobId);
+    }
+    // Reads a completed payment's sources again for a stored answer: the original transfer, the retained permit and the three artifacts.
+    // It never takes a claim, signs, writes or saves; the caller checks the settlement credit. Throws what `unavailable` builds from a cause.
+    async function verifyRetainedPayment(session, stored) {
+        const { payment, paymentWork: work } = session;
+        if (!payment || !work) throw unavailable('absent');
+        const terms = agreementTerms(session.agreement), { intake } = work, identity = intake.settlementIdentity;
+        if (!same(stored, answer(session)) || normalized(payment.txHash) !== normalized(work.txHash) || payment.settlementId !== intake.settlementId || payment.permitId !== intake.permitId
+            || (durable && durable.settlementJob(intake.settlementId) !== session.jobId)) throw unavailable('changed');
+        let observed, permit;
+        try {
+            observed = await readAdmissionCapability({ read: (value, limits) => observer(value, limits) }, 'read', identity.txHash);
+            permit = await receiptStore.inspectPermit(intake.permitId);
+        } catch (cause) { throw unavailable(cause); }
+        if (observed?.status !== 'included' || observed.execution === undefined) throw unavailable(observed?.status === 'not-found' ? 'absent' : 'unavailable');
+        const authorization = Object.fromEntries(Object.entries(intake).filter(([key]) => !INTAKE_RESULT_KEYS.has(key)));
+        if (!observedTransferMatches(observed, { txHash: identity.txHash, terms, committedAt: session.commitment.committedAt }) || observed.blockNumber !== identity.blockNumber
+            || permit?.status !== 'available' || permit.claim?.jobId !== session.jobId || !same(permit.claim.authorization, authorization)) throw unavailable('changed');
+        try { await verifyCompleted(session, identity); } catch (cause) { throw unavailable(cause?.code === 'payment_readback_required' ? 'changed' : cause); }
     }
     const answer = session => ({ status: 'delivered', settlementId: session.payment.settlementId, evidenceAddress: session.payment.ref.anchor.locator, deliverableAddress: session.payment.deliverableRef.anchor.locator, deliveryEvidenceAddress: session.payment.deliveryRef.anchor.locator });
     // The durable job fence refuses a second holder; memory mode has none, so a
@@ -117,7 +139,8 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
         if (session.payment) {
             if (session.payment.settlementId !== intake.settlementId)
                 error('payment_readback_required', 'retained settlement differs');
-            await verifyCompleted(session, intake);
+            await verifyCompleted(session, intake.settlementIdentity);
+            guard(jobId);
             return answer(session);
         }
         if (!work)
@@ -164,8 +187,9 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
         if (intake.disposition !== 'verified' || intake.fulfilment !== 'already-claimed' || !same([intake.settlementId, intake.evidenceHash, intake.permitId], [work.intake.settlementId, work.intake.evidenceHash, work.intake.permitId]))
             error('payment_readback_required', 'fresh payment authentication differs from the retained payment');
         assertCredit(jobId);
-        await verifyCompleted(session, intake);
+        await verifyCompleted(session, intake.settlementIdentity);
+        guard(jobId);
         return answer(session);
     }
-    return Object.freeze({ submitPayment, readPayment });
+    return Object.freeze({ submitPayment, readPayment, verifyRetainedPayment });
 }
