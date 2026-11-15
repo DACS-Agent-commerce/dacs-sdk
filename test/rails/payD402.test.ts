@@ -12,6 +12,8 @@ import {
   type PayD402Rail,
 } from "../../src/rails/payD402.js";
 
+import { CounterpartyError } from "../../src/errors.js";
+
 const RECIPIENT = `0x${"cd".repeat(32)}`;
 const PAYER = "ab".repeat(32);
 const TX_HASH = "ef".repeat(32);
@@ -85,7 +87,12 @@ function recordedPayment(over: { status?: string; hash?: string; content?: Recor
     content: {
       type: "d402_payment",
       from: `0x${PAYER}`,
+      from_ed25519_address: `0x${PAYER}`,
       data: ["d402_payment", { to: RECIPIENT, amount: "1500000000", memo: "resourceId:res-1" }],
+      gcr_edits: [
+        { type: "balance", operation: "remove", isRollback: false, account: `0x${PAYER}`, txhash: `0x${TX_HASH}`, amount: "1500000000" },
+        { type: "balance", operation: "add", isRollback: false, account: RECIPIENT, txhash: `0x${TX_HASH}`, amount: "1500000000" },
+      ],
       ...over.content,
     },
   };
@@ -233,6 +240,36 @@ describe("payD402SettleCore", () => {
     expect(res.ok).toBe(false);
   });
 
+  test("a record that debits another account is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ content: { from_ed25519_address: `0x${"11".repeat(32)}` } }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a record with no debit account is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ content: { from_ed25519_address: undefined } }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a confirmed record with no balance credit to the payee is not reported ok", async () => {
+    const credit = (over: Record<string, unknown>) => ({
+      type: "balance", operation: "add", isRollback: false, account: RECIPIENT,
+      txhash: `0x${TX_HASH}`, amount: "1500000000", ...over,
+    });
+    for (const gcr_edits of [
+      undefined,
+      [],
+      [credit({ account: `0x${"22".repeat(32)}` })],
+      [credit({ amount: "1" })],
+      [credit({ operation: "remove" })],
+      [credit({ isRollback: true })],
+    ]) {
+      const res = await settleWithRecord(async () => recordedPayment({ content: { gcr_edits } }));
+      expect(res.ok).toBe(false);
+    }
+  });
+
   test("a recorded transfer to another payee is not reported ok", async () => {
     const res = await settleWithRecord(async () =>
       recordedPayment({
@@ -269,6 +306,27 @@ describe("payD402SettleCore", () => {
     });
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe(`0x${TX_HASH}`);
+  });
+
+  test("a 402 whose payment the record check could not confirm is refused before paying", async () => {
+    for (const body of [
+      { ...ADVERTISED_REQUIREMENT, amount: "01500000000" },
+      { ...ADVERTISED_REQUIREMENT, amount: "0x59682F00" },
+      { ...ADVERTISED_REQUIREMENT, description: "x".repeat(70_000) },
+      { ...ADVERTISED_REQUIREMENT, resourceId: "r".repeat(70_000) },
+    ]) {
+      let created = 0;
+      const client = fakeClient({ onCreate: () => (created += 1) });
+      await expect(
+        payD402SettleCore(params(), {
+          client,
+          fetchImpl: fetch402(body),
+          payerAddress: PAYER,
+          readTransaction: confirmingRead,
+        }),
+      ).rejects.toThrow(CounterpartyError);
+      expect(created).toBe(0);
+    }
   });
 
   test("a bare-DEM number amount (pre-fork) is rejected — OS base-unit string required", async () => {
