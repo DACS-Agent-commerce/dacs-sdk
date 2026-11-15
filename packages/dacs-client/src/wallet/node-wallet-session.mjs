@@ -15,6 +15,7 @@ import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purch
 import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
 import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
+import { createSignerReservations } from './signer-reservation.mjs';
 import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
 // A comparison value inside the descriptor only: `_doPost` checks the URL it is given equals the
@@ -56,6 +57,8 @@ const liveLeases = new WeakSet();
 const passFence = new AsyncLocalStorage();
 // Every token `admitTp1Authority` has made; a copy of one is not in it.
 const tokens = new WeakSet();
+// Each seller composition's signer reservations, over its own journal; never a member of the composition.
+const sellerReservations = new WeakMap();
 
 const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
 
@@ -542,9 +545,11 @@ async function buildNodeComposition(options, seller) {
       request: request => selectedJournal.run(selected, () => session.request(request)),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
-    return Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass,
+    const composition = Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass,
       ...(seller ? { transport: createHeldTransportFacade({ admission, transport }), observer: createNodeObserver({ owner, clock }) } : {}),
       async close() { session.lock(); await transport.close(); } });
+    if (seller) sellerReservations.set(composition, createSignerReservations({ journal, pins: expected }));
+    return composition;
   } catch (error) {
     try { session?.lock(); await transport?.close(); } catch { /* the construction error is the one to report */ }
     throw error;

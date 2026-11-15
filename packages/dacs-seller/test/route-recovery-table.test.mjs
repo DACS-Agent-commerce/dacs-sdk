@@ -8,7 +8,7 @@ import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createOperatorBuyerAccess } from '../src/devnet-demo/buyer-access.mjs';
 import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { WIRE_ROUTE_PATHS } from '../src/dacs/seller-wire-requests.mjs';
-import { JOB, testWallet } from './helpers/protocol-fixture.mjs';
+import { JOB, buyer, testWallet } from './helpers/protocol-fixture.mjs';
 import { BUYER, SELLER, PIN, continuingWorld, derive, jobFor, proposeJob, world } from './helpers/wire-routes-world.mjs';
 import { BUNDLE_REFUSALS, SHORT_LEASE_MS, bundleWorld, claimedTransport, completions, editSession, markPaid, operationOf, proposalSigningRig, reconcileInput, realWorld, tempDirectory } from './helpers/route-recovery-world.mjs';
 
@@ -402,6 +402,29 @@ const commitmentSnapshot = (w) => ({ ...snapshot(w), rows: JSON.stringify([...w.
 const commitmentRevalidation = (w, outcome = w.outcome) => w.fixture.agent().revalidateCompletedAnswer({ path: w.commitmentPath, jobId: w.jobId, outcome });
 
 const closedAccess = () => createOperatorBuyerAccess({ openBuyerAccess: false, custodyBuyer: testWallet(9).claim });
+
+for (const early of [false, true]) for (const unavailable of ['closed access', 'unready buyer lookup']) {
+  test(`completed ${early ? 'signature' : 'ordinary'} commitment replay refuses ${unavailable} and preserves the stored outcome`, async (t) => {
+    const w = await completedCommitment(t, early), settled = commitmentSnapshot(w), openAccess = w.fixture.config.buyerAccess;
+    assert.equal((await w.commitmentRequest()).text, w.first.text, 'the allowed replay returns the stored bytes');
+    w.fixture.config.buyerAccess = createOperatorBuyerAccess({
+      openBuyerAccess: unavailable === 'unready buyer lookup',
+      custodyBuyer: testWallet(9).claim,
+      buyerForJob: () => buyer.address,
+      buyerLookupReady: () => unavailable !== 'unready buyer lookup',
+    });
+    await w.fixture.reopen();
+    const refused = await w.commitmentRequest();
+    assert.deepEqual({ status: refused.status, signed: refused.signed, error: refused.body.error },
+      { status: 409, signed: true, error: 'buyer_access_closed' }, 'the access refusal keeps its own code');
+    assert.equal(operationOf(w, w.jobId, w.commitmentPath).state, 'completed');
+    assert.deepEqual(commitmentSnapshot(w), settled, 'the refusal changes no retained work or outcome');
+    w.fixture.config.buyerAccess = openAccess;
+    await w.fixture.reopen();
+    assert.equal((await w.commitmentRequest()).text, w.first.text, 'restored access returns the same stored bytes');
+    assert.deepEqual(commitmentSnapshot(w), settled, 'retrying signs and publishes no new commitment');
+  });
+}
 
 test('buyer access closed after proposal completion withholds replay without changing the outcome', async (t) => {
   const w = await completedProposal(t), settled = snapshot(w), openAccess = w.fixture.config.buyerAccess;
