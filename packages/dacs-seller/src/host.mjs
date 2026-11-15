@@ -46,7 +46,7 @@ import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { createContextWorkRegistry } from './dacs/context-work-registry.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
@@ -328,8 +328,6 @@ export async function startSellerHost(options) {
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();
     store.recoverLostContextReservations();
-    // A purchase whose session already ended gives its unspent units back before anything is served.
-    capacity.releaseTerminalAllocations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     const sellerClaim = listing.seller.identity.presentedBy;
     // The agent asks which context requests were admitted through these records; the admission transaction and the journal they read are
@@ -372,6 +370,10 @@ export async function startSellerHost(options) {
       knownJob: null, ready: sellerReady, stopped: hostStopped, now, monotonicNow: () => performance.now(), trackContextWork: contextWork.track });
     const context = { ...createSellerContextRoute({ listing, now, assertBuyerAccess, resolveBuyer: oldContextStepRefused, admitPresentation: oldContextStepRefused, writable: oldContextStepRefused,
       admitWrites: oldContextStepRefused, releaseWrites: oldContextStepRefused, recover: oldContextStepRefused }), ...contextRoute };
+    // A purchase whose session already ended gives its unspent units back before anything is served, unless its job holds a recorded
+    // payment and the payments operation has no completed answer: that job's paid retry still needs its session and allocation.
+    capacity.releaseTerminalAllocations(({ jobId, seller }) => agent.holdsRecordedPayment(jobId)
+      && inspectWireOperation(journal, { jobId, seller, path: DACS_SELLER_HTTP_PATHS.payments }).state !== 'completed');
     // Rows an earlier process left unfinished are settled or fenced before any route is mounted.
     await admission.sweep({ startup: true });
     // The state directories and the new transport database entry are durable

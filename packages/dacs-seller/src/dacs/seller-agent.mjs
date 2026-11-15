@@ -2176,6 +2176,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
     return session ?? null;
   };
+  // A payment this seller recorded for the job: payment work, evidence work or a settlement bound to the job. Read only, not verified.
+  const recordedPayment = (jobId, session = durable?.loadSession(jobId) ?? sessions.get(jobId)) =>
+    Boolean(session?.payment || session?.paymentWork || session?.nativeEvidenceWork || durable?.settlementBoundTo(jobId));
   const proposalWork = (jobId) => { const s = durable?.loadSession(jobId) ?? sessions.get(jobId); return Boolean(s?.agreementSignatureKey || s?.sellerContribution || s?.commitment); };
   // Countersignature work a bundle route must finish: kept for the buyer's signature, with no seller copy anchored yet.
   const unfinishedBundleWork = (session) => Boolean(session?.countersignatureWork && !session.sellerCopy);
@@ -2349,8 +2352,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     retainsUnfinishedWork: ({ jobId, path }) => {
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
       return Boolean((session?.commitCreatedAt && !session.commitment && !session.signatureCommitmentHeld) || (BUNDLE_PATHS.has(path) && unfinishedBundleWork(session)) ||
-        (path === '/dacs/v1/payments' && (session?.payment || session?.paymentWork || session?.nativeEvidenceWork || durable?.settlementBoundTo(jobId))));
+        (path === '/dacs/v1/payments' && recordedPayment(jobId, session)));
     },
+    // Whether this seller recorded a payment for the job, finished or not. The host's restart cleanup leaves such a job's
+    // session and allocation open until its payments operation has a completed answer. Synchronous and read only.
+    holdsRecordedPayment: (jobId) => recordedPayment(jobId),
     /**
      * Reads the sources of a completed proposal, commitment or payment answer again, read only, before the stored answer is signed again.
      * A payment: the retained commitment and buyer access, then the original transfer (read again, never the replaying request's transaction), the
