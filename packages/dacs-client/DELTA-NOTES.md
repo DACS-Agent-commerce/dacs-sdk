@@ -186,7 +186,7 @@ This delta records two historical statement-guard commits and their reciprocal h
 - `fix(client): D11 refuse SQL callbacks under the statement guard`: superseded by `fix(client): D11 enforce the write lease in SQLite instead of patching statements`.
 - `fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard`: superseded by `fix(client): D11 enforce the write lease in SQLite instead of patching statements`.
 
-These records add no runtime behavior. The write-lease module and its lease tests were removed later because nothing used them. The historical callback-refusal blobs in the commit register describe those named commits, rather than a callback-refusal feature in the current tree.
+These records add no runtime behavior. `src/util/guarded-sqlite.mjs` and `test/guarded-sqlite.test.mjs` were removed because nothing used them. The historical callback-refusal blobs in the commit register describe those named commits, rather than a callback-refusal feature in the current tree.
 
 D11 transaction adapter dependency split:
 
