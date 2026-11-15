@@ -7,14 +7,19 @@ import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createOperatorBuyerAccess } from '../src/devnet-demo/buyer-access.mjs';
-import { PATHS, proposalFor, proposeJob, world } from './helpers/wire-routes-world.mjs';
+import { BUYER, PATHS, SELLER, proposalFor, proposeJob, world } from './helpers/wire-routes-world.mjs';
+import { wireBuyer } from './helpers/wire-buyer.mjs';
+import { DELEGATION_MS, T0, nativePaymentWorld } from './helpers/native-payment-wire-fixture.mjs';
+import { nativeTransfer } from './helpers/completed-source-cells.mjs';
 import { BUNDLE_REFUSALS, SHORT_LEASE_MS, bundleWorld, claimedTransport, completions, editSession, markPaid, operationOf, proposalSigningRig, reconcileInput, realWorld, tempDirectory } from './helpers/route-recovery-world.mjs';
 import { JOB, NOW, buyer, seller as sellerKey, testWallet } from './helpers/protocol-fixture.mjs';
 import { FINALITY_COMMITMENT_SEPARATOR, sha256Hex } from '@kynesyslabs/dacs';
+import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 import { provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { agreementCreateProjection } from './helpers/agreement-create-projection.mjs';
+import { EVIDENCE_SIGNATURE, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
 
 // The durable responder's worker lease, which a killed worker leaves behind (60 s, with a margin).
 const RESPONDER_LEASE_MS = 61_000;
@@ -62,7 +67,7 @@ test('a null end whose reply was lost keeps its binding across a restart, and th
   assert.equal(w.agent.calls.reconciled, reconciledBefore + 1);
 });
 
-test('a host cut between the end record and the outcome file answers the exact stored bytes after a restart, with no agent run', async t => {
+test('an ordinary replay restores the outcome file from its retained end record', async t => {
   const w = await world(t), job = await proposeJob(w, 'end-only');
   const first = await job.post();
   assert.equal(first.status, 200);
@@ -75,6 +80,7 @@ test('a host cut between the end record and the outcome file answers the exact s
   const replayed = await job.post();
   assert.equal(replayed.text, first.text, 'the end record alone completes the operation with the exact stored bytes');
   assert.equal(w.effects(), calls, 'no agent ran');
+  assert.deepEqual(readdirSync(w.state.journals[0]).filter((name) => name.endsWith('.done')), outcomes, 'the replay published the outcome file again from the end record');
 });
 
 test('a completed answer that cannot be signed keeps its stored outcome across a restart, never a refusal or a null end', async t => {
@@ -337,5 +343,295 @@ test('commitments and commitments/signature × publisher state {a pre-intent rea
     assert.deepEqual([retried.disposition, retried.value.status, seller.sent.length], ['present', answerOf(early), 1], `${cell}: the original operation ran once and completed`);
     assert.equal((await seller.recover()).value.status, answerOf(early), `${cell}: a repeated retry answers the stored outcome`);
     assert.equal(seller.sent.length, 1, `${cell}: one CREATE in all`);
+  }
+});
+
+// ---- A worker that outlives its lease ----
+
+const HOST_LEASE_MS = 300_000;
+const ENDPOINT = 'https://seller.example.invalid';
+const ATTEMPT_RECORD = /^o-([0-9a-f]+)-(\d+)(\.end)?$/;
+const DONE_RECORD = /^o-[0-9a-f]+\.done$/;
+const REFUSED = { status: 503, error: 'operation_uncertain', signed: true };
+
+/** A pause the test arms for the next worker that calls `hold()`: `reached` settles when a worker is held, `release()` lets it go. */
+function pausePoint(t) {
+  const pause = { armed: false, release: () => {} };
+  pause.arm = () => {
+    pause.armed = true;
+    pause.reached = new Promise((resolve) => { pause.reach = resolve; });
+    const opened = new Promise((resolve) => { pause.release = resolve; });
+    pause.hold = async () => {
+      if (!pause.armed) return;
+      pause.armed = false;
+      pause.reach();
+      await opened;
+    };
+  };
+  pause.hold = async () => {};
+  t.after(() => pause.release());
+  return pause;
+}
+
+const refusalOf = (answer) => ({ status: answer.status, error: answer.body.error, signed: answer.signed });
+
+/** What the wire journal holds for the operations created after `known` was taken: attempts, supersession records, and whether an outcome is published. */
+function journalOf(w, known) {
+  const directory = w.state.journals[0], names = readdirSync(directory).filter((name) => !known.has(name));
+  const ends = names.filter((name) => ATTEMPT_RECORD.exec(name)?.[3] !== undefined).map((name) => JSON.parse(readFileSync(join(directory, name), 'utf8')));
+  return { attempts: names.filter((name) => ATTEMPT_RECORD.exec(name)?.[3] === undefined && ATTEMPT_RECORD.test(name)).length,
+    superseded: ends.filter((end) => end.superseded).length, outcomes: ends.filter((end) => end.outcome !== null).length, done: names.some((name) => DONE_RECORD.test(name)) };
+}
+
+/**
+ * A worker of one effect route stopped inside its job at `cell.pause` as its lease runs out. Another request then supersedes it and is refused at the held job,
+ * the stopped worker's late end is refused, and a later request completes the operation once.
+ * A cell has `w` (the wire world), `pause`, `post()` (a fresh signed request for the operation), `prepare()` (what the recovering kind needs first), `sink()` (one
+ * count per outside effect), `lapse()`, `reopen()`, `reservesBeforeRefusal` (whether the successor's reservation is recorded before it is refused),
+ * and `kind`: `new` or `recover`.
+ */
+async function overrunScenario(cell) {
+  const { w, pause, label } = cell, known = new Set(readdirSync(w.state.journals[0]));
+  await cell.prepare();
+  const before = cell.sink(), attemptsBefore = journalOf(w, known).attempts;
+  pause.arm();
+  const worker = cell.post();
+  await Promise.race([pause.reached, worker.then((answer) => { throw new Error(`${label}: the worker finished without stopping: ${answer.text}`); })]);
+  assert.equal(journalOf(w, known).attempts, attemptsBefore + 1, `${label}: the stopped worker holds its own attempt`);
+  const held = journalOf(w, known);
+  cell.lapse();
+  const successor = await cell.post(), refused = journalOf(w, known);
+  assert.deepEqual(refusalOf(successor), REFUSED, `${label}: the successor is refused inside the held job`);
+  assert.deepEqual([refused.attempts, refused.superseded], cell.reservesBeforeRefusal ? [held.attempts + 1, held.superseded + 1] : [held.attempts, held.superseded],
+    `${label}: the successor's reservation and the supersession of the stopped attempt`);
+  assert.deepEqual(cell.sink(), before, `${label}: the refused successor caused no outside effect`);
+  pause.release();
+  const late = await worker, ended = journalOf(w, known);
+  assert.deepEqual(refusalOf(late), REFUSED, `${label}: the stopped worker's late end is refused`);
+  assert.deepEqual([ended.attempts, ended.outcomes, ended.done], [refused.attempts, 0, false], `${label}: the late end left no outcome and no new attempt`);
+  assert.ok(cell.sink().every((count, index) => count <= Math.max(1, before[index])), `${label}: at most one outside effect in all`);
+  cell.lapse();
+  const completed = await cell.post(), final = journalOf(w, known);
+  assert.equal(completed.status, 200, `${label}: a later request completes: ${completed.text}`);
+  assert.deepEqual([final.outcomes, final.done], [1, true], `${label}: exactly one attempt ended with the published outcome`);
+  assert.ok(cell.sink().every((count) => count === 1), `${label}: the work was done once`);
+  const effects = cell.sink();
+  assert.equal((await cell.post()).text, completed.text, `${label}: a repeat answers the stored bytes`);
+  await cell.reopen();
+  assert.equal((await cell.post()).text, completed.text, `${label}: a reopened seller answers the stored bytes`);
+  assert.deepEqual(cell.sink(), effects, `${label}: repeats and the reopen added no effect`);
+}
+
+/** The fixture payment route: the worker stops at its awaited read of the transfer. */
+async function paymentCell(t, kind) {
+  const w = await fixturePaymentWorld(t), pause = pausePoint(t);
+  w.script.observe = async (txHash) => { await pause.hold(); return includedTransfer(txHash); };
+  return { w, pause, kind, label: `payments ${kind}`, reservesBeforeRefusal: true, post: () => w.pay(), lapse: () => w.lapse(), reopen: () => w.restart(),
+    sink: () => [w.evidenceCreates(), w.deliverableWrites(), w.deliveryEvidenceWrites()],
+    prepare: async () => {
+      if (kind === 'new') return;
+      // The seller saved the work and could not sign its evidence: the attempt stays open with retained work.
+      w.script.signFault = EVIDENCE_SIGNATURE;
+      assert.equal((await w.pay()).status, 503);
+      w.lapse();
+    } };
+}
+
+/**
+ * A seller over the commitment fixture behind the wire handler, its Agreement proposed but not committed. An armed `pause` stops a worker at the awaited
+ * commitment publisher; `faults.beforePublish` makes the next publish fail before anything is sent, and `sent` lists each CREATE the publisher sent.
+ */
+async function commitmentWire(t, { early, leaseMs }) {
+  const f = await commitmentFixture(t, { early, publicEndpoint: ENDPOINT }), pause = pausePoint(t), sent = [], faults = { beforePublish: null };
+  const { publish, readRetained } = f.native;
+  f.native.publish = async (input) => {
+    if (faults.beforePublish !== null) { const fault = faults.beforePublish; faults.beforePublish = null; throw fault; }
+    await pause.hold();
+    const out = await publish(input);
+    sent.push(input.logicalAddress);
+    return out;
+  };
+  f.native.readRetained = async (input, options) => {
+    const read = await readRetained(input, options);
+    return input.proofOfNoIntent && read.status === 'absent' ? provenUnsignedAbsence('TEST no signed CREATE is retained') : read;
+  };
+  const { agent: opened, request, agreement } = await f.prepare();
+  let agent = opened;
+  const w = await world(t, { fixture: { listing: f.listing, agent: () => agent }, leaseMs }), admitted = new Set();
+  Object.assign(w.agent, {
+    // The host holds a job from the proposal its wire route admitted, which is when the transport store keeps the job's tuple.
+    transportAgreementOf: (id) => (admitted.has(id) ? agent.transportAgreementOf(id) : null),
+    receiveProposal: (body, settings) => agent.receiveProposal(body, settings),
+    reconcileTransport: (input) => agent.reconcileTransport(input),
+    retainsProposalWork: (id) => agent.retainsProposalWork(id),
+    retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target),
+    retainsCommitmentWork: (id) => agent.retainsCommitmentWork(id),
+    revalidateCompletedAnswer: (input) => agent.revalidateCompletedAnswer(input),
+    commit: (body, settings) => agent.commit(body, settings),
+    commitOnSignature: (body, settings) => agent.commitOnSignature(body, settings),
+  });
+  const jobId = agreement.jobId, agreementHash = request.transportIdentity.agreementHash;
+  // The agent already signed the proposal, so its wire route replays that answer.
+  const proposed = await w.post(PATHS.proposals, request, { jobId, agreementHash });
+  assert.equal(proposed.status, 200, proposed.text);
+  admitted.add(jobId);
+  const path = early ? PATHS.commitmentSignature : PATHS.commitments;
+  const body = early ? { jobId, agreement, signedProjection: agreementCreateProjection(agreement) } : { jobId };
+  return { w, pause, sent, faults, post: () => w.post(path, body, { jobId, agreementHash }),
+    reopen: async () => { w.reopen(); agent.close(); agent = await f.open(); } };
+}
+
+const commitmentCell = async (t, { early, kind }) => {
+  const seller = await commitmentWire(t, { early, leaseMs: SHORT_LEASE_MS }), { w } = seller;
+  return { w, pause: seller.pause, kind, label: `${early ? 'commitments/signature' : 'commitments'} ${kind}`, reservesBeforeRefusal: true, post: seller.post, reopen: seller.reopen,
+    sink: () => [seller.sent.length], lapse: () => { w.state.time += SHORT_LEASE_MS; },
+    prepare: async () => {
+      if (kind === 'new') return;
+      // The publisher failed before it sent anything: the attempt stays open with the publish-asked marker saved.
+      seller.faults.beforePublish = new Error('TEST the publisher died before any intent');
+      assert.equal((await seller.post()).status, 503);
+      w.state.time += SHORT_LEASE_MS;
+    } };
+};
+
+/**
+ * The proposals route of a fresh job. The worker stops at the awaited read of the Vet record inside the agent's durable responder, before the Agreement is signed.
+ * A new worker runs under the host's own lease and is overrun one millisecond past it.
+ */
+async function proposalCell(t, kind) {
+  const f = await commitmentFixture(t, { early: false, publicEndpoint: ENDPOINT }), pause = pausePoint(t);
+  const admission = f.config.sessionAdmission;
+  f.config.sessionAdmission = { ...admission, resolveVetRecord: async (...args) => {
+    await pause.hold();
+    return admission.resolveVetRecord(...args);
+  } };
+  let agent = await f.open();
+  const request = await f.proposal(agent), { jobId, agreementHash } = request.transportIdentity, agreementText = Buffer.from(request.proposal.plan.signedBytes).toString();
+  const leaseMs = kind === 'new' ? HOST_LEASE_MS : SHORT_LEASE_MS, lapseMs = leaseMs + 1;
+  const w = await world(t, { fixture: { listing: f.listing, agent: () => agent }, leaseMs });
+  Object.assign(w.agent, {
+    transportAgreementOf: (id) => agent.transportAgreementOf(id),
+    receiveProposal: (body, settings) => agent.receiveProposal(body, settings),
+    reconcileTransport: (input) => agent.reconcileTransport(input),
+    retainsProposalWork: (id) => agent.retainsProposalWork(id),
+    retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target),
+    revalidateCompletedAnswer: (input) => agent.revalidateCompletedAnswer(input),
+  });
+  // The buyer's discovery proof lasts ten minutes, which two host leases outrun: each request is signed by a buyer that discovers the seller anew.
+  const post = async () => {
+    const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: w.agent.listingPin, clock: w.clock, connection: () => ({ ...w.state.connection }), publicEndpoint: ENDPOINT });
+    return w.send(PATHS.proposals, await buyerWire.signRequest(PATHS.proposals, request, { jobId, agreementHash }));
+  };
+  return { w, pause, kind, label: `proposals ${kind}`, reservesBeforeRefusal: kind === 'recover', post, lapse: () => { w.state.time += lapseMs; },
+    sink: () => [f.signed.filter((text) => text === agreementText).length],
+    reopen: async () => { w.reopen(); agent.close(); agent = await f.open(); },
+    prepare: async () => {
+      if (kind === 'new') return;
+      // The Agreement was signed and its answer could not be signed: the attempt stays open with the proposal's work retained.
+      w.signing.failures = 2;
+      const cut = await post();
+      assert.equal(cut.signed, false);
+      w.state.time += lapseMs;
+    } };
+}
+
+/**
+ * A bundle world whose response signer stops the next armed worker inside the wire's settle, which still holds the job. `signer.failures` makes the next
+ * responses unsignable and `signer.responses` counts the responses signed. `paid` marks the job's payment as made and delivered first.
+ */
+async function bundleOverrunWorld(t, { paid, retainedCountersignature = false }) {
+  const w = await bundleWorld(t, { leaseMs: SHORT_LEASE_MS }), pause = pausePoint(t), signer = { failures: 0, responses: 0 };
+  if (paid) await editSession(w.fixture, w.jobId, markPaid);
+  if (retainedCountersignature) await editSession(w.fixture, w.jobId, (session) => { session.countersignatureWork = { buyerSignature: 'TEST-retained-countersignature' }; });
+  w.handle.wireOverrides = { signer: { claim: SELLER.claim, sign: (bytes) => {
+    if (!Buffer.from(bytes).toString('utf8').startsWith(DACS_SELLER_HTTP_DOMAINS.response)) return SELLER.sign(bytes);
+    if (signer.failures > 0) { signer.failures--; throw new Error('TEST signer failure'); }
+    signer.responses++;
+    return pause.armed ? pause.hold().then(() => SELLER.sign(bytes)) : SELLER.sign(bytes);
+  } } };
+  w.reopen();
+  return { w, pause, signer, effects: () => [w.fixture.signed.length, w.fixture.publications.length, completions(w).length] };
+}
+
+test('a bundle worker that outlives its lease has its late end refused without causing an effect', async (t) => {
+  const cells = BUNDLE_REFUSALS.flatMap(([path, paid, code, status]) => ['new', 'recover'].map((kind) => ({ path, paid, kind, refusal: { status, error: code }, retained: false })));
+  cells.push(...['new', 'recover'].map((kind) => ({ path: PATHS.bundleCountersignature, paid: false, kind, refusal: { status: 503, error: 'operation_uncertain' }, retained: true })));
+  for (const { path, paid, kind, refusal, retained } of cells) {
+    const { w, pause, signer, effects } = await bundleOverrunWorld(t, { paid, retainedCountersignature: retained }), label = `${path} paid ${paid} retained ${retained} ${kind}`;
+    const known = new Set(readdirSync(w.state.journals[0])), lapse = () => { w.state.time += SHORT_LEASE_MS; };
+    if (kind === 'recover') {
+      signer.failures = 2;
+      assert.equal((await w.request(path)).signed, false, `${label}: the first answer could not be signed, so its attempt stays open`);
+      lapse();
+    }
+    const effectsBefore = effects(), attemptsBefore = journalOf(w, known).attempts;
+    pause.arm();
+    const worker = w.request(path);
+    await Promise.race([pause.reached, worker.then((answer) => { throw new Error(`${label}: the worker finished without stopping: ${answer.text}`); })]);
+    const held = journalOf(w, known);
+    assert.equal(held.attempts, attemptsBefore + 1, `${label}: the stopped worker holds its own attempt`);
+    lapse();
+    const successor = await w.request(path), refused = journalOf(w, known);
+    assert.deepEqual(refusalOf(successor), REFUSED, `${label}: the successor is refused at the held job`);
+    assert.deepEqual([refused.attempts, refused.superseded], [held.attempts + 1, held.superseded + 1], `${label}: the stopped attempt is recorded superseded and the successor's attempt is open`);
+    pause.release();
+    const late = await worker, ended = journalOf(w, known);
+    assert.deepEqual(refusalOf(late), REFUSED, `${label}: the late end is refused`);
+    assert.deepEqual([ended.attempts, ended.outcomes, ended.done], [refused.attempts, 0, false], `${label}: the late end left no outcome`);
+    lapse();
+    const answered = await w.request(path), view = operationOf(w, w.jobId, path);
+    assert.deepEqual({ status: answered.status, error: answered.body.error }, refusal, `${label}: a later request answers the route's own refusal`);
+    // A refusal that proves no work and no worker ends its attempt with no outcome; retained work leaves the attempt open.
+    assert.equal(view.state, retained ? 'pending' : 'ended', `${label}: the attempt's end`);
+    assert.equal(journalOf(w, known).done, false, `${label}: no bundle outcome was published`);
+    for (const again of ['same process', 'after a restart']) {
+      if (again === 'after a restart') w.reopen();
+      const repeated = await w.request(path);
+      // Retained work keeps its attempt open, and a live lease holds it: a repeat inside the lease is pending.
+      assert.deepEqual({ status: repeated.status, error: repeated.body.error }, retained ? { status: 503, error: 'seller_effect_pending' } : refusal, `${label}: ${again}`);
+    }
+    assert.deepEqual(effects(), effectsBefore, `${label}: no signature, CREATE, receipt claim or delivery was added`);
+    assert.ok(signer.responses > 0, `${label}: the seller's own responses were signed`);
+  }
+});
+
+const MAX_EFFECT_ATTEMPTS = 16;
+// Retained payment work without the last hold reason it records, which changes with each recovery.
+const identityOf = (work) => Object.fromEntries(Object.entries(work).filter(([key]) => key !== 'anchorError'));
+
+test('a retained payment that lapses sixteen times becomes unresolved while state remains readable', async (t) => {
+  const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
+  // The seller saves the payment's work and its wallet fails before signing: the attempt stays open with the work retained.
+  w.faults.walletSignature = 1;
+  assert.equal((await p.send(txHash, { delegated: true })).body.status, 'held');
+  const work = await w.work(p);
+  assert.ok(work !== undefined, 'the payment work is retained');
+  // From here the transfer is not found, so every recovery holds with the same work.
+  nativeTransfer(w, txHash, () => null);
+  const untouched = () => [w.counts.walletSignatures, w.evidenceCreates(p), w.deliverableWrites(p), w.deliveryEvidenceWrites(p), w.grantedReceipts()];
+  const effectsBefore = untouched();
+  for (let recovery = 1; recovery < MAX_EFFECT_ATTEMPTS; recovery++) {
+    const held = await p.send(txHash, { delegated: true }), view = w.wireState(p);
+    assert.equal(held.body.status, 'held', `recovery ${recovery} holds`);
+    assert.deepEqual([view.state, view.attempt], ['pending', recovery], `recovery ${recovery} supersedes the one before and its own attempt is open`);
+  }
+  assert.ok(w.clock() < T0 + DELEGATION_MS, 'every request was signed inside the six-hour delegation');
+  const unresolved = await p.send(txHash, { delegated: true }), view = w.wireState(p);
+  assert.deepEqual([unresolved.status, unresolved.body.error], [500, 'seller_effect_unresolved'], 'request 17 is refused as unresolved');
+  assert.deepEqual([view.state, view.attempt, view.superseded], ['ended', MAX_EFFECT_ATTEMPTS - 1, MAX_EFFECT_ATTEMPTS], 'sixteen attempts were superseded and the last ended with no outcome');
+  const repeated = await p.send(txHash, { delegated: true });
+  assert.equal(repeated.text, unresolved.text, 'the unresolved answer is stored');
+  assert.deepEqual(w.wireState(p), view, 'a repeat reserved no further attempt');
+  await w.restart();
+  assert.equal((await p.send(txHash, { delegated: true })).text, unresolved.text, 'the unresolved answer holds across a restart');
+  assert.deepEqual(identityOf(await w.work(p)), identityOf(work), 'the retained work is still readable and keeps its claim, evidence and CREATE address');
+  assert.deepEqual(untouched(), effectsBefore, 'no signature, CREATE, receipt or delivery was added by the recoveries');
+});
+
+test('a worker that overruns its lease cannot add a second effect and its operation completes once later', async (t) => {
+  for (const kind of ['new', 'recover']) {
+    await overrunScenario(await proposalCell(t, kind));
+    await overrunScenario(await paymentCell(t, kind));
+    for (const early of [false, true]) await overrunScenario(await commitmentCell(t, { early, kind }));
   }
 });
