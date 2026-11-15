@@ -1025,10 +1025,10 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "a63e2c99d3fde161e66b28f302dd2405022b6cbd"
+        "blob": "57e2bf1c23e6f27a46e078cf2165e99ac62cf574"
       },
       "scripts/check-hold.test.mjs": {
-        "blob": "8d78bf497c2965145033dc4d583a83f1f28d022a"
+        "blob": "537e70dfe2c6fc8e16dedcba42f7d3271045d0e9"
       },
       "scripts/check-imports.mjs": {
         "blob": "c48030a9ee189aa510d524fa136536449e0234aa"
@@ -1064,7 +1064,7 @@
         "blob": "bdf5b9f53877e0ca3b2c93b7c8a52f838a1d6fc1"
       },
       "scripts/delta-frontier.test.mjs": {
-        "blob": "5b96a438dd70c3bc963b793b31ecd24f585fe8f1"
+        "blob": "a21c2499a63a28fe5a65e23c3a70f72adb2ee7de"
       },
       "scripts/delta-map.mjs": {
         "blob": "94f50c98494e7293a3c20b3457a497bd9eff3c17"
@@ -1079,7 +1079,7 @@
         "blob": "f6e0daeeab9c9a22b429bb7f9d0b5cb2c6156ec0"
       },
       "scripts/delta-switch.test.mjs": {
-        "blob": "370cb61b9e8d4b98a4ab84247e913885ba85235b"
+        "blob": "71ef1a457a1dce3dd2042b4fafc271adb3e19cc8"
       },
       "scripts/import-cut-map.mjs": {
         "blob": "12eb6fe36a77cb7d33fa58a1489c880edb3a6aa7"

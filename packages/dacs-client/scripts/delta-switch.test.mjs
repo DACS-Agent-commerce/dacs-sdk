@@ -114,11 +114,16 @@ test('the record command writes the staged inventory without writing the archive
 });
 
 test('re-pinning keeps only core pins and never stages files', t => {
-  const s = scratch(t), index = s.git('ls-files', '--stage');
+  const s = scratch(t), core = 'scripts/delta-record.test.mjs';
+  appendFileSync(join(s.dir, core), '\n// Additional schema coverage.\n');
+  s.git('add', '--', P + core);
+  const index = s.git('ls-files', '--stage'), controls = ['HOLD.json', 'scripts/check-hold.mjs'].map(path => readFileSync(join(s.dir, path)));
   accepted(s.run('pin-delta'));
   assert.equal(s.git('ls-files', '--stage'), index);
   const hold = JSON.parse(readFileSync(join(s.dir, 'HOLD.json'), 'utf8'));
   assert.deepEqual(Object.keys(hold.step1Freeze.files).filter(path => !isCorePath(path)), []);
+  assert.equal(hold.step1Freeze.files[core].blob, s.git('rev-parse', `:${P}${core}`));
+  for (const [i, path] of ['HOLD.json', 'scripts/check-hold.mjs'].entries()) assert.notDeepEqual(readFileSync(join(s.dir, path)), controls[i]);
 });
 
 

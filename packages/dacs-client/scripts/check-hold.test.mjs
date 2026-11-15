@@ -72,6 +72,10 @@ const PACKAGE_EDITS = {
 };
 for (const [action, [edit, ...patterns]] of Object.entries(PACKAGE_EDITS)) test(`package ${action} is refused`, t => {
   const s=scratch(t); edit(s); refuses(s, ...patterns);
+  if (action === 'delete') {
+    unlinkSync(join(s.dir,'LICENSE'));
+    refuses(s, fail('LICENSE', 'missing file; package is frozen'));
+  }
 });
 for (const field of ['exports','main','bin','scripts']) test(`package manifest ${field} cannot bypass the hold`, t => {
   const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file);
@@ -86,7 +90,7 @@ for (const [change, key, edit] of [['an added key', 'sideEffects', p => { p.side
 test('a package.json files edit is record-named, not pinned by the manifest', t => {
   const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file); p.files.push('scripts/check-hold.mjs'); writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
   const r=gate(s); assert.equal(r.status, 1, r.text);
-  assert.match(r.text);
+  assert.match(r.text, fail('package.json', 'working file differs from HEAD \\(bytes or mode\\)'));
   assert.doesNotMatch(r.text, /key files/);
 });
 test('package staged changes fail even with restored working bytes', t => {
@@ -99,6 +103,10 @@ test('package HEAD changes fail even with restored index and working bytes', t =
   appendFileSync(file,'\n');git(s.repo,'add','.');commit(s.repo,'unreviewed package change');
   writeFileSync(file,bytes);git(s.repo,'add','.');
   refuses(s, fail('src/purchases.mjs', `HEAD differs from ${DERIVED}`));
+  const core=join(s.dir,'LICENSE'), original=readFileSync(core);
+  appendFileSync(core,'\n');git(s.repo,'add','--',P+'LICENSE');commit(s.repo,'unreviewed core change');
+  writeFileSync(core,original);git(s.repo,'add','--',P+'LICENSE');
+  refuses(s, fail('LICENSE', 'HEAD blob differs from the freeze pin'));
 });
 test('a committed package addition or deletion fails even with restored index and working files', t => {
   const added=scratch(t); put(join(added.dir,'dist/live.mjs'), 'export {};\n'); git(added.repo,'add','-f','--','packages/dacs-client/dist/live.mjs'); commit(added.repo,'unreviewed package addition');

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { recordName } from './delta-record.mjs';
+import { isCorePath, recordName } from './delta-record.mjs';
 import { commits, expectedBlob, git, ledger, selects } from './delta-map.mjs';
 
 // The gate reads superseded and active records together and skips selectors
@@ -17,6 +17,7 @@ function recordedPaths() {
     const matches = history.filter(commit => selects(change, commit));
     if (matches.length !== 1) continue;
     for (const file of change.files) {
+      if (isCorePath(file.path.slice('packages/dacs-client/'.length))) continue;
       records.set(file.path, [...(records.get(file.path) ?? []), { sha: matches[0].sha, after: file.after }]);
     }
   }
