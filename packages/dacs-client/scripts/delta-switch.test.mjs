@@ -81,7 +81,7 @@ test('an undeclared commit-only id and malformed declarations are refused', t =>
   }
 });
 
-test('a declaration binds its first record subject and filename', t => {
+test('a declaration must name the subject of a record in its lane and have a valid filename', t => {
   const s = scratch(t);
   json(join(s.dir, 'records/ids/EXAMPLE.json'), { schema: 'dacs-client-delta-id/v1', delta: 'EXAMPLE', registration: 'EXAMPLE: example lane', subject: 'delta(client): EXAMPLE absent record' });
   assert.match(assemble(s.dir).failures.join('\n'), /declaration subject.*does not select a record/);
@@ -126,6 +126,15 @@ test('re-pinning keeps only core pins and never stages files', t => {
   for (const [i, path] of ['HOLD.json', 'scripts/check-hold.mjs'].entries()) assert.notDeepEqual(readFileSync(join(s.dir, path)), controls[i]);
 });
 
+test('re-pinning ignores an unstaged edit to a file that is not a core file', t => {
+  const s = scratch(t), core = 'scripts/delta-record.test.mjs';
+  appendFileSync(join(s.dir, core), '\n// Additional schema coverage.\n');
+  s.git('add', '--', P + core);
+  appendFileSync(join(s.dir, 'README.md'), '\nUnrelated unstaged guidance.\n');
+  accepted(s.run('pin-delta'));
+  const hold = JSON.parse(readFileSync(join(s.dir, 'HOLD.json'), 'utf8'));
+  assert.equal(hold.step1Freeze.files[core].blob, s.git('rev-parse', `:${P}${core}`));
+});
 
 test('a re-pinned core gate test passes both hold and provenance without a source record', t => {
   const s = scratch(t), subject = 'delta(client): WF update a core gate test', path = P + 'test/delta-ledger-gate.test.mjs';

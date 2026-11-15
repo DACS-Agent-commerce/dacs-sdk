@@ -329,7 +329,7 @@ async function main() {
   }
   p(localPaths.length === 0 ? "None." : localPaths.join("\n"));
   p();
-  p('## 10. Current destination import audit (D1)');
+  p('## 10. Destination import audit when this map was generated (D1)');
   p();
   p('Sections 1–9 record the original copy and source graph. This section scans the current destination source. Test harness cuts remain listed above.');
   const audit = importAudit();

@@ -408,7 +408,7 @@ Copied lines that contain an absolute local home path. Step 1 does not edit the 
 - `test/helpers/agreement-context-integration.mjs:33`: the default of `DACS_SELLER_INTEROP_REFERENCE`, an external reference tree that is not provisioned.
 - `test/source-server-hosting.test.mjs:121`: a rejected `networkAdmissionPath` value in a preflight negative case.
 
-## 10. Current destination import audit (D1)
+## 10. Destination import audit when this map was generated (D1)
 
 Sections 1–9 record the original copy and source graph. This section scans the current destination source. Test harness cuts remain listed above.
 
