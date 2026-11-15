@@ -59,7 +59,7 @@ function composeEnvironment(callerEnv: Record<string, string>): Record<string, s
   try {
     const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], {
       encoding: "utf8",
-      env: { acceptance_root: root, PATH: dirname(process.execPath), ...callerEnv },
+      env: { acceptance_root: root, PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter), ...callerEnv },
     });
     expect(result.status, result.stderr).toBe(0);
     return JSON.parse(result.stdout) as Record<string, string>;
