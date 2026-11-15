@@ -578,7 +578,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   expected amount.
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent. A kept CREATE whose whole debit is above the ceiling is never
-  broadcast again: `anchorEvidence`, `reconcilePaymentEvidence`,
+  broadcast again, and until the operator clears it (below)
+  `anchorEvidence`, `reconcilePaymentEvidence`,
   `ensureEvidence` and the Deliverable journal's `resume` and
   `submitAuthorized` refuse its address with `write-fee-cap`, naming its hash
   and debit, before any wallet read or signature. `readSignedProjection` still
@@ -590,13 +591,16 @@ per-client limiter so one client cannot exhaust the shared request budget.
   delivery outcome, which starts with `write-fee-cap:`.
   To clear a held write, call `clearHeldWrite({ logicalAddress, txHash })` on
   the journal (the evidence journal or the Deliverable journal) with the
-  address and hash the `write-fee-cap` reason names:
+  hash the `write-fee-cap` reason names and the address of the write,
+  `dacs4:evidence:<jobId>` on the payment evidence path and
+  `dacs4:deliverable:<jobId>` on the Deliverable path:
   1. Check on the chain what became of the write. It must have been applied,
      or another transaction of the writer must have used its nonce.
   2. Call `clearHeldWrite`. It asks the journal's own `readAccountNonce` and
      `readTransactionState` and clears the write only if they prove one of the
      two. It answers `{ status: 'applied', txHash }` when the write was
-     applied: the journal keeps it and sends nothing. It answers
+     applied: the journal keeps it and sends nothing, even when a later read
+     of the chain fails or answers `pending`. It answers
      `{ status: 'superseded', txHash }` when the write can no longer execute
      (the account nonce has passed it and a complete transaction index shows
      it was not executed): the address is then signed anew by the next

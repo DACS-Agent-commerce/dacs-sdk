@@ -443,7 +443,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   async function liveFor(input, observed) {
     const { live, highestNonce } = keptFor(input);
     if (!live) return { live: null, highestNonce };
-    const checked = observed?.txHash === live.txHash ? observed.checked : await fate(live);
+    // A write cleared as applied stays applied, whatever the chain answers now.
+    const checked = clearedOutcome(live.txHash) === 'applied' ? { alive: true, applied: true }
+      : observed?.txHash === live.txHash ? observed.checked : await fate(live);
     if (checked.alive) return { live, highestNonce, applied: checked.applied, reason: checked.reason };
     const swap = db.prepare(`UPDATE ${table} SET superseded_at = ? WHERE logical_address = ? AND tx_hash = ? AND superseded_at IS NULL`).run(now(), input.logicalAddress, live.txHash);
     if (swap.changes !== 1) throw Object.assign(new Error('the wallet journal row changed while it was checked'), { code: 'wallet_journal_conflict' });

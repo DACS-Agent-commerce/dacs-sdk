@@ -678,6 +678,19 @@ test('clearHeldWrite keeps a held evidence CREATE the chain applied, and sends n
   assert.deepEqual(await journal.reconcilePaymentEvidence(input), { status: 'applied', txHash: kept.hash });
   assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
 });
+for (const [label, degrade] of [
+  ['a state read fails', (w) => { w.faults.state.push('throw', 'throw'); }],
+  ['the chain answers pending', (w, kept) => { w.chain.applied.length = 0; w.chain.pending.push(kept.hash); }],
+]) test(`a held evidence CREATE cleared as applied is not sent when later ${label}`, async (t) => {
+  const w = wallet(t), journal = w.open(); t.after(() => journal.close());
+  const { input, kept, ask } = await keepHeldCreate(w);
+  w.chain.applied.push(kept.hash); w.chain.accountNonce = 1;
+  assert.equal((await journal.clearHeldWrite(ask)).status, 'applied');
+  degrade(w, kept);
+  assert.deepEqual(await journal.reconcilePaymentEvidence(input), { status: 'applied', txHash: kept.hash });
+  assert.deepEqual(await journal.anchorEvidence(input), { status: 'applied', txHash: kept.hash });
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
 for (const [label, prepare, readers] of [
   ['it is pending', (w, kept) => { w.chain.pending.push(kept.hash); w.other(); }, {}],
   ['its nonce is not overtaken', () => {}, {}],
