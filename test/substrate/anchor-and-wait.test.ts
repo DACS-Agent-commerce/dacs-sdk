@@ -2440,7 +2440,7 @@ for (const jump of [-60_000, 60_000]) {
       vi.setSystemTime(1_000_000);
       const { adapter, raw } = await makeAdapter();
       if (stage !== "visibility") {
-        raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
+        raw.getTxByHash.mockResolvedValue(NO_ROW_YET);
         raw.nodeCall.mockResolvedValue({ state: "pending" });
       } else raw.storagePrograms.read.mockRejectedValue(notFound());
       let outcome: unknown;
@@ -2476,7 +2476,7 @@ for (const jump of [-60_000, 60_000]) {
         : pendingAnchorWrite(lease.generation, wallet, "tx-clock", 9, "clock-prior", "stor-clock", { value: 1 }).record;
       await lease.put({ ...retained, stage: kind === "nonce-visibility" ? "canonical-confirmed" : retained.stage });
       if (kind === "nonce-visibility") raw.getAddressNonce.mockResolvedValue(0);
-      raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
+      raw.getTxByHash.mockResolvedValue(NO_ROW_YET);
       raw.nodeCall.mockResolvedValue({ state: "pending" });
       let outcome: unknown;
       const pending = adapter.reconcileWalletJournal(lease, 20, { pollMs: 2 })
