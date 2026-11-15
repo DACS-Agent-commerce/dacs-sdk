@@ -169,7 +169,9 @@ function sourceBlockReader({ chainIdentity, reviewedReads, fallback, blockZeroEr
       if (height === 0 && blockZeroErrorEnvelope !== null && (answer === 'error' || answer?.response === 'error') && !reviewedShape) fail('malformed_observation','the reviewed Node2 block-zero error envelope differs');
       const node2LiteralBlockZeroError = height === 0 && fallback !== null && reviewedShape;
       if(strictEnvelope && !rpcEnvelope(answer,200,'') && !(node2LiteralBlockZeroError && observedFourField)) fail('malformed_observation','storage recovery requires an exact identity RPC envelope');
-      if(strictEnvelope && !node2LiteralBlockZeroError && !storageWriteIdentityMatches(answer.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
+      // String zero is the two-field genesis projection, which the binder validates field by field;
+      // every numeric height keeps the full block schema.
+      if(strictEnvelope && height !== '0' && !node2LiteralBlockZeroError && !storageWriteIdentityMatches(answer.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
       let value = node2LiteralBlockZeroError ? 'error' : answer;
       if (height === 1 && blockOneLayout === DEVNET_NODE2_BLOCK_LAYOUT) {
         const first = reviewedNode2Block(answer);
