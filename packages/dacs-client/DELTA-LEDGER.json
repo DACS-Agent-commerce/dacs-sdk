@@ -10033,6 +10033,47 @@
           "after": "4562053621a6e0820910e21178456be9811e2cd1"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read the recorded Node2 answers in the source observer and bring the identity fixtures to the reviewed block shape",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "f954dada99f699178563fbfed69cea975993cff2",
+          "after": "974581bbe731439d9cfed3fb255645ce445bdf8a"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c",
+          "after": "54581e517c5cb670321d09d0d401c703f576809b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+          "before": "b57a7c47e008a17332332980b98b8f730f8b6366",
+          "after": "3ceed283a2e1e1a7d2f9c7daafccf6d368066be0"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": "e4bfba810710cd180fe8eea370f79f8ed48432d2",
+          "after": "9c1f4f080ef6f461cf6878940485b075b17a11be"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d",
+          "after": "6b0e4a1deec87b0aec54e0747da4716db26c4c84"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "d2f826dc1bc3db1138b3d4df9ac61b33ffeed121",
+          "after": "bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "4562053621a6e0820910e21178456be9811e2cd1",
+          "after": "704c356cf6fde7f017f441a65604a598e56a578b"
+        }
+      ]
     }
   ]
 }

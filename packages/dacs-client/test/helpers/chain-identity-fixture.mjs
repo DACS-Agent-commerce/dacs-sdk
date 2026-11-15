@@ -33,9 +33,11 @@ export function shared({ answers, getContext = () => ({ ...local }), getBlock, t
   return { binder, heights };
 }
 
-// Synthetic nine-field block two, chained to the unchanged dated block one.
+// Synthetic nine-field block two with the ten reviewed content fields, chained to the unchanged dated block one.
 // Its hash is a test pin, not captured evidence from a node.
-export const syntheticTwo = envelope({ id: 3, number: 2, hash: hash('TEST-synthetic-reviewed-block-two'), content: { previousHash: captured.one.response.hash }, status: 'confirmed', proposer: 'TEST-proposer', next_proposer: 'TEST-next', validation_data: {}, attrs: {} });
+const syntheticTwoContent = { ordered_transactions: [], encrypted_transactions_hashes: {}, per_address_transactions: {}, web2data: {}, previousHash: captured.one.response.hash,
+  timestamp: 1_792_496_207, peerlist: [], l2ps_partecipating_nodes: {}, l2ps_banned_nodes: {}, native_tables_hashes: {} };
+export const syntheticTwo = envelope({ id: 3, number: 2, hash: hash('TEST-synthetic-reviewed-block-two'), content: syntheticTwoContent, status: 'confirmed', proposer: 'TEST-proposer', next_proposer: 'TEST-next', validation_data: {}, attrs: {} });
 export function native(t) {
   const replies = new Map([[0, structuredClone(captured.zero)], ['0', structuredClone(captured.genesis)], [1, structuredClone(captured.one)], [2, structuredClone(syntheticTwo)]]);
   const heights = [], messages = [], rows = new Map();
