@@ -23,7 +23,7 @@ test('persistent context cleanup failure still ends a bounded uncertain HTTP res
  const res=await exchange(f.handler());assert.equal(res.status,503);assert.equal(res.writableEnded,true);assert.equal(JSON.parse(res.text).error,'operation_uncertain');
 });
 for(const retained of [undefined,true,false])test(`rejected payment releases its effect only with explicit unretained proof: ${retained}`,async()=>{
- const f=fixture();if(retained!==undefined)f.agent.retainsPaymentClaim=()=>retained;
+ const f=fixture();if(retained!==undefined)f.agent.retainsPaymentClaim=()=>retained;f.agent.retainsPaymentWork=()=>retained;
  const res=await exchange(f.handler(),{url:'/dacs/v1/payments'});assert.equal(res.status,200);assert.equal(f.finishes[0].noEffect,retained===false);assert.equal(f.finishes[0].retry,retained!==false);
 });
 for(const method of ['propose','submitPayment','agreementContext'])test(`${method} rejects oversized nested decoded collections`,async()=>{

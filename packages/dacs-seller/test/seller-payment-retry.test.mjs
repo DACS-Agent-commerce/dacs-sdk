@@ -44,7 +44,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   // The durable agent already committed this job; the host holds it from the proposal its wire route admitted, which is when the store keeps the tuple.
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => proposalCalls === 0 ? null : retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
-    retainsPaymentClaim:()=>false, retainsProposalWork: () => false, revalidateCompletedAnswer: async () => {}, assertSettlementCredit: () => {},
+    retainsPaymentClaim:()=>false, retainsPaymentWork: () => false, retainsUnfinishedWork: () => false, retainsProposalWork: () => false, revalidateCompletedAnswer: async () => {}, assertSettlementCredit: () => {},
     submitPayment: async (body) => {
       calls.push(body.txHash);
       const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
@@ -84,8 +84,8 @@ test('a payment answered indeterminate before the evidence checkpoint ends null,
   const w = await world(t, [{ status: 'indeterminate', reason: 'demos-pending' }, DELIVERED]);
   assert.deepEqual(await w.pay(), { status: 'indeterminate', reason: 'demos-pending' });
   assert.deepEqual(await w.pay(), DELIVERED, 'the null end let the next request recover at once: the transfer, now included, reaches payment intake');
-  assert.deepEqual(await w.pay(), DELIVERED, 'the completed delivery is authenticated again by the agent');
-  assert.equal(w.calls.length, 3);
+  assert.deepEqual(await w.pay(), DELIVERED, 'the completed delivery replays from its stored answer after its sources are read again');
+  assert.equal(w.calls.length, 2, 'the replay does not run the claim again');
   const corrected = await world(t, [{ status: 'indeterminate', reason: 'demos-not-found' }, DELIVERED]);
   await corrected.pay({ ...corrected.claim, txHash: 'b2'.repeat(32) });
   assert.deepEqual(await corrected.pay(), DELIVERED, 'nothing was bound to the first body');
@@ -100,7 +100,7 @@ test('a held answer is recovered by the next request on a fresh nonce, without w
   assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), HELD, 'the same transaction in its other form reads back again');
   assert.deepEqual(await w.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
   assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 4, 'every request reached the agent, and the delivered claim is put to the agent again');
+  assert.equal(w.calls.length, 3, 'every request until the delivery reached the agent, and the delivered claim replays from its stored answer');
 });
 
 // The journal allows 16 superseded attempts, meant for crashes; a normal "not final yet" answer must never spend one.
@@ -136,7 +136,7 @@ test('evidenced payment with a delivery not done yet is retried until the delive
   for (const answer of pending) assert.deepEqual(await w.pay(), answer, 'each poll recovers at once');
   assert.deepEqual(await w.pay(), DELIVERED);
   assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 5);
+  assert.equal(w.calls.length, 4, 'the delivered claim replays from its stored answer');
 });
 
 test('a waiting proposal keeps its HTTP retry slot until the durable responder completes', async (t) => {
@@ -198,7 +198,7 @@ async function delegatedWorld(t, answers, publication = null) {
   // The durable agent already committed this job; the host holds it from the proposal its wire route admitted, which is when the store keeps the tuple.
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => proposed ? retained.agent().transportAgreementOf(id) : null, continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => { proposed = true; return { disposition: 'complete', contribution: null }; },
-    retainsPaymentClaim: () => false, assertSettlementCredit: () => {},
+    retainsPaymentClaim: () => false, retainsPaymentWork: () => false, retainsUnfinishedWork: () => false, revalidateCompletedAnswer: async () => {}, assertSettlementCredit: () => {},
     submitPayment: async (body) => {
       calls.push(body.txHash);
       const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
@@ -261,14 +261,13 @@ test('an uncertain payment claim is refused before reconciliation once its sessi
   assert.equal(w.calls.length, 1, 'and the claim never runs again');
 });
 
-// The saved answer alone does not authenticate current payment, Deliverable or
-// delivery evidence, and re-running the claim under an expired delegation could
-// publish a new evidence CREATE. Neither is allowed: the transport holds.
+// Once the session delegation has expired the wire refuses the request (408 peer_delegation_expired) before any route runs, so a completed
+// answer is not replayed and the claim is never run again, which could publish a new evidence CREATE.
 const DEFERRED = { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'deferred-to-explicit-sdk-finaliser' } };
 for (const [label, answers, enabled] of [
   ['delivery-ready', [DEFERRED, DELIVERED], false],
   ['delivered', [DELIVERED], true],
-]) test(`a completed ${label} answer is held, never replayed unauthenticated, once its session delegation expired`, async (t) => {
+]) test(`a completed ${label} answer is refused, never replayed, once its session delegation expired`, async (t) => {
   const publication = { enabled, calls: [] };
   const w = await delegatedWorld(t, answers, publication);
   const first = await w.pay();
@@ -276,10 +275,7 @@ for (const [label, answers, enabled] of [
   const agentCalls = w.calls.length, publications = publication.calls.length;
   w.expire();
   publication.enabled = true; // the operator switches publication on for the restarted seller
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const held = await w.pay();
-    assert.deepEqual(held, { error: 'seller_unavailable', status: undefined });
-  }
+  for (let attempt = 0; attempt < 2; attempt++) assert.deepEqual(await w.pay(), { error: 'seller_unavailable', status: undefined });
   assert.equal(w.calls.length, agentCalls, 'the claim never runs again under the expired delegation');
   assert.equal(publication.calls.length, publications, 'no delivery evidence CREATE is asked for after expiry');
 });
