@@ -10197,6 +10197,18 @@
           "after": "ff3a9f0c8230954e2a0425e7195f4c38503fd514"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs blob after carrying the client payment and late fix parts up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0969d1afb9f2c2b26cd8b5f57344486ae587ef4b",
+          "after": "0969d1afb9f2c2b26cd8b5f57344486ae587ef4b"
+        }
+      ]
     }
   ]
 }
