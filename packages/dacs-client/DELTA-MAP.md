@@ -1632,7 +1632,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | fa00650470049af3a851da08362bb082f90e86db |
 | D11 | fix(client): preserve combined storage readback checks | Git commit selector c429d24f62c4426449bd44dbf873e2bbe7f62b05 |
 | | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1`: abe5cea422327278732c707b1e8957274677ea44<br>`packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1`: 7797647b3bda845b75faa490eef6592949d87847<br>`packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1`: 4876283f701e7150328967f1f0147d2070f88674 | |
-| D11 | fix(client): say an applied read leaves a released authorization released | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): say an applied read leaves a released authorization released | Git commit selector 24526dcadd60928f067366ce35bfec4c3b64e1d3 |
 | | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1`: 9b84ef696305b217d1a9e3f4fdbd16350f0b910a | |
 
 ## Complete commit and file inventory
@@ -4925,6 +4925,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): preserve combined storage readback checks | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
 | fix(client): record combined storage readback checks | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): say an applied read leaves a released authorization released | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/README.md:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
+| fix(client): record the released authorization wording change | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

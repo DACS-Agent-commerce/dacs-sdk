@@ -9937,6 +9937,7 @@
     },
     {
       "delta": "D11",
+      "sha": "24526dcadd60928f067366ce35bfec4c3b64e1d3",
       "subject": "fix(client): say an applied read leaves a released authorization released",
       "compact": true,
       "files": [
