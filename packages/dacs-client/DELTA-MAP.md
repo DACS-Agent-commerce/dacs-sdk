@@ -4930,6 +4930,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | Use the recorded README copy in the freeze fixture | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-freeze.test.mjs:1` |
 | Move the record anchor to the current base | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/records/ANCHOR.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | Run the freeze tests in scratch clones that start on a named branch | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-freeze.test.mjs:1` |
+| Start the hold test scratch clone on a named branch | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/check-hold.test.mjs:1` |
 
 ## Original moved files
 
