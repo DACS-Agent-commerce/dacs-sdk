@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { api, agreementRequest, mnemonicBytes, setPurchaseAdmission, world } from './helpers/tp1-node-fixture.mjs';
 import { inPass, sellerPublications as publications } from './helpers/effect-gate-world.mjs';
 import { confirmThroughFacade, listingCreate, retainAcceptedCreate, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
@@ -250,9 +251,11 @@ test('seller construction validates admission, runtime, publications and confirm
     await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), key, publications: publications(), approveConfirmedWrite: value }), /approveConfirmedWrite/);
     assert.ok(key.every(byte => byte === 0));
   }
+  const stateOwnership = { directory: dirname(w.path), held: () => true };
   for (const extra of [{ admission: undefined }, { publications: {} }, { key: new Uint8Array([255]) }]) {
     const key = extra.key ?? mnemonicBytes();
-    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), publications: publications(), approveConfirmedWrite: null, ...extra, key }));
+    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), publications: publications(), approveConfirmedWrite: null, stateOwnership, ...extra, key }),
+      error => error.code !== 'state_ownership_required');
     assert.ok(key.every(byte => byte === 0));
   }
   const original = Object.getOwnPropertyDescriptor(process, 'version');
