@@ -151,6 +151,17 @@ test('a README record must select a commit after the anchor; a branch cut where 
   assert.deepEqual(derived(early), []);
 });
 
+test('a README record from a branch cut before the anchor\'s last README change is refused until the branch is rebased', t => {
+  const s = scratch(t), { commit: anchor } = readAnchor(s.dir), main = s.git('branch', '--show-current');
+  const last = s.git('log', '--no-merges', '--format=%H', '-n', '1', anchor, '--', `${P}README.md`);
+  assert.notEqual(s.git('rev-parse', `${last}^:${P}README.md`), readAnchor(s.dir).files[`${P}README.md`]);
+  s.git('switch', '-qc', 'TEST-early', `${last}^`);
+  const early = recordedCommit(s, 'delta(client): WF TEST README change from an old copy', { 'README.md': `${readme(s)}\nTEST early line\n` });
+  s.git('switch', '-q', main); s.git('merge', '-q', '--no-ff', '--no-commit', '-s', 'ours', 'TEST-early');
+  s.git('checkout', 'TEST-early', '--', `${P}README.md`, P + early.record); s.git('commit', '-qm', 'TEST merge an old branch');
+  assert.deepEqual(derived(s), [`${P}README.md: delta parent is discontinuous at ${early.sha}`]);
+});
+
 test('a record whose selector resolves to no commit is refused', t => {
   const s = scratch(t), subject = 'delta(client): WF TEST record without its commit';
   recordedCommit(s, subject, { 'README.md': `${readme(s)}\nTEST line\n` });
