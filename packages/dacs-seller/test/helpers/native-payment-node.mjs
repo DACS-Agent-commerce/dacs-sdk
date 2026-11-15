@@ -31,21 +31,22 @@ export function scriptedDemosNode(now) {
     transactions.set(transaction.hash, executed);
     return number;
   };
-  // `script.transferRead(hash, record)` answers a read of a transaction in place of the node's record (null reads as not found; a throw as an
-  // unreachable node); `script.programRead(record)` does the same for a storage program; `script.onRead({ message, hash })` is told of each
-  // transaction read before it is answered; `counts.transactionReads` counts transaction reads.
+  // `script.transferRead(hash, record, message)` answers a read of a transaction in place of the node's record (null reads as not found; a throw
+  // as an unreachable node), and is told which read it answers (`getTransactionStatus` or `getTxByHash`); `script.programRead(record)` does the
+  // same for a storage program; `script.onRead({ message, hash })` is told of each transaction read before it is answered;
+  // `counts.transactionReads` counts transaction reads. A record whose status is `failed` reads as a failed transaction.
   const script = { transferRead: null, programRead: null, onRead: null }, counts = { transactionReads: 0 };
   const transactionRecord = (message, hash) => {
     counts.transactionReads++;
     script.onRead?.({ message, hash });
     const record = transactions.get(hash) ?? null;
-    return script.transferRead ? script.transferRead(hash, record && clone(record)) : clone(record);
+    return script.transferRead ? script.transferRead(hash, record && clone(record), message) : clone(record);
   };
   const nodeCall = (message, data) => {
     switch (message) {
       case 'getBlockByNumber': return clone(blocks[data.blockNumber] ?? null);
       case 'getAddressNonce': return accountNonces.get(data.address) ?? 0;
-      case 'getTransactionStatus': { const found = transactionRecord(message, String(data.hash).toLowerCase()); return found ? { state: 'included', blockNumber: found.blockNumber } : { state: 'not-found' }; }
+      case 'getTransactionStatus': { const found = transactionRecord(message, String(data.hash).toLowerCase()); return found ? { state: found.status === 'failed' ? 'failed' : 'included', blockNumber: found.blockNumber } : { state: 'not-found' }; }
       case 'getTxByHash': return transactionRecord(message, String(data.hash).toLowerCase());
       case 'searchStoragePrograms': return [...programs.values()].filter((program) => program.programName === data.query).map(({ storageAddress, programName }) => ({ storageAddress, programName }));
       default: return undefined;
