@@ -122,14 +122,18 @@ describe("packed archive files", () => {
     const archive = gzipSync(tarArchive([{ ...valid, pax: { size: String(Buffer.byteLength(valid.body ?? "")) } }]));
     expect(text(packedFiles(archive))).toEqual({ "package.json": valid.body });
   });
+  // Rewrites the size field of the header at `offset` as `marker`, then the size big-endian, and fixes the checksum.
+  const binarySize = (source: Buffer, offset: number, size: number, marker = 0x80) => {
+    const tar = Buffer.from(source);
+    tar.fill(0, offset + 124, offset + 136);
+    tar[offset + 124] = marker;
+    tar.writeUInt32BE(size, offset + 132);
+    tar.write("        ", offset + 148);
+    tar.write(tar.subarray(offset, offset + 512).reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, "0") + "\0 ", offset + 148);
+    return tar;
+  };
   it("accepts a file size written in base-256, as npm does", async () => {
-    const tar = Buffer.from(complete);
-    tar.fill(0, 124, 136);
-    tar[124] = 0x80;
-    tar.writeUInt32BE(Buffer.byteLength(valid.body ?? ""), 132);
-    tar.write("        ", 148);
-    tar.write(tar.subarray(0, 512).reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, "0") + "\0 ", 148);
-    const archive = gzipSync(tar);
+    const archive = gzipSync(binarySize(complete, 0, Buffer.byteLength(valid.body ?? "")));
     const directory = temporaryDirectory();
     const path = join(directory, "archive.tgz");
     writeFileSync(path, archive);
@@ -141,6 +145,18 @@ describe("packed archive files", () => {
   it.each(["00000000001", "00000002000"])("refuses a directory header with nonzero size %s", size => {
     const archive = gzipSync(tarArchive([valid, { name: "package/lib/", type: "5", size }]));
     expect(() => packedFiles(archive)).toThrow("packed tarball directory has a nonzero size");
+  });
+  it("refuses a base-256 directory header with nonzero size", () => {
+    const tar = binarySize(tarArchive([valid, { name: "package/lib/", type: "5" }]), 1024, 1024);
+    expect(() => packedFiles(gzipSync(tar))).toThrow("packed tarball directory has a nonzero size");
+  });
+  it("refuses a base-256 header size that differs from the pax size", () => {
+    const tar = binarySize(tarArchive([valid, { name: "package/sized.js", pax: { size: "1" } }]), 2048, 2);
+    expect(() => packedFiles(gzipSync(tar))).toThrow("pax size differs from the entry header");
+  });
+  it("refuses a high-bit size marker other than base-256, even with a pax size override", () => {
+    const tar = binarySize(tarArchive([valid, { name: "package/empty.js", pax: { size: "0" } }]), 2048, 0, 0xb0);
+    expect(() => packedFiles(gzipSync(tar))).toThrow("malformed size");
   });
   it.each(["1", "2"])("matches npm for link type %s with a body covering the next file header", async type => {
     const tar = Buffer.concat([tarArchive([valid, { name: "package/link", type, size: "00000002000" }]).subarray(0, -1024),
