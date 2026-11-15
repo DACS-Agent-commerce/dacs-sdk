@@ -9878,6 +9878,52 @@
           "after": "ff3a9f0c8230954e2a0425e7195f4c38503fd514"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF cross-check the string-zero genesis in the shared identity reader and compare counterparty CREATEs on the shared chain tuple",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "da760633c415a79c635121fe311b4ef47df6496d",
+          "after": "5379e0581620530a3c9aa45d89d11ce56c6515a3"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "c2420945f3a5c5dbb1c3101923fd27af3e27398f",
+          "after": "f954dada99f699178563fbfed69cea975993cff2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "fa13b14b9c7b97996f756a48b650e483b6be7824",
+          "after": "4a4f0821176484fe8fc9336a1d1d950e052646d6"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": null,
+          "after": "7b891fd0e31379edd00ee55c86fd12e916cf4236"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+          "before": null,
+          "after": "b57a7c47e008a17332332980b98b8f730f8b6366"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": null,
+          "after": "e4bfba810710cd180fe8eea370f79f8ed48432d2"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "da2946d04f52ac899dfd805ec55b02ddcb3213da",
+          "after": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9",
+          "after": "17068c95d837ebd0b8a66c7067db360ad12bc46e"
+        }
+      ]
     }
   ]
 }

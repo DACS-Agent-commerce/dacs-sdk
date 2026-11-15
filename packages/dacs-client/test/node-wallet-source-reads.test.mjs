@@ -30,6 +30,7 @@ const envelope = (result, response, extra) => jsonResponse(JSON.stringify({ resu
 function answerReviewedLayout(row) {
   const height = heightOf(row);
   if (height === 0) return envelope(400, 'error', 'Block number not provided');
+  if (height === '0') return envelope(200, { number: 0, hash: CHAIN }, '');
   if (height === 1) return envelope(200, { number: 1, id: 2, status: 'confirmed', hash: BLOCK_ONE_HASH, content: { previousHash: CHAIN } }, '');
   return envelope(200, { number: 2, id: 3, status: 'confirmed', hash: BLOCK_TWO_HASH, content: { previousHash: BLOCK_ONE_HASH } }, '');
 }
@@ -130,7 +131,7 @@ test('cancellation between the block-one and block-two reads of the reviewed lay
   const control = sourceReadWorld(t, reviewedLayoutOptions);
   control.node.intercept = answerReviewedLayout;
   await control.transport.observeBinding();
-  assert.deepEqual(control.node.calls.map(heightOf), [0, 1, 2], 'the reviewed layout reads three blocks');
+  assert.deepEqual(control.node.calls.map(heightOf), [0, '0', 1, 2], 'the reviewed layout cross-checks string-zero genesis');
 
   const w = sourceReadWorld(t, reviewedLayoutOptions), stop = cancellation(reason), getContext = w.owner.getContext;
   let blockOneAnswered = false;
@@ -138,7 +139,7 @@ test('cancellation between the block-one and block-two reads of the reviewed lay
   w.owner.getContext = () => { if (blockOneAnswered) { blockOneAnswered = false; stop.abort(); } return getContext(); };
   w.node.intercept = row => { if (heightOf(row) === 1) blockOneAnswered = true; return answerReviewedLayout(row); };
   await assert.rejects(w.transport.observeBinding({ signal: stop.signal }), error => error === reason);
-  assert.deepEqual(w.node.calls.map(heightOf), [0, 1], 'block two was never requested');
+  assert.deepEqual(w.node.calls.map(heightOf), [0, '0', 1], 'block two was never requested');
 });
 
 test('with a fetch that ignores abort, readRpc and observeBinding aborted mid-flight reject the caller, then release the journal lock and the fence (close() settles, held() is false) and discard the late reply', { timeout: TEST_TIMEOUT_MS }, async t => {

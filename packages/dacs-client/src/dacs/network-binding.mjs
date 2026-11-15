@@ -126,6 +126,21 @@ function exactHeight(block, height) {
   if (block.status !== 'confirmed') fail('wrong_block', 'The identity block is not confirmed');
 }
 
+// The recorded answer to a string `"0"` block request: an exact successful RPC
+// envelope whose response is only the genesis number and hash. It has no
+// `status`, so `exactHeight` does not apply to it.
+function genesisProjection(value) {
+  const envelope = record(value);
+  exactKeys(envelope, ['result', 'response', 'require_reply', 'extra'], 'malformed_observation');
+  if (envelope.result !== 200) fail('unavailable', 'The genesis read did not return result 200');
+  if (envelope.require_reply !== false || envelope.extra !== '') fail('malformed_observation', 'The genesis RPC envelope differs from the recorded projection');
+  const genesis = record(envelope.response);
+  exactKeys(genesis, ['number', 'hash'], 'malformed_observation');
+  if (genesis.number !== 0) fail('wrong_block', 'The genesis projection must name numeric block zero');
+  if (identity(genesis.hash) !== genesis.hash) fail('malformed_observation', 'The genesis hash must be canonical');
+  return genesis;
+}
+
 function exactAliases(block, expectedIdentity) {
   for (const key of ['chainIdentity', 'genesisHash']) {
     if (Object.hasOwn(block, key) && identity(block[key]) !== expectedIdentity) {
@@ -139,6 +154,13 @@ function exactAliases(block, expectedIdentity) {
  * { blockZeroUnavailable: 'literal-error', documentation: '<reviewed reference>' }.
  * SDK source documents this specific first-queryable-block-one convention.
  * A timeout, null, malformed block or non-200 result never enables fallback.
+ * The fallback reads numeric 0, string "0" and numeric 1, and requires the
+ * string-zero genesis hash, confirmed block one's `previousHash` and the pin to
+ * agree. A refused, malformed or unavailable string-zero answer refuses the
+ * observation; it is never read as the literal-error marker.
+ * Returns a read-only binder whose observations grant no signing authority.
+ * Throws NetworkBindingError for an invalid policy; the binder's methods reject
+ * with NetworkBindingError and keep a failed reader's error as `cause`.
  */
 export function createDemosNetworkBinder({ expected: input, reader, fallback = null, now = () => Date.now(), maxAgeMs = 10_000, timeoutMs = 10_000 } = {}) {
   const expected = record(input, 'unpinned_network');
@@ -171,7 +193,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
     if (observedAt > at || at - observedAt > maxAgeMs) fail('stale_observation', 'The read is stale or from the future');
   };
 
-  // One wall-clock deadline covers context reads and both possible block reads.
+  // One wall-clock deadline covers the context reads and every block read.
   // A timed-out injected operation is read-only and cannot yield a later fence.
   async function bounded(callback, deadline) {
     const remaining = Math.ceil(deadline - performance.now());
@@ -216,7 +238,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
     if (read.observedAt < requestedAt) fail('stale_observation', 'The identity read predates this request');
     const after = await context(deadline);
     if (!sameContext(after, connection)) fail('connection_changed', 'The transport changed during identity observation');
-    return { value: sdkValue(read.value), observedAt: read.observedAt };
+    return { value: height === '0' ? genesisProjection(read.value) : sdkValue(read.value), observedAt: read.observedAt };
   }
 
   function persisted(value, { allowExpired = false } = {}) {
@@ -254,11 +276,13 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
       let source;
       if (zero.value === 'error') {
         if (!fallbackPolicy) fail('unavailable', 'Block zero is unavailable and no reviewed block-one fallback is configured');
+        const genesis = await read('0', connection, deadline);
         const first = await read(1, connection, deadline);
         if (first.value === 'error') fail('unavailable', 'Block one is unavailable');
         exactHeight(first.value, 1);
         const content = record(first.value.content);
         observedIdentity = identity(content.previousHash);
+        if (genesis.value.hash !== observedIdentity) fail('conflicting_identity', 'The genesis hash differs from block one\'s predecessor');
         exactAliases(first.value, observedIdentity);
         if (Object.hasOwn(first.value, 'previousHash') && identity(first.value.previousHash) !== observedIdentity) {
           fail('conflicting_identity', 'Block predecessor aliases conflict');
@@ -266,6 +290,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
         observedAt = first.observedAt;
         source = { kind: 'confirmed-block-one-predecessor', blockNumber: 1, blockHash: identity(first.value.hash), fallbackDocumentation: fallbackPolicy.documentation };
         fresh(zero.observedAt, clock());
+        fresh(genesis.observedAt, clock());
       } else {
         exactHeight(zero.value, 0);
         observedIdentity = identity(zero.value.hash);
