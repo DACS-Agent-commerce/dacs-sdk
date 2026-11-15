@@ -13,7 +13,7 @@ import { OperationError } from '../client-errors.mjs';
 import { isTp1AuthorityLabel } from '../dacs/tp1-authority-label.mjs';
 import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
-import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
+import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from './devnet-native-transport.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createPaymentEvidenceCreateAdapter } from './node-payment-evidence-adapter.mjs';
 import { createSignerReservations } from './signer-reservation.mjs';
@@ -551,7 +551,9 @@ async function buildNodeComposition(options, seller) {
     };
     const stamps = createRpcStampSource(clock);
     const transportOptions = { expected, transportOwner: owner, journal, fetchImpl, now: () => clock.now(), stamps,
-      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation } };
+      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation },
+      blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
+      blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH };
     transport = seller
       ? createDevnetDemoTransport({ ...transportOptions, settlementPublication: publications?.settlementPublication, deliveryPublication: publications?.deliveryPublication,
         demoArtifactPublication: publications?.demoArtifactPublication,
