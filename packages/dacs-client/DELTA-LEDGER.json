@@ -9975,6 +9975,22 @@
           "after": "ae9ce572e9076dc07dee3e35b4f307f79c37dcee"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF canonicalise the native transport's chain identity and refuse writes on a lane stamped by another pin version",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "8747911df44b4d52981ecd0a9d8596127b33c8e5",
+          "after": "bdf6af6c1f45d926416112ce65e7a9062a196282"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": null,
+          "after": "33e6f68f1b10e68f6fccca7c6918e3cd291ac4d4"
+        }
+      ]
     }
   ]
 }
