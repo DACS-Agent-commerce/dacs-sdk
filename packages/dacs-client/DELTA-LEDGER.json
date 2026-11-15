@@ -9927,6 +9927,28 @@
           "after": "f2337a42eebc81e26737556a54eccee74dc3cb3b"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read client delta records through one assembler",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "d268285a6a256119ca07a0d87557610764f5afa8",
+          "after": "29ba56b6264d27cebb8cad969408ceb4bc6774af"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF order delta records by file name and check every recorded path",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "29ba56b6264d27cebb8cad969408ceb4bc6774af",
+          "after": "0db3b89514f68fbba88d99345a0ea7089911e3d7"
+        }
+      ]
     }
   ]
 }
