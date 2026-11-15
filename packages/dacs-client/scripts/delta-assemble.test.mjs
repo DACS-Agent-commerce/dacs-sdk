@@ -181,6 +181,21 @@ test('the delta checker accepts a record that changes only README.md, and refuse
   assert.ok(h.check().includes(`${prefix}README.md: current blob differs from enumerated deltas`));
 });
 
+test('the delta checker starts the first README.md record from the anchor, not from its parent, and refuses a stale source parent', async t => {
+  const h = await history(t);
+  writeFileSync(join(h.fixture, 'README.md'), 'changed without a record\n');
+  h.commit({ 'src/example.mjs': 'fixed\n' }, { extra: [prefix + 'README.md'] });
+  h.commit({ 'README.md': 'changed readme\n' });
+  const failures = h.check();
+  assert.ok(failures.some(failure => failure.startsWith(`${prefix}README.md: delta parent is discontinuous at `)), failures.join('\n'));
+  assert.ok(failures.some(failure => failure.startsWith(`${prefix}README.md: unenumerated change in `)), failures.join('\n'));
+  const { name } = h.commit({ 'src/example.mjs': 'fixed again\n' });
+  const file = join(h.fixture, 'records', name), good = readJson(file);
+  json(file, { ...good, files: [{ ...good.files[0], before: blobA }] });
+  h.git('add', '--', prefix + 'records/' + name); h.git('commit', '--quiet', '-m', 'TEST wrong source parent');
+  assert.ok(h.check().some(failure => failure.includes('src/example.mjs: delta parent is discontinuous')));
+});
+
 test('the delta checker refuses a record the schema refuses, a wrong blob and a subject the archive already records', async t => {
   const h = await history(t);
   const { name, sha } = h.commit({ 'src/example.mjs': 'fixed\n' }, { extra: [prefix + 'DELTA-LEDGER.json'] });

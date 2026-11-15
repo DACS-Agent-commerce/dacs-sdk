@@ -364,7 +364,7 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "05b396a9f10a39d333d1e3ace745e3602b4d31b6"
+        "blob": "f7058f9d369c3ef2090dd83f8ecccbf81a25f5e9"
       },
       "DELTA-LEDGER.json": {
         "blob": "b8df97a3b83b22533ab1e1b9a1d0ec43828002f2"
@@ -1025,7 +1025,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "b8fe3a3f16838fb4ecce14d87df0f03ccf827fd5"
+        "blob": "a63e2c99d3fde161e66b28f302dd2405022b6cbd"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "8d78bf497c2965145033dc4d583a83f1f28d022a"
@@ -1052,22 +1052,22 @@
         "blob": "fba2761708deb6871bfa2bbc94f09ee64154ca66"
       },
       "scripts/delta-assemble.test.mjs": {
-        "blob": "9e51bb89e24352e251e59dd73323489fae227081"
+        "blob": "d52e4022b26859e11de957f9cc437d0fa81d3869"
       },
       "scripts/delta-continuity.test.mjs": {
         "blob": "55dc314aa835bcdb0f249ab33b2991fc576b07b4"
       },
       "scripts/delta-freeze.mjs": {
-        "blob": "21ba2958fea98c3683bb3e281054a9b354ffefab"
+        "blob": "a160eec0278b84bd72f796ceaf187aa34e6d740b"
       },
       "scripts/delta-freeze.test.mjs": {
-        "blob": "c6f53f5d31fdf20076a7e50db9ff26cb068ad11b"
+        "blob": "bdf5b9f53877e0ca3b2c93b7c8a52f838a1d6fc1"
       },
       "scripts/delta-frontier.test.mjs": {
         "blob": "5b96a438dd70c3bc963b793b31ecd24f585fe8f1"
       },
       "scripts/delta-map.mjs": {
-        "blob": "7c746b8911c3574e214d50cb3d1e7eefc1c65663"
+        "blob": "94f50c98494e7293a3c20b3457a497bd9eff3c17"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "80d25ff5ecfdb68cc9ad888044918e6dbb7215a5"
