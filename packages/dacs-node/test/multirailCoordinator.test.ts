@@ -147,4 +147,56 @@ describe("live multirail coordinator", () => {
       reasonCode: "multirail-job-identity-conflict",
     });
   });
+
+  it("admits a job to one rail when two starts for it run at the same time over independent stores", async () => {
+    const x402 = fake("x402");
+    const payDem = fake("pay-dem");
+    const coordinator = createDacsLiveMultirailCoordinatorV1({
+      role: "buyer",
+      x402: x402.value as unknown as FixedPriceX402CommerceCoordinator,
+      payDem: payDem.value as unknown as FixedPricePayDemCommerceCoordinator,
+    });
+
+    const results = await Promise.allSettled([
+      coordinator.startOrder(order("pay-x402")),
+      coordinator.startOrder(order("pay-dem")),
+    ]);
+
+    expect(x402.value.startOrder.mock.calls.length + payDem.value.startOrder.mock.calls.length)
+      .toBe(1);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const refused = results.find((result) => result.status === "rejected");
+    expect(refused).toMatchObject({
+      reason: { reasonCode: "multirail-job-profile-conflict" },
+    });
+    await expect(coordinator.getOrderStatus(JOB)).resolves.toMatchObject({ jobId: JOB });
+  });
+
+  it("admits the other rail when the earlier start of the same job failed", async () => {
+    const x402 = fake("x402");
+    const payDem = fake("pay-dem");
+    let failFirstStart: (error: Error) => void = () => undefined;
+    x402.value.startOrder.mockImplementationOnce(() =>
+      new Promise((_resolve, reject) => {
+        failFirstStart = reject;
+      }));
+    const coordinator = createDacsLiveMultirailCoordinatorV1({
+      role: "buyer",
+      x402: x402.value as unknown as FixedPriceX402CommerceCoordinator,
+      payDem: payDem.value as unknown as FixedPricePayDemCommerceCoordinator,
+    });
+
+    const first = coordinator.startOrder(order("pay-x402"));
+    const second = coordinator.startOrder(order("pay-dem"));
+    await vi.waitFor(() => expect(x402.value.startOrder).toHaveBeenCalledOnce());
+    await Promise.resolve();
+    expect(payDem.value.startOrder).not.toHaveBeenCalled();
+
+    failFirstStart(new Error("rail start failed"));
+
+    await expect(first).rejects.toThrow("rail start failed");
+    await expect(second).resolves.toMatchObject({ jobId: JOB, profile: "pay-dem" });
+    expect(payDem.value.startOrder).toHaveBeenCalledOnce();
+  });
+
 });
