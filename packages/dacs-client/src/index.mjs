@@ -20,7 +20,7 @@ export { createListingVerifier, NotConfiguredError } from './public-verification
 export { DEM_DECIMAL, OS_INTEGER } from './dacs/chain.mjs';
 /** deliveryEvidenceAddress(jobId) returns the canonical evidence address and may reject invalid identifiers. vetNotPerformedRef(jobId,party) returns the explicit unperformed-Vet reference; neither reads, writes or authorizes Vet. */
 export { deliveryEvidenceAddress, vetNotPerformedRef } from './dacs/purchase-protocol.mjs';
-/** sellerFailureCause(value) returns a recognized seller failure label or undefined; it has no side effects and does not throw for unknown labels. */
+/** sellerFailureCause(value) returns a recognized seller failure label (tls, network, response-auth, status-4xx, status-5xx, client-sign, timeout, address, redirect, oversized, other) or undefined; it has no side effects and does not throw for unknown labels. */
 export { sellerFailureCause } from './dacs/seller-http.mjs';
 /** usesNativePaymentEvidence(operation) returns whether its retained protocol selects native evidence; it performs no network or storage work. */
 export { usesNativePaymentEvidence } from './dacs/native-payment-evidence-consumer.mjs';

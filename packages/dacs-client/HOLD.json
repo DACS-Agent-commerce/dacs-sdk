@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "eacefad3063441dcf8e4b09c9f6dad70f980b119"
+        "blob": "d93b3e540f1671daf166bfdb2368a44c1febdf55"
       },
       "DELTA-LEDGER.json": {
-        "blob": "67e8523d22d90783369a1df8c24beef589ddacb5"
+        "blob": "5451a56f66a0a6dd335468f4583de95999d696ee"
       },
       "DELTA-MAP.md": {
-        "blob": "e8a85ba4af19124be48363b4ae50a2dfe67dafa7"
+        "blob": "e4c2fc9a36684fc211b9123bfa2e743572a075e5"
       },
       "DELTA-NOTES.md": {
         "blob": "2fd14b834ffa4e44e77d8af6b38f096f32d49d8b"
@@ -1030,14 +1030,14 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "f3b9d30fd5df076edc01f796b7356ec3d04a2504"
+        "blob": "8fbb1bf0e11bf1ceff38c4baba22d75f476d03f8"
       },
       "records/.gitkeep": {
         "blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "6525334b429962711d6808ecdddeb416e31b2a46"
+        "blob": "c52ab9779eae8f24fd616e908719608f25ddcad7"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1193,7 +1193,10 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "c2a23d02278639657358480a74e9e933492b0832"
+        "blob": "7a75e86fe07501b58946cef29b61d2af5f619a16"
+      },
+      "src/dacs/seller-https-connector.mjs": {
+        "blob": "ad2926ab214f03546facc9f089bbe151079b1a46"
       },
       "src/dacs/seller-response-class.mjs": {
         "blob": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2"
@@ -1247,7 +1250,7 @@
         "blob": "0dcfab473d1256f9de295bc65c0f04926e1ceb62"
       },
       "src/index.mjs": {
-        "blob": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        "blob": "8f2d395270b07f99c1884c9dfae0d1032bc17c18"
       },
       "src/portal-capability.mjs": {
         "blob": "fb1f631894e79e1139d7d66c8ce2e56d97a40ae5"
@@ -1601,7 +1604,7 @@
         "blob": "ca236433328acbe239d3662741ce36829723572e"
       },
       "test/helpers/entry-point-closure.mjs": {
-        "blob": "48056110819fef0a22ae0e8bff28e5781ed1bcb6"
+        "blob": "cb45766caa937eac592966d1719e218c394eeaef"
       },
       "test/helpers/env-contract-view.mjs": {
         "blob": "c275aeb31278349c33e9aa4bd8c562644351dca7"
@@ -1628,7 +1631,7 @@
         "blob": "7915bac5268baf9bfafa259cbe710f1731caf917"
       },
       "test/helpers/loopback-test-ca.mjs": {
-        "blob": "bfe8faf4eea14100728ce274f186af84be20450d"
+        "blob": "8f77bf0f70a5e6cb4252e91865eb07e36d9cfcc6"
       },
       "test/helpers/loopback-test-tls.mjs": {
         "blob": "669b8675efb0be64181ba3fa8137d3e9f0983ea9"
@@ -2037,6 +2040,9 @@
       },
       "test/runtime-floor.test.mjs": {
         "blob": "c8133057b9b84685e1227cbb72fd1e1e8467f6ef"
+      },
+      "test/seller-https-connector.test.mjs": {
+        "blob": "f23d2e87435ff65e1de401dae91f14760099f6d8"
       },
       "test/seller-public-endpoint.test.mjs": {
         "blob": "97f99b5f286658c793fe6cb44de12ff39951dab7"
