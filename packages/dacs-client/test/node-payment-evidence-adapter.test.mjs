@@ -826,6 +826,7 @@ test("a confirmed transaction whose storage program is absent or differs from th
 test("storage readback requires the CREATE address and every metadata field before spending approval", async t => {
   const changes = {
     'another address': program => ({ ...program, storageAddress: `stor-${'9'.repeat(40)}` }),
+    'another address with matching creation provenance': (program, hash) => ({ ...program, storageAddress: `stor-${'9'.repeat(40)}`, createdByTx: hash, interactionTxs: [hash] }),
     'missing address': ({ storageAddress, ...program }) => program,
     'another logical address': program => ({ ...program, metadata: { ...program.metadata, logicalAddress: 'TEST-other' } }),
     'another artifact kind': program => ({ ...program, metadata: { ...program.metadata, artifactKind: 'TEST-other' } }),
@@ -835,13 +836,13 @@ test("storage readback requires the CREATE address and every metadata field befo
     'extra metadata': program => ({ ...program, metadata: { ...program.metadata, TEST: 'other' } }),
   };
   for (const [name, change] of Object.entries(changes)) await t.test(name, async t => {
-    const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), created = JSON.parse(signed.signedTransaction).content;
+    const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), { hash, content: created } = JSON.parse(signed.signedTransaction);
     applyWithoutBroadcast(w, signed);
     const operation = created.data[1], kept = await recordOf(w);
     const program = { success: true, storageAddress: created.to, data: operation.data, owner: created.from,
       programName: operation.programName, metadata: operation.metadata };
     w.node.intercept = row => row.body === null
-      ? new Response(JSON.stringify(change(program)), { headers: { 'content-type': 'application/json' } }) : undefined;
+      ? new Response(JSON.stringify(change(program, hash)), { headers: { 'content-type': 'application/json' } }) : undefined;
     const answer = await w.adapter.readTransactionState(signed);
     assert.equal(answer.state, 'pending');
     assert.ok(codes(w.session.internalCauseOf(answer)).includes('readback_unverified'));
