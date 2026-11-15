@@ -225,7 +225,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const agentUrl = agentTransform ? await privateModuleUrl(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], agentTransform) : null;
   const hostModule = await privateModule(new URL('../src/host.mjs', import.meta.url), ['setCutAgent'], source => {
     const cut = source.replace('const REQUIRED =', 'let cutAgent = (agent) => agent; function setCutAgent(value) { cutAgent = value; }\nconst REQUIRED =')
-      .replace('createSellerHttpHandler(agent, { authentication, wire })', 'createSellerHttpHandler(cutAgent(agent, wire), { authentication, wire })');
+      .replace('createSellerHttpHandler(agent, { authentication, wire, context })', 'createSellerHttpHandler(cutAgent(agent, wire), { authentication, wire, context })');
     return agentUrl === null ? cut : cut.replace("from './dacs/seller-agent.mjs'", `from '${agentUrl}'`);
   });
   hostModule.setCutAgent(cutAgent);
