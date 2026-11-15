@@ -19,6 +19,8 @@ function scratch(t) {
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   execFileSync('git', ['clone', '--quiet', '--shared', ROOT, repo]);
   const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
+  // A checkout of a detached commit clones detached; give every scratch clone a named branch.
+  git('switch', '-qc', 'TEST-main');
   return { repo, dir: join(repo, P), git };
 }
 function derived(s, pins) {
