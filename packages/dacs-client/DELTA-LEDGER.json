@@ -9924,6 +9924,57 @@
           "after": "17068c95d837ebd0b8a66c7067db360ad12bc46e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF add the unfenced authority seam and the client's production authority reader",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "f954dada99f699178563fbfed69cea975993cff2",
+          "after": "03c9894d1f9af9950469510fa2048ed6f95dc206"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "ab72ed2ba7ac3d90452bb40ae634721c6b9131b3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/authority-reader.mjs",
+          "before": null,
+          "after": "ae87ec1f5c387c0b12d0e7f76767c11897aa74fc"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "4a4f0821176484fe8fc9336a1d1d950e052646d6",
+          "after": "8747911df44b4d52981ecd0a9d8596127b33c8e5"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b9290c0f6b1673b099a1a66597ef46bdaa14c387",
+          "after": "c02dfdef0e7c168c436055d4187fad440f468b10"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": "7b891fd0e31379edd00ee55c86fd12e916cf4236",
+          "after": "a69baa3eab6d7bd8bee037cc43fb492a79e99571"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": "e4bfba810710cd180fe8eea370f79f8ed48432d2",
+          "after": "31226b6c2bded3856ad4411def7ec6df28eaaa2d"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "683f3a9c22c09a4207d1f588e0108cb327b579f2",
+          "after": "ada0bb057896b9ff4b6d3e07ef02b7244564c659"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "486970306e8b48607e190ce43ffd2f6f0b46113c",
+          "after": "ae9ce572e9076dc07dee3e35b4f307f79c37dcee"
+        }
+      ]
     }
   ]
 }

@@ -8,12 +8,17 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalize } from '@kynesyslabs/dacs';
-import { assertTp1Binding, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+import { assertTp1Binding, bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
 import { isTp1AuthorityLabel } from '../dacs/tp1-authority-label.mjs';
 import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
+import { claimForAddress } from '../signatures.mjs';
 import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
+import { createAuthorityReader } from './authority-reader.mjs';
 import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
+import { createEffectBoundary } from './effect-boundary.mjs';
+import { createEffectFence } from './effect-fence.mjs';
+import { createEffectHistory } from './effect-history.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createPaymentEvidenceCreateAdapter } from './node-payment-evidence-adapter.mjs';
 import { createSignerReservations } from './signer-reservation.mjs';
@@ -31,6 +36,9 @@ const PASSIVE_TRANSPORT_METHODS = ['readRpc', 'observeBinding', 'chainReader', '
   'nativeTransferRefused', 'nativeNonceConsumer', 'isWalletIdle', 'profile', 'onPurchaseStep', 'onStorageWriteResend', 'reserveRpcAuth', 'close'];
 const READBACK_PHASE = 'readback';
 const NODE_INFO_MESSAGES = Object.freeze(['getNetworkInfo', 'getNetworkParameters']);
+const AUTHORITY_READ_MESSAGES = Object.freeze(['getBlockByNumber', 'getNetworkInfo']);
+const AUTHORITY_READ_MAX_LIST_ENTRIES = 1024;
+const AUTHORITY_READ_CONCURRENCY = 4;
 const PAYMENT_EVIDENCE_APPROVAL_MEMBERS = ['prepare', 'open', 'reopen', 'confirm', 'settle'];
 const OBSERVER_PROVENANCE_PREFIX = `dacs-node-observer:${TP1_APPROVED_IDENTITY_RECORD.recordId}`;
 const RPC_FAILED = 'node_wallet_rpc_failed';
@@ -200,6 +208,63 @@ export function createNodeObserver({ owner, clock = { now: () => Date.now() } } 
       return answer.response;
     },
   });
+}
+
+// True when no array anywhere in `value` has more than `limit` entries. Iterative, so nesting cannot overflow the stack.
+function listsWithin(value, limit) {
+  const pending = [value];
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (next === null || typeof next !== 'object') continue;
+    if (Array.isArray(next) && next.length > limit) return false;
+    pending.push(...Object.values(next));
+  }
+  return true;
+}
+
+// Runs at most `limit` reads at once. The rest wait in order, and a waiter leaves with the signal's reason when its signal aborts.
+function createReadQueue(limit) {
+  let running = 0;
+  const waiting = [];
+  const release = () => { const next = waiting.shift(); if (next) next(); else running -= 1; };
+  return async function runQueued(read, signal) {
+    signal.throwIfAborted();
+    if (running < limit) running += 1;
+    else {
+      await new Promise((resolve, reject) => {
+        const turn = () => { signal.removeEventListener('abort', leave); resolve(); };
+        const leave = () => { waiting.splice(waiting.indexOf(turn), 1); reject(signal.reason); };
+        waiting.push(turn);
+        signal.addEventListener('abort', leave, { once: true });
+      });
+    }
+    try { return await read(); } finally { release(); }
+  };
+}
+
+/**
+ * Returns the session's stage-one authority capability for a node owner: `{authorityRpc(body, {signal}), claim(), context(),
+ * connectionGeneration()}`, with no sign or send. `authorityRpc` sends one node read over the owner's current transport and resolves
+ * the decoded reply. Only `getBlockByNumber` and `getNetworkInfo` are sent (readonly_only for anything else). It takes no connection fence,
+ * journal lock or signer, so it works while an effect pass holds the fence. A reply is limited to 4 MiB before decoding and 1024
+ * entries per array after (authority_list_too_large). At most four reads run at once; the rest queue inside the same 10 s deadline
+ * (tp1_authority_timeout, cause kept). A caller's abort rejects with its own reason. A failed fetch, body read or decode rejects with
+ * its original error. `claim` is read synchronously by the production reader; `connectionGeneration()` is the owner's connection id.
+ * Throws TypeError for an owner the observer refuses or a `claim` that is not a function.
+ */
+export function createNodeAuthorityCapability({ owner, claim } = {}) {
+  if (typeof claim !== 'function') throw new TypeError('the wallet claim reader must be a function');
+  const source = createSourceObserver({ record: TP1_APPROVED_IDENTITY_RECORD, owner, timeoutMs: AUTHORITY_READ_DEADLINE_MS });
+  const runQueued = createReadQueue(AUTHORITY_READ_CONCURRENCY);
+  async function authorityRpc(body, { signal } = {}) {
+    const request = body?.method === 'nodeCall' && body.params?.length === 1 ? body.params[0] : undefined;
+    if (!AUTHORITY_READ_MESSAGES.includes(request?.message)) fail('readonly_only');
+    const read = { method: 'nodeCall', params: [{ message: request.message, data: request.data }] };
+    const answer = await withinAuthorityDeadline(({ signal: stop }) => runQueued(() => source.post(read, {}, { signal: stop }), stop), signal);
+    if (!listsWithin(answer, AUTHORITY_READ_MAX_LIST_ENTRIES)) fail('authority_list_too_large');
+    return answer;
+  }
+  return Object.freeze({ authorityRpc, claim, context: () => owner.getContext(), connectionGeneration: () => owner.currentLocal().connectionId });
 }
 
 /**
@@ -522,6 +587,35 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
  */
 export function createNodeSellerComposition(options = {}) {
   return buildNodeComposition(options, true);
+}
+
+const localDigestOf = local => createHash('sha256').update(canonicalize(local)).digest('hex');
+
+/**
+ * Returns a Promise for the buyer's Node wallet composition: what `createNodeWalletSession` returns plus `binding` (the wire's
+ * `Tp1Binding`) and `effectBoundary`. It is built in stages from an unopened `owner`: the authority capability, the production
+ * authority reader (see `createAuthorityReader`), `await bindTp1Profile` (its first act is the reader's connection read), the effect
+ * boundary over that binding, then the session itself. Nothing effect-capable exists before the last stage. Requires `identityRecord`,
+ * `listings`, `purchases`, `participantImplementations`, `stopped`, `feeCeilingOs`, `journal`, `key` and the other options of
+ * `createNodeWalletSession` except `admission`, which the composition makes. It always zero-fills `key`. Rejects with the failing stage's
+ * own error (TypeError for a missing input, the wire's tp1_* refusal with the reader's cause, a transport error, or the session's);
+ * a failed stage leaves no composition. The host's `owner` and `journal` stay open.
+ */
+export async function composeNodeWalletSession({ owner, journal, key, identityRecord, listings, purchases, participantImplementations, stopped, feeCeilingOs, ...session } = {}) {
+  let walletClaim;
+  try {
+    const authority = createNodeAuthorityCapability({ owner, claim: () => walletClaim ?? fail('session_not_finalized') });
+    const readAuthority = createAuthorityReader({ authority, identityRecord, claim: authority.claim, listings, purchases, participantImplementations });
+    const binding = await bindTp1Profile({ record: identityRecord, local: owner.currentLocal(), readAuthority });
+    const fence = createEffectFence({ acquire: () => owner.acquireConnectionFence(), currentLocal: () => localDigestOf(owner.currentLocal()) });
+    const effectBoundary = createEffectBoundary({ binding, currentLocal: owner.currentLocal, stopped, feeCeilingOs, history: createEffectHistory({ journal }), fence });
+    const composition = await createNodeWalletSession({ ...session, owner, journal, key, admission: { binding, currentLocal: owner.currentLocal } });
+    try { walletClaim = claimForAddress(composition.wallet.getPublicAccount().address); }
+    catch (error) { await composition.close(); throw error; }
+    return Object.freeze({ ...composition, binding, effectBoundary });
+  } finally {
+    if (key instanceof Uint8Array) key.fill(0);
+  }
 }
 
 async function buildNodeComposition(options, seller) {
