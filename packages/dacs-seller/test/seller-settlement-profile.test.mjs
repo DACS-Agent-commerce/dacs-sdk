@@ -861,7 +861,8 @@ test('a presentation that carries no session nonce is refused before the admissi
   assert.deepEqual([h.last.status, h.last.answer.error, h.last.answer.message], [409, 'context_admission_closed', message]);
   assert.equal(h.agent.stageOf(v.jobId), null, 'no session is kept over HTTP');
   assert.equal(v.admission.calls.filter(([call]) => call === 'admit').length, 0);
-  assert.equal((await h.client.propose(h.proposal)).disposition, 'complete', 'the refusal kept no transport effect: the presentation under its own challenge is signed');
+  await h.agent.admitFirst(h.proposal);
+  assert.equal((await h.client.propose(h.proposal)).disposition, 'complete', 'the refusal kept no transport effect: once the presentation under its own challenge is admitted, the proposal is signed');
 });
 
 test('the seller issues a fresh 256-bit challenge bound to one job and buyer; a nonce is issued once', async (t) => {

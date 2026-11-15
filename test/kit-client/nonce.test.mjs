@@ -23,7 +23,7 @@ function clientPresentation(nonce) {
 
 const proposalInput = (buyerIdentityBundle) => ({ proposal: {}, transportIdentity: { jobId: JOB, buyer: buyer.claim, seller: seller.claim }, buyerIdentityBundle });
 
-test("the kit refuses a presentation carrying the client's self-derived nonce: the job has no accepted context presentation", async (t) => {
+test("K12-H1 today: the kit refuses a presentation carrying the client's self-derived nonce: the job has no accepted context presentation", async (t) => {
   const fixture = await proposalAdmissionFixture(t), agent = await fixture.open();
   fixture.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, CHALLENGE_SCOPE);
   await assert.rejects(agent.stagedProposal(proposalInput(clientPresentation())), (error) => {
@@ -34,7 +34,7 @@ test("the kit refuses a presentation carrying the client's self-derived nonce: t
   assert.equal(admissions(fixture), 0, 'no session was opened');
 });
 
-test('control: the kit continues the same presentation once its context admission accepted it under a nonce the kit issued', async (t) => {
+test('K12-H1 control: the kit continues the same presentation once its context admission accepted it under a nonce the kit issued', async (t) => {
   const fixture = await proposalAdmissionFixture(t), agent = await fixture.open(), ledger = fixture.store.challenges;
   const { sessionNonce } = ledger.issue({ jobId: JOB, buyer: buyer.claim }, CHALLENGE_SCOPE), bundle = clientPresentation(sessionNonce);
   const { owner } = ledger.attempt({ path: 'context', nonce: sessionNonce, jobId: JOB, buyer: buyer.claim, challengeScopeHash: CHALLENGE_SCOPE, presentationHash: sha256Hex(canonicalize(bundle)) });

@@ -7,7 +7,8 @@ import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 export const FIRST_ADMISSION_SCOPE = sha256Hex('TEST first admission scope');
 
 /**
- * Returns `agent` with `receiveProposal` admitting an issued challenge first, for a job with no accepted presentation.
+ * Returns `agent` with `receiveProposal` admitting an issued challenge first, for a job with no accepted presentation. `admitFirst(request)`
+ * is that admission by itself, for a test whose retried request over HTTP is recovered without the wrapper.
  * `ledger` is the challenge ledger the agent reads, `now()` the clock its acceptance records, and `AgentError` the agent's
  * error class `(code, message, status)`, so that refusals keep the codes the HTTP routes know.
  */
@@ -40,5 +41,5 @@ export function withFirstAdmission(agent, ledger, now, AgentError) {
       throw error?.code === 'seller_job_bound' ? ledgerRefusal(error) : error;
     }
   }
-  return { ...agent, async receiveProposal(request, options) { await admitFirst(request); return agent.receiveProposal(request, options); } };
+  return { ...agent, admitFirst, async receiveProposal(request, options) { await admitFirst(request); return agent.receiveProposal(request, options); } };
 }
