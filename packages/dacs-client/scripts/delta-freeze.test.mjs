@@ -145,7 +145,10 @@ test('a README record must select a commit after the anchor; a branch cut where 
   s.git('add', '--', P); s.git('commit', '-qm', 'TEST record a README commit before the anchor');
   assert.deepEqual(derived(s), [`${P}README.md: delta WF selects ${old}, which the anchor already contains`]);
   const early = scratch(t), main = early.git('branch', '--show-current');
-  early.git('switch', '-qc', 'TEST-early', `${anchor}^`);
+  const parent = early.git('rev-list', '--parents', '-n', '1', anchor).split(' ').slice(1)
+    .find(sha => early.git('rev-parse', `${sha}:${P}README.md`) === readAnchor(early.dir).files[`${P}README.md`]);
+  assert.ok(parent, 'the early branch starts with the anchored README copy');
+  early.git('switch', '-qc', 'TEST-early', parent);
   recordedCommit(early, 'delta(client): WF TEST README change from before the anchor', { 'README.md': `${readme(early)}\nTEST early line\n` });
   early.git('switch', '-q', main); early.git('merge', '-q', '--no-ff', '-m', 'TEST merge an early branch', 'TEST-early');
   assert.deepEqual(derived(early), []);
