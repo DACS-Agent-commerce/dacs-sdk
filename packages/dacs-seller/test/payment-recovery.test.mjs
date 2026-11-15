@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { paymentEvidenceAddress } from '@kynesyslabs/dacs';
+import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
 import { seller } from './helpers/protocol-fixture.mjs';
 import { PATHS, completions, operationOf } from './helpers/wire-routes-world.mjs';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
@@ -629,4 +630,57 @@ for (const [title, killAt, signedBeforeKill] of [
     assert.deepEqual(run.broadcastCreates, run.signedCreates, 'the node received once, and exactly the bytes the wallet signed');
   });
 }
+
+// ---- A second job claims the settlement while the seller signs the completed answer ----
+
+// A response signer the test can stop: `stop()` holds the next response signature until `release()`, and `reached` settles once it is held.
+function pausableResponseSigner() {
+  let held = null;
+  const signer = { claim: seller.claim, sign: (bytes) => {
+    if (held === null || !Buffer.from(bytes).toString('utf8').startsWith(DACS_SELLER_HTTP_DOMAINS.response)) return seller.signBytes(bytes);
+    const current = held;
+    held = null;
+    current.reach();
+    return current.released.then(() => seller.signBytes(bytes));
+  } };
+  const stop = () => {
+    held = {};
+    held.reached = new Promise((resolve) => { held.reach = resolve; });
+    held.released = new Promise((resolve) => { held.release = resolve; });
+    return { reached: held.reached, release: held.release };
+  };
+  return { signer, stop };
+}
+
+test('a settlement collision during response signing withholds the completed answer', async (t) => {
+  for (const replay of [false, true]) {
+    const w = await fixturePaymentWorld(t), label = replay ? 'replay of a completed payment' : 'first completion';
+    const { signer, stop } = pausableResponseSigner();
+    await w.withWire({ signer }, async () => {
+      let stored = null;
+      if (replay) {
+        assert.equal((await w.pay()).body.status, 'delivered', label);
+        stored = operationOf(w, w.jobId, PATHS.payments);
+        assert.equal(stored.state, 'completed', label);
+      }
+      const signing = stop(), answering = w.pay();
+      await signing.reached;
+      // The answer's sources have been read and its response is being signed when a second admitted job claims the same transfer.
+      const competing = await w.pay({ id: w.otherJobId });
+      assert.deepEqual([competing.status, competing.body.status, competing.body.reason], [200, 'indeterminate', 'settlement-collision'], `${label}: the competing job is told of the collision`);
+      signing.release();
+      const withheld = await answering;
+      assert.deepEqual([withheld.status, withheld.body.error], [503, 'operation_uncertain'], `${label}: the completed answer is withheld: ${withheld.text}`);
+      assert.equal(withheld.signed, true, `${label}: the refusal is signed`);
+      if (replay) assert.deepEqual(operationOf(w, w.jobId, PATHS.payments), stored, `${label}: the stored outcome is unchanged`);
+      else {
+        assert.equal(stateOf(w), 'pending', `${label}: the attempt stays open`);
+        assert.deepEqual(paymentCompletions(w), [], `${label}: no outcome is recorded`);
+      }
+      assert.deepEqual([w.evidenceCreates(w.otherJobId), w.deliverableWrites(w.otherJobId), w.deliveryEvidenceWrites(w.otherJobId)], [0, 0, 0], `${label}: the competing job gets no evidence or delivery`);
+      assert.throws(() => w.agent.assertSettlementCredit(w.jobId), { code: 'settlement_collision' }, `${label}: the first job lost its credit`);
+    });
+    assert.deepEqual([w.evidenceCreates(), w.deliverableWrites(), w.deliveryEvidenceWrites()], [1, 1, 1], `${label}: the effects done before the collision are kept and nothing is added`);
+  }
+});
 
