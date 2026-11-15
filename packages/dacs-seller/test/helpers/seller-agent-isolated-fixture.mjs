@@ -23,8 +23,10 @@ export async function fixtureProposal(listing,jobId,claims=[]){
  return{plan,buyerContribution,body:{proposal,transportIdentity:{jobId,planHash:plan.planHash,agreementHash:plan.agreementHash,buyer:buyer.claim,seller:sellerKey.claim,proposalHash:proposal.proposalHash},buyerIdentityBundle}};
 }
 // memory: an agent with no durable directory (no job fence, no store), kept open; it cannot be reopened.
-export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false,memory=false}={}){
- const seller={...sellerKey,sign:sellerKey.signBytes},buyer={...buyerKey,sign:buyerKey.signBytes},dir=mkdtempSync(join(tmpdir(),'TEST-fixture-payment-')),listing=fixtureListing(sellerKey,{now:NOW}),pin=listingPin(listing),anchors=localAnchor({now:()=>NOW+2000}),agreements=new Map(),controls={observation:null};
+// The fixture Listing, signed again over `publicEndpoint` when one is given (the wire discovery document needs an origin).
+const listingAt=async publicEndpoint=>{const listing=fixtureListing(sellerKey,{now:NOW});if(publicEndpoint===null)return listing;const draft={...listing};delete draft.signature;draft.seller={...draft.seller,publicEndpoint};return core.signComponentArtifact(draft,core.ARTIFACT_SEPARATORS.Listing,{signer:sellerKey.claim,algorithm:"ed25519",sign:sellerKey.signBytes});};
+export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false,memory=false,publicEndpoint=null}={}){
+ const seller={...sellerKey,sign:sellerKey.signBytes},buyer={...buyerKey,sign:buyerKey.signBytes},dir=mkdtempSync(join(tmpdir(),'TEST-fixture-payment-')),listing=await listingAt(publicEndpoint),pin=listingPin(listing),anchors=localAnchor({now:()=>NOW+2000}),agreements=new Map(),controls={observation:null};
  const config={signer:seller,listing,anchors,...(memory?{}:{durableDirectory:dir}),commitOnSignature:early,now:()=>NOW+2000,simulatedFixture:true,observeDemosTransfer:async hash=>controls.observation??await observeConfirmedNativeTransfer({txHash:hash,payer:buyer.address,payee:seller.address,amountOs:'2500000000',blockNumber:8,includedAt:NOW+3000})};
  let agent,store;const create=()=>createSellerAgent(config);
  const openStore=()=>createSellerDurableState({dir,signer:seller,listingPin:pin});
