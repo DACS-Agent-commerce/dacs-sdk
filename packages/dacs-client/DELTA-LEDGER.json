@@ -9805,6 +9805,128 @@
           "after": "55dfd5c220077e110aa6d72115c236f5b8c68a79"
         }
       ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 accept the reviewed testnet block layout",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "75913557cd68e57668189f8fcc33ca674bebd7e0"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "4ba56c73af306778fef8531dd80bf48404d581b6",
+          "after": "2780fc9823cc2f5641992981217c13c94b3bdbcb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": null,
+          "after": "329b22f692f1e31f0ce48e0020d57f4b5e88ec4f"
+        }
+      ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 move the block-two observation to its own capture",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "75913557cd68e57668189f8fcc33ca674bebd7e0",
+          "after": "553cb843ac22399e425a0bfbb334500e869caecb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "329b22f692f1e31f0ce48e0020d57f4b5e88ec4f",
+          "after": "ed5ca3d48021e4df8e372307148c25e68e1765b8"
+        }
+      ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 state the block-two pin without a capture path",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "553cb843ac22399e425a0bfbb334500e869caecb",
+          "after": "172c0e6ab561cdb1ddf4efe9e6eddb9b24fdef6f"
+        }
+      ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 refuse a block-one predecessor that differs from the pin before saving the reads",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "172c0e6ab561cdb1ddf4efe9e6eddb9b24fdef6f",
+          "after": "dda41718971ceb8b360bb0bcfeb063a741b283aa"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "ed5ca3d48021e4df8e372307148c25e68e1765b8",
+          "after": "d2f826dc1bc3db1138b3d4df9ac61b33ffeed121"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF preserve merged wallet validation",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "9c5a38b22893b6f572bc63249f8b116fe1c738a0",
+          "after": "9c5a38b22893b6f572bc63249f8b116fe1c738a0"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "37c703ca19b331857b0d49569589a6f15144b1ed",
+          "after": "37c703ca19b331857b0d49569589a6f15144b1ed"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs and node-wallet-session.mjs blobs after merging eedd37b3e502",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "285c2eba321bfb342c99dde92a5ddaa2597cdf57",
+          "after": "285c2eba321bfb342c99dde92a5ddaa2597cdf57"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "988c0c6a883f16ffbd5119e5fd60aea3e6a83510",
+          "after": "988c0c6a883f16ffbd5119e5fd60aea3e6a83510"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged node-wallet-session.mjs blob after merging a619ce44142c",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c",
+          "after": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF use recorded blocks for cancellation checks",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9",
+          "after": "f2337a42eebc81e26737556a54eccee74dc3cb3b"
+        }
+      ]
     }
   ]
 }
