@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "f83c5dea6396d7b487e191c77cec6565b2a6085c"
+        "blob": "889e058d989f7e470ae751e55faccce0adde48dc"
       },
       "DELTA-LEDGER.json": {
-        "blob": "da4c1dff40dec5c95afd875097fdaacad5cfc709"
+        "blob": "b69bdefcc82efe717b703c7d43bdfa1ac108defa"
       },
       "DELTA-MAP.md": {
-        "blob": "f844de8bdec32df8619079c02e43fca012dbdc5d"
+        "blob": "0f8af19dcfba908915f4ec7067579fac50dd11e8"
       },
       "DELTA-NOTES.md": {
         "blob": "d7bec8403823e255c9ee97b9be5e5ad6f0d1b535"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "28818c044ed0b8ce0e5bf310137a407a9a5f8e11"
+        "blob": "07e9e208711cc2236bc58c8587b0a24191eb1394"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "a844f5ddef373074e499694c21d00ec1b1612479"
+        "blob": "0ad4924840a25020bcc07db9b045ebed47f96ddb"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,10 +1058,10 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "06eb48e280b4650fce9a625b100ba97c81c1b6d4"
+        "blob": "d4fa46046f0c4c79e727d8ae8d5119995e2dda3e"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "6ed2b09718f6d4d1a04c2a4684c167b953d0059a"
+        "blob": "f91a9f6504d7601ab2ceefa0c33e087ee24a08b1"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1154,7 +1154,7 @@
         "blob": "b10ec778520587c7d49045ae569b9742b05c097a"
       },
       "src/dacs/network-binding.mjs": {
-        "blob": "03c9894d1f9af9950469510fa2048ed6f95dc206"
+        "blob": "0f218e6e7a49859004e10cad557543279983aa9c"
       },
       "src/dacs/protocol-purchases.mjs": {
         "blob": "f6492ec9771611dd72c96e94107384db860ca748"
@@ -1247,7 +1247,7 @@
         "blob": "3d60f6151608b59fda215fb362bb54a5721c82ce"
       },
       "src/public/portal/embedded-wallet/sdk-provider.mjs": {
-        "blob": "fedbd31b661b3ee5540213629d5e895c2a55ea3f"
+        "blob": "10714c8e99468837c2ebc47cd666ec638488bf33"
       },
       "src/public/portal/seller-session-delegation.mjs": {
         "blob": "1a36a9a9d65cd6723b1f149005c0338a87ffddee"
@@ -1259,7 +1259,7 @@
         "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "1426fa081a61f904773ce02cb38d9c7184851839"
+        "blob": "0862419d2002cc0910e531cd0426cbd044ba21cf"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1316,19 +1316,19 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "8747911df44b4d52981ecd0a9d8596127b33c8e5"
+        "blob": "9209cbe9968a69930b849a2bc8e223e0b690db7f"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
       },
       "src/wallet/effect-boundary.mjs": {
-        "blob": "be747aab0f805f37b550920e8acea9c023ac7f93"
+        "blob": "796433f8bc1bca0d06a152305289e52f05f03812"
       },
       "src/wallet/effect-fence.mjs": {
         "blob": "f084d06e7fcac773a024fb36149b1f68b2826403"
       },
       "src/wallet/effect-history.mjs": {
-        "blob": "d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53"
+        "blob": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
@@ -1340,7 +1340,7 @@
         "blob": "abe5cea422327278732c707b1e8957274677ea44"
       },
       "src/wallet/node-wallet-session.mjs": {
-        "blob": "c02dfdef0e7c168c436055d4187fad440f468b10"
+        "blob": "ed94f9883ed7995f7a3123c0876c1a67c9c1b718"
       },
       "src/wallet/payload-helpers.mjs": {
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
@@ -1421,10 +1421,10 @@
         "blob": "f3d0560be2447f1a5195f646001e74f7454aa6c9"
       },
       "test/effect-boundary-operation.test.mjs": {
-        "blob": "c5f91f14575651303e144ec91570d7db728034e1"
+        "blob": "83bf647eea4cbb4cf4614e97b07b52203356393c"
       },
       "test/effect-boundary.test.mjs": {
-        "blob": "f948151165e3ba48272216e650df2f9bc3c20480"
+        "blob": "6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1"
       },
       "test/effect-history.test.mjs": {
         "blob": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
@@ -1508,7 +1508,7 @@
         "blob": "318991bcfc372a7dde19bd2eadd128b7352b5432"
       },
       "test/helpers/chain-identity-fixture.mjs": {
-        "blob": "b57a7c47e008a17332332980b98b8f730f8b6366"
+        "blob": "3ceed283a2e1e1a7d2f9c7daafccf6d368066be0"
       },
       "test/helpers/collect-garbage.mjs": {
         "blob": "1d8aad9d5a61666d767c767388215560e5c48fcd"
@@ -1616,7 +1616,7 @@
         "blob": "89b2de8333c1d4f31e0e38b0db45aaa1f7a17c39"
       },
       "test/helpers/legacy-seller-client-auth.mjs": {
-        "blob": "754a7e898ef18b3d6fa45fbf9141e9e8107304b7"
+        "blob": "5da731a690d6648591afd34a50ed0017d508b998"
       },
       "test/helpers/listener-guard.mjs": {
         "blob": "7915bac5268baf9bfafa259cbe710f1731caf917"
@@ -1853,7 +1853,7 @@
         "blob": "c458b4582cc4b2aef338c9525dd0b69a0ec1ff57"
       },
       "test/host-observations.test.mjs": {
-        "blob": "340d541daecd3e501767c1cf341ea1e7c2c1683f"
+        "blob": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "2bb9dd310f49253c35f2985fff4a653e0b22775e"
@@ -1886,7 +1886,7 @@
         "blob": "9869cc55d5b9235033ffd0382583a5e3948f5f4f"
       },
       "test/network-binding.test.mjs": {
-        "blob": "31226b6c2bded3856ad4411def7ec6df28eaaa2d"
+        "blob": "708d3ee2b074d0e3ee834f8f0bfd534a42a9f777"
       },
       "test/node-demos-loading.test.mjs": {
         "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
@@ -1919,10 +1919,13 @@
         "blob": "ad4e44d9bf20ae4274b06491c97cf5190504da5c"
       },
       "test/node-wallet-observer.test.mjs": {
-        "blob": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d"
+        "blob": "6b0e4a1deec87b0aec54e0747da4716db26c4c84"
       },
       "test/node-wallet-packed.test.mjs": {
         "blob": "cb7e6298b275bb6123561c5afa4a52a4981b72bf"
+      },
+      "test/node-wallet-real-block-layout.test.mjs": {
+        "blob": "bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5"
       },
       "test/node-wallet-rpc-bounds.test.mjs": {
         "blob": "5c56b94ba23578c1e6116dba5eae1296beb0155a"
@@ -1937,7 +1940,7 @@
         "blob": "e84121241791b080837b9e2fbff8161aa1936889"
       },
       "test/node-wallet-source-reads.test.mjs": {
-        "blob": "17068c95d837ebd0b8a66c7067db360ad12bc46e"
+        "blob": "704c356cf6fde7f017f441a65604a598e56a578b"
       },
       "test/old-domain-sources.test.mjs": {
         "blob": "a8ccc8f4759f908cabb11fb0aff27f3290e40a74"
@@ -1952,7 +1955,7 @@
         "blob": "8e433835a01a81de01ea3a4d6f377270905ae434"
       },
       "test/passive-observation.test.mjs": {
-        "blob": "cf4497afe1bd896a8d18a55993bb8b38f4896c16"
+        "blob": "4b2d301177a3d336f1976f1bafaae1fc00e98c70"
       },
       "test/portal-capability.test.mjs": {
         "blob": "03649eaa13ff185ed7e74c73984df819b417e1ff"
@@ -1998,6 +2001,9 @@
       },
       "test/purchase-executed-only.test.mjs": {
         "blob": "72479ddb615e6ad1f1002f588eabbb9e0dab4d1a"
+      },
+      "test/purchase-expiry-clocks.test.mjs": {
+        "blob": "fd0b0dd51c4fc12d8ab7c83f2b89c87b391047d1"
       },
       "test/purchase-integrity.test.mjs": {
         "blob": "174d67c16132706497904b28250c6135e97d1497"
@@ -2061,6 +2067,9 @@
       },
       "test/seller-suspension.test.mjs": {
         "blob": "c3f5dac05fd2af76c65238f819d636869f7919fb"
+      },
+      "test/seller-transport-key-validation.test.mjs": {
+        "blob": "55dfd5c220077e110aa6d72115c236f5b8c68a79"
       },
       "test/signatures-claim-ref.test.mjs": {
         "blob": "f0696e4cc8a8d54e4833adde9e465638d792a03c"

@@ -7,7 +7,7 @@ import { createAuthorityFixture } from './fixtures/tp1-authority-reader.mjs';
 import { shared, native, captured, record, local, ownLocal, hash, envelope, expected, NOW } from './helpers/chain-identity-fixture.mjs';
 import { deferred } from './helpers/source-read-world.mjs';
 
-test('the string-zero genesis is cross-checked against block one and the approved pin in the shared reader, the client composition and native strict recovery', async t => {
+test('the string-zero genesis is cross-checked against block one and the approved pin in the shared reader, the constructed held transport facade and native strict recovery', async t => {
   await t.test('documented fallback binds the recorded two-field genesis and uses typed heights', async () => {
     const h = shared();
     assert.equal((await h.binder.bind()).chainIdentity, record.chainIdentity);

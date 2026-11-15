@@ -15,7 +15,7 @@ import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purch
 import { claimForAddress } from '../signatures.mjs';
 import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
 import { createAuthorityReader } from './authority-reader.mjs';
-import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
+import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from './devnet-native-transport.mjs';
 import { createEffectBoundary } from './effect-boundary.mjs';
 import { createEffectFence } from './effect-fence.mjs';
 import { createEffectHistory } from './effect-history.mjs';
@@ -181,7 +181,8 @@ async function withinAuthorityDeadline(read, signal) {
 /**
  * Returns the fence-free, read-only observer for a node owner: {observe({signal}),
  * readNodeInfo(message, {signal}), provenance()}. Its expected identity and block-one fallback
- * come only from TP1_APPROVED_IDENTITY_RECORD. It acquires no connection fence, takes no
+ * come only from TP1_APPROVED_IDENTITY_RECORD, and it reads the node's block-zero error, block-one layout and
+ * block two with the same reviewed Node2 policy as the transport. It acquires no connection fence, takes no
  * journal lock and signs nothing, so it works while a fence is held and before any journal or
  * custody is opened. observe resolves {local, chainIdentity, provenance} for the owner's current
  * connection once the node's chain matches the record; readNodeInfo resolves the node's answer
@@ -193,7 +194,8 @@ async function withinAuthorityDeadline(read, signal) {
  * Throws TypeError for an owner without currentLocal, getContext and fetchImpl.
  */
 export function createNodeObserver({ owner, clock = { now: () => Date.now() } } = {}) {
-  const source = createSourceObserver({ record: TP1_APPROVED_IDENTITY_RECORD, owner, now: () => clock.now(), timeoutMs: AUTHORITY_READ_DEADLINE_MS });
+  const source = createSourceObserver({ record: TP1_APPROVED_IDENTITY_RECORD, owner, now: () => clock.now(), timeoutMs: AUTHORITY_READ_DEADLINE_MS,
+    blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH });
   const provenanceOf = connectionId => `${OBSERVER_PROVENANCE_PREFIX}:${connectionId}`;
   return Object.freeze({
     provenance: () => provenanceOf(owner.currentLocal().connectionId),
@@ -645,7 +647,9 @@ async function buildNodeComposition(options, seller) {
     };
     const stamps = createRpcStampSource(clock);
     const transportOptions = { expected, transportOwner: owner, journal, fetchImpl, now: () => clock.now(), stamps,
-      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation } };
+      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation },
+      blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
+      blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH };
     transport = seller
       ? createDevnetDemoTransport({ ...transportOptions, settlementPublication: publications?.settlementPublication, deliveryPublication: publications?.deliveryPublication,
         demoArtifactPublication: publications?.demoArtifactPublication,

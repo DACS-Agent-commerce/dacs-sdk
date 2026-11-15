@@ -96,6 +96,19 @@ function operationState(records, operation, pinVersion) {
   return { state: possible ? 'possible' : held ? 'held' : 'signed', signed, passId: open ? signed.passId : `p${signedRecords.length + 1}`, fresh: !open };
 }
 
+// Runs the tasks of one key one after another, in call order; a task that fails does
+// not stop the next. An idle key keeps no entry.
+function createKeyedQueue() {
+  const tails = new Map();
+  return function enqueue(key, task) {
+    const result = (tails.get(key) ?? Promise.resolve()).then(task);
+    const tail = result.then(() => {}, () => {});
+    tails.set(key, tail);
+    void tail.then(() => { if (tails.get(key) === tail) tails.delete(key); });
+    return result;
+  };
+}
+
 /**
  * Builds the client's effect boundary. Required host sources, each a TypeError when
  * missing: `binding` (from bindTp1Profile), `currentLocal()`, `stopped()` (boolean or
@@ -114,17 +127,25 @@ function operationState(records, operation, pinVersion) {
  * and approval, the binding and the stop seam again, then checks admission, fee,
  * connection and revision with no await before the effect. Every method rejects with
  * the signer's, transport's or authority reader's own error, or an OperationError
- * carrying a refusal code, and always releases the fence it acquired.
+ * carrying a refusal code, and always releases the fence it acquired. When the work
+ * succeeded but the fence release failed, the method rejects `eb_fence_release_failed`
+ * instead: the work's return value (a send's result, a signed artifact) is
+ * `error.details.result` and the release failure is `error.cause`.
  *
  * - `signPass(operation, sign)`: refuses `eb_operation_signed` (with the recorded
  *   `artifactHash` in `details`) once the operation has a record on its lane, without
  *   calling `sign`. Resolves the artifact `{ ...operation, artifactHash }` after `sign()`'s
- *   bytes are durable; a refusal after that leaves `signed-held`.
+ *   bytes are durable; a refusal after that leaves `signed-held`. Calls for one operation
+ *   and lane that run together are queued: a later one is refused as above once the
+ *   earlier one has recorded its artifact, and signs if the earlier one failed.
  * - `dispatchPass(artifact, send, { explicit })`: passes the retained bytes to `send(bytes)`
  *   once, after recording `dispatch-started`; a refusal then records `dispatch-withheld`.
  *   A held or withheld artifact needs `explicit: true`, which a composition sets only for
  *   a fresh request of its own; a possible dispatch refuses `eb_readback_required`; an
  *   artifact that is not the operation's one signed artifact refuses `eb_history_unavailable`.
+ *   When `send` returned but the acknowledgement record could not be written, it rejects
+ *   `eb_ack_not_persisted`: the artifact was sent, the send's return value is
+ *   `error.details.result`, and the write failure is `error.cause`.
  * - `withOperation(operation, work)`: holds the fence across `work`; passes made inside
  *   for the same operation reuse it, another operation is refused `tp1_fence_not_owned`.
  *   Do not await `replaceConnection` inside it.
@@ -136,6 +157,10 @@ function operationState(records, operation, pinVersion) {
 export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilingOs, history, fence, clock = systemClock, currentApproval, currentRevision, replayPolicy } = {}) {
   requireSources({ binding, currentLocal, stopped, history, fence, clock });
   const operations = new AsyncLocalStorage();
+  // The history key of a signed record includes the artifact hash, so the store cannot
+  // tell two different signatures of one operation apart. Signing is queued per
+  // operation and lane: a later call reads the earlier one's record before it signs.
+  const signingQueue = createKeyedQueue();
 
   async function checkStop(read) {
     let isStopped;
@@ -204,10 +229,19 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
       return fence.withFence(operation.operationId, () => work(enclosing, read), { capability: enclosing.capability });
     }
     await precheck(read, operation);
-    return fence.withFence(operation.operationId, (capability) => {
-      const frame = { operationId: operation.operationId, capability };
-      return operations.run(frame, () => work(frame, read));
-    });
+    let finished;
+    try {
+      return await fence.withFence(operation.operationId, async (capability) => {
+        const frame = { operationId: operation.operationId, capability };
+        const result = await operations.run(frame, () => work(frame, read));
+        finished = { result };
+        return result;
+      });
+    } catch (cause) {
+      // The work succeeded, so only the release failed. Its result may be a send that already left.
+      if (finished) throw new OperationError('eb_fence_release_failed', 'the work finished but the actor fence could not be released', finished, { cause });
+      throw cause;
+    }
   }
 
   async function persist(record) {
@@ -245,7 +279,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
 
   async function signPass(input, sign) {
     const operation = snapshotOperation(input);
-    return runPass(operation, async (frame, read) => {
+    return runPass(operation, (frame, read) => signingQueue(JSON.stringify([operation.lane, operation.operationId]), async () => {
       await refuseSignedOperation(operation);
       await refresh(read, operation);
       gate(frame, operation);
@@ -256,7 +290,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
       const artifact = { ...operation, artifactHash: sha256Hex(stored) };
       await persist({ ...artifact, bytes: stored.toString('base64'), passId: FIRST_PASS, state: 'signed' });
       return authorizeOrHold(frame, read, artifact, FIRST_PASS, 'signed-held', () => artifact);
-    });
+    }));
   }
 
   // Hands the operation's retained bytes to `release(bytes, passId)` once the history
@@ -275,15 +309,22 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
   async function dispatchPass(input, send, { explicit = false } = {}) {
     const operation = snapshotOperation(input);
     return runPass(operation, (frame, read) => dispatchRetained(frame, read, operation, explicit, async (bytes, passId) => {
+      // An unpaired dispatch-started stays a possible dispatch if the unknown record is lost too; the first cause is the one reported.
+      const recordUnknown = (cause) => persist({ ...operation, passId, state: 'dispatch-unknown', cause: failureCode(cause) }).catch(() => {});
+      let result;
       try {
-        const result = await send(bytes);
-        await persist({ ...operation, passId, state: 'dispatch-acknowledged' });
-        return result;
+        result = await send(bytes);
       } catch (cause) {
-        // An unpaired dispatch-started stays unknown if this record is lost too; the first cause is the one reported.
-        await persist({ ...operation, passId, state: 'dispatch-unknown', cause: failureCode(cause) }).catch(() => {});
+        await recordUnknown(cause);
         throw cause;
       }
+      try {
+        await persist({ ...operation, passId, state: 'dispatch-acknowledged' });
+      } catch (cause) {
+        await recordUnknown(cause);
+        throw new OperationError('eb_ack_not_persisted', 'the artifact was sent but its acknowledgement record was not persisted', { result }, { cause });
+      }
+      return result;
     }));
   }
 
