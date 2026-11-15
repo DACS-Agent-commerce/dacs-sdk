@@ -9906,6 +9906,18 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged node-wallet-session.mjs blob after merging a619ce44142c",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c",
+          "after": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF use recorded blocks for cancellation checks",
       "compact": true,
       "files": [
