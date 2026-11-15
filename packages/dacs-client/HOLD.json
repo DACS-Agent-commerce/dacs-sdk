@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "b61953b31873e04c50dda0abbe49a9a017851d9c"
+        "blob": "6f9148ed0450faba42e210b1fbc4dbc3a9671f55"
       },
       "DELTA-LEDGER.json": {
-        "blob": "0459af604cf3dde05924ff373e97342091a1f982"
+        "blob": "9eb637cfb7612c006152054b3bdfa83cd499805c"
       },
       "DELTA-MAP.md": {
-        "blob": "a0d180e03f8707971e745b6a466df20670f6ff1c"
+        "blob": "8388ddfddfa3596422b5b6b1d56d3fa66bf2eb79"
       },
       "DELTA-NOTES.md": {
-        "blob": "d3bd6e8e77a383ddb4987e41bd9004a386cdbb2f"
+        "blob": "f9227d9a8c63161861dc3784ef9bc082afdddf3a"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "a3adfe61d8736b41a32e598b7ec9f8147987ad8a"
+        "blob": "8d9a15aedf75e377ae1f1123cc2f27891f0a5ca6"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "ca75e095fb75d74657bc0ca3c2466a095945ae92"
+        "blob": "224ba8eb210facbe541ba193e66281a7026eea79"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1133,7 +1133,7 @@
         "blob": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7"
       },
       "src/dacs/demos-sr2-adapter.mjs": {
-        "blob": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868"
+        "blob": "da760633c415a79c635121fe311b4ef47df6496d"
       },
       "src/dacs/demos-sr2-wallet-bridge.mjs": {
         "blob": "aae9cc8e17848ff796c10b1c2289b7da798eefa0"
@@ -1334,7 +1334,7 @@
         "blob": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
       },
       "src/wallet/node-payment-evidence-adapter.mjs": {
-        "blob": "478ef59d0e9d03b9a461d13b79afe4c4285a1403"
+        "blob": "abe5cea422327278732c707b1e8957274677ea44"
       },
       "src/wallet/node-wallet-session.mjs": {
         "blob": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
@@ -1343,7 +1343,7 @@
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
       },
       "src/wallet/signer-reservation.mjs": {
-        "blob": "27c92266c296ed0bff1653f48a1d42379161817a"
+        "blob": "82d3054cde61baac5a4638e991fc67c4cedc03d3"
       },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
@@ -1826,7 +1826,7 @@
         "blob": "b59171dbbc86f4612ba57ae203e0fc3822ac7a1c"
       },
       "test/helpers/tp1-node-fixture.mjs": {
-        "blob": "368b592d492038d35f4ff4b6d869173160720152"
+        "blob": "7797647b3bda845b75faa490eef6592949d87847"
       },
       "test/helpers/wallet-extension-probe-dom.mjs": {
         "blob": "82ed93b9e4d001302b7fc8ea6e57b5ee5c04467c"
@@ -1880,10 +1880,10 @@
         "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
       },
       "test/node-payment-evidence-adapter.test.mjs": {
-        "blob": "fa00650470049af3a851da08362bb082f90e86db"
+        "blob": "5f75ef8894fa32aae113d45a462b75b38fbde695"
       },
       "test/node-signer-reservation.test.mjs": {
-        "blob": "1bf7311e098d0d06e54b26ec97aea4f9e74cab10"
+        "blob": "ff3a9f0c8230954e2a0425e7195f4c38503fd514"
       },
       "test/node-signer-retirement.test.mjs": {
         "blob": "6175c0421d58d74bf403ee1150a32c750011c455"

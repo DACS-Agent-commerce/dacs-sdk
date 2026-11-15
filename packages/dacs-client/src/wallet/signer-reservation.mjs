@@ -14,11 +14,12 @@
 // and `bindSigned` stores the signed bytes. The caller sends the bytes only after `bindSigned` returns them. If the
 // approval ends while signed bytes are kept, `renewApproval` stores the id of a replacement for the same request text.
 //
-// A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes, moves the floor past
-// the nonce and keeps those bytes as the record's `executed`, so a later read by hash can still compare them with the chain.
-// `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
+// A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes and moves the floor past
+// the nonce; `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
 // settles the approval ledger's hold by id (`spent` or `released`), which is idempotent, so a crash between the settlement and the
-// put is finished by repeating the call. Signed bytes are never retired: only an execution frees them. While a retirement has
+// put is finished by repeating the call. One execution settles at most one approval spent: `consume` first stores the approval id
+// it is about to spend in a second record keyed by the signer, which `renewApproval` refuses to pass, so no later step, in this
+// process or another, can spend a different approval for the same bytes. Signed bytes are never retired: only an execution frees them. While a retirement has
 // settled the approval `released` and its put has not committed, this instance refuses `bindSigned` for that reservation
 // (`signer_retirement_unfinished`), and the next `reserve` finishes the retirement before it claims.
 //
@@ -35,8 +36,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { verifyDemosSignature } from '../signatures.mjs';
 import { sha256Hex } from '../util/ids.mjs';
 
-const FORMAT = 'dacs-signer-reservation/v4';
+const FORMAT = 'dacs-signer-reservation/v3';
+const SETTLEMENT_FORMAT = 'dacs-signer-settlement/v1';
 const KEY_ROOT = 'devnet/signer-reservation';
+const SETTLEMENT_KEY_ROOT = 'devnet/signer-settlement';
 const MAX_TEXT_BYTES = 256 * 1024;
 const MAX_ID_BYTES = 256;
 const OPERATIONS = ['payment-evidence', 'native', 'artifact'];
@@ -98,10 +101,10 @@ function validateSigned(signed, signer, nonce) {
  * network, chain identity and pin version every record carries. `openApproval(requestText)` resolves null or the one open
  * `{ledgerId, requestText}` for those exact bytes; `settleApproval(ledgerId, outcome, reason)` settles by id and is idempotent
  * for the same outcome. Both refuse until supplied. Returns `reserve`, `bindApprovalIntent`, `bindApproval`, `bindSigned`,
- * `renewApproval`, `retireUnsigned`, `consume`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
+ * `renewApproval`, `retireUnsigned`, `consume`, `executionSettled`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
  * Throws `signer_reservation_invalid` for a malformed record or argument, `signer_reservation_stale` for a handle that is
  * not the stored record, `signer_reservation_uncertain` when a failed write cannot be read back, `signer_lane_busy`,
- * `invalid_nonce`, `signer_retirement_unfinished`, `approval_lookup_refused`, `signer_settlement_failed` and `signer_execution_unproven`; journal errors such
+ * `invalid_nonce`, `signer_retirement_unfinished`, `approval_lookup_refused`, `signer_settlement_failed`, `signer_execution_settled` and `signer_execution_unproven`; journal errors such
  * as `journal-capacity` pass through. Each keeps the original error as its `cause`.
  */
 export function createSignerReservations({ journal, pins, openApproval = refused, settleApproval = refused } = {}) {
@@ -112,6 +115,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
   // The reservation is still stored, so nothing may sign for it; `reserve` or a repeated `retireUnsigned` finishes it.
   const unfinishedRetirements = new Map();
   const keyOf = signer => { check(isAddress(signer), 'invalid signer'); return signerReservationKey(pins, signer); };
+  const settlementKeyOf = signer => { check(isAddress(signer), 'invalid signer'); return `${SETTLEMENT_KEY_ROOT}/${JSON.stringify([pins.network, pins.chainIdentity, signer])}`; };
 
   function validateActive(active, record) {
     check(isText(active.attemptId) && OPERATIONS.includes(active.operation) && isText(active.operationKey), 'invalid active identity');
@@ -127,11 +131,16 @@ export function createSignerReservations({ journal, pins, openApproval = refused
     check(record.network === pins.network && record.chainIdentity === pins.chainIdentity, 'chain mismatch');
     check(isCount(record.revision) && record.revision > 0 && isCount(record.floor), 'invalid revision or floor');
     if (record.active !== null) validateActive(record.active, record);
-    if (record.executed !== null) { check(isCount(record.executed.nonce), 'invalid executed nonce'); validateSigned(record.executed, record.signer, record.executed.nonce); }
     return record;
   }
-  async function write(record) {
-    const key = keyOf(record.signer);
+  // The approval this signer's most recent execution settles spent, or null before the first.
+  async function readSettlement(signer) {
+    const row = await journal.get(settlementKeyOf(signer));
+    if (row === undefined) return null;
+    check(row?.format === SETTLEMENT_FORMAT && row.signer === signer && isHex64(row.txHash) && (row.approvalId === null || isText(row.approvalId)), 'invalid settlement record');
+    return row;
+  }
+  async function write(record, key = keyOf(record.signer)) {
     try { await journal.put(key, record); } catch (cause) {
       let saved;
       try { saved = await journal.get(key); } catch { fail('signer_reservation_uncertain', cause); }
@@ -152,8 +161,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
       if (active === UNCHANGED) return record;
       const spent = active === SPENT;
       check(isCount(record.revision + 1) && (!spent || isCount(record.active.nonce + 1)), 'revision or nonce exhausted');
-      return write({ ...record, revision: record.revision + 1, floor: spent ? Math.max(record.floor, record.active.nonce + 1) : record.floor, active: spent ? null : active,
-        executed: spent ? { ...record.active.signed, nonce: record.active.nonce } : record.executed });
+      return write({ ...record, revision: record.revision + 1, floor: spent ? Math.max(record.floor, record.active.nonce + 1) : record.floor, active: spent ? null : active });
     });
   }
 
@@ -186,7 +194,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
       const nonce = Math.max(chain + 1, floor), revision = (record?.revision ?? 0) + 1;
       check(isCount(revision), 'revision exhausted');
       const reservation = await write({ format: FORMAT, network: pins.network, chainIdentity: pins.chainIdentity, pinVersion: pins.pinVersion,
-        signer, revision, floor, executed: record?.executed ?? null, active:{ attemptId: randomUUID(), operation, operationKey, nonce, approvalIntent: null, approvalId: null, signed: null } });
+        signer, revision, floor, active: { attemptId: randomUUID(), operation, operationKey, nonce, approvalIntent: null, approvalId: null, signed: null } });
       return { reservation, nonce };
     });
   }
@@ -237,12 +245,14 @@ export function createSignerReservations({ journal, pins, openApproval = refused
   /**
    * Replaces the approval id of signed bytes with the id of another authorization for the same exact request text, after the
    * earlier one ended, in one write; the execution then settles the new id. Refuses a reservation without signed bytes, a null
-   * id and another request text. The same id again changes nothing.
+   * id and another request text. The same id again changes nothing. Refuses `signer_execution_settled` once an execution of
+   * these bytes has fixed the approval to spend.
    */
   async function renewApproval(reservation, approval) {
     check(isText(approval?.ledgerId), 'invalid approval');
-    return update(reservation, ({ active }) => {
+    return update(reservation, async ({ signer, active }) => {
       check(active.signed !== null && active.approvalIntent === approval.requestText, 'renewal needs signed bytes and the bound request text');
+      if ((await readSettlement(signer))?.txHash === active.signed.txHash) fail('signer_execution_settled', 'an execution of these bytes already fixed the approval to spend');
       return active.approvalId === approval.ledgerId ? UNCHANGED : { ...active, approvalId: approval.ledgerId };
     });
   }
@@ -282,19 +292,31 @@ export function createSignerReservations({ journal, pins, openApproval = refused
   }
   /**
    * Ends a reservation on an authenticated execution of its exact signed bytes: `observation` is
-   * `{status: 'executed', authenticated: true, txHash, projectionText}` from the lane's reader. Settles the approval spent, then
-   * in one write clears the claim, moves the floor past the nonce and keeps the signed bytes with their nonce as `executed`
-   * (the most recent execution only). Anything else (pending, failed, unauthenticated, other
-   * bytes) is `signer_execution_unproven` and changes nothing. The handle is stale afterwards. Returns the stored record.
+   * `{status: 'executed', authenticated: true, txHash, projectionText}` from the lane's reader. Stores the approval to spend (the
+   * one an earlier consume of these bytes stored, else the reservation's), settles that approval spent and any other one held for
+   * the bytes released, then in one write clears the claim and moves the floor past the nonce. Anything else (pending, failed,
+   * unauthenticated, other bytes) is `signer_execution_unproven` and changes nothing. With `approvalEnded: true` the caller has shown
+   * that the ledger no longer holds the approval to spend open (an operator released it): that approval is not settled spent and the
+   * reservation ends all the same. The handle is stale afterwards. Returns the stored record.
    */
-  async function consume(reservation, observation) {
-    return update(reservation, async ({ active }) => {
+  async function consume(reservation, observation, { approvalEnded = false } = {}) {
+    return update(reservation, async ({ signer, active }) => {
       check(active.signed !== null, 'signed bytes required');
       const { txHash, projectionText } = active.signed;
       if (!(observation?.status === 'executed' && observation.authenticated === true && observation.txHash === txHash && observation.projectionText === projectionText)) fail('signer_execution_unproven');
-      await settle(active.approvalId, 'spent', 'executed');
+      const stored = await readSettlement(signer);
+      const spend = stored?.txHash === txHash ? stored.approvalId
+        : (await write({ format: SETTLEMENT_FORMAT, signer, txHash, approvalId: active.approvalId }, settlementKeyOf(signer))).approvalId;
+      if (!approvalEnded) await settle(spend, 'spent', 'executed');
+      if (active.approvalId !== spend) await settle(active.approvalId, 'released', 'execution-settled');
       return SPENT;
     });
+  }
+  /** Whether an execution of the reservation's signed bytes already fixed the approval to spend, so no other approval may be linked for them. */
+  async function executionSettled(reservation) {
+    check(isAddress(reservation?.signer), 'reservation required');
+    const signed = reservation.active?.signed;
+    return signed != null && (await readSettlement(reservation.signer))?.txHash === signed.txHash;
   }
   /**
    * Removes the lock rows of dead holders (see `releaseAbandonedJournalLocks`, same proof and refusal), then retires every
@@ -310,5 +332,5 @@ export function createSignerReservations({ journal, pins, openApproval = refused
       if (record.active?.signed === null) await retireUnsigned(record);
     }
   }
-  return Object.freeze({ reserve, bindApprovalIntent, bindApproval, bindSigned, renewApproval, retireUnsigned, consume, recover, current: readRecord });
+  return Object.freeze({ reserve, bindApprovalIntent, bindApproval, bindSigned, renewApproval, retireUnsigned, consume, executionSettled, recover, current: readRecord });
 }

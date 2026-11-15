@@ -292,12 +292,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 
 - `P21a3bb` — gives the payment-evidence adapter `broadcast`, `readAccountNonce` and `readTransactionState`. `broadcast` acts only on the signed bytes the signer reservation holds: it reopens the stored authorization by id (or links a replacement through the new `renewApproval` step before sending), confirms the exact three-member projection with fresh authentication headers, runs the ledger's `confirm` on every replay, and dispatches once through the effect gate. An invalid confirmation is unknown and sends nothing; a failure after the dispatch starts is `outcome_unknown`. `readTransactionState` answers `applied` only when an authenticated block lists the hash and the executed transaction has the original's signature and complete content, then ends the reservation and settles its authorization spent; everything else is `pending` with its cause kept, and it never answers `absent`. Every reply is limited to 4 MiB and 10 seconds. The composition passes the adapter its owner, gated fetch, stamp source and cause recorder. The transport now stamps its own storage-write recovery calls from the session's stamp source, so a recovery stamp cannot collide with or fall below one the session used.
 
-- Late fixes to the payment-evidence adapter, from the whole-group review. `readTransactionState` accepts `{txHash}` alone, as the seller journal calls it, and reads the bytes and nonce the reservation holds for that hash, or those of the signer's most recent execution, which the reservation record keeps after it ends; it answers `applied` only when the node also serves the storage program the CREATE made, and it ends the reservation in the same queue as `broadcast`. When the stored authorization is no longer open, `broadcast` reads the chain before replacing it and refuses `transaction_already_executed` for an executed CREATE, so an authorization already spent is never replaced by a new one, also after a restart. The native transport lets a write pass once the chain has used the reserved nonce. `signCreate` claims the signer while holding the native lane's lock and reads the fee inputs only after the node's chain identity is bound; the native transport refuses to broadcast while a reservation is stored for its signer. `signer-reservation.mjs` exports the record's key for that check. The test fixture's scripted node serves the storage program read.
-
-
-## Evidence storage readback
-
-Payment-evidence readback compares the returned storage address and every metadata field with the retained signed CREATE before reporting applied or spending approval. Missing or different fields leave the reservation unchanged. The same check serves execution recognition during replay; JSON member order does not change the result.
+- Late fixes to the payment-evidence adapter, from the whole-group review. `readTransactionState` takes the bytes and nonce the seller journal keeps for the hash, which the journal now passes, also for a CREATE whose reservation has ended; it answers `applied` only when the node also serves the storage program the CREATE made (its address, data, metadata, program name and owner), and it ends the reservation in the same queue as `broadcast`. When the stored authorization is no longer open, `broadcast` reads the chain before replacing it: an executed CREATE refuses `transaction_already_executed`, and only a status of exactly `{state: 'unknown'}` allows a replacement; any other answer that does not prove the execution refuses `approval_required`. `consume` stores the approval it will spend in a record keyed by the signer before it settles it, and `renewApproval` refuses once that record names the CREATE, so one CREATE settles at most one authorization spent, also after a restart. The native transport lets a write pass once the chain has used the reserved nonce. `signCreate` claims the signer while holding the native lane's lock and reads the fee inputs only after the node's chain identity is bound; the native transport refuses to broadcast for its signer while the chain's account nonce is below a stored reservation's nonce. `signer-reservation.mjs` exports the record's key for that check. The test fixture's scripted node serves the storage program read.
 
 ## Commit register
 
@@ -1617,6 +1612,18 @@ Payment-evidence readback compares the returned storage address and every metada
 | | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 27c92266c296ed0bff1653f48a1d42379161817a |
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | b3df7082b465fc0d9c1206040a9e5ea7b85a652f |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 1bf7311e098d0d06e54b26ec97aea4f9e74cab10 |
+| WF | delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | 0245218b47bdb45775221164100a09ab7ccb2d35 |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 761621e175cb94637425171c512077accb5f7ba6 |
+| | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` | 7797647b3bda845b75faa490eef6592949d87847 |
+| | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | 48465811c45148130b612f81f1f7284453161001 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 60dae400c63b663c77a287459b1e47cea57ed3d5 |
+| WF | delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/demos-sr2-adapter.mjs:64` | da760633c415a79c635121fe311b4ef47df6496d |
+| | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | abe5cea422327278732c707b1e8957274677ea44 |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 82d3054cde61baac5a4638e991fc67c4cedc03d3 |
+| | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | c9957a6b9c243c285b85d8fc2991c91fb1c4ec7e |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | ff3a9f0c8230954e2a0425e7195f4c38503fd514 |
 | WF | fix(client): verify evidence storage address and metadata | Git commit selector b4d5c1f7d99f1650c437b3a8d266bc82f23c119b |
 | | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | 478ef59d0e9d03b9a461d13b79afe4c4285a1403 |
 | | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` | 368b592d492038d35f4ff4b6d869173160720152 |
@@ -4866,6 +4873,34 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
 | delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
 | delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/README.md:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-seller/README.md:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-seller/test/payment-evidence-wallet-journal.test.mjs:1` |
+| fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/HOLD.json:1` |
+| fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/src/dacs/demos-sr2-adapter.mjs:64` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): WF refuse a storage readback with partial creation provenance and end the reservation of an executed CREATE whose authorization was released | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
 | b4d5c1f7d99f1650c437b3a8d266bc82f23c119b | `packages/dacs-client/README.md:1` |
 | b4d5c1f7d99f1650c437b3a8d266bc82f23c119b | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
 | b4d5c1f7d99f1650c437b3a8d266bc82f23c119b | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` |
@@ -4882,6 +4917,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF exercise another storage address in readback | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF exercise another storage address in readback | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF exercise another storage address in readback | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| Merge updated storage evidence base | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/DELTA-NOTES.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/README.md:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/src/dacs/demos-sr2-adapter.mjs:64`<br>`packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1`<br>`packages/dacs-client/src/wallet/signer-reservation.mjs:1`<br>`packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1`<br>`packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1`<br>`packages/dacs-client/test/node-signer-reservation.test.mjs:1`<br>`packages/dacs-seller/README.md:1`<br>`packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs:1`<br>`packages/dacs-seller/test/payment-evidence-wallet-journal.test.mjs:1` |
 
 ## Original moved files
 
@@ -4899,7 +4935,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/dacs/delivery-readback.mjs` | `http-mcp/src/dacs/delivery-readback.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/src/dacs/dem-delivery-consumer.mjs` | `http-mcp/src/dacs/dem-delivery-consumer.mjs` | bc94796472c3c44d3f640a5ef1c2dfd0086e535c | changed by D16 | 597a1a6205e46cfb4e1a1a44b768ace3239f0843 |
 | `packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs` | `http-mcp/src/dacs/dem-delivery-context-consumer.mjs` | 3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7 | unchanged | 3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7 |
-| `packages/dacs-client/src/dacs/demos-sr2-adapter.mjs` | `http-mcp/src/dacs/demos-sr2-adapter.mjs` | aec7ffb01c037b98772be53a7d4c6d1b32aa3868 | unchanged | aec7ffb01c037b98772be53a7d4c6d1b32aa3868 |
+| `packages/dacs-client/src/dacs/demos-sr2-adapter.mjs` | `http-mcp/src/dacs/demos-sr2-adapter.mjs` | aec7ffb01c037b98772be53a7d4c6d1b32aa3868 | changed by WF | da760633c415a79c635121fe311b4ef47df6496d |
 | `packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs` | `http-mcp/src/dacs/demos-sr2-wallet-bridge.mjs` | aae9cc8e17848ff796c10b1c2289b7da798eefa0 | unchanged | aae9cc8e17848ff796c10b1c2289b7da798eefa0 |
 | `packages/dacs-client/src/dacs/devnet-purchase-consumer.mjs` | `http-mcp/src/dacs/devnet-purchase-consumer.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/src/dacs/directory.mjs` | `http-mcp/src/dacs/directory.mjs` | 7501cb68e65b07831eda5ce1723e870864656c69 | changed by D16 | c91e7f4769c14fa8b8306ef38647c65230cce881 |
