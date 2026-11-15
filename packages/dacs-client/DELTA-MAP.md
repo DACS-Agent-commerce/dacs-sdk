@@ -4668,6 +4668,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): allow the reviewed wallet provider import in the audit | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): allow the reviewed wallet provider import in the audit | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): allow the reviewed wallet provider import in the audit | `packages/dacs-client/HOLD.json:1` |
+| fix(client): allow the reviewed wallet provider import in the audit | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): allow the reviewed wallet provider import in the audit | `packages/dacs-client/scripts/check-imports.mjs:1` |
+| fix(client): allow the reviewed wallet provider import in the audit | `packages/dacs-client/scripts/check-imports.test.mjs:1` |
 
 ## Original moved files
 
