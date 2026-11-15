@@ -8904,28 +8904,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF read client delta records through one assembler",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
-          "before": "d268285a6a256119ca07a0d87557610764f5afa8",
-          "after": "29ba56b6264d27cebb8cad969408ceb4bc6774af"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF order delta records by file name and check every recorded path",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
-          "before": "29ba56b6264d27cebb8cad969408ceb4bc6774af",
-          "after": "0db3b89514f68fbba88d99345a0ea7089911e3d7"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF P21a2aa add the fence-free observer and bounded source reads",
       "files": [
         {
@@ -9565,6 +9543,158 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee",
+          "after": "89db1bf53f2e62853119805060587931c6b7078f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "1d687234da2ff434291fcea67c4488d8e6614f4d",
+          "after": "04faef5ff305e1763bfe712d51c396fedd2a7fb3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6",
+          "after": "88f40ad0f47ef2f5e11435175c265e01e7140d19"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a",
+          "after": "ff9732c9168110cae498ead2048d51b36ddbbf9a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "42a1d94960ea6b671d6ed387007bd899a2b4e33b",
+          "after": "b20c12b6561dea8fadb54a7e3c52e9f83e0e72e4"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0e9061d13141e783f3fdb484b97f66f9b45253c",
+          "after": "96968641ddf503280b35d21fc0b0708a51783cb2"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "d3bf2b1e65c8736ccd0c09fe42c1e5c11b0bce49",
+          "after": "15e7ac95a7940b8712e966a83885505142afd796"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "7cf6b00589e4818b4fbd876ab327421a6e90cfba",
+          "after": "3ff282a68f7e0551135e6a663a718f8eb655dade"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 fence audited unsigned reservation revisions",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "04faef5ff305e1763bfe712d51c396fedd2a7fb3",
+          "after": "b8d65ab0a50ab2d37f22da6f5d74a41ffb65207a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "96968641ddf503280b35d21fc0b0708a51783cb2",
+          "after": "bb26d97d15d59c621b149847feebd7c7095dbe7e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF finish the signer reservation's terminal steps and startup recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0d4803b0dcf41dd15566abe589f3756ebf2cabce",
+          "after": "7ca77023b701055eb1bf092ff0ce632846f3702b"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "ed1935c77b265ee31428df33d4d85170d1d08d2b",
+          "after": "7e54669ad2d3b2af37aee198f8f4de382d598186"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "8b03bdb1392424fc58763afdabd38e9a28a82598",
+          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "3048034aa3b7af377e090e62be3f1173c1f06ee0",
+          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f",
+          "after": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API test after carrying the signer part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74",
+          "after": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test after carrying the exports test fix up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8",
+          "after": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged public API, session and seller-parts tests after carrying the effect gate part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "52730e2159bc80c6265d505e401c89810c3d1a80",
+          "after": "52730e2159bc80c6265d505e401c89810c3d1a80"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "d0e4b92a51189b36931096c70db47ffcf44d42c6",
+          "after": "d0e4b92a51189b36931096c70db47ffcf44d42c6"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74",
+          "after": "2f1489480a0ae2ea22fca468dd2a06a7dc0fbd74"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the public API test and wallet session merged from the signer part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "486970306e8b48607e190ce43ffd2f6f0b46113c",
+          "after": "486970306e8b48607e190ce43ffd2f6f0b46113c"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "52730e2159bc80c6265d505e401c89810c3d1a80",
+          "after": "52730e2159bc80c6265d505e401c89810c3d1a80"
+        }
+      ]
+    },
+    {
       "delta": "D38",
       "subject": "delta(client): D38 end passive lock and fence waits at the deadline",
       "files": [
@@ -9673,6 +9803,150 @@
           "path": "packages/dacs-client/test/seller-transport-key-validation.test.mjs",
           "before": "26523776589d9fbb6681a585ce59031a0dcdf48b",
           "after": "55dfd5c220077e110aa6d72115c236f5b8c68a79"
+        }
+      ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 accept the reviewed testnet block layout",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "75913557cd68e57668189f8fcc33ca674bebd7e0"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "4ba56c73af306778fef8531dd80bf48404d581b6",
+          "after": "2780fc9823cc2f5641992981217c13c94b3bdbcb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": null,
+          "after": "329b22f692f1e31f0ce48e0020d57f4b5e88ec4f"
+        }
+      ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 move the block-two observation to its own capture",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "75913557cd68e57668189f8fcc33ca674bebd7e0",
+          "after": "553cb843ac22399e425a0bfbb334500e869caecb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "329b22f692f1e31f0ce48e0020d57f4b5e88ec4f",
+          "after": "ed5ca3d48021e4df8e372307148c25e68e1765b8"
+        }
+      ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 state the block-two pin without a capture path",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "553cb843ac22399e425a0bfbb334500e869caecb",
+          "after": "172c0e6ab561cdb1ddf4efe9e6eddb9b24fdef6f"
+        }
+      ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 refuse a block-one predecessor that differs from the pin before saving the reads",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "172c0e6ab561cdb1ddf4efe9e6eddb9b24fdef6f",
+          "after": "dda41718971ceb8b360bb0bcfeb063a741b283aa"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "ed5ca3d48021e4df8e372307148c25e68e1765b8",
+          "after": "d2f826dc1bc3db1138b3d4df9ac61b33ffeed121"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF preserve merged wallet validation",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "9c5a38b22893b6f572bc63249f8b116fe1c738a0",
+          "after": "9c5a38b22893b6f572bc63249f8b116fe1c738a0"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "37c703ca19b331857b0d49569589a6f15144b1ed",
+          "after": "37c703ca19b331857b0d49569589a6f15144b1ed"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs and node-wallet-session.mjs blobs after merging eedd37b3e502",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "285c2eba321bfb342c99dde92a5ddaa2597cdf57",
+          "after": "285c2eba321bfb342c99dde92a5ddaa2597cdf57"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "988c0c6a883f16ffbd5119e5fd60aea3e6a83510",
+          "after": "988c0c6a883f16ffbd5119e5fd60aea3e6a83510"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged node-wallet-session.mjs blob after merging a619ce44142c",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c",
+          "after": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF use recorded blocks for cancellation checks",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9",
+          "after": "f2337a42eebc81e26737556a54eccee74dc3cb3b"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read client delta records through one assembler",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "d268285a6a256119ca07a0d87557610764f5afa8",
+          "after": "29ba56b6264d27cebb8cad969408ceb4bc6774af"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF order delta records by file name and check every recorded path",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "29ba56b6264d27cebb8cad969408ceb4bc6774af",
+          "after": "0db3b89514f68fbba88d99345a0ea7089911e3d7"
         }
       ]
     }
