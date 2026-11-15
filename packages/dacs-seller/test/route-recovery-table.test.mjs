@@ -13,7 +13,7 @@ import { paymentEvidenceAddress } from '@kynesyslabs/dacs';
 import { deliverableAddress, deliveryEvidenceAddress, listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { JOB, seller, testWallet } from './helpers/protocol-fixture.mjs';
 import { EVIDENCE_SIGNATURE, OTHER_TX, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
-import { arrangeReceipts, arrangeRecord, arrangeTransfer, fixtureReceiptsFile, nativeRecord, nativeTransfer } from './helpers/completed-source-cells.mjs';
+import { arrangeReceipts, arrangeRecord, arrangeTransfer, fixtureReceiptsFile, nativeRecord, nativeTransfer, omit } from './helpers/completed-source-cells.mjs';
 import { BUYER, SELLER, PIN, continuingWorld, derive, jobFor, proposeJob, world } from './helpers/wire-routes-world.mjs';
 import { BUNDLE_REFUSALS, SHORT_LEASE_MS, bundleWorld, claimedTransport, completions, editSession, markPaid, operationOf, proposalSigningRig, reconcileInput, realWorld, tempDirectory } from './helpers/route-recovery-world.mjs';
 
@@ -660,10 +660,8 @@ async function checkNativeSources(t) {
   const send = () => p.send(txHash, { lapse: false }), stored = (await send()).text;
   // Every answer is signed and every signed request leaves a nonce in the journal and the accounting rows, so those are left out of what
   // a replay must not change. The receipt count is the test's own edit in the permit cells.
-  const snapshot = () => {
-    const { rows, journal, receipts, ...kept } = w.snapshot(p), { responseSignatures, ...effects } = w.counts;
-    return { ...kept, outcome: w.wireState(p), effects, anchorRows: [...w.anchors.journal.rows], sourceRows: [...w.anchors.sourceJournal.rows] };
-  };
+  const snapshot = () => ({ ...omit(w.snapshot(p), ['rows', 'journal', 'receipts']), outcome: w.wireState(p), effects: omit(w.counts, ['responseSignatures']),
+    anchorRows: [...w.anchors.journal.rows], sourceRows: [...w.anchors.sourceJournal.rows] });
   for (const [label, cause, arrange] of nativeSourceCells(txHash)) await assertWithheldThenRestored(label, { send, snapshot, stored, cause, arrange: () => arrange(w) });
   w.advance(3_600_000);
   assert.equal((await send()).text, stored, 'a later clock alone changes nothing');

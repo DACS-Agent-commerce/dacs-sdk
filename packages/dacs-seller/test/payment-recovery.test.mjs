@@ -13,7 +13,7 @@ import { deliverableAddress, deliveryEvidenceAddress } from '../src/dacs/purchas
 import { EVIDENCE_SIGNATURE, OTHER_TX, PAYMENT_TX, WORK_SAVE_SIGNATURE, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
 import { DELEGATION_MS, T0, nativePaymentWorld } from './helpers/native-payment-wire-fixture.mjs';
 import { killAndReopen } from './helpers/payment-restart-process.mjs';
-import { arrangeRecord, nativeRecord } from './helpers/completed-source-cells.mjs';
+import { arrangeRecord, nativeRecord, omit } from './helpers/completed-source-cells.mjs';
 
 // The deadline of one bounded source read, and how many turns of the event loop a test waits for a read to start.
 const SOURCE_READ_TIMEOUT_MS = 10000;
@@ -810,11 +810,9 @@ async function checkNativePassiveSources(t) {
   ];
   // The wallet's steps, the signatures the seller made and the journals of the artifact anchor, with the demo recovery rows among them.
   // Response signatures are left out: each answer is signed.
-  const effects = () => {
-    const { rows, journal, receipts, ...kept } = w.snapshot(p), { responseSignatures, ...signatures } = w.counts;
-    return { ...kept, signatures, walletSteps: w.steps.filter((entry) => entry.step.startsWith('wallet')).length, requestsToWallet: w.anchors.captured.length,
-      anchorRows: [...w.anchors.journal.rows], sourceRows: [...w.anchors.sourceJournal.rows] };
-  };
+  const effects = () => ({ ...omit(w.snapshot(p), ['rows', 'journal', 'receipts']), signatures: omit(w.counts, ['responseSignatures']),
+    walletSteps: w.steps.filter((entry) => entry.step.startsWith('wallet')).length, requestsToWallet: w.anchors.captured.length,
+    anchorRows: [...w.anchors.journal.rows], sourceRows: [...w.anchors.sourceJournal.rows] });
   const before = effects();
   for (const when of ['at once', 'after a restart']) {
     if (when === 'after a restart') await w.restart();

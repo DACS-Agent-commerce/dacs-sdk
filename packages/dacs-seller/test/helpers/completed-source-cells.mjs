@@ -3,6 +3,9 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+/** `record` without the fields in `names`: what a replay of a completed payment must leave as it was leaves out the counts every request moves. */
+export const omit = (record, names) => Object.fromEntries(Object.entries(record).filter(([name]) => !names.includes(name)));
+
 /** The fixture seller's receipt state file. */
 export const fixtureReceiptsFile = (w) => join(w.f.config.durableDirectory, 'sdk-receipts', 'seller-receipts.json');
 
