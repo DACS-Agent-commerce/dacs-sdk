@@ -10422,6 +10422,33 @@
           "after": "17068c95d837ebd0b8a66c7067db360ad12bc46e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read the string-zero genesis in the reviewed-layout block reads and record the merged blobs of three source files after merging 88ddc800243b",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "10714c8e99468837c2ebc47cd666ec638488bf33",
+          "after": "10714c8e99468837c2ebc47cd666ec638488bf33"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "f63694d231a3e3f70e52371bcc5eaf913e4e60d3",
+          "after": "f63694d231a3e3f70e52371bcc5eaf913e4e60d3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "192016f0d5c93cbdd715fa2b5058bb312bc1d683",
+          "after": "192016f0d5c93cbdd715fa2b5058bb312bc1d683"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "f2337a42eebc81e26737556a54eccee74dc3cb3b",
+          "after": "4562053621a6e0820910e21178456be9811e2cd1"
+        }
+      ]
     }
   ]
 }
