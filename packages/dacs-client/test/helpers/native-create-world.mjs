@@ -72,13 +72,16 @@ export function countingJournal(journal, events) {
  * The transport and its test wallet over `journal`. `onNode(message, call)` runs
  * before the scripted node answers any call and may pause or kill the process.
  * `identityAnswer(chainIdentity)` replaces the node's answer to every block read. `stamps` is the transport's RPC stamp source.
+ * `answer(message, call)` replaces the node's whole answer to a call when it returns one.
  */
-export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, stamps }) {
+export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, answer = () => undefined, stamps }) {
   const wallet = deterministicWallet();
   const sent = { confirms: [], broadcasts: [] };
   const answerNode = async (init) => {
     const body = JSON.parse(init.body), call = body.params[0], message = call.message ?? call.extra;
     await onNode(message, call);
+    const scripted = answer(message, call);
+    if (scripted !== undefined) return scripted;
     if (message === 'getBlockByNumber' && identityAnswer) return identityAnswer(PINS.chainIdentity);
     if (message === 'getBlockByNumber') return reply({ number: 0, status: 'confirmed', hash: PINS.chainIdentity }, '');
     if (message === 'getAddressNonce') return reply(0);
