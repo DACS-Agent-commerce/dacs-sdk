@@ -50,7 +50,7 @@ test("a step that an earlier attempt's closed predicate refused is not a permane
                 assert.deepEqual(closureStages(step), [point.stage]);
                 // The SDK's anchor wrapper replaces the callback's error with a generic one; the signing step keeps the provider's own.
                 assert.equal(step.error.code === UNCODED, point.step === ANCHOR);
-                const signatures = f.controls.signatures.length, creates = f.controls.creates.length, before = copy(await f.base.entries());
+                const signatures = f.controls.signatures.length, before = copy(await f.base.entries());
                 // A successor that is not writable changes nothing.
                 await blocked(() => resolve(f, f.fresh(), () => false));
                 assert.deepEqual(await f.base.entries(), before);
