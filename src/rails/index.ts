@@ -380,6 +380,8 @@ export {
 } from "./payD402.js";
 export {
   createPayDemRail,
+  demosAddressFromClaim,
+  normalizeDemosNativeAddress,
   PayDemIncludedNonceVisibilityError,
   payDemSettle,
   payDemSettleCore,

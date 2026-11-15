@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "2394e6ebe0574c61d4fa1c1b8f758492c89945a1"
+        "blob": "6735a6670af2dd1ee7e020d89e6037e66c30239a"
       },
       "DELTA-LEDGER.json": {
-        "blob": "a8cb6f7161900074210fd204444aed521e9ae210"
+        "blob": "908c2dfc03b4618ed3c94e83e25cdfe1ab7b0d6b"
       },
       "DELTA-MAP.md": {
-        "blob": "3f9060f8d0e510469a1fad7bb09ddcdd699c36f2"
+        "blob": "27b00cc1736798023061a8fbc03cc87c24966ad9"
       },
       "DELTA-NOTES.md": {
         "blob": "f2b03b9da621c02cd756b1f4792a3541e2845423"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "c34838460207178a938350851529b9a24ca43355"
+        "blob": "fc070583cb1bef6bc783b08ed06d7e9619e2c5cd"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "44c38b75614652dd1fbe1484d9b60811322fa0b3"
+        "blob": "01611b151e14d4eb7f2557ffce807178346fef5b"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,10 +1058,10 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "06eb48e280b4650fce9a625b100ba97c81c1b6d4"
+        "blob": "aa25a9d3573c174eb5684d96cc6ff2c2dc310851"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "6ed2b09718f6d4d1a04c2a4684c167b953d0059a"
+        "blob": "f91a9f6504d7601ab2ceefa0c33e087ee24a08b1"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1259,7 +1259,7 @@
         "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "1426fa081a61f904773ce02cb38d9c7184851839"
+        "blob": "0862419d2002cc0910e531cd0426cbd044ba21cf"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1313,19 +1313,19 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "7e61b54257846f628b2984bc6bee811470401dc2"
+        "blob": "abf4b0a8fcce97c05fdd573460f27c25cf216716"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
       },
       "src/wallet/effect-boundary.mjs": {
-        "blob": "be747aab0f805f37b550920e8acea9c023ac7f93"
+        "blob": "796433f8bc1bca0d06a152305289e52f05f03812"
       },
       "src/wallet/effect-fence.mjs": {
         "blob": "f084d06e7fcac773a024fb36149b1f68b2826403"
       },
       "src/wallet/effect-history.mjs": {
-        "blob": "d10b3d26b686bfc6ff6844a2c884b02e6b6e5e53"
+        "blob": "c9067c8d3faf5b01d1f2f174280d81877786e2d5"
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
@@ -1412,10 +1412,10 @@
         "blob": "f3d0560be2447f1a5195f646001e74f7454aa6c9"
       },
       "test/effect-boundary-operation.test.mjs": {
-        "blob": "c5f91f14575651303e144ec91570d7db728034e1"
+        "blob": "83bf647eea4cbb4cf4614e97b07b52203356393c"
       },
       "test/effect-boundary.test.mjs": {
-        "blob": "f948151165e3ba48272216e650df2f9bc3c20480"
+        "blob": "6b2e2d5045bdfb8de42ddfa5a428e9ca7b3369f1"
       },
       "test/effect-history.test.mjs": {
         "blob": "d7894853a7aa7c21b1b993b37d74642856ce1e4c"
@@ -1838,7 +1838,7 @@
         "blob": "c458b4582cc4b2aef338c9525dd0b69a0ec1ff57"
       },
       "test/host-observations.test.mjs": {
-        "blob": "340d541daecd3e501767c1cf341ea1e7c2c1683f"
+        "blob": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "2bb9dd310f49253c35f2985fff4a653e0b22775e"
@@ -1931,7 +1931,7 @@
         "blob": "8e433835a01a81de01ea3a4d6f377270905ae434"
       },
       "test/passive-observation.test.mjs": {
-        "blob": "cf4497afe1bd896a8d18a55993bb8b38f4896c16"
+        "blob": "4b2d301177a3d336f1976f1bafaae1fc00e98c70"
       },
       "test/portal-capability.test.mjs": {
         "blob": "03649eaa13ff185ed7e74c73984df819b417e1ff"
@@ -1977,6 +1977,9 @@
       },
       "test/purchase-executed-only.test.mjs": {
         "blob": "72479ddb615e6ad1f1002f588eabbb9e0dab4d1a"
+      },
+      "test/purchase-expiry-clocks.test.mjs": {
+        "blob": "fd0b0dd51c4fc12d8ab7c83f2b89c87b391047d1"
       },
       "test/purchase-integrity.test.mjs": {
         "blob": "174d67c16132706497904b28250c6135e97d1497"

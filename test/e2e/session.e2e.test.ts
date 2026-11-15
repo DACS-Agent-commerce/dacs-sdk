@@ -3,7 +3,6 @@ import { describe, expect, test } from "vitest";
 import { buildSignedArtifact, verifySignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {
   runSessionCore,
-  sessionAnchorName,
   type SessionDeps,
 } from "../../src/agent/runSessionCore.js";
 import {
@@ -220,21 +219,6 @@ function strictComposite(
 function verifyDeps(sub: ReturnType<typeof memSubstrate>): VerifyBundleDeps {
   return {
     readArtifact: sub.read,
-    resolveRef: async (kind, jobId, _parties, legacyRef) => {
-      if (kind === "dacs-2-composite" && legacyRef) {
-        return sub.read(legacyRef.id);
-      }
-      const name =
-        kind === "dacs-3-agreement"
-          ? sessionAnchorName.agreement(jobId)
-          : kind === "dacs-4-evidence"
-            ? sessionAnchorName.evidence(jobId)
-            : kind === "dacs-2-verifyresult"
-              ? sessionAnchorName.vet(jobId, sellerDid)
-              : null;
-      if (!name) return null;
-      return sub.read(await sub.anchorAddress(name));
-    },
     resolvePublicKey: async (did) => resolveFromDid(did),
     verify,
     verifyEvidence: async () => ({
@@ -587,25 +571,25 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
       ).resolves.toMatchObject({ status: "valid" });
     }
 
-    // runSessionCore still emits the legacy MVP buyer-only bundle. A strict
-    // third-party verifier must reject it until the two-sided producer helper
-    // is wired into this orchestration path.
+    // runSessionCore emits the old buyer-only bundle with flat {kind,id} refs.
+    // Verification refuses it as not a current attestation bundle.
     const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
 
     expect(v.ok).toBe(false);
     expect(v.fullyVerified).toBe(false);
-    expect(v.reason).toMatch(/missing required signature/);
-    expect(v.reason).toContain(sellerDid);
-    // The bundle's buyer signature verifies over the §10.4.1 signed scope.
-    expect(v.signatures).toEqual([{ party: buyerDid, verdict: "valid" }]);
-    // Full 5-stage spec bundle: content-addressed listing/agreement refs +
+    expect(v.reason).toBe("not an attestation bundle");
+    expect(v.signatures).toEqual([]);
+    expect(v.refs).toEqual([]);
+    // What the runner stored: content-addressed listing/agreement refs +
     // vet record + settlement evidence.
     expect(result.vetRef).toBeDefined();
-    expect(v.bundle?.outcome).toBe("completed");
-    expect(v.bundle?.vetRecords).toHaveLength(1);
-    expect(v.bundle?.settlementEvidence).toHaveLength(1);
-    expect(v.bundle?.listingRef.contentHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(v.bundle?.agreementRef?.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(sub.store.get(result.bundleRef)).toMatchObject({
+      outcome: "completed",
+      vetRecords: [expect.anything()],
+      settlementEvidence: [expect.anything()],
+      listingRef: { contentHash: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      agreementRef: { contentHash: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
 
     // Settlement evidence carries the exact authenticated log coordinate.
     const evidence = sub.store.get(result.settlementRef);
@@ -627,31 +611,18 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     // Deal struck against listing v2, anchored at the versioned §6.3.4 address.
     const { result } = await runFlow(sub, 2);
     const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
-    // Strict two-sided verification fail-closes the legacy buyer-only bundle
-    // (see the first test) — assert that the missing seller signature is the
-    // only bundle-level failure. The legacy one-sided Agreement is now also
-    // reported honestly as unauthenticated, while every other referenced
-    // artifact — including the v2 Listing at its versioned §6.3.4 address —
-    // must authenticate successfully. That pinning is what #29 tests.
+    // Verification refuses the runner's old buyer-only bundle (see the first
+    // test), so the pinned version is read from what the runner stored.
     expect(v.ok).toBe(false);
-    expect(v.reason).toMatch(/missing required signature/);
-    expect(
-      v.refs.find((ref) => ref.kind === "dacs-3-agreement"),
-    ).toMatchObject({
-      verdict: "signature-missing",
-      signature: { verdict: "missing" },
-    });
-    expect(
-      v.refs
-        .filter((ref) => ref.kind !== "dacs-3-agreement")
-        .every((ref) => ref.verdict === "ok"),
-    ).toBe(true);
+    expect(v.reason).toBe("not an attestation bundle");
     // The bundle records the exact version it pinned, not a hardcoded 1.
-    expect(v.bundle?.listingRef.version).toBe(2);
-    const pinnedHash = v.bundle?.listingRef.contentHash;
+    const pinned = structuredClone(
+      sub.store.get(result.bundleRef)!.listingRef,
+    ) as { version: number; contentHash: string };
+    expect(pinned.version).toBe(2);
 
     // The seller publishes v3 (a new address); v2's anchor is untouched, so the
-    // historical bundle still verifies against the version it pinned.
+    // stored bundle still pins the version it was struck against.
     const v3Signed = await buildSignedArtifact(
       {
         agentId: sellerDid,
@@ -670,21 +641,14 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
     await sub.anchor(listingAddress(sellerDid, "market-data", 3), v3Signed);
 
     const after = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
-    // v3's publication changes nothing: the pinned v2 ref still resolves and
-    // authenticates at its own address; the same legacy Agreement gap remains.
-    expect(after.reason).toMatch(/missing required signature/);
-    expect(
-      after.refs.find((ref) => ref.kind === "dacs-3-agreement")?.verdict,
-    ).toBe("signature-missing");
-    expect(
-      after.refs
-        .filter((ref) => ref.kind !== "dacs-3-agreement")
-        .every((ref) => ref.verdict === "ok"),
-    ).toBe(true);
-    expect(after.bundle?.listingRef.contentHash).toBe(pinnedHash);
+    // v3's publication changes nothing: the bundle is still refused and still
+    // pins the same Listing.
+    expect(after.ok).toBe(false);
+    expect(after.reason).toBe("not an attestation bundle");
+    expect(sub.store.get(result.bundleRef)!.listingRef).toEqual(pinned);
   });
 
-  test("tampering the anchored bundle breaks signature verification", async () => {
+  test("an anchored bundle from the early runner is refused by strict verification", async () => {
     const { sub, result } = await runFlow();
     // Mutate a supported signed-scope field of the bundle after it was signed.
     const bundle = { ...sub.store.get(result.bundleRef)! };
@@ -693,6 +657,6 @@ describe("end-to-end session (publish → negotiate → x402 settle → verify)"
 
     const v = await verifyBundleCore(result.bundleRef, verifyDeps(sub));
     expect(v.ok).toBe(false);
-    expect(v.reason).toMatch(/signature/);
+    expect(v.reason).toBe("not an attestation bundle");
   });
 });
