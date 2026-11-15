@@ -1630,7 +1630,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | 84b69de0aaae9b1269bdf8b813a2f9a183fdd336 |
 | WF | delta(client): WF exercise another storage address in readback | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | fa00650470049af3a851da08362bb082f90e86db |
-| D11 | fix(client): preserve combined storage readback checks | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): preserve combined storage readback checks | Git commit selector c429d24f62c4426449bd44dbf873e2bbe7f62b05 |
 | | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1`: abe5cea422327278732c707b1e8957274677ea44<br>`packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1`: 7797647b3bda845b75faa490eef6592949d87847<br>`packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1`: 4876283f701e7150328967f1f0147d2070f88674 | |
 
 ## Complete commit and file inventory
@@ -4921,6 +4921,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF exercise another storage address in readback | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
 | Merge updated storage evidence base | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/DELTA-NOTES.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/README.md:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/src/dacs/demos-sr2-adapter.mjs:64`<br>`packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1`<br>`packages/dacs-client/src/wallet/signer-reservation.mjs:1`<br>`packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1`<br>`packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1`<br>`packages/dacs-client/test/node-signer-reservation.test.mjs:1`<br>`packages/dacs-seller/README.md:1`<br>`packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs:1`<br>`packages/dacs-seller/test/payment-evidence-wallet-journal.test.mjs:1` |
 | fix(client): preserve combined storage readback checks | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| fix(client): record combined storage readback checks | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
