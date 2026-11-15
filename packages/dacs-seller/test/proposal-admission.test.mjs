@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {identityBundleHash,canonicalize,sha256Hex} from '@kynesyslabs/dacs';
 import Database from 'better-sqlite3';
 import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs';
-import {testWallet,NOW,JOB,buyer,seller} from './helpers/protocol-fixture.mjs';
+import {testWallet,NOW,JOB,buyer} from './helpers/protocol-fixture.mjs';
 import {fixtureIdentityBundle} from './fixtures/listings.mjs';
 import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {SESSION_CHALLENGE_LIFETIME_MS} from '../src/dacs/session-admission.mjs';

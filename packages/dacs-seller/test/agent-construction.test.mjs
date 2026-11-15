@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync,readdirSync,readlinkSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import * as core from '@kynesyslabs/dacs';
-import {createSellerAgent,SellerAgentError} from '../src/dacs/seller-agent.mjs';
+import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
 import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {fixtureListing} from './fixtures/listings.mjs';
 import {seller,buyer,JOB,NOW} from './helpers/protocol-fixture.mjs';
