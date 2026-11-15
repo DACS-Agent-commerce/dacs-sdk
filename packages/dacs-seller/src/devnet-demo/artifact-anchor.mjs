@@ -3,6 +3,7 @@ import { verifyComponent } from '../dacs/listing.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 import { boundedResolutionValue, resolveWithDeadline } from '../util/bounded-resolution.mjs';
 import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
+import { reportNativeRefusal } from '../dacs/native-observation-evidence.mjs';
 // Application-owned native publication for the real demo composition. Every
 // CREATE is produced by the packaged seller wallet and then accepted only
 // after an independent source read, original signed projection, and SDK
@@ -218,6 +219,10 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return `demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
   };
 
+  // A refusal this anchor proves from its own retained intent or from an authenticated readback is reported, before
+  // the coarse status or error below replaces it, to the collector of the call that is running (if any).
+  const refusalProof=(kind,address,retainedHash,observedHash=null)=>reportNativeRefusal({kind,address,retainedHash,observedHash});
+  const scopeConflict=(address,retained,input)=>{refusalProof('immutable-scope-conflict',address,retained.inputHash,exactHash(input));fail('conflict','immutable demo artifact intent differs');};
   const snapshot=async()=>publicationSnapshot(await sourceCapability.journal.entries(),await journal.entries());
   const signedNothing=async(address,row)=>(await snapshot()).classify(address,row)==='unsigned';
 
@@ -377,7 +382,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     let hash=retained.hash;
     if(!hash) {
       const hashes=(await snapshot()).addressHashes.get(input.logicalAddress);
-      if(!hashes?.size&&retained.error==='user_rejected') return {status:'rejected',reason:'user_rejected: the operator refused this CREATE',noResend:true};
+      if(!hashes?.size&&retained.error==='user_rejected'){refusalProof('operator-denied',input.logicalAddress,retained.inputHash);return {status:'rejected',reason:'user_rejected: the operator refused this CREATE',noResend:true};}
       if(hashes?.size!==1) return {status:'indeterminate',reason:'the original demo CREATE hash is not uniquely retained',noResend:true};
       hash=[...hashes][0];
       // Every caller holds the artifact lock from intent lookup through save,
@@ -400,6 +405,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     const record=await reader.read(input.logicalAddress,{expectedWriter:claim,expectedArtifactKind:input.artifactKind,...(input.deliveryBinding?{expectedDeliveryBinding:input.deliveryBinding}:{}),signedProjection:projection});
     if(record.status!=='present' || canonicalize(record.artifact)!==canonicalize(input.artifact) || record.receipt.contentHash!==input.receiptContentHash) {
       if(cacheable) immutable.delete(cacheKey);
+      if(record.status==='present') refusalProof('authenticated-contradiction',input.logicalAddress,input.receiptContentHash,contentHash(record.artifact));
       fail('invalid','native demo artifact readback differs from the retained intent');
     }
     const verdict=await reader.verifyReceipt({receipt:record.receipt,logicalAddress:input.logicalAddress,artifact:input.artifact,expectedWriter:claim,artifactKind:input.artifactKind,receiptContentHash:input.receiptContentHash,signedProjection:projection});
@@ -460,13 +466,13 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         // carry it, and only within the same scope: a proven unsigned attempt signed nothing, and a dead refused CREATE can
         // never be included, so no immutable intent is left to contradict. A dead refused CREATE's replacement may differ only
         // in the re-stamped fields (RESTAMPED_FIELDS). Any other change stays a conflict.
-        if(!sameInput&&publicationScope(retained.input)!==publicationScope(input)) fail('conflict','immutable demo artifact intent differs');
+        if(!sameInput&&publicationScope(retained.input)!==publicationScope(input)) scopeConflict(logicalAddress,retained,input);
         if(!unsigned) {
-          if(!sameInput&&!restampedOnly(retained.input,input)) fail('conflict','immutable demo artifact intent differs');
+          if(!sameInput&&!restampedOnly(retained.input,input)) scopeConflict(logicalAddress,retained,input);
           const deadHash=await deadRefusedCreateHash(input,retained);
           if(deadHash) supersedes={hash:deadHash,transaction:clone(retained.transaction)};
           else if(sameInput) return observe(input,retained,undefined,resendOptions);
-          else fail('conflict','immutable demo artifact intent differs');
+          else scopeConflict(logicalAddress,retained,input);
         }
       }
       if(!retained&&(await snapshot()).addresses.has(logicalAddress)) return {status:'indeterminate',reason:'signed CREATE retained without an intent',noResend:true};
@@ -536,6 +542,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         const state=await snapshot();
         const signed=state.live([...state.sourceRows,...state.walletRows]).some(([,row])=>!state.rejected(row) && row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
         const code=answer?.error?.code;
+        if(code==='user_rejected') refusalProof('operator-denied',logicalAddress,intent.inputHash);
         const stage=code==='user_rejected'?'denied':code==='broadcast_rejected'?'rejected':answer?.success===false&&!signed?'unsigned':'issued';
         await journal.put(keyFor(logicalAddress),{...intent,stage,error:code ?? 'wallet-response-missing'});
         if(signed&&code==='user_rejected') return observe(input,{...intent,stage,error:code},undefined,resendOptions);
@@ -567,7 +574,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       const retained=await journal.get(keyFor(logicalAddress));
       if(!retained) return noIntentAbsence(logicalAddress);
       const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
-      if(retained.inputHash!==exactHash(input)) return {status:'rejected',reason:'retained demo CREATE scope differs'};
+      if(retained.inputHash!==exactHash(input)){refusalProof('immutable-scope-conflict',logicalAddress,retained.inputHash,exactHash(input));return {status:'rejected',reason:'retained demo CREATE scope differs'};}
       authorizeRetained(retained);
       if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
       if(retained.stage==='closing') return {status:'absent',reason:CLOSING_ABSENT};
@@ -596,7 +603,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
       if(!retained) return proofOfNoIntent?noIntentAbsence(logicalAddress):{status:'absent',reason:'no seller-owned demo CREATE intent'};
-      if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress) return {status:'rejected',reason:'retained demo CREATE scope differs'};
+      if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress){refusalProof('immutable-scope-conflict',logicalAddress,retained.inputHash);return {status:'rejected',reason:'retained demo CREATE scope differs'};}
       authorizeRetained(retained);
       // After the access check and before any proof, readback or recovery send, a retained Vet record is held to
       // this anchor's own mode: an intent kept under the other mode is refused, never read, resent or proven unsigned.

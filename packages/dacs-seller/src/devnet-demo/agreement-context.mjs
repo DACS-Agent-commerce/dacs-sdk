@@ -1,4 +1,5 @@
 import { isProvenUnsignedAbsence, PASSIVE_RETAINED_READ } from '../dacs/native-dem-delivery-consumer.mjs';
+import { withNativeObservationEvidence } from '../dacs/native-observation-evidence.mjs';
 import { listingPin, protocolSupport } from '../dacs/purchase-protocol.mjs';
 import { attachIdentityPresentation, DEM_RAIL, purchaseSupport, verifyComponent } from '../dacs/listing.mjs';
 import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore, identityBundleHash, partyVetCore, verifyCompositeVerificationRecord, vetPhaseFailureClass, sellerFulfilmentVetModeOf, SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
@@ -91,9 +92,27 @@ function partyVetState(store,writer) {
 }
 
 const rejectedAuthorization=verdict=>({status:'authorization-rejected',reason:['fenced','expired','indeterminate'].includes(verdict?.reason)?verdict.reason:'indeterminate'});
-// A retained signing step whose signer provably never ran (no bytes written ahead) or whose signature is kept.
-// Bytes without a signature are an unknown outcome and are never recoverable.
-const signingRecoverable=(old,entry)=>entry?.signedBytes?Boolean(entry.signature):old.state==='pending';
+const ANCHOR_STEP='composite-anchor';
+// One execution's observation log is bounded; past either bound its coverage is unknown and the step is held.
+const PROVENANCE_MAX_ENTRIES=256,PROVENANCE_MAX_BYTES=1048576;
+const storedCause=error=>({code:typeof error?.code==='string'?error.code.slice(0,64):null,name:typeof error?.name==='string'?error.name.slice(0,64):'Error'});
+const closureAt=(entries,stage)=>entries.some(entry=>entry.result.kind==='closure'&&(stage===undefined||entry.stage===stage));
+// The log of a failed step, only when it is this exact step's and this execution's and covers the whole path; else null.
+const failureLog=(old,role)=>{
+  const {provenance}=old;
+  return provenance?.operationHash===old.operationHash&&provenance.inputHash===old.inputHash&&provenance.role===role
+    &&provenance.owner===old.owner&&provenance.coverage==='complete'&&Array.isArray(provenance.entries)?provenance.entries:null;
+};
+// What a retained failed signing step permits. Written-ahead bytes without a signature are held unless the log shows
+// the final guard stopped the run before the signer; a kept signature or a closure lets the step be taken over.
+const signingVerdict=(entry,log)=>{
+  if(entry?.signedBytes&&!entry.signature&&!(log&&closureAt(log,'signing-after-write-ahead')))return'held';
+  return entry&&(entry.signature||(log&&closureAt(log)))?'reconsider':'replay';
+};
+// What a retained failed anchor step permits. A refusal the provider proved, or a log that exists and holds no
+// callback at all (the SDK refused before any source contact), replays; any other complete log is reconsidered
+// from fresh evidence; no log is held. The SDK's error text, code and category decide nothing.
+const anchorVerdict=log=>!log?'held':log.length===0||log.some(entry=>entry.result.kind==='refusal')?'replay':'reconsider';
 
 // Reserve before execution. Completed results/failures replay; an interrupted
 // pending step holds for authoritative reconciliation and never executes again.
@@ -109,9 +128,15 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
     const {operationKey,operationHash,inputHash,step,execute,authorize}=input;
     const key=canonicalize({operationKey,step}),owner=randomUUID();
     const identity={operationHash,inputHash};
-    const kept=old=>{
+    // What a failed step permits: the orchestrator reads the provider's own provenance; the counterparty mode replays.
+    const verdictOf=(old,entry)=>!reconcile?'replay':step===SIGNING_STEP?signingVerdict(entry,failureLog(old,role)):anchorVerdict(failureLog(old,role));
+    const takeable=(old,entry)=>old.state==='pending'?step!==SIGNING_STEP||!entry?.signedBytes||Boolean(entry.signature):verdictOf(old,entry)==='reconsider';
+    const kept=(old,entry)=>{
       if(old.operationHash!==operationHash||old.inputHash!==inputHash)fail('conflict','party Vet effect key conflict');
-      if(old.state==='failed')throw replayFailure(old.error);
+      if(old.state==='failed'){
+        if(verdictOf(old,entry)!=='replay')fail('indeterminate','the retained party Vet step failed with a cause that is not proven final; authoritative reconciliation is required');
+        throw replayFailure(old.error);
+      }
       if(old.state==='complete'||(old.state===undefined&&Object.hasOwn(old,'value')))return clone(old.value);
       fail('indeterminate','the retained party Vet step has an unknown outcome; authoritative reconciliation is required');
     };
@@ -127,7 +152,8 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
         const observed=await state.read(job.jobId),ops=own(observed),old=ops.steps[key],entry=ops.signing[key]??null;
         if(!old||!['pending','failed'].includes(old.state))return null;
         if(old.operationHash!==operationHash||old.inputHash!==inputHash||entry&&(entry.operationHash!==operationHash||entry.inputHash!==inputHash))fail('conflict','party Vet effect key conflict');
-        const decision=step===SIGNING_STEP?(signingRecoverable(old,entry)?{}:null):await reconcile({step,inputHash,checkpoints:ops.checkpoints});
+        const decision=!takeable(old,entry)?null:step===SIGNING_STEP?{}:await reconcile({step,inputHash,checkpoints:ops.checkpoints});
+        if(decision?.refused){if(old.state==='failed')throw replayFailure(old.error);return null;}
         if(!decision)return null;
         if(authorized){const verdict=await authorize();if(verdict?.status!=='authorized')return{answer:rejectedAuthorization(verdict)};}
         let taken=false;
@@ -148,7 +174,7 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
       let replay=false,value;
       if(!taken)await state.update(job.jobId,current=>{
         const ops=own(current),old=ops.steps[key];
-        if(old){value=kept(old);replay=true;return undefined;}
+        if(old){value=kept(old,ops.signing[key]);replay=true;return undefined;}
         if(step===SIGNING_STEP&&ops.signing[key])fail('indeterminate','a legacy written-ahead signing step requires authoritative reconciliation');
         ops.steps[key]={...identity,state:'pending',owner};return current;
       });
@@ -173,8 +199,8 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
         });
         view=Object.freeze({key,generatedAt:at});
       }else await state.update(job.jobId,current=>{fenced(own(current));});}catch(error){try{await clear();}catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet preparation cleanup failed',{cause}),{code:'indeterminate'});}throw error;}
-      const signer={called:false};
-      const scope=Object.freeze({state,jobId:job.jobId,role,key,owner,clock,view,signer});
+      const signer={called:false},log={entries:[],bytes:0,coverage:'complete'};
+      const scope=Object.freeze({state,jobId:job.jobId,role,key,owner,clock,view,signer,log});
       const finish=outcome=>retryStoreWrite(()=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);ops.steps[key]={...identity,...outcome};return current;}));
       // Before the signer ran, only a busy or full store left the step open; after it,
       // only the wallet's own refusal proves nothing was signed. Both leave a way back.
@@ -187,7 +213,8 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
           throw error;
         }
         const failure=terminalFailure(error);
-        try{await finish({state:'failed',error:failure});}
+        // The failure and the execution's whole log are kept in one update, so neither survives without the other.
+        try{await finish({state:'failed',error:failure,owner,provenance:{...identity,owner,role,coverage:log.coverage,entries:log.entries}});}
         catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet failure could not be durably retained',{cause}),{code:'indeterminate'});}
         throw replayFailure(failure,error);
       }
@@ -226,7 +253,16 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
   };
   // Called right before the signer, so a failed step knows whether one may have signed.
   const markSignerCall=()=>{signingScope().signer.called=true;};
-  return{writeAhead,recordSignature,markSignerCall,operationStore:{
+  // Appends one entry to the running step's log, when this call runs inside that step's execution; the step keeps the
+  // log only if it fails. An entry that would pass a bound marks the log's coverage unknown instead.
+  const record=(stage,phase,result)=>{
+    const scope=signingContext.getStore();
+    if(scope?.state!==state||scope.jobId!==job.jobId||scope.role!==role)return;
+    const entry={stage,phase,result},size=JSON.stringify(entry).length,log=scope.log;
+    if(log.entries.length>=PROVENANCE_MAX_ENTRIES||log.bytes+size>PROVENANCE_MAX_BYTES){log.coverage='unknown';return;}
+    log.entries.push(entry);log.bytes+=size;
+  };
+  return{writeAhead,recordSignature,markSignerCall,record,operationStore:{
     load:async(key)=>{const value=own(await state.read(job.jobId)).checkpoints[key];return value===undefined?null:clone(value);},
     compareAndSet:async({operationKey,expected,next})=>{
       let changed=false;
@@ -679,6 +715,24 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         throw error;
       }
     };
+    // The step's log: what each source call returned or threw, kept at the callback boundary, before the status is
+    // mapped to null, the verdict to a boolean or the error replaced by the SDK. Local refusal proofs the native
+    // anchor establishes during the call make its entry a refusal; everything else a source error is only a source entry.
+    let published=false;
+    const observed=async(stage,work)=>{
+      const proofs=[],phase=published?'recovery':'initial';
+      if(stage==='publish')published=true;
+      const cause=error=>proofs.length?{kind:'refusal',proof:proofs[0],cause:error?storedCause(error):{code:null,name:'returned'}}:{kind:'source',status:null,cause:storedCause(error)};
+      let out;
+      try{out=await withNativeObservationEvidence(proof=>proofs.push(proof),work);}
+      catch(error){durable.record(stage,phase,cause(error));throw error;}
+      durable.record(stage,phase,proofs.length?cause(null):{kind:'returned',status:typeof out==='string'?out:out?.status??null});
+      return out;
+    };
+    const anchorRead=(stage,work)=>anchorCall(()=>observed(stage,work));
+    // A closure is the provider's own purchase check refusing; the error is rethrown unchanged.
+    const closure=(stage,error)=>{if(error?.code==='not-pending')durable.record(stage,'local',{kind:'closure',cause:storedCause(error)});return error;};
+    const guardAt=stage=>{try{guard(job,'signature');}catch(error){throw closure(stage,error);}};
     // Orchestrator mode: a cut anchor step is reconciled from the party's retained record (its
     // composite-submitting checkpoint) and the anchor itself. Finalized and strictly valid: complete
     // from that readback. Proven unsigned (no intent included): run it again. Anything else stays held.
@@ -690,14 +744,15 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       if(inputHash!==sha256Hex(canonicalize({logicalAddress:address,artifactHash:sha256Hex(canonicalize(artifact))})))fail('conflict','party Vet anchor evidence conflict');
       const out=await anchor.readRetained({logicalAddress:address,artifactKind:'CompositeVerificationRecord',fresh:true,proofOfNoIntent:true},PASSIVE_RETAINED_READ);
       if(isProvenUnsignedAbsence(out))return{};
-      if(out?.status!=='present'||!same(out.artifact,artifact)||(await strictRecord(artifact,{jobId,bundle:identityBundle,requirement,authority:wallet.claim})).status!=='valid'
-        ||!await validReceipt(out,address,artifact,wallet.claim,{fresh:true}))return null;
+      if(out?.status!=='present'||!await validReceipt(out,address,out.artifact,wallet.claim,{fresh:true}))return null;
+      // The chain's own authenticated record at this address is not the retained one, or the retained one does not verify: a refusal, not a wait.
+      if(!same(out.artifact,artifact)||(await strictRecord(artifact,{jobId,bundle:identityBundle,requirement,authority:wallet.claim})).status!=='valid')return{refused:true};
       return{value:{ref:{anchor:{kind:'storage-program',locator:out.receipt.nativeAddress},contentHash:contentHash(artifact),signer:wallet.claim},receipt:out.receipt}};
     }:undefined;
     const durable=durableOperationStore(state,job,role,{now,clock,wait,reconcile:reconcileAnchorStep});
     const sign=async(bytes)=>{
       let stored;
-      try{guard(job,'signature');await markWrite(job);stored=await durable.writeAhead(bytes);await authorizeEffect(job);guard(job,'signature');}
+      try{guardAt('signing-before-mark');await markWrite(job);stored=await durable.writeAhead(bytes);await authorizeEffect(job);guardAt('signing-after-write-ahead');}
       catch(error){writerFailed(error);throw error;}
       // The purchase was read again just above, with no await before the
       // signer: one cancelled while the mark, the bytes or the durable row
@@ -721,25 +776,26 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
             // stores the intent: a purchase cancelled meanwhile stores none
             // and sends nothing. The write mark is inside anchorCall, so a busy
             // store there is a retryable wait like a busy anchor journal.
-            out=await anchorCall(async()=>{await markWrite(job);return anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job)});});
+            const authorize=async()=>{try{return await authorizeEffect(job);}catch(error){throw closure('anchor-authorize',error);}};
+            out=await anchorCall(async()=>{await markWrite(job);return observed('publish',()=>anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize,authorizeSigning:authorizeSigningFor(job)}));});
           }else{
             // Readback only: a read never creates an intent.
-            out=await anchorCall(()=>anchor.read({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord'}));
-            if(out.status==='absent')fail('not-pending','the purchase is no longer pending; no new Vet write was started');
+            out=await anchorRead('publish',()=>anchor.read({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord'},PASSIVE_RETAINED_READ));
+            if(out.status==='absent')throw closure('anchor-before-publish',Object.assign(new Error('the purchase is no longer pending; no new Vet write was started'),{code:'not-pending'}));
           }
         }catch(error){writerFailed(error);throw error;}
         if(out.status!=='present'){wait.terminal=true;writerFailed(null,out);throw new Error(out.reason ?? 'Vet publication held');}
         return{ref:{anchor:{kind:'storage-program',locator:out.receipt.nativeAddress},contentHash:contentHash(artifact),signer:wallet.claim},receipt:out.receipt};
       },
-      verifyFinalizedAnchor:async({logicalAddress,artifact,receipt})=>(await anchorCall(()=>anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt})))==='valid',
+      verifyFinalizedAnchor:async({logicalAddress,artifact,receipt})=>(await anchorRead('receipt',()=>anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt})))==='valid',
       readAnchoredJson:async(ref)=>{
-        const out=await anchorCall(()=>anchor.readRetained({logicalAddress:address,artifactKind:'CompositeVerificationRecord'}));
+        const out=await anchorRead('artifact',()=>anchor.readRetained({logicalAddress:address,artifactKind:'CompositeVerificationRecord'},PASSIVE_RETAINED_READ));
         if(out.status!=='present')return null;
         if(out.receipt.nativeAddress!==ref.anchor.locator||contentHash(out.artifact)!==ref.contentHash){wait.terminal=true;return null;}
         return out.artifact;
       },
       resolveFinalizedArtifact:async({logicalAddress,contentHash:hash})=>{
-        const out=await anchorCall(()=>anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'}));
+        const out=await anchorRead('lookup',()=>anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'},PASSIVE_RETAINED_READ));
         if(out.status!=='present')return null;
         if(contentHash(out.artifact)!==hash){wait.terminal=true;return null;}
         if(PENDING_RECEIPT_STATES.has(out.receipt?.state)){wait.pending=true;throw new Error(`the ${role} Vet receipt is not final yet`);}
