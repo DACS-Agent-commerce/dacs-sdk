@@ -4861,6 +4861,24 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
 | delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
 | delta(client): WF close the payment-evidence replay, readback and native write gaps after an executed CREATE | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/README.md:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/test/helpers/tp1-node-fixture.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-seller/README.md:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-seller/src/dacs/payment-evidence-wallet-journal.mjs:1` |
+| delta(client): WF settle each executed CREATE's approval once, refuse an unclear execution read and keep the retained bytes with the seller journal | `packages/dacs-seller/test/payment-evidence-wallet-journal.test.mjs:1` |
+| fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/HOLD.json:1` |
+| fix(client): list the files of the settle-once commit in the register | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
