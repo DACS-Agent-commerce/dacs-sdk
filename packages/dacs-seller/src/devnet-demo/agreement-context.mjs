@@ -94,7 +94,8 @@ function partyVetState(store,writer) {
 const rejectedAuthorization=verdict=>({status:'authorization-rejected',reason:['fenced','expired','indeterminate'].includes(verdict?.reason)?verdict.reason:'indeterminate'});
 // One execution's observation log is bounded; past either bound its coverage is unknown and the step is held.
 const PROVENANCE_MAX_ENTRIES=256,PROVENANCE_MAX_BYTES=1048576;
-const storedCause=error=>({code:typeof error?.code==='string'?error.code.slice(0,64):null,name:typeof error?.name==='string'?error.name.slice(0,64):'Error'});
+// A cause is kept only as its closed diagnostic code, never as error text or a raw code; no decision reads it.
+const storedCause=error=>({code:sellerDiagnostic(error?.code).code});
 const closureAt=(entries,stage)=>entries.some(entry=>entry.result.kind==='closure'&&(stage===undefined||entry.stage===stage));
 // The log of a failed step, only when it is this exact step's and this execution's and covers the whole path; else null.
 const failureLog=(old,role)=>{
@@ -724,7 +725,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const observed=async(stage,work)=>{
       const proofs=[],phase=published?'recovery':'initial';
       if(stage==='publish')published=true;
-      const cause=error=>proofs.length?{kind:'refusal',proof:proofs[0],cause:error?storedCause(error):{code:null,name:'returned'}}:{kind:'source',status:null,cause:storedCause(error)};
+      const cause=error=>proofs.length?{kind:'refusal',proof:proofs[0],cause:error?storedCause(error):{code:null}}:{kind:'source',status:null,cause:storedCause(error)};
       let out;
       try{out=await withNativeObservationEvidence(proof=>proofs.push(proof),work);}
       catch(error){durable.record(stage,phase,cause(error));throw error;}

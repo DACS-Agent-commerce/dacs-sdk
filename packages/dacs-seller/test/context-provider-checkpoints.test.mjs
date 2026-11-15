@@ -80,7 +80,8 @@ function faulty(anchor, plan, logicalAddress) {
         },
         verifyReceipt: async request => { if (request.logicalAddress === logicalAddress) await gate('receipt'); return anchor.verifyReceipt(request); } };
 }
-const OUTAGE = () => new Error('TEST source outage');
+const RAW_CODE = 'TEST-raw-source-code';
+const OUTAGE = () => Object.assign(new Error('TEST source outage'), { code: RAW_CODE });
 const TIMEOUT = () => new DOMException('TEST source deadline', 'TimeoutError');
 const INCONSISTENT = () => Object.assign(new Error('TEST node reply is inconsistent'), { code: 'invalid' });
 const createsFor = (f, role) => f.controls.creates.filter(logicalAddress => logicalAddress === address(PARTY[role])).length;
@@ -148,6 +149,8 @@ test("a generic SDK anchor failure is classified from publication and observatio
                     assert.deepEqual(log.at(-1), [cell.stage, 'initial', 'source']);
                     assert.ok(log.slice(0, -1).every(([, , kind]) => kind === 'returned'));
                     assert.ok(log.every(([stage]) => stage !== 'publish'));
+                    // The log keeps a closed diagnostic code, never the source's own error code or text.
+                    assert.ok(!JSON.stringify(await f.base.entries()).includes(cell.error === OUTAGE ? RAW_CODE : 'TEST source'));
                     const chain = copy(f.records.get(address(PARTY[role])));
                     assertPresent(await resolve(f, successor(f, failing)));
                     assert.equal(createsFor(f, role), 1);
