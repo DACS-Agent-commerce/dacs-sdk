@@ -192,4 +192,26 @@ for (const [kind, makeProof] of [['unsigned absence', provenUnsignedAbsence], ['
       assert.notEqual(answer, proof);
     });
   }
+  test(`a proven ${kind} copy is a plain object, as a JSON round trip makes it`, async () => {
+    const proof = makeProof({ code: 'TEST_NO_MESSAGE' });
+    proof.observation = { state: 'not signed' };
+    const answer = await readNativeDemDelivery(capabilityWhere('read', async () => proof), {});
+    assert.equal(mayPublishAgain(answer), true);
+    assert.equal(Object.getPrototypeOf(answer), Object.prototype);
+    assert.equal(Object.getPrototypeOf(answer.observation), Object.prototype);
+    assert.deepEqual(answer.reason, { code: 'TEST_NO_MESSAGE' });
+  });
+  for (const [form, define] of [
+    ['a throwing enumerable message getter', (reason) => Object.defineProperty(reason, 'message', { enumerable: true, get() { throw new Error(OVER_BYTE_LIMIT); } })],
+    ['a throwing non-enumerable message getter', (reason) => Object.defineProperty(reason, 'message', { enumerable: false, get() { throw new Error(OVER_BYTE_LIMIT); } })],
+  ]) {
+    test(`a proven ${kind} whose reason has ${form} answers indeterminate within the byte limit`, async () => {
+      const proof = makeProof(define({}));
+      const answer = await readNativeDemDelivery(capabilityWhere('read', async () => proof), {});
+      assert.equal(answer.status, 'indeterminate');
+      assert.match(answer.reason, /limit/);
+      assert.equal(answer.reason.length <= 300, true, `reason is ${answer.reason.length} characters`);
+      assert.equal(mayPublishAgain(answer), false);
+    });
+  }
 }

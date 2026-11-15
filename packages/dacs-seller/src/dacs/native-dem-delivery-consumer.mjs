@@ -96,19 +96,22 @@ const measuredProofReason = (reason) => {
  * unsigned-absence or dead-refusal proof, the object itself is checked too, so a `toJSON` cannot
  * hide a field. Its checked copy receives the same process-local proof. A missing reason becomes
  * empty text; errors and message-bearing objects use their name and message; functions and
- * symbols become text. The original reason object is never returned in place of that text.
+ * symbols become text. The original reason object is never returned in place of that text. When
+ * the reason cannot be read, or the reply is over a limit, the cause in the `indeterminate` reason
+ * is cut to 240 characters.
  */
 function boundedReply(reply, indeterminate) {
   try {
     const plain = JSON.parse(JSON.stringify(reply));
     boundedResolutionValue(plain, NATIVE_DEM_DELIVERY_LIMITS);
     if (!isProvenUnsignedAbsence(reply) && !isDeadRefusedCreate(reply)) return plain;
-    const checked = boundedResolutionValue({ ...reply, reason: measuredProofReason(reply.reason) }, NATIVE_DEM_DELIVERY_LIMITS);
+    const measured = boundedResolutionValue({ ...reply, reason: measuredProofReason(reply.reason) }, NATIVE_DEM_DELIVERY_LIMITS);
+    const checked = JSON.parse(JSON.stringify(measured));
     if (isProvenUnsignedAbsence(reply)) provenUnsigned.add(checked);
     else deadRefusedCreates.add(checked);
     return checked;
   } catch (error) {
-    return indeterminate(`native delivery reply exceeds its read limits: ${error.message}`);
+    return indeterminate(`native delivery reply exceeds its read limits: ${String(error?.message ?? error).slice(0, 240)}`);
   }
 }
 
