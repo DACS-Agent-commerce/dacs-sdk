@@ -1,9 +1,9 @@
 {
   "schema": "dacs-client-anchor/v1",
-  "commit": "940e36ffd671734d2c1c4fba5cb8b91b4846a794",
+  "commit": "1028e64b0a60a0512c0b17402a6d887416aee136",
   "files": {
-    "packages/dacs-client/DELTA-NOTES.md": "9c7cafaab58379b2465ee9be76d12dfe834e89c2",
-    "packages/dacs-client/README.md": "3d87ecf1cbf41a4fca081b8a037d73d3dd685a0d",
+    "packages/dacs-client/DELTA-NOTES.md": "2fd14b834ffa4e44e77d8af6b38f096f32d49d8b",
+    "packages/dacs-client/README.md": "fc070583cb1bef6bc783b08ed06d7e9619e2c5cd",
     "packages/dacs-client/package.json": "f3b9d30fd5df076edc01f796b7356ec3d04a2504",
     "packages/dacs-client/scripts/generate-payload-helpers.mjs": "668c42fd6e34a0b055b32063698350677335622a"
   }
