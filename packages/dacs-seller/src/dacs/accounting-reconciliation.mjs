@@ -23,6 +23,7 @@ const boundedCause = (error) => { const cause = storedCause(error); return { ...
 // What the journal holds for a row that is still `reserving`: `nonce` is its published nonce key, if any, and `view` its operation's view.
 function resultOf(row, nonce, view) {
   if (nonce === undefined) return { kind: 'not-published' };
+  if (!['none', 'pending', 'ended', 'completed'].includes(view?.state)) throw mismatch(`operation ${row.operationId} has no readable state`);
   if (view.state === 'none') return { kind: 'published', attempt: null, effectState: 'no-attempt' };
   if (view.binding !== nonce.binding) throw mismatch(`operation ${row.operationId} is bound to another request binding`);
   if (['pending', 'ended'].includes(view.state) && view.requestHash === row.requestHash) return { kind: 'published', attempt: view.attempt, effectState: view.attempt === 0 ? 'new' : 'recover' };

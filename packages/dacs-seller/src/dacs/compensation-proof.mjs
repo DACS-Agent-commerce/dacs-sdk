@@ -113,7 +113,7 @@ export async function compensationProof(addresses, sources) {
 export function createContextEffectEvidence(sources) {
   return async (privateRow) => {
     const { buyer, seller } = privateRow?.vetAddresses ?? {};
-    if (typeof buyer !== 'string' || typeof seller !== 'string' || buyer === seller || buyer.length === 0) throw undetermined('the row does not retain two distinct sink addresses');
+    if (typeof buyer !== 'string' || typeof seller !== 'string' || buyer.length === 0 || seller.length === 0 || buyer === seller) throw undetermined('the row does not retain two distinct sink addresses');
     return Promise.all([buyer, seller].map((address) => classifyAddress(address, sources)));
   };
 }
