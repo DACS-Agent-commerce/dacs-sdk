@@ -338,9 +338,12 @@ limits: 256 KiB, 32768 values, 80 levels deep and 16384 entries in a list. These
 cover any Deliverable the seller can send. A reply over a limit is answered as
 `indeterminate`, never as absent. A reconcile, read or verify that takes longer
 than 30 seconds is also answered as `indeterminate`; a missed deadline does not
-prove that nothing was written. A submit has no deadline. Except for the
-`provenUnsignedAbsence` and `deadRefusedCreate` objects, the caller gets a JSON
-copy of a reply, not the object the capability returned.
+prove that nothing was written. A submit has no deadline. The caller gets a
+checked JSON copy of a reply.
+For `provenUnsignedAbsence` and `deadRefusedCreate`, that copy retains the
+process-local proof. Missing reasons become empty text; errors and
+message-bearing objects use their name and message; function and symbol
+reasons become text. Other reason values must pass the JSON reply limits.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a

@@ -1825,10 +1825,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!isDeliverableMiss(error)) return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.code ?? 'unknown').slice(0, 64)}: ${String(error?.message ?? error).slice(0, 180)}` };
           read = { status: 'absent' };
         }
-        if (mayPublishAgain(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved nothing signed for the Deliverable can still land' };
+        if (mayPublishAgain(read)) return { status: 'absent', reason: read.reason || 'the reader proved nothing signed for the Deliverable can still land' };
         if (read?.status === 'absent' && deliverableJournal) {
           const asked = await resumeDeliverableJournal(session, work, input.fulfilmentId);
-          return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason ?? 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
+          return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason || 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
         }
         if (read?.status !== 'present') return { status: 'indeterminate', reason: `a submitted Deliverable CREATE did not read back: ${read?.reason ?? read?.status ?? 'missing'}` };
         if (!reportMatches(read.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
