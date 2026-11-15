@@ -156,6 +156,13 @@ with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
+A store that already exists is checked against the journal on every start,
+before the host listens: every nonce key must name an accounting row, a charge
+that a crash left reserving is marked with what the journal holds for it (its
+charge stays counted), and the slot of an operation that completed before the
+slot was returned is returned once. If the journal cannot be read whole, or a
+key names no row, the host starts not ready, changes nothing and records
+`kit_journal_accounting_mismatch` with its cause.
 
 Signed effect routes reserve through one reservation coordinator, which commits
 accounting before the wire journal publishes their attempt. A final answer

@@ -117,6 +117,7 @@ test('both exact retained addresses are required, read as they are spelled, and 
   const effectEvidence = createContextEffectEvidence(sourcesOf());
   await assert.rejects(effectEvidence({ vetAddresses: { buyer } }), { code: 'context_compensation_undetermined' });
   await assert.rejects(effectEvidence({ vetAddresses: { buyer, seller: buyer } }), { code: 'context_compensation_undetermined' });
+  await assert.rejects(effectEvidence({ vetAddresses: { buyer, seller: '' } }), { code: 'context_compensation_undetermined' });
   assert.deepEqual((await effectEvidence({ vetAddresses: { buyer, seller } })).map(entry => entry.kind), ['no-intent', 'no-intent']);
 });
 

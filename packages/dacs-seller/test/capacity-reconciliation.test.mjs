@@ -403,6 +403,8 @@ test('an operation bound to a different request binding, or one that cannot be r
   assert.equal(foreign.ready, false); assert.equal(foreign.code, MISMATCH); assert.deepEqual(results(w), [{ route: PATHS.proposals, label: 'unclassified' }]);
   w.inspect = () => { throw new Error('TEST unreadable operation'); };
   assert.equal((await w.restart()).ready, false);
+  w.inspect = () => ({ state: 'unknown' });
+  assert.equal((await w.restart()).ready, false, 'an operation view of no known state');
 });
 
 // ------------------------------------------------------------------ the exhausted slot
