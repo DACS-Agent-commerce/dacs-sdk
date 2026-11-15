@@ -28,7 +28,9 @@ const PROFILE = Object.freeze({ id: TP1_PROFILE_ID, revision: TP1_PROFILE_REVISI
   chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, pinVersion: TP1_APPROVED_IDENTITY_RECORD.pinVersion });
 const SCOPE = { agreement: 'context-scope-vector' };
 const ARTIFACT = hash('seller vet create'), OTHER_ARTIFACT = hash('replacement vet create'), LANE = 'seller-vet';
-const record = (seq, state, artifactHash = ARTIFACT) => ({ seq, lane: LANE, state, operationId: 'operation', pinVersion: '1', artifactHash });
+const record = (seq, state, artifactHash = ARTIFACT, of) => ({ seq, lane: LANE, state, operationId: 'operation', pinVersion: '1', artifactHash, ...(of === undefined ? {} : { of }) });
+// What the effect boundary writes when a pass is refused after its intent: `-started` first, then `-withheld` naming it.
+const WITHHELD_PASS = ['signed', 'dispatch-started', { state: 'dispatch-withheld', of: 2 }];
 const intent = (signed = true, artifactHash = ARTIFACT) => ({ lane: LANE, artifactHash, signed });
 const executedAt = address => ({ address, finalized: true, verified: true });
 
@@ -51,7 +53,7 @@ function sourcesOf({ anchor = {}, wallet = {}, history = {}, executed = [], reti
 const held = (...intents) => ({ intents, complete: true });
 // An address whose one signed CREATE has the given history, in both journals.
 const createWith = (address, ...states) => ({ anchor: { [address]: held(intent()) }, wallet: { [address]: held(intent()) },
-  history: { [ARTIFACT]: { records: states.map((state, index) => record(index + 1, state)), complete: true } } });
+  history: { [ARTIFACT]: { records: states.map((state, index) => (typeof state === 'string' ? record(index + 1, state) : record(index + 1, state.state, ARTIFACT, state.of))), complete: true } } });
 
 test('an address with no intent in either journal is no-intent, and one with an unsigned retained intent is proven-unsigned', async () => {
   const address = 'did:demos:agent:' + 'a'.repeat(64), sources = sourcesOf({ anchor: { [address]: held(intent(false)) }, wallet: { [address]: held(intent(false)) } });
@@ -73,7 +75,7 @@ test('a signed CREATE that appears in only one journal, with no retirement or co
 test('a journal or readback read that fails or times out classifies undetermined with its cause', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const address = 'did:demos:agent:' + 'c'.repeat(64), failure = Object.assign(new Error('TEST read failed'), { code: 'EIO' });
-  const retained = createWith(address, 'signed', 'dispatch-withheld');
+  const retained = createWith(address, ...WITHHELD_PASS);
   const throws = () => { throw failure; };
   const rows = [
     ['the anchor journal throws', { ...retained, anchor: throws }],
@@ -102,6 +104,65 @@ test('an incomplete, oversized or malformed read is undetermined, never no-inten
   const retained = createWith(address, 'signed');
   assert.equal((await classifyAddress(address, sourcesOf({ ...retained, history: { [ARTIFACT]: { records: [record(1, 'signed')], complete: false } } }))).kind, 'undetermined', 'an incomplete history');
   assert.equal((await classifyAddress(address, sourcesOf({ ...retained, executed: async () => ({ address, finalized: true, verified: false }) }))).kind, 'undetermined', 'an unverified execution');
+});
+
+test('the never-dispatched proof follows the history the effect boundary writes: a started record is cleared only by its own stage\'s withheld record', async () => {
+  const address = 'did:demos:agent:' + '9'.repeat(64);
+  const kindOfStates = async (...states) => (await classifyAddress(address, sourcesOf(createWith(address, ...states)))).kind;
+  assert.equal(await kindOfStates('signed'), 'never-dispatched', 'signed and never started');
+  assert.equal(await kindOfStates(...WITHHELD_PASS), 'never-dispatched', 'started, then withheld after its checks refused');
+  assert.equal(await kindOfStates('signed', 'dispatch-started'), 'undetermined', 'started and nothing after it');
+  assert.equal(await kindOfStates('signed', 'dispatch-started', { state: 'dispatch-withheld', of: 2 }, 'dispatch-started'), 'undetermined', 'a later started record has no withheld record of its own');
+  assert.equal(await kindOfStates('signed', 'dispatch-started', 'dispatch-started', { state: 'dispatch-withheld', of: 3 }), 'undetermined', 'an earlier started record is not erased by a later withheld one');
+  assert.equal(await kindOfStates('signed', 'confirm-started', { state: 'dispatch-withheld', of: 2 }), 'undetermined', 'a withheld record of another stage names no started record of its own stage');
+  assert.equal(await kindOfStates('signed', 'dispatch-started', { state: 'dispatch-withheld', of: 9 }), 'undetermined', 'a withheld record naming no started record');
+  assert.equal(await kindOfStates('signed', { state: 'dispatch-withheld', of: 1 }), 'undetermined', 'a withheld record with no started record, a history the seller never writes');
+  assert.equal(await kindOfStates('signed', 'dispatch-started', { state: 'dispatch-withheld', of: 2 }, { state: 'dispatch-acknowledged', of: 2 }), 'undetermined', 'an acknowledgement is never erased by a withheld record');
+  assert.equal(await kindOfStates('signed', 'broadcast-started', { state: 'broadcast-withheld', of: 2 }), 'never-dispatched', 'every stage follows the same rule');
+});
+
+test('a malformed or unknown history record gives an indeterminate result, never never-dispatched', async () => {
+  const address = 'did:demos:agent:' + '8'.repeat(64), valid = [record(1, 'signed'), record(2, 'dispatch-started'), record(3, 'dispatch-withheld', ARTIFACT, 2)];
+  const kindOfRecords = async (...records) => classifyAddress(address, sourcesOf({ ...createWith(address, 'signed'), history: { [ARTIFACT]: { records, complete: true } } }));
+  assert.equal((await kindOfRecords(...valid)).kind, 'never-dispatched', 'the control');
+  const rows = [
+    ['an unknown state', record(4, 'dispatch-resent')],
+    ['a state of an unknown stage', record(4, 'refund-started')],
+    ['a state that is not a string', { ...record(4, 'signed'), state: 7 }],
+    ['a dispatch-started record whose state is misspelled', record(4, 'dispatch-startd')],
+    ['a record that is not an object', null],
+    ['a record without an artifact hash', { seq: 4, state: 'signed' }],
+    ['a record without a sequence', { ...record(4, 'dispatch-started'), seq: undefined }],
+    ['a record with a fractional sequence', record(4.5, 'dispatch-started')],
+    ['a withheld record without its `of`', record(4, 'dispatch-withheld')],
+  ];
+  for (const [label, bad] of rows) {
+    const evidence = await kindOfRecords(...valid, bad);
+    assert.equal(evidence.kind, 'undetermined', label); assert.equal(evidence.cause.code, 'context_compensation_undetermined', label);
+  }
+  assert.equal((await kindOfRecords(...valid, record(4, 'dispatch-resent', OTHER_ARTIFACT))).kind, 'undetermined', 'an unknown state of another artifact is not read past');
+  assert.equal((await classifyAddress(address, sourcesOf({ ...createWith(address, 'signed'), history: { [ARTIFACT]: { records: valid, complete: true, extra: 1 } } }))).kind, 'never-dispatched');
+});
+
+test('a reply over the one MiB read limit is undetermined from every source, and one within it is read', async () => {
+  const address = 'did:demos:agent:' + '7'.repeat(64), padding = 'x'.repeat(1048576), small = 'x'.repeat(1000);
+  const retained = createWith(address, ...WITHHELD_PASS);
+  assert.equal((await classifyAddress(address, sourcesOf())).kind, 'no-intent', 'the control');
+  const oversize = [
+    ['an anchor reply with no intents', { anchor: { [address]: { intents: [], complete: true, padding } } }],
+    ['a wallet reply with no intents', { wallet: { [address]: { intents: [], complete: true, padding } } }],
+    ['a history', { ...retained, history: { [ARTIFACT]: { records: [record(1, 'signed'), { ...record(2, 'dispatch-started'), padding }, record(3, 'dispatch-withheld', ARTIFACT, 2)], complete: true } } }],
+    ['a chain readback', { ...retained, executed: async () => ({ ...executedAt(address), padding }) }],
+  ];
+  for (const [label, spec] of oversize) {
+    const evidence = await classifyAddress(address, sourcesOf(spec));
+    assert.equal(evidence.kind, 'undetermined', label); assert.equal(evidence.cause.code, 'context_compensation_undetermined', label);
+    assert.match(evidence.cause.message, /bytes/, label);
+  }
+  const retirement = sourcesOf({ ...createWith(address, 'signed', 'dispatch-started'), retired: {} });
+  retirement.retirement = async () => ({ address, retired: true, artifactHashes: [ARTIFACT], padding });
+  assert.equal((await classifyAddress(address, retirement)).kind, 'undetermined', 'a retirement reply');
+  assert.equal((await classifyAddress(address, sourcesOf({ anchor: { [address]: { intents: [], complete: true, padding: small } } }))).kind, 'no-intent', 'a reply within the limit');
 });
 
 test('both exact retained addresses are required, read as they are spelled, and an incomplete set is never a vacuous no-effect', async () => {
@@ -219,7 +280,7 @@ test('a running row with both Vets finalized and no journal outcome proves effec
 
 test('a Vet CREATE whose only pass was withheld after the row was fenced is never-dispatched; with the other address no-intent the row aborts', async t => {
   const w = world(t), job = await w.running();
-  w.control.sources = sourcesOf(createWith(job.seller, 'signed', 'dispatch-withheld'));
+  w.control.sources = sourcesOf(createWith(job.seller, ...WITHHELD_PASS));
   await w.admission.compensate(job.jobId, 'd');
   const aborted = w.row(job.jobId);
   assert.equal(aborted.state, 'aborted'); assert.deepEqual(aborted.compensation.evidence.map(entry => entry.kind), ['no-intent', 'never-dispatched']); assert.equal(w.calls.wire, 1);
@@ -238,7 +299,7 @@ test('a CREATE durable with no dispatch intent when the row is fenced, then a cr
 
 test('an earlier unknown dispatch keeps the address undetermined whatever later replay records say; after the chain executes it, effects-definite', async t => {
   const w = world(t), job = await w.running();
-  const laterRecords = ['signed', 'dispatch-unknown', 'signed-held', 'dispatch-withheld', 'observed'];
+  const laterRecords = ['signed', 'dispatch-started', { state: 'dispatch-unknown', of: 2 }, 'signed-held', 'dispatch-started', { state: 'dispatch-withheld', of: 5 }, 'observed'];
   w.control.sources = sourcesOf(createWith(job.seller, ...laterRecords));
   await w.admission.compensate(job.jobId, 'd'); await restart(w);
   assert.equal(w.row(job.jobId).state, 'compensating'); assert.equal(w.holds.size, 1);

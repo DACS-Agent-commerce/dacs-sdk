@@ -165,7 +165,10 @@ that a crash left reserving is marked with what the journal holds for it (its
 charge stays counted), and the slot of an operation that completed before the
 slot was returned is returned once. If the journal cannot be read whole, or a
 key names no row, the host starts not ready, changes nothing and records
-`kit_journal_accounting_mismatch` with its cause.
+`kit_journal_accounting_mismatch` with its cause, and writes that cause to
+stderr. The operator restores `seller/`, `transport/` and `wire-journal/` to one
+consistent copy (the same backup, or the same running host) or repairs the
+unreadable file the line names, then restarts; each start checks again.
 
 Signed effect routes reserve through one reservation coordinator, which commits
 accounting before the wire journal publishes their attempt. A final answer

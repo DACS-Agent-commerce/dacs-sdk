@@ -7,18 +7,26 @@ import { evidenceProof, storedCause } from './seller-admission-transaction.mjs';
 const READ_BOUNDS = Object.freeze({ timeoutMs: 10000, maxBytes: 1048576, maxItems: 256 });
 const UNDETERMINED_CODE = 'context_compensation_undetermined';
 const HASH = /^[0-9a-f]{64}$/;
-// A history state at which the bytes may have reached the transport; a withheld or only-signed record never erases one.
-const MAY_HAVE_REACHED_TRANSPORT = /^(?:dispatch|confirm|broadcast)-(?:started|acknowledged|unknown)$/;
+// The states the effect boundary writes to a lane: `signed`, `signed-held`, `observed`, and each stage's started, withheld, unknown and acknowledged.
+const STAGE_STATE = /^(dispatch|confirm|broadcast)-(started|withheld|unknown|acknowledged)$/;
+const OTHER_STATES = new Set(['signed', 'signed-held', 'observed']);
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const undetermined = (message) => Object.assign(new Error(message), { code: UNDETERMINED_CODE, status: 503 });
 const isIntent = (value) => isRecord(value) && typeof value.lane === 'string' && value.lane.length > 0 && HASH.test(value.artifactHash) && typeof value.signed === 'boolean';
 
-// One source read within its deadline; the signal is aborted when the deadline passes.
+// A reply larger than the byte bound, or one that cannot be measured, proves nothing.
+function assertWithinBytes(reply) {
+  const text = JSON.stringify(reply);
+  if (text !== undefined && Buffer.byteLength(text) > READ_BOUNDS.maxBytes) throw undetermined(`a source answered more than ${READ_BOUNDS.maxBytes} bytes`);
+  return reply;
+}
+
+// One source read within its deadline and byte bound; the signal is aborted when the deadline passes.
 async function readWithin(read) {
   const controller = new AbortController();
   const bounds = Object.freeze({ ...READ_BOUNDS, signal: controller.signal });
-  try { return await boundedCall(() => read(bounds), { timeoutMs: READ_BOUNDS.timeoutMs }); } catch (error) {
+  try { return assertWithinBytes(await boundedCall(() => read(bounds), { timeoutMs: READ_BOUNDS.timeoutMs })); } catch (error) {
     if (isBoundedCallTimeout(error)) controller.abort();
     throw error;
   }
@@ -48,13 +56,31 @@ async function isExecuted(address, sources) {
   return true;
 }
 
-// Whether the exact signed bytes may have reached the transport, from the whole history of their lane.
+// A lane record the effect boundary could have written; one that is not cannot be read as saying anything about a dispatch.
+const isHistoryRecord = (record) => {
+  if (!isRecord(record) || !Number.isSafeInteger(record.seq) || !HASH.test(record.artifactHash) || typeof record.state !== 'string') return false;
+  if (!OTHER_STATES.has(record.state) && !STAGE_STATE.test(record.state)) return false;
+  return !record.state.endsWith('-withheld') || Number.isSafeInteger(record.of);
+};
+
+// Whether the exact signed bytes may have reached the transport, from the whole history of their lane. A started record may have, unless a
+// withheld record of its stage names it (the effect boundary writes started first, and withheld after the started record's checks refuse);
+// an unknown, acknowledged or observed record may have whatever else the lane holds. A malformed or unknown record is undetermined.
 async function mayHaveReachedTransport({ lane, artifactHash }, sources) {
   const history = await readWithin((bounds) => sources.history(lane, artifactHash, bounds));
   if (history?.complete !== true || !Array.isArray(history.records) || history.records.length > READ_BOUNDS.maxItems) throw undetermined('the dispatch history is incomplete or too long to read whole');
-  const records = history.records.filter((record) => record?.artifactHash === artifactHash);
+  if (!history.records.every(isHistoryRecord)) throw undetermined('the dispatch history holds a malformed or unknown record');
+  const records = history.records.filter((record) => record.artifactHash === artifactHash);
   if (!records.some((record) => record.state === 'signed')) throw undetermined('the dispatch history holds no record of these signed bytes');
-  return records.some((record) => MAY_HAVE_REACHED_TRANSPORT.test(record.state));
+  const startedAt = new Set(records.filter((record) => record.state.endsWith('-started')).map((record) => `${record.state.replace('-started', '')}\n${record.seq}`));
+  const withheld = new Set(records.filter((record) => record.state.endsWith('-withheld')).map((record) => `${record.state.replace('-withheld', '')}\n${record.of}`));
+  if (![...withheld].every((key) => startedAt.has(key))) throw undetermined('a withheld record names no started record of its stage');
+  return records.some((record) => {
+    if (record.state === 'observed') return true;
+    const [, stage, step] = STAGE_STATE.exec(record.state) ?? [];
+    if (step === 'started') return !withheld.has(`${stage}\n${record.seq}`);
+    return step === 'unknown' || step === 'acknowledged';
+  });
 }
 
 // A sink's own proof that every dispatched artifact was retired. Only a sink with such a proof supplies the reader.

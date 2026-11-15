@@ -321,6 +321,8 @@ export async function startSellerHost(options) {
     // Before anything is served the store and the journal are reconciled: every nonce key names its accounting row, a charge that
     // never saw its result is told what the journal holds, and a completed operation returns its slot once. A mismatch keeps the host not ready.
     const reconciliation = await createAccountingReconciler({ store, capacity, journal, inspectOperation: target => inspectWireOperation(journal, target) }).reconcileStartup();
+    // The cause is otherwise only a row in the store, so the one start that refuses purchases for it says why.
+    if (!reconciliation.ready) process.stderr.write(`seller-state: not accepting new purchases: ${reconciliation.code}: ${String(reconciliation.cause?.message ?? '').replace(/\s+/g, ' ').trim()}\n`);
     let stopping = false;
     // The seller takes new purchases until it stops or the reconciliation found a mismatch. No route allocates purchase capacity yet, so readiness does not read it.
     const sellerReady = () => !stopping && reconciliation.ready;

@@ -511,18 +511,26 @@ test('a host over an existing store stays not ready while a nonce key names no a
   for (const option of ['durableDirectory', 'commitOnSignature', 'vetMode', 'challengeLedger']) delete config[option];
   const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() }, hosts = [];
   t.after(async () => { for (const host of hosts) await host.close().catch(() => {}); await rm(dataDirectory, { recursive: true, force: true }); });
+  const written = [], write = process.stderr.write;
+  t.after(() => { process.stderr.write = write; });
   const readiness = async () => {
-    const host = await startSellerHost(options); hosts.push(host);
+    process.stderr.write = function (text, ...rest) { written.push(String(text)); return write.call(this, text, ...rest); };
+    const host = await startSellerHost(options).finally(() => { process.stderr.write = write; }); hosts.push(host);
     const buyerWire = await wireBuyer({ buyer: { claim: buyer.claim, sign: buyer.signBytes }, seller: { claim: seller.claim, sign: seller.signBytes }, listingPin: host.listingPin, clock: () => NOW });
     const served = await fetch(`${host.url}${DACS_SELLER_DISCOVERY_PATH}`), proof = await buyerWire.verifyDiscovery(Buffer.from(await served.arrayBuffer()));
     await host.close(); hosts.pop();
     return proof.ready;
   };
+  const refusals = () => written.filter(line => line.startsWith('seller-state: not accepting new purchases'));
   assert.equal(await readiness(), true, 'a new store over an empty journal');
+  assert.deepEqual(refusals(), [], 'a ready start says nothing');
   const orphan = join(dataDirectory, 'wire-journal', `k-${hash('orphan')}`);
   writeFileSync(orphan, canonicalize({ key: hash('orphan'), operationId: hash('operation'), binding: hash('binding'), requestHash: hash('request') }), { mode: 0o600 });
   assert.equal(await readiness(), false, 'the existing store meets a key that names no row');
+  assert.equal(refusals().length, 1, 'one line for the refused start');
+  assert.match(refusals()[0], new RegExp(`^seller-state: not accepting new purchases: ${MISMATCH}: [^\\n]*\\S[^\\n]*\\n$`), 'one line that carries the cause');
   assert.equal(readFileSync(orphan, 'utf8').includes(hash('operation')), true, 'the key is kept');
   rmSync(orphan);
   assert.equal(await readiness(), true, 'the journal and the store agree again');
+  assert.equal(refusals().length, 1, 'the ready start after it adds no line');
 });
