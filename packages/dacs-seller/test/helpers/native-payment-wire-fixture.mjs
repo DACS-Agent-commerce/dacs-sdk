@@ -1,7 +1,9 @@
 // A native-profile seller behind the wire handler, run by the real standalone host. The artifact anchor is the shipped one, the delivery
 // capability is the shipped devnet capability with its evidence reader on, and the payment evidence goes through the shipped wallet journal.
-// Only the network is scripted (native-payment-node.mjs). Nothing prefills a payment: grants, signatures, CREATEs and deliveries are the
-// seller's own steps, counted here.
+// The Demos node is scripted (native-payment-node.mjs). Test stand-ins besides the node: the Agreement readback (an in-memory map, so an
+// Agreement is served without an Agreement transaction on the node), the finality reader and its test finality oracle for the commitment
+// record, the anchor's source and request functions, session admission and the vet records, the vet input the delivery context resolves,
+// and the rail authority. Nothing prefills a payment: grants, signatures, CREATEs and deliveries are the seller's own steps, counted here.
 import { mkdtempSync, realpathSync, rmSync, readdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,18 +58,19 @@ let jobSequence = 0;
 
 /**
  * One native seller on its own directories, with its clock at `T0` and the host's own 300000 ms journal lease. `advance(ms)` moves the clock
- * (and what `performance.now` reads, which the wire times its admissions with) and `beforeRetry()` moves it to the end of the open attempt's lease.
+ * (and what `performance.now` reads, which the wire times its admissions with). Unless a request opts out, it first moves the clock to the end of
+ * the open attempt's lease.
  *
  * `purchase()` returns a signed, committed Agreement with its payment ready: `p.pay()` makes the buyer's transfer; `p.claim(txHash)` sends the
  * payment request through the client library; `p.sign(txHash, options)` signs one request and `p.post(signed)` sends exactly those bytes, so
  * the same signed request can go twice; `p.send(txHash, options)` does both. `restart()` closes and reopens the seller over the same stores.
  *
- * `faults.evidenceSignature`, `faults.walletSignature`, `faults.walletBroadcast` and `faults.responseSignature` each fail that many next steps
+ * `faults.walletSignature`, `faults.walletBroadcast` and `faults.responseSignature` each fail that many next steps
  * (the wallet faults fail before the step, so nothing is signed or sent). `hold(point)` stops the seller after that step until `release()`.
  *
  * What the seller really did: `counts` (evidence, wallet, broadcast and response signatures, plus `resends` of an accepted CREATE the node
  * does not show yet and the `rpcSignatures` that authenticated each resend), `evidenceCreates`, `deliverableWrites`,
- * `deliveryEvidenceWrites`, `work`, `sessionOf`, `wireState`, `steps` (each node read and wallet step in order, with the jobs whose durable lock
+ * `deliveryEvidenceWrites`, `work`, `wireState`, `steps` (each node read and wallet step in order, with the jobs whose durable lock
  * was held), `transferReads()`, `lockedJobs()`, `grantedReceipts()`, `leaseUntil()` and `snapshot(p)`, which holds what a repeated request must
  * leave as it was.
  *
@@ -104,7 +107,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
 
   const counts = { evidenceSignatures: 0, walletSignatures: 0, walletBroadcasts: 0, responseSignatures: 0, resends: 0, rpcSignatures: 0 };
-  const faults = { evidenceSignature: 0, walletSignature: 0, walletBroadcast: 0, responseSignature: 0 };
+  const faults = { walletSignature: 0, walletBroadcast: 0, responseSignature: 0 };
   // `hold(point)` stops the next step at that point once the step has happened and counted, until the test calls `release()`. It returns
   // `reached`, which settles when the seller is stopped there. The points are `responseSignature`, `walletSignature` and `walletBroadcast`.
   const holds = new Map();
@@ -126,7 +129,6 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     const text = Buffer.from(bytes).toString('utf8');
     if (text.startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence)) {
       counts.evidenceSignatures++;
-      if (faults.evidenceSignature > 0) { faults.evidenceSignature--; throw new Error('TEST the seller signer failed'); }
     }
     if (text.startsWith(DACS_SELLER_HTTP_DOMAINS.response)) {
       // The wire awaits its signer, so a response signature may wait for the test.
@@ -153,13 +155,16 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     }
     return clone(inputs.get(jobId));
   };
+  // A test stand-in: Agreements are read back from `agreements`, not from the node, and carry a made-up transaction reference.
   const agreementAnchor = { source: 'TEST-native-payment-wire/agreement',
     readAgreement: async ({ logicalAddress }) => (agreements.has(logicalAddress)
       ? { disposition: 'present', artifact: clone(agreements.get(logicalAddress)), ref: { anchor: { kind: 'storage-program', locator: logicalAddress }, contentHash: core.contentHash(agreements.get(logicalAddress)) },
         native: { source: 'TEST-native-payment-wire/agreement', evidenceMode: 'TEST-scripted', nativeAddress: 'TEST-native-agreement', txRef: { kind: 'demos', txHash: 'c3'.repeat(32), blockNumber: 1 } } }
       : { disposition: 'absent', reason: 'TEST not anchored' }) };
 
-  // The shipped artifact anchor over the scripted node: the wallet signs the CREATE as the SDK does, and the node applies what it is sent.
+  // The shipped artifact anchor over the scripted node, with its source, binding, request and reader functions replaced by test ones. The
+  // commitment record's finality comes from the test finality reader, which the test records into when the node applies its CREATE.
+  // The evidence and Deliverable CREATEs go through the shipped wallet journal below; the node applies its own copy of what the wallet signed.
   const finalized = finalizedCommitmentReader(node.reader, sellerKey, { substrate: 'demos' });
   const anchors = await anchorFixture({ writer: { claim: sellerKey.claim, sign: sellerKey.sign }, now: clock,
     artifactKinds: ['FinalityCommitmentRecord', 'CompositeVerificationRecord', 'Deliverable', 'SettlementEvidence'],
@@ -358,7 +363,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
       allocations: db.prepare('SELECT allocationId, state, rev FROM kit_allocations WHERE jobId = ?').all(p.jobId) })) });
   const retain = () => ({ node: node.retain(), finalized: finalized.retain(), admission: admission.retain(), journals: anchorJournals.map(({ rows }) => [...rows]),
     agreements: [...agreements], inputs: [...inputs], buyerBundles: [...buyerBundles] });
-  return { node, anchors, artifactAnchor, purchase, restart, retain, faults, counts, dataDirectory, listing, sellerKey, buyerKey, advance, host: () => host, beforeRetry: retrySeam.beforeRetry,
+  return { node, anchors, artifactAnchor, purchase, restart, retain, faults, counts, dataDirectory, listing, sellerKey, buyerKey, advance, host: () => host,
     hold, steps, lockedJobs, snapshot, leaseMs: JOURNAL_LEASE_MS, leaseUntil: openLeaseUntil, clock, grantedReceipts,
     /** For each payment request sent so far, the jobs whose durable lock was held at each read of the transfer the seller made for it. */
     transferReads: () => steps.reduce((requests, entry) => {
@@ -366,7 +371,6 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
       else if (entry.step === 'getTransactionStatus') requests.at(-1)?.push(entry.locks);
       return requests;
     }, []),
-    sessionOf: (p) => inDurableState((state) => state.withJob(p.jobId, (session) => clone(session))),
     work: (p) => inDurableState((state) => state.withJob(p.jobId, (session) => clone(session.nativeEvidenceWork))),
     /** Another job takes the transfer's settlement, so this job loses its settlement credit. */
     withdrawCredit: (p, otherJobId) => inDurableState((state) => state.withJob(p.jobId, (session) => {
