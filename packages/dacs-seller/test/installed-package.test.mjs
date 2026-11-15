@@ -260,7 +260,7 @@ test('P11a1-T22: the packed host test passes with the wire buyer helper; the pac
   assert.deepEqual(out.refusals.missingNonce, { name: 'SellerRefusedError', code: 'session_not_admitted', status: 409 }, 'DACS-1 §6.3.2: a presentation that carries no session nonce is refused');
   assert.deepEqual(out.issuedChallenge, { nonce: true, lifetimeMs: 600000 }, 'the installed host issues a fresh 256-bit challenge with its lifetime');
   assert.equal(out.presentsIssuedChallenge, true, 'the buyer presents the random challenge the host issued through the public builder');
-  assert.deepEqual(out.refusals.contextChallenge, { status: 404, body: { error: 'not_found' } });
+  assert.deepEqual(out.refusals.contextChallenge, { status: 401, body: { error: 'peer_envelope_invalid', message: 'peer_envelope_invalid' } }, 'the host mounts the challenge route, which refuses an unsigned request');
   for (const attempt of [out.refusals.secondHostSameDirectory, out.refusals.secondProcessSameDirectory]) {
     assert.match(attempt, /^Error: seller state directory is in use by another live operator process/, 'one live host owns the state');
   }

@@ -350,8 +350,9 @@ export async function startSellerHost(options) {
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     let stopping = false;
-    // The seller takes new purchases until it stops, and while a context row's cleanup is unfinished.
-    const sellerReady = () => !stopping && !admission.cleanupPending();
+    // The seller takes new purchases until it stops. A context row with unfinished cleanup keeps its own hold and slot, so it needs no
+    // refusal of other buyers.
+    const sellerReady = () => !stopping;
     // Stopped by the process stop flag or by this host's own close.
     const hostStopped = () => stopping || stopRequested();
     const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
@@ -427,7 +428,7 @@ export async function startSellerHost(options) {
       server.listen({ host, port, exclusive: true }, () => { server.off('error', reject); resolve(); });
     });
     // Unfinished context rows are swept again while the host runs, one sweep at a time. A sweep that cannot finish a row records its cause on
-    // that row, which keeps the host not ready until a later sweep clears it, so a failed pass has nothing more to report here.
+    // that row and a later sweep tries again, so a failed pass has nothing more to report here.
     let sweeping = null;
     const sweepTimer = setInterval(() => {
       sweeping ??= admission.sweep({ startup: false }).catch(() => {}).finally(() => { sweeping = null; });

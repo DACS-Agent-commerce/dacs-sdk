@@ -11,8 +11,10 @@ import { HOST_CONTEXT_CALLBACKS } from './helpers/host-context-callbacks.mjs';
 import { contextCapability, contextHostFixture, presentContextAnswer } from './helpers/host-context-client.mjs';
 import { JOB } from './helpers/protocol-fixture.mjs';
 
+const OTHER_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0B';
 const CONTEXT_DEADLINE_MS = 240_000;
 const SWEEP_INTERVAL_MS = 60_000;
+const LEASE_WAIT_MS = 10_000;
 const SWEEP_SQL = /state IN \('intent', 'compensating', 'admitted', 'running'\)/;
 const deferred = () => {
   let resolve, reject;
@@ -176,6 +178,40 @@ test('host close closes the write authority of a live context attempt before it 
   assert.equal(existsSync(lockPath(f.dataDirectory)), false);
   assert.notEqual(admissionState(f.dataDirectory), 'settled');
   await (await f.start()).close();
+});
+
+test('a context row whose cleanup is unfinished keeps its own job refused and does not make the host refuse another buyer\'s challenge', async (t) => {
+  const f = await contextHostFixture(t);
+  const host = await f.start({ demDeliveryContext: contextCapability({ resolveBuyer: async (input, options) => { options.writable(); throw new Error('TEST the Vet readback failed'); } }) });
+  const buyer = await f.buyerFor(host);
+  const failed = await buyer.requestContext();
+  assert.equal(failed.status >= 500, true, failed.text);
+  assert.equal(admissionState(f.dataDirectory), 'compensating', 'the row keeps its cleanup open');
+  const other = await buyer.challenge(OTHER_JOB);
+  assert.equal(other.status, 200, other.text);
+  assert.equal((await buyer.challenge(JOB)).status === 200, false, 'the unfinished job itself is not served again');
+});
+
+test('a sweep that cannot take the lease of a running context step records its cause there and does not make the host refuse another buyer', async (t) => {
+  const provider = stalledProvider('between'), f = await contextHostFixture(t);
+  const timers = [], setInterval = globalThis.setInterval;
+  t.mock.method(globalThis, 'setInterval', (callback, ms, ...rest) => { const timer = setInterval(callback, ms, ...rest); timers.push({ callback, ms }); return timer; });
+  const host = await f.start({ demDeliveryContext: provider.capability }), buyer = await f.buyerFor(host);
+  const sweep = timers.find(({ ms }) => ms === SWEEP_INTERVAL_MS);
+  const pending = buyer.requestContext();
+  await reached(provider.seen.entered, pending);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  sweep.callback();
+  await flush();
+  t.mock.timers.tick(LEASE_WAIT_MS);
+  await flush();
+  t.mock.timers.reset();
+  const cleanup = new Database(join(f.dataDirectory, 'transport', 'transport.sqlite'), { readonly: true });
+  try { assert.notEqual(cleanup.prepare("SELECT json_extract(record, '$.cleanup.cause') AS cause FROM kit_context_admissions WHERE jobId = ?").get(JOB).cause, null, 'the sweep recorded its cause on the row'); } finally { cleanup.close(); }
+  const other = await buyer.challenge(OTHER_JOB);
+  assert.equal(other.status, 200, other.text);
+  provider.gate.resolve();
+  await pending;
 });
 
 test('the host runs one unref\'d 60 second sweep at a time, and close stops the timer and waits for a sweep in flight', async (t) => {
