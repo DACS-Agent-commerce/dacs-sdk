@@ -199,7 +199,7 @@ export function parsePolicyLedger(text){
     const totalOs=policyRow&&row.decision==='approved'&&BigInt(declared)>BigInt(row.totalOs)?declared:row.totalOs;
     // The confirmation decides nothing about the hold: the reservation stays
     // one row, counted until its completion line, whatever the decision.
-    if(linked){authorized.confirmed=row.decision;if(row.decision==='approved')authorized.totalOs=totalOs;continue;}
+    if(linked){authorized.confirmed=row.decision;authorized.confirmation=row.confirmation;if(row.decision==='approved')authorized.totalOs=totalOs;continue;}
     const entry={decision:row.decision,policy:policyRow,held:Object.hasOwn(row,'policyHold'),...(answer?{retainedAnswer:true}:{}),jobId:request?.content?.jobId??null,artifactKind:request?.content?.artifactKind??null,totalOs,recordedAt:row.recordedAt,
       reservationId:row.decision==='approved'?row.reservationId:null,approvalHash:row.approvalHash,outcome:null,attemptId:attempt?row.attemptId:null,request,originLine:attempt?attempt.originLine:lineNumber};
     rows.push(entry);
@@ -337,8 +337,10 @@ const withinConfirmationBound=(validity)=>{try{return Buffer.byteLength(JSON.str
  * (decision.requestBytes); a request that no longer matches them is not asked about and its attempt is released
  * (policy.releaseHeld), as is a hold outside the table. Policy errors reject; a manual answer or sign gate that
  * throws first releases the held attempt (policy.releaseHeld). confirm checks the one policy-approved write in flight
- * at the policy's confirmation gate, and is false for any other approval. A repeat of a confirmation whose line is
- * already appended runs the same checks, syncs the ledger again and is true, so a line whose sync failed can be retried.
+ * at the policy's confirmation gate, and is false for any other approval. At the policy's gate, a repeat of a
+ * confirmation whose line is already appended runs the same checks and syncs the ledger again, and is true only for
+ * the transaction the line records, so a line whose sync failed can be retried. Through confirm, a repeat after a
+ * confirmation that answered true is false, since the write is no longer prepared.
  * approve.retained = {prepare, open, reopen, confirm, settle} is the lifecycle of a payment-evidence SettlementEvidence
  * write whose exact bytes the caller retains for replay. Its authorization is held until settle(binding, outcome) ends
  * it: a replacement, a mismatched or refused confirmation, or another write never releases it, and it never enters the
@@ -666,9 +668,10 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const copy=JSON.parse(record.bytes),row=await openSignLine(record);
     const checks=await confirmationChecks(copy,validity,HOLD_REASONS.has(record.reason));
     // A line already appended for this request: its file sync may have failed, so a repeat syncs it again and
-    // appends nothing. A repeat the checks refuse is false and leaves the line and the reservation as they are.
+    // appends nothing. A repeat the checks refuse, or one whose executed transaction is not the recorded one, is
+    // false and leaves the line and the reservation as they are.
     if(row.confirmed!==null){
-      if(checks.reason)return false;
+      if(checks.reason||JSON.stringify(executedTransaction(validity))!==JSON.stringify(row.confirmation))return false;
       syncContextLedger(evidencePath);
       return true;
     }
@@ -688,10 +691,13 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   };
   // Appends the linked confirmation line. It keeps only the executed transaction confirmedWriteOs checked member by
   // member, not the rest of the node's answer. attempt: the held attempt whose id and hold reason the line carries.
-  const appendConfirmation=(bytes,copy,ids,validity,{declared,confirmed,counted},attempt=null)=>{
+  const executedTransaction=(validity)=>{
     const tx=validity.response.data.transaction;
+    return{hash:typeof tx.hash==='string'&&HASH.test(tx.hash)?tx.hash:null,content:tx.content};
+  };
+  const appendConfirmation=(bytes,copy,ids,validity,{declared,confirmed,counted},attempt=null)=>{
     appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:ids.approvalHash,requestBytes:bytes,method:copy.method,address:copy.address,totalOs:counted.toString(),decision:'approved',approvalMode:'policy',policyReason:null,
-      reservationId:ids.reservationId,...(attempt?.attemptId?{attemptId:attempt.attemptId,policyHold:attempt.reason}:{}),confirmation:{hash:typeof tx.hash==='string'&&HASH.test(tx.hash)?tx.hash:null,content:tx.content},declaredTotalOs:declared.toString(),
+      reservationId:ids.reservationId,...(attempt?.attemptId?{attemptId:attempt.attemptId,policyHold:attempt.reason}:{}),confirmation:executedTransaction(validity),declaredTotalOs:declared.toString(),
       confirmedRemovalsOs:confirmed.toString(),countedTotalOs:counted.toString(),recordedAt:clock()});
   };
   // The record's sign line, still open, from a fresh ledger read (an unreadable ledger rejects). Not refused after
