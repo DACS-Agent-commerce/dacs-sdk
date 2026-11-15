@@ -9934,6 +9934,18 @@
           "after": "4876283f701e7150328967f1f0147d2070f88674"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): say an applied read leaves a released authorization released",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "abe5cea422327278732c707b1e8957274677ea44",
+          "after": "9b84ef696305b217d1a9e3f4fdbd16350f0b910a"
+        }
+      ]
     }
   ]
 }

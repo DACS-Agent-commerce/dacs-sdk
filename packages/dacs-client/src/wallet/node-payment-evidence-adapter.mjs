@@ -26,7 +26,8 @@
 //   policy         `approval.confirm` runs on every replay against the held authorization; `false` or a throw sends nothing.
 //   dispatch       one `broadcastTx`. Whatever goes wrong after it starts is `outcome_unknown`: the receiver may hold the bytes.
 // `readTransactionState` answers `applied` only when the chain executed exactly these bytes, lists the hash in its block and serves
-// the storage program the CREATE made; it then settles the reservation's authorization spent. Every other outcome is `pending` with
+// the storage program the CREATE made; it then settles the reservation's authorization spent if it is still open, and leaves one
+// that was already released released. Every other outcome is `pending` with
 // its cause kept. It never answers `absent`. The reservation ends inside the queue, so no broadcast is between its authorization
 // lookup and its send when it ends.
 //
@@ -419,7 +420,8 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       && creationProvenanceMatches(program, tx.hash, true);
     if (!matches) throw refuse('readback_unverified');
   }
-  // `applied` after the chain proves the execution of exactly the retained bytes; the reservation holding them, if any, ends and its authorization is spent.
+  // `applied` after the chain proves the execution of exactly the retained bytes; the reservation holding them, if any, ends. An open authorization is
+  // settled spent and an already released one is left released.
   async function transactionState(retained, signal) {
     try {
       signal.throwIfAborted();
