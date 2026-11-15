@@ -30,23 +30,13 @@ import type {
   CompositeVerificationRecord,
 } from "../artifacts/types.js";
 import {
-  type LegacyMvpAnyAttestationBundle,
-  type LegacyMvpAttestationRef,
-  isLegacyMvpAnyAttestationBundle,
-  isLegacyMvpAgreementDocument,
-  isLegacyMvpAttestationRef,
-  isLegacyMvpSettlementEvidence,
-} from "../artifacts/legacyMvp.js";
-import {
   isAgreementArtifact,
   isAnyAttestationBundle,
   isAttestationRef,
   isChainTxRef,
   isCompositeVerificationRecord,
-  isLegacyMvpListing,
   isListingDraft,
   isRatingRecord,
-  isExactJsonRecord,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
 import { type Verifier } from "./signedArtifact.js";
@@ -76,9 +66,10 @@ import { deepFreeze } from "../internal/deepFreeze.js";
  *     agreementRef, settlementEvidence[], vetRecords[], listingRef) are
  *     content-addressed and independently signed under artifact-specific
  *     domains.
- *     Normative session refs use DACS-2 §7.5.2
- *     `{anchor:{kind,locator},contentHash,signer?}`; the pre-normative `{kind,id,...}`
- *     record is accepted only by the explicit legacy-MVP read path. A valid
+ *     Session refs use DACS-2 §7.5.2
+ *     `{anchor:{kind,locator},contentHash,signer?}`. A bundle that is not a
+ *     current attestation bundle, including one that carries the earlier
+ *     `{kind,id,...}` refs, is refused before any resolver runs. A valid
  *     bundle signature only binds those *hashes*; it does NOT prove the
  *     referenced artifacts exist or are authentic. We therefore dereference
  *     each normative ref, validate its unsigned scope, confirm its content hash,
@@ -140,20 +131,15 @@ export interface BundleVerification {
   reason?: string;
   /** Every signature verified against a resolved key. */
   fullyVerified: boolean;
-  bundle?: AnyAttestationBundle | LegacyMvpAnyAttestationBundle;
+  bundle?: AnyAttestationBundle;
   signatures: SignatureCheck[];
   /** Per-referenced-artifact shape, integrity, and authentication results. */
   refs: RefCheck[];
 }
 
-type ReadableAttestationBundle =
-  | AnyAttestationBundle
-  | LegacyMvpAnyAttestationBundle;
-type ReadableAttestationRef = AttestationRef | LegacyMvpAttestationRef;
-
 export interface BundleEvidenceVerificationContext {
-  bundle: ReadableAttestationBundle;
-  evidenceRef: ReadableAttestationRef;
+  bundle: AnyAttestationBundle;
+  evidenceRef: AttestationRef;
   agreement: Record<string, unknown> | null;
 }
 
@@ -243,19 +229,6 @@ export interface VerifyBundleDeps {
     listingRef: Readonly<ListingPin>,
     parties: readonly BundleParty[],
   ) => Promise<Record<string, unknown> | null>;
-  /**
-   * @deprecated Pre-normative MVP resolver keyed by SDK-only artifact kind. It is
-   * retained solely for explicit legacy reads. Normative AttestationRef
-   * resolution uses `resolveAttestationRef` and normative ListingPin resolution
-   * uses `resolveListingRef`; those paths MUST NOT fall back to this resolver.
-   */
-  resolveRef?: (
-    kind: string,
-    jobId: string,
-    parties: readonly BundleParty[],
-    /** Exact historical ref; current legacy-MVP writers put native ids here. */
-    ref?: Readonly<LegacyMvpAttestationRef>,
-  ) => Promise<Record<string, unknown> | null>;
   /** Resolve a signer DID/claim to its ed25519 public key (null if unknown). */
   resolvePublicKey: (did: string) => Promise<Uint8Array | null>;
   /** Verify a signature over raw bytes for a public key. */
@@ -288,7 +261,7 @@ export interface VerifyBundleDeps {
    */
   verifyCompositeRecord?: (
     record: Readonly<CompositeVerificationRecord>,
-    bundle: Readonly<ReadableAttestationBundle>,
+    bundle: Readonly<AnyAttestationBundle>,
   ) => Promise<StrictCompositeVerification>;
   /**
    * Required for an EvidenceBoundFaultAttestationBundle. Compose
@@ -345,7 +318,6 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
     false,
   );
   const resolveListingRef = ownDependency(deps, "resolveListingRef", false);
-  const resolveRef = ownDependency(deps, "resolveRef", false);
   const resolvePublicKey = ownDependency(deps, "resolvePublicKey", true);
   const verify = ownDependency(deps, "verify", true);
   const verifyEvidence = ownDependency(deps, "verifyEvidence", false);
@@ -382,7 +354,6 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
   for (const [label, candidate] of [
     ["resolveAttestationRef", resolveAttestationRef],
     ["resolveListingRef", resolveListingRef],
-    ["resolveRef", resolveRef],
     ["verifyEvidence", verifyEvidence],
     ["verifyAlternativePaymentProjection", verifyAlternativePaymentProjection],
     ["verifyCompositeRecord", verifyCompositeRecord],
@@ -428,14 +399,6 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
             deps,
           ),
         }),
-    ...(resolveRef === undefined
-      ? {}
-      : {
-          resolveRef: bindMethod(
-            resolveRef as NonNullable<VerifyBundleDeps["resolveRef"]>,
-            deps,
-          ),
-        }),
     ...(verifyEvidence === undefined
       ? {}
       : {
@@ -459,7 +422,7 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
       : {
           verifyCompositeRecord: async (
             record: Readonly<CompositeVerificationRecord>,
-            bundle: Readonly<ReadableAttestationBundle>,
+            bundle: Readonly<AnyAttestationBundle>,
           ) => {
             const callback = bindMethod(
             verifyCompositeRecord as NonNullable<
@@ -702,55 +665,6 @@ async function authenticateComponentReference(
   return check;
 }
 
-/** Authenticate the SDK's explicitly isolated pre-ComponentSignature format. */
-async function authenticateLegacyHexReference(
-  artifact: Record<string, unknown>,
-  separator: DomainSeparator,
-  signer: string | null,
-  deps: VerifyBundleDeps,
-): Promise<RefSignatureCheck> {
-  if (!Object.prototype.hasOwnProperty.call(artifact, "signature")) {
-    return { verdict: "missing" };
-  }
-  if (
-    typeof artifact.signature !== "string" ||
-    !/^[0-9a-f]{128}$/.test(artifact.signature)
-  ) {
-    return { verdict: "malformed", reason: "invalid-legacy-hex-signature" };
-  }
-  if (!signer) {
-    return { verdict: "unresolved", reason: "legacy-signer-unresolved" };
-  }
-  let key: Uint8Array | null;
-  try {
-    key = await deps.resolvePublicKey(signer);
-  } catch {
-    return { verdict: "unresolved", reason: "legacy-signer-key-resolution-failed" };
-  }
-  if (!key || key.length !== 32) {
-    return {
-      verdict: "unresolved",
-      reason: key ? "legacy-signer-key-malformed" : "legacy-signer-key-not-found",
-    };
-  }
-  const message = signedBytes(
-    separator,
-    contentHash(stripSignature(artifact)),
-  );
-  try {
-    const valid = await deps.verify(
-      Uint8Array.from(message),
-      Uint8Array.from(Buffer.from(artifact.signature, "hex")),
-      Uint8Array.from(key),
-    );
-    return valid
-      ? { verdict: "valid", signers: [signer] }
-      : { verdict: "invalid", reason: "cryptographic-verification-failed" };
-  } catch {
-    return { verdict: "unresolved", reason: "legacy-signature-verification-error" };
-  }
-}
-
 function isAgreementSignatureShape(value: unknown): value is AgreementSignature {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -883,7 +797,7 @@ async function authenticateAgreementReference(
 }
 
 function bundlePartySignerClaims(
-  bundle: ReadableAttestationBundle,
+  bundle: AnyAttestationBundle,
 ): ReadonlySet<string> | null {
   const claims = bundle.parties.map((party) => party.primaryClaim);
   return claims.length > 0 ? new Set(claims) : null;
@@ -895,56 +809,11 @@ function isNormativeListingScope(v: Record<string, unknown>): boolean {
   return isListingDraft(scope);
 }
 
-/** Historical SDK bundles may read only the isolated MVP Listing scope. */
-function isLegacyMvpListingScope(v: Record<string, unknown>): boolean {
-  const scope = stripSignature(v);
-  return isLegacyMvpListing(scope);
-}
-
-function exactListingPin(value: unknown): ListingPin | null {
-  if (!isExactJsonRecord(value)) return null;
-  const keys = Object.keys(value);
-  if (
-    keys.length !== 3 ||
-    !Object.prototype.hasOwnProperty.call(value, "listingId") ||
-    !Object.prototype.hasOwnProperty.call(value, "version") ||
-    !Object.prototype.hasOwnProperty.call(value, "contentHash") ||
-    typeof value.listingId !== "string" ||
-    value.listingId.length === 0 ||
-    !Number.isSafeInteger(value.version) ||
-    (value.version as number) < 1 ||
-    typeof value.contentHash !== "string" ||
-    !/^[0-9a-f]{64}$/.test(value.contentHash)
-  ) {
-    return null;
-  }
-  return {
-    listingId: value.listingId,
-    version: value.version as number,
-    contentHash: value.contentHash,
-  };
-}
-
-/**
- * Current runSession compatibility bundles still use legacy artifact refs, but
- * their buyer-signed Agreement pins the normative Listing tuple explicitly.
- * Recognize that narrow bridge without allowing an unpinned legacy bundle to
- * upgrade a legacy Listing read into a normative one.
- */
-function legacyAgreementNormativeListingPin(
-  agreement: Record<string, unknown> | null,
-): ListingPin | null {
-  if (!agreement) return null;
-  const scope = stripSignature(agreement);
-  if (!isLegacyMvpAgreementDocument(scope)) return null;
-  return exactListingPin(scope.dacsSdkListingPin);
-}
-
 function isAgreementCommitPhase(kind: string): boolean {
   return kind === "commit" || kind.startsWith("commit-");
 }
 
-function requiresAgreementRef(bundle: ReadableAttestationBundle): boolean {
+function requiresAgreementRef(bundle: AnyAttestationBundle): boolean {
   return (
     bundle.outcome === "completed" ||
     bundle.phaseSummary.some(
@@ -1002,13 +871,8 @@ function validatedBundleParties(
 }
 
 function agreementClaim(agreement: Record<string, unknown> | null, role: "buyer" | "seller"): string | undefined {
-  if (!agreement) return undefined;
-  if (isAgreementArtifact(agreement)) {
-    return agreement.parties.find((party) => party.role === role)?.primaryClaim;
-  }
-  const scope = stripSignature(agreement);
-  if (isLegacyMvpAgreementDocument(scope)) return scope[role];
-  return undefined;
+  if (!agreement || !isAgreementArtifact(agreement)) return undefined;
+  return agreement.parties.find((party) => party.role === role)?.primaryClaim;
 }
 
 /**
@@ -1018,7 +882,7 @@ function agreementClaim(agreement: Record<string, unknown> | null, role: "buyer"
  */
 function agreementIsCoherentWithBundle(
   agreement: Record<string, unknown>,
-  bundle: ReadableAttestationBundle,
+  bundle: AnyAttestationBundle,
 ): boolean {
   const bundleParty = (role: "buyer" | "seller") =>
     bundle.parties.filter((party) => party.role === role);
@@ -1050,29 +914,11 @@ function agreementIsCoherentWithBundle(
       agreementSellers[0]!.bundleHash === bundleSellers[0]!.bundleHash
     );
   }
-
-  const scope = stripSignature(agreement);
-  // Historical runSessionCore bundles are explicitly buyer-only. Keep reading
-  // their legacy agreement when the buyer and job match; the absent seller
-  // party is already surfaced by the required-signature check and must not be
-  // upgraded into a second, misleading ref-integrity failure.
-  if (bundleSellers.length === 0) {
-    return (
-      isLegacyMvpAgreementDocument(scope) &&
-      scope.jobId === bundle.jobId &&
-      sameCanonicalClaimIdentity(scope.buyer, bundleBuyers[0]!.primaryClaim)
-    );
-  }
-  return (
-    isLegacyMvpAgreementDocument(scope) &&
-    scope.jobId === bundle.jobId &&
-    sameCanonicalClaimIdentity(scope.buyer, bundleBuyers[0]!.primaryClaim) &&
-    sameCanonicalClaimIdentity(scope.seller, bundleSellers[0]!.primaryClaim)
-  );
+  return false;
 }
 
 function requiredSignatureClaims(
-  bundle: ReadableAttestationBundle,
+  bundle: AnyAttestationBundle,
   agreement: Record<string, unknown> | null,
   parties: ValidatedBundleParties | null,
   signatureCount: number,
@@ -1131,7 +977,7 @@ function requiredSignatureClaims(
 }
 
 function bundleClaimReferencesAreCanonical(
-  bundle: Readonly<ReadableAttestationBundle>,
+  bundle: Readonly<AnyAttestationBundle>,
 ): boolean {
   const parties: unknown = bundle.parties;
   const signatures: unknown = bundle.signatures;
@@ -1186,10 +1032,8 @@ export async function verifyBundleCore(
       refs: [],
     };
   }
-  const isNormativeGraph = raw !== null && isAnyAttestationBundle(raw);
-  const isLegacyMvpGraph =
-    raw !== null && isLegacyMvpAnyAttestationBundle(raw);
-  if (!raw || (!isNormativeGraph && !isLegacyMvpGraph)) {
+  const isCurrentBundle = raw !== null && isAnyAttestationBundle(raw);
+  if (!raw || !isCurrentBundle) {
     return {
       ok: false,
       reason: "not an attestation bundle",
@@ -1198,8 +1042,8 @@ export async function verifyBundleCore(
       refs: [],
     };
   }
-  const bundle = raw as ReadableAttestationBundle;
-  if (isNormativeGraph && isEvidenceBoundFaultBundle(bundle as unknown as Record<string, unknown>)) {
+  const bundle = raw as AnyAttestationBundle;
+  if (isEvidenceBoundFaultBundle(bundle as unknown as Record<string, unknown>)) {
     if (!deps.verifyEvidenceBound) {
       return {
         ok: false,
@@ -1239,10 +1083,8 @@ export async function verifyBundleCore(
     }
   }
   const canonicalBundleClaims = bundleClaimReferencesAreCanonical(bundle);
-  const parties = isNormativeGraph
-    ? validatedBundleParties(bundle as AnyAttestationBundle)
-    : null;
-  if (isNormativeGraph && canonicalBundleClaims && !parties) {
+  const parties = validatedBundleParties(bundle);
+  if (canonicalBundleClaims && !parties) {
     return {
       ok: false,
       reason:
@@ -1277,7 +1119,7 @@ export async function verifyBundleCore(
     };
   }
   // Signed scope = canonical form omitting signatures + anchoredByRole (§10.4.1).
-  const scope = { ...raw };
+  const scope: Record<string, unknown> = { ...raw };
   delete scope["signatures"];
   delete scope["anchoredByRole"];
   const message = signedBytes(
@@ -1361,60 +1203,43 @@ export async function verifyBundleCore(
   if (!bundle.agreementRef && requiresAgreementRef(bundle)) {
     refs.push({ kind: "dacs-3-agreement", id: "agreementRef", verdict: "missing" });
   }
-  const refLocator = (ref: ReadableAttestationRef): string =>
-    isAttestationRef(ref) ? ref.anchor.locator : ref.id;
+  const refLocator = (ref: AttestationRef): string => ref.anchor.locator;
   const resolveReadableRef = async (
-    ref: ReadableAttestationRef,
+    ref: AttestationRef,
   ): Promise<{
     supported: boolean;
     value: Record<string, unknown> | null;
     rejected?: RefVerdict;
   }> => {
-    if (isAttestationRef(ref)) {
-      if (!deps.resolveAttestationRef) return { supported: false, value: null };
-      let resolved: Record<string, unknown> | null;
-      try {
-        resolved = await deps.resolveAttestationRef(
-          structuredClone(ref),
-          bundle.jobId,
-          structuredClone(bundle.parties),
-          // Checked against the supported outcome sets above.
-          bundle.outcome as AnyAttestationBundle["outcome"],
-        );
-      } catch (error) {
-        if (!(error instanceof AttestationRefRejection)) throw error;
-        return {
-          supported: true,
-          value: null,
-          rejected: ATTESTATION_REF_REJECTION_VERDICT[error.disposition],
-        };
-      }
+    if (!deps.resolveAttestationRef) return { supported: false, value: null };
+    let resolved: Record<string, unknown> | null;
+    try {
+      resolved = await deps.resolveAttestationRef(
+        structuredClone(ref),
+        bundle.jobId,
+        structuredClone(bundle.parties),
+        // Checked against the supported outcome sets above.
+        bundle.outcome as AnyAttestationBundle["outcome"],
+      );
+    } catch (error) {
+      if (!(error instanceof AttestationRefRejection)) throw error;
       return {
         supported: true,
-        value: snapshotDependencyRecord(
-          resolved,
-          `resolved artifact ${ref.anchor.locator}`,
-        ),
+        value: null,
+        rejected: ATTESTATION_REF_REJECTION_VERDICT[error.disposition],
       };
     }
-    if (!deps.resolveRef) return { supported: false, value: null };
-    const resolved = await deps.resolveRef(
-      ref.kind,
-      bundle.jobId,
-      structuredClone(bundle.parties),
-      structuredClone(ref),
-    );
     return {
       supported: true,
       value: snapshotDependencyRecord(
         resolved,
-        `resolved legacy artifact ${ref.kind}`,
+        `resolved artifact ${ref.anchor.locator}`,
       ),
     };
   };
   const checkReadableRef = async (
     artifactKind: string,
-    ref: ReadableAttestationRef,
+    ref: AttestationRef,
     validateScope: (value: Record<string, unknown>) => boolean,
     authenticate?: (
       value: Record<string, unknown>,
@@ -1475,15 +1300,8 @@ export async function verifyBundleCore(
     const agreement = await checkReadableRef(
       "dacs-3-agreement",
       bundle.agreementRef,
-      isLegacyMvpAttestationRef(bundle.agreementRef)
-        ? isLegacyMvpAgreementDocument
-        : isAgreementScope,
-      isLegacyMvpAttestationRef(bundle.agreementRef)
-        ? async () => ({
-            verdict: "missing" as const,
-            reason: "legacy-agreement-signatures-missing",
-          })
-        : (artifact) => authenticateAgreementReference(artifact, deps),
+      isAgreementScope,
+      (artifact) => authenticateAgreementReference(artifact, deps),
     );
     if (
       agreement.check.verdict === "ok" &&
@@ -1509,7 +1327,7 @@ export async function verifyBundleCore(
   // APR-7 runs before any SettlementEvidence callback. Resolve and authenticate
   // the signed Listing now, then require the SDK-composed projection verifier
   // whenever that exact Listing contains the listing-only placeholder.
-  if (isNormativeGraph && deps.resolveListingRef) {
+  if (deps.resolveListingRef) {
     prefetchedNormativeListing = snapshotDependencyRecord(
       await deps.resolveListingRef(
         structuredClone(bundle.listingRef),
@@ -1610,11 +1428,7 @@ export async function verifyBundleCore(
     const evidence = await checkReadableRef(
       "dacs-4-evidence",
       ev,
-      isLegacyMvpAttestationRef(ev)
-        ? (value) =>
-            isLegacyMvpSettlementEvidence(value) ||
-            isSettlementEvidenceScope(value)
-        : isSettlementEvidenceScope,
+      isSettlementEvidenceScope,
     );
     if (
       evidence.check.verdict === "ok" &&
@@ -1782,37 +1596,20 @@ export async function verifyBundleCore(
     refs.push(checked.check);
   }
 
-  // Listing resolution is graph-discriminated. A current bundle always resolves
-  // its exact signed ListingPin through the normative LR-1 resolver, including a
-  // pre-commit abort with no Agreement. Only an explicit early-MVP bundle may
-  // follow the historical Agreement address / kind+job resolver.
+  // A bundle always resolves its exact signed ListingPin through the LR-1
+  // resolver, including a pre-commit abort with no Agreement.
   const listingId = String(bundle.listingRef.listingId);
-  const legacyNormativeListingPin = isNormativeGraph
-    ? null
-    : legacyAgreementNormativeListingPin(agreementArtifact);
   const agreementListingPin =
     agreementArtifact && isAgreementArtifact(agreementArtifact)
       ? agreementArtifact.listingRef
-      : legacyNormativeListingPin;
-  const legacyListingAddr =
-    !isNormativeGraph &&
-    agreementArtifact &&
-    typeof (stripSignature(agreementArtifact) as { listingRef?: unknown })
-      .listingRef === "string"
-      ? (stripSignature(agreementArtifact) as { listingRef: string }).listingRef
       : null;
   const listingPinCoherent =
     !agreementListingPin ||
     (agreementListingPin.listingId === bundle.listingRef.listingId &&
       agreementListingPin.version === bundle.listingRef.version &&
       agreementListingPin.contentHash === bundle.listingRef.contentHash);
-  const listingUsesNormativeScope =
-    isNormativeGraph || legacyNormativeListingPin !== null;
-  const canResolveListing = isNormativeGraph
-    ? Boolean(deps.resolveListingRef)
-    : Boolean(legacyListingAddr || deps.resolveRef);
   let listing: Record<string, unknown> | null = null;
-  if (listingPinCoherent && isNormativeGraph && deps.resolveListingRef) {
+  if (listingPinCoherent && deps.resolveListingRef) {
     listing =
       prefetchedNormativeListing !== undefined
         ? prefetchedNormativeListing
@@ -1823,20 +1620,6 @@ export async function verifyBundleCore(
             ),
             `resolved Listing ${bundle.listingRef.listingId}`,
           );
-  } else if (listingPinCoherent && legacyListingAddr) {
-    listing = snapshotDependencyRecord(
-      await deps.readArtifact(legacyListingAddr),
-      `resolved legacy Listing ${legacyListingAddr}`,
-    );
-  } else if (listingPinCoherent && !isNormativeGraph && deps.resolveRef) {
-    listing = snapshotDependencyRecord(
-      await deps.resolveRef(
-        "dacs-1-listing",
-        bundle.jobId,
-        structuredClone(bundle.parties),
-      ),
-      "resolved legacy Listing",
-    );
   }
   let listingCheck: RefCheck;
   if (!listingPinCoherent) {
@@ -1845,7 +1628,7 @@ export async function verifyBundleCore(
       id: listingId,
       verdict: "hash-mismatch",
     };
-  } else if (!canResolveListing) {
+  } else if (!deps.resolveListingRef) {
     listingCheck = {
       kind: "dacs-1-listing",
       id: listingId,
@@ -1856,12 +1639,10 @@ export async function verifyBundleCore(
       "dacs-1-listing",
       listingId,
       bundle.listingRef.contentHash,
-      listingUsesNormativeScope
-        ? isNormativeListingScope
-        : isLegacyMvpListingScope,
+      isNormativeListingScope,
       listing,
     );
-    if (listingCheck.verdict === "ok" && listing && listingUsesNormativeScope) {
+    if (listingCheck.verdict === "ok" && listing) {
       const listingScope = stripSignature(listing) as {
         listingId?: unknown;
         seller?: { identity?: { presentedBy?: unknown } };
@@ -1884,25 +1665,15 @@ export async function verifyBundleCore(
       const listingScope = stripSignature(listing) as Record<string, unknown>;
       const publisher = isListingDraft(listingScope)
         ? listingScope.seller.identity.presentedBy
-        : isLegacyMvpListing(listingScope)
-          ? listingScope.agentId
-          : null;
+        : null;
       listingCheck = attachSignatureCheck(
         listingCheck,
-        isLegacyMvpListing(listingScope) &&
-          typeof listing.signature === "string"
-          ? await authenticateLegacyHexReference(
-              listing,
-              ARTIFACT_SEPARATORS.Listing,
-              publisher,
-              deps,
-            )
-          : await authenticateComponentReference(
-              listing,
-              ARTIFACT_SEPARATORS.Listing,
-              publisher ? new Set([publisher]) : null,
-              deps,
-            ),
+        await authenticateComponentReference(
+          listing,
+          ARTIFACT_SEPARATORS.Listing,
+          publisher ? new Set([publisher]) : null,
+          deps,
+        ),
       );
     }
   }
