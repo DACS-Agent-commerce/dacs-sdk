@@ -54,7 +54,8 @@
 //    Anything else is refused (wallet_sign_invalid), and nothing is kept or
 //    sent. A kept CREATE whose whole debit is above the ceiling is never broadcast
 //    again: every call about its address is refused (write-fee-cap) before
-//    any wallet read, so the agent holds it for the operator;
+//    any wallet read, so the agent holds it for the operator, who clears it
+//    with clearHeldWrite once the chain shows it applied or unable to execute;
 //  - broadcast({ signedTransaction, txHash }, { signal }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
 //  - readAccountNonce() -> a non-negative safe integer, or an authenticated
@@ -79,7 +80,7 @@
 //  slow node does not make other handles of the file wait; the lock is held to
 //  decide, write and sign. A read is used only for the CREATE it was made for.
 // Returns { anchorEvidence, reconcilePaymentEvidence, readSignedProjection,
-// journalId, close }: the first goes into createNativePaymentEvidenceConsumer,
+// clearHeldWrite, journalId, close }: the first goes into createNativePaymentEvidenceConsumer,
 // the second is the host option. createSellerAgent (and so startSellerHost)
 // takes the two only from one journal (isPaymentEvidenceWalletJournalPair):
 // their answers are the only authority for a second signature of the same
@@ -135,6 +136,8 @@ const FEE_CEILING = `the ${WRITE_FEE_CEILING_OS / OS_PER_DEM} DEM ceiling per wr
 // Its storage CREATE burns 1 DEM of gas and 1 DEM of storage fee per started 10240 bytes of the program's JSON.
 const GAS_DEM = 1;
 const STORAGE_FEE_CHUNK_BYTES = 10_240;
+// journal_meta key prefix of the mark clearHeldWrite leaves for a held row; its value is the outcome, 'applied' or 'superseded'.
+const CLEARED_KEY = 'held-cleared:';
 // The only attempt outcome that proves no CREATE was signed, so nothing was sent.
 const PRE_SIGNING_FAILURE = 'failed-before-signing';
 const TX_STATES = new Set(['applied', 'pending', 'absent']);
@@ -199,7 +202,7 @@ function heldDebitOs(row) {
 // which the node regenerates and compares: storage fee burn, storage program, gas burn, nonce increment by 1. The whole
 // debit (fee plus the storage and gas burns) is compared only with the per-write ceiling: a fee that cannot be summed
 // exactly, or a debit above it, is refused.
-function feeAndEditsProblem(content, from, op) {
+function feeAndEditsProblem(content, from, op, ceilingCleared) {
   const zero = content.amount, postFork = zero === '0', fee = content.transaction_fee;
   const amount = (value) => (postFork ? typeof value === 'string' && OS_AMOUNT.test(value) : typeof value === 'number' && Number.isFinite(value) && value >= 0);
   if (!object(fee) || Object.keys(fee).join() !== 'network_fee,rpc_fee,additional_fee,rpc_address' || !amount(fee.network_fee) || !amount(fee.rpc_fee)
@@ -208,7 +211,7 @@ function feeAndEditsProblem(content, from, op) {
   if (debitOs === null) return 'carries a fee that cannot be summed exactly';
   const dem = (value) => (postFork ? String(BigInt(value) * OS_PER_DEM) : value);
   const storageFee = storageFeeDem(op);
-  if (debitOs > WRITE_FEE_CEILING_OS) return `carries a debit of ${debitOs} OS (fee, storage fee and gas), above ${FEE_CEILING}`;
+  if (debitOs > WRITE_FEE_CEILING_OS && !ceilingCleared) return `carries a debit of ${debitOs} OS (fee, storage fee and gas), above ${FEE_CEILING}`;
   const edits = [{ type: 'balance', operation: 'remove', isRollback: false, account: from, txhash: '', amount: dem(storageFee) },
     { type: 'storageProgram', target: op.storageAddress, isRollback: false, txhash: '', context: { operation: 'CREATE_STORAGE_PROGRAM', sender: from, data: { variables: op, metadata: op.metadata } } },
     { type: 'balance', account: from, operation: 'remove', amount: dem(GAS_DEM), txhash: '', isRollback: false },
@@ -229,7 +232,8 @@ function permitted(authorize) {
   if (typeof answer?.then === 'function') answer.then(undefined, () => {});
   if (answer !== true) throw Object.assign(new Error(`the wallet effect is no longer authorized${answer instanceof Error ? `: ${reason(answer)}` : ''}`), { code: 'wallet_not_authorized' });
 }
-function signedCreateProblem(answer, input, signatureChainId) {
+// `ceilingCleared` lifts only the per-write ceiling, for a kept row an operator cleared (clearHeldWrite).
+function signedCreateProblem(answer, input, signatureChainId, ceilingCleared = false) {
   let signed;
   try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
   const content = signed?.content, op = content?.data?.[1];
@@ -259,7 +263,7 @@ function signedCreateProblem(answer, input, signatureChainId) {
   if (!Object.keys(content).every((key) => CONTENT_MEMBERS.has(key)) || !Object.keys(op).every((key) => OPERATION_MEMBERS.has(key))
       || !Object.keys(metadata).every((key) => METADATA_MEMBERS.has(key))) return 'carries a member a storage CREATE does not';
   if (!ZERO_AMOUNTS.includes(content.amount) || !object(op.acl) || Object.keys(op.acl).join() !== 'mode' || op.acl.mode !== 'public' || op.storageLocation !== 'onchain') return 'is not the public zero-value on-chain CREATE';
-  return feeAndEditsProblem(content, from, op);
+  return feeAndEditsProblem(content, from, op, ceilingCleared);
 }
 
 // Refuses a journal path whose directory another user could write to: they could unlink or replace the file and with it the kept signatures.
@@ -358,16 +362,20 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   }
 
   const rows =(logicalAddress) => db.prepare(`SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM ${table} WHERE logical_address = ? ORDER BY nonce`).all(logicalAddress);
+  // The outcome clearHeldWrite recorded for this kept CREATE, or undefined while it is not cleared.
+  const clearedOutcome = (txHash) => db.prepare('SELECT value FROM journal_meta WHERE key = ?').get(`${CLEARED_KEY}${txHash}`)?.value;
+  // The whole debit of a kept row that is held: above the ceiling and not cleared by an operator, else null.
+  const heldDebit = (row) => (clearedOutcome(row.tx_hash) === undefined ? heldDebitOs(row) : null);
   // One evidence per address: a question about other bytes at a kept address is refused.
   const keptFor = (input) => {
     if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const kept = rows(input.logicalAddress);
     // A kept CREATE whose whole debit is above the ceiling is never sent again, and nothing more is signed for its address.
     for (const row of kept) {
-      const debitOs = heldDebitOs(row);
+      const debitOs = heldDebit(row);
       if (debitOs !== null) throw Object.assign(new Error(`the wallet journal keeps the signed CREATE ${row.tx_hash}, whose debit of ${debitOs} OS (fee, storage fee and gas) is above ${FEE_CEILING}; it is held and never broadcast again`), { code: 'write-fee-cap' });
     }
-    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input, signatureChainId))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
+    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input, signatureChainId, clearedOutcome(row.tx_hash) !== undefined))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     const live = kept.find((row) => row.superseded_at === null);
     return { live: live ? { signedTransaction: live.signed_transaction, txHash: live.tx_hash, nonce: Number(live.nonce) } : null, highestNonce: kept.length ? Number(kept.at(-1).nonce) : 0 };
   };
@@ -421,7 +429,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     let live;
     try {
       live = db.prepare(`SELECT tx_hash, nonce, signed_transaction FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress);
-      if (live && rows(input.logicalAddress).some((row) => heldDebitOs(row) !== null)) return undefined;
+      if (live && rows(input.logicalAddress).some((row) => heldDebit(row) !== null)) return undefined;
     } catch (error) { if (error.code === 'SQLITE_BUSY') return undefined; throw error; }
     return live ? { txHash: live.tx_hash, checked: await fate({ txHash: live.tx_hash, signedTransaction: live.signed_transaction, nonce: Number(live.nonce) }) } : undefined;
   }
@@ -436,7 +444,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   async function liveFor(input, observed) {
     const { live, highestNonce } = keptFor(input);
     if (!live) return { live: null, highestNonce };
-    const checked = observed?.txHash === live.txHash ? observed.checked : await fate(live);
+    // A write cleared as applied stays applied, whatever the chain answers now.
+    const checked = clearedOutcome(live.txHash) === 'applied' ? { alive: true, applied: true }
+      : observed?.txHash === live.txHash ? observed.checked : await fate(live);
     if (checked.alive) return { live, highestNonce, applied: checked.applied, reason: checked.reason };
     const swap = db.prepare(`UPDATE ${table} SET superseded_at = ? WHERE logical_address = ? AND tx_hash = ? AND superseded_at IS NULL`).run(now(), input.logicalAddress, live.txHash);
     if (swap.changes !== 1) throw Object.assign(new Error('the wallet journal row changed while it was checked'), { code: 'wallet_journal_conflict' });
@@ -584,8 +594,43 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return live ? JSON.parse(live.signed_transaction) : null;
   }
 
+  // The kept row clearHeldWrite is asked about, and the outcome it already recorded (undefined before). Refuses a hash
+  // this journal never kept for the address and a row that is not held.
+  function heldRowToClear({ logicalAddress, txHash }) {
+    const row = rows(logicalAddress).find((kept) => kept.tx_hash === txHash);
+    if (!row) throw Object.assign(new Error(`the wallet journal kept no signed CREATE ${txHash} for this address`), { code: 'held_write_unknown' });
+    const outcome = clearedOutcome(txHash);
+    if (outcome === undefined && heldDebitOs(row) === null) throw Object.assign(new Error(`the signed CREATE ${txHash} is not held: its debit is not above ${FEE_CEILING}`), { code: 'held_write_not_held' });
+    return { row, outcome };
+  }
+  // The operator's step for a held write. It clears the write only on the chain's proof (the same fate() that supersedes
+  // any kept CREATE): applied, or its nonce overtaken with a complete absence observation. The mark and the supersession
+  // commit together, so a crash leaves it held or cleared. Returns { status: 'applied' | 'superseded', txHash }, the
+  // same answer on a repeat. Throws TypeError for a request without a logicalAddress and a txHash, held_write_unknown,
+  // held_write_not_held, and held_write_still_live (nothing changed) when the chain does not prove either.
+  async function clearHeldWrite(request) {
+    if (!object(request) || typeof request.logicalAddress !== 'string' || typeof request.txHash !== 'string' || !TX_HASH.test(request.txHash)) {
+      throw new TypeError('clearHeldWrite needs the logicalAddress and the txHash of the held write');
+    }
+    const { logicalAddress, txHash } = request, before = heldRowToClear(request);
+    if (before.outcome !== undefined) return { status: before.outcome, txHash };
+    const checked = await fate({ txHash, nonce: Number(before.row.nonce) });
+    if (checked.alive && !checked.applied) throw Object.assign(new Error(`the held signed CREATE ${txHash} is not proven applied or unable to execute${checked.reason ? `: ${checked.reason}` : ''}; it stays held`), { code: 'held_write_still_live' });
+    const outcome = checked.applied ? 'applied' : 'superseded';
+    return locked(() => {
+      const { outcome: recorded } = heldRowToClear(request);
+      if (recorded !== undefined) return { status: recorded, txHash };
+      if (outcome === 'superseded') {
+        const swap = db.prepare(`UPDATE ${table} SET superseded_at = ? WHERE logical_address = ? AND tx_hash = ? AND superseded_at IS NULL`).run(now(), logicalAddress, txHash);
+        if (swap.changes !== 1) throw Object.assign(new Error('the wallet journal row changed while it was checked'), { code: 'wallet_journal_conflict' });
+      }
+      db.prepare('INSERT INTO journal_meta VALUES (?, ?)').run(`${CLEARED_KEY}${txHash}`, outcome);
+      return { status: outcome, txHash };
+    });
+  }
+
   const operations = table === EVIDENCE_TABLE ? { anchor: anchorCreate, reconcile: reconcileCreate, ensureEvidence } : { guardedCreate };
-  return Object.freeze({ ...operations, readSignedProjection, journalId, close: () => db.close() });
+  return Object.freeze({ ...operations, readSignedProjection, clearHeldWrite, journalId, close: () => db.close() });
 }
 
 export function createPaymentEvidenceWalletJournal(options) {

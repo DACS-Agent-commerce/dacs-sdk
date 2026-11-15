@@ -10,6 +10,9 @@
 // return { value: <SDK getBlockByNumber material>, context, observedAt,
 //          fromCache: false, redirected: false } for that actual request.
 // `value` can be a direct block or the SDK {result:200,response:<block>} shape.
+// The one exception is the string "0" genesis read: its `value` must be the exact
+// four-field envelope {result:200,response:{number:0,hash},require_reply:false,extra:""},
+// never a bare block or a two-field envelope.
 // A transport cannot establish its authority by copying the expected values;
 // the caller must bind this receipt to its actual egress/connection state.
 //

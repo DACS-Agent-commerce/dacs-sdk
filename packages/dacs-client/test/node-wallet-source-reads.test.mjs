@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { DEVNET_NODE2_BLOCK_LAYOUT, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE } from '../src/wallet/devnet-native-transport.mjs';
@@ -24,17 +25,17 @@ const callers = {
 };
 const cancellation = reason => { const controller = new AbortController(); return { signal: controller.signal, abort: () => controller.abort(reason) }; };
 const flushLateWork = () => new Promise(resolve => setImmediate(resolve));
-// Block reads for the reviewed Node2 layout: block zero refused, then block one and block two.
-const BLOCK_ONE_HASH = 'c'.repeat(64), BLOCK_TWO_HASH = 'd'.repeat(64);
-const envelope = (result, response, extra) => jsonResponse(JSON.stringify({ result, response, require_reply: false, extra }));
+// Block reads for the reviewed Node2 layout: numeric block zero refused, the string "0" read answered with the genesis projection, then block one and block two.
+const observations = new URL('../../../conformance/', import.meta.url);
+const reviewedBlocks = ['tp1-node-observations/block0-2026-10-20.json', 'tp1-node-observations/block1-2026-10-20.json',
+  'tp1-node-observations-2026-11-08/block2-2026-11-08.json'].map(file => JSON.parse(readFileSync(new URL(file, observations))).body);
 function answerReviewedLayout(row) {
   const height = heightOf(row);
-  if (height === 0) return envelope(400, 'error', 'Block number not provided');
-  if (height === '0') return envelope(200, { number: 0, hash: CHAIN }, '');
-  if (height === 1) return envelope(200, { number: 1, id: 2, status: 'confirmed', hash: BLOCK_ONE_HASH, content: { previousHash: CHAIN } }, '');
-  return envelope(200, { number: 2, id: 3, status: 'confirmed', hash: BLOCK_TWO_HASH, content: { previousHash: BLOCK_ONE_HASH } }, '');
+  if (height === '0') return jsonResponse(JSON.stringify({ result: 200, response: { number: 0, hash: CHAIN }, require_reply: false, extra: '' }));
+  return jsonResponse(reviewedBlocks[height]);
 }
-const reviewedLayoutOptions = { blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: BLOCK_TWO_HASH };
+const reviewedLayoutOptions = { blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT,
+  reviewedBlockTwoHash: JSON.parse(reviewedBlocks[2]).response.hash };
 
 test('through the real source readRpc, a requested 1 MiB limit admits 1 MiB and refuses 1 MiB plus one before decoding, with and without content-length; a limit above 4 MiB or not an integer is refused', { timeout: TEST_TIMEOUT_MS }, async t => {
   const w = sourceReadWorld(t);

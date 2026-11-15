@@ -23,6 +23,16 @@ export const DEVNET_NATIVE_PROFILE = 'devnet-native';
 // the run-reviewed Node2 RPC representation which the transport may unwrap.
 export const DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE = 'node2-result-400-error-require-reply-false-block-number-not-provided/v1';
 export const DEVNET_NODE2_BLOCK_LAYOUT = 'node2-number-id-plus-one-empty-extra/v1';
+// Reviewed hash of TP-1 block two. Its predecessor is the recorded block one;
+// this pin is never learned from a live read.
+export const TP1_REVIEWED_BLOCK_TWO_HASH = 'ee41ad17448a9723b1040b41a4d375ab9071f5a9bcdd363bc22dba150faf1bd5';
+const NODE2_CONTENT_FIELDS = ['ordered_transactions','encrypted_transactions_hashes','per_address_transactions','web2data','previousHash','timestamp','peerlist','l2ps_partecipating_nodes','l2ps_banned_nodes','native_tables_hashes'];
+function reviewedNode2Block(answer) {
+  const block = answer?.response, content = block?.content;
+  return rpcEnvelope(answer,200,'') && storageWriteIdentityMatches(block)
+    && content !== null && typeof content === 'object' && !Array.isArray(content)
+    && Object.keys(content).length === NODE2_CONTENT_FIELDS.length && NODE2_CONTENT_FIELDS.every(key=>Object.hasOwn(content,key)) ? block : null;
+}
 const capabilities = new WeakSet();
 const agreementCapabilities = new WeakSet();
 const settlementCapabilities = new WeakSet();
@@ -145,7 +155,7 @@ export function createDevnetDemoTransport(options) { return constructTransport(o
 // The identity block reader behind every binder: the transport's, in normal and strict recovery
 // modes, the observer's and the production authority reader's. Each dependency is a parameter and
 // strictEnvelope has no default.
-export function sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post, now }) {
+export function sourceBlockReader({ chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post, now }) {
   if (typeof strictEnvelope !== 'boolean') throw new TypeError('the identity reader requires an explicit strictEnvelope');
   return {
     getContext: context,
@@ -168,6 +178,7 @@ export function sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLa
       const observedFourField = rpcEnvelope(answer,400,'Block number not provided') && answer.response === 'error';
       const reviewedShape = blockZeroErrorEnvelope === null ? legacyTwoField
         : blockZeroErrorEnvelope === DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE && observedFourField;
+      if (height === 0 && blockZeroErrorEnvelope !== null && (answer === 'error' || answer?.response === 'error') && !reviewedShape) fail('malformed_observation','the reviewed Node2 block-zero error envelope differs');
       const node2LiteralBlockZeroError = height === 0 && fallback !== null && reviewedShape;
       if(strictEnvelope && !rpcEnvelope(answer,200,'') && !(node2LiteralBlockZeroError && observedFourField)) fail('malformed_observation','storage recovery requires an exact identity RPC envelope');
       // String zero is the two-field genesis projection, which the binder validates field by field;
@@ -175,7 +186,7 @@ export function sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLa
       if(strictEnvelope && height !== '0' && !node2LiteralBlockZeroError && !storageWriteIdentityMatches(answer.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
       let value = node2LiteralBlockZeroError ? 'error' : answer;
       if (height === 1 && blockOneLayout === DEVNET_NODE2_BLOCK_LAYOUT) {
-        const first = rpcEnvelope(answer,200,'') ? answer.response : null;
+        const first = reviewedNode2Block(answer);
         const firstIdentity = first?.content?.previousHash;
         if (first?.number !== 1 || first?.id !== 2 || first?.status !== 'confirmed' || !HASH.test(first?.hash ?? '') || !HASH.test(firstIdentity ?? '') || first.hash === firstIdentity
           || (Object.hasOwn(first,'previousHash') && first.previousHash !== firstIdentity)
@@ -183,12 +194,16 @@ export function sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLa
         signal?.throwIfAborted();
         const secondAnswer = await post({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:2 } }] }, {}, { signal });
         if(strictEnvelope && !storageWriteIdentityMatches(secondAnswer?.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
-        const second = rpcEnvelope(secondAnswer,200,'') ? secondAnswer.response : null;
+        const second = reviewedNode2Block(secondAnswer);
         const secondPrevious = second?.content?.previousHash;
         if (second?.number !== 2 || second?.id !== 3 || second?.status !== 'confirmed' || !HASH.test(second?.hash ?? '') || second.hash === first.hash || secondPrevious !== first.hash
           || (Object.hasOwn(second,'previousHash') && second.previousHash !== first.hash)
           || ['chainIdentity','genesisHash'].some((key)=>Object.hasOwn(second,key)&&second[key]!==firstIdentity)) fail('malformed_observation','the reviewed Node2 block-two continuation differs');
         if (second.hash !== reviewedBlockTwoHash) fail('identity_mismatch','the fresh Node2 block-two hash differs from exact admission review');
+        if (firstIdentity !== chainIdentity) fail('identity_mismatch','the fresh Node2 block-one predecessor differs from the pinned chain identity');
+        const reads = canonicalize([first,second]);
+        if (reviewedReads.value !== undefined && reads !== reviewedReads.value) fail('identity_mismatch','the reviewed Node2 blocks changed between identity reads');
+        reviewedReads.value = reads;
         const { id:_databaseId, ...binderBlock } = first;
         value = { ...answer, response:binderBlock };
       }
@@ -212,8 +227,9 @@ export function createSourceObserver({ record, owner, blockZeroErrorEnvelope = n
   const fallback = { blockZeroUnavailable:'literal-error', documentation:record.provenance.documentation };
   const post = (body, headers = {}, { signal } = {}) => fetchBoundedJson(endpoint, { method:'POST', body, headers, fetchImpl:(...args) => owner.fetchImpl(...args),
     timeoutMs, signal, maxBytes:SOURCE_READ_MAX_BYTES, expectedOrigin:new URL(endpoint).origin });
+  const reviewedReads = {};
   const bind = ({ signal } = {}) => createDemosNetworkBinder({ expected, fallback, now, timeoutMs, maxAgeMs:IDENTITY_MAX_AGE_MS,
-    reader:sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope:false, signal, context:async () => owner.getContext(), post, now }) }).bind();
+    reader:sourceBlockReader({ chainIdentity:expected.chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope:false, signal, context:async () => owner.getContext(), post, now }) }).bind();
   return Object.freeze({ bind, post });
 }
 function constructTransport({ expected, transportOwner, journal, fallback = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
@@ -310,8 +326,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (answer?.result !== 200) fail('upstream_unavailable', 'the pinned node did not return a usable observation');
     return answer.response;
   };
+  const reviewedReads = {};
   const makeBinder = (strictEnvelope=false, signal, bindTimeoutMs=timeoutMs) => createDemosNetworkBinder({ expected:pinned, fallback, now, timeoutMs:bindTimeoutMs, maxAgeMs:IDENTITY_MAX_AGE_MS, exclusive:true,
-    reader:sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post:raw, now }) });
+    reader:sourceBlockReader({ chainIdentity:pinned.chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post:raw, now }) });
   const binder = makeBinder(),storageRecoveryBinder = makeBinder(true);
   const lane = (address) => nativeWalletLaneKey(pinned, address);
   const intent = (hash) => `devnet/native-transfer/${hash}`;
@@ -537,9 +554,34 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (r) { sharedAuth-=r.used.size; r.reserved=true; }
     else authRecords.set(identity,{ used:new Set(),floor:-Infinity,reserved:true });
   };
-  async function fenced(work, address) {
+  // Ends a wait for a lock or a connection fence with the abort reason as soon
+  // as `signal` aborts. `wait` receives a function to call when the grant
+  // arrives; an abort after that no longer ends the wait, so granted work runs
+  // to completion. After an abort the wait itself goes on in the background
+  // until the lock or fence is granted or the journal gives up on the lock
+  // with 'journal-busy' (after its lockTimeoutMs). No work runs after the
+  // abort, and a lock or fence granted after it is released without any.
+  function untilAborted(signal, wait) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const giveUp = () => reject(signal.reason);
+      const granted = () => signal.removeEventListener('abort', giveUp);
+      signal.addEventListener('abort', giveUp, { once: true });
+      wait(granted).then(resolve, reject).finally(granted);
+    });
+  }
+  const lockUnlessAborted = (signal, key, work) => untilAborted(signal, granted =>
+    journal.withWalletLock(key, () => { granted(); signal.throwIfAborted(); return work(); }));
+  const fenceUnlessAborted = (signal, address) => untilAborted(signal, granted =>
+    Promise.resolve().then(() => transportOwner.acquireConnectionFence({ address })).then(f => {
+      granted();
+      if (!signal.aborted) return f;
+      // The caller already has the abort reason; a failed release has no one to report to.
+      Promise.resolve().then(() => f?.release?.()).catch(() => {});
+    }));
+  async function fenced(work, address, signal) {
     await releaseExpiredLeases();
-    const f = await transportOwner.acquireConnectionFence({ address });
+    const f = await (signal ? fenceUnlessAborted(signal, address) : transportOwner.acquireConnectionFence({ address }));
     if (!f || typeof f.release !== 'function') fail('invalid_transport_owner','actual connection fence acquisition failed');
     try {
       if (!sameContext(await context(),f.context)) fail('connection_changed','the acquired connection differs from actual egress');
@@ -1011,8 +1053,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // 'included'}; rejects invalid_params, readback_unverified, a binding
   // failure, or the abort reason (caller, close(), or OutboundError 'timeout').
   // Abort contract: fetchImpl and transportOwner honour AbortSignal and settle.
-  // An abort stops new steps and aborts requests; it abandons no running work,
-  // and close() aborts and then waits for it.
+  // An abort stops new steps and aborts requests, and close() aborts and then
+  // waits for reads that are running. An abort or the deadline ends a wait for
+  // the source-read lock or the connection fence at once. After that, no read
+  // runs, and a lock or fence granted after the abort is released without a
+  // read. close() does not wait for an ended lock or fence wait, which goes on
+  // until the lock or fence is granted or the journal gives up on the lock
+  // with 'journal-busy'.
   async function observePassiveTransfer(hash, options={}) {
     if(typeof hash!=='string' || !HASH.test(hash)) fail('invalid_params','a canonical native transaction hash is required');
     const stop=AbortSignal.any([closing.signal,...(options.signal?[options.signal]:[])]);
@@ -1029,7 +1076,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     }); reads.push(answer); return answer; };
     const client={ getTransactionStatus:(h)=>read('getTransactionStatus',{hash:h}), getBlockByNumber:(n)=>read('getBlockByNumber',{blockNumber:n}),
       getTxByHash:async(h)=>{ const tx=await read('getTxByHash',{hash:h}); body=clone(tx); return tx; } };
-    const result=await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>{ signal.throwIfAborted(); return fenced(async()=>{
+    const result=await lockUnlessAborted(signal,'devnet/source-read/'+declaration.bindingId,()=>fenced(async()=>{
       signal.throwIfAborted();
       const c=await context(), binder=makeBinder(false,signal);
       await (retained ? binder.recover(issued.networkBinding) : binder.bind());
@@ -1038,7 +1085,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       signal.throwIfAborted();
       if(!sameContext(await context(),c)) fail('connection_changed','the connection changed during passive observation');
       return observation;
-    }); });
+    },undefined,signal));
     // The core converts read errors to observations; keep this boundary's refusal after draining reads.
     if(nestedEnvelope) refuseEnvelope();
     if(result.status!=='included') return result;
