@@ -132,6 +132,14 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // consumer retains it across browser-local signature, SDK confirm and one
 // broadcast. Copying expected values into getContext is not authority; the
 // independently trusted caller must bind these methods to its actual egress.
+//
+// `boundary` is the client's effect boundary (effect-boundary.mjs), optional; a value without
+// holdFence, signPass and dispatchPass is a TypeError. With one, the signature lease holds
+// the boundary's fence (its own deadline, once per lease, released when the lease stops or
+// expires) and each confirmTx runs in the lease's frame as its own stage: the exact signed
+// transaction and confirm-started are durable before the node is asked, and the transaction
+// counts as confirmed for the broadcast only after the node's valid answer is durable as
+// confirm-acknowledged. The broadcast and recovery paths do not use the boundary.
 export function createDevnetNativeTransport(options) { return constructTransport(options,false); }
 export function createDevnetAgreementTransport(options) { return constructTransport(options,true); }
 // Separate opt-in composition. The Agreement-only constructor above remains
@@ -219,8 +227,9 @@ export function createSourceObserver({ record, owner, blockZeroErrorEnvelope = n
 function constructTransport({ expected, transportOwner, journal, fallback = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
   fetchImpl = globalThis.fetch, now = () => Date.now(), stamps = { next: () => now() }, timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
+  settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null, boundary } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
   if (!transportOwner || typeof transportOwner.getContext !== 'function' || typeof transportOwner.acquireConnectionFence !== 'function') throw new TypeError('actual transport-owner context and connection fencing are required');
+  if (boundary !== undefined && !['holdFence', 'signPass', 'dispatchPass'].every((name) => typeof boundary?.[name] === 'function')) throw new TypeError('a native transport boundary needs holdFence, signPass and dispatchPass');
   if (!journal || !['get','put','entries','withWalletLock'].every((k) => typeof journal[k] === 'function')) throw new TypeError('an explicit durable public native-transfer journal is required');
   if (!Number.isSafeInteger(leaseMs) || leaseMs < 1000 || leaseMs > 60000) throw new TypeError('native connection lease must be bounded from1000 to60000ms');
   if (!Number.isSafeInteger(inclusionWaitMs) || inclusionWaitMs < 0 || inclusionWaitMs > 300000 || !Number.isSafeInteger(inclusionPollMs) || inclusionPollMs < 1 || typeof sleep !== 'function') throw new TypeError('the accepted-broadcast inclusion wait must be bounded from0 to300000ms');
@@ -455,9 +464,32 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const stopLease = async (lease, released = false) => {
     if (!lease || leases.get(lease.id) !== lease) return;
     leases.delete(lease.id); byAddress.delete(lease.address);
+    clearTimeout(lease.expiryTimer);
     try { if (released && lease.transfer) await writeClaims(lease.address,(claims) => claims.filter((c) => c.leaseId !== lease.id)); }
     catch { /* fail closed: the claim stays */ }
-    finally { await lease.fence.release(); }
+    finally { await lease.hold.release(); }
+  };
+  // The connection a signature lease holds until it stops. With a boundary it is the boundary's
+  // fence (taken once, inside the boundary's own deadline), and `run` puts later calls in the
+  // lease's frame so their passes reuse it; its context is the egress seen once it is held.
+  // Without one it is the transport owner's own fence.
+  const holdConnection = async (address, operation) => {
+    if (boundary) {
+      const held = await boundary.holdFence(operation);
+      try { return { release:held.release, run:held.run, context:await context() }; }
+      catch (error) { await held.release(); throw error; }
+    }
+    const fence = await transportOwner.acquireConnectionFence({ address });
+    try { if (!fence || typeof fence.release !== 'function' || !sameContext(await context(),fence.context)) fail('invalid_transport_owner','actual signature connection fence is unavailable'); }
+    catch (error) { await fence?.release?.(); throw error; }
+    return { release:() => fence.release(), run:(work) => work(), context:fence.context };
+  };
+  // Other operations take a boundary's fence without this transport's sweep (releaseExpiredLeases),
+  // so a lease that holds it ends itself at its expiry, unless a confirm or broadcast is running
+  // under it: that call's end, or the next sweep, stops it.
+  const expireLeaseAfterTerm = (lease) => {
+    lease.expiryTimer = setTimeout(() => { if (lease.busy === 0) stopLease(lease).catch(() => { /* a failed release leaves the fence for its next waiter's timeout */ }); }, leaseMs);
+    lease.expiryTimer.unref();
   };
   // A wallet's explicit release never frees the fence under a running confirm
   // or broadcast: the lease refuses new work at once and stops when the last
@@ -475,7 +507,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const claimLease = async (address) => {
     const l = byAddress.get(address);
     const current = () => l && leases.get(l.id) === l && l.expiresAt > now() && !l.releaseRequested;
-    if (!current() || !sameContext(await context(),l.fence.context) || !current()) fail('network_binding_required','the signature/broadcast connection fence is absent or changed');
+    if (!current() || !sameContext(await context(),l.hold.context) || !current()) fail('network_binding_required','the signature/broadcast connection fence is absent or changed');
     l.busy++;
     return { l, release: async () => { l.busy--; if (l.busy === 0 && l.releaseRequested) await stopLease(l,true); } };
   };
@@ -806,6 +838,27 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         }
     }));
   }
+  // The node's answer that makes a transaction confirmed: a valid one. A byte-identical, approved one is checked by the caller.
+  const acceptedConfirmation = (answer) => answer?.result === 200 && answer.response?.data?.valid === true;
+  // What a confirm-acknowledged record keeps of an accepted answer: the answer itself, as the wallet gets it, and its gas.
+  const confirmationMaterial = (answer) => (acceptedConfirmation(answer) ? { confirmation:answer,gasOperation:answer.response.data.gas_operation ?? null } : undefined);
+  // Retains the exact signed transaction (its JSON text) as the lease's one signed artifact. The same bytes
+  // again reuse the retained record; other bytes under this lease are refused (eb_operation_signed).
+  const retainSignedTransaction = async (operation, bytes) => {
+    try { return await boundary.signPass(operation,async () => bytes); }
+    catch (error) {
+      const artifactHash=sha(bytes);
+      if (error?.code === 'eb_operation_signed' && error.details?.artifactHash === artifactHash) return { ...operation,artifactHash };
+      throw error;
+    }
+  };
+  // The confirmation as its own stage: the signed transaction and confirm-started are durable before `send` asks the node,
+  // and its outcome is recorded after. It writes nothing of the broadcast's lane or intent records. Runs in the lease's frame.
+  const confirmStage = async (lease, tx, send) => {
+    const operation={ ...lease.operation,kind:tx.content.type === 'storageProgram' ? 'create' : 'native' };
+    const artifact=await retainSignedTransaction(operation,Buffer.from(JSON.stringify(tx)));
+    return boundary.dispatchPass(artifact,send,{ explicit:true,stage:'confirm',material:confirmationMaterial });
+  };
   const implementation = {
     profile(publicOrigin) { return { profile:agreement?DEVNET_AGREEMENT_PROFILE:DEVNET_NATIVE_PROFILE,network:pinned.network,
       rpcUrl:`${publicOrigin}${DEVNET_NATIVE_RPC_PATH}`,bindingUrl:`${publicOrigin}${DEVNET_NATIVE_BINDING_PATH}`,
@@ -830,10 +883,11 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         if (previous && !['observed','failed'].includes(previous.stage)) fail(retainedWriteCode(previous),'the retained native transfer must be read back; it is never resent');
         const transfer=declaredTransfer(request.transfer);
         if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
-        const fence=await transportOwner.acquireConnectionFence({ address });
+        // One operation per lease: the boundary's history keeps every record of the lease's one signed transaction under this id.
+        const operation={ operationId:randomBytes(16).toString('hex'),lane:lane(address),kind:'native',paidWrite:true,debitOs:transfer?.amountOs ?? '0',pinVersion:pinned.pinVersion };
+        const hold=await holdConnection(address,operation);
         let l;
         try {
-          if (!fence || typeof fence.release !== 'function' || !sameContext(await context(),fence.context)) fail('invalid_transport_owner','actual signature connection fence is unavailable');
           const retained=await journal.get(lane(address));
           if(retained && !['observed','failed'].includes(retained.stage)) fail(retainedWriteCode(retained),'an issued native transfer appeared while acquiring the connection fence');
           const binding=await binder.beforeSignature(await binder.recover(request.binding));
@@ -842,7 +896,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             const latest=await journal.get(lane(address));
             if (latest && !['observed','failed'].includes(latest.stage)) fail(retainedWriteCode(latest),'an issued native transfer appeared while acquiring the connection fence');
             if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
-            const lease={ id:randomBytes(16).toString('hex'),address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:now(),busy:0,transfer:null };
+            const lease={ id:operation.operationId,address,hold,operation,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:now(),busy:0,transfer:null };
             // Claimed durably before it is returned: a cancellation in any
             // process sees it (transferClaimed).
             if (transfer) await claimTransfer(lease,transfer);
@@ -850,6 +904,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             // fence acquisition (releaseExpiredLeases), never underneath a running
             // confirm or broadcast. Provider release / app close ends it earlier.
             l=lease; leases.set(l.id,l); byAddress.set(address,l);
+            if (boundary) expireLeaseAfterTerm(l);
             return { binding,leaseId:l.id,expiresAt:l.expiresAt };
           };
           // A lease that names its transfer is granted under the lane lock: a
@@ -858,7 +913,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           // Agreement CREATE, a seller write, an older page) claims nothing
           // until its confirmTx, so it is granted as before, without the lock.
           return await (transfer ? journal.withWalletLock(lane(address),grant) : grant());
-        } catch(error) { if(!l) await fence?.release?.(); throw error; }
+        } catch(error) { if(!l) await hold.release(); throw error; }
       }
       if (phase === 'broadcast') {
         const { l, release }=await claimLease(address);
@@ -870,7 +925,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           const confirmed=await identityOf(l.confirmed.content);
           if(await cancelledTransfer(address,confirmed)) await refuseCancelled(address,confirmed,'pre-broadcast');
           l.binding=await binder.beforeBroadcast(l.binding);
-          if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the connection changed before broadcast');
+          if(!sameContext(await context(),l.hold.context)) fail('connection_changed','the connection changed before broadcast');
           l.readyHash=request.hash;
           return { binding:l.binding,leaseId:l.id };
         } finally { await release(); }
@@ -902,14 +957,20 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           await claimTransfer(l,transfer,true);
         });
         step(tx,'sign','complete',l.signStarted);
-        const started=now();
-        const answer=await rawWithoutWriteProof(body,headers);
-        step(tx,'validate','complete',started);
-        if(answer?.result === 200 && answer.response?.data?.valid === true) {
-          if(JSON.stringify(answer.response.data.transaction) !== JSON.stringify(tx)) fail('signed_bytes_changed','the new native transport requires byte-identical signed confirmation');
-          if(approveConfirmedWrite&&(await approveConfirmedWrite(answer))!==true)fail('approval_required','the seller policy refused the confirmed write');
-          l.confirmed=clone(tx);
-        }
+        const confirmAtNode=async () => {
+          const started=now();
+          const answer=await rawWithoutWriteProof(body,headers);
+          step(tx,'validate','complete',started);
+          if(acceptedConfirmation(answer)) {
+            if(JSON.stringify(answer.response.data.transaction) !== JSON.stringify(tx)) fail('signed_bytes_changed','the new native transport requires byte-identical signed confirmation');
+            if(approveConfirmedWrite&&(await approveConfirmedWrite(answer))!==true)fail('approval_required','the seller policy refused the confirmed write');
+          }
+          return answer;
+        };
+        // With a boundary the confirmation is its own recorded stage inside the lease's frame; the lease counts
+        // the transaction as confirmed only once the answer's record is durable.
+        const answer=boundary ? await l.hold.run(() => confirmStage(l,tx,confirmAtNode)) : await confirmAtNode();
+        if(acceptedConfirmation(answer)) l.confirmed=clone(tx);
         return answer;
       }
       if(l.readyHash !== tx.hash || JSON.stringify(l.confirmed) !== JSON.stringify(tx)) fail('native_confirmation_required','the original signed transaction and fresh broadcast binding are required');
@@ -927,7 +988,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           const claiming=await identityOf(tx.content);
           if(await cancelledTransfer(tx.content.from,claiming)) await refuseCancelled(tx.content.from,claiming,'broadcast');
           const binding=await binder.beforeBroadcast(l.binding);
-          if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the fenced connection changed');
+          if(!sameContext(await context(),l.hold.context)) fail('connection_changed','the fenced connection changed');
           if(tx.content.type==='native' && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))>=tx.content.nonce) fail('nonce_consumed','the bound sender nonce was already consumed; no native intent was issued');
           const issued={ stage:'broadcast-started',hash:tx.hash,nonce:tx.content.nonce,signedTransaction:clone(tx),networkBinding:clone(binding) };
           if(tx.content.type==='storageProgram') issued.storageWriteGas=clone(call.data?.response?.data?.gas_operation ?? null);
@@ -951,7 +1012,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           for (let polls = Math.ceil(inclusionWaitMs / inclusionPollMs); !closed && polls > 0 && now()<deadline; polls--) {
             let status;
             try {
-              if (!sameContext(await context(),l.fence.context)) break;
+              if (!sameContext(await context(),l.hold.context)) break;
               status = await node('getTransactionStatus',{ hash:tx.hash });
             } catch { break; }
             if (status?.state === 'included' && Number.isSafeInteger(status.blockNumber)) {
@@ -961,7 +1022,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
                 // context before the reads (still the lease's fenced one) and
                 // keep the proof only if that connection is current after them.
                 const observedContext=await context();
-                if(!sameContext(observedContext,l.fence.context)) fail('connection_changed','the fenced connection changed before the inclusion proof');
+                if(!sameContext(observedContext,l.hold.context)) fail('connection_changed','the fenced connection changed before the inclusion proof');
                 const proofStarted=now(),issued=await journal.get(intent(tx.hash));
                 const binding=await binder.recover(issued.networkBinding);
                 const receipt=await inclusionReceipt(tx.content.from,tx.hash,issued,binding,status);

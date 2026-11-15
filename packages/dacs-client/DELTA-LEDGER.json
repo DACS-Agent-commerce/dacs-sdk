@@ -9991,6 +9991,42 @@
           "after": "33e6f68f1b10e68f6fccca7c6918e3cd291ac4d4"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF hold the effect boundary's fence across the native signature lease and record confirmation as its own stage",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bdf6af6c1f45d926416112ce65e7a9062a196282",
+          "after": "804a0c769f90a2994dfefabf38cc660791ddffe3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "be747aab0f805f37b550920e8acea9c023ac7f93",
+          "after": "8921071044d422042d0b94d63f83eeaa471d6ce8"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-stages.test.mjs",
+          "before": null,
+          "after": "73b47b66641da5aa092f2263dc8e3691aa444e62"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-effect-world.mjs",
+          "before": null,
+          "after": "c35508b7d5355dba417b885f89510e8da73c8f7b"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmation-persistence-cuts.test.mjs",
+          "before": null,
+          "after": "f2350df2fdf2307c7ea7de2d391c54c98284058f"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "33e6f68f1b10e68f6fccca7c6918e3cd291ac4d4",
+          "after": "7940e3591c6ce56076b9b567942e11f85a5e72bd"
+        }
+      ]
     }
   ]
 }
