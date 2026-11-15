@@ -302,14 +302,14 @@ const RECORD_FAULTS = [
  { name: 'a renamed record', rename: true },
  { name: 'an unreachable commit selector', edit: value => { value.sha = '0'.repeat(40); } },
  { name: 'a changed subject on a hashed selector', edit: (value, sha) => { value.sha = sha; value.subject = 'delta(client): WF a different commit subject'; } },
- { name: 'a repeated commit selector', duplicate: true },
+ { name: 'a repeated commit selector', duplicate: true, qualified: true },
  { name: 'an unqualified subject without a delta prefix', edit: value => { delete value.sha; value.subject = 'a source repair without a delta prefix'; } },
  { name: 'a changed terminal blob', edit: value => { value.files[0].after = '0'.repeat(40); } },
  { name: 'a changed parent blob', edit: value => { value.files[0].before = '0'.repeat(40); } },
  { name: 'an ordinary record with no changed blob', edit: value => { value.files[0].after = value.files[0].before; } },
  { name: 'an empty file list', edit: value => { value.files = []; } },
  { name: 'an inventory row naming another file', edit: value => { value.commitFiles = ['packages/dacs-client/README.md']; } },
- { name: 'an unqualified repeated subject', edit: value => { value.delta = 'D11'; }, duplicate: true },
+ { name: 'an unqualified repeated subject', duplicate: true },
 ];
 for (const fault of RECORD_FAULTS) test(`immutable record files refuse ${fault.name}`, t => {
  const dir = scratch(t), git = scratchGit(dir), subject = 'delta(client): WF record a source change for integrity checks';
@@ -326,10 +326,21 @@ for (const fault of RECORD_FAULTS) test(`immutable record files refuse ${fault.n
  const file = 'packages/dacs-client/records/' + recordName(value);
  if (fault.remove || fault.rename) unlinkSync(join(dir, file));
  if (fault.rename) writeFileSync(join(dir, 'packages/dacs-client/records/renamed.json'), JSON.stringify(value));
- if (fault.duplicate) { value = { ...value, delta: 'D11', sha }; savedRecord(dir, value); }
- else if (fault.edit) { fault.edit(value, sha); writeFileSync(join(dir, file), JSON.stringify(value)); }
+ if (fault.duplicate) {
+  unlinkSync(join(dir, file));
+  if (fault.qualified) value = { ...value, sha };
+  savedRecord(dir, value);
+  savedRecord(dir, { ...value, delta: 'D11' });
+ } else if (fault.edit) {
+  fault.edit(value, sha); unlinkSync(join(dir, file)); savedRecord(dir, value);
+ }
  const result = check(dir); assert.equal(result.status, 1, result.text);
  assert.match(result.text, /record file (?:differs from the blob it was added with|not added by a commit after the baseline)/);
+ if (fault.duplicate) {
+  assert.match(result.text, /duplicate delta subject delta\(client\): WF record a source change for integrity checks/);
+  assert.match(result.text, new RegExp(`commit inventory selects ${sha} more than once`));
+  assert.doesNotMatch(result.text, /file name must be/);
+ }
  // The same archived edit is refused by the reciprocal core pin.
  const archive = join(dir, 'packages/dacs-client/DELTA-LEDGER.json'), data = JSON.parse(readFileSync(archive, 'utf8'));
  if (fault.remove || fault.rename) data.changes.pop();
