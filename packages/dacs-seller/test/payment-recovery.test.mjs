@@ -480,6 +480,8 @@ test('native recovery sends the retained evidence CREATE once and delivers witho
 const NATIVE_SOURCE_CELLS = [
   ['the transfer read fails', (w, txHash) => readTransferAs(w, txHash, unreadableTransfer)],
   ['the transfer cannot be found', (w, txHash) => readTransferAs(w, txHash, () => null)],
+  ['the transfer reads as failed', (w, txHash) => readTransferAs(w, txHash, failedTransfer)],
+  ['the transfer is included but its record says failed', (w, txHash) => readTransferAs(w, txHash, includedButFailedTransfer)],
   ['the Deliverable is gone', (w) => { w.node.script.programRead = (record) => (record?.metadata.artifactKind === 'Deliverable' ? null : record); }],
   ['the delivery evidence cannot be read', (w) => { w.node.script.programRead = (record) => { if (record?.metadata.logicalAddress.startsWith('dacs4:evidence:')) throw new Error('TEST node unreachable'); return record; }; }],
 ];
