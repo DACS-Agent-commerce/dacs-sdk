@@ -1,7 +1,7 @@
 [
   {
     "id": "K12-H1",
-    "today": "the kit agent's proposal admission refuses a presentation carrying the client's self-derived nonce: session_not_admitted, \"the presentation nonce is not a challenge this seller issued\"",
+    "today": "the kit agent's proposal refuses a presentation carrying the client's self-derived nonce: context_admission_closed, \"the job has no accepted context presentation\"",
     "target": "the client presents the seller-issued nonce; accepted",
     "owner": "P14a",
     "flippedBy": null

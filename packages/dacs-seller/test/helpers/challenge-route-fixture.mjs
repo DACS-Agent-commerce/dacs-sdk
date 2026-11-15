@@ -124,7 +124,7 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
     const db = new Database(path);
     try {
       for (let index = 0; index < count; index++) {
-        db.prepare("INSERT INTO kit_challenges (nonce,jobId,buyer,challengeScopeHash,origin,issuedAt,expiresAt,state) VALUES (?,?,?,?,'route',?,?,'issued')")
+        db.prepare("INSERT INTO kit_challenges (nonce,jobId,buyer,challengeScopeHash,issuedAt,expiresAt,state) VALUES (?,?,?,?,?,?,'issued')")
           .run(sha256Hex(`TEST-seed-${index}`), generateCanonicalJobId({ timestamp: T0, entropy: new Uint8Array(10).fill(0x40 + index) }), testWallet(40 + index).claim,
             sha256Hex(`TEST-scope-${index}`), state.time, state.time + CHALLENGE_LIFETIME_MS);
       }

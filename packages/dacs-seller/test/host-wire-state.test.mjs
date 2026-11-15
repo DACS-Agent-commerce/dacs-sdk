@@ -585,7 +585,7 @@ test('the reader each signed request calls is bounded: a stalled read is pending
     await flush();
     assert.deepEqual(unhandled, []);
     const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
-    try { assert.deepEqual(['peer_jobs', 'peer_effects', 'kit_purchase_profiles'].map((table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n), [0, 0, 0], 'nothing was reserved or kept'); } finally { db.close(); }
+    try { assert.deepEqual(['peer_jobs', 'peer_effects', 'kit_purchase_profiles'].map((table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n), [0, 0, PROPOSALS_PER_BUYER], 'nothing was reserved or kept beyond the tuples the context admissions kept'); } finally { db.close(); }
     stall = false;
     assert.equal((await postSigned(host, afterwards)).status, 404, 'a later request is answered: the slots were released');
   } finally {
@@ -1148,14 +1148,16 @@ test('R20 detached profiles do not hold job slots', t => {
 test('started host signed proposal creates accounting and wire operation records', async (t) => {
   const f = await hostFixture(t), host = await f.start();
   const body = await f.proposal(host), { jobId: id, agreementHash } = body.transportIdentity;
+  // The job's context admission, made to open the session, wrote its own records first.
+  const journalFiles = () => ({ requests: namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, operations: namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length });
+  const before = journalFiles();
   const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
   const answer = await postSigned(host, await buyerWire.signRequest(PROPOSALS, body, { jobId: id, agreementHash }));
   const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
   try {
-    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations').all(), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
+    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations WHERE route = ?').all(PROPOSALS), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
   } finally { db.close(); }
-  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, 1);
-  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length, 1);
+  assert.deepEqual(Object.fromEntries(Object.entries(journalFiles()).map(([name, count]) => [name, count - before[name]])), { requests: 1, operations: 1 });
   assert.ok(answer.header, 'the started host signs the result');
 });

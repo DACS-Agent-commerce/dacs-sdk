@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { createClosedBootstrapGate } from '../../src/dacs/closed-bootstrap-gate.mjs';
 import { createDemDeliveryContext, demDeliveryContextHost } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { createWireSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
@@ -107,6 +108,8 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   };
   const drain = async () => { while (tracked.size > 0) await Promise.allSettled([...tracked]); };
   const wire = w.makeWire({ capacity, reservations: coordinator });
+  const closedBootstrapGate = createClosedBootstrapGate({ admission: admission.admissionRecord, purchaseProfile: (jobId) => w.store.purchaseProfile(jobId), profile: wire.binding.profile });
+  coordinator.addPreAccountingGate(closedBootstrapGate);
   const routeOptions = { listing: w.listing, wire, store: w.store, ledger: w.store.challenges, admissionTransaction: countingAdmission, coordinator, capacity, provider,
     assertBuyerAccess: async (claim) => { calls.access++; return w.policy.access(claim); }, knownJob: async (...input) => { calls.known++; return w.policy.known(...input); },
     ready: () => state.ready(), stopped: () => state.stop(), now, monotonicNow: () => state.mono, trackContextWork };
@@ -159,6 +162,6 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const settleJob = async (jobId = JOB) => { await drain(); await admission.jobEffectMutex(jobId).run(() => {}); await drain(); };
   const privateRow = (jobId = JOB) => JSON.parse(internals.db.prepare('SELECT record FROM kit_context_admissions WHERE jobId = ?').get(jobId).record);
   return { ...w, challenges: () => w.store.challenges, handler, route, admission, countingAdmission, coordinator, capacity, counts, behaviour, provider, post, issue, startContext, rowOf, privateRow, challengeOf, openHolds, internals,
-    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire,
+    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire, closedBootstrapGate,
     tick: (ms) => { state.mono += ms; } };
 }

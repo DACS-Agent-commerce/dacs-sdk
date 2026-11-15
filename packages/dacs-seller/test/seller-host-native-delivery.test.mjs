@@ -16,7 +16,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import {testWallet,NOW}from './helpers/protocol-fixture.mjs';
-import { HOST_CONTEXT_CALLBACKS } from './helpers/host-context-callbacks.mjs';
+import { HOST_CONTEXT_CALLBACKS, presentContextAnswer } from './helpers/host-context-callbacks.mjs';
+import { hostBuyer } from './helpers/host-context-client.mjs';
 import * as core from '@kynesyslabs/dacs';
 import {sellerApi as seller}from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
@@ -56,12 +57,6 @@ function key(tag){const wallet=testWallet(tag);return{...wallet,sign:wallet.sign
 const identityFor = (party, presentedAt, sessionSeed = 'host-native-delivery') => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
-};
-// The buyer's presentation of the challenge the seller host issued (CORE SN-1/SN-3).
-const presentChallenge = (party, presentedAt, sessionNonce) => {
-  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'host-native-delivery' });
-  const bundle = { ...unsigned.bundle, sessionNonce }, bundleHash = core.sha256Hex(core.canonicalize(bundle));
-  return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
 
 // One Demos node: confirmed blocks bound to the fixture chain identity, native
@@ -256,8 +251,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const buyerBundles = new Map();
   const buyerBundleFor = async (jobId) => {
     if (!buyerBundles.has(jobId)) {
-      const challenge = await host.issueSessionChallenge({ jobId, buyer: buyerKey.claim });
-      buyerBundles.set(jobId, presentChallenge(buyerKey, now, challenge.sessionNonce));
+      buyerBundles.set(jobId, await (await hostBuyer(host, listing, { jobId, buyer: buyerKey, seller: sellerKey, clock })).admit(jobId));
     }
     return buyerBundles.get(jobId);
   };
@@ -467,7 +461,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const evidenceConsumer = (anchorEvidence) => createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl, anchorEvidence, now: clock,
     ...(projectionReader ? { readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) } : {}) });
   const demDeliveryContext = createDemDeliveryContext({ authority: 'TEST-host-native-delivery', vetMode: KIT_TP1_VET_MODE,
-    resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); }, ...HOST_CONTEXT_CALLBACKS,
+    resolveBuyer: async (input) => presentContextAnswer(input), ...HOST_CONTEXT_CALLBACKS,
     resolveSeller: async ({ jobId }) => {
       const input = await vettedInput(jobId);
       // One requirement invocation per Vet record the Agreement references,
@@ -661,7 +655,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // read with the host stopped, from the host's own durable state.
   const retainedSession = async (jobId) => {
     await stop();
-    const agent = await seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger() });
+    const agent = await seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger(), closedBootstrapGate: () => null });
     try { return agent.durableSessionOf(jobId); } finally { agent.close(); }
   };
   const PAYMENTS_PATH = '/dacs/v1/payments';
@@ -715,7 +709,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const agentFor = async ({ stopHost = true, readIssued = null, deliveryEvidenceEnabled: publishEvidence = deliveryEvidenceEnabled, beforePublish = null } = {}) => {
     if (stopHost) await stop();
     const anchor = beforePublish ? { ...artifactAnchor, publish: async input => { await beforePublish(); return artifactAnchor.publish(input); } } : artifactAnchor;
-    return seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence, challengeLedger: hostLedger() });
+    return seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence, challengeLedger: hostLedger(), closedBootstrapGate: () => null });
   };
   // Model an authenticated checkpoint written by an older agent before its
   // adapter recovery fix, using the store's own fenced save and signature.
@@ -2583,15 +2577,10 @@ test('a pending commitment CREATE is not sent again once the seller-state check,
   assert.equal(commitmentResends(w, p), 0, 'a failed check sends nothing');
 });
 
-// The public host forwards issuance to the same verifier-owned generator.
-test('the host refuses caller-chosen challenges and accepts a buyer presentation of its own challenge', async (t) => {
-  const w = await world(t), jobId = '01J8N4YV7YVYQ4DB7M8T'+String(++jobSequence).padStart(6,'0');
-  const chosen = identityFor(w.buyerKey, NOW);
-  await assert.rejects(w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });
-  await assert.rejects(w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: '01'.repeat(16) }), { code: 'challenge_invalid' });
-  const issued = await w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim });
-  assert.match(issued.sessionNonce, /^[0-9a-f]{64}$/);
-  assert.notEqual(issued.sessionNonce, chosen.sessionNonce);
+// The host issues challenges only through its signed challenge route, and a presentation of one is first admitted by the context route.
+test('the host has no operator issuance and accepts a buyer presentation of the challenge its wire issued', async (t) => {
+  const w = await world(t);
+  assert.equal(Object.hasOwn(w.host(), 'issueSessionChallenge'), false);
   const purchase = await w.purchase({ commit: false });
   assert.match(purchase.agreementHash, /^[0-9a-f]{64}$/, 'the seller accepted the presentation and signed its Agreement');
 });
