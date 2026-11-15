@@ -81,7 +81,25 @@ describe("inventory command line entry", () => {
   });
 });
 
+describe("inventory entry with symlinks preserved", () => {
+  it("prints the inventory when started through a symlink", () => {
+    const directory = root(); pkg(join(directory, "node_modules/a"));
+    const link = join(directory, "inventory-link.mjs");
+    symlinkSync(inventoryScript, link);
+    const output = execFileSync(process.execPath, ["--preserve-symlinks-main", link, directory], { encoding: "utf8" });
+    expect(JSON.parse(output).packages).toEqual([{ location: "node_modules/a", name: "a", version: "1.0.0" }]);
+  });
+});
+
 describe("inventory import without a script path", () => {
+  it("prints nothing when imported from standard input beside a symlink named -", () => {
+    const directory = root();
+    symlinkSync(inventoryScript, join(directory, "-"));
+    const output = execFileSync(process.execPath, ["--input-type=module", "-"], { encoding: "utf8", cwd: directory,
+      input: `import ${JSON.stringify(pathToFileURL(inventoryScript).href)};` });
+    expect(output).toBe("");
+  });
+
   it("prints nothing and does not fail when imported from standard input", () => {
     const output = execFileSync(process.execPath, ["--input-type=module", "-"], { encoding: "utf8",
       input: `import ${JSON.stringify(pathToFileURL(inventoryScript).href)};` });

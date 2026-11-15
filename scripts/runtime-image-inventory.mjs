@@ -8,7 +8,7 @@
 // name or version, so the comparison fails closed on each.
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const RUNTIME_IMAGE_INVENTORY_SCHEMA = "dacs-runtime-image-inventory/v1";
 
@@ -71,9 +71,11 @@ export function runtimeImageInventory(root) {
   return { schema: RUNTIME_IMAGE_INVENTORY_SCHEMA, packages };
 }
 
-const entryUrl = (() => {
-  try { return pathToFileURL(realpathSync(process.argv[1])).href; } catch { return null; }
+const isEntry = (() => {
+  const entry = process.argv[1];
+  if (!entry || entry === "-") return false;
+  try { return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 })();
-if (entryUrl === import.meta.url) {
+if (isEntry) {
   process.stdout.write(JSON.stringify(runtimeImageInventory(process.argv[2] ?? "."), null, 2) + "\n");
 }
