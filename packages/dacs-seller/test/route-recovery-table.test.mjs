@@ -9,12 +9,11 @@ import { createOperatorBuyerAccess } from '../src/devnet-demo/buyer-access.mjs';
 import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { WIRE_ROUTE_PATHS } from '../src/dacs/seller-wire-requests.mjs';
 import DatabaseSync from 'better-sqlite3';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { paymentEvidenceAddress } from '@kynesyslabs/dacs';
 import { deliverableAddress, deliveryEvidenceAddress, listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { JOB, seller, testWallet } from './helpers/protocol-fixture.mjs';
 import { EVIDENCE_SIGNATURE, OTHER_TX, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
+import { arrangeReceipts, arrangeRecord, arrangeTransfer, fixtureReceiptsFile, nativeRecord, nativeTransfer } from './helpers/completed-source-cells.mjs';
 import { BUYER, SELLER, PIN, continuingWorld, derive, jobFor, proposeJob, world } from './helpers/wire-routes-world.mjs';
 import { BUNDLE_REFUSALS, SHORT_LEASE_MS, bundleWorld, claimedTransport, completions, editSession, markPaid, operationOf, proposalSigningRig, reconcileInput, realWorld, tempDirectory } from './helpers/route-recovery-world.mjs';
 
@@ -566,16 +565,6 @@ test('a final payment whose cleanup fails after publication keeps its outcome an
 
 const OVERSIZED_REPLY_CHARS = 600_000;
 const never = () => new Promise(() => {});
-const receiptsOf = (w) => join(w.f.config.durableDirectory, 'sdk-receipts', 'seller-receipts.json');
-// Each arrange* changes one source of a completed payment and returns what restores it.
-const arrangeTransfer = (w, answer) => { w.script.observe = answer; return () => { w.script.observe = null; }; };
-const arrangeRecord = (w, address, change) => { w.f.anchors.controls.read = (row, at) => (at === address ? change(row) : row); return () => { w.f.anchors.controls.read = (row) => row; }; };
-const arrangeReceipts = (file, change) => {
-  const saved = readFileSync(file, 'utf8'), state = JSON.parse(saved);
-  change(state);
-  writeFileSync(file, JSON.stringify(state));
-  return () => writeFileSync(file, saved);
-};
 const fixtureRecords = (w) => ({ payment: paymentEvidenceAddress(w.jobId, 'demos-native:DEM', 2), deliverable: deliverableAddress(w.jobId), delivery: deliveryEvidenceAddress(w.jobId) });
 const changedArtifact = (row) => ({ ...row, artifact: { ...row.artifact, observedAt: 1 } });
 const FIXTURE_SOURCE_CELLS = [
@@ -584,9 +573,9 @@ const FIXTURE_SOURCE_CELLS = [
   ['the transfer read fails', 'unavailable', (w) => arrangeTransfer(w, async () => { throw new Error('TEST node unreachable'); })],
   ['the transfer amount is not the price', 'changed', (w) => arrangeTransfer(w, (txHash) => includedTransfer(txHash, { amountOs: '1' }))],
   ['the transfer was paid by another key', 'changed', (w) => arrangeTransfer(w, (txHash) => includedTransfer(txHash, { payer: seller.address }))],
-  ['the permit is gone from the receipt state', 'changed', (w) => arrangeReceipts(receiptsOf(w), (state) => { state.records = {}; state.permits = {}; })],
-  ['the permit authorizes a different rail registry version', 'changed', (w) => arrangeReceipts(receiptsOf(w), (state) => { Object.values(state.records)[0].selected.authorization.railRegistryVersion = 2; })],
-  ['the receipt state that holds the permit is damaged', 'unavailable', (w) => arrangeReceipts(receiptsOf(w), (state) => { state.permits = {}; })],
+  ['the permit is gone from the receipt state', 'changed', (w) => arrangeReceipts(fixtureReceiptsFile(w), (state) => { state.records = {}; state.permits = {}; })],
+  ['the permit authorizes a different rail registry version', 'changed', (w) => arrangeReceipts(fixtureReceiptsFile(w), (state) => { Object.values(state.records)[0].selected.authorization.railRegistryVersion = 2; })],
+  ['the receipt state that holds the permit is damaged', 'unavailable', (w) => arrangeReceipts(fixtureReceiptsFile(w), (state) => { state.permits = {}; })],
   ['the payment evidence record differs', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).payment, changedArtifact)],
   ['the payment evidence record is absent', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).payment, () => ({ status: 'absent' }))],
   ['the Deliverable record differs', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).deliverable, changedArtifact)],
@@ -647,8 +636,6 @@ async function checkFixtureSources(t) {
 }
 
 // The native world's sources: the transfer and the three records its node serves, and the receipt state.
-const nativeRecord = (w, prefix, change) => { w.node.script.programRead = (record) => (record?.metadata.logicalAddress.startsWith(prefix) ? change(record) : record); return () => { w.node.script.programRead = null; }; };
-const nativeTransfer = (w, txHash, answer) => { w.node.script.transferRead = (hash, record) => (hash === txHash ? answer(record) : record); return () => { w.node.script.transferRead = null; }; };
 const nativeSourceCells = (txHash) => [
   ['the transfer read fails', 'unavailable', (w) => nativeTransfer(w, txHash, () => { throw new Error('TEST node unreachable'); })],
   ['the transfer cannot be found', 'unavailable', (w) => nativeTransfer(w, txHash, () => null)],

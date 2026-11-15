@@ -13,6 +13,7 @@ import { deliverableAddress, deliveryEvidenceAddress } from '../src/dacs/purchas
 import { EVIDENCE_SIGNATURE, OTHER_TX, PAYMENT_TX, WORK_SAVE_SIGNATURE, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
 import { DELEGATION_MS, T0, nativePaymentWorld } from './helpers/native-payment-wire-fixture.mjs';
 import { killAndReopen } from './helpers/payment-restart-process.mjs';
+import { arrangeRecord, nativeRecord } from './helpers/completed-source-cells.mjs';
 
 // The deadline of one bounded source read, and how many turns of the event loop a test waits for a read to start.
 const SOURCE_READ_TIMEOUT_MS = 10000;
@@ -630,6 +631,96 @@ for (const [title, killAt, signedBeforeKill] of [
     assert.deepEqual(run.broadcastCreates, run.signedCreates, 'the node received once, and exactly the bytes the wallet signed');
   });
 }
+
+// ---- A completed payment's source checks only read ----
+
+const never = () => new Promise(() => {});
+const PASSIVE_FIXTURE_CELLS = [
+  ['the payment evidence is absent', (w) => arrangeRecord(w, paymentEvidenceAddress(w.jobId, 'demos-native:DEM', 2), () => ({ status: 'absent' }))],
+  ['the Deliverable is absent', (w) => arrangeRecord(w, deliverableAddress(w.jobId), () => ({ status: 'absent' }))],
+  ['the delivery evidence cannot be read', (w) => arrangeRecord(w, deliveryEvidenceAddress(w.jobId), () => { throw new Error('TEST delivery unavailable'); })],
+];
+
+async function checkFixturePassiveSources(t) {
+  const w = await fixturePaymentWorld(t), stored = (await w.pay()).text;
+  let recoveries = 0;
+  const reconcile = w.agent.reconcileTransport;
+  w.agent.reconcileTransport = (input) => { recoveries++; return reconcile(input); };
+  // Everything a replay of a completed payment must leave as it was: no recovery, no signature, no write, and the stored state.
+  const effects = () => ({ recoveries, agentSignatures: w.counts.signed.length, publicSubmits: w.counts.publicSubmits, writes: w.f.anchors.writes.length, outcome: operationOf(w, w.jobId, PATHS.payments),
+    session: w.f.agent.durableSessionOf(w.jobId), receipts: readFileSync(RECEIPTS_FILE(w), 'utf8') });
+  const before = effects();
+  for (const when of ['at once', 'after a restart']) {
+    if (when === 'after a restart') await w.restart();
+    for (const [label, arrange] of PASSIVE_FIXTURE_CELLS) {
+      const undo = arrange(w);
+      for (const call of [1, 2]) {
+        const refused = await w.pay();
+        assert.deepEqual([refused.status, refused.body.error, refused.signed], [503, 'seller_source_unavailable', true], `${label}, ${when}, call ${call}`);
+        assert.deepEqual(effects(), before, `${label}, ${when}, call ${call}: nothing recovers, signs or writes`);
+      }
+      undo();
+      assert.equal((await w.pay()).text, stored, `${label}, ${when}: restoring the source returns the stored bytes`);
+    }
+  }
+  // A read that never answers ends at its deadline, and the check is still only a read.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let hung = false;
+  const undo = arrangeRecord(w, deliverableAddress(w.jobId), () => { hung = true; return never(); });
+  const answering = w.pay();
+  for (let turns = 0; !hung; turns++) {
+    assert.ok(turns < EVENT_LOOP_TURNS, 'the Deliverable is read');
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  t.mock.timers.tick(SOURCE_READ_TIMEOUT_MS);
+  const refused = await answering;
+  assert.deepEqual([refused.status, refused.body.error, refused.body.cause], [503, 'seller_source_unavailable', 'timeout']);
+  assert.deepEqual(effects(), before, 'a read that timed out recovers, signs and writes nothing');
+  undo();
+  t.mock.timers.reset();
+  assert.equal((await w.pay()).text, stored);
+}
+
+async function checkNativePassiveSources(t) {
+  const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay(), otherTxHash = p.pay();
+  assert.equal((await p.claim(txHash)).status, 'payment-evidenced');
+  const send = () => p.send(txHash, { lapse: false }), stored = (await send()).text;
+  const cells = [
+    ['the payment evidence is absent', () => nativeRecord(w, 'dacs4:payment:', () => null)],
+    ['the Deliverable is absent', () => nativeRecord(w, 'dacs4:deliverable:', () => null)],
+    ['the delivery evidence cannot be read', () => nativeRecord(w, 'dacs4:evidence:', () => { throw new Error('TEST delivery unavailable'); })],
+    ['the accepted CREATE reads pending', () => { const read = w.anchors.source.binding; w.anchors.source.binding = async () => ({ disposition: 'pending' }); return () => { w.anchors.source.binding = read; }; }],
+  ];
+  // The wallet's steps, the signatures the seller made and the journals of the artifact anchor, with the demo recovery rows among them.
+  // Response signatures are left out: each answer is signed.
+  const effects = () => {
+    const { rows, journal, receipts, ...kept } = w.snapshot(p), { responseSignatures, ...signatures } = w.counts;
+    return { ...kept, signatures, walletSteps: w.steps.filter((entry) => entry.step.startsWith('wallet')).length, requestsToWallet: w.anchors.captured.length,
+      anchorRows: [...w.anchors.journal.rows], sourceRows: [...w.anchors.sourceJournal.rows] };
+  };
+  const before = effects();
+  for (const when of ['at once', 'after a restart']) {
+    if (when === 'after a restart') await w.restart();
+    for (const [label, arrange] of cells) {
+      const undo = arrange();
+      for (const call of [1, 2]) {
+        const refused = await send();
+        assert.deepEqual([refused.status, refused.body.error], [503, 'seller_source_unavailable'], `${label}, ${when}, call ${call}`);
+        assert.deepEqual(effects(), before, `${label}, ${when}, call ${call}: nothing recovers, signs, confirms or sends`);
+      }
+      undo();
+      assert.equal((await send()).text, stored, `${label}, ${when}: restoring the source returns the stored bytes`);
+    }
+    const reads = w.transferReads().flat().length, other = await p.send(otherTxHash, { lapse: false });
+    assert.deepEqual([other.status, other.body.error, w.transferReads().flat().length], [409, 'payment_already_recorded', reads], `${when}: another incoming transaction is not read`);
+    assert.deepEqual(effects(), before, `${when}: another incoming transaction changes nothing`);
+  }
+}
+
+test('completed payment source checks stay passive across pending reads and repeated retrieval', async (t) => {
+  await checkFixturePassiveSources(t);
+  await checkNativePassiveSources(t);
+});
 
 // ---- A second job claims the settlement while the seller signs the completed answer ----
 
