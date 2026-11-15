@@ -10571,6 +10571,18 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs blob after carrying the unfenced authority seam fixes up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "019aa0dcf182380b1af4b4858e648e2b9ba7c0e6",
+          "after": "019aa0dcf182380b1af4b4858e648e2b9ba7c0e6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF canonicalise the native transport's chain identity and refuse writes on a lane stamped by another pin version",
       "files": [
         {
