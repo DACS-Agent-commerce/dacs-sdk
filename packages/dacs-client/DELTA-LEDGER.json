@@ -9991,6 +9991,37 @@
           "after": "33e6f68f1b10e68f6fccca7c6918e3cd291ac4d4"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read a stabilised genesis on exact agreement of numeric block zero, the chain identity and block one",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "03c9894d1f9af9950469510fa2048ed6f95dc206",
+          "after": "d0c8876e5c4aea9ce555d29768bae48c3641d7e8"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/chain-identity-read.mjs",
+          "before": null,
+          "after": "a85c1d5dcd2a51000dbe9b9f09640f8e9e7ade8a"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bdf6af6c1f45d926416112ce65e7a9062a196282",
+          "after": "f642d45751289149c1e218ebca88b46d74c5811c"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+          "before": "b57a7c47e008a17332332980b98b8f730f8b6366",
+          "after": "67ae3e2db9118dbbe4e1e3cb64087452eefe82eb"
+        },
+        {
+          "path": "packages/dacs-client/test/stabilised-genesis-binding.test.mjs",
+          "before": null,
+          "after": "0f88b8b5cd19939a5d95dd0c9d4cbe2d5f05f19d"
+        }
+      ]
     }
   ]
 }
