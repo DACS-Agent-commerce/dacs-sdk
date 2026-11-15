@@ -10210,6 +10210,27 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "784ba66530fcc1030fb4c0dc837fcb4a7b65c4dc",
+          "after": "7e44af5f5f7960f6430b02f5ea22fa26eca75fb3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b9290c0f6b1673b099a1a66597ef46bdaa14c387",
+          "after": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "eeb6174390def3dcf19749b82ca0d6e38aac620c",
+          "after": "f47e93e24b21002ae87f0b7ec1b7d67abf30422e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the merged payment evidence adapter test after carrying the payment part up",
       "files": [
         {
@@ -10261,22 +10282,12 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge",
+      "subject": "delta(client): WF test that a replay after a gate refusal before the broadcast sends the retained bytes once",
       "files": [
         {
-          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
-          "before": "784ba66530fcc1030fb4c0dc837fcb4a7b65c4dc",
-          "after": "7e44af5f5f7960f6430b02f5ea22fa26eca75fb3"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
-          "before": "b9290c0f6b1673b099a1a66597ef46bdaa14c387",
-          "after": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
-        },
-        {
           "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
-          "before": "eeb6174390def3dcf19749b82ca0d6e38aac620c",
-          "after": "f47e93e24b21002ae87f0b7ec1b7d67abf30422e"
+          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
+          "after": "6edf96300eaead3ecf369f64ed1f626f1ac4357f"
         }
       ]
     }
