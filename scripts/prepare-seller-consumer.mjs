@@ -12,6 +12,10 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const SELLER = "@kynesyslabs/dacs-seller";
 const NODE_HOST = "@kynesyslabs/dacs-node";
 const SMOKE_RUNNER = "packages/dacs-seller/test/helpers/installed-seller-host.mjs";
+// The consumer installs the seller under node_modules; the root lock records what the seller nests
+// (a version it pins that differs from the root's) under the workspace folder instead.
+const SELLER_CONSUMER_PATH = "node_modules/" + SELLER;
+const SELLER_WORKSPACE_PATH = "packages/dacs-seller";
 const NPM_TIMEOUT_MS = 240_000;
 const NPM_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
@@ -81,6 +85,11 @@ function packageEntry(manifest, pack) {
 }
 
 // Preserve exact versions, locations and integrity; never resolve a fresh range.
+/** The root lock's key for a package at `consumerKey` in the consumer's tree. */
+function rootLockKey(consumerKey) {
+  return consumerKey.startsWith(SELLER_CONSUMER_PATH + "/") ? SELLER_WORKSPACE_PATH + consumerKey.slice(SELLER_CONSUMER_PATH.length) : consumerKey;
+}
+
 function consumerLock(lock, manifest, core, seller, node, corePack, sellerPack, nodePack) {
   const selected = {
     "": { name: manifest.name, version: manifest.version, dependencies: manifest.dependencies },
@@ -95,14 +104,14 @@ function consumerLock(lock, manifest, core, seller, node, corePack, sellerPack, 
       let at = parent, key;
       for (;;) {
         const candidate = (at ? at + "/" : "") + "node_modules/" + name;
-        if (selected[candidate] || lock.packages[candidate]) { key = candidate; break; }
+        if (selected[candidate] || lock.packages[rootLockKey(candidate)]) { key = candidate; break; }
         if (!at) break;
         const cut = at.lastIndexOf("/node_modules/");
         at = cut < 0 ? "" : at.slice(0, cut);
       }
       if (!key) throw new Error("root lock lacks production dependency " + name + " of " + parent);
       if (selected[key]) continue;
-      const entry = structuredClone(lock.packages[key]);
+      const entry = structuredClone(lock.packages[rootLockKey(key)]);
       // A package only optional edges reach stays marked optional: the install omits it, so it may be a platform build or
       // a git dependency (demosdk's wallet adapters reach both) that the lock cannot pin.
       if (entry.link || (!entry.optional && (!entry.integrity || !entry.resolved))) throw new Error("production dependency is not pinned: " + key);
