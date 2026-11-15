@@ -1342,6 +1342,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const retained = session?.commitment, logicalAddress = finalityCommitmentAddress(jobId);
     // An early commitment holds no ordinary commitment yet: its retained evidence is the CREATE at its address and the Agreement hash.
     if (!session?.agreementHash || !(retained || (path === '/dacs/v1/commitments/signature' && session.signatureCommitmentHeld))) throw sourceUnavailable('absent');
+    try { assertBuyer(session.buyerBundle.presentedBy, jobId); }
+    catch (error) { throw error?.code === 'buyer_access_closed' ? new SellerTransportError(error.code, error.status) : error; }
     let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
     if (stored?.status !== COMMITMENT_ANSWER_STATUS[path] || stored.address !== logicalAddress ||
         (retained && (retained.logicalAddress !== logicalAddress || retained.agreementHash !== session.agreementHash))) throw sourceUnavailable('changed');
@@ -2338,7 +2340,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
      * Reads the sources of a completed proposal or commitment answer again, read only, before the stored answer is signed again.
      * A proposal: the current buyer access, the retained contribution and Agreement, the stored answer against that contribution,
      * and both Vet records with their receipts. A commitment (or early commitment): the retained commitment, its canonical address,
-     * its record, transaction and finalized receipt, read from the commitment's source in passive mode, against the stored answer.
+     * its record, transaction and finalized receipt, read from the commitment's source in passive mode, against the stored answer,
+     * and the buyer's current job-scoped access.
      * Resolves with nothing when every one authenticates. Throws SellerTransportError `seller_source_unavailable`
      * (503) with a cause of `absent`, `changed`, `timeout`, `too_large` or `unavailable`, the closed-access refusal as its own
      * SellerTransportError, and a TypeError for a path that has no completed answer here. It writes nothing and signs nothing.
