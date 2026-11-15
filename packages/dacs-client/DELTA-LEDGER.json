@@ -10493,6 +10493,33 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged blobs of the identity reader, the native transport, the wallet session and the binding test after carrying the shared identity reader fixes up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "0f218e6e7a49859004e10cad557543279983aa9c",
+          "after": "0f218e6e7a49859004e10cad557543279983aa9c"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "9209cbe9968a69930b849a2bc8e223e0b690db7f",
+          "after": "9209cbe9968a69930b849a2bc8e223e0b690db7f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "ed94f9883ed7995f7a3123c0876c1a67c9c1b718",
+          "after": "ed94f9883ed7995f7a3123c0876c1a67c9c1b718"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": "708d3ee2b074d0e3ee834f8f0bfd534a42a9f777",
+          "after": "708d3ee2b074d0e3ee834f8f0bfd534a42a9f777"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF add the unfenced authority seam and the client's production authority reader",
       "files": [
         {
