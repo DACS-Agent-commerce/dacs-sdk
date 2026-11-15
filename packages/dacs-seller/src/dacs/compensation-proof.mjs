@@ -15,14 +15,15 @@ const isRecord = (value) => value !== null && typeof value === 'object' && !Arra
 const undetermined = (message) => Object.assign(new Error(message), { code: UNDETERMINED_CODE, status: 503 });
 const isIntent = (value) => isRecord(value) && typeof value.lane === 'string' && value.lane.length > 0 && HASH.test(value.artifactHash) && typeof value.signed === 'boolean';
 
-// A reply larger than the byte bound, or one that cannot be measured, proves nothing.
+// A returned reply larger than the byte limit, or one that cannot be measured, proves nothing. This runs after the source has
+// returned, so it does not limit how much the source reads; a source limits its own read from the `maxBytes` it is given.
 function assertWithinBytes(reply) {
   const text = JSON.stringify(reply);
-  if (text !== undefined && Buffer.byteLength(text) > READ_BOUNDS.maxBytes) throw undetermined(`a source answered more than ${READ_BOUNDS.maxBytes} bytes`);
+  if (text !== undefined && Buffer.byteLength(text) > READ_BOUNDS.maxBytes) throw undetermined(`a source returned a reply of more than ${READ_BOUNDS.maxBytes} bytes`);
   return reply;
 }
 
-// One source read within its deadline and byte bound; the signal is aborted when the deadline passes.
+// One source read under its deadline; the signal is aborted when the deadline passes. The reply it returns must be within the byte limit.
 async function readWithin(read) {
   const controller = new AbortController();
   const bounds = Object.freeze({ ...READ_BOUNDS, signal: controller.signal });
@@ -108,7 +109,8 @@ async function kindOf(address, sources) {
 
 /**
  * Classifies one sink address from `sources`: `no-intent`, `proven-unsigned`, `never-dispatched`, `retired`, `executed` or `undetermined`.
- * Every read is bounded (10,000 ms, 1 MiB, 256 items) and runs fresh. Resolves `{ address, kind, cause? }`; a read that throws, times out or
+ * Every read runs fresh under a 10,000 ms deadline, and a returned reply of more than 1 MiB or 256 items is not accepted. Each source is
+ * given those limits to apply while it reads; the proof itself checks only the deadline and the reply it gets back. Resolves `{ address, kind, cause? }`; a read that throws, times out or
  * answers an incomplete or malformed result is `undetermined` with its stored cause. Never rejects.
  */
 export async function classifyAddress(address, sources) {
