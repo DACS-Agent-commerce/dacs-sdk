@@ -92,7 +92,6 @@ function partyVetState(store,writer) {
 }
 
 const rejectedAuthorization=verdict=>({status:'authorization-rejected',reason:['fenced','expired','indeterminate'].includes(verdict?.reason)?verdict.reason:'indeterminate'});
-const ANCHOR_STEP='composite-anchor';
 // One execution's observation log is bounded; past either bound its coverage is unknown and the step is held.
 const PROVENANCE_MAX_ENTRIES=256,PROVENANCE_MAX_BYTES=1048576;
 const storedCause=error=>({code:typeof error?.code==='string'?error.code.slice(0,64):null,name:typeof error?.name==='string'?error.name.slice(0,64):'Error'});
@@ -114,10 +113,12 @@ const signingVerdict=(entry,log)=>{
 // from fresh evidence; no log is held. The SDK's error text, code and category decide nothing.
 const anchorVerdict=log=>!log?'held':log.length===0||log.some(entry=>entry.result.kind==='refusal')?'replay':'reconsider';
 
-// Reserve before execution. Completed results/failures replay; an interrupted
+// Reserve before execution. Completed results replay; an interrupted
 // pending step holds for authoritative reconciliation and never executes again.
 // With `reconcile` (the orchestrator Vet mode) a pending or failed step is taken over instead
-// when its retained evidence proves where it stopped (see `reclaim`).
+// when its retained evidence proves where it stopped (see `reclaim`). A failed step keeps the
+// log of its execution, and that log alone decides whether the failure replays, is reconsidered
+// or is held (see `signingVerdict` and `anchorVerdict`); without `reconcile` every failure replays.
 // Signing context belongs to this async invocation, including concurrent keys.
 function durableOperationStore(state,job,role,{now,clock,wait={pending:false},reconcile}) {
   const own=(current)=>{if(!liveJob(current,job))fail('binding-changed','the job\'s party Vet binding changed; nothing was written');return current.ops[role];};
@@ -142,8 +143,9 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
     };
     const done=value=>authorized?{status:'complete',value}:value;
     // Orchestrator mode only. Takes over a pending or failed step whose retained evidence proves where it stopped:
-    // a signing step with a kept signature (reused) or with no bytes written ahead (the signer cannot have run),
-    // an anchor step whose record reads back finalized (completed from the readback) or is proven unsigned.
+    // a signing step with a kept signature (reused), with no bytes written ahead (the signer cannot have run) or
+    // whose log shows a closed purchase check stopped it before the signer, an anchor step whose record reads back
+    // finalized (completed from the readback) or is proven unsigned. A failed step is taken over only if its log allows it.
     // Authorization comes first and writes nothing if refused. One transaction then moves the step and its signing
     // entry to this owner, only while the whole row is still the revision that was classified; otherwise it reads again.
     // Answers null (reserve or replay as usual), {answer} (done: completed or authorization refused) or {owned} (run it).
@@ -640,7 +642,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     // The native anchor caches verified readbacks briefly, and that cache is
     // per provider instance. Returning success on a repeat therefore needs a
     // fresh read and a fresh receipt verification, not cached evidence.
-    let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
+    let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ);
     if(read.status!=='present'){
       guard(job,'counterparty anchor');await markWrite(job);
       read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job)});
@@ -811,7 +813,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     });
     const strict=await verifyCompositeVerificationRecord(made.record,{jobId,evaluatedParty:identityBundle.presentedBy,bundleHash:identityBundleHash(identityBundle),requirement,verifier:wallet.claim,freshness:[],dealSpecific:[]},{nowMs:now,resolve:async()=>null,resolveRecipe:async()=>null,isRecipeSignerAuthorized:()=>false,isVerifyResultSignerAuthorized:()=>false,resolvePublicKey:verifier.resolvePublicKey,verify:verifier.verify,verifyAuthorityAttestation:()=> 'unresolved'});
     if(strict.status!=='valid')throw new Error(`party Vet closure failed: ${strict.status}:${strict.code}`);
-    const logicalAddress=address,read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'});
+    const logicalAddress=address,read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord'},PASSIVE_RETAINED_READ);
     if(read.status!=='present'||contentHash(read.artifact)!==contentHash(made.record)||!await validReceipt(read,logicalAddress,made.record,wallet.claim))throw new Error('party Vet native readback failed');
     const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(made.record),signer:wallet.claim};
     if(made.record.overallDecision!=='pass')return{refused:nonPass(made.record)};

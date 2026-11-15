@@ -457,6 +457,55 @@ test('a recovered run keeps the producer order, the Vet mode and the retained by
     }
 });
 
+test('every context observation remains passive for a pending accepted CREATE, including recovery, completed replay, outside-step reads and closed attempts', async (t) => {
+    // An RPC signer and a spy on the source's recovery send are wired in, so a read that was not passive would act.
+    const withRecoverySpy = async (t) => {
+        const f = await orchestratorFixture(t, { disk: true, real: true, signRpc: async () => ({}) }), seen = { recoveries: 0, closedReads: 0 };
+        f.native.source.recoverStorageWrite = async () => { seen.recoveries++; return { resent: true }; };
+        f.native.source.binding = async () => ({ disposition: 'included' });
+        return { f, seen };
+    };
+    const recoveryRows = f => JSON.stringify([...f.native.journal.rows].filter(([key]) => key.startsWith('demo/recovery/')));
+    const snapshot = (f, seen) => JSON.stringify([seen.recoveries, recoveryRows(f), f.controls.signatures.length, walletRequests(f)]);
+    const pending = f => { f.native.source.binding = async () => ({ disposition: 'pending' }); };
+    for (const role of ROLES) {
+        await t.test(`${role}: a retained CREATE the source reports as pending is only read, by every observation caller, immediately and after a restart`, async (t) => {
+            const { f, seen } = await withRecoverySpy(t);
+            f.when(role, 'signature', () => pending(f));
+            await blocked(() => resolve(f, f.provider()));
+            // The publication itself may send an authorized recovery; it is counted here and everything below must leave it alone.
+            assert.ok(seen.recoveries >= 1);
+            const baseline = snapshot(f, seen), observations = { calls: 0 };
+            for (let repeat = 0; repeat < 2; repeat++) {
+                // The pure readers leave the retained row as it was.
+                const rows = await f.base.entries(), provider = f.fresh();
+                assert.equal(await provider.recoverBuyer(f.input), null);
+                assert.equal(await provider.resumableBuyer(f.input), null);
+                assert.deepEqual(await f.base.entries(), rows);
+                // Attempts the deadline closes after two, three... purchase checks still make their lookups, and only read.
+                for (const after of [2, 3, 4, 5]) {
+                    const check = purchaseCheck(), observer = f.openAnchor();
+                    check.armed = true; check.after = after;
+                    await blocked(() => resolve(f, f.fresh({ anchor: { ...observer, readRetained: (...args) => { observations.calls++; return observer.readRetained(...args); } } }), check.open));
+                }
+                assert.equal(snapshot(f, seen), baseline);
+            }
+            assert.ok(observations.calls > 0);
+        });
+        await t.test(`${role}: a completed job replayed while the source reports its records as pending is refused without any send`, async (t) => {
+            const { f, seen } = await withRecoverySpy(t), provider = f.provider();
+            assertPresent(await resolve(f, provider));
+            pending(f);
+            const baseline = snapshot(f, seen);
+            for (let repeat = 0; repeat < 2; repeat++) {
+                await blocked(() => resolve(f, provider));
+                await blocked(() => resolve(f, f.fresh()));
+                assert.equal(snapshot(f, seen), baseline);
+            }
+        });
+    }
+});
+
 test('concurrent native observation collectors each receive only their own refusal proofs, and a malformed collector or work is refused', async () => {
     const proof = kind => ({ kind, address: 'a', retainedHash: 'b', observedHash: null });
     const collected = { first: [], second: [] }, pause = () => new Promise(done => setImmediate(done));
