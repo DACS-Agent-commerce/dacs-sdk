@@ -56,7 +56,7 @@ export function scriptedNode() {
   };
   return node;
 }
-export async function world(t, { held = false, journalWrap = x => x, ownerWrap = x => x } = {}) {
+export async function world(t, { held = false, journalWrap = x => x, ownerWrap = x => x, createSession = api.createNodeWalletSession, sessionOptions = {} } = {}) {
   setPurchaseAdmission(held ? 'held' : 'testnet-tp1');
   const dir = mkdtempSync(join(tmpdir(), 'node-wallet-session-')), path = join(dir, 'journal.sqlite');
   const node = scriptedNode(), authority = createAuthorityFixture(), key = mnemonicBytes();
@@ -69,7 +69,9 @@ export async function world(t, { held = false, journalWrap = x => x, ownerWrap =
     owners.push(owner);
     const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: owner.currentLocal(), readAuthority: authority.read });
     const admission = { binding, currentLocal: owner.currentLocal };
-    session = await api.createNodeWalletSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock });
+    // A seller composition requires the host's proof that it owns the state directory.
+    const stateOwnership = createSession === api.createNodeSellerComposition ? { stateOwnership: { directory: dir, held: () => true } } : {};
+    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...stateOwnership, ...sessionOptions });
     sessions.push(session);
     return { owner, admission };
   }

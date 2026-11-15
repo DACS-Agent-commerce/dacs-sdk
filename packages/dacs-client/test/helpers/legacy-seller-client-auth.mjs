@@ -1,6 +1,6 @@
 // Archived buyer implementation for legacy server fixtures only. Never shipped.
-import { randomBytes, createPublicKey, verify } from 'node:crypto';
-import { canonicalize, sha256Hex, admitRawJson } from '@kynesyslabs/dacs';
+import { randomBytes, createPublicKey } from 'node:crypto';
+import { canonicalize, sha256Hex, admitRawJson, ed25519Verify } from '@kynesyslabs/dacs';
 import { sellerTransportSigningBytes, verifySellerSessionDelegation, SellerTransportError } from '../../../dacs-seller/src/dacs/seller-transport-auth.mjs';
 const CLAIM = /^did:demos:agent:[0-9a-f]{64}$/;
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -22,7 +22,7 @@ async function signedHeader(payload, signer, delegation) {
 function verifiedHeader(header, kind, principal) {
   const envelope = admitRawJson(Buffer.from(header, 'base64url'), { maxBytes: 4096 });
   const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(principal.slice('did:demos:agent:'.length), 'hex')]), format: 'der', type: 'spki' });
-  if (envelope.payload.kind !== kind || envelope.payload.seller !== principal || !verify(null, sellerTransportSigningBytes(envelope.payload), key, signatureBytes(envelope.signature)))
+  if (envelope.payload.kind !== kind || envelope.payload.seller !== principal || !ed25519Verify(sellerTransportSigningBytes(envelope.payload), signatureBytes(envelope.signature), key))
     fail('peer_signature_invalid');
   return envelope.payload;
 }
