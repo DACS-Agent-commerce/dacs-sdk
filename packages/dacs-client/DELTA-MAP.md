@@ -1565,6 +1565,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 8dcb7f15daa80e2e2abf272b6ce867d06f40101f |
 | WF | delta(client): WF record the wallet session blob chosen when the effect gate fixes merged | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 084ebc66416efef054224c570a539ce3e6561666 |
+| WF | delta(client): WF record the merged journal blob | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/durable-journal.mjs:4`, `packages/dacs-client/src/wallet/durable-journal.mjs:9`, `packages/dacs-client/src/wallet/durable-journal.mjs:22`, `packages/dacs-client/src/wallet/durable-journal.mjs:77`, `packages/dacs-client/src/wallet/durable-journal.mjs:82`, `packages/dacs-client/src/wallet/durable-journal.mjs:92`, `packages/dacs-client/src/wallet/durable-journal.mjs:136`, `packages/dacs-client/src/wallet/durable-journal.mjs:175`, `packages/dacs-client/src/wallet/durable-journal.mjs:200`, `packages/dacs-client/src/wallet/durable-journal.mjs:206`, `packages/dacs-client/src/wallet/durable-journal.mjs:232`, `packages/dacs-client/src/wallet/durable-journal.mjs:246`, `packages/dacs-client/src/wallet/durable-journal.mjs:255`, `packages/dacs-client/src/wallet/durable-journal.mjs:264`, `packages/dacs-client/src/wallet/durable-journal.mjs:274`, `packages/dacs-client/src/wallet/durable-journal.mjs:276`, `packages/dacs-client/src/wallet/durable-journal.mjs:280`, `packages/dacs-client/src/wallet/durable-journal.mjs:297`, `packages/dacs-client/src/wallet/durable-journal.mjs:301`, `packages/dacs-client/src/wallet/durable-journal.mjs:322`: bc36e9f0477613f54e57b1a94424971e42e5c6e1 | |
 | WF | fix(wallet): check that no package export reaches the reservation module | Git commit selector fce7c509715ce94ee9153eaad2efe11d27bdef23 |
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 5fe427a4c2f7d293a9a1b925e381a4e24346af95 |
 
@@ -4728,6 +4730,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D41 stop background git maintenance racing the provenance test cleanup | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): WF record the merged journal blob | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
