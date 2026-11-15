@@ -326,9 +326,9 @@ test('host start releases the open slots of a finished session once, starts with
   lockReleased(f);
 });
 
-// A host with the default budget whose seller history holds `count` settled accounting rows of an earlier purchase, written
-// in the accounting's own shape while the host is stopped (one clean restart). The rows are a day old, so the store's own
-// record limit no longer counts them; the purchase budget counts every row ever written.
+// A host, started with `hostOptions` (the default limits when none are given), whose seller history holds `count` settled
+// accounting rows of an earlier purchase, written in the accounting's own shape while the host is stopped (one clean restart).
+// The rows are a day old; the purchase budget counts every row ever written.
 async function hostWithAccountingHistory(t, count, hostOptions = {}) {
   const f = await hostFixture(t);
   const first = await f.start(), listingPin = first.listingPin;
@@ -346,7 +346,7 @@ async function hostWithAccountingHistory(t, count, hostOptions = {}) {
   } finally { db.close(); }
   const host = await f.start(hostOptions);
   const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
-  const read =(sql, ...args) => { const view = new DatabaseSync(f.path(STORE_FILE), { readonly: true }); try { return view.prepare(sql).all(...args); } finally { view.close(); } };
+  const read = (sql, ...args) => { const view = new DatabaseSync(f.path(STORE_FILE), { readonly: true }); try { return view.prepare(sql).all(...args); } finally { view.close(); } };
   const accountingRows = () => read('SELECT COUNT(*) AS n FROM kit_reservations')[0].n;
   const rowStates = (id) => read('SELECT state FROM kit_reservations WHERE jobId = ? ORDER BY rowid', id).map((row) => row.state);
   const propose = async (id) => {
@@ -420,6 +420,15 @@ test('a host refuses a zero or fractional reservation budget and names the optio
   const f = await hostFixture(t);
   await (await f.start({ maxReservationUnits: 1 })).close();
   for (const maxReservationUnits of [0, 1.5]) assert.match((await rejection(f.start({ maxReservationUnits }))).message, /maxReservationUnits must be a positive integer/);
+});
+
+test('a host refuses a bad maxRecords and names maxRecords, not the reservation budget', async (t) => {
+  const f = await hostFixture(t);
+  for (const maxRecords of [0, 1.5, '100']) {
+    const { message } = await rejection(f.start({ maxRecords }));
+    assert.match(message, /maxRecords must be a positive integer/);
+    assert.doesNotMatch(message, /maxReservationUnits/);
+  }
 });
 
 test('P10-T04 a journal open failure closes the agent and store and reports the original cause', async (t) => {
