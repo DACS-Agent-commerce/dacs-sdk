@@ -9737,6 +9737,23 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs and node-wallet-session.mjs blobs after merging eedd37b3e502",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "285c2eba321bfb342c99dde92a5ddaa2597cdf57",
+          "after": "285c2eba321bfb342c99dde92a5ddaa2597cdf57"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "988c0c6a883f16ffbd5119e5fd60aea3e6a83510",
+          "after": "988c0c6a883f16ffbd5119e5fd60aea3e6a83510"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF use recorded blocks for cancellation checks",
       "compact": true,
       "files": [
