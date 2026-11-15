@@ -142,9 +142,9 @@ test('missing HEAD and malformed record fail closed', t => {
   const s=scratch(t);rmSync(join(s.repo,'.git'),{recursive:true,force:true});refuses(s,/not a git repository|not the Git worktree root/);
   const other=scratch(t);writeFileSync(join(other.dir,'HOLD.json'),'{');refuses(other,/^FAIL HOLD\.json is not valid JSON: /m);
 });
-test('an unrecorded README change after the anchor is refused by the derived rule', t => {
+test('an unrecorded README change after its latest record is refused by the derived rule', t => {
   const s=scratch(t); appendFileSync(join(s.dir,'README.md'),'\nTEST unrecorded line\n');
-  refuses(s, fail('README.md', 'working file differs from the anchor \\([0-9a-f]{40}\\)'));
+  refuses(s, fail('README.md', 'working file differs from its newest record \\([0-9a-f]{40}\\)'));
 });
 test('a file the anchor does not name is refused, and a deleted baseline script cannot come back', t => {
   const s=scratch(t);

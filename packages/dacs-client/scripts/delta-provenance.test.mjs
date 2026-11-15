@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { isCorePath, recordName } from './delta-record.mjs';
 import { assemble } from './delta-assemble.mjs';
+import { commits, git, selects } from './delta-map.mjs';
 const root=join(dirname(fileURLToPath(import.meta.url)),'../../..');
 // A `git commit` may start `git maintenance run --auto`, which can detach and keep writing into the clone's .git
 // after the commit returns; that races the cleanup below (ENOTEMPTY). A scratch clone never starts it.
@@ -267,7 +268,7 @@ test(`a WF record selected by its full commit hash may carry the subject "${subj
  r=check(dir);assert.equal(r.status,1,r.text);assert.ok(r.text.includes(`invalid delta ${subject}`),r.text);
 });
 
-// Each fault edits only the PR's own records, in a scratch clone of the checked head.
+// Each fault edits archived records in a scratch clone of the checked head.
 const LEDGER_FAULTS=[
  {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,
   edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after&&!isCorePath(file.path.slice('packages/dacs-client/'.length)))),1);}},
@@ -278,22 +279,25 @@ const LEDGER_FAULTS=[
   edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.length>0&&record.files.every(file=>file.before===file.after)),1);}},
  {name:'(c) a record\'s last recorded blob for a path is replaced by an earlier one',message:/current blob differs/,
   edit:data=>{
-   const history=new Map();
-   for(const record of data.changes)for(const file of record.files){const entries=history.get(file.path)??[];entries.push({record,file});history.set(file.path,entries);}
-   const [,entries]=[...history].filter(([,all])=>all.length>1&&all.at(-2).file.after!==all.at(-1).file.after).at(-1);
-   entries.at(-1).file.after=entries.at(-2).file.after;}},
+   const history=commits(), assembled=assemble(join(root,'packages/dacs-client')).ledger;
+   const current=[...(assembled.supersededChanges??[]),...assembled.changes];
+   const archived=[...(data.supersededChanges??[]),...data.changes];
+   const paths=[...new Set(archived.flatMap(record=>record.files.map(file=>file.path)))].reverse();
+   for(const path of paths){
+    if(isCorePath(path.slice('packages/dacs-client/'.length)))continue;
+    const entries=current.filter(record=>record.files.some(file=>file.path===path)).map(record=>({commit:history.find(commit=>selects(record,commit)),file:record.files.find(file=>file.path===path)}));
+    const newest=git('merge-base','--independent',...new Set(entries.map(entry=>entry.commit.sha))).split('\n');
+    if(newest.length!==1)continue;
+    const latest=entries.findLast(entry=>entry.commit.sha===newest[0]);
+    const target=archived.find(record=>selects(record,latest.commit))?.files.find(file=>file.path===path);
+    const earlier=entries.find(entry=>entry.file.after!==latest.file.after);
+    if(!target||!earlier)continue;
+    target.after=earlier.file.after;return;
+   }
+   assert.fail('a recorded path must have one newest commit and an earlier blob');}},
 ];
 test('the committed head passes and each archived record fault is refused',t=>{
  const head=check(scratch(t));assert.equal(head.status,0,head.text);
- const {changes}=assemble(join(root,'packages/dacs-client')).ledger;
- const wfRecords=changes.filter(record=>record.delta==='WF');
- assert.ok(wfRecords.length>0,'this PR records its changes under WF');
- for(const record of wfRecords)for(const file of record.files){
-  if(isCorePath(file.path.slice('packages/dacs-client/'.length)))continue;
-  const newest=changes.findLast(other=>other.files.some(entry=>entry.path===file.path)).files.find(entry=>entry.path===file.path).after;
-  const committed=spawnSync('git',['-C',root,'rev-parse','--verify','--quiet',`HEAD:${file.path}`],{encoding:'utf8'});
-  assert.equal(committed.status===0?committed.stdout.trim():null,newest,`${file.path} is recorded at its committed blob (null: deleted)`);
- }
  for(const fault of LEDGER_FAULTS){
   const dir=scratch(t),file=join(dir,control[1]),data=JSON.parse(readFileSync(file,'utf8'));
   fault.edit(data);writeFileSync(file,JSON.stringify(data));
