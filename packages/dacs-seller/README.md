@@ -964,7 +964,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   again only after its sources are read again, read only: the retained
   contribution and Agreement, both Vet records with their receipts, and the
   buyer's current access. A completed commitment answer is signed again only
-  after the retained commitment's canonical address, record, transaction and
+  after the buyer's current job-scoped access passes and the retained commitment's
+  canonical address, record, transaction and
   finalized receipt are read again from its source in passive mode; an early
   commitment needs no buyer Agreement anchor for this. A source that fails answers `503
   seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
