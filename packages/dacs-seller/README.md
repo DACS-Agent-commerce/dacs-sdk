@@ -51,7 +51,9 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
-The host's optional `maxRecords` (default 10,000) is the reservation budget. A purchase allocation holds 17 units for each of the
+The host has two separate record limits. `maxRecords` (default 10,000) is the transport store's limit on live nonce records
+and retained accounting rows, and it also sets the store's challenge and context-record caps. `maxReservationUnits` is the purchase capacity's reservation budget; it defaults to `maxRecords`
+and is set on its own to give the budget a different size. A purchase allocation holds 17 units of that budget for each of the
 context, proposals, commitments and payments routes (68 units, or 85 when
 commitments/signature is enabled), and admission allots one only while the whole
 allotment is free. A successful context completion returns only the context
@@ -108,7 +110,8 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
-  maxRecords: 10000,     // optional reservation budget; a purchase allocation is 68 units
+  maxRecords: 10000,     // optional limit on the store's live nonce, challenge and context records and retained accounting rows
+  maxReservationUnits: 10000, // optional reservation budget, default maxRecords; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
@@ -338,9 +341,12 @@ limits: 256 KiB, 32768 values, 80 levels deep and 16384 entries in a list. These
 cover any Deliverable the seller can send. A reply over a limit is answered as
 `indeterminate`, never as absent. A reconcile, read or verify that takes longer
 than 30 seconds is also answered as `indeterminate`; a missed deadline does not
-prove that nothing was written. A submit has no deadline. Except for the
-`provenUnsignedAbsence` and `deadRefusedCreate` objects, the caller gets a JSON
-copy of a reply, not the object the capability returned.
+prove that nothing was written. A submit has no deadline. The caller gets a
+checked JSON copy of a reply.
+For `provenUnsignedAbsence` and `deadRefusedCreate`, that copy retains the
+process-local proof. Missing reasons become empty text; errors and
+message-bearing objects use their name and message; function and symbol
+reasons become text. Other reason values must pass the JSON reply limits.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -590,7 +596,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   expected amount.
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent. A kept CREATE whose whole debit is above the ceiling is never
-  broadcast again: `anchorEvidence`, `reconcilePaymentEvidence`,
+  broadcast again, and until the operator clears it (below)
+  `anchorEvidence`, `reconcilePaymentEvidence`,
   `ensureEvidence` and the Deliverable journal's `resume` and
   `submitAuthorized` refuse its address with `write-fee-cap`, naming its hash
   and debit, before any wallet read or signature. `readSignedProjection` still
@@ -600,7 +607,30 @@ per-client limiter so one client cannot exhaust the shared request budget.
   (`code` and `message`) on the held answer of the seller agent. On the
   Deliverable path it is the `reason` of the held, pending or indeterminate
   delivery outcome, which starts with `write-fee-cap:`.
-  There is no operator command to clear a held write.
+  To clear a held write, call `clearHeldWrite({ logicalAddress, txHash })` on
+  the journal (the evidence journal or the Deliverable journal) with the
+  hash the `write-fee-cap` reason names and the address of the write,
+  `dacs4:evidence:<jobId>` on the payment evidence path and
+  `dacs4:deliverable:<jobId>` on the Deliverable path:
+  1. Check on the chain what became of the write. It must have been applied,
+     or another transaction of the writer must have used its nonce.
+  2. Call `clearHeldWrite`. It asks the journal's own `readAccountNonce` and
+     `readTransactionState` and clears the write only if they prove one of the
+     two. It answers `{ status: 'applied', txHash }` when the write was
+     applied: the journal keeps it and sends nothing, even when a later read
+     of the chain fails or answers `pending`. It answers
+     `{ status: 'superseded', txHash }` when the write can no longer execute
+     (the account nonce has passed it and a complete transaction index shows
+     it was not executed): the address is then signed anew by the next
+     `anchorEvidence` or `submitAuthorized`, with a nonce above the kept one.
+     The held write itself is never broadcast.
+  3. If the chain does not prove either, `clearHeldWrite` throws
+     `held_write_still_live` and the write stays held; try again once the
+     chain has moved on. A hash the journal never kept for the address throws
+     `held_write_unknown`, and a write that is not above the ceiling throws
+     `held_write_not_held`.
+  Clearing the same write again answers the same result without reading the
+  chain.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
@@ -964,7 +994,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   again only after its sources are read again, read only: the retained
   contribution and Agreement, both Vet records with their receipts, and the
   buyer's current access. A completed commitment answer is signed again only
-  after the retained commitment's canonical address, record, transaction and
+  after the buyer's current job-scoped access passes and the retained commitment's
+  canonical address, record, transaction and
   finalized receipt are read again from its source in passive mode; an early
   commitment needs no buyer Agreement anchor for this. A source that fails answers `503
   seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
