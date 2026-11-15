@@ -142,8 +142,9 @@ export function createDevnetSettlementTransport(options) { return constructTrans
 export function createDevnetDeliveryTransport(options) { return constructTransport(options,true,true,true); }
 export function createDevnetDemoTransport(options) { return constructTransport(options,true,true,true,true); }
 // The identity block reader behind every binder: the transport's, in normal and strict recovery
-// modes, and the observer's. Each dependency is a parameter and strictEnvelope has no default.
-function sourceBlockReader({ chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post, now }) {
+// modes, the observer's and the production authority reader's. Each dependency is a parameter and
+// strictEnvelope has no default.
+export function sourceBlockReader({ chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post, now }) {
   if (typeof strictEnvelope !== 'boolean') throw new TypeError('the identity reader requires an explicit strictEnvelope');
   return {
     getContext: context,
@@ -315,7 +316,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     return answer.response;
   };
   const reviewedReads = {};
-  const makeBinder = (strictEnvelope=false, signal, bindTimeoutMs=timeoutMs) => createDemosNetworkBinder({ expected:pinned, fallback, now, timeoutMs:bindTimeoutMs, maxAgeMs:IDENTITY_MAX_AGE_MS,
+  const makeBinder = (strictEnvelope=false, signal, bindTimeoutMs=timeoutMs) => createDemosNetworkBinder({ expected:pinned, fallback, now, timeoutMs:bindTimeoutMs, maxAgeMs:IDENTITY_MAX_AGE_MS, exclusive:true,
     reader:sourceBlockReader({ chainIdentity:pinned.chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post:raw, now }) });
   const binder = makeBinder(),storageRecoveryBinder = makeBinder(true);
   const lane = (address) => `devnet/native-wallet/${JSON.stringify([pinned.network,pinned.chainIdentity,address])}`;
