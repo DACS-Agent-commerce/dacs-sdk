@@ -1,5 +1,6 @@
-// A scripted Demos node for the native payment world. It stands in for the network only: it keeps what was actually sent to it (a
-// transfer, a signed CREATE) and answers every read from those records. It never reports a transaction that nobody sent.
+// A scripted Demos node for the native payment world. It stands in for the network: it keeps the transfers and signed CREATEs the test hands
+// it and answers every read from those records. It never reports a transaction that nobody handed it. A rebroadcast names a transaction by
+// hash and the node applies its own kept copy, so it does not see the bytes a wallet broadcasts.
 import * as core from '@kynesyslabs/dacs';
 import { DEMOS_SR2_FIXTURE_CHAIN_IDENTITY, createDemosSr2Adapter, createInMemoryDemosSr2Journal } from '../../src/dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../../src/dacs/wallet-transactions.mjs';

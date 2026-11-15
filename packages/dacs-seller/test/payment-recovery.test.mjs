@@ -332,8 +332,8 @@ test('a payment whose settlement credit is withdrawn just before its evidence is
 // ---- The native profile on the native wire world ----
 
 const nativeStateOf = (w, p) => w.wireState(p).state;
-// The seller's own steps of a payment that was delivered once: one payment evidence CREATE, one Deliverable, one delivery evidence, and the two
-// evidence signatures that go with the first and the last.
+// A payment that was delivered once: one payment evidence CREATE, one Deliverable and one delivery evidence applied on the scripted node, and
+// one wallet signature. It does not count the seller's evidence signatures and does not compare the bytes the wallet broadcast with the bytes it signed.
 const assertNativeDeliveredOnce = (w, p) => {
   assert.deepEqual([w.evidenceCreates(p), w.deliverableWrites(p), w.deliveryEvidenceWrites(p)], [1, 1, 1]);
   assert.equal(w.counts.walletSignatures, 1, 'the wallet signed the payment evidence once');
