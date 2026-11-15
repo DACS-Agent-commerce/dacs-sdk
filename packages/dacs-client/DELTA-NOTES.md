@@ -5,7 +5,7 @@ Per-change notes belong in that record's `note`. Render the map and notes with
 `node packages/dacs-client/scripts/delta-map.mjs`; output goes to stdout.
 Do not store the rendered map in the package. Core changes require a reciprocal
 re-pin; other changes keep the controls unchanged. Declare a new lane once in
-`records/ids/`, including its register line and first record subject.
+`records/ids/`, including its register line and the subject of one of its records.
 A later record may supersede an earlier record; both remain immutable and
 continue to supply history and inventory evidence.
 
