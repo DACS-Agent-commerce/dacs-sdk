@@ -4,6 +4,7 @@
 // wire store. Rows are looked up by the exact request path, so a read route or a path of another owner
 // never reaches one.
 import { DACS_SELLER_HTTP_PATHS as PATHS } from '@kynesyslabs/dacs/wire';
+import { isFinalPaymentAnswer } from './seller-agent.mjs';
 
 const NO_EFFECT = Object.freeze({ kind: 'no-effect' });
 const OPEN = Object.freeze({ kind: 'open' });
@@ -41,6 +42,19 @@ const commitmentRow = (path) => row(path, {
   },
 });
 
+// A payment route's sink is the payment evidence CREATE in the wallet journal, then the delivery. Its attempt ends with no outcome only when
+// the job holds no payment work of any kind. Retained work that is not final (held, evidenced with the delivery not done, or any answer or
+// refusal while it is unfinished) keeps the attempt open. Only a final answer is stored, and it returns the purchase's remaining capacity.
+const paymentRow = row(PATHS.payments, {
+  sink: 'the payment evidence CREATE in the wallet journal, then the delivery',
+  idempotenceKey: 'payment:<settlement id of the transfer>',
+  endAfter: (answer, evidence) => {
+    if (answer.retry || answer.noEffect) return noWorkRetained(evidence) ? NO_EFFECT : OPEN;
+    let stored; try { stored = JSON.parse(answer.text); } catch { /* not an answer */ }
+    return answer.status === 200 && evidence.final && isFinalPaymentAnswer(stored) ? Object.freeze({ kind: 'outcome', outcome: { status: answer.status, text: answer.text }, cleanup: 'purchase-final' }) : OPEN;
+  },
+});
+
 /** The table of the routes this module owns, by exact request path. Each row is `{ sink, idempotenceKey, recover, endAfter, revalidate }`.
  * `recover(input)` runs the agent's locked recovery once. `endAfter(answer, evidence)` returns the end decision of the wire attempt
  * (`{ kind: 'outcome', outcome, cleanup }`, `{ kind: 'no-effect' }` or `{ kind: 'open' }`) from the classified answer, which carries the
@@ -56,6 +70,7 @@ export const SELLER_EFFECT_ROUTES = Object.freeze({
       return answer.status === 200 && evidence.final ? Object.freeze({ kind: 'outcome', outcome: { status: answer.status, text: answer.text }, cleanup: 'route' }) : OPEN;
     },
   }),
+  [PATHS.payments]: paymentRow,
   [PATHS.bundleRequest]: bundleRow(PATHS.bundleRequest),
   [PATHS.bundleCountersignature]: bundleRow(PATHS.bundleCountersignature),
   [PATHS.commitments]: commitmentRow(PATHS.commitments),
