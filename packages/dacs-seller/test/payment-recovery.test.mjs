@@ -333,15 +333,18 @@ test('a payment whose settlement credit is withdrawn just before its evidence is
 // ---- The native profile on the native wire world ----
 
 const nativeStateOf = (w, p) => w.wireState(p).state;
-// The seller's own steps of a payment that was delivered once: one payment evidence CREATE, one Deliverable, one delivery evidence, and the two
-// evidence signatures that go with the first and the last.
+// A payment that was delivered once: one payment evidence CREATE, one Deliverable and one delivery evidence applied on the scripted node, and
+// one wallet signature. It does not count the seller's evidence signatures and does not compare the bytes the wallet broadcast with the bytes it signed.
 const assertNativeDeliveredOnce = (w, p) => {
   assert.deepEqual([w.evidenceCreates(p), w.deliverableWrites(p), w.deliveryEvidenceWrites(p)], [1, 1, 1]);
   assert.equal(w.counts.walletSignatures, 1, 'the wallet signed the payment evidence once');
 };
 // The node answers a read of this transfer in place of its record; every other read is the node's own.
-const readTransferAs = (w, txHash, answer) => { w.node.script.transferRead = (hash, record) => (hash === txHash ? answer(record) : record); };
+const readTransferAs = (w, txHash, answer) => { w.node.script.transferRead = (hash, record, message) => (hash === txHash ? answer(record, message) : record); };
 const unreadableTransfer = () => { throw new Error('TEST node unreachable'); };
+// A transfer the chain executed and failed: its status and its record both say so, or the status still says included while its record says failed.
+const failedTransfer = (record) => ({ ...record, status: 'failed' });
+const includedButFailedTransfer = (record, message) => (message === 'getTxByHash' ? { ...record, status: 'failed' } : record);
 const changedTransfer = (record) => ({ ...record, content: { ...record.content, amount: '1', data: ['native', { nativeOperation: 'send', args: [record.content.to, '1'] }] } });
 const recordReceiptEdit = (w, change) => {
   const state = JSON.parse(readFileSync(w.receiptsFile, 'utf8'));
@@ -362,8 +365,11 @@ for (const [title, unfinished, reason, firstRead] of [
       assert.deepEqual([early.status, early.reason], [unfinished, reason], label);
       assert.equal(nativeStateOf(w, p), 'ended', `${label}: no work was kept, so the attempt ends with no outcome`);
       assert.equal(w.grantedReceipts(), 0, `${label}: no receipt is granted while no work is kept`);
-      // Reading the retained work stops the host and starts it again over the same state.
-      if (restart) assert.equal(await w.work(p), undefined, `${label}: no work is retained across the restart`);
+      // A restart reopens the host, the wallet journal and the artifact anchor over the same stores; reading the work then stops the host and starts it again.
+      if (restart) {
+        await w.restart();
+        assert.equal(await w.work(p), undefined, `${label}: no work is retained across the restart`);
+      }
       w.node.script.transferRead = null;
       const final = await p.claim(corrected ? p.pay() : original);
       assert.equal(final.status, 'payment-evidenced', label);
@@ -375,6 +381,28 @@ for (const [title, unfinished, reason, firstRead] of [
       assert.ok(reads.every((locksAtRead) => locksAtRead.length > 0 && locksAtRead.every((locks) => locks.length === 1 && locks[0] === p.jobId)), `${label}: one job lock at every read`);
       assert.equal(w.grantedReceipts(), 1, label);
       assert.deepEqual(w.lockedJobs(), [], `${label}: the lock is released`);
+    }
+  });
+}
+
+// A transfer that executed and failed is never paid: nothing is retained, signed, written or delivered, and the same transfer read as the
+// executed original afterwards is paid once.
+for (const [label, answer] of [['its status and record say failed', failedTransfer], ['its status says included and its record says failed', includedButFailedTransfer]]) {
+  test(`a native payment whose transfer failed to execute is not paid: ${label}`, async (t) => {
+    for (const restart of [false, true]) {
+      const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay(), cell = `restart ${restart}`;
+      readTransferAs(w, txHash, answer);
+      const refused = await p.claim(txHash);
+      assert.notEqual(refused.status, 'payment-evidenced', cell);
+      if (restart) await w.restart();
+      assert.equal(await w.work(p), undefined, `${cell}: no work is retained`);
+      assert.equal(nativeStateOf(w, p), 'ended', `${cell}: no outcome is recorded`);
+      assert.deepEqual([w.grantedReceipts(), w.counts.walletSignatures, w.counts.walletBroadcasts, w.evidenceCreates(p), w.deliverableWrites(p), w.deliveryEvidenceWrites(p)],
+        [0, 0, 0, 0, 0, 0], `${cell}: no receipt, signature, broadcast, evidence, Deliverable or delivery`);
+      w.node.script.transferRead = null;
+      const control = await p.claim(txHash);
+      assert.equal(control.status, 'payment-evidenced', `${cell}: the executed original is paid`);
+      assertNativeDeliveredOnce(w, p);
     }
   });
 }
@@ -391,6 +419,7 @@ const cutBeforeWalletSignature = async (w, p, txHash) => {
 
 for (const restart of [false, true]) for (const [label, answer] of [
   ['the transfer read fails', unreadableTransfer], ['the transfer cannot be found', () => null], ['the transfer amount changed', changedTransfer],
+  ['the transfer failed to execute', failedTransfer], ['the transfer is included but its record says failed', includedButFailedTransfer],
 ]) {
   test(`native payment recovery authenticates the original transfer again before the wallet signs or sends: ${label}, restart ${restart}`, async (t) => {
     const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
@@ -452,6 +481,8 @@ test('native recovery sends the retained evidence CREATE once and delivers witho
 const NATIVE_SOURCE_CELLS = [
   ['the transfer read fails', (w, txHash) => readTransferAs(w, txHash, unreadableTransfer)],
   ['the transfer cannot be found', (w, txHash) => readTransferAs(w, txHash, () => null)],
+  ['the transfer reads as failed', (w, txHash) => readTransferAs(w, txHash, failedTransfer)],
+  ['the transfer is included but its record says failed', (w, txHash) => readTransferAs(w, txHash, includedButFailedTransfer)],
   ['the Deliverable is gone', (w) => { w.node.script.programRead = (record) => (record?.metadata.artifactKind === 'Deliverable' ? null : record); }],
   ['the delivery evidence cannot be read', (w) => { w.node.script.programRead = (record) => { if (record?.metadata.logicalAddress.startsWith('dacs4:evidence:')) throw new Error('TEST node unreachable'); return record; }; }],
 ];

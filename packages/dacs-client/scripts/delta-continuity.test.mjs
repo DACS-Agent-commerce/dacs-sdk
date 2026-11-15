@@ -49,7 +49,7 @@ async function fixture(t, initial = 'original\n') {
     checker = checker.replace(pin, `export const ${name} = '${value}';`);
   }
   writeFileSync(join(pkg, 'scripts/delta-map.mjs'), checker);
-  for (const name of ['source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(pkg, 'scripts', name));
+  for (const name of ['delta-assemble.mjs', 'delta-record.mjs', 'source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(pkg, 'scripts', name));
   const { blob, checkDeltas, table } = await import(pathToFileURL(join(pkg, 'scripts/delta-map.mjs')));
   json('DELTA-LEDGER.json', { schema: 'dacs-client-deltas/v2', baseline, changes: [] });
   const render = () => writeFileSync(join(pkg, 'DELTA-MAP.md'), table());
@@ -213,6 +213,19 @@ for (const field of ['before', 'after']) {
     ledger.changes[0].files[0][field] = null;
     history.json('DELTA-LEDGER.json', ledger); history.render();
     assert.ok(history.check().includes(`${path}: delta D11 blob differs at ${sha}${field === 'before' ? '^' : ''}`));
+  });
+}
+
+for (const [name, substitute] of [['its own new blob', (record) => record.after], ['an older blob of the same file', (_record, earlier) => earlier.before]]) {
+  test(`a record whose before names ${name} instead of its parent's blob is refused`, async t => {
+    const history = await fixture(t);
+    history.record('changed\n');
+    const sha = history.record('next\n');
+    const ledger = history.read('DELTA-LEDGER.json');
+    const [earlier, record] = ledger.changes.map(change => change.files[0]);
+    record.before = substitute(record, earlier);
+    history.json('DELTA-LEDGER.json', ledger); history.render();
+    assert.ok(history.check().includes(`${path}: delta D11 blob differs at ${sha}^`));
   });
 }
 

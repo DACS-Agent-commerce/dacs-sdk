@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 import { setImmediate } from 'node:timers/promises';
 import {
   createNativeDemDeliveryCapability, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery,
@@ -76,10 +77,11 @@ test('a native delivery read reply with too many list entries is refused as inde
   assertIndeterminate('read', await readNativeDemDelivery(capability, {}), /limit/);
 });
 
-test('a read of proven unsigned absence returns the capability\'s own reply object', async () => {
+test('a read of proven unsigned absence returns a checked proof copy', async () => {
   const absence = provenUnsignedAbsence('TEST never signed');
   const answer = await readNativeDemDelivery(capabilityWhere('read', async () => absence), {});
-  assert.equal(answer, absence);
+  assert.notEqual(answer, absence);
+  assert.deepEqual({ ...answer }, absence);
   assert.equal(mayPublishAgain(answer), true);
 });
 
@@ -100,10 +102,13 @@ test('a proven unsigned absence whose toJSON hides an oversized reason answers i
 
 for (const [kind, makeProof] of [['unsigned absence', provenUnsignedAbsence], ['dead refused create', deadRefusedCreate]]) {
   for (const [form, reason] of [['no reason', undefined], ['an Error reason', new Error('TEST gone')]]) {
-    test(`a proven ${kind} with ${form} returns the capability's own reply object`, async () => {
+    test(`a proven ${kind} with ${form} returns a checked proof copy`, async () => {
       const proof = makeProof(reason);
       const answer = await readNativeDemDelivery(capabilityWhere('read', async () => proof), {});
-      assert.equal(answer, proof);
+      assert.notEqual(answer, proof);
+      assert.equal(answer.status, proof.status);
+      assert.equal(answer.reason, reason === undefined ? '' : 'Error: TEST gone');
+      assert.equal(answer.noResend, proof.noResend);
       assert.equal(mayPublishAgain(answer), true);
     });
   }
@@ -150,3 +155,63 @@ test('a capability error that reads like a timeout is not taken for the deadline
   const capability = capabilityWhere('read', async () => { throw failure; });
   await assert.rejects(readNativeDemDelivery(capability, {}), error => error === failure);
 });
+
+for (const [kind, makeProof] of [['unsigned absence', provenUnsignedAbsence], ['dead refused create', deadRefusedCreate]]) {
+  for (const label of Object.keys(OPERATIONS)) {
+    test(`a native delivery ${label} returns a measured ${kind} proof without the Error cause`, async () => {
+      const reason = new Error('read refused', { cause: { response: OVER_BYTE_LIMIT } });
+      const proof = makeProof(reason);
+      proof.observation = { state: 'not signed' };
+      const answer = await OPERATIONS[label].call(capabilityWhere(label, async () => proof));
+      assert.equal(answer.status, proof.status);
+      assert.equal(answer.noResend, proof.noResend);
+      assert.equal(mayPublishAgain(answer), true);
+      assert.equal(answer.reason, 'Error: read refused');
+      assert.notEqual(answer, proof);
+      assert.notEqual(answer.observation, proof.observation);
+      assert.deepEqual({ ...answer.observation }, proof.observation);
+      assert.equal(JSON.stringify(answer).includes(OVER_BYTE_LIMIT), false);
+      assert.equal(mayPublishAgain({ ...answer }), false);
+      proof.observation.state = 'changed';
+      assert.equal(answer.observation.state, 'not signed');
+    });
+  }
+  for (const [form, reason, text] of [
+    ['a cross-realm Error', runInNewContext("new Error('read refused')"), 'Error: read refused'],
+    ['a message-bearing object', { message: 'read refused' }, 'read refused'],
+    ['a function', function reason() {}, 'function reason() {}'],
+    ['a symbol', Symbol('read refused'), 'Symbol(read refused)'],
+  ]) {
+    test(`a proven ${kind} with ${form} returns bounded reason text`, async () => {
+      const proof = makeProof(reason);
+      const answer = await readNativeDemDelivery(capabilityWhere('read', async () => proof), {});
+      assert.equal(answer.status, proof.status);
+      assert.equal(answer.noResend, proof.noResend);
+      assert.equal(mayPublishAgain(answer), true);
+      assert.equal(answer.reason, text);
+      assert.notEqual(answer, proof);
+    });
+  }
+  test(`a proven ${kind} copy is a plain object, as a JSON round trip makes it`, async () => {
+    const proof = makeProof({ code: 'TEST_NO_MESSAGE' });
+    proof.observation = { state: 'not signed' };
+    const answer = await readNativeDemDelivery(capabilityWhere('read', async () => proof), {});
+    assert.equal(mayPublishAgain(answer), true);
+    assert.equal(Object.getPrototypeOf(answer), Object.prototype);
+    assert.equal(Object.getPrototypeOf(answer.observation), Object.prototype);
+    assert.deepEqual(answer.reason, { code: 'TEST_NO_MESSAGE' });
+  });
+  for (const [form, define] of [
+    ['a throwing enumerable message getter', (reason) => Object.defineProperty(reason, 'message', { enumerable: true, get() { throw new Error(OVER_BYTE_LIMIT); } })],
+    ['a throwing non-enumerable message getter', (reason) => Object.defineProperty(reason, 'message', { enumerable: false, get() { throw new Error(OVER_BYTE_LIMIT); } })],
+  ]) {
+    test(`a proven ${kind} whose reason has ${form} answers indeterminate within the byte limit`, async () => {
+      const proof = makeProof(define({}));
+      const answer = await readNativeDemDelivery(capabilityWhere('read', async () => proof), {});
+      assert.equal(answer.status, 'indeterminate');
+      assert.match(answer.reason, /limit/);
+      assert.equal(answer.reason.length <= 300, true, `reason is ${answer.reason.length} characters`);
+      assert.equal(mayPublishAgain(answer), false);
+    });
+  }
+}

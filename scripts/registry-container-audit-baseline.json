@@ -368,13 +368,13 @@
             "check": "productionImage",
             "finding": "pqcrypto@1.0.01 at node_modules/pqcrypto",
             "disposition": "Retain as a #191 upstream package-metadata defect; production publication remains blocked.",
-            "reason": "demosdk@4.0.16 requires pqcrypto ^1.0.1. The registry lock records 1.0.1, while the installed manifest records 1.0.01. This is a version mismatch in the existing production closure, not an extra package. Fix the upstream package metadata before removing this finding."
+            "reason": "The pinned demosdk requires pqcrypto ^1.0.1. The registry lock records 1.0.1, while the installed manifest records 1.0.01. This is a version mismatch in the existing production closure, not an extra package. Fix the upstream package metadata before removing this finding."
           },
           {
             "check": "physicalSbom",
             "finding": "invalid: bip39@3.1.2, 3.1.0 required by @multiversx/sdk-core@13.17.2",
             "disposition": "Retain as a #191 upstream optional-dependency SBOM defect; production publication remains blocked.",
-            "reason": "demosdk@4.0.16 requires bip39 ^3.1.0 and @multiversx/sdk-core ^13.17.2. The latter optionally requires exactly bip39 3.1.0. The lock has a nested optional 3.1.0 copy; --omit=optional removes it and npm sbom sees top-level 3.1.2 instead. Resolve that upstream dependency constraint before removing this finding."
+            "reason": "The pinned demosdk requires bip39 ^3.1.0 and @multiversx/sdk-core ^13.17.2. The latter optionally requires exactly bip39 3.1.0. The lock has a nested optional 3.1.0 copy; --omit=optional removes it and npm sbom sees top-level 3.1.2 instead. Resolve that upstream dependency constraint before removing this finding."
           }
         ]
       },
@@ -387,19 +387,19 @@
             "check": "engineStrict",
             "finding": "@tufjs/models@5.0.1 at node_modules/@tufjs/models",
             "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
-            "reason": "The packed consumer selects demosdk 4.0.16 -> sigstore ^5.0.0 -> @sigstore/tuf ^5.0.0 -> tuf-js ^6.0.0 -> @tufjs/models 5.0.1. Both published models 5.x versions require Node 22.22.2 or newer supported majors; pinning 5.0.0 does not restore Node 20 support. A compatible parent-major change belongs in a separate consumer dependency change."
+            "reason": "The packed consumer selects the pinned demosdk -> sigstore ^5.0.0 -> @sigstore/tuf ^5.0.0 -> tuf-js ^6.0.0 -> @tufjs/models 5.0.1. Both published models 5.x versions require Node 22.22.2 or newer supported majors; pinning 5.0.0 does not restore Node 20 support. A compatible parent-major change belongs in a separate consumer dependency change."
           },
           {
             "check": "engineStrict",
             "finding": "tuf-js@6.0.1 at node_modules/tuf-js",
             "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
-            "reason": "The packed consumer selects demosdk 4.0.16 -> sigstore ^5.0.0 -> @sigstore/tuf ^5.0.0 -> tuf-js ^6.0.0. Both published tuf-js 6.x versions require Node 22.22.2 or newer supported majors; pinning 6.0.0 does not restore Node 20 support. A compatible parent-major change belongs in a separate consumer dependency change."
+            "reason": "The packed consumer selects the pinned demosdk -> sigstore ^5.0.0 -> @sigstore/tuf ^5.0.0 -> tuf-js ^6.0.0. Both published tuf-js 6.x versions require Node 22.22.2 or newer supported majors; pinning 6.0.0 does not restore Node 20 support. A compatible parent-major change belongs in a separate consumer dependency change."
           },
           {
             "check": "audit",
             "finding": "GHSA-4qx8-w7c3-pj3p",
             "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
-            "reason": "The transitive path is demosdk 4.0.16 -> @coral-xyz/anchor 0.32.1 -> toml ^3.0.0 (3.0.0). Many array-of-tables headers cause quadratic parsing work. The corrected toml 5.0.1 is outside the selected parent range; the parent must change before this entry can be removed."
+            "reason": "The transitive path is the pinned demosdk -> @coral-xyz/anchor 0.32.1 -> toml ^3.0.0 (3.0.0). Many array-of-tables headers cause quadratic parsing work. The corrected toml 5.0.1 is outside the selected parent range; the parent must change before this entry can be removed."
           },
           {
             "check": "audit",
@@ -430,13 +430,13 @@
             "check": "audit",
             "finding": "GHSA-gcqx-w48m-w2h4",
             "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
-            "reason": "The optional path is demosdk 4.0.16 -> rubic-sdk 5.57.4 -> @tonconnect/ui 2.4.4 -> deepmerge ^4.3.1 (4.3.1). The returned-object prototype-poisoning notice has no corrected release in this range; 4.3.1 is the latest published version. Retain it until the parent/module is corrected."
+            "reason": "The optional path is the pinned demosdk -> rubic-sdk 5.57.4 -> @tonconnect/ui 2.4.4 -> deepmerge ^4.3.1 (4.3.1). The returned-object prototype-poisoning notice has no corrected release in this range; 4.3.1 is the latest published version. Retain it until the parent/module is corrected."
           },
           {
             "check": "audit",
             "finding": "GHSA-qr28-fpjm-wq7f",
             "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
-            "reason": "The optional path is demosdk 4.0.16 -> rubic-sdk 5.57.4 -> web3 1.10.4 -> web3-bzz 1.10.4 -> swarm-js 0.1.42 -> xhr-request 1.1.0 -> query-string 5.1.1 -> decode-uri-component ^0.2.0 (0.2.2). The percent-encoded-run CPU correction is 0.5.1, outside the selected range; a compatible parent dependency update is required."
+            "reason": "The optional path is the pinned demosdk -> rubic-sdk 5.57.4 -> web3 1.10.4 -> web3-bzz 1.10.4 -> swarm-js 0.1.42 -> xhr-request 1.1.0 -> query-string 5.1.1 -> decode-uri-component ^0.2.0 (0.2.2). The percent-encoded-run CPU correction is 0.5.1, outside the selected range; a compatible parent dependency update is required."
           }
         ]
       }
