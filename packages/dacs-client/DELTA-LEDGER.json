@@ -9655,6 +9655,28 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF update client documents for the current record base",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "87af0099909f6e6881cfb224d0236aaef747331a",
+          "after": "3d87ecf1cbf41a4fca081b8a037d73d3dd685a0d"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "c35d385d50d9059aeb2ab09b2772d95ff4d9fe02",
+          "after": "f3b9d30fd5df076edc01f796b7356ec3d04a2504"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "97973b1f3320f9529fb504a2082b2ef30e6759e3",
+          "after": "27527a1a6ac2daf17c5cbde1b1d788e8c8e90133"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF preserve key checks in the relocated transport fixture",
       "sha": null,
       "compact": true,

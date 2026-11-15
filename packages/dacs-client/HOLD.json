@@ -364,10 +364,10 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "a5924600d74b3e116cfe6a855f48d53ccaee70b7"
+        "blob": "d06a1f9ce036d4a87a8842a66896c4cfbc6c0c1d"
       },
       "DELTA-LEDGER.json": {
-        "blob": "517935952089e464b6670cd3e1886eb45e44585e"
+        "blob": "7652f4b74fc05f32ad566806b85d5b933baa6a22"
       },
       "HOLD.json": {
         "control": "record"
@@ -1025,7 +1025,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "ae9cfead8d2a75316af01620b9604d18e0867a86"
+        "blob": "ed8af7e122704048e0c2ec485b1537da3efd6765"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "537e70dfe2c6fc8e16dedcba42f7d3271045d0e9"
