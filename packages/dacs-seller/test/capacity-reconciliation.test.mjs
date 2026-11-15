@@ -507,8 +507,8 @@ test('with no general capacity the retry is refused peer_store_capacity with its
 test('a host over an existing store stays not ready while a nonce key names no accounting row, and is ready once the journal and the store agree', async t => {
   const f = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE, publicEndpoint: FIXTURE_ENDPOINT });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-host-reconciliation-'));
-  const { durableDirectory, commitOnSignature, nativeArtifactAnchor, ...config } = f.config;
-  delete config.vetMode; delete config.challengeLedger;
+  const { nativeArtifactAnchor, ...config } = f.config;
+  for (const option of ['durableDirectory', 'commitOnSignature', 'vetMode', 'challengeLedger']) delete config[option];
   const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() }, hosts = [];
   t.after(async () => { for (const host of hosts) await host.close().catch(() => {}); await rm(dataDirectory, { recursive: true, force: true }); });
   const readiness = async () => {
