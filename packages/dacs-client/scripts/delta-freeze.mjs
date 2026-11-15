@@ -9,10 +9,11 @@
 //     chooses one), else its blob at the anchor (records/ANCHOR.json) for
 //     anchored paths, else its baseline blob. No expected blob means the path
 //     must not exist. A record of an anchored path must select a commit after
-//     the anchor (reachable from HEAD but not from the anchor commit). A branch
-//     cut before the anchor's last change to an anchored file holds an older
-//     copy of it; its record cannot chain from the anchor, so it must be
-//     rebased onto the anchor first (check-provenance refuses it otherwise).
+//     the anchor (reachable from HEAD but not from the anchor commit), and the
+//     first such record must start from the anchor's blob. A branch cut before
+//     the anchor's last change to an anchored file holds an older copy of it;
+//     its record cannot start from the anchor, so it is refused until the
+//     branch is rebased onto the anchor.
 // Anything else is refused. The rule reads the history from the baseline to
 // HEAD with one `git rev-list` for the commit graph and one `git log --raw`
 // for the commits and their package changes, and fails closed without it.
@@ -93,10 +94,32 @@ function recordedBlobs(ledger, commits, afterAnchor, failures) {
     if (hits.length !== 1) { failures.push(`delta commit selector must resolve once: ${change.sha == null ? change.subject : `${change.sha} ${change.subject}`}`); continue; }
     for (const file of change.files) {
       if (isAnchored(file.path.slice(PACKAGE_PREFIX.length)) && !afterAnchor(hits[0].sha)) failures.push(`${file.path}: delta ${change.delta} selects ${hits[0].sha}, which the anchor already contains`);
-      else recorded.set(file.path, [...(recorded.get(file.path) ?? []), { sha: hits[0].sha, after: file.after }]);
+      else recorded.set(file.path, [...(recorded.get(file.path) ?? []), { sha: hits[0].sha, before: file.before, after: file.after }]);
     }
   }
   return recorded;
+}
+
+// An anchored path's first record, the one with no other record of the path
+// among its ancestors, must start from the anchor's blob.
+function checkAnchorStart({ parents, order }, anchor, recorded, failures) {
+  const ancestorsOf = sha => {
+    const seen = new Set(), stack = [...parents.get(sha)];
+    while (stack.length) {
+      const next = stack.pop();
+      if (seen.has(next) || !order.has(next)) continue;
+      seen.add(next);
+      stack.push(...parents.get(next));
+    }
+    return seen;
+  };
+  for (const [path, records] of recorded) {
+    if (!isAnchored(path.slice(PACKAGE_PREFIX.length))) continue;
+    for (const { sha, before } of records) {
+      const ancestors = ancestorsOf(sha);
+      if (!records.some(other => ancestors.has(other.sha)) && before !== (anchor.files[path] ?? null)) failures.push(`${path}: delta parent is discontinuous at ${sha}`);
+    }
+  }
 }
 
 // Record file path -> the blob it was added with. Any later change, deletion
@@ -125,6 +148,7 @@ export function checkDerivedFreeze({ repoRoot, packageDir, pins, files, head, in
   if (!history.order.has(anchor.commit)) return [`${PACKAGE_PREFIX}records/ANCHOR.json: anchor commit ${anchor.commit} is not in the history from the baseline to HEAD`];
   const { ledger, failures } = assemble(packageDir);
   const recorded = recordedBlobs(ledger, history.commits, afterAnchorIn(history, anchor.commit), failures);
+  checkAnchorStart(history, anchor, recorded, failures);
   const added = addedRecordFiles(history.commits, failures);
   const baseline = new Map(sourceGit(['-C', repoRoot, 'ls-tree', '-r', BASELINE, '--', `${PACKAGE_PREFIX}src`, `${PACKAGE_PREFIX}test`], { encoding: 'utf8', maxBuffer: MAX_GIT_OUTPUT })
     .split('\n').filter(Boolean).map(row => { const [meta, path] = row.split('\t'); return [path, meta.split(' ')[2]]; }));
