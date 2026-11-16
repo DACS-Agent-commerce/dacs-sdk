@@ -10343,6 +10343,23 @@
           "after": "ae9ce572e9076dc07dee3e35b4f307f79c37dcee"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the blobs chosen for the transport and wallet session after carrying the shared chain identity part up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "3490595c87ed8af1bd2a770e794888ab83be9ed5",
+          "after": "3490595c87ed8af1bd2a770e794888ab83be9ed5"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "06412570eb25caec40124fbd5873eead46e956a2",
+          "after": "06412570eb25caec40124fbd5873eead46e956a2"
+        }
+      ]
     }
   ]
 }
