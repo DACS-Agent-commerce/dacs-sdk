@@ -562,7 +562,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
           await capability.complete(null, { jobLease });
           throw new SellerTransportError('session_admission_unavailable', 503);
         }
-        // D5 and D6 are separate critical sections: nothing is read or written for an attempt that the row has moved past in between.
+        // The reservation and this work hold the job's lease separately: a recovery reads and writes nothing once the row has moved past its attempt in between.
         if (recovering && !holdsAttempt(jobId, capability)) throw new SellerTransportError('context_admission_closed', 409);
         attempt = createContextAttempt({ jobId, effect: capability.effect, capability, admissionTransaction, now, monotonicNow });
         running.add(attempt);

@@ -805,6 +805,16 @@ test('a recovery that only reads keeps write authority unlatched and a completed
   assert.deepEqual(seen, [false]);
 });
 
+test('a recovery whose row was closed between its reservation and its work reads and writes nothing and leaves the closed row alone', async (t) => {
+  const w = await contextWireWorld(t), request = await cutInsideProvider(w, 1), { resolves, sourceReads, vetWrites } = w.counts;
+  w.behaviour.beforeWork = async () => { w.behaviour.beforeWork = null; await w.admission.compensate(WIRE_JOB, 'a'); };
+  const answer = await retryAfterLease(w, request);
+  await w.settleJob();
+  assert.deepEqual([answer.status, answer.body.error, answer.body.cause], [503, 'operation_uncertain', 'context_admission_closed']);
+  assert.deepEqual([w.counts.resolves, w.counts.sourceReads, w.counts.vetWrites], [resolves, sourceReads, vetWrites]);
+  assert.notEqual(w.rowOf().state, 'running');
+});
+
 test('the context wire ports name equivalents for every old direct-context test before auth removal', async () => {
   const sourceOf = (file) => readFile(new URL(`../src/dacs/${file}`, import.meta.url), 'utf8');
   for (const file of ['seller-context-route.mjs', 'seller-context-continuation.mjs', 'seller-context-recovery.mjs', 'seller-planned-agreement.mjs']) {

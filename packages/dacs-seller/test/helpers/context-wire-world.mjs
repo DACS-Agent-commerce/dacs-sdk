@@ -44,7 +44,7 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   };
   // What a test can bend: the presentation admission, the policy hold, the provider's steps and answer, the reservation (`recover` answers a recovery
   // effect the journal never issued), the wire completion (`nullEndFails`, `cutAfterPublish`), the acceptance (`failAcceptance`) and the kind of effect evidence compensation reads (`evidenceKind`).
-  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, source: null, afterFirstWrite: null, beforeReserve: null, afterReserve: null, beforeAnswer: null, records: null, nonPass: null, unknownIntent: false, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false, evidenceKind: 'no-intent' };
+  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, source: null, afterFirstWrite: null, beforeReserve: null, afterReserve: null, beforeWork: null, beforeAnswer: null, records: null, nonPass: null, unknownIntent: false, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false, evidenceKind: 'no-intent' };
   const fakeEffects = new Set(), completions = [];
   // A presentation's profile admission: the agent's own, here a counting stand-in that grants unless a test says otherwise.
   agent.admitSessionPresentation = async ({ jobId, bundle, nonce }) => {
@@ -135,7 +135,7 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
 
   const tracked = new Set();
   const trackContextWork = (start) => {
-    const task = start();
+    const task = (async () => { await behaviour.beforeWork?.(); return start(); })();
     tracked.add(task);
     void task.then(() => tracked.delete(task), () => tracked.delete(task));
     return task;
