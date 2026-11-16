@@ -57,14 +57,14 @@ test('in a fresh child in the consumer directory, the packed node-wallet entry c
     ${nodeSource}
     const node=scriptedNode(), owner=api.createNodeTransportOwner({endpoint:'https://rpc.example.invalid/',transportAuthority:'vector-authority',fetchImpl:node.fetch});
     const binding=await bindTp1Profile({record:TP1_APPROVED_IDENTITY_RECORD,local:owner.local,readAuthority:async scope=>({local:scope.local,chainIdentity:TP1_APPROVED_IDENTITY_RECORD.chainIdentity,provenance:'TEST-packed-authority',sessionId:scope.sessionId,participants:[]})});
-    const rows=new Map(), journal={get:async k=>rows.get(k)??null,put:async(k,v)=>rows.set(k,structuredClone(v)),entries:async()=>[...rows],withWalletLock:async(k,work)=>work()};
+    const rows=new Map(), journal={get:async k=>rows.get(k)??null,put:async(k,v)=>rows.set(k,structuredClone(v)),entries:async()=>[...rows],withWalletLock:async(k,work)=>work(),withOwnedOrAcquiredLane:async(k,work)=>work(),appendUnderLock:async(lane,k,v)=>{assert.equal(rows.has(k),false);rows.set(k,structuredClone(v));}};
     const key=new TextEncoder().encode(entropyToMnemonic(randomBytes(32),wordlist));
     const options={admission:{binding,currentLocal:owner.currentLocal},owner,journal,approve:async()=>true,clock:{now:()=>T0}};
-    const bootstrap=await api.createNodeWalletSession({...options,key});
+    const bootstrap=await api.createNodeWalletSession({...options,stopped:async()=>false,feeCeilingOs:'50000000000',key});
     assert.ok(key.every(byte=>byte===0));
     await bootstrap.close();
     const {Demos}=await import('@kynesyslabs/demosdk/websdk');
-    const session=await api.createNodeWalletSession({...options,key:new TextEncoder().encode(new Demos().newMnemonic())});
+    const session=await api.createNodeWalletSession({...options,stopped:async()=>false,feeCeilingOs:'50000000000',key:new TextEncoder().encode(new Demos().newMnemonic())});
     const from=session.wallet.getPublicAccount().address;
     const to='0x'+'2'.repeat(64), amount='2500000000';
     const content={type:'native',from,to,amount,data:['native',{nativeOperation:'send',args:[to,amount]}],nonce:1,timestamp:T0,transaction_fee:{network_fee:'0',rpc_fee:'0',additional_fee:'0',rpc_address:null}};

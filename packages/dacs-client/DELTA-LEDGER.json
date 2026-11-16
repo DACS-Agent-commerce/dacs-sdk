@@ -10101,6 +10101,82 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF take the stop check and fee ceiling at the Node session's finalization and give the native transport the client boundary and the private pass context",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+          "before": "aae9cc8e17848ff796c10b1c2289b7da798eefa0",
+          "after": "c08a0af159012c94282ae25bb6e5ddf2c9b0cc73"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "c02dfdef0e7c168c436055d4187fad440f468b10",
+          "after": "f40c46c881a05fb1c690d3a8b639a50189707bf3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "02c3808d514792df7d0a707767dfb08feb08685c",
+          "after": "dbb17847d10c96b2699b0a9fb703641a8c653c77"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/finalized-node-child.mjs",
+          "before": null,
+          "after": "09a081c1e3ea16439ebd2357b70fd684710555e7"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/finalized-node-world.mjs",
+          "before": null,
+          "after": "ce03e5423b1b27ce53bc194114211e5f68004cad"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "7797647b3bda845b75faa490eef6592949d87847",
+          "after": "1887b5a8009cd20f466570f57899c4231f4977fa"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "e36e812b04d58809bd4a6d16c4068094c4f9c755",
+          "after": "156a5e85823ad84391137b75aba5b16bdaa1853d"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "c9957a6b9c243c285b85d8fc2991c91fb1c4ec7e",
+          "after": "7f188b0cc0d8c8b237e38dc02d35950732ca9873"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "0a89124816f6c933eae528c682873577e0d6edd8",
+          "after": "08d013e60f5fdf1cdbf24a06e15ce25a75256c82"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-fresh-child.test.mjs",
+          "before": "396b4f470820de6aa77cce86839ce5a287b31ccd",
+          "after": "b19bba0d874f49713e683b9679aee0db0815190f"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-lanes.test.mjs",
+          "before": "ad4e44d9bf20ae4274b06491c97cf5190504da5c",
+          "after": "945e56dc8efaa5cd2aeb2be2410971349ac04799"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": "cb7e6298b275bb6123561c5afa4a52a4981b72bf",
+          "after": "4950cf73edd332353fe6f9f994587167db66ca6a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4",
+          "after": "48e7aea7aa3978cdc3f043d48f1c6e361da4b6ac"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
+          "before": "e84121241791b080837b9e2fbff8161aa1936889",
+          "after": "300b729b5f1a1d9a9a95a77fe46778581af86fe5"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF read a stabilised genesis on exact agreement of numeric block zero, the chain identity and block one",
       "files": [
         {

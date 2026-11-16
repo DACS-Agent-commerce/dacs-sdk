@@ -21,8 +21,8 @@ ${nodeSource}
 ${agreementSource.replaceAll("'@kynesyslabs/dacs'",JSON.stringify(import.meta.resolve('@kynesyslabs/dacs')))}
 const node=scriptedNode(),owner=api.createNodeTransportOwner({endpoint:'https://rpc.example.invalid/',transportAuthority:'vector-authority',fetchImpl:node.fetch});
 const binding=await bindTp1Profile({record:TP1_APPROVED_IDENTITY_RECORD,local:owner.local,readAuthority:async scope=>({local:scope.local,chainIdentity:TP1_APPROVED_IDENTITY_RECORD.chainIdentity,provenance:'TEST-child',sessionId:scope.sessionId,participants:[]})});
-const records=new Map(); const journal={get:async k=>records.get(k)??null,put:async(k,v)=>records.set(k,structuredClone(v)),entries:async()=>[...records],withWalletLock:async(k,work)=>work(),close(){}};
-const session=await api.createNodeWalletSession({admission:{binding,currentLocal:owner.currentLocal},owner,journal,key:new Uint8Array(JSON.parse(process.argv[2])),approve:async()=>true,clock:{now:()=>T0}});
+const records=new Map(); const journal={get:async k=>records.get(k)??null,put:async(k,v)=>records.set(k,structuredClone(v)),entries:async()=>[...records],withWalletLock:async(k,work)=>work(),withOwnedOrAcquiredLane:async(k,work)=>work(),appendUnderLock:async(lane,k,v)=>{assert.equal(records.has(k),false);records.set(k,structuredClone(v));},close(){}};
+const session=await api.createNodeWalletSession({admission:{binding,currentLocal:owner.currentLocal},owner,journal,key:new Uint8Array(JSON.parse(process.argv[2])),approve:async()=>true,stopped:async()=>false,feeCeilingOs:'50000000000',clock:{now:()=>T0}});
 const address=session.wallet.getPublicAccount().address;
 if(process.argv[3]==='frames')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:address})+'\\n');
 const send=await session.wallet.request({method:'sendTransaction',params:[buildNativeTransferPayload({from:address,to:'0x'+'2'.repeat(64),amountOs:'2500000000',nonce:1,timestamp:T0,encoding:'os-string'})]});
