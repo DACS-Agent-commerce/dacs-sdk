@@ -676,6 +676,7 @@ type PayD402Rail
 type PayD402RailConfig
 type PayD402SettleCoreDeps
 type PayD402SettleParams
+type PayD402SettleResult
 type PayDemObservationClient
 type PayDemPreparedTransfer
 type PayDemRail
