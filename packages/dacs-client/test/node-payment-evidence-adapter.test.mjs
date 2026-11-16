@@ -1,16 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
-import { api, mnemonicBytes, ok, setPurchaseAdmission } from './helpers/tp1-node-fixture.mjs';
+import { agreementRequest, api, mnemonicBytes, ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
+import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
 import { gateWorld, inPass, openPass, sellerPublications } from './helpers/effect-gate-world.mjs';
+import { confirmThroughFacade, sha, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 import { recordingApproval } from './helpers/payment-evidence-approval-double.mjs';
 import { installNoEgress } from './helpers/no-egress.mjs';
+import { rpcEnvelope, storageWriteConfirmationMatches } from '../src/devnet-demo/storage-write-recovery.mjs';
 import { nativeWalletLaneKey } from '../src/wallet/devnet-native-transport.mjs';
-import { createSignerReservations } from '../src/wallet/signer-reservation.mjs';
+import { createSignerReservations, signerReservationKey } from '../src/wallet/signer-reservation.mjs';
 
 // The kit journal refuses every send while the kit's operation guard is off. This test-only loader hook admits it in this process, so it is
 // registered before the journal module is loaded.
@@ -287,6 +290,73 @@ test("signCreate refuses signer_lane_busy while the transport lane holds an issu
   assert.equal(lane.signsInsideSign, signedBefore, 'signer calls 0'); assert.equal(await recordOf(lane), null, 'no reservation is made');
 });
 
+test("a native write is refused while a stored evidence CREATE holds the signer, and goes out once the chain has used the reserved nonce", async t => {
+  const w = await adapterWorld(t), signed = await signIn(w, evidenceInput(w));
+  const refused = await inPass(w, () => w.send());
+  assert.equal(refused.success, false); assert.equal(refused.error.code, 'signer_lane_busy', JSON.stringify(refused));
+  assert.ok(codes(w.session.internalCauseOf(refused)).includes('signer_lane_busy'), 'the refusal keeps its cause');
+  assert.equal(w.node.broadcasts.length, 0, 'the native write sent nothing');
+  assert.equal((await w.journal().entries()).some(([key]) => key.startsWith('devnet/native-wallet/')), false, 'no native lane record was written');
+  w.node.nonce = signed.nonce;
+  const next = { method: 'sendTransaction', params: [buildNativeTransferPayload({ from: signerOf(w), to: `0x${'2'.repeat(64)}`, amountOs: '2500000000', nonce: signed.nonce + 1, timestamp: T0, encoding: 'os-string' })] };
+  assert.equal((await inPass(w, () => w.session.wallet.request(next))).success, true);
+  assert.equal(w.node.broadcasts.length, 1, 'the native write goes out once the signer is free');
+});
+
+test("a seller storage CREATE refused while a stored evidence CREATE holds the signer is a clean refusal that leaves no issued lane, and the next CREATE and native write go out once the chain has used the reserved nonce", async t => {
+  const createRequest = w => inPass(w, async () => w.session.wallet.request(await agreementRequest(w)));
+  const nativeRequest = w => inPass(w, () => w.session.wallet.request({ method: 'sendTransaction', params: [buildNativeTransferPayload({ from: signerOf(w), to: `0x${'2'.repeat(64)}`,
+    amountOs: '2500000000', nonce: w.node.nonce + 1, timestamp: T0, encoding: 'os-string' })] }));
+  for (const [name, next] of [['storage CREATE', createRequest], ['native write', nativeRequest]]) {
+    const w = await adapterWorld(t), signed = await signIn(w, evidenceInput(w));
+    const refused = await createRequest(w);
+    assert.equal(refused.success, false); assert.equal(refused.error.code, 'signer_lane_busy', JSON.stringify(refused));
+    assert.equal(w.node.broadcasts.length, 0, 'nothing was sent');
+    assert.deepEqual((await w.journal().entries()).filter(([, row]) => row?.stage === 'broadcast-started'), [], 'no lane was left issued');
+    w.node.nonce = signed.nonce;
+    const sent = await next(w);
+    assert.equal(sent.success, true, `${name}: ${JSON.stringify(sent)}`); assert.equal(w.node.broadcasts.length, 1, `the ${name} goes out`);
+  }
+});
+
+test("the transaction a reservation holds is not refused when it is sent through the native transport, while another write at its nonce is", async t => {
+  const w = await adapterWorld(t), wallet = await signingWallet(w), signer = wallet.address, tx = signedTransaction(wallet, w.request.params[0]);
+  const requestText = JSON.stringify({ TEST: 'reserved native send' }), holder = deadProcess(w);
+  let held = (await holder.reserve({ signer, operation: 'native', operationKey: 'TEST-reserved-send', readChainNonce: async () => 0 })).reservation;
+  assert.equal(held.active.nonce, tx.content.nonce);
+  held = await holder.bindApprovalIntent(held, requestText); held = await holder.bindApproval(held, { ledgerId: null, requestText });
+  await holder.bindSigned(held, { txHash: tx.hash, projectionText: JSON.stringify(tx), inputDigest: sha('TEST-input') });
+  let at = T0;
+  const send = payload => { at += 1000; w.clock.now = () => at; return inPass(w, async () => {
+    const { answer: confirmed, lease } = await confirmThroughFacade(w, wallet, payload);
+    try {
+      await w.session.transport.binding({ phase: 'broadcast', address: signer, leaseId: lease.leaseId, hash: payload.hash });
+      const identity = `ed25519:${signer}`, timestamp = String(w.clock.now() + 2);
+      const headers = { identity, timestamp, signature: wallet.signBytes(Buffer.from(sha(`${identity}:${timestamp}`))).toString('hex') };
+      return await w.session.transport.rpc({ method: 'execute', params: [{ extra: 'broadcastTx', data: confirmed }] }, headers);
+    } finally { await w.session.transport.binding({ phase: 'release', address: signer, leaseId: lease.leaseId }); }
+  }); };
+  const other = signedTransaction(wallet, buildNativeTransferPayload({ from: signer, to: `0x${'3'.repeat(64)}`, amountOs: '2500000000', nonce: tx.content.nonce, timestamp: T0, encoding: 'os-string' }));
+  await assert.rejects(send(other), { code: 'signer_lane_busy' });
+  assert.equal(w.node.broadcasts.length, 0, 'the other write sent nothing');
+  const answer = await send(tx);
+  assert.equal(answer.result, 200, JSON.stringify(answer));
+  assert.deepEqual(w.node.broadcasts.map(sent => sent.hash), [tx.hash], 'the reserved transaction was sent once');
+});
+
+test("a native write and an evidence CREATE started together never take the same nonce", async t => {
+  const w = await adapterWorld(t), input = evidenceInput(w), pass = await openPass(w);
+  // The evidence CREATE is started from here, outside the native write's lock context, as the native write first reads the chain nonce after its confirmation.
+  let reached; const atNonceRead = new Promise(resolve => { reached = resolve; });
+  w.node.intercept = row => { if (row.body.params[0].message === 'getAddressNonce' && w.node.confirms.length > 0) { w.node.intercept = null; reached(); } return undefined; };
+  const evidence = atNonceRead.then(() => w.session.runInEffectPass(pass.handle, () => w.adapter.signCreate(input))).then(value => ({ value }), error => ({ error }));
+  const { native, outcome } = await pass.run(async () => ({ native: await w.send(), outcome: await evidence }));
+  assert.equal(native.success, true); assert.equal(w.node.broadcasts.length, 1);
+  const sent = w.node.broadcasts[0].content.nonce, held = (await recordOf(w))?.active ?? null;
+  if (outcome.error) { assert.ok(codes(outcome.error).includes('signer_lane_busy'), 'the evidence CREATE is refused'); assert.equal(held, null, 'and holds nothing'); }
+  else { assert.notEqual(outcome.value.nonce, sent, 'the evidence CREATE took another nonce'); assert.equal(held.nonce, outcome.value.nonce); }
+});
+
 test("signCreate refuses an input that is not this signer's evidence CREATE, a locked wallet and an aborted call before it reserves anything", async t => {
   const w = await adapterWorld(t), input = evidenceInput(w);
   for (const bad of [null, { ...input, writer: `did:demos:agent:${'3'.repeat(64)}` }, { ...input, logicalAddress: '' }, { ...input, artifact: [] }, { ...input, receiptContentHash: 'abc' }, { ...input, jobId: 7 },
@@ -301,7 +371,7 @@ test("signCreate refuses an input that is not this signer's evidence CREATE, a l
 
 test("the hold refuses signCreate with profile_not_admitted and no node call, and the composition requires the whole approval ledger input", async t => {
   const w = await adapterWorld(t), callsBefore = w.node.calls.length;
-  assert.deepEqual(Object.keys(w.adapter), ['signCreate']);
+  assert.deepEqual(Object.keys(w.adapter).sort(), ['broadcast', 'readAccountNonce', 'readTransactionState', 'signCreate']);
   setPurchaseAdmission('held');
   await assert.rejects(signIn(w, evidenceInput(w)), { code: 'profile_not_admitted' });
   assert.equal(w.node.calls.length, callsBefore, '0 node calls'); assert.equal(await recordOf(w), null);
@@ -312,6 +382,505 @@ test("the hold refuses signCreate with profile_not_admitted and no node call, an
       publications: sellerPublications(), stateOwnership: { directory: tmpdir(), held: () => true }, paymentEvidenceApproval: partial }), { code: 'invalid_params' }, missing);
     assert.ok(key.every(byte => byte === 0), 'the key is zeroed on refusal');
   }
+});
+
+// The replay half: a scripted node that answers a confirmation and a broadcast the way the serving node does, with `w.reply` as the hook that
+// changes any one answer.
+const broadcastIn = (w, signed, options) => inPass(w, () => w.adapter.broadcast(signed, options));
+const successfulConfirmation = (tx, data = {}) => ok({ data: { valid: true, reference_block: 1, message: 'TEST-valid', gas_operation: null, transaction: tx, ...data },
+  signature: { type: 'ed25519', data: `0x${'5'.repeat(128)}` }, rpc_public_key: { type: 'ed25519', data: `0x${'6'.repeat(64)}` } });
+const responseOf = answer => new Response(JSON.stringify(answer), { headers: { 'content-type': 'application/json' } });
+const spentIds = w => [...w.approval.settled].filter(([, outcome]) => outcome === 'spent').map(([id]) => id);
+const applyWithoutBroadcast = (w, signed) => { w.node.applied.set(signed.txHash, JSON.parse(signed.signedTransaction)); w.node.nonce = signed.nonce; };
+const messageOf = row => row.body.params[0].message || row.body.params[0].extra;
+
+async function replayWorld(t, options) {
+  const w = await adapterWorld(t, options);
+  w.reply = null;
+  w.node.intercept = async row => {
+    const call = row.body.params[0];
+    if (call.extra === 'confirmTx') w.node.confirms.push(structuredClone(call.data));
+    if (call.extra === 'broadcastTx') w.node.broadcasts.push(structuredClone(call.data.response.data.transaction));
+    const changed = await w.reply?.(row);
+    if (changed) return changed;
+    if (call.extra === 'confirmTx') return responseOf(successfulConfirmation(call.data));
+    if (call.extra === 'broadcastTx') {
+      const tx = call.data.response.data.transaction;
+      w.node.applied.set(tx.hash, structuredClone(tx)); w.node.nonce = tx.content.nonce;
+      return responseOf(ok({ hash: tx.hash }));
+    }
+  };
+  return w;
+}
+const replyFor = (w, message, respond) => { w.reply = row => (messageOf(row) === message ? respond(row) : undefined); };
+
+test("signCreate signs the journal's three-member projection with one signature and no egress; the first broadcast confirms against the serving-node confirmation shape and dispatches the retained bytes once, byte-equal at the receiver; the positive fixture passes every validator in the path", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  assert.equal(w.signsInsideSign, 1); assertNothingSent(w);
+  assert.deepEqual(await broadcastIn(w, signed), { status: 'accepted', txHash: signed.txHash });
+  assert.equal(w.node.broadcasts.length, 1); assert.equal(JSON.stringify(w.node.broadcasts[0]), signed.signedTransaction);
+  const { validity } = w.approval.confirmations[0];
+  assert.ok(rpcEnvelope(validity, 200, null)); assert.ok(storageWriteConfirmationMatches(validity.response));
+  assert.equal(JSON.stringify(validity.response.data.transaction), signed.signedTransaction);
+  assert.deepEqual(Object.keys(validity.response.data.transaction), ['hash', 'content', 'signature']);
+  assert.equal(w.signsInsideSign, 1, 'broadcast signs nothing');
+});
+
+test("after reopening the journal and the composition, a replay confirms and dispatches the same three-member projection; no second signature is made", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  await broadcastIn(w, signed); await w.restart();
+  await broadcastIn(w, signed);
+  assert.equal(w.node.confirms.length, 2); assert.equal(w.node.broadcasts.length, 2);
+  assert.deepEqual(w.node.broadcasts.map(tx => JSON.stringify(tx)), [signed.signedTransaction, signed.signedTransaction]);
+  assert.equal(w.signsInsideSign, 1, 'no second signature'); assert.equal(w.approval.prepared.length, 1);
+  assert.deepEqual(w.approval.reopened, ['TEST-ledger-1', 'TEST-ledger-1'], 'the replay reopens the original authorization');
+});
+
+test("a confirmation whose transaction has an extra or missing member, or changed content, hash or signature, is an unknown confirmation and nothing is dispatched", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  const changes = { extra: tx => ({ ...tx, status: '' }), missing: ({ hash, content }) => ({ hash, content }), content: tx => ({ ...tx, content: { ...tx.content, amount: '1' } }),
+    hash: tx => ({ ...tx, hash: 'f'.repeat(64) }), signature: tx => ({ ...tx, signature: { ...tx.signature, data: `0x${'7'.repeat(128)}` } }) };
+  for (const [name, change] of Object.entries(changes)) {
+    replyFor(w, 'confirmTx', row => responseOf(successfulConfirmation(change(row.body.params[0].data))));
+    await assert.rejects(broadcastIn(w, signed), { code: 'outcome_unknown' }, name);
+  }
+  assert.equal(w.node.broadcasts.length, 0); assert.equal(w.approval.confirmations.length, 0, 'the callback never ran');
+});
+
+test("a valid:true confirmation with the exact projection and malformed gas or charge fields is an unknown confirmation, never confirm_rejected, and nothing is dispatched", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  for (const data of [{ gas_operation: { TEST: 'unexpected gas' } }, { reference_block: -1 }, { message: 7 }]) {
+    replyFor(w, 'confirmTx', row => responseOf(successfulConfirmation(row.body.params[0].data, data)));
+    await assert.rejects(broadcastIn(w, signed), error => error.code === 'outcome_unknown' && error.code !== 'confirm_rejected', JSON.stringify(data));
+  }
+  assert.equal(w.node.broadcasts.length, 0);
+});
+
+test("a validated valid:false confirmation is confirm_rejected with its cause; nothing is dispatched", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  replyFor(w, 'confirmTx', row => responseOf(successfulConfirmation(row.body.params[0].data, { valid: false, message: 'TEST-insufficient-balance' })));
+  await assert.rejects(broadcastIn(w, signed), error => error.code === 'confirm_rejected' && /TEST-insufficient-balance/.test(error.cause.message));
+  assert.equal(w.node.broadcasts.length, 0); assert.deepEqual(w.approval.settlements, [], 'the authorization stays held');
+});
+
+test("a lost or malformed confirmation answer never advances to broadcast and is reported unknown, never unsent", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  for (const answer of [() => { throw new Error('TEST-confirm-lost'); }, () => responseOf({ result: 200, response: 'TEST-garbled' }), () => new Response('TEST-unavailable', { status: 503 })]) {
+    replyFor(w, 'confirmTx', answer);
+    await assert.rejects(broadcastIn(w, signed), { code: 'outcome_unknown' });
+  }
+  assert.equal(w.node.broadcasts.length, 0); assert.equal(w.approval.confirmations.length, 0);
+  assert.equal((await recordOf(w)).active.signed.projectionText, signed.signedTransaction, 'the bytes are kept');
+});
+
+test("a lost broadcast acknowledgement after the receiver recorded the bytes is outcome_unknown with its cause, never unsent", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  replyFor(w, 'broadcastTx', row => { const tx = row.body.params[0].data.response.data.transaction; w.node.applied.set(tx.hash, tx); throw new Error('TEST-acknowledgement-lost'); });
+  await assert.rejects(broadcastIn(w, signed), error => error.code === 'outcome_unknown' && causeChain(error).some(link => /TEST-acknowledgement-lost/.test(link.message)));
+  assert.ok(w.node.applied.has(signed.txHash)); assert.deepEqual(w.approval.settlements, [], 'the authorization stays held');
+  assert.equal((await recordOf(w)).active.signed.txHash, signed.txHash);
+});
+
+test("each explicit broadcast call re-dispatches the identical bytes once with fresh authentication headers; no second signature is made", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  await broadcastIn(w, signed); await broadcastIn(w, signed);
+  assert.deepEqual(w.node.broadcasts.map(tx => JSON.stringify(tx)), [signed.signedTransaction, signed.signedTransaction]);
+  const stamps = w.node.calls.filter(row => row.headers.identity?.startsWith('ed25519:') && ['confirmTx', 'broadcastTx'].includes(row.body.params[0].extra)).map(row => Number(row.headers.timestamp));
+  assert.equal(stamps.length, 4); stamps.slice(1).forEach((stamp, index) => assert.ok(stamp > stamps[index], 'each stamp is above the last'));
+  assert.equal(w.signsInsideSign, 1);
+});
+
+test("two overlapping broadcast calls for one CREATE serialize; each dispatches at most once", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  let running = 0, most = 0;
+  w.reply = async () => { running += 1; most = Math.max(most, running); await settle(); running -= 1; };
+  await inPass(w, () => Promise.all([w.adapter.broadcast(signed), w.adapter.broadcast(signed)]));
+  assert.equal(most, 1, 'one request at a time'); assert.equal(w.node.broadcasts.length, 2, 'one dispatch per call');
+});
+
+test("signCreate refuses signer_lane_busy while another evidence address's CREATE holds the reservation; after that one is applied it signs at the next nonce", async t => {
+  const w = await replayWorld(t), first = await signIn(w, evidenceInput(w));
+  await assert.rejects(signIn(w, evidenceInput(w, 'b')), { code: 'signer_lane_busy' });
+  await broadcastIn(w, first);
+  assert.equal((await w.adapter.readTransactionState(first)).state, 'applied');
+  assert.equal((await signIn(w, evidenceInput(w, 'b'))).nonce, first.nonce + 1);
+});
+
+test("readTransactionState answers applied only for authenticated successful execution of the retained CREATE; included-but-failed is pending", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending', 'not on the chain');
+  applyWithoutBroadcast(w, signed);
+  replyFor(w, 'getTxByHash', () => responseOf(ok({ ...JSON.parse(signed.signedTransaction), status: 'failed', blockNumber: 1 })));
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending', 'included but failed');
+  assert.deepEqual(spentIds(w), []); w.reply = null;
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+});
+
+// The kit journal over the real adapter: the journal asks the adapter for the state of a kept CREATE by its hash alone.
+function wiredJournal(t, w, overrides = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'payment-evidence-adapter-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const journal = createPaymentEvidenceWalletJournal({ path: join(dir, 'journal.sqlite'), signCreate: (asked, options) => signIn(w, asked, options),
+    broadcast: (signed, options) => broadcastIn(w, signed, options), readAccountNonce: () => w.adapter.readAccountNonce(),
+    readTransactionState: asked => w.adapter.readTransactionState(asked), ...overrides });
+  t.after(() => journal.close());
+  return journal;
+}
+const keepBroadcastsOffChain = w => replyFor(w, 'broadcastTx', row => responseOf(ok({ hash: row.body.params[0].data.response.data.transaction.hash })));
+const heldBytes = async w => { const { signed, nonce } = (await recordOf(w)).active; return { txHash: signed.txHash, signedTransaction: signed.projectionText, nonce }; };
+
+test("through the kit journal over the real adapter, job B's evidence is refused signer_lane_busy while job A's sent CREATE has not executed, also after a restart, and goes out at the next nonce once A executed", async t => {
+  const w = await replayWorld(t), journal = wiredJournal(t, w), [inputA, inputB] = [evidenceInput(w, 'a'), evidenceInput(w, 'b')];
+  keepBroadcastsOffChain(w);
+  assert.equal((await journal.anchorEvidence(inputA)).status, 'submitted');
+  const held = await recordOf(w);
+  await assert.rejects(journal.anchorEvidence(inputB), { code: 'signer_lane_busy' });
+  await w.restart();
+  await assert.rejects(journal.anchorEvidence(inputB), { code: 'signer_lane_busy' }, 'after the restart');
+  assert.deepEqual(await recordOf(w), held, 'A still holds the signer'); assert.equal(w.node.broadcasts.length, 1); assert.deepEqual(spentIds(w), []);
+  const first = await heldBytes(w); applyWithoutBroadcast(w, first);
+  assert.equal((await journal.anchorEvidence(inputB)).status, 'submitted');
+  const next = await recordOf(w);
+  assert.equal(next.active.operationKey, inputB.logicalAddress); assert.equal(next.active.nonce, first.nonce + 1);
+  assert.equal(w.node.broadcasts.length, 2); assert.deepEqual(spentIds(w), ['TEST-ledger-1'], 'A\'s authorization was settled spent once');
+});
+
+test("re-anchoring job A after its CREATE executed answers applied and sends nothing; the readback frees the signer for job B", async t => {
+  const w = await replayWorld(t), journal = wiredJournal(t, w), [inputA, inputB] = [evidenceInput(w, 'a'), evidenceInput(w, 'b')];
+  assert.equal((await journal.anchorEvidence(inputA)).status, 'submitted');
+  assert.equal((await journal.anchorEvidence(inputA)).status, 'applied');
+  assert.equal(w.node.broadcasts.length, 1, 'A\'s bytes were not sent again'); assert.equal((await recordOf(w)).active, null);
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+  assert.equal((await journal.anchorEvidence(inputB)).status, 'submitted');
+  assert.equal(w.node.broadcasts.length, 2);
+});
+
+test("re-anchoring job A after job B's signing freed A's executed bytes is refused retained_transaction_invalid and sends no bytes", async t => {
+  const w = await replayWorld(t), journal = wiredJournal(t, w), [inputA, inputB] = [evidenceInput(w, 'a'), evidenceInput(w, 'b')];
+  await journal.anchorEvidence(inputA); await journal.anchorEvidence(inputB);
+  await assert.rejects(journal.anchorEvidence(inputA), { code: 'retained_transaction_invalid' });
+  assert.equal(w.node.broadcasts.length, 2, 'only A and B were sent, once each');
+});
+
+test("with a readback that answers applied, the kit journal over the adapter's signCreate does not send the anchored CREATE again", async t => {
+  const w = await replayWorld(t), sent = [], journal = wiredJournal(t, w, { broadcast: async ({ signedTransaction }) => { sent.push(signedTransaction); }, readTransactionState: async () => 'applied' });
+  assert.equal((await journal.anchorEvidence(evidenceInput(w))).status, 'submitted');
+  assert.equal((await journal.anchorEvidence(evidenceInput(w))).status, 'applied');
+  assert.equal(sent.length, 1);
+});
+
+test("signCreate for another address consumes executed bytes that hold the signer without holding the signer's lock during the chain read; unexecuted bytes still refuse signer_lane_busy", async t => {
+  const w = await replayWorld(t), first = await signIn(w, evidenceInput(w));
+  await assert.rejects(signIn(w, evidenceInput(w, 'b')), { code: 'signer_lane_busy' });
+  applyWithoutBroadcast(w, first);
+  let release; const readStarted = new Promise(resolve => { replyFor(w, 'getTransactionStatus', () => { resolve(); return new Promise(done => { release = done; }); }); });
+  const second = signIn(w, evidenceInput(w, 'b')); await readStarted;
+  const lockKey = signerReservationKey(TP1_APPROVED_IDENTITY_RECORD, signerOf(w));
+  assert.equal(await w.journal().withWalletLock(lockKey, async () => 'free'), 'free', 'the chain read holds no signer lock');
+  w.reply = null; release();
+  assert.equal((await second).nonce, first.nonce + 1);
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+});
+
+test("readTransactionState with only a hash answers pending, with the cause kept, when no reservation holds that hash", async t => {
+  const w = await replayWorld(t), first = await signIn(w, evidenceInput(w));
+  const answer = await w.adapter.readTransactionState({ txHash: 'f'.repeat(64) });
+  assert.equal(answer.state, 'pending'); assert.equal(w.session.internalCauseOf(answer).code, 'retained_transaction_invalid');
+  assert.equal((await w.adapter.readTransactionState({ txHash: first.txHash })).state, 'pending', 'held but not on the chain');
+  applyWithoutBroadcast(w, first);
+  assert.equal((await w.adapter.readTransactionState({ txHash: first.txHash })).state, 'applied');
+  assert.equal((await recordOf(w)).active, null);
+  assert.equal((await w.adapter.readTransactionState({ txHash: first.txHash })).state, 'pending', 'the freed reservation no longer names the bytes');
+});
+
+// Replies as a live node records them: block one with every member of its `content`, and an executed transaction with the members the node adds.
+const recordedJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'));
+const recordedBlockOne = JSON.parse(recordedJson('../../../conformance/tp1-node-observations/block1.json').body).response;
+const recordedExecuted = Object.values(recordedJson('../../../test/fixtures/demos-node2-records.json').getTxByHash)[0].response;
+const liveBlock = (ordered, content = {}) => ({ ...recordedBlockOne, number: 1, content: { ...recordedBlockOne.content, previousHash: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, ordered_transactions: ordered, ...content } });
+const liveExecuted = (signed, extra = {}) => ({ ...JSON.parse(signed.signedTransaction), ed25519_signature: recordedExecuted.ed25519_signature, attrs: recordedExecuted.attrs, status: 'confirmed', blockNumber: 1, ...extra });
+const serveReadback = (w, executed, block) => {
+  const answers = { getTransactionStatus: ok({ state: 'included', blockNumber: 1 }), getTxByHash: ok(executed), getBlockByNumber: ok(block) };
+  w.reply = row => (Object.hasOwn(answers, messageOf(row)) && (messageOf(row) !== 'getBlockByNumber' || row.body.params[0].data.blockNumber === 1) ? responseOf(answers[messageOf(row)]) : undefined);
+};
+
+test("a block recorded from a live node, with all ten members of its content, answers applied when it lists the hash and pending when it does not", async t => {
+  assert.equal(Object.keys(recordedBlockOne.content).length, 10, 'the fixture is the live shape');
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed);
+  for (const [name, ordered] of [['no transactions', []], ['another transaction only', ['c'.repeat(64)]]]) {
+    serveReadback(w, liveExecuted(signed), liveBlock(ordered));
+    const answer = await w.adapter.readTransactionState(signed);
+    assert.equal(answer.state, 'pending', name); assert.ok(w.session.internalCauseOf(answer), `${name}: the cause is kept`);
+  }
+  assert.deepEqual(spentIds(w), []);
+  serveReadback(w, liveExecuted(signed), liveBlock(['c'.repeat(64), signed.txHash]));
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+});
+
+test("the executed record a live node serves, with its empty dual signature and attrs, is applied; any other member, a dual signature, a block with no listing or another chain identity is pending", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed);
+  const listed = liveBlock([signed.txHash]);
+  const refused = {
+    'an unknown member of the executed record': [liveExecuted(signed, { TEST_extra: 1 }), listed],
+    'a non-empty dual signature': [liveExecuted(signed, { ed25519_signature: `0x${'1'.repeat(128)}` }), listed],
+    'attrs that are not an object': [liveExecuted(signed, { attrs: 'TEST' }), listed],
+    'block content without a listing': [liveExecuted(signed), liveBlock(undefined)],
+    'a listing that is not an array': [liveExecuted(signed), liveBlock(signed.txHash)],
+    'a block one that follows another chain': [liveExecuted(signed), liveBlock([signed.txHash], { previousHash: 'd'.repeat(64) })],
+    'an unknown member of the block': [liveExecuted(signed), { ...listed, TEST_extra: 1 }],
+  };
+  for (const [name, [executed, block]] of Object.entries(refused)) {
+    serveReadback(w, executed, block);
+    const answer = await w.adapter.readTransactionState(signed);
+    assert.equal(answer.state, 'pending', name); assert.ok(w.session.internalCauseOf(answer), `${name}: the cause is kept`);
+  }
+  assert.deepEqual(spentIds(w), []);
+  serveReadback(w, liveExecuted(signed), listed);
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+});
+
+test("a readback body with the matching hash but changed signed fields, changed execution edits or changed fees is pending, never applied; equal hashes in a scripted answer do not suffice", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), original = JSON.parse(signed.signedTransaction);
+  applyWithoutBroadcast(w, signed);
+  const changes = { nonce: c => ({ ...c, nonce: c.nonce + 1 }), data: c => ({ ...c, data: ['storageProgram', { ...c.data[1], programName: 'TEST-other' }] }),
+    edits: c => ({ ...c, gcr_edits: c.gcr_edits.map((edit, index) => (index === 0 ? { ...edit, amount: '1' } : edit)) }),
+    fees: c => ({ ...c, transaction_fee: { ...c.transaction_fee, network_fee: '7' } }), amount: c => ({ ...c, amount: '5' }) };
+  for (const [name, change] of Object.entries(changes)) {
+    replyFor(w, 'getTxByHash', () => responseOf(ok({ ...original, content: change(original.content), status: 'confirmed', blockNumber: 1 })));
+    const answer = await w.adapter.readTransactionState(signed);
+    assert.equal(answer.state, 'pending', name); assert.ok(w.session.internalCauseOf(answer), `${name}: the cause is kept`);
+  }
+  assert.deepEqual(spentIds(w), []); assert.notEqual((await recordOf(w)).active, null);
+});
+
+test("reopened before the first readback, readTransactionState compares the chain with the retained projection the reservation holds, not an in-memory copy", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed); await w.restart();
+  assert.equal((await w.adapter.readTransactionState({ ...signed, signedTransaction: ` ${signed.signedTransaction}` })).state, 'pending', 'other text than the held bytes');
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.equal((await recordOf(w)).active, null, 'the execution ended the reservation');
+});
+
+test("a broadcast of bytes the reservation does not hold refuses with no egress, and a readback of bytes that are not this signer's signed CREATE answers pending with the cause kept", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), tx = JSON.parse(signed.signedTransaction);
+  const callsBefore = w.node.calls.length;
+  for (const bad of [{ ...signed, txHash: 'f'.repeat(64) }, { ...signed, signedTransaction: ` ${signed.signedTransaction}` },
+    { ...signed, signedTransaction: JSON.stringify({ ...tx, signature: { ...tx.signature, data: `0x${'7'.repeat(128)}` } }) }]) {
+    await assert.rejects(broadcastIn(w, bad), { code: 'retained_transaction_invalid' });
+    const answer = await w.adapter.readTransactionState(bad);
+    assert.equal(answer.state, 'pending'); assert.equal(w.session.internalCauseOf(answer).code, 'retained_transaction_invalid');
+  }
+  assert.equal(w.node.calls.length, callsBefore, 'no node call'); assertNothingSent(w);
+  const other = await replayWorld(t);
+  await assert.rejects(broadcastIn(other, signed), { code: 'retained_transaction_invalid' }, 'no reservation holds these bytes');
+  assertNothingSent(other);
+});
+
+test("readAccountNonce returns a scalar nonce and readTransactionState never answers absent, so the journal's supersession stays disabled", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  assert.equal(await w.adapter.readAccountNonce(), 0); w.node.nonce = '5'; assert.equal(await w.adapter.readAccountNonce(), 5);
+  replyFor(w, 'getAddressNonce', () => responseOf(ok({ nonce: 5, blockHeight: 9 })));
+  await assert.rejects(w.adapter.readAccountNonce(), { code: 'invalid_nonce' });
+  for (const answer of [await w.adapter.readTransactionState(signed), await w.adapter.readTransactionState({ ...signed, signedTransaction: '{' })]) assert.deepEqual(answer, { state: 'pending' });
+});
+
+test("an authenticated applied readback with no approval in this process, also after restart, consumes the transaction and settles its authorization spent once by id; a repeated applied settles nothing new", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed); await w.restart();
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']); assert.equal((await recordOf(w)).active, null);
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied', 'applied again with no reservation left');
+  assert.equal(w.approval.settlements.filter(call => call.outcome === 'spent').length, 1, 'settled once');
+  assert.equal((await recordOf(w)).floor, signed.nonce + 1);
+});
+
+test("a reservation write that fails after the authorization was settled spent leaves an unchanged record and a pending answer, and the next readback ends it with one settlement", async t => {
+  const { faults, wrap } = failingJournal(), w = await replayWorld(t, { journalWrap: wrap }), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed); const held = await recordOf(w);
+  faults.failPut = (key, value) => key.startsWith(RECORD_KEY_PREFIX) && value?.active === null;
+  const first = await w.adapter.readTransactionState(signed);
+  assert.equal(first.state, 'pending'); assert.match(w.session.internalCauseOf(first).message, /TEST-put-failed/);
+  assert.deepEqual(await recordOf(w), held, 'the record is unchanged'); assert.deepEqual(spentIds(w), ['TEST-ledger-1'], 'the authorization is already spent');
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.equal((await recordOf(w)).active, null); assert.deepEqual(w.approval.settlements.map(call => `${call.ledgerId}/${call.outcome}`).filter((row, index, rows) => rows.indexOf(row) === index), ['TEST-ledger-1/spent'], 'one id and outcome settled');
+});
+
+test("held, signCreate and broadcast reject profile_not_admitted with signer and node calls 0; the reads keep working", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  setPurchaseAdmission('held'); const callsBefore = w.node.calls.length, signatures = w.innerSigns.length;
+  await assert.rejects(signIn(w, evidenceInput(w)), { code: 'profile_not_admitted' });
+  await assert.rejects(broadcastIn(w, signed), { code: 'profile_not_admitted' });
+  assert.equal(w.node.calls.length, callsBefore, 'node calls 0'); assert.equal(w.innerSigns.length, signatures, 'signer calls 0');
+  assert.equal(await w.adapter.readAccountNonce(), 0); assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending');
+});
+
+test("readAccountNonce and readTransactionState honour the received signal: after an abort no further read in that sequence starts, and no consume or settlement happens", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  await assert.rejects(w.adapter.readAccountNonce({ signal: AbortSignal.abort(new Error('TEST-aborted-early')) }), /TEST-aborted-early/);
+  applyWithoutBroadcast(w, signed); const controller = new AbortController(), reads = [];
+  w.reply = row => { reads.push(messageOf(row)); if (messageOf(row) === 'getTransactionStatus') controller.abort(new Error('TEST-deadline')); };
+  assert.equal((await w.adapter.readTransactionState(signed, { signal: controller.signal })).state, 'pending');
+  assert.deepEqual(reads.slice(reads.indexOf('getTransactionStatus') + 1), [], 'no read starts after the abort');
+  assert.deepEqual(w.approval.settlements, []); assert.notEqual((await recordOf(w)).active, null);
+});
+
+test("the inner signature and each confirm and broadcast transmission run through the effect gate; a gate refusal after signing keeps the bytes, records no transmission and transmits 0", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), events = [];
+  await (await openPass(w, { events })).run(() => w.adapter.broadcast(signed));
+  assert.ok(events.indexOf('authority:confirmTx') < events.indexOf('authority:broadcastTx') && events.includes('authority:broadcastTx'), 'both transmissions are gated in order');
+  for (const phase of ['confirmTx', 'broadcastTx']) {
+    const sentBefore = w.node.broadcasts.length, confirmedBefore = w.node.confirms.length;
+    const pass = await openPass(w, { pass: { synchronousChecks: [({ phase: at }) => { if (at === phase) throw new Error('TEST-gate-refused'); }] } });
+    await assert.rejects(pass.run(() => w.adapter.broadcast(signed)), error => causeChain(error).some(link => /TEST-gate-refused/.test(link.message)), phase);
+    assert.equal(w.node.broadcasts.length, sentBefore, `${phase}: transmits 0`); assert.equal(w.node.confirms.length, confirmedBefore + (phase === 'confirmTx' ? 0 : 1));
+    assert.equal((await recordOf(w)).active.signed.projectionText, signed.signedTransaction, `${phase}: the bytes are kept`);
+  }
+  assert.equal(w.signsInsideSign, 1, 'the one transaction signature');
+});
+
+test("a broadcast that never left the process because the gate refused it after the confirmation leaves the bytes and authorization as they were, and a restarted replay sends exactly those bytes once with no second signature", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  const pass = await openPass(w, { pass: { synchronousChecks: [({ phase }) => { if (phase === 'broadcastTx') throw new Error('TEST-gate-refused'); }] } });
+  await assert.rejects(pass.run(() => w.adapter.broadcast(signed)), error => causeChain(error).some(link => /TEST-gate-refused/.test(link.message)));
+  assert.equal(w.node.confirms.length, 1, 'the confirmation was sent'); assert.equal(w.node.broadcasts.length, 0, 'the broadcast was not');
+  const held = (await recordOf(w)).active;
+  await w.restart(); await broadcastIn(w, signed);
+  assert.equal(w.node.broadcasts.length, 1); assert.equal(JSON.stringify(w.node.broadcasts[0]), signed.signedTransaction, 'the retained bytes, unchanged');
+  const after = (await recordOf(w)).active;
+  assert.equal(after.signed.projectionText, held.signed.projectionText); assert.equal(after.approvalId, held.approvalId);
+  assert.equal(w.signsInsideSign, 1, 'no second signature'); assert.equal(w.approval.prepared.length, 1, 'no second authorization');
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied'); assert.deepEqual(spentIds(w), [held.approvalId]);
+});
+
+test("after a restart, a replay reopens the original authorization by ledgerId and creates no second budgeted write; an authorization the operator released is replaced only by the exact request's open or new authorization, linked before any egress", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  await w.restart(); await broadcastIn(w, signed);
+  assert.equal(w.approval.prepared.length, 1, 'no second write'); assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1');
+  await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+  const linkedBeforeEgress = [];
+  w.reply = async row => { if (messageOf(row) === 'confirmTx') linkedBeforeEgress.push((await recordOf(w)).active.approvalId); };
+  await broadcastIn(w, signed);
+  assert.equal(w.approval.prepared.length, 2, 'a new authorization'); assert.deepEqual(linkedBeforeEgress, ['TEST-ledger-2'], 'linked before the first transmission');
+  assert.equal(w.approval.confirmations.at(-1).binding.ledgerId, 'TEST-ledger-2');
+  await w.approval.settle('TEST-ledger-2', 'released', 'TEST-operator-released');
+  w.approval.entries.push({ ledgerId: 'TEST-ledger-open', requestText: w.approval.entries[0].requestText });
+  await broadcastIn(w, signed);
+  assert.equal(w.approval.prepared.length, 2, 'the exact request\'s open authorization is used'); assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-open');
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-open'], 'only the linked authorization is spent');
+});
+
+test("a replacement authorization prepared but not linked is found by its exact request after a restart and linked without a second preparation", async t => {
+  const { faults, wrap } = failingJournal(), w = await replayWorld(t, { journalWrap: wrap }), signed = await signIn(w, evidenceInput(w));
+  await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+  faults.failPut = (key, value) => key.startsWith(RECORD_KEY_PREFIX) && value?.active?.approvalId === 'TEST-ledger-2';
+  await assert.rejects(broadcastIn(w, signed), error => error.code === 'approval_required' && causeChain(error).some(link => /TEST-put-failed/.test(link.message)));
+  assertNothingSent(w); assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1', 'the replacement is not linked');
+  assert.equal(w.approval.prepared.length, 2, 'the replacement was prepared');
+  await w.restart(); await broadcastIn(w, signed);
+  assert.equal(w.approval.prepared.length, 2, 'no third preparation'); assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-2');
+  w.approval.lookupDown = true; w.approval.settled.set('TEST-ledger-2', 'released');
+  await assert.rejects(broadcastIn(w, signed), { code: 'approval_required' }); assert.equal(w.approval.prepared.length, 2, 'an unreadable lookup never prepares another');
+});
+
+test("the confirmed-write callback runs once on the validated confirmation against the reopened binding; false, a throw or an unavailable binding broadcasts nothing and the authorization stays held", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  for (const result of [false, new Error('TEST-policy-down')]) {
+    w.approval.confirmResult = result;
+    await assert.rejects(broadcastIn(w, signed), { code: 'approval_required' });
+  }
+  w.approval.confirmResult = true; w.approval.lookupDown = true; w.approval.settled.set('TEST-ledger-1', 'released');
+  await assert.rejects(broadcastIn(w, signed), { code: 'approval_required' });
+  assert.equal(w.node.broadcasts.length, 0); assert.deepEqual(w.approval.settlements, [], 'nothing was released');
+  assert.equal(w.approval.confirmations.length, 2, 'one callback per validated confirmation'); assert.deepEqual(w.approval.confirmations[0].binding, w.approval.entries[0]);
+});
+
+test("after successful confirmation and a lost broadcast answer, every replay calls the current policy again; unavailable purchase resolution, revoked payment observation or changed bound purchase data each broadcasts zero and retains the same authorization; valid evidence restored permits the exact-byte replay", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  replyFor(w, 'broadcastTx', row => { const tx = row.body.params[0].data.response.data.transaction; w.node.applied.set(tx.hash, tx); throw new Error('TEST-acknowledgement-lost'); });
+  await assert.rejects(broadcastIn(w, signed), { code: 'outcome_unknown' }); w.reply = null;
+  for (const refusal of ['purchase resolution unavailable', 'payment observation revoked', 'bound purchase data changed']) {
+    w.approval.confirmResult = new Error(`TEST-${refusal}`);
+    await assert.rejects(broadcastIn(w, signed), { code: 'approval_required' }, refusal);
+  }
+  assert.equal(w.node.broadcasts.length, 1, 'zero further dispatches'); assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1'); assert.deepEqual(w.approval.settlements, []);
+  w.approval.confirmResult = true; await broadcastIn(w, signed);
+  assert.equal(w.node.broadcasts.length, 2); assert.equal(w.approval.confirmations.length, 5, 'the policy ran on every replay');
+  assert.equal(JSON.stringify(w.node.broadcasts[1]), signed.signedTransaction);
+});
+
+test("a lost broadcast answer followed by a withheld replay keeps the bytes and the authorization through two restarts, and a later permitted replay sends the same bytes", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  replyFor(w, 'broadcastTx', () => { throw new Error('TEST-acknowledgement-lost'); });
+  await assert.rejects(broadcastIn(w, signed), { code: 'outcome_unknown' }); w.reply = null; w.approval.confirmResult = false;
+  const held = await recordOf(w);
+  for (let reopen = 0; reopen < 2; reopen += 1) {
+    await w.restart(); await assert.rejects(broadcastIn(w, signed), { code: 'approval_required' });
+    assert.deepEqual(await recordOf(w), held, 'the record is unchanged'); assert.deepEqual(w.approval.settlements, []);
+  }
+  w.approval.confirmResult = true; await broadcastIn(w, signed);
+  assert.equal(w.node.broadcasts.length, 2); assert.equal(JSON.stringify(w.node.broadcasts[1]), signed.signedTransaction);
+});
+
+const replyForms = {
+  'an extra top-level member': answer => ({ ...answer, TEST_extra: 1 }),
+  'an extra nested response member': answer => ({ ...answer, response: typeof answer.response === 'object' ? { ...answer.response, TEST_extra: 1 } : { value: answer.response, TEST_extra: 1 } }),
+  'a forged writeProof': answer => ({ ...answer, response: typeof answer.response === 'object' ? { ...answer.response, writeProof: { TEST: 'forged' } } : { value: answer.response, writeProof: { TEST: 'forged' } } }),
+  'a contradicting number': answer => (typeof answer.response?.blockNumber === 'number' ? { ...answer, response: { ...answer.response, blockNumber: 2 } }
+    : typeof answer.response?.number === 'number' ? { ...answer, response: { ...answer.response, number: 2 } } : { ...answer, TEST_extra: 1 }),
+  'a rejected answer': () => ({ result: 400, response: 'TEST-rejected', require_reply: false, extra: null }),
+};
+const readAnswers = signed => ({ getAddressNonce: ok(0), getTransactionStatus: ok({ state: 'included', blockNumber: 1 }),
+  getTxByHash: ok({ ...JSON.parse(signed.signedTransaction), status: 'confirmed', blockNumber: 1 }),
+  getBlockByNumber: ok({ number: 1, status: 'confirmed', hash: 'b'.repeat(64), content: { previousHash: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, ordered_transactions: [signed.txHash] } }) });
+test("replies table (confirmTx, broadcastTx, getAddressNonce, getTransactionStatus, getTxByHash, getBlockByNumber) × (extra top-level or nested response member, forged writeProof, contradicting nested status or block number, rejected answer after dispatch): never confirmed/applied; broadcast is outcome_unknown; the reservation stays live; another address's signCreate refuses signer_lane_busy; settlements 0", async t => {
+  for (const [form, forge] of Object.entries(replyForms)) {
+    for (const message of ['confirmTx', 'broadcastTx', 'getAddressNonce', 'getTransactionStatus', 'getTxByHash', 'getBlockByNumber']) {
+      const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), label = `${message} with ${form}`;
+      if (message === 'confirmTx') {
+        replyFor(w, message, row => responseOf(forge(successfulConfirmation(row.body.params[0].data))));
+        await assert.rejects(broadcastIn(w, signed), { code: 'outcome_unknown' }, label); assert.equal(w.node.broadcasts.length, 0, `${label}: dispatches 0`);
+      } else if (message === 'broadcastTx') {
+        replyFor(w, message, row => { const { hash } = row.body.params[0].data.response.data.transaction; return responseOf(forge(ok({ hash }))); });
+        await assert.rejects(broadcastIn(w, signed), { code: 'outcome_unknown' }, label); assert.equal(w.node.broadcasts.length, 1, `${label}: one dispatch`);
+      } else {
+        // The nonce read is not part of proving an execution, so those bytes stay unexecuted for it.
+        if (message !== 'getAddressNonce') applyWithoutBroadcast(w, signed);
+        replyFor(w, message, () => responseOf(forge(readAnswers(signed)[message])));
+        if (message === 'getAddressNonce') await assert.rejects(w.adapter.readAccountNonce(), error => ['node_reply_invalid', 'invalid_nonce'].includes(error.code), label);
+        else assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending', label);
+      }
+      assert.deepEqual(w.approval.settlements, [], `${label}: settlements 0`); assert.equal((await recordOf(w)).active.signed.txHash, signed.txHash, `${label}: the reservation stays live`);
+      await assert.rejects(signIn(w, evidenceInput(w, 'b')), { code: 'signer_lane_busy' }, label);
+    }
+  }
+});
+
+test("a node reply over 4 MiB is refused before it is decoded and a block listing more than 10,000 hashes is not trusted: the confirmation is unknown and the readback is pending", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), oversized = () => responseOf(ok('x'.repeat(4 * 1024 * 1024 + 1)));
+  replyFor(w, 'confirmTx', oversized);
+  await assert.rejects(broadcastIn(w, signed), { code: 'outcome_unknown' }); assert.equal(w.node.broadcasts.length, 0);
+  applyWithoutBroadcast(w, signed); replyFor(w, 'getTxByHash', oversized);
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending', 'oversized transaction');
+  let executedRead = false; const crowded = readAnswers(signed).getBlockByNumber;
+  crowded.response.content.ordered_transactions = [signed.txHash, ...Array(10_000).fill('c'.repeat(64))];
+  w.reply = row => { if (messageOf(row) === 'getTxByHash') executedRead = true; if (executedRead && messageOf(row) === 'getBlockByNumber') return responseOf(crowded); };
+  const answer = await w.adapter.readTransactionState(signed);
+  assert.equal(answer.state, 'pending', 'oversized block list'); assert.equal(w.session.internalCauseOf(answer).code, 'readback_unverified');
+  assert.deepEqual(spentIds(w), []);
+});
+
+test("broadcast with a never-settling fetch, aborted by the journal deadline: the call rejects, the signed bytes and authorization stay, and the next call is not blocked", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), deadline = new AbortController();
+  w.reply = row => { if (messageOf(row) === 'broadcastTx') { deadline.abort(new Error('TEST-deadline')); return new Promise(() => {}); } };
+  await assert.rejects(broadcastIn(w, signed, { signal: deadline.signal }), error => error.code === 'outcome_unknown' && causeChain(error).some(link => /TEST-deadline/.test(link.message)));
+  assert.equal((await recordOf(w)).active.signed.txHash, signed.txHash); assert.deepEqual(w.approval.settlements, []);
+  w.reply = null; assert.equal((await broadcastIn(w, signed)).status, 'accepted', 'the queue is free again');
 });
 
 test("no socket or DNS lookup leaves the process in the adapter suite", () => {

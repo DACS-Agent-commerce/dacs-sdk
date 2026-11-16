@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { installNoEgress } from './helpers/no-egress.mjs';
-import { args, open, options, otherSigner, recordKey, signed, signer } from './helpers/signer-reservation-world.mjs';
+import { args, open, options, otherSigner, pins, recordKey, signed, signer } from './helpers/signer-reservation-world.mjs';
 
 const trap = installNoEgress();
 test.after(() => { trap.restore(); assert.deepEqual(trap.attempts, []); });
@@ -45,6 +45,27 @@ function child(t, path, mode, operationKey = 'TEST-child') {
 }
 const rejectCode = (promise, code) => assert.rejects(promise, { code });
 const noChainRead = () => { throw new Error('TEST-unexpected-chain-read'); };
+
+test('signerReservationKey is the journal key the reservation record is stored under', async t => {
+  const w = world(t);
+  await w.reservations.reserve(args());
+  assert.equal(module.signerReservationKey(pins, signer), recordKey());
+  assert.ok(await w.journal.get(module.signerReservationKey(pins, signer)), 'the record is stored under the exported key');
+  assert.equal(await w.journal.get(module.signerReservationKey(pins, otherSigner)), undefined, 'another signer has another key');
+});
+
+test('reserve runs beforeClaim under the signer lock before any read or write, and a refusal from it claims nothing', async t => {
+  const w = world(t), refusal = Object.assign(new Error('TEST-refused'), { code: 'TEST-refused' });
+  let underLock = false;
+  const beforeClaim = async () => {
+    await assert.rejects(w.journal.withWalletLock(recordKey(), async () => {}), { code: 'journal-reentrant' }); underLock = true;
+    assert.equal(await w.journal.get(recordKey()), undefined, 'nothing is stored yet'); throw refusal;
+  };
+  await rejectCode(w.reservations.reserve({ ...args(), readChainNonce: noChainRead, beforeClaim }), 'TEST-refused');
+  assert.equal(underLock, true); assert.equal(await w.journal.get(recordKey()), undefined, 'the refusal claimed nothing');
+  await w.reservations.reserve(args());
+  assert.ok(await w.journal.get(recordKey()), 'the next claim goes through');
+});
 
 test('two different evidence addresses: the second reserve refuses signer_lane_busy and the two never receive the same nonce', async t => {
   const w = world(t), reservation = await w.reservations.bindSigned(await approved(w.reservations), signed());
@@ -356,6 +377,22 @@ test('a manual grant is retired without a lookup or a settlement', async t => {
   assert.equal((await w.reservations.retireUnsigned(manual)).active, null);
   assert.deepEqual(looked, []);
   assert.deepEqual(ledger.settled, []);
+});
+
+test('renewApproval replaces the approval id of signed bytes in one write, so the execution settles the new id spent; an unsigned or stale handle, another request text and a null id are refused', async t => {
+  const ledger = ledgerDouble(), w = world(t, { ledger }), bytes = signed(), renewed = { ledgerId: 'TEST-ledger-renewed', requestText: REQUEST };
+  const unsigned = await approved(w.reservations);
+  await rejectCode(w.reservations.renewApproval(unsigned, renewed), 'signer_reservation_invalid');
+  const reservation = await w.reservations.bindSigned(unsigned, bytes);
+  for (const bad of [{ ledgerId: null, requestText: REQUEST }, { ledgerId: 'TEST-ledger-renewed', requestText: 'TEST-other-request' }, undefined]) {
+    await rejectCode(w.reservations.renewApproval(reservation, bad), 'signer_reservation_invalid');
+  }
+  const next = await w.reservations.renewApproval(reservation, renewed);
+  assert.equal(next.active.approvalId, 'TEST-ledger-renewed'); assert.equal(next.revision, reservation.revision + 1);
+  assert.deepEqual((await w.reservations.renewApproval(next, renewed)), next, 'the same id again writes nothing');
+  await rejectCode(w.reservations.renewApproval(reservation, renewed), 'signer_reservation_stale');
+  await w.reservations.consume(next, executed(bytes));
+  assert.deepEqual(ledger.settled, [['TEST-ledger-renewed', 'spent', 'executed']]);
 });
 
 test('consume ends the reservation only on an authenticated execution of the exact bytes: pending, failed, unauthenticated and other bytes change nothing; the real one settles spent and moves the floor', async t => {

@@ -966,7 +966,7 @@ shapes: such an input is refused with `not an attestation bundle`, whether it
 is a whole early-shape bundle or a current bundle that carries one early-shape
 reference.
 
-Its deterministic historical names are available as
+The `runSessionCore` producer's deterministic historical names are available as
 `legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit
 prefix is intentional: these strings must not be used as the current DACS
 address grammar. New code should use the typed address helper exported by the
