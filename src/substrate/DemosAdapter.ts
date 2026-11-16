@@ -2026,8 +2026,9 @@ export class DemosAdapter implements SubstrateAdapter {
         recognisedAnswer = true;
       }
       if (roundTransportFailures > 0 && !recognisedAnswer) {
-        accountNonce = await this.readAccountNonce(ctx);
-        lastBlock = await this.readLastBlock(ctx);
+        // A read the deadline cut off must not erase what an earlier round read.
+        accountNonce = (await this.readAccountNonce(ctx)) ?? accountNonce;
+        lastBlock = (await this.readLastBlock(ctx)) ?? lastBlock;
       }
       const statusBlockNumber = status?.state === "included" ||
           status?.state === "failed"
@@ -2112,7 +2113,7 @@ export class DemosAdapter implements SubstrateAdapter {
             "transport-failure";
         if (nonceUnread) {
           transportFailures += 1;
-          lastBlock = await this.readLastBlock(ctx);
+          lastBlock = (await this.readLastBlock(ctx)) ?? lastBlock;
         }
       }
       if (
