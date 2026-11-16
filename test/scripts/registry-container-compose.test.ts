@@ -71,6 +71,34 @@ it("passes the caller's DOCKER_CONFIG to the compose command", () => {
   expect(values.DOCKER_CONFIG).toBe("/srv/docker-config");
 });
 
+it("keeps a relative DOCKER_CONFIG pointing at the caller's directory after the script changes directory", () => {
+  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
+  const resolveStart = source.indexOf('case "${DOCKER_CONFIG-}" in');
+  expect(resolveStart).toBeGreaterThan(-1);
+  const resolve = source.slice(resolveStart, source.indexOf("esac", resolveStart) + 4);
+  const start = source.indexOf("\nenv \\\n");
+  const block = source.slice(start, source.indexOf('    > "$artifact_stage/compose.rendered.yaml"'));
+  const setup = source.slice(source.indexOf("# Inert Compose inputs"), start);
+  const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+  const render = block.replace(/node "\$bounded_support\/bounded-command\.mjs" "\$COMMAND_TIMEOUT_SECONDS" 1 docker compose[\s\S]*/, `${node} -e 'process.stdout.write(JSON.stringify(process.env))'`);
+  const root = mkdtempSync(join(tmpdir(), "dacs-compose-relative-config-"));
+  try {
+    const caller = join(root, "caller");
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(caller);
+    mkdirSync(elsewhere);
+    const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", `${resolve}\ncd '${elsewhere}'\n${setup}\n${render}`], {
+      encoding: "utf8",
+      cwd: caller,
+      env: { acceptance_root: root, HOME: "/home/caller", DOCKER_CONFIG: "relative-config",
+        PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter) },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const values = JSON.parse(result.stdout) as Record<string, string>;
+    expect(values.DOCKER_CONFIG).toBe(join(caller, "relative-config"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 it("points the compose command at the caller's ~/.docker when DOCKER_CONFIG is unset", () => {
   const values = composeEnvironment({ HOME: "/home/caller" });
   expect(values.DOCKER_CONFIG).toBe("/home/caller/.docker");
