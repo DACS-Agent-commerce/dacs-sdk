@@ -48,7 +48,7 @@ export function createContinuationCheck({ ledger, completedOutcomeOf }) {
 }
 
 /**
- * The accepted continuation of K1. `continueAccepted(request, { body, delegationExpiresAt }, { accepted })` checks that the presented bundle is
+ * The continuation of an accepted presentation. `continueAccepted(request, { body, delegationExpiresAt }, { accepted })` checks that the presented bundle is
  * the kept one and that the kept admission still binds it (`session_admission_unavailable` 503 otherwise), runs `checkPolicy` again and
  * re-reads the job's admission row. No challenge expiry, generatedAt, profile admission, start limit, hold or start is checked or made.
  * Resolves with the stored `{ status, text }` of a settled admission, which reserves nothing and is answered after `revalidate`, and with

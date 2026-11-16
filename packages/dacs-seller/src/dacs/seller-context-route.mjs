@@ -444,7 +444,7 @@ function providerOutcome(answer, scope) {
  * keeps the attempt open. Any other error after the reservation leaves the attempt open and answers `operation_uncertain`, or the 503
  * refusal it carries. The provider's work runs inside `trackContextWork`, which keeps the job's mutex until the work has settled, also
  * after a deadline has answered.
- * A presentation that was already accepted continues (K1 accepted continuation): the presented bundle must be the kept one, the kept admission must
+ * A presentation that was already accepted continues: the presented bundle must be the kept one, the kept admission must
  * still bind it (`session_admission_unavailable` 503 otherwise), and buyer access and the known-job check run again; the challenge expiry, the
  * generatedAt window, the profile admission and the start limits are not checked again and no hold or start is made. An `admitted` row is reserved
  * and runs, a settled one answers its stored outcome without a reservation, and a closed one is `context_admission_closed` (409). A running row whose
