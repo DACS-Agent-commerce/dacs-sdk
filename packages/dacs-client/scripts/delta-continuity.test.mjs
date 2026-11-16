@@ -241,9 +241,9 @@ test('a control-only last record is refused with the ledger path even when every
 
 // A record-only entry changes no blob itself: each file has before equal to after.
 // The last-entry rule accepts one only when it records the blob committed at HEAD
-// and that blob is not the one the earlier entries last recorded for the path.
+// and no other entry, superseded ones included, recorded that blob for the path.
 const unblob = failures => failures.map(failure => failure.replace(/[0-9a-f]{40}/g, '<blob>'));
-const restates = `${path}: the last record-only entry restates <blob>, the blob the earlier records last recorded; it records nothing new`;
+const restates = `${path}: the last record-only entry restates <blob>, a blob already recorded for it; it records nothing new`;
 const notHead = (holds = '<blob>') => `${path}: the last record-only entry records <blob>, but HEAD holds ${holds}`;
 
 // Two parallel records of one path, merged to `merged` bytes that no record names,
@@ -256,7 +256,7 @@ async function recordedMerge(t, merged) {
   return history;
 }
 
-test('a trailing record-only entry for a committed blob no earlier record names is accepted', async t => {
+test('a trailing record-only entry for a committed blob that no other record names is accepted', async t => {
   const history = await recordedMerge(t, 'combined\n');
   const last = history.read('DELTA-LEDGER.json').changes.at(-1);
   assert.ok(last.files.every(file => file.before === file.after), 'the last entry changes no blob itself');
@@ -273,6 +273,24 @@ test('a trailing record-only entry that records a deletion committed at HEAD is 
 test('a trailing record-only entry that restates the blob last recorded for its path is refused', async t => {
   const history = await fixture(t);
   history.record('changed\n'); history.record('changed\n');
+  assert.deepEqual(unblob(history.recordOnlyFailures()), [restates]);
+});
+
+// After a merge of two parallel records, the answer is the same whichever side's
+// bytes the merge keeps and whichever record comes later in the ledger file.
+for (const [kept, merged] of [['the base', 'main\n'], ['the side', 'side\n']]) {
+  test(`a trailing record-only entry is refused when the merge keeps ${kept}'s bytes, which a parallel record already names`, async t => {
+    const history = await recordedMerge(t, merged);
+    assert.deepEqual(unblob(history.recordOnlyFailures()), [restates]);
+  });
+}
+
+test('a trailing record-only entry is refused for a blob that only a superseded record names', async t => {
+  const history = await fixture(t);
+  history.record('changed\n'); history.record('changed\n');
+  const ledger = history.read('DELTA-LEDGER.json');
+  ledger.supersededChanges = [ledger.changes.shift()];
+  history.json('DELTA-LEDGER.json', ledger);
   assert.deepEqual(unblob(history.recordOnlyFailures()), [restates]);
 });
 

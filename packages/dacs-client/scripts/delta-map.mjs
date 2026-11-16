@@ -80,23 +80,24 @@ const blobAt=(rev,path)=>{try{return git('rev-parse','--verify',`${rev}:${path}`
 const describeBlob=sha=>sha??'no file';
 /**
  * The last-entry rule for a trailing record-only entry (one that changes no
- * source or test blob itself). `changes` is the ledger in order; its last entry
- * counts as a real change only if it names a source or test path and, for every
- * path it records, the recorded blob is the blob committed at HEAD and is not
- * the blob the earlier entries last recorded (the baseline blob when none
- * names the path). Returns the failures, each naming its path; none means the
- * entry counts.
+ * source or test blob itself). The last entry of `ledger.changes` counts as a
+ * real change only if it names a source or test path and, for every path it
+ * records, the recorded blob is the blob committed at HEAD and no earlier entry
+ * recorded it for that path. Earlier entries are every other entry in
+ * `changes` and in `supersededChanges`, in any order; when none names the path,
+ * the baseline blob counts as recorded. Returns the failures, each naming its
+ * path; none means the entry counts.
  */
-export function lastRecordOnlyFailures(changes=readArchive(pkg).ledger.changes) {
-  const last=changes.at(-1), earlier=changes.slice(0,-1);
+export function lastRecordOnlyFailures(ledger=readArchive(pkg).ledger) {
+  const last=ledger.changes.at(-1), earlier=[...(ledger.supersededChanges??[]),...ledger.changes.slice(0,-1)];
   if(!last?.files.some(file=>/^packages\/dacs-client\/(src|test)\//.test(file.path))) return [`${prefix}DELTA-LEDGER.json: last record names no source or test change`];
   const failures=[];
   for(const {path,after} of last.files) {
     const committed=blobAt('HEAD',path);
     if(after!==committed) failures.push(`${path}: the last record-only entry records ${describeBlob(after)}, but HEAD holds ${describeBlob(committed)}`);
-    const entry=earlier.findLast(change=>change.files.some(file=>file.path===path));
-    const recorded=entry?entry.files.find(file=>file.path===path).after:blobAt(BASELINE,path);
-    if(after===recorded) failures.push(`${path}: the last record-only entry restates ${describeBlob(after)}, the blob the earlier records last recorded; it records nothing new`);
+    const named=earlier.flatMap(change=>change.files.filter(file=>file.path===path));
+    const recorded=named.length?named.map(file=>file.after):[blobAt(BASELINE,path)];
+    if(recorded.includes(after)) failures.push(`${path}: the last record-only entry restates ${describeBlob(after)}, a blob already recorded for it; it records nothing new`);
   }
   return failures;
 }

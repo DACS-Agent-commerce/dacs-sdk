@@ -1711,6 +1711,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | f3a42056739f497fd805935c801cb490cadddb82 |
 | D42 | delta(client): D42 accept a trailing record-only ledger entry for a committed blob | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` | 5e909c66900348ecfcab0ca9d549363d384052d3 |
+| D42 | delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` | f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa |
 
 ## Complete commit and file inventory
 
@@ -5175,6 +5177,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D42 accept a trailing record-only ledger entry for a committed blob | `packages/dacs-client/scripts/delta-continuity.test.mjs:1` |
 | delta(client): D42 accept a trailing record-only ledger entry for a committed blob | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): D42 accept a trailing record-only ledger entry for a committed blob | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
+| delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob | `packages/dacs-client/scripts/delta-continuity.test.mjs:1` |
+| delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
 
 ## Original moved files
 

@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readArchive } from '../scripts/delta-assemble.mjs';
 import { lastRecordOnlyFailures, pkg } from '../scripts/delta-map.mjs';
-test("with this PR's delta records, `check-provenance.mjs --local-only` exits 0 on the PR head and on the head merged with current main; the last ledger entry names a source or test change, or is a record-only entry for a committed blob no earlier entry recorded; no copied path has two newest records or a recorded final blob other than head; any stale, parallel, conflicting or control-only-last record fails with the path named", () => {
+test("with this PR's delta records, `check-provenance.mjs --local-only` exits 0 on the PR head and on the head merged with current main; the last ledger entry names a source or test change, or is a record-only entry that records, for each path, the blob committed at HEAD when no other entry, superseded ones included, recorded that blob for the path; no copied path has two newest records or a recorded final blob other than head; any stale, parallel, conflicting or control-only-last record fails with the path named", () => {
  const env={...process.env};delete env.NODE_TEST_CONTEXT;
  const ledger=readArchive(pkg).ledger;
  const last=ledger.changes.at(-1),cwd=fileURLToPath(new URL('../../..',import.meta.url));
@@ -15,7 +15,7 @@ test("with this PR's delta records, `check-provenance.mjs --local-only` exits 0 
   const changed=spawnSync('git',['diff','--name-only',`${sha}^`,sha,'--','packages/dacs-client/src','packages/dacs-client/test'],{cwd,encoding:'utf8'});
   assert.equal(changed.status,0,changed.stderr);
   assert.ok(last.files.some(file=>changed.stdout.split('\n').includes(file.path)&&file.before!==file.after),'last record selects a commit that actually changes its recorded source or test');
- } else assert.deepEqual(lastRecordOnlyFailures(ledger.changes),[],'last ledger record names a source or test change, or records a committed blob no earlier record recorded');
+ } else assert.deepEqual(lastRecordOnlyFailures(ledger),[],'last ledger record names a source or test change, or records a committed blob that no other record recorded');
  const result=spawnSync(process.execPath,['packages/dacs-client/scripts/check-provenance.mjs','--local-only'],{cwd:fileURLToPath(new URL('../../..',import.meta.url)),encoding:'utf8',env});
  assert.equal(result.status,0,result.stdout+result.stderr);
  const cases=["^launch review: unrelated main commits and a PR merge preserve client provenance$","^the ledger gate refuses each fault in a PR's own delta records,","^parallel records of different blobs conflict until a later record chooses one$","^a control-only last record is refused with the ledger path"].join('|');
