@@ -1728,6 +1728,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` | 6b0e4a1deec87b0aec54e0747da4716db26c4c84 |
 | | `packages/dacs-client/test/node-wallet-real-block-layout.test.mjs:1` | bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5 |
 | | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` | 704c356cf6fde7f017f441a65604a598e56a578b |
+| WF | delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change) | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 192016f0d5c93cbdd715fa2b5058bb312bc1d683 |
+| | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` | fe0f13b7fd3c59d1e8f3082819777a723fba3c8d |
+| | `packages/dacs-client/test/node-wallet-real-block-layout.test.mjs:1` | c7e55813ec5c437ed39a0966b6a882470884b57b |
 
 ## Complete commit and file inventory
 
@@ -5198,6 +5202,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF read the recorded Node2 answers in the source observer and bring the identity fixtures to the reviewed block shape | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` |
 | delta(client): WF read the recorded Node2 answers in the source observer and bring the identity fixtures to the reviewed block shape | `packages/dacs-client/test/node-wallet-real-block-layout.test.mjs:1` |
 | delta(client): WF read the recorded Node2 answers in the source observer and bring the identity fixtures to the reviewed block shape | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` |
+| delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change) | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change) | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change) | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change) | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change) | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change) | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` |
+| delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change) | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` |
+| delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change) | `packages/dacs-client/test/node-wallet-real-block-layout.test.mjs:1` |
 
 ## Original moved files
 
