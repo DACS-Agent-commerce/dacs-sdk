@@ -65,9 +65,10 @@ passed), unless a crash left it still reserving. Charges that no longer count st
 and each admission still scans them; they are never pruned. The host
 composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
-accounting and recording the reservation result. Every signed route, the context
-route included, reserves through the coordinator and spends a unit of its
-purchase's slot. The context route's admission allots a new purchase its
+accounting and recording the reservation result. Every signed effect route
+reserves through the coordinator. The other effect routes spend a unit of their
+purchase's slot, while the context route charges one general capacity unit.
+Signed reads and the signed challenge reserve nothing. The context route's admission allots a new purchase its
 allocation and refuses `seller_not_ready` (503) while the whole allotment is not
 free; the host's readiness does not read the units. Terminal allocation cleanup
 runs at startup and when a store reader observes a terminal session through
