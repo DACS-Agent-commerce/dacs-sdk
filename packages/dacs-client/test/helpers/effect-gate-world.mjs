@@ -18,12 +18,12 @@ export const sellerPublications = () => ({
  * connection. `currentOwner()` is the current composition's owner; `clock` is the composition's mutable clock; `qualify` is
  * installed on a seller.
  */
-export async function gateWorld(t, { seller = true, qualify, sessionOptions = {} } = {}) {
+export async function gateWorld(t, { seller = true, qualify, sessionOptions = {}, journalWrap } = {}) {
   const clock = { now: () => T0 };
   let owner, replaced = null;
   const w = await spiedWorld(t, {
     createSession: seller ? api.createNodeSellerComposition : api.createNodeWalletSession,
-    ownerWrap: raw => { replaced = null; owner = { ...raw, currentLocal: () => replaced ?? raw.currentLocal() }; return owner; },
+    ownerWrap: raw => { replaced = null; owner = { ...raw, currentLocal: () => replaced ?? raw.currentLocal() }; return owner; }, journalWrap,
     sessionOptions: { clock, ...(seller ? { approveConfirmedWrite: null, publications: sellerPublications(), ...(qualify ? { qualify } : {}) } : {}), ...sessionOptions },
   });
   return Object.assign(w, { clock, currentOwner: () => owner, replaceLocal: local => { replaced = local; } });
