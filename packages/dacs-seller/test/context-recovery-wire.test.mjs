@@ -222,6 +222,14 @@ test('settled context inspection may answer the same signed request twice withou
   }
 });
 
+test('an unfinished earlier attempt of an accepted admission is held and neither ended nor run again', async (t) => {
+  const w = await contextWireWorld(t), request = await admittedAndCut(w);
+  w.behaviour.recover = true;
+  const answer = await w.post(await resign(w, request));
+  assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'context_recovery_held']);
+  assert.deepEqual([w.counts.resolves, w.completions.length, w.counts.vetWrites], [0, 0, 0]);
+});
+
 test('a completed outcome of a running admission is revalidated and answered without a second start', async (t) => {
   const w = await contextWireWorld(t), { request, answer } = await settled(w);
   // A crash after the outcome was published and before the row settled leaves the row running with a completed operation.
