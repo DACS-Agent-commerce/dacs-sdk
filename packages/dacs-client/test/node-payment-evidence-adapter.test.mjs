@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
-import { api, mnemonicBytes, ok, setPurchaseAdmission } from './helpers/tp1-node-fixture.mjs';
+import { api, mnemonicBytes, ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
+import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
 import { gateWorld, inPass, openPass, sellerPublications } from './helpers/effect-gate-world.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 import { recordingApproval } from './helpers/payment-evidence-approval-double.mjs';
@@ -285,6 +286,18 @@ test("signCreate refuses signer_lane_busy while the transport lane holds an issu
   const signedBefore = lane.signsInsideSign;
   await assert.rejects(signIn(lane, evidenceInput(lane)), { code: 'signer_lane_busy' });
   assert.equal(lane.signsInsideSign, signedBefore, 'signer calls 0'); assert.equal(await recordOf(lane), null, 'no reservation is made');
+});
+
+test("a native write is refused while a stored evidence CREATE holds the signer, and goes out once the chain has used the reserved nonce", async t => {
+  const w = await adapterWorld(t), signed = await signIn(w, evidenceInput(w));
+  const refused = await inPass(w, () => w.send());
+  assert.equal(refused.success, false); assert.ok(codes(w.session.internalCauseOf(refused)).includes('signer_lane_busy'), 'the refusal keeps its cause');
+  assert.equal(w.node.broadcasts.length, 0, 'the native write sent nothing');
+  assert.equal((await w.journal().entries()).some(([key]) => key.startsWith('devnet/native-wallet/')), false, 'no native lane record was written');
+  w.node.nonce = signed.nonce;
+  const next = { method: 'sendTransaction', params: [buildNativeTransferPayload({ from: signerOf(w), to: `0x${'2'.repeat(64)}`, amountOs: '2500000000', nonce: signed.nonce + 1, timestamp: T0, encoding: 'os-string' })] };
+  assert.equal((await inPass(w, () => w.session.wallet.request(next))).success, true);
+  assert.equal(w.node.broadcasts.length, 1, 'the native write goes out once the signer is free');
 });
 
 test("signCreate refuses an input that is not this signer's evidence CREATE, a locked wallet and an aborted call before it reserves anything", async t => {

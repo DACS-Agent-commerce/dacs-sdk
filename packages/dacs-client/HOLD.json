@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "655acffbac26c82f0670f19814dad51f1a570394"
+        "blob": "d1956587fecd63376e5c326d40f99af0c68a5977"
       },
       "DELTA-LEDGER.json": {
-        "blob": "56d89488638e17a51d5fb4f2a28efc3efae0a012"
+        "blob": "da42387f10ebfbeb0d57ccab1ff734bb469ab552"
       },
       "DELTA-MAP.md": {
-        "blob": "5f8cacb6a46b2d51d0abf52b04ec93353e4e3c88"
+        "blob": "960a33156844436deb3a8e0d9f102893b9f06dec"
       },
       "DELTA-NOTES.md": {
         "blob": "e810d07c443b64c89dd8ffcd3a3f029f4d8c3cc3"
@@ -1037,7 +1037,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "d8df765c2361c982c1a893f12a071ef6d0e2c9c6"
+        "blob": "97caa427c140b87827474cf5fb8183aad41a7586"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1331,7 +1331,7 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "cb7be1026524f82794127d071ed37bc9e3a8c549"
+        "blob": "f453ffb58a09484125da89d68f74b3928137b9c7"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
@@ -1361,7 +1361,7 @@
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
       },
       "src/wallet/signer-reservation.mjs": {
-        "blob": "bcb216547421660a2cd0de45415cce9a0ad18ba3"
+        "blob": "1678957be639d72489fa6cc925da8a27660ee9cb"
       },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
@@ -1898,10 +1898,10 @@
         "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
       },
       "test/node-payment-evidence-adapter.test.mjs": {
-        "blob": "a4e588ba8351ad22b97d9234aa0918e2158ecf65"
+        "blob": "7449baca4f938c782bfdc29625db69fb82556c43"
       },
       "test/node-signer-reservation.test.mjs": {
-        "blob": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        "blob": "88d543ca451ef7657ff6a2e72b271b1d73264f8f"
       },
       "test/node-signer-retirement.test.mjs": {
         "blob": "6175c0421d58d74bf403ee1150a32c750011c455"
