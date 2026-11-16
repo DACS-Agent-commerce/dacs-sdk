@@ -1000,18 +1000,19 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // Readback only, for a plan step that ended before its Vet record writes read back as included: each of the
   // job's two Vet records with a retained intent is read back, never sent again. Nothing is signed or intended;
   // the anchor saves a record it authenticates as included, so the next plan request completes from it.
-  // Answers present when every retained record reads back, absent when none is retained, else indeterminate.
+  // Answers present only when both of the job's records have a retained write and each reads back as included,
+  // absent when neither is retained, else indeterminate (a record never written, or one with no readback answer).
   async function readBackRecords({jobId,buyer}){
     requireJobId(jobId);assertAccess(buyer);
     const reads=[];
     for(const party of [buyer,wallet.claim]){
       const logicalAddress=compositeVerificationAddress(jobId,party);
-      if(await anchor.hasIntent(logicalAddress))reads.push(await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ));
+      reads.push(await anchor.hasIntent(logicalAddress)?await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ):null);
     }
-    if(!reads.length)return{disposition:'absent',reason:'no Vet record write is retained for this job'};
-    const held=reads.find(read=>read?.status!=='present');
-    return held?{disposition:'indeterminate',reason:`a retained Vet record does not read back yet (${held.status}: ${held.reason ?? 'no reason'})`.slice(0,240)}
-      :{disposition:'present',reason:'every retained Vet record reads back as included'};
+    if(reads.every(read=>read===null))return{disposition:'absent',reason:'no Vet record write is retained for this job'};
+    if(reads.every(read=>read?.status==='present'))return{disposition:'present',reason:'both Vet records read back as included'};
+    const held=reads.find(read=>read&&read.status!=='present');
+    return{disposition:'indeterminate',reason:(held?`a retained Vet record does not read back yet (${held.status}: ${held.reason ?? 'no reason'})`:'a Vet record is not written yet, or a retained one gave no readback answer').slice(0,240)};
   }
   async function resolveSeller({jobId,listingPin:pin,buyerIdentityBundle,generatedAt}){
     validate({jobId,generatedAt});assertAccess(buyerIdentityBundle.presentedBy);

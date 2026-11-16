@@ -106,11 +106,22 @@ test('readBackRecords reads a retained Vet record back with nothing signed or se
   const signatures = f.controls.signatures.length, recoveryChecks = recoveries.length;
   assert.equal((await p.readBackRecords({ jobId: JOB, buyer: BUYER.claim })).disposition, 'indeterminate');
   included = true;
-  assert.equal((await p.readBackRecords({ jobId: JOB, buyer: BUYER.claim })).disposition, 'present');
+  const sellerOnly = await p.readBackRecords({ jobId: JOB, buyer: BUYER.claim });
+  assert.equal(sellerOnly.disposition, 'indeterminate', 'the buyer record is not written yet');
   assert.equal(f.native.captured.length, 1, 'nothing was sent');
   assert.equal(recoveries.length, recoveryChecks, 'no recovery send');
   assert.equal(f.controls.signatures.length, signatures, 'nothing was signed');
   await assert.rejects(p.readBackRecords({ jobId: JOB, buyer: OTHER.claim }), { code: 'buyer_access_closed' });
   assertPresent(await p.resolveBuyer(f.input, { writable: () => true }));
   assert.deepEqual(f.native.captured.map((request) => request.logicalAddress), [address(SELLER), address(BUYER)], 'the seller record was not sent again');
+  assert.equal((await p.readBackRecords({ jobId: JOB, buyer: BUYER.claim })).disposition, 'present', 'both records read back');
+});
+
+test('readBackRecords answers indeterminate, not present, when a retained record gives no readback answer', async (t) => {
+  const f = await orchestratorFixture(t);
+  assertPresent(await f.run());
+  assert.equal((await f.provider().readBackRecords({ jobId: JOB, buyer: BUYER.claim })).disposition, 'present');
+  const silent = f.provider({ anchor: { ...f.openAnchor(), readRetained: async () => undefined } });
+  const out = await silent.readBackRecords({ jobId: JOB, buyer: BUYER.claim });
+  assert.equal(out.disposition, 'indeterminate', JSON.stringify(out));
 });

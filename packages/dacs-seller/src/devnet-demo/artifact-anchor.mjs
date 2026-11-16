@@ -100,7 +100,9 @@ const REFUSED_DEAD='dead', REFUSED_INCOMPLETE='incomplete';
 const SIGNED_CREATE_MAX_BYTES=4*MAX_STORAGE_ARTIFACT_BYTES;
 const SIGNED_PROJECTION_MAX_BYTES=SIGNED_CREATE_MAX_BYTES+1024; // Authentication envelope above the signed-content budget.
 // A node can include a CREATE after the transport's own inclusion wait has ended. With awaitInclusion, publish
-// reads a CREATE it sent back again for at most this long after the send, once per poll.
+// reads a CREATE it sent back again for at most this long after the wallet's answer, once per poll. The wallet
+// answers only after the transport's own inclusion wait (120 s by default), so the bound ends that much later
+// than the broadcast.
 const ISSUED_READBACK_MS=6*60_000, ISSUED_READBACK_POLL_MS=5_000;
 
 // The caller authenticates expectedSigner: the Vet verifier or commitment
@@ -436,9 +438,10 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // which is asked once more right before the resend; without authorize, or when
   // it answers anything but true, the retained intent is only read back.
   // awaitInclusion (optional, needs authorize): a CREATE this call sends that reads back pending is read back
-  // again, never sent again, once per ISSUED_READBACK_POLL_MS for up to ISSUED_READBACK_MS after the send, while
-  // authorize still answers true. A retained intent is read back once, as without it. Like the transport's own
-  // inclusion wait, this keeps the seller's nonce lane, so no other seller CREATE is prepared meanwhile.
+  // again, never sent again, once per ISSUED_READBACK_POLL_MS for up to ISSUED_READBACK_MS after the wallet's
+  // answer (which itself comes after the transport's inclusion wait), while authorize still answers true. A
+  // retained intent is read back once, as without it. Like the transport's own inclusion wait, this keeps the
+  // seller's nonce lane, so no other seller CREATE is prepared meanwhile.
   async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,authorizeSigning,reaskDenied=false,awaitInclusion=false}) {
     assertKitOperationAdmitted('publish');
     if(authorize!==undefined&&typeof authorize!=='function') fail('invalid','publish authorization must be a function');
@@ -565,7 +568,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     })));
   }
   // observe's readAgain for a CREATE publish just sent: waits one poll, then answers true only while
-  // ISSUED_READBACK_MS has not passed since the send and authorize still answers true (a throw ends it too).
+  // ISSUED_READBACK_MS has not passed since the wallet's answer and authorize still answers true (a throw ends it too).
   function issuedReadbackGate(authorize) {
     const deadline=now()+ISSUED_READBACK_MS;
     return async()=>{
