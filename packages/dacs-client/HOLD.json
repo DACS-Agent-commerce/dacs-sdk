@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "eacefad3063441dcf8e4b09c9f6dad70f980b119"
+        "blob": "3774759b59507c91780e7a9b118de5850e0850bb"
       },
       "DELTA-LEDGER.json": {
-        "blob": "67e8523d22d90783369a1df8c24beef589ddacb5"
+        "blob": "b248719236b6921610b64904963dd18a54dae00e"
       },
       "DELTA-MAP.md": {
-        "blob": "e8a85ba4af19124be48363b4ae50a2dfe67dafa7"
+        "blob": "6dc3d608ef4988e8cbcbdb3b70cb9c62efa8eb42"
       },
       "DELTA-NOTES.md": {
         "blob": "2fd14b834ffa4e44e77d8af6b38f096f32d49d8b"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "fc070583cb1bef6bc783b08ed06d7e9619e2c5cd"
+        "blob": "24429fabe79812c3ebde1b9385556a719722ea37"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1037,7 +1037,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "6525334b429962711d6808ecdddeb416e31b2a46"
+        "blob": "32776a9fc94337c4f3131e598e7a653daa25fa91"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1070,7 +1070,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "0f2e6679473afc002446fac791617242a521b204"
+        "blob": "e9d3c6cbc13ec90b49c5521a2cc69cd3d44602ae"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "5fda029c1ecf1d7476d016ac70a130a25c4b4367"
@@ -1328,7 +1328,7 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/demos-quiet-hooks.mjs": {
-        "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
+        "blob": "91d06508f63df5308dece710ffb05aeae26a5bb8"
       },
       "src/wallet/devnet-native-transport.mjs": {
         "blob": "285c2eba321bfb342c99dde92a5ddaa2597cdf57"
@@ -1889,7 +1889,7 @@
         "blob": "9869cc55d5b9235033ffd0382583a5e3948f5f4f"
       },
       "test/node-demos-loading.test.mjs": {
-        "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
+        "blob": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43"
       },
       "test/node-signer-reservation.test.mjs": {
         "blob": "f78944bc7b6c4eb3a0b6df481b3c721791f3d4c8"
