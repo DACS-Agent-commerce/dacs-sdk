@@ -15,6 +15,7 @@ import DatabaseSync from 'better-sqlite3';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, TP1_CAPABILITIES } from '@kynesyslabs/dacs/wire';
 import { exchange } from './helpers/d5-http-fixture.mjs';
+import { contextWireWorld } from './helpers/context-wire-world.mjs';
 import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './helpers/wire-authority-fixture.mjs';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
@@ -751,6 +752,26 @@ test('P11a1-T01: every non-pre-Agreement route answers with a wire response enve
     await w.verified(answer);
     assert.deepEqual(JSON.parse(Buffer.from(answer.header, 'base64url')).payload.profile, w.buyerWire.binding.profile);
   }
+});
+
+test('every route the handler serves answers under the wire response domain: the whole route table with both read routes, the challenge and the context step', async (t) => {
+  const table = await continuingWorld(t);
+  assert.ok(WIRE_ROUTE_PATHS.includes(PATHS.state) && WIRE_ROUTE_PATHS.includes(PATHS.bundleBuyerCopy), 'both read routes are in the table');
+  for (const path of WIRE_ROUTE_PATHS) {
+    const answer = await table.request(path);
+    assert.equal(answer.status, answeredStatus(path), path);
+    await table.verified(answer);
+    assert.deepEqual(JSON.parse(Buffer.from(answer.header, 'base64url')).payload.profile, table.buyerWire.binding.profile, path);
+  }
+  const w = await contextWireWorld(t), challenge = await w.sign();
+  const challenged = await w.post({ url: challenge.url, header: challenge.header, text: challenge.text });
+  assert.equal(challenged.status, 200);
+  await challenge.verify(challenged);
+  const context = await w.startContext(), answered = await w.post(context);
+  await w.settleJob();
+  assert.equal(answered.status, 200);
+  await context.verify(answered);
+  for (const answer of [challenged, answered]) assert.deepEqual(JSON.parse(Buffer.from(answer.signature, 'base64url')).payload.profile, w.wire.binding.profile);
 });
 
 test('an old-domain request on any wire route is refused unsigned with zero agent calls', async (t) => {

@@ -99,10 +99,6 @@ const NO_HOLD_POLICY = Object.freeze({ reserve: async () => null, release: async
 // How often a running host re-runs the admission sweep over unfinished context rows.
 const SWEEP_INTERVAL_MS = 60000;
 
-// The one old context route object serves the challenge on the wire (`challengeOnWire`) and carries the paths; the wire route serves the
-// context step itself, so every provider and write port the old object takes refuses.
-const oldContextStepRefused = () => { throw new SellerTransportError('session_admission_unavailable', 503); };
-
 // Compensation's evidence for the two Vet sink addresses of a context row: the anchor's own fresh, passive proof that no CREATE intent was
 // kept. Any other answer proves nothing, so the row keeps its hold and its slot.
 const vetAddressEvidence = (anchor) => (row) => Promise.all([row.vetAddresses.buyer, row.vetAddresses.seller].map(async (address) => {
@@ -370,8 +366,8 @@ export async function startSellerHost(options) {
     // The route binds the provider's retained-scope reader once, as it is built, before any request or provider work.
     const contextRoute = createWireSellerContextRoute({ listing, wire, store, ledger: store.challenges, admissionTransaction: admission, coordinator: reservations, capacity, provider, assertBuyerAccess,
       knownJob: null, ready: sellerReady, stopped: hostStopped, now, monotonicNow: () => performance.now(), trackContextWork: contextWork.track });
-    const context = { ...createSellerContextRoute({ listing, now, assertBuyerAccess, resolveBuyer: oldContextStepRefused, admitPresentation: oldContextStepRefused, writable: oldContextStepRefused,
-      admitWrites: oldContextStepRefused, releaseWrites: oldContextStepRefused, recover: oldContextStepRefused }), ...contextRoute };
+    // The challenge route serves the challenge on the wire and names the paths; the wire route serves the context step.
+    const context = { ...createSellerContextRoute({ listing, now, assertBuyerAccess }), ...contextRoute };
     // Rows an earlier process left unfinished are settled or fenced before any route is mounted.
     await admission.sweep({ startup: true });
     // The state directories and the new transport database entry are durable

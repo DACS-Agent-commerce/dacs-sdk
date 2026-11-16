@@ -18,19 +18,10 @@ import { createContextAttempt } from './seller-context-attempt.mjs';
 import { createAcceptedContinuation, createContextOutcomeRevalidation, createContinuationCheck } from './seller-context-continuation.mjs';
 import { resumeContext } from './seller-context-recovery.mjs';
 import { createPlannedAgreementReader } from './seller-planned-agreement.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals, sellerTransportEffect } from './seller-transport-auth.mjs';
+import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals } from './seller-transport-auth.mjs';
 
-// Per buyer: five accepted starts per rolling hour.
-// Overall, 12 starts of two Vet CREATEs fill the default 24 policy writes an
-// hour (operator-approval.mjs SELLER_POLICY_DEFAULTS). Counted from the
-// durable admission records, so only accepted new starts count, also after a
-// restart.
-export const SELLER_CONTEXT_LIMITS = Object.freeze({ maxStartsPerBuyerPerHour: 5, maxStartsPerHour: 12 });
-// Each start makes two seller Vet CREATEs before the buyer pays anything.
-const VET_WRITES = 2;
 // The deadline of each buyer-access and known-job callback (DC18).
 const POLICY_READ_TIMEOUT_MS = 10_000;
-const HOUR_MS = 3_600_000;
 // The seller's clock window for the buyer's generatedAt (seller-agent.mjs).
 const GENERATED_AT_SKEW_MS = 10 * 60 * 1000;
 // dem-delivery-context-consumer.mjs keeps at most 240 characters of a reason.
@@ -78,10 +69,6 @@ function assertOpenForChallenges(stopped) {
   if (typeof answer?.then === 'function') Promise.resolve(answer).then(undefined, () => {});
   if (typeof answer !== 'boolean') throw new SellerTransportError('seller_stopped', 503, { cause: 'stop_check_invalid' });
   if (answer) throw new SellerTransportError('seller_stopped', 503);
-}
-
-function savedDisposition(text) {
-  try { return JSON.parse(text)?.disposition; } catch { return null; }
 }
 
 function bundleAuthentic(bundle) {
@@ -137,107 +124,21 @@ function challengeAttemptInput(request, body) {
   return { path: 'context', nonce: body.buyerIdentityBundle?.sessionNonce, jobId: request.jobId, buyer: request.buyer, challengeScopeHash, presentationHash };
 }
 
-// Seller context policy and recovery ports are operator capabilities. Admission
-// owns its exact pending reservation until a hold is returned to HTTP; failures
-// release unused holds, clear fresh work, and retain resumed uncertainty.
-// admitPresentation validates the first presentation and returns its admission
-// record; accepted retries reuse that record. Callback deadlines throw a
-// SellerTransportError with the original cause; invalid options throw TypeError.
-export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAccess, admitPresentation, knownJob = null, writable, admitWrites, releaseWrites,
-  recover, resumable = null, limits = SELLER_CONTEXT_LIMITS, now = () => Date.now(), log = line => process.stderr.write(line) }) {
+// The seller's route for the context challenge on the wire. Its policy ports are operator capabilities: callback deadlines throw a
+// SellerTransportError with the original cause, and invalid options throw a TypeError. The context step itself is
+// `createWireSellerContextRoute`.
+export function createSellerContextRoute({ listing, assertBuyerAccess, knownJob = null, now = () => Date.now() }) {
   const support = purchaseSupport(listing);
-  if (!support.supported || typeof resolveBuyer !== 'function' || typeof assertBuyerAccess !== 'function' || (knownJob !== null && typeof knownJob !== 'function') || typeof writable !== 'function'
-      || (resumable !== null && typeof resumable !== 'function')
-      || ![admitWrites, releaseWrites, recover, admitPresentation].every((value) => typeof value === 'function')
-      || !['maxStartsPerBuyerPerHour', 'maxStartsPerHour'].every((key) => Number.isSafeInteger(limits?.[key]) && limits[key] > 0)) {
-    throw new TypeError('the seller context route needs a supported Listing, its context provider, buyer access, write admission and positive limits');
+  if (!support.supported || typeof assertBuyerAccess !== 'function' || (knownJob !== null && typeof knownJob !== 'function')) {
+    throw new TypeError('the seller context route needs a supported Listing and buyer access');
   }
   const seller = listing.seller.identity.presentedBy, pin = listingPin(listing);
-  // Resolves true when the hold is released, false (after logging) when the release failed.
-  const release=async(jobId,hold)=>{
-    try { await releaseWrites({jobId,hold}); return true; }
-    catch(error) { log(`context hold release failed: ${jobId} ${hold} ${String(error?.code??'error').slice(0,64)}\n`); return false; }
-  };
-  async function admitOwned(reservation,request,store,writes) {
-    const {jobId}=request,effect=reservation.effectKey,resumed=reservation.resumed===true;
-    const hold=`${effect}:${reservation.owner}`;
-    let problem,failure;
-    try { problem=await admitWrites({jobId,effect,writes,hold}); }
-    catch(cause) { failure={cause};problem='operation_uncertain'; }
-    if(problem!==null) {
-      await release(jobId,hold);
-      store.finish(reservation,failure||resumed?503:409,JSON.stringify({error:failure?'operation_uncertain':'seller_budget_refused'}),{noEffect:!resumed});
-      if(failure)throw failure.cause;
-      if(resumed)return null;
-      refuse('seller_budget_refused');
-    }
-    return {...reservation,contextHold:{jobId,hold}};
-  }
-  // The unpaid-start limits, read inside the reserve transaction.
-  const admitStart = (request) => ({ starts }) => {
-    const at = now();
-    if (starts(at - HOUR_MS) >= limits.maxStartsPerHour) refuse('unpaid_start_limit');
-    if (starts(at - HOUR_MS, request.buyer) >= limits.maxStartsPerBuyerPerHour) refuse('buyer_unpaid_start_limit');
-    return at;
-  };
-  // The transport has bound job, buyer (never the seller), seller, pin, scope
-  // hash and the bundle's presenter; this binds the remaining scope fields to
-  // the seller's own values.
-  function scopeProblem({ scope, buyerIdentityBundle: bundle }, challenge = false) {
-    if (!challenge && !bundleAuthentic(bundle)) return 'buyer_bundle_unauthenticated';
-    return scopeTermsProblem(scope, challenge ? null : identityBundleHash(bundle), { seller, pin, support, now });
-  }
-  // A saved present answer is reported again only once both Vet records read
-  // back and verify, as in reconcile; otherwise nothing is reported and the
-  // saved step stays as it is.
-  async function verifiedReplay(body, reservation) {
-    if (reservation.disposition !== 'cached' || reservation.status !== 200 || savedDisposition(reservation.text) !== 'present') return reservation;
-    let answer = null;
-    try { answer = await recover(structuredClone(body)); } catch (cause) { throw new Error('the saved context answer could not be verified again', { cause }); }
-    if (answer?.disposition !== 'present') throw new Error('the saved context answer\'s Vet records no longer verify; it was not reported');
-    return reservation;
-  }
-  // The ledger's attempt owner per request: only this entry may accept or fail its challenge (SA-17).
-  const attempts = new WeakMap();
+  // The challenge scope has no bundle hash; the transport has already bound the job and the buyer, so this checks the rest against the seller's own values.
+  const challengeScopeProblem = (scope) => scopeTermsProblem(scope, null, { seller, pin, support, now });
   const checkPolicy = buyerPolicyCheck({ assertBuyerAccess, knownJob });
-  function attempt(request, body, store) {
-    if (attempts.has(request)) return attempts.get(request);
-    const checkedAt = now();
-    const result = store.challenges.attempt({ request, ...challengeAttemptInput(request, body) });
-    if (result.kind === 'refused') throw new SellerTransportError(result.code, result.status, { cause: result.cause });
-    const entry = { ...result, checkedAt, nonce: body.buyerIdentityBundle?.sessionNonce, store };
-    attempts.set(request, entry);
-    return entry;
-  }
-  // Bytes the journal already holds (an answer, or an effect it keeps fenced) are answered by the journal alone when the ledger has no
-  // record of their challenge (an earlier store's, or one reclaimed) or already accepted it. A challenge the ledger refused or still
-  // validates keeps the ledger's answer. The journal's own read-only reserve decides; its errors propagate rather than claiming the bytes are new.
-  // The reserve that follows a known answer gets no admission callback, so it can never start new work without a challenge.
-  function journalKnows(request, body, store) {
-    const row = store.challenges.retained(body.buyerIdentityBundle?.sessionNonce);
-    if (row !== null && row.state !== 'accepted') return false;
-    return store.classify?.(request, body) === 'known';
-  }
-  function attemptRefused(request, code = 'operation_uncertain') {
-    const entry = attempts.get(request);
-    if (entry?.kind === 'validate') entry.store.challenges.recordFailed(entry.owner, entry.nonce, typeof code === 'string' && code ? code : 'operation_uncertain');
-    attempts.delete(request);
-  }
   return Object.freeze({
-    // The HTTP handler calls these two around the transport's body checks (seller-http.mjs): a rejected body
-    // consumes a fresh challenge first; exact retained work keeps its original body refusal without a new attempt.
-    onRejectedBody(request, body, store) { requireContextJob(request, body); if (!journalKnows(request, body, store)) attempt(request, body, store); },
-    attemptRefused,
     path: SELLER_CONTEXT_PATH,
     challengePath: SELLER_CONTEXT_CHALLENGE_PATH,
-    challenge: async (request, body, store) => {
-      requireContextJob(request, body);
-      if (request.jobId !== body.scope.jobId) refuse('peer_job_mismatch');
-      const problem = scopeProblem(body, true);
-      if (problem) refuse(problem);
-      await checkPolicy(request);
-      return store.challenges.issue(request, sellerContextScopeHash(body.scope));
-    },
     /**
      * The challenge route on the wire (K1 issue steps 1-17, K2 for `contextChallenge`). `wire` is a `createWireContext` context
      * with its stop check; `input` is the raw request: `header`, `method`, `path`, the exact `rawBody` and its parsed `body`, and
@@ -261,7 +162,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       try {
         assertOpenForChallenges(wire.stopped);
         const admitted = await admit();
-        const problem = scopeProblem(admitted.body, true);
+        const problem = challengeScopeProblem(admitted.body.scope);
         if (problem) refuse(problem);
         await checkPolicy(request);
         // The two callbacks above may each take their full deadline, and nothing after this admission awaits: authority, the
@@ -271,78 +172,6 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       } catch (error) {
         throw error instanceof KitOperationGuardError ? new SellerTransportError(error.code, 503, { cause: error }) : error;
       }
-    },
-    reserve: async (request, body, store) => {
-      requireContextJob(request, body);
-      const entry = journalKnows(request, body, store) ? null : attempt(request, body, store);
-      let reservation, accepted = false, failure = 'operation_uncertain';
-      try {
-        let admission;
-        if (entry?.kind === 'validate') {
-          const problem = scopeProblem(body);
-          if (problem) refuse(problem);
-          await checkPolicy(request);
-          admission = await admitPresentation({ jobId: request.jobId, bundle: structuredClone(body.buyerIdentityBundle), nonce: entry.nonce });
-          if (!record(admission)) throw new SellerTransportError('session_admission_unavailable', 503);
-        } else if (entry !== null && entry.accepted.buyerBundleText !== canonicalize(body.buyerIdentityBundle)) refuse('context_challenge_consumed');
-        reservation = store.reserve(request, body, { admit: entry === null ? null : admitStart(request), challengeNonce: entry?.kind === 'validate' ? entry.nonce : null });
-        const effect = sellerTransportEffect(request);
-        if (reservation.disposition === 'cached') { await release(request.jobId, effect); return verifiedReplay(body, reservation); }
-        if (reservation.disposition !== 'perform') return reservation;
-        reservation = await admitOwned(reservation, request, store, VET_WRITES);
-        if (entry?.kind === 'validate') {
-          accepted = store.challenges.accept(entry.owner, entry.nonce, {
-            buyerBundleText: canonicalize(body.buyerIdentityBundle), buyerBundleHash: identityBundleHash(body.buyerIdentityBundle), admission,
-            admittedAt: store.contextAdmission(request.jobId)?.admittedAt, firstAdmission: { challengeExpiresAt: store.challenges.retained(entry.nonce).expiresAt, generatedAt: body.scope.generatedAt, checkedAt: entry.checkedAt },
-          });
-          if (!accepted) refuse('context_challenge_consumed');
-        }
-        return reservation;
-      } catch (error) {
-        failure = error?.code ?? 'operation_uncertain';
-        if (reservation?.contextHold) {
-          store.finish(reservation, 409, JSON.stringify({ error: failure }), { noEffect: true });
-          await release(request.jobId, reservation.contextHold.hold);
-        }
-        throw error;
-      } finally { if (entry?.kind === 'validate' && !accepted) attemptRefused(request, failure); else attempts.delete(request); }
-    },
-    perform: (body) => {
-      requireJobId(body?.scope?.jobId);
-      return resolveBuyer(structuredClone(body), { writable: () => writable(body.scope.jobId, body.scope.buyer) });
-    },
-    // A finished attempt releases only its own hold (one per journal owner); an
-    // uncertain effect stays fenced and an authenticated resume reserves fresh capacity.
-    settled: (contextHold)=>{
-      if(!contextHold?.hold)return;
-      requireJobId(contextHold.jobId);
-      return release(contextHold.jobId,contextHold.hold);
-    },
-    // An uncertain step is answered from both Vet records read back and
-    // verified; nothing is written or run again. Failing that, a step a
-    // shutdown cut before anything of it was signed or sent (resumable) may
-    // resume; every other uncertain step stays fenced.
-    async reconcile({ body }) {
-      requireJobId(body?.scope?.jobId);
-      let answer = null;
-      try { answer = await recover(structuredClone(body)); } catch { return null; }
-      if (answer?.disposition === 'present' || answer?.code === 'party_vet_non_pass') return { disposition: 'present', value: answer };
-      if (resumable === null) return null;
-      let cut = null;
-      try { cut = await resumable(structuredClone(body)); } catch { return null; }
-      return Number.isSafeInteger(cut?.writes) && cut.writes > 0 && cut.writes <= VET_WRITES ? { disposition: 'resume', writes: cut.writes } : null;
-    },
-    // Release the previous owner's exact hold while the journal still names that owner, so a failed
-    // release leaves the step as it was and a later resume names the same hold. Then reserve the new
-    // journal owner and take its hold.
-    resume: async(reservation,request,store,{writes})=>{
-      requireJobId(request?.jobId);
-      if(typeof store?.resume!=='function')return null;
-      try { await checkPolicy(request); } catch { return null; }
-      if(!await release(request.jobId,`${reservation.effectKey}:${reservation.owner}`))return null;
-      let resumed;
-      try { resumed=store.resume(reservation,request); } catch { return null; }
-      return admitOwned(resumed,request,store,writes);
     },
   });
 }

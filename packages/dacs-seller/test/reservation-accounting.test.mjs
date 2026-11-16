@@ -5,17 +5,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect, inspectWireOperation, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
-import { RESERVATION_LEDGER, sellerStoreInternals, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
+import { RESERVATION_LEDGER, sellerStoreInternals, SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 import { createReservationAccounting } from '../src/dacs/seller-reservation-accounting.mjs';
-import DatabaseSync from 'better-sqlite3';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS } from '../src/dacs/session-admission.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
-import { accountingFixture, T0, JOB, JOB2, BUYER, SELLER, OTHER, PIN, PROPOSALS, PAYMENTS, PAYMENT_TX, CONTEXT, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
+import { accountingFixture, T0, JOB, JOB2, BUYER, SELLER, OTHER, PIN, PAYMENTS, PAYMENT_TX, CONTEXT, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
-import { world as contextWorld, presentContext } from './helpers/d5-http-fixture.mjs';
 
 const refused = (code, status) => ({ code, ...(status === undefined ? {} : { status }) });
 const cause = new Error('TEST interrupted process');
@@ -748,66 +746,6 @@ test("the old path refuses another buyer's request for a job an accounted contex
   assert.throws(() => oldReserve(f, contextPayload(f, { buyer: OTHER.claim })), refused('peer_job_conflict', 409));
   assert.equal(f.jobRows().length, 0);
   assert.doesNotThrow(() => oldReserve(f, f.payload()));
-});
-
-// Exercise presentation decisions through the D21 context route and its retained challenge ledger.
-async function presentedContextFixture(t, options = {}) {
-  const limits = { maxStartsPerHour: 100, maxStartsPerBuyerPerHour: 100 };
-  const w = await contextWorld(t, { ...options, limits, recover: presentContext });
-  const input = await w.wire({ jobId: JOB }), p = w.auth.readRequest(input.header), body = JSON.parse(input.text);
-  let store = w.store;
-  t.after(() => store.close());
-  return { w, p, body, store: () => store, reopen() {
-    store.close();
-    store = createSellerTransportStore({ path: w.path, now: w.now, contextStartLimits: limits, ...options });
-  } };
-}
-const issueChallenge = (f, jobId = JOB) => f.store().challenges.issue({ jobId, buyer: f.p.buyer },
-  sellerContextScopeHash(sellerContextChallengeScope({ ...f.body.scope, jobId })));
-const presented = (f) => () => f.w.route.reserve(f.p, f.body, f.store());
-
-test('a context start refused at full job capacity consumes its challenge, so the presentation cannot be tried again', async t => {
-  const f = await presentedContextFixture(t, { maxJobs: 1 });
-  f.store().reserve({ ...f.p, jobId: JOB2, path: PROPOSALS, nonce: sha256Hex('full-job prior nonce') }, {});
-  const challenge = issueChallenge(f), start = presented(f);
-  await assert.rejects(start(), refused('peer_job_capacity', 503));
-  const retained = f.store().challenges.retained(challenge.sessionNonce);
-  assert.equal(retained.state, 'failed');
-  assert.equal(retained.failure.code, 'peer_job_capacity');
-  await assert.rejects(start(), error => error.code === 'context_challenge_failed' && error.cause === 'peer_job_capacity');
-  const db = new DatabaseSync(f.w.path);
-  t.after(() => db.close());
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 1);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'peer_context_admissions'").get().n, 0);
-  // The same dry store decision refuses without a second nonce or an admission.
-  assert.throws(() => f.store().reserve(f.p, f.body, { admit: f.w.now, dryRun: true }), refused('peer_job_capacity', 503));
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 1);
-});
-
-test('a job that already holds the only context record retries its retained challenge; another job is not issued one', async t => {
-  for (const accounted of [false, true]) for (const restart of [false, true]) {
-    const f = await presentedContextFixture(t, { maxContextRecords: 1 });
-    const challenge = issueChallenge(f);
-    if (accounted) {
-      const payload = { ...f.p, profile: FIXTURE_PROFILE };
-      await f.store().reservationAccounting.reserveAccounted({ checked: { body: {}, reserve: async () => ({ state: 'new' }) },
-        payload, route: CONTEXT, operationId: wireOperationId(payload), keepProfile: FIXTURE_PROFILE });
-    } else {
-      const reservation = await presented(f)();
-      f.store().finish(reservation, 200, JSON.stringify(await presentContext(f.body)));
-    }
-    if (restart) f.reopen();
-    assert.equal(challenge.expiresAt, f.w.now() + 600000);
-    assert.throws(() => issueChallenge(f, JOB2), refused('peer_context_capacity', 503));
-    if (accounted) {
-      assert.equal(issueChallenge(f).sessionNonce, challenge.sessionNonce);
-      await assert.rejects(presented(f)(), refused('peer_operation_conflict', 409));
-    } else {
-      // K1 closes fresh issuance once a presentation has been accepted; the accepted nonce alone retries.
-      assert.throws(() => issueChallenge(f), refused('context_job_closed', 409));
-      assert.equal((await presented(f)()).disposition, 'cached');
-    }
-  }
 });
 
 test('a job that already holds the only context record is issued a fresh challenge for its retry; another job is not', async t => {

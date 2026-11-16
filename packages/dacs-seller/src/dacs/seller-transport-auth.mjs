@@ -269,7 +269,9 @@ export const RESERVATION_LEDGER = Object.freeze({
     "SELECT jobId AS job, buyer, json_extract(record, '$.seller') AS seller, json_extract(record, '$.listingPin') AS pin FROM kit_context_admissions"]),
 });
 const NO_DELEGATION = Object.freeze({ assertStillLive: () => {} });
-// The route's default unpaid-start limits (seller-context-route.mjs SELLER_CONTEXT_LIMITS).
+// The default unpaid-start limits: five accepted starts per buyer per rolling hour, and 12 overall, which fill the default 24 policy writes
+// an hour (operator-approval.mjs SELLER_POLICY_DEFAULTS) at two Vet CREATEs a start. They count the durable admission records, so only
+// accepted new starts count, also after a restart.
 const SELLER_CONTEXT_START_LIMITS = Object.freeze({ maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 5 });
 /**
  * Opens the private transport journal and the one challenge ledger on its SQLite handle.

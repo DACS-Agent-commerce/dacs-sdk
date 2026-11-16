@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Server } from 'node:net';
 import Database from 'better-sqlite3';
@@ -13,9 +13,7 @@ import { createSellerTransportServerAuth, createSellerTransportClientAuth,
   sellerSessionDelegationSigningBytes, SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_PROFILE_ID, TP1_PROFILE_REVISION, TP1_BASE_REVISION } from '@kynesyslabs/dacs/wire';
 import { createSellerChallengeLedger } from '../src/dacs/seller-challenge-ledger.mjs';
-import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';
 import { KIT_TP1_VET_MODE } from '../src/host.mjs';
-import { createSellerContextAdmission, releaseSellerContextHolds, parsePolicyLedger } from '../src/devnet-demo/operator-approval.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { NOW, testWallet, buyer as agentBuyer, seller as agentSeller } from './helpers/protocol-fixture.mjs';
 import { proposalAdmissionFixture } from './helpers/proposal-admission-fixture.mjs';
@@ -29,7 +27,7 @@ import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
 import { testNetwork, withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 
-const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000, DEADLINE = 10000;
+const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000;
 const buyer = testWallet(1), seller = testWallet(2);
 const JOB = generateCanonicalJobId({ timestamp: T0, entropy: new Uint8Array(10).fill(0x11) });
 const JOB2 = generateCanonicalJobId({ timestamp: T0, entropy: new Uint8Array(10).fill(0x22) });
@@ -39,16 +37,11 @@ const flush = async () => { for (let i = 0; i < 24; i++) await Promise.resolve()
 const barrier = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const errorOf = async promise => { try { await promise; } catch (error) { return error; } assert.fail('expected refusal'); };
 const titles = {
-  "T05": "every context-step refusal records `failed` with its code; an identical retry answers that cause without validating",
   "T06": "a body-check refusal after the attempt records `failed`; no current-generation row is left `attempted`",
   "T10": "an expired delegation cannot issue or attempt through the guarded store",
-  "T11": "today's route answers every issue refusal with its code and zero ledger mutations",
   "T12": "host start closes earlier-generation attempts before the listener opens",
-  "T14": "an in-process stop request refuses issuance with `seller_stopped` and zero rows",
   "T20": "with `maxRecords` 1 and the clock advanced past the nonce window each time, three signed context requests naming an unknown, a consumed and a mismatched challenge each refuse with their K1 code while `peer_nonces` and `peer_nonce_retention` never exceed one row each (expired rows are reclaimed before any refusal is recorded; a dry-run `classify` writes nothing), also after reopening, and the ledger gains no row for the unknown nonce",
   "T15": "the existing route- and store-level challenge tests pass unchanged in name on the one ledger",
-  "T16": "the buyer-access callback rejecting, never settling, settling at 9,999 ms and at 10,000 ms, and refusing or succeeding after the deadline, each on issuance, first admission and resume: a timeout answers 503 `session_admission_unavailable` with its cause and `buyer_access_closed` keeps its code; issuance touches no ledger; the first admission's owner records `failed` by CAS; resume answers null; a late result runs no issuer, hold, reservation or effect; a later independent issuance completes",
-  "T17": "the same cases for the known-job callback, with `context_job_unknown` keeping its code; resume's refusal leaves the accepted row and its ownership unchanged",
   "T18": "through the composed host, a `contextSessionState` answering a DACS-5 terminal state lets reclamation take eligible rows once; nonterminal, `null`, throwing, agent-stage and Promise-returning answers keep them. Round 3: a rejected Promise, a rejecting thenable, a thenable whose `then` throws and a Promise fulfilled with a terminal name each keep the rows; the host stays alive, an `unhandledRejection` listener sees nothing, and the late fulfilment reclaims nothing; a later synchronous terminal answer then reclaims the eligible rows once. The same after a restart and after a live change to terminal; a host without the option reclaims nothing"
 };
 Object.assign(titles, {
@@ -64,26 +57,16 @@ Object.assign(titles, {
 });
 const card = id => `P09a2-${id} ${titles[id]}`;
 
-// `options.parties`, `options.listing` and `options.time` let the composed agent tests share the route's store and clock.
+// `options.parties`, `options.listing` and `options.time` let the composed agent tests share the fixture's store and clock.
 async function fixture(t, options = {}) {
   const { buyer, seller } = options.parties ?? defaultParties;
   const directory = await mkdtemp(join(tmpdir(), 'TEST-one-nonce-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, 'transport.sqlite'), listing = options.listing ?? fixtureListing(seller, { now: T0 }), pin = listingPin(listing), support = purchaseSupport(listing);
   let time = options.time ?? T0, store, generation = 0;
-  const calls = { access: 0, known: 0, admission: 0, holds: 0, effects: 0, releases: 0 };
-  const policy = { access: () => {}, known: () => true, hold: () => null, ...options.policy,
-    admission: options.policy?.admission ?? (({ jobId, bundle }) => admittedSession({ jobId, bundle, bundleHash: identityBundleHash(bundle), seller: seller.claim, listingPin: pin })) };
+  const policy = { admission: options.policy?.admission ?? (({ jobId, bundle }) => admittedSession({ jobId, bundle, bundleHash: identityBundleHash(bundle), seller: seller.claim, listingPin: pin })) };
   const open = () => store = withFixtureProfile(createSellerTransportStore({ path, now: () => time, generation: `TEST-generation-${++generation}`, ...options.store }));
   open(); t.after(() => store.close());
-  const route = createSellerContextRoute({ listing, now: () => time, writable: () => true,
-    assertBuyerAccess: async value => { calls.access++; return policy.access(value); },
-    knownJob: async (...args) => { calls.known++; return policy.known(...args); },
-    admitPresentation: async value => { calls.admission++; return policy.admission(value); },
-    admitWrites: async value => { calls.holds++; return policy.hold(value); },
-    releaseWrites: async value => { calls.releases++; return policy.release?.(value); },
-    resolveBuyer: async body => { calls.effects++; return { disposition: 'present', value: { scope: body.scope } }; },
-    recover: async body => policy.recover?.(body) ?? null, resumable: async body => policy.resumable?.(body) ?? null });
   const rows = (table = 'kit_challenges') => {
     const db = new Database(path, { readonly: true });
     try { return db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table) ? db.prepare(`SELECT * FROM ${table}`).all() : []; } finally { db.close(); }
@@ -95,7 +78,7 @@ async function fixture(t, options = {}) {
   const request = (body, path = SELLER_CONTEXT_PATH) => ({ version: '1', kind: 'request', buyer: buyer.claim, seller: seller.claim,
     jobId: body.scope.jobId, listingPin: pin, agreementHash: sellerContextScopeHash(body.scope), method: 'POST', path,
     bodyHash: sha256Hex(JSON.stringify(body)), nonce: Buffer.from(`TEST-${time}-${generation}`).toString('base64url'), issuedAt: time, expiresAt: time + 60000 });
-  const issue = async (jobId = JOB) => { const body = challengeBody(jobId); return route.challenge(request(body, SELLER_CONTEXT_CHALLENGE_PATH), body, store); };
+  const issue = async (jobId = JOB) => { const body = challengeBody(jobId); return store.challenges.issue(request(body, SELLER_CONTEXT_CHALLENGE_PATH), sellerContextScopeHash(body.scope)); };
   const input = async (jobId = JOB, amend = () => {}) => {
     const { sessionNonce } = await issue(jobId);
     const bundle = { bundleVersion: '1', presentedBy: buyer.claim, presentedAt: time, sessionNonce, claims: [{ ref: buyer.claim }] };
@@ -104,45 +87,25 @@ async function fixture(t, options = {}) {
     const body = { scope: { ...scope(jobId), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle };
     return { body, request: request(body), nonce: sessionNonce };
   };
-  return { route, calls, policy, rows, scope, challengeBody, request, issue, input, path, listing, pin,
+  // The first context admission as the ledger and the journal see it: the nonce attempt, the session admission of the presentation, the
+  // journal reservation and the acceptance of the nonce. A failed admission records the attempt as failed. Resolves with the reservation.
+  const accept = async ({ body, request }) => {
+    const nonce = body.buyerIdentityBundle.sessionNonce, owned = store.challenges.attempt({ request, path: 'context', nonce, jobId: request.jobId, buyer: request.buyer,
+      challengeScopeHash: sellerContextScopeHash(sellerContextChallengeScope(body.scope)), presentationHash: sha256Hex(canonicalize(body.buyerIdentityBundle)) });
+    if (owned.kind === 'refused') throw new SellerTransportError(owned.code, owned.status, { cause: owned.cause });
+    let admission;
+    try { admission = await policy.admission({ jobId: request.jobId, bundle: structuredClone(body.buyerIdentityBundle), nonce }); }
+    catch (error) { store.challenges.recordFailed(owned.owner, nonce, error.code ?? 'operation_uncertain'); throw error; }
+    const reservation = store.reserve(request, body, { admit: () => time, challengeNonce: nonce });
+    store.challenges.accept(owned.owner, nonce, { buyerBundleText: canonicalize(body.buyerIdentityBundle), buyerBundleHash: identityBundleHash(body.buyerIdentityBundle), admission,
+      admittedAt: store.contextAdmission(request.jobId)?.admittedAt, firstAdmission: { challengeExpiresAt: store.challenges.retained(nonce).expiresAt, generatedAt: body.scope.generatedAt, checkedAt: time } });
+    return reservation;
+  };
+  return { policy, rows, scope, challengeBody, request, issue, input, accept, path, listing, pin,
     get store() { return store; }, advance: ms => { time += ms; }, now: () => time,
     reopen() { store.close(); open(); }, closeLost() { store.challenges.closeLostValidations(); store.recoverLostContextReservations(); } };
 }
 
-
-test(card('T05'), async t => {
-  for (const point of ['scope', 'access', 'known', 'admission', 'hold', 'untyped', 'untypedDacsError', 'malformedAdmission', 'malformedCode', 'acceptanceSave']) await t.test(point, async t => {
-    const f = await fixture(t), input = await f.input();
-    const code = { scope: 'context_scope_invalid', access: 'buyer_access_closed', known: 'context_job_unknown',
-      admission: 'session_not_admitted', hold: 'seller_budget_refused', untyped: 'operation_uncertain', untypedDacsError: 'operation_uncertain', malformedAdmission: 'session_admission_unavailable', malformedCode: 'operation_uncertain', acceptanceSave: 'EIO' }[point];
-    if (point === 'scope') input.body.scope.buyerBundleHash = sha256Hex('TEST wrong digest');
-    if (point === 'access') f.policy.access = () => { throw new SellerTransportError(code, 409); };
-    if (point === 'known') f.policy.known = () => false;
-    if (point === 'admission') f.policy.admission = () => { throw new SellerTransportError(code, 409); };
-    if (point === 'acceptanceSave') {
-      const prepare=Database.prototype.prepare;
-      t.mock.method(Database.prototype,'prepare',function(sql){
-        const statement=prepare.call(this,sql);
-        if(sql.startsWith('UPDATE kit_context_reservations SET accepted = 1'))statement.run=()=>{throw Object.assign(new Error('TEST acceptance marker save failed'),{code:'EIO'});};
-        return statement;
-      });
-    }
-    if (point === 'malformedCode') f.policy.admission = () => { throw Object.assign(new Error('TEST malformed refusal code'),{code:''}); };
-    if (point === 'malformedAdmission') f.policy.admission = () => null;
-    if (point === 'hold') f.policy.hold = () => 'TEST refused';
-    if (point === 'untyped') f.policy.admission = () => { throw new Error('TEST admission interrupted'); };
-    if (point === 'untypedDacsError') f.policy.admission = () => { throw new DacsError('TEST admission interrupted'); };
-    const error = await errorOf(f.route.reserve(input.request, input.body, f.store));
-    if (point === 'untypedDacsError') assert.ok(error instanceof DacsError && !('code' in error), 'the thrown error is an uncoded DacsError');
-    assert.equal(typeof error.code==='string' && error.code ? error.code : 'operation_uncertain', code);
-    const row = f.store.challenges.retained(input.nonce); assert.equal(row.state, 'failed'); assert.equal(row.failure.code, code);
-    if(point==='acceptanceSave'){assert.equal(f.rows('kit_context_reservations').length,0);assert.equal(f.rows('peer_effects').length,0);assert.equal(f.calls.releases,1);}
-    const counts = { ...f.calls };
-    const retry = await errorOf(f.route.reserve({ ...input.request }, input.body, f.store));
-    assert.equal(retry.code, 'context_challenge_failed'); assert.equal(retry.cause, code);
-    assert.deepEqual(f.calls, counts); assert.equal(f.calls.effects, 0);
-  });
-});
 
 test(card('T10'), async t => {
   const f = await fixture(t), body = f.challengeBody(), session = testWallet(3);
@@ -157,34 +120,7 @@ test(card('T10'), async t => {
   f.advance(1000);
   for (const action of [() => auth.store.challenges.issue(request, sellerContextScopeHash(body.scope)),
     () => auth.store.challenges.issueForOperator(request), () => auth.store.challenges.attempt({ request })]) assert.throws(action, { code: 'peer_delegation_expired' });
-  assert.equal(f.rows().length, 0); assert.equal(f.calls.holds, 0); assert.equal(f.calls.effects, 0);
-});
-
-test(card('T11'), async t => {
-  const changes = [null, ...['source', 'wallet', 'seller', 'listingPin', 'rail', 'payee', 'price'].map(field => field),
-    -600001, -600000, 600001, 'unsafe', 'string', 'job', 'requestJob', 'access', 'known', 'clock'];
-  for (const change of changes) await t.test(String(change), async t => {
-    const f = await fixture(t), body = f.challengeBody(), request = f.request(body, SELLER_CONTEXT_CHALLENGE_PATH);
-    let expected = 'context_scope_invalid';
-    if (change === null || change === -600000) expected = null;
-    if (['source', 'wallet', 'seller', 'payee'].includes(change)) body.scope[change] = 'TEST other';
-    if (change === 'listingPin' || change === 'rail') body.scope[change] = { ...body.scope[change], [change === 'rail' ? 'railVersion' : 'version']: 2 };
-    if (change === 'price') body.scope.price = { ...body.scope.price, amount: '99' };
-    if (typeof change === 'number') { body.scope.generatedAt += change; if (expected) expected = 'context_generated_at'; }
-    if (change === 'unsafe' || change === 'string') { body.scope.generatedAt = change === 'unsafe' ? 2 ** 53 : String(T0); expected = 'context_generated_at'; }
-    if (change === 'job') { body.scope.jobId = JOB2; expected = 'peer_job_mismatch'; }
-    if (change === 'requestJob') { request.jobId = JOB.toLowerCase(); expected = 'peer_job_invalid'; }
-    if (change === 'access') { f.policy.access = () => { throw new SellerTransportError('buyer_access_closed', 409); }; expected = 'buyer_access_closed'; }
-    if (change === 'known') { f.policy.known = () => false; expected = 'context_job_unknown'; }
-    if (change === 'clock') { f.advance(600001); expected = 'context_generated_at'; }
-    let mutations = 0;
-    const prepare = Database.prototype.prepare;
-    t.mock.method(Database.prototype, 'prepare', function (sql) { if (/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql)) mutations++; return prepare.call(this, sql); });
-    if (expected) assert.equal((await errorOf(f.route.challenge(request, body, f.store))).code, expected);
-    else assert.match((await f.route.challenge(request, body, f.store)).sessionNonce, /^[0-9a-f]{64}$/);
-    assert.equal(mutations, expected ? 0 : 1); t.mock.restoreAll();
-    assert.equal(f.rows().length, expected ? 0 : 1); assert.equal(f.calls.holds, 0); assert.equal(f.calls.effects, 0);
-  });
+  assert.equal(f.rows().length, 0);
 });
 
 async function hostFixture(t, edit = source => source) {
@@ -219,13 +155,6 @@ test(card('T12'), async t => {
   assert.equal(f.api.testStore.challenges.retained(challenge.sessionNonce).owner.generation, old.owner.generation);
 });
 
-test(card('T14'), async t => {
-  const stop = await privateModule(new URL('../src/devnet-demo/stop-request.mjs', import.meta.url), []);
-  const f = await fixture(t, { store: { stopped: stop.stopRequested } });
-  stop.requestStop();
-  assert.equal((await errorOf(f.issue())).code, 'seller_stopped'); assert.equal(f.rows().length, 0);
-});
-
 test(card('T15'), () => {
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
   // The default reporter differs between Node lines, so the child prints TAP explicitly.
@@ -234,50 +163,6 @@ test(card('T15'), () => {
   assert.equal(result.status, 0, result.stdout + result.stderr);
   // At least one selected test passed. The `# pass` count is no proof: Node may count a file in which no test matched as a passing test.
   assert.match(result.stdout, /^\s*ok \d+ - T[1-6] /m);
-});
-
-for (const [id, port, code] of [['T16', 'access', 'buyer_access_closed'], ['T17', 'known', 'context_job_unknown']]) test(card(id), async t => {
-  for (const stage of ['issue', 'first', 'resume']) for (const outcome of ['reject', 'policy', 'never', '9999', '10000', 'late-refuse', 'late-success']) {
-    await t.test(`${stage} ${outcome}`, async t => {
-      const f = await fixture(t), input = stage === 'issue' ? null : await f.input();
-      let reservation;
-      if (stage === 'resume') {
-        reservation = await f.route.reserve(input.request, input.body, f.store);
-        f.store.finish(reservation, 503, '{}'); reservation = f.store.reserve(input.request, input.body);
-      }
-      const gate = barrier(), cause = new Error('TEST policy read interrupted');
-      f.policy[port] = () => outcome === 'reject' ? Promise.reject(cause)
-        : outcome === 'policy' ? Promise.reject(new SellerTransportError(code, 409)) : gate.promise;
-      t.mock.timers.enable({ apis: ['setTimeout'] });
-      const beforeJournal = f.rows('peer_effects');
-      const before = f.rows(), effects = f.calls.effects, holds = f.calls.holds;
-      const work = stage === 'issue' ? f.issue() : stage === 'first' ? f.route.reserve(input.request, input.body, f.store)
-        : f.route.resume(reservation, input.request, f.store, { writes: 1 });
-      let settled = false; const observed = work.then(value => ({ value }), error => ({ error })).then(value => { settled = true; return value; });
-      await flush();
-      if (!['reject', 'policy'].includes(outcome)) {
-        t.mock.timers.tick(DEADLINE-1); await flush(); assert.equal(settled, false);
-        if (outcome === '9999') gate.resolve(true);
-        else { t.mock.timers.tick(1); if(outcome==='10000')gate.resolve(true); }
-      }
-      await flush(); const result = await observed;
-      if (outcome === '9999') assert.ok(stage === 'issue' ? result.value?.sessionNonce : result.value?.disposition === 'perform');
-      else if (stage === 'resume') { assert.equal(result.value, null); assert.deepEqual(f.rows(), before); assert.deepEqual(f.rows('peer_effects'), beforeJournal); }
-      else {
-        assert.equal(result.error?.code, outcome === 'policy' ? code : 'session_admission_unavailable');
-        if (outcome !== 'policy') { assert.equal(result.error.status, 503); if(outcome==='reject')assert.equal(result.error.cause,cause);else assert.equal(result.error.cause?.name,'TimeoutError'); }
-        if (stage === 'issue') assert.equal(f.rows().length, 0);
-        else { const row = f.store.challenges.retained(input.nonce); assert.equal(row.state, 'failed'); assert.equal(row.failure.code, result.error.code); }
-      }
-      if (outcome !== '9999') {
-        const saved = f.rows();
-        if (outcome === 'late-refuse') gate.reject(new SellerTransportError(code, 409)); else if(outcome!=='never')gate.resolve(true);
-        await flush(); assert.deepEqual(f.rows(), saved); assert.equal(f.calls.holds, holds); assert.equal(f.calls.effects, effects);
-        f.policy[port] = () => true; assert.ok((await f.issue(JOB2)).sessionNonce, 'independent issuance is not blocked');
-      }
-      t.mock.timers.reset();
-    });
-  }
 });
 
 test(card('T18'), async t => {
@@ -309,104 +194,6 @@ test(card('T18'), async t => {
   assert.equal(attempt().sessionNonce, attempt().sessionNonce);
 });
 
-test('context-refusal-save-restart', async t => {
-  for (const saveFails of [false,true]) await t.test(`saveFails=${saveFails}`, async t => {
-    const f = await fixture(t), input = await f.input();
-    f.policy.admission = () => { throw new SellerTransportError('session_not_admitted',409); };
-    if(saveFails) {
-      const prepare=Database.prototype.prepare;
-      t.mock.method(Database.prototype,'prepare',function(sql){
-        const statement=prepare.call(this,sql);
-        if(sql.startsWith("UPDATE kit_challenges SET state = 'failed'"))statement.run=()=>{throw Object.assign(new Error('TEST refusal save interrupted'),{code:'EIO'});};
-        return statement;
-      });
-    }
-    assert.equal((await errorOf(f.route.reserve(input.request,input.body,f.store))).code,saveFails?'EIO':'session_not_admitted');
-    t.mock.restoreAll();
-    assert.equal(f.store.challenges.retained(input.nonce).state,saveFails?'attempted':'failed');
-    f.reopen();f.closeLost();const before={...f.calls};
-    const retry=await errorOf(f.route.reserve({...input.request},input.body,f.store));
-    assert.equal(retry.code,'context_challenge_failed');assert.equal(retry.cause,saveFails?'validator_lost':'session_not_admitted');assert.deepEqual(f.calls,before);
-    assert.equal(f.calls.holds,0);assert.equal(f.calls.effects,0);
-  });
-});
-
-test('legacy-context-pending-owner-crash', async t => {
-  for (const stage of ['unaccepted','accepted','refused']) await t.test(stage, async t => {
-    const accepted=stage==='accepted';
-    const f = await fixture(t), input = await f.input(), effectPath = join(dirname(f.path), 'policy.jsonl');
-    const config = { evidencePath: effectPath, sellerApproval: { mode: 'policy', maxWriteTotalOs: '4', maxWritesPerHour: 2, maxTotalOsPerHour: '8' }, now: f.now };
-    const policy = createSellerContextAdmission(config);
-    f.policy.hold = value => policy.reserve(value);
-    f.policy.release = ({ jobId, hold }) => releaseSellerContextHolds({ ...config, jobId, holdId: hold });
-    let reservation;
-    if (accepted) reservation = await f.route.reserve(input.request, input.body, f.store);
-    else {
-      f.route.onRejectedBody(input.request, input.body, f.store);
-      reservation = f.store.reserve(input.request, input.body, { admit: f.now, challengeNonce: input.nonce });
-      assert.equal(await policy.reserve({ jobId: JOB, effect: reservation.effectKey, writes: 2, hold: reservation.effectKey }), null);
-    }
-    if(stage==='refused')f.store.challenges.recordFailed(f.store.challenges.retained(input.nonce).owner,input.nonce,'seller_budget_refused');
-    assert.equal(f.store.contextHoldState({ jobId: JOB, effect: reservation.effectKey }), 'pending');
-    if (accepted) {
-      const db = new Database(f.path);
-      // An older failed challenge for this job must not erase its later accepted reservation.
-      db.prepare("INSERT INTO kit_challenges (nonce,jobId,buyer,challengeScopeHash,origin,issuedAt,expiresAt,state,failure) SELECT ?,jobId,buyer,challengeScopeHash,origin,issuedAt,expiresAt,'failed',? FROM kit_challenges WHERE nonce = ?").run(sha256Hex('TEST earlier failed challenge'), JSON.stringify({code:'context_challenge_expired'}), input.nonce);
-      db.close();
-    }
-    f.reopen(); f.store.challenges.closeLostValidations();
-    const beforeNonces = f.rows('peer_nonces'), prepare = Database.prototype.prepare;
-    t.mock.method(Database.prototype,'prepare',function(sql){
-      const statement = prepare.call(this,sql);
-      if(sql.startsWith(accepted ? "UPDATE peer_effects SET state = 'uncertain'" : 'DELETE FROM peer_effects')) {
-        statement.run = () => { throw Object.assign(new Error('TEST recovery commit interrupted'),{code:'EIO'}); };
-      }
-      return statement;
-    });
-    assert.throws(()=>f.store.recoverLostContextReservations(),{code:'EIO'}); t.mock.restoreAll();
-    assert.deepEqual(f.rows('peer_nonces'),beforeNonces); assert.equal(f.rows('peer_effects')[0].state,'pending');
-    f.reopen(); f.closeLost(); const startup = createSellerContextAdmission({ ...config, transportStore: f.store }); await startup.ready;
-    f.policy.hold = value => startup.reserve(value);
-    const result = accepted ? await f.route.reserve(input.request, input.body, f.store) : await errorOf(f.route.reserve({ ...input.request }, input.body, f.store));
-    if (!accepted) {
-      assert.equal(result.code, 'context_challenge_failed'); assert.equal(result.cause, stage==='refused'?'seller_budget_refused':'validator_lost');
-      assert.equal(JSON.parse(f.rows('peer_nonces')[0].response).cause,result.cause);
-      assert.ok(parsePolicyLedger(await readFile(effectPath, 'utf8')).rows.every(row => row.released));
-    } else {
-      assert.equal(f.store.challenges.retained(input.nonce).accepted.buyerBundleText,canonicalize(input.body.buyerIdentityBundle));
-      assert.equal(result.disposition, 'uncertain'); assert.equal(await f.route.reconcile({ body: input.body }), null);
-      assert.equal(f.calls.effects, 0); f.policy.resumable = () => ({ writes: 1 });
-      const proof = await f.route.reconcile({ body: input.body }); assert.equal(proof.disposition, 'resume');
-      const resumed = await f.route.resume(result, input.request, f.store, proof); assert.equal(resumed.disposition, 'perform');
-      assert.notEqual(resumed.owner, reservation.owner);
-      assert.throws(() => f.store.finish(reservation, 200, '{}'), { code: 'peer_store_conflict' });
-      f.store.finish(resumed, 200, '{}'); await f.route.settled(resumed.contextHold);
-      const rows = parsePolicyLedger(await readFile(effectPath, 'utf8')).rows;
-      assert.equal(rows.length, 2); assert.ok(rows.every(row => row.released));
-    }
-    assert.equal(f.calls.effects, 0);
-  });
-});
-
-test('legacy-context-reclaimed-acceptance-keeps-uncertainty', async t => {
-  let terminal=false;
-  const f=await fixture(t,{store:{maxChallenges:2,contextSessionState:({jobId})=>terminal&&jobId===JOB?'finalised':null}}),input=await f.input();
-  const evidencePath=join(dirname(f.path),'reclaimed-policy.jsonl');
-  const config={evidencePath,sellerApproval:{mode:'policy',maxWriteTotalOs:'4',maxWritesPerHour:2,maxTotalOsPerHour:'8'},now:f.now};
-  const policy=createSellerContextAdmission(config);f.policy.hold=value=>policy.reserve(value);
-  const reservation=await f.route.reserve(input.request,input.body,f.store);
-  const db=new Database(f.path);
-  db.prepare("INSERT INTO kit_challenges (nonce,jobId,buyer,challengeScopeHash,origin,issuedAt,expiresAt,state,failure) SELECT ?,jobId,buyer,challengeScopeHash,origin,issuedAt+1,expiresAt+1,'failed',? FROM kit_challenges WHERE nonce=?").run(sha256Hex('TEST later failed challenge'),JSON.stringify({code:'context_challenge_expired'}),input.nonce);
-  db.close();f.advance(HOUR);terminal=true;
-  f.store.challenges.issue({jobId:JOB2,buyer:buyer.claim},sha256Hex('TEST reclamation scope'));
-  assert.equal(f.store.challenges.retained(input.nonce),null,'terminal reclamation may remove the accepted challenge');
-  f.reopen();f.closeLost();
-  assert.equal(f.store.contextHoldState({jobId:JOB,effect:reservation.effectKey}),'uncertain','a remaining failed nonce cannot prove this effect was never accepted');
-  const restarted=createSellerContextAdmission({...config,transportStore:f.store});await restarted.ready;
-  assert.equal(parsePolicyLedger(await readFile(evidencePath,'utf8')).rows[0].released,false);
-  assert.equal(f.rows('peer_nonces')[0].response,null);assert.equal(f.calls.effects,0);assert.equal(f.calls.holds,1);
-});
-
 // ---- the agent on the one ledger (P09a2b) ----
 const LIFETIME = 600000, OTHER_BUYER = testWallet(5);
 const watchWrites = t => {
@@ -423,7 +210,7 @@ const refusalOf = async (promise, code, status) => {
   return error;
 };
 
-// The route's store and the agent share one ledger and one clock.
+// The fixture's store and the agent share one ledger and one clock.
 async function composed(t, storeOptions = {}) {
   let agent, f, lose = false, acceptRefusal = null;
   const ledger = () => {
@@ -477,7 +264,7 @@ const sellerChallengeRows = c => {
 
 test(card('T01'), async t => {
   const c = await composed(t), input = await c.f.input();
-  assert.equal((await c.f.route.reserve(input.request, input.body, c.f.store)).disposition, 'perform');
+  assert.equal((await c.f.accept(input)).disposition, 'perform');
   assert.equal(c.f.rows().length, 1); assert.equal(c.admitReads(), 1); assert.equal(c.f.store.challenges.retained(input.nonce).state, 'accepted');
   const watch = watchWrites(t);
   await refusalOf(c.proposal(input.body.buyerIdentityBundle), 'proposal_not_assembled', 503);
@@ -488,7 +275,7 @@ test(card('T01'), async t => {
 test(card('T02'), async t => {
   const c = await composed(t), operator = await c.agent.issueSessionChallenge({ jobId: JOB, buyer: agentBuyer.claim });
   const input = await c.f.input(), other = c.present(operator.sessionNonce);
-  await c.f.route.reserve(input.request, input.body, c.f.store);
+  await c.f.accept(input);
   await c.reopen();
   const taken = await refusalOf(c.proposal(other), 'job_taken', 409);
   assert.match(taken.message, /bound to another buyer or bundle/);
@@ -507,7 +294,7 @@ for (const bundleKind of ['plain', 'extension']) for (const path of ['context', 
     let bundle, nonce;
     if (path === 'context') {
       const input = await c.f.input(JOB, amend); nonce = input.nonce; bundle = input.body.buyerIdentityBundle;
-      await c.f.route.reserve(input.request, input.body, c.f.store);
+      await c.f.accept(input);
     } else {
       nonce = (await c.agent.issueSessionChallenge({ jobId: JOB, buyer: agentBuyer.claim })).sessionNonce; bundle = c.present(nonce, { amend });
       await refusalOf(c.proposal(bundle), 'proposal_not_assembled', 503);
@@ -542,7 +329,7 @@ for (const bundleKind of ['plain', 'extension']) for (const path of ['context', 
 test(card('T04'), async t => {
   const c = await composed(t), input = await c.f.input(), gate = barrier();
   c.f.policy.admission = async value => { await gate.promise; return c.agent.admitSessionPresentation(value); };
-  const validating = c.f.route.reserve(input.request, input.body, c.f.store);
+  const validating = c.f.accept(input);
   assert.equal(c.f.store.challenges.retained(input.nonce).state, 'attempted');
   const watch = watchWrites(t);
   await refusalOf(c.proposal(input.body.buyerIdentityBundle), 'session_admission_unavailable', 503);
@@ -554,7 +341,7 @@ test(card('T04'), async t => {
 
 test(card('T07'), async t => {
   const c = await composed(t), input = await c.f.input();
-  await c.f.route.reserve(input.request, input.body, c.f.store);
+  await c.f.accept(input);
   const operator = await c.agent.issueSessionChallenge({ jobId: JOB2, buyer: agentBuyer.claim });
   await refusalOf(c.proposal(c.present(operator.sessionNonce), { jobId: JOB2 }), 'proposal_not_assembled', 503);
   assert.deepEqual(c.f.rows('sqlite_master').filter(row => row.name === 'peer_context_challenges'), []);
@@ -579,7 +366,7 @@ test(card('T09'), async t => {
   assert.equal(c.f.store.challenges.retained(operator.sessionNonce).state, 'accepted'); assert.equal(c.admitReads(), 1);
   const second = await c.agent.issueSessionChallenge({ jobId: JOB2, buyer: agentBuyer.claim });
   const input = await c.f.input(JOB2, bundle => { bundle.sessionNonce = second.sessionNonce; });
-  assert.equal((await errorOf(c.f.route.reserve(input.request, input.body, c.f.store))).code, 'context_challenge_mismatch');
+  assert.equal((await errorOf(c.f.accept(input))).code, 'context_challenge_mismatch');
   const row = c.f.store.challenges.retained(second.sessionNonce);
   assert.equal(row.state, 'failed'); assert.equal(row.failure.code, 'context_challenge_mismatch'); assert.equal(c.admitReads(), 1);
 });
@@ -670,49 +457,6 @@ test('an uncoded DacsError on the proposal path closes the challenge as operatio
   assert.equal(row.state, 'failed'); assert.equal(row.failure.code, 'operation_uncertain');
 });
 
-// ---- late fixes on the one ledger (P09bbL3) ----
-const presentAnswer = scope => ({ disposition: 'present', value: { scope, input: {} } });
-
-test('context-journal-answers-bytes-the-ledger-never-saw', async t => {
-  for (const stage of ['completed', 'interrupted']) await t.test(stage, async t => {
-    const f = await fixture(t), earlierNonce = sha256Hex('TEST nonce from before the ledger');
-    const input = await f.input(JOB, bundle => { bundle.sessionNonce = earlierNonce; });
-    const first = f.store.reserve(input.request, input.body, { admit: f.now });
-    if (stage === 'completed') f.store.finish(first, 200, JSON.stringify(presentAnswer(input.body.scope)));
-    f.policy.recover = () => presentAnswer(input.body.scope);
-    f.reopen();
-    const reservation = await f.route.reserve(f.request(input.body), input.body, f.store);
-    assert.equal(reservation.disposition, stage === 'completed' ? 'cached' : 'uncertain');
-    assert.equal(f.store.challenges.retained(earlierNonce), null); assert.equal(f.calls.admission, 0); assert.equal(f.calls.effects, 0);
-  });
-});
-
-test('context-reserve-after-a-known-answer-starts-no-new-work', async t => {
-  const f = await fixture(t), input = await f.input(JOB, bundle => { bundle.sessionNonce = sha256Hex('TEST nonce from before the ledger'); });
-  const knownAnswerStore = { challenges: f.store.challenges, classify: () => 'known', reserve: (...args) => f.store.reserve(...args) };
-  assert.equal((await errorOf(f.route.reserve(input.request, input.body, knownAnswerStore))).code, 'peer_context_unadmitted');
-  assert.equal(f.rows('peer_effects').length, 0); assert.equal(f.calls.holds, 0); assert.equal(f.calls.effects, 0);
-});
-
-test('context-journal-readback-after-delegation-expiry', async t => {
-  const f = await fixture(t), input = await f.input(), session = testWallet(3);
-  f.policy.recover = () => presentAnswer(input.body.scope);
-  const first = await f.route.reserve(input.request, input.body, f.store);
-  f.store.finish(first, 200, JSON.stringify(presentAnswer(input.body.scope)));
-  const payload = { version: '1', kind: 'seller-session-delegation', buyer: buyer.claim, sessionPublicKey: session.claim.slice('did:demos:agent:'.length),
-    seller: seller.claim, listingPin: f.pin, jobId: JOB, notBefore: T0, expiresAt: T0 + 1000 };
-  const delegation = { payload, signature: buyer.signBytes(sellerSessionDelegationSigningBytes(payload)).toString('base64url') };
-  f.advance(1000);
-  const auth = createSellerTransportServerAuth({ sellerSigner: signer(seller), listingPin: f.pin, store: f.store, now: f.now, requireDelegation: true });
-  const client = createSellerTransportClientAuth({ sessionSigner: signer(session), delegation, seller: seller.claim, now: f.now, lifetimeMs: 100,
-    resolveJob: () => ({ listingPin: f.pin, agreementHash: sellerContextScopeHash(input.body.scope) }) });
-  const text = JSON.stringify(input.body), { header } = await client.request(SELLER_CONTEXT_PATH, input.body, text);
-  const request = auth.readRequest(header); auth.validate(request, { method: 'POST', path: SELLER_CONTEXT_PATH, rawBody: Buffer.from(text), body: input.body });
-  assert.equal(auth.readbackOnly(request), true);
-  const reservation = await f.route.reserve(request, input.body, auth.store);
-  assert.equal(reservation.disposition, 'cached'); assert.equal(reservation.status, 200); assert.equal(f.calls.effects, 0);
-});
-
 test('host refuses issuance when the session reader fails', async t => {
   for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
     const source = unreadableSource(name), f = await hostFixture(t); let broken = false;
@@ -742,32 +486,6 @@ const proposalInput = (f, jobId = JOB) => {
   const body = { jobId, proposal: {} }, request = f.request({ scope: f.scope(jobId) }, '/dacs/v1/agreements/proposals');
   return { body, request: { ...request, bodyHash: sha256Hex(JSON.stringify(body)) } };
 };
-test('R09 ledger refusal precedes retained recovery', async t => {
-  for (const state of ['issued', 'attempted', 'failed']) await t.test(state, async t => {
-    const f = await fixture(t), input = await f.input();
-    f.store.reserve(input.request, input.body, { admit: f.now });
-    if (state !== 'issued') {
-      const attempt = f.store.challenges.attempt({ nonce: input.nonce, jobId: JOB, buyer: buyer.claim, path: 'context',
-        challengeScopeHash: sellerContextScopeHash(sellerContextChallengeScope(input.body.scope)), presentationHash: sha256Hex(canonicalize(input.body.buyerIdentityBundle)) });
-      assert.equal(attempt.kind, 'validate');
-      if (state === 'failed') f.store.challenges.recordFailed(attempt.owner, input.nonce, 'TEST refused');
-    }
-    const before = recoverySnapshot(f); let classified = 0;
-    const store = { ...f.store, classify() { classified++; throw new Error('TEST classifier must not run'); } };
-    if (state === 'issued') {
-      assert.equal((await f.route.reserve(input.request, input.body, store)).disposition, 'uncertain');
-      assert.equal(f.calls.admission, 1);
-    } else {
-      const error = await errorOf(f.route.reserve(input.request, input.body, store));
-      assert.equal(error.code, state === 'attempted' ? 'context_attempt_pending' : 'context_challenge_failed');
-      assert.equal(error.status, state === 'attempted' ? 503 : 409);
-      if (state === 'failed') assert.equal(error.cause, 'TEST refused');
-      assert.deepEqual(recoverySnapshot(f), before);
-    }
-    assert.equal(classified, 0); assert.equal(f.calls.holds, 0); assert.equal(f.calls.effects, 0);
-  });
-});
-
 test('standalone ledger uses the shared adapter to refuse unavailable state', async t => {
   for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
     const source = unreadableSource(name), directory = await mkdtemp(join(tmpdir(), 'TEST-observer-'));
@@ -815,7 +533,6 @@ test('transport gates refuse unreadable authority', async t => {
     }
     const before = recoverySnapshot(f); broken = true;
     assert.throws(invoke, error => unavailable(error, source)); assert.deepEqual(recoverySnapshot(f), before);
-    assert.equal(f.calls.effects, 0); assert.equal(f.calls.holds, 0);
   });
 });
 

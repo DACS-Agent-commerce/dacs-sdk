@@ -61,7 +61,6 @@ export const WEIGHTS = {
     "confirmed-native-transfer-fixture.test.mjs": 1,
     "context-admission-transaction.test.mjs": 39,
     "context-budgets.test.mjs": 3,
-    "context-compensation.test.mjs": 14,
     "context-hold-startup.test.mjs": 12,
     "d5-admission.test.mjs": 2,
     "d5-challenge-retention.test.mjs": 11,

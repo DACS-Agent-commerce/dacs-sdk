@@ -34,7 +34,6 @@ const DELEGATION_LEAD_MS = 30_000;
 const DELEGATION_LIFETIME_MS = 3_600_000;
 const [SELLER, BUYER, OTHER, SESSION] = [testWallet(2), testWallet(1), testWallet(3), testWallet(99)];
 const signer = (wallet) => ({ claim: wallet.claim, sign: wallet.signBytes });
-const unexpected = (name) => () => { throw new Error(`TEST the challenge route reached ${name}`); };
 
 /** Resolves `entered` when the callback that awaits `pass()` is reached, and lets it go on at `release()`. */
 export function gate() {
@@ -73,11 +72,9 @@ export async function challengeWorld(t,{ store: storeOptions = {}, requireDelega
   };
   open();
   t.after(() => store.close());
-  const route = createSellerContextRoute({ listing, now, writable: unexpected('writable'),
+  const route = createSellerContextRoute({ listing, now,
     assertBuyerAccess: async (buyer) => { calls.access++; return policy.access(buyer); },
-    knownJob: async (...input) => { calls.known++; return policy.known(...input); },
-    admitPresentation: unexpected('admitPresentation'), admitWrites: unexpected('admitWrites'), releaseWrites: unexpected('releaseWrites'),
-    resolveBuyer: unexpected('resolveBuyer'), recover: unexpected('recover') });
+    knownJob: async (...input) => { calls.known++; return policy.known(...input); } });
   const journal = openWireRequestJournal(journalDirectory, { leaseMs: 300_000, clock: now });
   t.after(() => journal.close?.());
   const agent = { claim: SELLER.claim, listingPin: pin, transportAgreementOf: () => { calls.transportAgreementOf++; return null; },

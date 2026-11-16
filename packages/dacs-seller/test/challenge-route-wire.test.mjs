@@ -562,10 +562,3 @@ test('an old-domain challenge request is refused at the wire, unsigned, with not
   assert.equal(answer.signature, undefined);
   assert.equal(w.rows().length, 0);
 });
-
-test('the context route\'s challenge on the raw store still issues, with the store\'s default no-op final check', async (t) => {
-  const w = await challengeWorld(t);
-  const answer = await w.route.challenge({ jobId: JOB2, buyer: w.buyer.claim }, { scope: w.scopeFor(JOB2) }, w.store);
-  assert.match(answer.sessionNonce, NONCE);
-  assert.equal(w.rows().filter((row) => row.jobId === JOB2).length, 1);
-});

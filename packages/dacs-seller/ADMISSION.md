@@ -20,7 +20,7 @@ pre-payment write. #59's admission reserves capacity; it is not signing authorit
 
 | Request kind / condition | Decision and authority | Why | Test |
 | --- | --- | --- | --- |
-| Signed routes | SDK wire domain and bound purchase profile; payments and bundles re-admit durable commitment/Agreement and verify the current receipt under the signed Listing | Every route, the challenge and the context step included, is on the wire domain; an old-domain request is refused | wire-signed-routes.test.mjs (every route answers with a wire response envelope; an old-domain request is refused unsigned; payments and bundles run on the durable commitment) |
+| Signed routes | SDK wire domain and bound purchase profile; payments and bundles re-admit durable commitment/Agreement and verify the current receipt under the signed Listing | Every route, the challenge and the context step included, is on the wire domain; an old-domain request is refused | wire-signed-routes.test.mjs (every route, the challenge and the context step included, answers under the wire response domain; an old-domain request is refused unsigned; payments and bundles run on the durable commitment) |
 | App purchase-source configuration | Refused | The kit has only seller-owned state | d5-admission.test.mjs A1 |
 | Fresh authenticated context, seller-issued challenge, exact scope, access and limits satisfied | Admit the context and reserve at most two Vet writes; each write stays held for exact seller approval | A transport signature authorizes this bounded request, while seller records cannot establish buyer-side cancellation | d5-admission.test.mjs A2; d5-limits-before-effects.test.mjs B1–B5 |
 | Authenticated context challenge request | May write one bounded challenge record; never a Vet or sign-authorization record | Seller-generated challenge binds job, buyer, seller, Listing and exact scope before the bundle is presented | d5-limits-before-effects.test.mjs B22–B25, B27–B28, B30 |
@@ -265,9 +265,9 @@ result is missing. A9 tests a non-default phase and malformed/missing indices.
 The seller currently serves public Deliverables only; createSellerAgent refuses
 other access models locally before any publication.
 
-Canonical job IDs are checked at the transport envelope, direct challenge and
-journal entries, context route/client, and party-Vet provider before hashing or
-protocol callbacks. T21–T22 and B38/B40 cover malformed aliases, case, length,
+Canonical job IDs are checked at the transport envelope, the wire challenge and
+context routes, journal entries, context records and client, and party-Vet
+provider before hashing or protocol callbacks. T21–T22 and B38/B40 cover malformed aliases, case, length,
 range and types; B41 preserves consumption for a canonical cross-job attempt.
 B39 verifies that old or future bundle presentedAt values do not gate admission.
 B42–B43 cover malformed job IDs in signed request bodies and definite client
