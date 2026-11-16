@@ -188,6 +188,10 @@ jobs:
       - name: Build Node host kit
         run: npm run host:build
 
+      - name: Check client signature key validation
+        if: matrix.node-version == '22'
+        run: npm run client-keys:test
+
       - name: Test the kit-client contract harness
         if: matrix.node-version == '22'
         run: npm run kit-client:test

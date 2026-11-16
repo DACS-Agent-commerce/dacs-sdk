@@ -78,7 +78,7 @@ import { isPrivateDirectory } from './private-directory.mjs';
 export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network', 'readCommitmentReceipt']);
-const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'host', 'port', 'now', 'contextSessionState']);
+const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'maxReservationUnits', 'host', 'port', 'now', 'contextSessionState']);
 const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 // The startup binding read is bounded; a later answer grants nothing.
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
@@ -274,13 +274,15 @@ export async function startSellerHost(options) {
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
-    host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
+    maxReservationUnits = maxRecords, host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
   if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
+  if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) throw new TypeError('maxRecords must be a positive integer');
+  if (!Number.isSafeInteger(maxReservationUnits) || maxReservationUnits < 1) throw new TypeError('maxReservationUnits must be a positive integer');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
   if (!isPrivateDirectory(dataDirectory)) throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
   if ((observeDemosTransfer !== undefined && typeof observeDemosTransfer !== 'function') || typeof now !== 'function') throw new TypeError('now and any supplied observeDemosTransfer must be functions');
@@ -323,7 +325,7 @@ export async function startSellerHost(options) {
       wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
     // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
-    const capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
+    const capacity = createPurchaseCapacity({ store, now, maxRecords: maxReservationUnits, sessionState: sellerStoreInternals(store).sessionState });
     // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();
@@ -349,8 +351,9 @@ export async function startSellerHost(options) {
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     let stopping = false;
-    // The seller takes new purchases until it stops, and while a context row's cleanup is unfinished.
-    const sellerReady = () => !stopping && !admission.cleanupPending();
+    // The seller takes new purchases until it stops. A context row with unfinished cleanup keeps its own hold and slot, so it needs no
+    // refusal of other buyers.
+    const sellerReady = () => !stopping;
     // Stopped by the process stop flag or by this host's own close.
     const hostStopped = () => stopping || stopRequested();
     const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
@@ -431,7 +434,7 @@ export async function startSellerHost(options) {
       server.listen({ host, port, exclusive: true }, () => { server.off('error', reject); resolve(); });
     });
     // Unfinished context rows are swept again while the host runs, one sweep at a time. A sweep that cannot finish a row records its cause on
-    // that row, which keeps the host not ready until a later sweep clears it, so a failed pass has nothing more to report here.
+    // that row and a later sweep tries again, so a failed pass has nothing more to report here.
     let sweeping = null;
     const sweepTimer = setInterval(() => {
       sweeping ??= admission.sweep({ startup: false }).catch(() => {}).finally(() => { sweeping = null; });
@@ -439,13 +442,11 @@ export async function startSellerHost(options) {
     let closing = null;
     // Stops accepting, lets requests in progress finish, waits for the provider
     // work and the sweep still running, then closes the journal and the agent
-    // state they write to and releases the state lock.
+    // state they write to and releases the state lock. A context step already
+    // admitted runs to its own outcome or deadline; stopping refuses only new ones.
     const close = () => closing ??= (async () => {
       stopping = true;
       clearInterval(sweepTimer);
-      contextWork.stop();
-      // Before the first wait: the provider of a live context attempt may sign nothing more from here on.
-      contextRoute.closeAttempts(new SellerTransportError('seller_stopped', 503));
       const socketsClosed = new Promise((resolve) => server.close(resolve));
       server.closeIdleConnections();
       destroyUndispatched();
@@ -455,6 +456,8 @@ export async function startSellerHost(options) {
       // shutdown-induced uncertain effect. A readback past its deadline has
       // already answered uncertain, so this wait stays bounded.
       await Promise.allSettled([...active]);
+      // No request is left to start a provider step, so none starts from here on.
+      contextWork.stop();
       // Only now stop the underlying native work, then wait for it: a
       // capability that honours the signal stops early; one that does not
       // keeps ownership until it finishes.

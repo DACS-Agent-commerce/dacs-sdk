@@ -51,7 +51,9 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
-The host's optional `maxRecords` (default 10,000) is the reservation budget. A purchase allocation holds 17 units for each of the
+The host has two separate record limits. `maxRecords` (default 10,000) is the transport store's limit on live nonce records
+and retained accounting rows, and it also sets the store's challenge and context-record caps. `maxReservationUnits` is the purchase capacity's reservation budget; it defaults to `maxRecords`
+and is set on its own to give the budget a different size. A purchase allocation holds 17 units of that budget for each of the
 context, proposals, commitments and payments routes (68 units, or 85 when
 commitments/signature is enabled), and admission allots one only while the whole
 allotment is free. A successful context completion returns only the context
@@ -63,13 +65,15 @@ passed), unless a crash left it still reserving. Charges that no longer count st
 and each admission still scans them; they are never pruned. The host
 composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
-accounting and recording the reservation result. The routes do not yet reserve
-through the coordinator. Admission and accounting accept capacity through their
-internal ports.
-The routes do not yet reserve through these units, so the host's readiness does
-not read them: signed routes reserve through the store's accounting, terminal
-allocation cleanup runs at startup and when a store reader observes a terminal
-session, and the periodic terminal cleanup comes with the routes that use the units.
+accounting and recording the reservation result. Every signed route, the context
+route included, reserves through the coordinator and spends a unit of its
+purchase's slot. The context route's admission allots a new purchase its
+allocation and refuses `seller_not_ready` (503) while the whole allotment is not
+free; the host's readiness does not read the units. Terminal allocation cleanup
+runs at startup and when a store reader observes a terminal session through
+`contextSessionState`. There is no periodic terminal cleanup, so with the default
+`contextSessionState` (which names no state) the units a purchase keeps after
+its context step stay allocated.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
 the old store's checks, startup cleanup and the coordinator) is kept as a durable,
@@ -108,7 +112,8 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
-  maxRecords: 10000,     // optional reservation budget; a purchase allocation is 68 units
+  maxRecords: 10000,     // optional limit on the store's live nonce, challenge and context records and retained accounting rows
+  maxReservationUnits: 10000, // optional reservation budget, default maxRecords; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
@@ -117,8 +122,14 @@ const host = await startSellerHost({
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
                          // payment evidence anchored by the wallet journal (below), and its readback; the
                          // agent reads the signed CREATE's projection from the same journal
-  demDeliveryContext,    // createDemDeliveryContext({ ..., vetMode: KIT_TP1_VET_MODE }): the Vet context the
-                         // Agreement derives from; the host runs in that one mode (see the Vet paragraph)
+  demDeliveryContext,    // createDemDeliveryContext({ ..., vetMode: KIT_TP1_VET_MODE, recoverBuyer, resumableBuyer,
+                         // bindRetainedScope }): the Vet context the Agreement derives from; the host runs in
+                         // that one mode (see the Vet paragraph) and refuses at startup, before the lock and any
+                         // file, a capability built without the three callbacks. recoverBuyer and resumableBuyer
+                         // take (input, { writable, signal }) like resolveBuyer and are reserved for resuming an
+                         // interrupted context step (the host does not call them yet); bindRetainedScope(reader)
+                         // is called once at startup with the reader of completed context scopes and returns
+                         // { sellerBundlePresentedBy }, the Listing's seller presenter
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
@@ -143,7 +154,9 @@ const host = await startSellerHost({
 });
 // journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
 // deliveryJournal = createDeliverableWalletJournal(...) (below); the host refuses any other pair.
-// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
+// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state. A context step
+// already admitted runs to its own outcome (or its 240-second deadline) before the state closes; after a
+// crash during a step, the next start ends that step or marks it uncertain.
 // A buyer gets its challenge from the host's signed challenge route and presents it on the context route.
 ```
 
@@ -339,9 +352,12 @@ limits: 256 KiB, 32768 values, 80 levels deep and 16384 entries in a list. These
 cover any Deliverable the seller can send. A reply over a limit is answered as
 `indeterminate`, never as absent. A reconcile, read or verify that takes longer
 than 30 seconds is also answered as `indeterminate`; a missed deadline does not
-prove that nothing was written. A submit has no deadline. Except for the
-`provenUnsignedAbsence` and `deadRefusedCreate` objects, the caller gets a JSON
-copy of a reply, not the object the capability returned.
+prove that nothing was written. A submit has no deadline. The caller gets a
+checked JSON copy of a reply.
+For `provenUnsignedAbsence` and `deadRefusedCreate`, that copy retains the
+process-local proof. Missing reasons become empty text; errors and
+message-bearing objects use their name and message; function and symbol
+reasons become text. Other reason values must pass the JSON reply limits.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -591,7 +607,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   expected amount.
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent. A kept CREATE whose whole debit is above the ceiling is never
-  broadcast again: `anchorEvidence`, `reconcilePaymentEvidence`,
+  broadcast again, and until the operator clears it (below)
+  `anchorEvidence`, `reconcilePaymentEvidence`,
   `ensureEvidence` and the Deliverable journal's `resume` and
   `submitAuthorized` refuse its address with `write-fee-cap`, naming its hash
   and debit, before any wallet read or signature. `readSignedProjection` still
@@ -601,7 +618,30 @@ per-client limiter so one client cannot exhaust the shared request budget.
   (`code` and `message`) on the held answer of the seller agent. On the
   Deliverable path it is the `reason` of the held, pending or indeterminate
   delivery outcome, which starts with `write-fee-cap:`.
-  There is no operator command to clear a held write.
+  To clear a held write, call `clearHeldWrite({ logicalAddress, txHash })` on
+  the journal (the evidence journal or the Deliverable journal) with the
+  hash the `write-fee-cap` reason names and the address of the write,
+  `dacs4:evidence:<jobId>` on the payment evidence path and
+  `dacs4:deliverable:<jobId>` on the Deliverable path:
+  1. Check on the chain what became of the write. It must have been applied,
+     or another transaction of the writer must have used its nonce.
+  2. Call `clearHeldWrite`. It asks the journal's own `readAccountNonce` and
+     `readTransactionState` and clears the write only if they prove one of the
+     two. It answers `{ status: 'applied', txHash }` when the write was
+     applied: the journal keeps it and sends nothing, even when a later read
+     of the chain fails or answers `pending`. It answers
+     `{ status: 'superseded', txHash }` when the write can no longer execute
+     (the account nonce has passed it and a complete transaction index shows
+     it was not executed): the address is then signed anew by the next
+     `anchorEvidence` or `submitAuthorized`, with a nonce above the kept one.
+     The held write itself is never broadcast.
+  3. If the chain does not prove either, `clearHeldWrite` throws
+     `held_write_still_live` and the write stays held; try again once the
+     chain has moved on. A hash the journal never kept for the address throws
+     `held_write_unknown`, and a write that is not above the ceiling throws
+     `held_write_not_held`.
+  Clearing the same write again answers the same result without reading the
+  chain.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
@@ -967,7 +1007,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   again only after its sources are read again, read only: the retained
   contribution and Agreement, both Vet records with their receipts, and the
   buyer's current access. A completed commitment answer is signed again only
-  after the retained commitment's canonical address, record, transaction and
+  after the buyer's current job-scoped access passes and the retained commitment's
+  canonical address, record, transaction and
   finalized receipt are read again from its source in passive mode; an early
   commitment needs no buyer Agreement anchor for this. A source that fails answers `503
   seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,

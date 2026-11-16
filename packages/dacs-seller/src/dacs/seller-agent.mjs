@@ -1282,6 +1282,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const retained = session?.commitment, logicalAddress = finalityCommitmentAddress(jobId);
     // An early commitment holds no ordinary commitment yet: its retained evidence is the CREATE at its address and the Agreement hash.
     if (!session?.agreementHash || !(retained || (path === '/dacs/v1/commitments/signature' && session.signatureCommitmentHeld))) throw sourceUnavailable('absent');
+    try { assertBuyer(session.buyerBundle.presentedBy, jobId); }
+    catch (error) { throw error?.code === 'buyer_access_closed' ? new SellerTransportError(error.code, error.status) : error; }
     let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
     if (stored?.status !== COMMITMENT_ANSWER_STATUS[path] || stored.address !== logicalAddress ||
         (retained && (retained.logicalAddress !== logicalAddress || retained.agreementHash !== session.agreementHash))) throw sourceUnavailable('changed');
@@ -1761,10 +1763,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!isDeliverableMiss(error)) return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.code ?? 'unknown').slice(0, 64)}: ${String(error?.message ?? error).slice(0, 180)}` };
           read = { status: 'absent' };
         }
-        if (mayPublishAgain(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved nothing signed for the Deliverable can still land' };
+        if (mayPublishAgain(read)) return { status: 'absent', reason: read.reason || 'the reader proved nothing signed for the Deliverable can still land' };
         if (read?.status === 'absent' && deliverableJournal) {
           const asked = await resumeDeliverableJournal(session, work, input.fulfilmentId);
-          return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason ?? 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
+          return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason || 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
         }
         if (read?.status !== 'present') return { status: 'indeterminate', reason: `a submitted Deliverable CREATE did not read back: ${read?.reason ?? read?.status ?? 'missing'}` };
         if (!reportMatches(read.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
@@ -2363,7 +2365,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
      * retained permit, the evidence, the Deliverable and the delivery evidence, against the stored answer; it never runs or claims the payment.
      * A proposal: the current buyer access, the retained contribution and Agreement, the stored answer against that contribution,
      * and both Vet records with their receipts. A commitment (or early commitment): the retained commitment, its canonical address,
-     * its record, transaction and finalized receipt, read from the commitment's source in passive mode, against the stored answer.
+     * its record, transaction and finalized receipt, read from the commitment's source in passive mode, against the stored answer,
+     * and the buyer's current job-scoped access.
      * Resolves with nothing when every one authenticates. Throws SellerTransportError `seller_source_unavailable`
      * (503) with a cause of `absent`, `changed`, `timeout`, `too_large` or `unavailable`, the closed-access refusal as its own
      * SellerTransportError, and a TypeError for a path that has no completed answer here. It writes nothing and signs nothing.
