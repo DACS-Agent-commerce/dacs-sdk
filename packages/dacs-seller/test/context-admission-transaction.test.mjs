@@ -16,7 +16,7 @@ import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PR
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from '../src/dacs/session-admission.mjs';
 import { createSellerContextAdmission, parsePolicyLedger, releaseSellerContextHolds } from '../src/devnet-demo/operator-approval.mjs';
-import { createContextAttempt } from '../src/dacs/seller-context-route.mjs';
+import { createContextAttempt } from '../src/dacs/seller-context-attempt.mjs';
 import { SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
 
 const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000, POLICY_MS = 10000;
