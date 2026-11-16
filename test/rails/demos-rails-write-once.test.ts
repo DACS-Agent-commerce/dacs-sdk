@@ -44,10 +44,11 @@ function confirmation(transaction: { hash: string; content: Record<string, unkno
 /**
  * A Demos node on loopback. Each POST is keyed by its RPC method and the
  * `execute` extra or `nodeCall` message; the first answers for a key are 502
- * as many times as `failures` says, later ones succeed. The node never reports
- * a transaction as included.
+ * as many times as `failures` says, later ones succeed. The node reports a
+ * transaction as included in a block only when `included` is set, and then
+ * only on the hash lookup.
  */
-async function startNode(failures: Record<string, number>) {
+async function startNode(failures: Record<string, number>, options: { included?: boolean } = {}) {
   const keys: string[] = [];
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -77,6 +78,9 @@ async function startNode(failures: Record<string, number>) {
         "nodeCall:getAddressNonce": () => 0,
         "nodeCall:getTransactionStatus": () => ({ state: "pending" }),
         "nodeCall:broadcastNativeTransaction": () => ({ success: true, blockNumber: 7 }),
+        ...(options.included
+          ? { "nodeCall:getTxByHash": () => ({ hash: content.data.hash, blockNumber: 7, status: "confirmed" }) }
+          : {}),
       };
       const response = replies[key]?.() ?? {};
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -132,8 +136,7 @@ describe("Demos payment rails send a transfer once", () => {
     });
   });
 
-  it("pay-d402 broadcasts once when the node answers 502 and reports not ok", async () => {
-    const node = await startNode({ "execute:broadcastTx": 1 });
+  async function settleD402(rpc: string) {
     // demosdk waits up to a minute for inclusion after a broadcast; the rail
     // keeps that default, so shorten it here.
     const settle = D402Client.prototype.settle;
@@ -157,7 +160,7 @@ describe("Demos payment rails send a transfer once", () => {
       },
     );
     const rail = await createPayD402Rail({
-      rpc: node.url,
+      rpc,
       secret: SECRET,
       acknowledgeExperimental: true,
       fetchImpl: async () =>
@@ -173,11 +176,35 @@ describe("Demos payment rails send a transfer once", () => {
       amount: "1000",
       network: "demos",
     });
+    return { rail, result };
+  }
+
+  it("pay-d402 broadcasts once when the node answers 502 and reports not ok", async () => {
+    const node = await startNode({ "execute:broadcastTx": 1 });
+
+    const { rail, result } = await settleD402(node.url);
 
     expect(node.count("execute:confirmTx")).toBe(1);
     expect(node.count("execute:broadcastTx")).toBe(1);
     expect(result).toEqual({
       ok: false,
+      txHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      chainId: "demos",
+      payer: rail.address,
+      payee: RECIPIENT,
+    });
+  });
+
+  it("pay-d402 broadcasts once when the node answers 502 and the hash lookup then finds the transaction", async () => {
+    const node = await startNode({ "execute:broadcastTx": 1 }, { included: true });
+
+    const { rail, result } = await settleD402(node.url);
+
+    expect(node.count("execute:confirmTx")).toBe(1);
+    expect(node.count("execute:broadcastTx")).toBe(1);
+    expect(node.count("nodeCall:getTxByHash")).toBeGreaterThanOrEqual(1);
+    expect(result).toEqual({
+      ok: true,
       txHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       chainId: "demos",
       payer: rail.address,
