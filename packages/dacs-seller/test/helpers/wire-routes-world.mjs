@@ -21,7 +21,7 @@ import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
 import { wireContinuationFixture, receiptReader } from './wire-continuation-fixture.mjs';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth, createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER, createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 
 export const PATHS = DACS_SELLER_HTTP_PATHS;
 export const CONTINUING = [PATHS.payments, PATHS.bundleRequest, PATHS.bundleCountersignature];
@@ -167,7 +167,6 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     const journalDirectory = join(directory, 'wire-journal');
     if (state.journals.length === 0) { mkdirSync(journalDirectory, { mode: 0o700 }); state.journals.push(journalDirectory); }
     const journal = openWireRequestJournal(journalDirectory, { leaseMs, clock });
-    const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: pin, store, now: clock });
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
     // The journal's reservation re-checks authority with one more read, right after the coordinator is entered.
     const reserveCoordinated = reservations.reserveCoordinated.bind(reservations);
@@ -175,7 +174,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
       publicEndpoint: fixture?.listing.seller.publicEndpoint ?? FIXTURE_ENDPOINT, signedListing: fixture?.admittedListing, readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader(), reservations, completion, ...handle.wireOverrides });
-    Object.assign(handle, { store, capacity, authentication, wire, handler: createSellerHttpHandler(agent, { authentication, wire, commitOnSignature }) });
+    Object.assign(handle, { store, capacity, wire, handler: createSellerHttpHandler(agent, { wire, commitOnSignature }) });
   };
   mount();
   t.after(() => handle.store.close());

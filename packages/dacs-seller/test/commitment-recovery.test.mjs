@@ -11,10 +11,7 @@ import {contributionVerifier,agreementInput}from'../src/dacs/purchase-protocol.m
 import {agreementCreateProjection as projection}from'./helpers/agreement-create-projection.mjs';
 import {createSellerAgent}from'../src/dacs/seller-agent.mjs';
 import {fixtureListing,fixtureIdentityBundle}from'./fixtures/listings.mjs';
-import {createSellerHttpHandler}from'../src/dacs/seller-http.mjs';
 import {provenUnsignedAbsence}from'../src/dacs/native-dem-delivery-consumer.mjs';
-import {exchange}from'./helpers/d5-http-fixture.mjs';
-import {createOperatorBuyerAccess}from'../src/devnet-demo/buyer-access.mjs';
 
 const JOB2='01J8N4YV7YVYQ4DB7M8T4C7W0B';
 async function secondEarlyRequest(f,agent){
@@ -58,20 +55,6 @@ for(const retained of [false,'commit','readCommitment'])test(`authenticated ${re
  assert.equal((await current.commitOnSignature(next)).status,'commitment-held');assert.equal(f.local.writes.length,2);
 });
 
-for(const early of [false,true])test(`cached ${early?'signature':'ordinary'} commitment authenticates fresh receipt on every HTTP replay`,async t=>{
- const f=await commitmentFixture(t,{early}),{agent,agreement}=await f.prepare();
- const body=early?{jobId:JOB,agreement,signedProjection:projection(agreement)}:{jobId:JOB};
- const cached=await (early?agent.commitOnSignature(body):agent.commit(body)),writes=f.local.writes.length;
- const store={reserve:()=>({disposition:'cached',status:200,text:JSON.stringify(cached)})};
- const authentication={seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>({jobId:JOB}),validate(){},responseHeader:async()=> 'TEST-header'};
- const handler=createSellerHttpHandler(agent,{authentication,commitOnSignature:early});
- const post=()=>exchange(handler,{url:early?'/dacs/v1/commitments/signature':'/dacs/v1/commitments',text:JSON.stringify(body)});
- assert.equal((await post()).status,200);
- const read=f.local.controls.read;
- f.local.controls.read=row=>row.status==='present'?{...row,receipt:{...row.receipt,evidence:{...row.receipt.evidence,value:'TEST changed proof'}}}:row;
- for(let attempt=0;attempt<2;attempt++)assert.equal((await post()).status,503,'a retained answer cannot replace current authentication');
- f.local.controls.read=read;assert.equal((await post()).status,200);assert.equal(f.local.writes.length,writes);
-});
 test('successful native commitment replays exact state after restart and rejects contradictory block time',async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare();assert.equal((await agent.commit({jobId:JOB})).status,'committed');const kept=agent.durableSessionOf(JOB).commitment;agent.close();const fresh=await f.open();assert.equal((await fresh.commit({jobId:JOB})).status,'committed');assert.deepEqual(fresh.durableSessionOf(JOB).commitment,kept);assert.equal(f.local.writes.length,1);
  f.local.controls.read=row=>row.status==='present'?{...row,receipt:{...row.receipt,blockRef:{...row.receipt.blockRef,timestamp:row.receipt.blockRef.timestamp+1000}}}:row;
@@ -233,21 +216,7 @@ test('read-only commitment authentication with no retained CREATE never signs or
  assert.equal(f.local.writes.length,0);assert.equal(signs,0);
 });
 
-function agentHttp(agent,request,store,options={}){return createSellerHttpHandler(agent,{...options,authentication:{seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>request,validate(){},responseHeader:async()=> 'TEST-header'}});}
 function commitmentRequest(agent,agreementHash,jobId=JOB){return{method:'POST',path:'/dacs/v1/commitments',jobId,seller:seller.claim,buyer:buyer.claim,listingPin:agent.listingPin,agreementHash,bodyHash:core.sha256Hex(JSON.stringify({jobId}))};}
-function uncertainStore(){const reconciles=[],claims=[];return{reconciles,claims,reserve:()=>({disposition:'uncertain',effectKey:'TEST-effect',owner:'TEST-owner'}),claim(reservation){const claimed={...reservation,owner:'TEST-claimed'};claims.push(claimed);return claimed;},reconcile(...args){reconciles.push(args);}};}
-function performStore(){const finishes=[];return{finishes,reserve:()=>({disposition:'perform',effectKey:'TEST-effect',owner:'TEST-owner'}),finish(...args){finishes.push(args);}};}
-
-for(const restart of[false,true])test(`uncertain commitment ${restart?'after restart':'replay'} completes from the retained finalized receipt`,async t=>{
- const f=await commitmentFixture(t),{agent}=await f.prepare();assert.equal((await agent.commit({jobId:JOB})).status,'committed');
- const writes=f.local.writes.length;if(restart)agent.close();const live=restart?await f.open():agent;
- const store=uncertainStore(),request=commitmentRequest(live,core.contentHash(f.controls.agreement.artifact));
- const read=f.native.readRetained;f.native.readRetained=async input=>{assert.equal(store.claims.length,1,'native read follows the transport claim');return read(input);};
- const res=await exchange(agentHttp(live,request,store),{url:'/dacs/v1/commitments',text:JSON.stringify({jobId:JOB})});
- assert.equal(res.status,200);assert.equal(JSON.parse(res.text).status,'committed');
- assert.equal(store.reconciles[0][0],store.claims[0],'settlement uses the same claim');
- assert.equal(store.reconciles.length,1);assert.equal(store.reconciles[0][2],200);assert.equal(f.local.writes.length,writes);
-});
 
 test('uncertain commitment with proven unsigned absence runs the authenticated request once',async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare(),read=f.native.readRetained;
@@ -293,15 +262,6 @@ test('malformed early Agreement is a definite refusal before any effect',async t
  assert.equal(failure?.code,'signature_agreement_invalid');assert.equal(failure?.status,422);assert.equal(f.local.writes.length,0);
 });
 
-test('signature_agreement_invalid is a definite no-effect HTTP refusal',async()=>{
- const {SellerAgentError}=await import('../src/dacs/seller-agent.mjs'),store=performStore();
- const agent={claim:'TEST-seller',listingPin:{TEST:'pin'},commitOnSignature:async()=>{throw new SellerAgentError('signature_agreement_invalid','TEST malformed early Agreement',422);}};
- const authentication={seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>({jobId:JOB}),validate(){},responseHeader:async()=> 'TEST-header'};
- const res=await exchange(createSellerHttpHandler(agent,{authentication,commitOnSignature:true}),{url:'/dacs/v1/commitments/signature',text:JSON.stringify({jobId:JOB,agreement:{},signedProjection:{}})});
- assert.equal(res.status,422);assert.equal(JSON.parse(res.text).error,'signature_agreement_invalid');
- assert.equal(store.finishes.length,1);assert.equal(store.finishes[0][3].noEffect,true);
-});
-
 test('native Agreement present without an artifact is a definite refusal before any effect',async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare();
  f.controls.read=()=>({disposition:'present',artifact:null,ref:{anchor:{kind:'storage-program',locator:core.fixedPriceAgreementLogicalAddress(JOB)},contentHash:'a'.repeat(64)},native:{source:'TEST-native-agreement',evidenceMode:'TEST-writer-proof',nativeAddress:'TEST-native',txRef:{kind:'demos',txHash:'b'.repeat(64),blockNumber:1}}});
@@ -319,23 +279,6 @@ test('fixture commitment replay accepts a fresh observation time without rewriti
  assert.equal(f.anchors.writes.length,writes);
 });
 
-for(const early of [false,true])test(`cached fixture ${early?'signature':'ordinary'} commitment authenticates every HTTP replay`,async t=>{
- const {agentFixture}=await import('./helpers/seller-agent-isolated-fixture.mjs'),{JOBS}=await import('./helpers/bilateral-vet-fixture.mjs');
- const w=await agentFixture({early});t.after(()=>w.close());
- const {jobId,agreement,signedProjection}=await w.negotiate(JOBS[0],{anchor:false}),agent=w.agent;
- const body=early?{jobId,agreement,signedProjection}:{jobId};
- const cached=await (early?agent.commitOnSignature(body):agent.commit(body)),writes=w.anchors.writes.length;
- const store={reserve:()=>({disposition:'cached',status:200,text:JSON.stringify(cached)})};
- const authentication={seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>({jobId}),validate(){},responseHeader:async()=> 'TEST-header'};
- const handler=createSellerHttpHandler(agent,{authentication,commitOnSignature:early});
- const post=()=>exchange(handler,{url:early?'/dacs/v1/commitments/signature':'/dacs/v1/commitments',text:JSON.stringify(body)});
- assert.equal((await post()).status,200);
- const read=w.anchors.controls.read;
- w.anchors.controls.read=(row,address)=>address===core.finalityCommitmentAddress(jobId)&&row.status==='present'?{...row,receipt:{...row.receipt,evidence:{...row.receipt.evidence,value:'TEST changed proof'}}}:row;
- for(let attempt=0;attempt<2;attempt++)assert.equal((await post()).status,503);
- w.anchors.controls.read=read;assert.equal((await post()).status,200);assert.equal(w.anchors.writes.length,writes);
-});
-
 test('fixture read-only commitment without a retained CREATE has zero effects',async t=>{
  const f=await fixtureProfile(t),writes=f.anchors.writes.length;
  await assert.rejects(f.agent.readCommitment({jobId:JOB}),{code:'commitment_readback_required'});
@@ -346,14 +289,3 @@ test('fixture read-only commitment without a retained CREATE has zero effects',a
 // reason that says nothing about the commitment, the buyer gets a retryable 503, never a signed
 // definite refusal. The fixture agent is a private module copy with its own error class, so
 // the replay runs through the real module's agent over the same durable state.
-for(const [label,early,undo]of[['closed buyer access',false,()=>{}],['an Agreement that is not readable now',false,f=>{f.controls.agreement=null;}],['closed buyer access on the signature route',true,()=>{}]])test(`a cached commitment replay with ${label} answers 503 readback required`,async t=>{
- const f=await commitmentFixture(t,{early}),{agent,agreement}=await f.prepare();
- const body=early?{jobId:JOB,agreement,signedProjection:projection(agreement)}:{jobId:JOB};
- const cached=await(early?agent.commitOnSignature(body):agent.commit(body));agent.close();undo(f);
- const real=await createSellerAgent({...f.config,buyerAccess:createOperatorBuyerAccess({openBuyerAccess:true,buyerForJob:()=>buyer.address,buyerLookupReady:()=>!label.startsWith('closed')})});t.after(()=>real.close());
- const store={reserve:()=>({disposition:'cached',status:200,text:JSON.stringify(cached)})};
- const authentication={seller:real.claim,listingPin:real.listingPin,store,readRequest:()=>({jobId:JOB}),validate(){},responseHeader:async()=> 'TEST-header'};
- const handler=createSellerHttpHandler(real,{authentication,commitOnSignature:early});
- const response=await exchange(handler,{url:early?'/dacs/v1/commitments/signature':'/dacs/v1/commitments',text:JSON.stringify(body)});
- assert.equal(response.status,503);assert.equal(JSON.parse(response.text).error,'commitment_readback_required');
-});

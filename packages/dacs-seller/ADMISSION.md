@@ -9,9 +9,9 @@ qualified live deployment; unsupported qualification stays blocked.
 The kit has one purchase source: the seller agent's durable sessions. It has
 one Vet/context mode: the authenticated context route. There is no app database
 resolver or context switch. The standalone host (README.md) mounts the context
-route on the wire; a host composed directly passes `createSellerContextRoute` (a root
-export) as the `context` of `createSellerHttpHandler`, with
-`createSellerTransportServerAuth` as its `authentication`, as described here.
+route on the wire; a host composed directly passes a context route (`createSellerContextRoute`
+and `createWireSellerContextRoute`, root exports) as the `context` of `createSellerHttpHandler`,
+with a `createWireContext` context as its `wire`, as described here.
 
 A signed context request proves who asked and binds the job, Listing, bundle,
 terms and request bytes. It does not prove that a buyer has not cancelled its
@@ -20,7 +20,7 @@ pre-payment write. #59's admission reserves capacity; it is not signing authorit
 
 | Request kind / condition | Decision and authority | Why | Test |
 | --- | --- | --- | --- |
-| Signed non-bootstrap routes | SDK wire domain and bound purchase profile; payments and bundles re-admit durable commitment/Agreement and verify the current receipt under the signed Listing | Only challenge/context retain legacy transport domains | wire-signed-routes.test.mjs P11a1-T01, T02, T26 |
+| Signed routes | SDK wire domain and bound purchase profile; payments and bundles re-admit durable commitment/Agreement and verify the current receipt under the signed Listing | Every route, the challenge and the context step included, is on the wire domain; an old-domain request is refused | wire-signed-routes.test.mjs P11a1-T01, T26 |
 | App purchase-source configuration | Refused | The kit has only seller-owned state | d5-admission.test.mjs A1 |
 | Fresh authenticated context, seller-issued challenge, exact scope, access and limits satisfied | Admit the context and reserve at most two Vet writes; each write stays held for exact seller approval | A transport signature authorizes this bounded request, while seller records cannot establish buyer-side cancellation | d5-admission.test.mjs A2; d5-limits-before-effects.test.mjs B1–B5 |
 | Authenticated context challenge request | May write one bounded challenge record; never a Vet or sign-authorization record | Seller-generated challenge binds job, buyer, seller, Listing and exact scope before the bundle is presented | d5-limits-before-effects.test.mjs B22–B25, B27–B28, B30 |

@@ -11,7 +11,7 @@ import { createWireSellerContextRoute } from '../../src/dacs/seller-context-rout
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
+import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { CHALLENGE_PATH, JOB, JOB2, T0, challengeWorld } from './challenge-route-fixture.mjs';
 import { admittedSession } from './challenge-api.mjs';
@@ -148,9 +148,8 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const route = createWireSellerContextRoute(routeOptions);
   // After the route's own tuple hook, so a failure here rolls the stored tuple back with the rest of the acceptance.
   admission.addAcceptanceHook(() => { if (behaviour.failAcceptance) throw new Error('TEST the acceptance failed'); });
-  const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: w.pin, store: w.store, now, requireDelegation });
   /** The host's HTTP handler over `overWire`, another wire context of the same store, agent and route. */
-  const handlerOver = (overWire) => createSellerHttpHandler(agent, { authentication, context: { ...w.route, ...route }, wire: overWire });
+  const handlerOver = (overWire) => createSellerHttpHandler(agent, { context: { ...w.route, ...route }, wire: overWire });
   const handler = handlerOver(wire);
 
   const post = async ({ url = SELLER_CONTEXT_PATH, header, text, chunks }) => {

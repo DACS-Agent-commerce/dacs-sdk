@@ -16,7 +16,7 @@ import { AGREEMENT_CONTEXT_SOURCE } from '../../src/dacs/agreement-context-consu
 import { createSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth } from '../../src/dacs/seller-transport-auth.mjs';
+import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER } from '../../src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportStore } from './bound-transport-store.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { testWallet } from './protocol-fixture.mjs';
@@ -53,7 +53,7 @@ export function watchSql(t) {
   return { reads: () => seen.filter((sql) => /kit_challenges/.test(sql) && !isWrite(sql)).length, writes: () => seen.filter(isWrite).length };
 }
 
-export async function challengeWorld(t, { store: storeOptions = {}, requireDelegation = false } = {}) {
+export async function challengeWorld(t,{ store: storeOptions = {}, requireDelegation = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'TEST-challenge-route-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, 'transport.sqlite'), journalDirectory = join(directory, 'wire-journal');
@@ -89,8 +89,7 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
   let wire = null;
   const compose = () => {
     wire = makeWire();
-    const authentication = createSellerTransportServerAuth({ sellerSigner: signer(SELLER), listingPin: pin, store, now, requireDelegation });
-    handler = createSellerHttpHandler(agent, { authentication, context: route, wire });
+    handler = createSellerHttpHandler(agent, { context: route, wire });
   };
   compose();
 

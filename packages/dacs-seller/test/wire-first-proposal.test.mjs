@@ -13,7 +13,7 @@ import { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttp
 import { createSellerAgentClient as createBuyerSellerAgentClient } from '../../dacs-client/src/dacs/seller-http.mjs';
 import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
 import { createWireContext } from '../src/dacs/seller-wire-requests.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth } from '../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { boundPurchaseOf, createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from '../../dacs-client/test/helpers/purchase-admission-hook.mjs';
@@ -62,14 +62,13 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
     agreementState: () => { effects.reads++; return { proposal: structuredClone(proposal), contribution: null }; } };
   const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite'), now: clock });
   t.after(() => store.close());
-  const serverAuth = createSellerTransportServerAuth({ sellerSigner, listingPin: pin, store, now: clock });
   const journal = openWireRequestJournal(await mkdtemp(join(directory, 'wire-')), { leaseMs: JOURNAL_LEASE_MS, clock });
   const { store: rawStore, capacity } = boundPurchaseOf(store);
   const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
   const hostWire = createWireContext({ binding: wire.binding, tp1Network: { connection, readAuthority: authorityReader() }, signer: sellerSigner,
     journal, store, ready: () => true, now: clock, agent, requireDelegation: false, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }),
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
-  const handler = createSellerHttpHandler(agent, { authentication: serverAuth, wire: hostWire });
+  const handler = createSellerHttpHandler(agent, { wire: hostWire });
   const client = (clientPackage ? createBuyerSellerAgentClient : createSellerAgentClient)({ url: 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
     request: async (...args) => { const signed = await authentication.request(...args); request = signed.payload; return signed; },
     // The buyer client hands over `{header, status, body}`; the seller package's adapter reads the same bytes as `responseBytes`.

@@ -60,7 +60,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
       return outcome;
     } };
   const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock, leaseMs: LEASE_MS });
-  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,now:()=>NOW }) });
+  const handle = seller.createSellerHttpHandler(facade, { wire });
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);
     Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
@@ -211,8 +211,7 @@ async function delegatedWorld(t, answers, publication = null) {
   const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock, requireDelegation: true });
   payload.profile = wire.binding.profile;
   delegation.signature = buyerKey.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + core.canonicalize(payload))).toString('base64url');
-  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,
-    now: clock, requireDelegation: true }) });
+  const handle = seller.createSellerHttpHandler(facade, { wire });
   let lastResponse;
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);

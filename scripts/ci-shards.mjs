@@ -106,7 +106,6 @@ export const WEIGHTS = {
     "process-lease.test.mjs": 1,
     "proposal-admission.test.mjs": 3,
     "proposal-phase.test.mjs": 1,
-    "proposal-terminal-fence.test.mjs": 5,
     "purchase-protocol.test.mjs": 1,
     "rail-session-admission.test.mjs": 1,
     "readback-deadline.test.mjs": 8,

@@ -42,11 +42,11 @@ test('the package root exports the context routes and the buyer-side client a ho
   for (const name of ['createSellerContextRoute', 'createWireSellerContextRoute', 'createSellerContextClient']) assert.equal(typeof exported[name], 'function', `the root exports ${name}`);
 });
 
-test('the package root exports the buyer-side wire signer, and the README says which routes it signs and which keep the old client auth', async () => {
+test('the package root exports the buyer-side wire signer, and the README says which routes it signs and what its fallback signs', async () => {
   const exported = await import(new URL('src/index.mjs', packageUrl));
   assert.equal(typeof exported.createSellerWireClientAuth, 'function', 'the root exports createSellerWireClientAuth');
   assert.match(readme, /`createSellerWireClientAuth\(\{[^`]*\}\)`: it signs\s+and verifies every route but the challenge and the context step/);
-  assert.match(readme, /`createSellerTransportClientAuth`[^.]*(?:challenge|context)[^.]*old/s);
+  assert.match(readme, /`createSellerTransportClientAuth`[^.]*`fallback`[^.]*(?:challenge|context)/s);
 });
 
 test('the README names the module the handler agent comes from; it exports createSellerAgent and the root does not', async () => {
@@ -57,6 +57,6 @@ test('the README names the module the handler agent comes from; it exports creat
 
 test('the README and ADMISSION.md name the context route and how a host mounts it', () => {
   const admission = readFileSync(new URL('ADMISSION.md', packageUrl), 'utf8');
-  assert.match(readme, /`context` option of\s+`createSellerHttpHandler\(agent, \{ authentication, context \}\)`/);
-  assert.match(admission, /passes `createSellerContextRoute` \(a root\s+export\) as the `context` of `createSellerHttpHandler`/);
+  assert.match(readme, /`context` option of `createSellerHttpHandler\(agent, \{ wire, context \}\)`/);
+  assert.match(admission, /passes a context route \(`createSellerContextRoute`\s+and `createWireSellerContextRoute`, root exports\) as the `context` of `createSellerHttpHandler`/);
 });

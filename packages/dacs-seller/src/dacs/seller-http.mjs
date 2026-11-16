@@ -1,28 +1,23 @@
 // Narrow HTTP transport for the seller agent (seller-agent.mjs) and the
 // buyer-side client the plugin uses to reach it.
 //
-// Server/client stay loopback-only. Existing unauthenticated fixture callers
-// remain supported. Supplying an authentication adapter enables signed peer
-// requests, independently signed seller responses and a durable intent journal.
-// Only an authenticated definite refusal becomes SellerRefusedError in that
-// mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
-// With the `wire` option, every route but the challenge and the context step opens
-// each request and signs each answer through `./wire` (seller-wire-requests.mjs); the
-// wire journal owns their effects, the reservation coordinator accounts for them, the completion port ends each
+// Server/client stay loopback-only. The server's only authenticator is the wire context (`wire`, made by
+// createWireContext in seller-wire-requests.mjs): it opens each request and signs each answer through `./wire`.
+// The wire journal owns the effects of the routes, the reservation coordinator accounts for them, the completion port ends each
 // attempt (by the rule of the route's row in seller-effect-routes.mjs, where it has one), and read routes reserve nowhere.
-// With `context` and `wire` together the challenge is on the wire too (`context.challengeOnWire`),
-// before any Agreement and with no journal. A `context` that also carries `handleContext`
-// (`createWireSellerContextRoute`) serves the context step on the wire as well and signs its answer here;
-// without it the context step keeps the old server auth, and so does the challenge of a handler
-// composed without `wire`. Each request has one authenticator, chosen by its route.
+// With `context`, the challenge (`context.challengeOnWire`) is on the wire too, before any Agreement and with no journal; so is the
+// context step when `context.handleContext` (from `createWireSellerContextRoute`) is given, and without it that path is not found.
+// On the client, supplying an authentication adapter enables signed peer requests and independently signed seller responses.
+// Only an authenticated definite refusal becomes SellerRefusedError in that mode; unsigned, malformed, interrupted or
+// ambiguous answers are unavailable.
 import { completeWireEffect, DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_PATHS, inspectWireOperation, isReadRoute, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome, UNCERTAIN } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
-import { admitRawJson, canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
+import { admitRawJson, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
 import { signedDiscovery } from './seller-wire-discovery.mjs';
-import { WIRE_ROUTE_PATHS, wireAuthenticator } from './seller-wire-requests.mjs';
+import { wireAuthenticator } from './seller-wire-requests.mjs';
 import { createCompletionRecords } from './seller-completion-records.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { createSellerEffectRoutes } from './seller-effect-routes.mjs';
@@ -61,9 +56,6 @@ const PAYMENT_PATH = '/dacs/v1/payments';
 const COMMITMENT_PATH = '/dacs/v1/commitments';
 const COMMITMENT_SIGNATURE_PATH = '/dacs/v1/commitments/signature';
 const retainsPayment = (agent, jobId) => { try { return agent.retainsPaymentWork?.(jobId) !== false; } catch { return true; } };
-const reportsDeliveryReady = (text) => {
-  try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && ['delivery-ready','delivered'].includes(answer.delivery?.status); } catch { return false; }
-};
 // A proposal effect is released only on the agent's proof that it signed and kept nothing.
 const retainsProposal = (agent, jobId) => { try { return agent.retainsProposalWork?.(jobId) !== false; } catch { return true; } };
 const retainedBy = (agent, path, jobId) => path === PAYMENT_PATH ? retainsPayment(agent, jobId) : path === PROPOSAL_PATH && retainsProposal(agent, jobId);
@@ -220,23 +212,24 @@ function readRequest(req, timeoutMs) {
 
 // `context` (seller-context-route.mjs, seller context route) mounts the
 // Vet and Agreement-context route. Without it the route table is unchanged.
-// `wire` (a createWireContext context) moves the mounted routes of WIRE_ROUTE_PATHS onto `./wire`, with
-// the raw transport store as their only journal, and, when the context has a `publicEndpoint`, serves the signed discovery
-// document at DACS_SELLER_DISCOVERY_PATH. It needs `authentication`, naming the same seller and delegation rule and
-// made over the context's store, for the challenge and the context step; the context must be made for this `agent`.
-export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire = null } = {}) {
+// `wire` (a createWireContext context made for this `agent`) is the only authenticator. It opens each request and signs each
+// answer of the routes of WIRE_ROUTE_PATHS through `./wire`, with the raw transport store as their only journal, and, when the context
+// has a `publicEndpoint`, serves the signed discovery document at DACS_SELLER_DISCOVERY_PATH. Its signer names the seller
+// and its `requireDelegation` the delegation rule; the listing pin is the agent's own. Throws a TypeError for the removed
+// `authentication` option, and for a `wire` that createWireContext did not make for this agent.
+export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
-  if (wire !== null && !authentication) throw new Error('the wire routes need the old authentication of the routes still on it');
-  if (wire !== null && ['retainsPaymentWork', 'assertSettlementCredit'].some((name) => typeof agent[name] !== 'function')) throw new TypeError('the wire routes need the agent\'s retainsPaymentWork and assertSettlementCredit');
+  if (authentication !== undefined) throw new TypeError('createSellerHttpHandler no longer takes `authentication`: the `wire` context is its only authenticator');
+  if (['retainsPaymentWork', 'assertSettlementCredit'].some((name) => typeof agent[name] !== 'function')) throw new TypeError('the wire routes need the agent\'s retainsPaymentWork and assertSettlementCredit');
+  const auth = wireAuthenticator(wire, agent);
   if (![bodyTimeoutMs, maxRequestsPerWindow, rateWindowMs, maxConcurrent].every((n) => Number.isSafeInteger(n) && n > 0)) throw new Error('seller transport limits must be positive integers');
   if (typeof commitOnSignature !== 'boolean') throw new TypeError('commitOnSignature must be boolean');
   const routes = commitOnSignature ? SIGNATURE_ROUTES : ROUTES;
   const effectRoutes = createSellerEffectRoutes({ commitOnSignature });
-  if (authentication && (authentication.seller !== agent.claim || canonicalize(authentication.listingPin) !== canonicalize(agent.listingPin))) throw new Error('seller transport identity must match the independently configured agent');
-  if (authentication?.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
-  if (context !== null && (!authentication || context?.path !== SELLER_CONTEXT_PATH || context?.challengePath !== SELLER_CONTEXT_CHALLENGE_PATH || typeof authentication.store?.classify !== 'function' || !['challenge', 'reserve', 'perform', 'settled', 'reconcile'].every((name) => typeof context[name] === 'function'))) throw new Error('the seller context route needs the authenticated transport and its admission');
-  if (wire !== null && context !== null && (typeof wire.stopped !== 'function' || typeof context.challengeOnWire !== 'function')) throw new TypeError('the wire challenge route needs the host\'s stop predicate (wire.stopped) and the context route\'s challengeOnWire');
-  if (context?.handleContext !== undefined && (wire === null || typeof context.handleContext !== 'function')) throw new TypeError('the wire context route (context.handleContext) needs the wire option');
+  if (wire.signer.claim !== agent.claim) throw new Error('seller transport identity must match the independently configured agent');
+  if (wire.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
+  if (context !== null && (context?.path !== SELLER_CONTEXT_PATH || context?.challengePath !== SELLER_CONTEXT_CHALLENGE_PATH || typeof context.challengeOnWire !== 'function' || (context.handleContext !== undefined && typeof context.handleContext !== 'function'))) throw new TypeError('the seller context route needs its paths and its wire challenge (challengeOnWire), and its context step (handleContext) must be a function when given');
+  if (context !== null && typeof wire.stopped !== 'function') throw new TypeError('the wire challenge route needs the host\'s stop predicate (wire.stopped)');
   if (publicSignedCreates !== null && typeof publicSignedCreates !== 'function') throw new Error('publicSignedCreates must be the seller\'s signed CREATE pointer function');
   // DACS_BUYER_CHAIN_READBACK=on: a successful commit or payment answer (the
   // only answers the buyer takes pointers from) also names the seller's
@@ -257,25 +250,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   let windowStart = Date.now();
   let requests = 0;
   let active = 0;
-  // The two authenticators. Each opens a request (`{ body, read, readbackOnly(), reserveOptions }`), signs an answer
-  // (`undefined` sends it unsigned), encodes the text a stored answer keeps, and names the store that journals the route.
-  const oldAuth = authentication && Object.freeze({
-    store: authentication.store,
-    encode: (text) => text,
-    open: ({ header, onOpened, ...input }) => {
-      const request = authentication.readRequest(header);
-      onOpened(request);
-      authentication.validate(request, { ...input, agreement: agent.transportAgreementOf?.(request.jobId) });
-      return { body: input.body, read: false, readbackOnly: () => authentication.readbackOnly?.(request) === true, reserveOptions: undefined };
-    },
-    sign: (request, status, text) => authentication.responseHeader(request, status, text),
-  });
-  const wireAuth = wire === null ? null : wireAuthenticator(wire, agent, authentication);
-  // The headers of one answer, signed over its exact text by `auth` (the request's authenticator) when there is an authenticated request.
-  const signedHeaders = async (auth, status, text, request, close = false) => {
+  // The headers of one answer, signed over its exact text by the wire when there is an authenticated request.
+  const signedHeaders = async (status, text, request, close = false) => {
     const headers = { 'content-type': 'application/json', 'cache-control': 'no-store', ...(close ? { connection: 'close' } : {}) };
     if (Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) throw new SellerTransportError('seller_response_too_large', 503);
-    if (auth && request) {
+    if (request) {
       const signature = await auth.sign(request, status, text);
       if (signature !== undefined) headers[SELLER_TRANSPORT_HEADER] = signature;
     }
@@ -286,43 +265,31 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     res.writeHead(status, headers);
     res.end(text);
   };
-  // A wire route sends a signed 200 only once the agent's credit check has settled within its deadline. A failure, a rejection or
+  // A route sends a signed 200 only once the agent's credit check has settled within its deadline. A failure, a rejection or
   // a missed deadline throws, and a result that comes later releases nothing.
   const creditHeld = (jobId) => boundedCall(() => agent.assertSettlementCredit(jobId), { timeoutMs: SETTLEMENT_CREDIT_TIMEOUT_MS });
   // Sends one answer: signed, then for a 200 the credit check, then written.
-  const sender = (auth) => async (res, status, body, request, { close = false, text = JSON.stringify(body) } = {}) => {
-    const headers = await signedHeaders(auth, status, text, request, close);
-    if (status === 200 && request) {
-      if (auth && auth === wireAuth) await creditHeld(request.jobId);
-      else if (!res.destroyed && !res.writableEnded) agent.assertSettlementCredit?.(request.jobId);
-    }
+  const send = async (res, status, body, request, { close = false, text = JSON.stringify(body) } = {}) => {
+    const headers = await signedHeaders(status, text, request, close);
+    if (status === 200 && request) await creditHeld(request.jobId);
     write(res, status, headers, text);
   };
   // The discovery document is public, so it is signed as a document and carries no response envelope; a GET with a body is refused.
   const serveDiscovery = async (req, res) => {
-    const unsent = sender(null);
-    if (req.method !== 'GET') return await unsent(res, 405, { error: 'method_not_allowed' }, null, { close: true });
-    if ((req.headers['content-length'] ?? '0') !== '0' || req.headers['transfer-encoding'] !== undefined) return await unsent(res, 413, { error: 'body_too_large' }, null, { close: true });
+    if (req.method !== 'GET') return await send(res, 405, { error: 'method_not_allowed' }, null, { close: true });
+    if ((req.headers['content-length'] ?? '0') !== '0' || req.headers['transfer-encoding'] !== undefined) return await send(res, 413, { error: 'body_too_large' }, null, { close: true });
     const text = Buffer.from(await signedDiscovery(wire, agent.listingPin)).toString('utf8');
-    write(res, 200, await signedHeaders(null, 200, text, null), text);
+    write(res, 200, await signedHeaders(200, text, null), text);
   };
   return async (req, res) => {
-    // One authenticator per route, chosen here: the wire's for the routes it opens, the old server auth for every other.
-    const wireChallenge = wireAuth !== null && context !== null && req.url === SELLER_CONTEXT_CHALLENGE_PATH;
-    const wireContextStep = wireAuth !== null && typeof context?.handleContext === 'function' && req.url === SELLER_CONTEXT_PATH;
-    const auth = wireChallenge || wireContextStep || (wireAuth !== null && WIRE_ROUTE_PATHS.includes(req.url)) ? wireAuth : oldAuth;
-    const send = sender(auth);
     let request;
     let reservation;
     let body;
-    let settled = null;
-    let fenced = null;
     let counted = false;
-    // A wire attempt is answered once, in this order: sign its exact bytes, await the credit check of a 200, end the attempt
+    // An attempt is answered once, in this order: sign its exact bytes, await the credit check of a 200, end the attempt
     // through `end` (which first checks the attempt is still current), write. Nothing is awaited between that check and the write.
-    const wired = wireAuth !== null && auth === wireAuth;
     // Only the routes the wire serves have table rows, looked up by their exact path.
-    const rowOfRoute = () => (wired ? effectRoutes[req.url] : undefined);
+    const rowOfRoute = () => effectRoutes[req.url];
     let concluded = false, delivered = false;
     // A payment's final answer is stored and signed only after its sources are read again, passively. A failure throws before anything
     // is concluded: the attempt stays open and the refusal is answered with its cause.
@@ -341,10 +308,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
       concluded = true;
       const text = auth.encode(JSON.stringify(outcome.value)), sent = await pointed(outcome.status, text, request.jobId, req.url);
-      const headers = await signedHeaders(auth, outcome.status, sent, request);
+      const headers = await signedHeaders(outcome.status, sent, request);
       if (outcome.status === 200) await creditHeld(request.jobId);
       end(text);
-      settled = outcome; delivered = true;
+      delivered = true;
       write(res, outcome.status, headers, sent);
     };
     // The options an answer is stored with: its classification and, for a route with a row, the row's end decision for the exact text.
@@ -352,23 +319,19 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const row = rowOfRoute();
       return { noEffect: outcome.noEffect, retry: outcome.retry, ...(row === undefined ? {} : { decision: row.endAfter({ ...outcome, text }, routeEvidence(agent, req.url, request.jobId, outcome)) }) };
     };
-    const finishWith = (outcome) => {
-      if (wired) return conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)));
-      if (authentication) auth.store.finish(reservation, outcome.status, auth.encode(JSON.stringify(outcome.value)), { noEffect: outcome.noEffect, retry: outcome.retry });
-      return (settled = outcome);
-    };
+    const finishWith = (outcome) => conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)));
     try {
       if (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress)) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
       if (Date.now() - windowStart >= rateWindowMs) { windowStart = Date.now(); requests = 0; }
       if (++requests > maxRequestsPerWindow || active >= maxConcurrent) return await send(res, 429, { error: 'seller_rate_limited' }, null, { close: true });
       active++; counted = true;
-      if (wire?.publicEndpoint != null && req.url === DACS_SELLER_DISCOVERY_PATH) return await serveDiscovery(req, res);
+      if (wire.publicEndpoint != null && req.url === DACS_SELLER_DISCOVERY_PATH) return await serveDiscovery(req, res);
       // Match the raw request target exactly: query strings, alternate paths
       // and encoded aliases cannot evade the path authenticated by the peer.
       const contextChallenge = context !== null && req.url === SELLER_CONTEXT_CHALLENGE_PATH;
-      const contextStep = context !== null && req.url === SELLER_CONTEXT_PATH;
-      const route = contextChallenge ? () => {} : contextStep ? (_agent, body) => context.perform(body) : routes[req.url];
-      if (!route) return await send(res, 404, { error: 'not_found' }, null, { close: true });
+      const contextStep = typeof context?.handleContext === 'function' && req.url === SELLER_CONTEXT_PATH;
+      const route = routes[req.url];
+      if (!route && !contextChallenge && !contextStep) return await send(res, 404, { error: 'not_found' }, null, { close: true });
       if (req.method !== 'POST') return await send(res, 405, { error: 'method_not_allowed' }, null, { close: true });
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(req.headers['content-type'] ?? '')) return await send(res, 415, { error: 'json_required' }, null, { close: true });
       if (req.headers['content-encoding'] && req.headers['content-encoding'] !== 'identity') return await send(res, 415, { error: 'encoded_body_unsupported' }, null, { close: true });
@@ -376,153 +339,84 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const rawBody = await readRequest(req, bodyTimeoutMs);
       try { body = admitRawJson(rawBody); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
-      if (authentication) {
-        // The context step on the wire answers unsigned text; it is signed here under the opened request, and a request that never opened is sent unsigned.
-        if (wireContextStep) {
-          const answer = await context.handleContext({ rawBody, header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url });
-          return await send(res, answer.status, null, answer.request, { text: answer.text });
-        }
-        if (wireChallenge) {
-          const answer = await context.challengeOnWire(wire, { header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; } });
-          return await send(res, 200, answer, request, { text: auth.encode(JSON.stringify(answer)) });
-        }
-        let opened;
-        try {
-          opened = await auth.open({ header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; },
-            ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
-        } catch (error) { if (contextStep && request) context.attemptRefused?.(request, error?.code); throw error; }
-        body = opened.body;
-        // A signed read reserves and completes nowhere: it answers from the agent's current state.
-        if (opened.read) {
-          const outcome = transportOutcome(req.url, { answer: await route(agent, body, {}) }, { retained: false });
-          return await send(res, outcome.status, outcome.value, request);
-        }
-        // Payment evidence is taken only on an assembled settlement profile, whichever auth opened the request.
-        if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
-        if (contextChallenge) return await send(res, 200, await context.challenge(request, body, authentication.store), request);
-        // The context step reads the journal first and runs its admission only
-        // for new work, recording the start in the reserve transaction. A wire request's
-        // reservation keeps the job's TP-1 tuple in the same transaction.
-        reservation = contextStep ? await context.reserve(request, body, authentication.store) : await auth.store.reserve(request, body, opened.reserveOptions);
-        if (reservation.disposition === 'cached' && !wired) agent.assertSettlementCredit?.(request.jobId);
-        if (reservation.disposition === 'cached' && reservation.status === 200 && rowOfRoute() === undefined && ['/dacs/v1/commitments','/dacs/v1/commitments/signature'].includes(req.url)) {
-          // Without a table row (a handler composed without the wire), the commitment is already anchored: a failed readback (closed buyer access, an Agreement
-          // not readable now) cannot refuse it, so it answers retryable, never as a definite refusal.
-          let answer;
-          try { answer = await agent.readCommitment({jobId:request.jobId,signedProjection:body.signedProjection,
-            signatureAgreement:req.url==='/dacs/v1/commitments/signature'?body.agreement:undefined}); }
-          catch (cause) { throw new SellerTransportError('commitment_readback_required',503,{cause}); }
-          if (!['committed','commitment-held'].includes(answer?.status)) throw new SellerTransportError('commitment_readback_required',503);
-          return await send(res,200,answer,request,{text:await pointed(200,JSON.stringify(answer),request.jobId,req.url)});
-        }
-        const readbackOnly = opened.readbackOnly();
-        if (reservation.disposition === 'cached' && req.url === PAYMENT_PATH && !wired && reportsDeliveryReady(reservation.text)) {
-          // Without the wire, a cached completed answer is only a record of it. Under a live
-          // delegation the agent authenticates the payment evidence and reads
-          // the Deliverable again, and what it answers now is sent, never the
-          // saved success. An expired delegation admits journaled readback
-          // only, so that refresh (which may publish new delivery evidence)
-          // never runs; the saved answer alone authenticates nothing, so the
-          // claim is held instead of replayed as delivered.
-          if (readbackOnly) {
-            const answer = { status: 'held', reason: 'peer_delegation_expired: a completed delivery answer is authenticated only under a live session delegation' };
-            return await send(res, 200, answer, request, { text: await pointed(200, JSON.stringify(answer), request.jobId, req.url) });
-          }
-          // A cached refresh owns no pending reservation. Recheck its live
-          // authority inside the agent's job fence, including after restore.
-          const transport = Object.freeze({ check: () => authentication.assertLive(request) });
-          const answer = await route(agent, body, { transport }), text = JSON.stringify(answer);
-          return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
-        }
-        if (reservation.disposition === 'cached') {
-          // A completed answer of a table route is signed again only after its sources are read again; a refusal withholds it and rewrites nothing.
-          // A wire payment replay is rechecked on a fresh clock first, unless an expired delegation admitted it for stored readback only.
-          // A completed payment answers only the claim it was made for: another transaction or payer is refused, as the payment itself refuses it.
-          if (wired && req.url === PAYMENT_PATH) {
-            if (!readbackOnly) await opened.recheck();
-            if (agent.retainsPaymentWork(request.jobId) && !agent.retainsPaymentClaim(request.jobId, body)) throw new SellerTransportError('payment_already_recorded', 409);
-          }
-          await rowOfRoute()?.revalidate({ agent, jobId: request.jobId, outcome: { status: reservation.status, text: reservation.text } });
-          return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
-        }
-        if (reservation.disposition === 'uncertain') {
-          // A request its expired delegation admits only for readback reconciles read only.
-          const readOnly = opened.readbackOnly();
-          if (!contextStep) {
-            // One fenced recovery (seller-agent.mjs reconcileTransport): the
-            // agent claims this exact effect inside its job fence before it
-            // restores or runs anything, and settles it there. Only an answer
-            // the store settled is sent; anything else stays uncertain.
-            let claimed = null;
-            const reconcile = (outcome) => (text) => auth.store.reconcile(claimed, request, outcome.status, text, endOptions(outcome, text));
-            const transport = Object.freeze({
-              claim: () => (claimed = auth.store.claim(reservation, request, { live: !readOnly })),
-              settle: (outcome) => {
-                if (!claimed || settled) throw new SellerTransportError('peer_reconciliation_conflict', 503);
-                if (wired) return conclude(outcome, reconcile(outcome));
-                reconcile(outcome)(auth.encode(JSON.stringify(outcome.value)));
-                settled = outcome;
-              },
-            });
-            if (typeof agent.reconcileTransport === 'function' && typeof auth.store.claim === 'function') {
-              const row = rowOfRoute();
-              await (row === undefined ? agent.reconcileTransport({ request, body, rawBody, readOnly, transport }) : row.recover({ agent, request, body, rawBody, transport }));
-            }
-            if (delivered) return;
-            if (!settled) return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; its outcome is not established.' }, request);
-            return await send(res, settled.status, settled.value, request, { text: await pointed(settled.status, JSON.stringify(settled.value), request.jobId, req.url) });
-          }
-          if (authentication.store.contextHoldState?.({ jobId: request.jobId, effect: reservation.effectKey }) === 'pending') return await send(res, 503, { error: 'operation_uncertain', message: 'The retained context still has a pending owner.' }, request);
-          const proof = typeof authentication.store.reconcile === 'function' ? await context.reconcile({ request, body, rawBody, ...(readOnly ? { readOnly } : {}) }) : null;
-          if (proof?.disposition === 'present') {
-            const text = JSON.stringify(proof.value);
-            authentication.store.reconcile(reservation, request, 200, text);
-            await context.settled({ jobId: request.jobId, hold: reservation.effectKey });
-            return await send(res, 200, proof.value, request, { text: await pointed(200, text, request.jobId, req.url) });
-          }
-          // The second exception: the context route proved a shutdown cut its step
-          // before anything of it was signed or sent; the same effect runs
-          // again below under the reservation the journal hands back.
-          const resumed = !readOnly && contextStep && proof?.disposition === 'resume' && typeof context.resume === 'function' ? await context.resume(reservation, request, authentication.store, proof) : null;
-          if (resumed?.disposition !== 'perform') return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; it was not performed again.' }, request);
-          reservation = resumed;
-        }
+      // The context step answers unsigned text; it is signed here under the opened request, and a request that never opened is sent unsigned.
+      if (contextStep) {
+        const answer = await context.handleContext({ rawBody, header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url });
+        return await send(res, answer.status, null, answer.request, { text: answer.text });
       }
-      // One classification (seller-agent.mjs transportOutcome). An agent run
-      // checks its reservation inside its job fence before any work and
-      // settles there; a route without the fence is classified here when it
-      // returns. A resumed context step has written before: no answer of it deletes its records.
-      // A wire attempt is answered where it is settled, inside the fence when there is one.
-      const classified = (result) => transportOutcome(req.url, result, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId), resumed: reservation?.resumed === true });
-      const transport = authentication && !contextStep ? Object.freeze({ path: req.url, check: () => auth.store.assertPending(reservation), settle: (outcome) => wired ? finishWith(outcome) : void (fenced = finishWith(outcome)) }) : undefined;
+      if (contextChallenge) {
+        const answer = await context.challengeOnWire(wire, { header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; } });
+        return await send(res, 200, answer, request, { text: auth.encode(JSON.stringify(answer)) });
+      }
+      const opened = await auth.open({ header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; } });
+      body = opened.body;
+      // A signed read reserves and completes nowhere: it answers from the agent's current state.
+      if (opened.read) {
+        const outcome = transportOutcome(req.url, { answer: await route(agent, body, {}) }, { retained: false });
+        return await send(res, outcome.status, outcome.value, request);
+      }
+      // Payment evidence is taken only on an assembled settlement profile.
+      if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
+      reservation = await auth.store.reserve(request);
+      const readbackOnly = opened.readbackOnly();
+      if (reservation.disposition === 'cached') {
+        // A completed answer is signed again only after its sources are read again; a refusal withholds it and rewrites nothing.
+        // A payment replay is rechecked on a fresh clock first, unless an expired delegation admitted it for stored readback only.
+        // A completed payment answers only the claim it was made for: another transaction or payer is refused, as the payment itself refuses it.
+        if (req.url === PAYMENT_PATH) {
+          if (!readbackOnly) await opened.recheck();
+          if (agent.retainsPaymentWork(request.jobId) && !agent.retainsPaymentClaim(request.jobId, body)) throw new SellerTransportError('payment_already_recorded', 409);
+        }
+        await rowOfRoute()?.revalidate({ agent, jobId: request.jobId, outcome: { status: reservation.status, text: reservation.text } });
+        return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
+      }
+      if (reservation.disposition === 'uncertain') {
+        // A request its expired delegation admits only for readback reconciles read only.
+        const readOnly = opened.readbackOnly();
+        // One fenced recovery (seller-agent.mjs reconcileTransport): the
+        // agent claims this exact effect inside its job fence before it
+        // restores or runs anything, and settles it there. Only an answer
+        // the store settled is sent; anything else stays uncertain.
+        let claimed = null;
+        const reconcile = (outcome) => (text) => auth.store.reconcile(claimed, request, outcome.status, text, endOptions(outcome, text));
+        const transport = Object.freeze({
+          claim: () => (claimed = auth.store.claim(reservation, request, { live: !readOnly })),
+          settle: (outcome) => {
+            if (!claimed) throw new SellerTransportError('peer_reconciliation_conflict', 503);
+            return conclude(outcome, reconcile(outcome));
+          },
+        });
+        if (typeof agent.reconcileTransport === 'function') {
+          const row = rowOfRoute();
+          await (row === undefined ? agent.reconcileTransport({ request, body, rawBody, readOnly, transport }) : row.recover({ agent, request, body, rawBody, transport }));
+        }
+        if (delivered) return;
+        return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; its outcome is not established.' }, request);
+      }
+      // One classification (seller-agent.mjs transportOutcome). An agent run checks its reservation inside its job fence before
+      // any work and settles there, so the attempt is answered where it is settled.
+      const classified = (result) => transportOutcome(req.url, result, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId) });
+      const transport = Object.freeze({ path: req.url, check: () => auth.store.assertPending(reservation), settle: finishWith });
       const answer = await route(agent, body, { transport });
-      if (wired) { if (!delivered) await finishWith(classified({ answer })); return; }
-      const outcome = settled ?? finishWith(classified({ answer }));
-      if (contextStep) await context.settled(reservation.contextHold);
-      return await send(res, outcome.status, outcome.value, request, { text: await pointed(outcome.status, JSON.stringify(outcome.value), request?.jobId ?? body.jobId, req.url) });
+      if (!delivered) await finishWith(classified({ answer }));
     } catch (error) {
       if (delivered) return;
       const beforeEffect = !reservation || reservation.disposition !== 'perform';
-      // A wire refusal keeps its code, status and cause, never `operation_uncertain`. After the effect started, only the
+      // A refusal keeps its code, status and cause, never `operation_uncertain`. After the effect started, only the
       // refusal to store an unsignable answer and a source that cannot confirm a final answer do; any other error leaves the effect uncertain.
       const refusal = !concluded && (error instanceof SellerTransportError || error instanceof WireError) && (beforeEffect || ['outgoing_body_rejected', 'seller_source_unavailable'].includes(error.code));
-      // A refusal the agent settled inside its fence is answered as settled. A wire attempt whose answer failed before it was
-      // written (a superseded attempt, a failed signer or credit check) never sends that answer: its outcome is uncertain.
-      const outcome = concluded ? { status: 503, value: UNCERTAIN } : fenced ?? (refusal ? { status: error.status, value: { error: error.code, message: error.message, ...(CAUSE_ANSWERED_REFUSALS.has(error.code) && typeof error.cause === 'string' ? { cause: error.cause } : {}) } }
-        : transportOutcome(req.url, { error }, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId), resumed: reservation?.resumed === true }));
+      // An attempt whose answer failed before it was written (a superseded attempt, a failed signer or credit check) never sends that
+      // answer: its outcome is uncertain.
+      const outcome = concluded ? { status: 503, value: UNCERTAIN } : (refusal ? { status: error.status, value: { error: error.code, message: error.message, ...(CAUSE_ANSWERED_REFUSALS.has(error.code) && typeof error.cause === 'string' ? { cause: error.cause } : {}) } }
+        : transportOutcome(req.url, { error }, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId) }));
       let { status, value: answer } = outcome;
-      if (wired && reservation?.disposition === 'perform' && !concluded) {
+      if (reservation?.disposition === 'perform' && !concluded) {
         try { return await finishWith(outcome); } catch { if (delivered) return; ({ status, value: answer } = { status: 503, value: UNCERTAIN }); }
-      } else if (authentication && reservation?.disposition === 'perform' && !settled) {
-        try { auth.store.finish(reservation, status, auth.encode(JSON.stringify(answer)), { noEffect: outcome.noEffect, retry: outcome.retry }); } catch { /* durable intent remains uncertain */ }
-        // The context step has ended either way: its unused write reservation
-        // is released (its writes keep their own rows; it runs again only as a resume).
-        if (context !== null && req.url === SELLER_CONTEXT_PATH) try { await context.settled(reservation.contextHold); } catch { /* retain the uncertain hold; still answer below */ }
       }
       const close = status === 408 || status === 413;
       try { return await send(res, status, answer, request, { close }); } catch {
-        // A wire refusal before any effect that cannot be signed still goes out as itself, unsigned: its cause is never lost.
-        try { if (refusal && beforeEffect && auth === wireAuth && request) return await send(res, status, answer, null, { close }); } catch { /* the 503 below */ }
+        // A refusal before any effect that cannot be signed still goes out as itself, unsigned: its cause is never lost.
+        try { if (refusal && beforeEffect && request) return await send(res, status, answer, null, { close }); } catch { /* the 503 below */ }
         // A failed seller signer or journal cannot turn into a definite refusal.
         if (!res.headersSent && !res.destroyed) { res.writeHead(503, { 'content-type': 'application/json', connection: 'close' }); res.end('{"error":"operation_uncertain"}'); }
       }

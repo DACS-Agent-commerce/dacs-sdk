@@ -38,10 +38,9 @@
 // directory's format marker (kit-format.json), keeps the wire request journal at
 // <dataDirectory>/wire-journal under a 300 s lease, so an unusable journal
 // refuses startup, and holds the binding, the journal and the seller's signer in a
-// wire context for the signed routes. The
-// Agreement proposal, state and commitment routes open every request and sign
-// every answer through that context (seller-wire-requests.mjs), with the transport
-// store as their journal; the payment and bundle routes still use the old server auth.
+// wire context for the signed routes. Every route opens each request and signs
+// each answer through that context (seller-wire-requests.mjs), which is the host's
+// only authenticator; the transport store journals the routes.
 import { existsSync, mkdirSync, opendirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -63,7 +62,7 @@ import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
-import { SellerTransportError, createSellerTransportServerAuth, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
+import { SellerTransportError, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
@@ -384,8 +383,7 @@ export async function startSellerHost(options) {
     // parent entry has been synced yet.
     await DURABLE_SYNC.directory(transport);
     await DURABLE_SYNC.directory(dataDirectory);
-    const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
-    const handler = createSellerHttpHandler(agent, { authentication, wire, context });
+    const handler = createSellerHttpHandler(agent, { wire, context });
     const active = new Set();
     // Connections with no dispatched request cannot be drained: a buyer that
     // stops after a partial request line would hold server.close() forever,

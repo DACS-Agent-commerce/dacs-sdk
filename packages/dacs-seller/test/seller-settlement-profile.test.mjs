@@ -431,7 +431,7 @@ async function httpSeller(t, w, { gate = {} } = {}) {
     retainsProposalWork: (jobId) => agent.retainsProposalWork(jobId), retainsPaymentClaim: (jobId, body) => agent.retainsPaymentClaim(jobId, body), retainsPaymentWork: (jobId) => agent.retainsPaymentWork(jobId), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target), revalidateCompletedAnswer: (input) => agent.revalidateCompletedAnswer(input), assertSettlementCredit: (jobId) => agent.assertSettlementCredit(jobId),
     receiveProposal: gated('receiveProposal'), commit: gated('commit'), submitPayment: gated('submitPayment') };
   const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.signer, store, now: () => w.now });
-  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });
+  const handle = seller.createSellerHttpHandler(facade, { wire });
   const proposal = await w.proposalFor(w.vetted);
   const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: inProcessFetch(handle, last),
     authentication: buyerWire.authentication(() => proposal.proposal.plan.agreementHash) });

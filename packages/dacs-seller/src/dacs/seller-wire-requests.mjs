@@ -12,7 +12,7 @@ import { endWireAttempt } from './seller-http.mjs';
 import { plannedStateRecords } from './seller-planned-agreement.mjs';
 import { SELLER_EFFECT_ROUTES } from './seller-effect-routes.mjs';
 import { requestNonceKey } from './seller-reservation-accounting.mjs';
-import { SellerTransportError, sellerStoreInternals, transportStoreOf, validateBody } from './seller-transport-auth.mjs';
+import { SellerTransportError, sellerStoreInternals, validateBody } from './seller-transport-auth.mjs';
 
 // The routes that continue a committed purchase: the wire admits them only on the purchase's commitment, Agreement and Listing.
 const CONTINUING_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature, DACS_SELLER_HTTP_PATHS.bundleBuyerCopy]);
@@ -20,14 +20,14 @@ const COMMITMENT_RECEIPT_TIMEOUT_MS = 10000;
 
 /**
  * The routes the wire opens and signs. `commitments/signature` is one only where the handler mounts it (`commitOnSignature`);
- * the context step keeps the old server auth, and the challenge is opened by `challengeOnWire` (it has no Agreement and no
+ * the context step is served by `handleContext`, and the challenge is opened by `challengeOnWire` (it has no Agreement and no
  * journal), not through this list.
  */
 export const WIRE_ROUTE_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.state, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature, ...CONTINUING_PATHS]);
 // The routes that start or commit a purchase carry the host's own `allocated` flag (false unless the purchase holds a live allocation).
 const STAGE_PATHS = new Set([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature]);
-// The contexts createWireContext made, each with the agent and raw store it was made over: the handler takes no other, and
-// only a pair it serves with the same agent and the same store.
+// The contexts createWireContext made, each with the agent it was made for: the handler takes no other, and
+// only for that agent.
 const wireContexts = new WeakMap();
 
 const partyClaim = (artifact, role) => artifact.parties?.find((party) => party?.role === role)?.primaryClaim;
@@ -152,7 +152,7 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
       return reader;
     },
     plannedAgreementOf: (jobId) => (readPlannedAgreement === null ? null : readPlannedAgreement({ jobId })) });
-  wireContexts.set(context, { agent, store });
+  wireContexts.set(context, agent);
   return context;
 }
 
@@ -227,22 +227,20 @@ async function admitWireRoute(wire, agent, limits, { header, method, path, rawBo
 }
 
 /**
- * The authenticator of the wire routes, in the shape the handler takes from either auth: `open` admits a request
+ * The authenticator of the wire routes, in the shape the handler uses: `open` admits a request
  * (`{ body, read, readbackOnly(), recheck(), assertLive() }`; a read route reserves nowhere, an effect route reserves with the
  * request's tuple; `assertLive()` throws once the request or its delegation has expired), `sign` signs an answer under the tuple
  * kept for the job (`undefined` for a request that names another seller, which cannot be signed for: its refusal goes out
  * unsigned), `encode` admits the text a stored answer keeps, and `store` is the wire-effect adapter: it reserves through the
  * reservation coordinator and ends each attempt through the completion port. Deferred reserve rechecks expiry; an expired recovery
- * claim grants read-only work and settles no retry or null end. `readbackOnly()` reads the clock each time too. Throws for a `wire` that createWireContext
- * did not make, whose seller or delegation rule differs from
- * `authentication`'s, or that was made for another agent than `agent` or another transport store than `authentication`'s:
- * its checks would read one agent's and one store's records while the other serves and journals the request.
+ * claim grants read-only work and settles no retry or null end. `readbackOnly()` reads the clock each time too. Throws a TypeError
+ * for a `wire` that createWireContext did not make, and an Error for one made for another agent than `agent`: its checks would read
+ * one agent's records while the other serves the request.
  */
-export function wireAuthenticator(wire, agent, authentication) {
-  const owner = wireContexts.get(wire);
-  if (owner === undefined) throw new TypeError('the wire option must be a createWireContext context');
-  if (wire.signer.claim !== authentication?.seller || wire.requireDelegation !== authentication.requireDelegation) throw new Error('the wire context and the old authentication must name the same seller and delegation rule');
-  if (owner.agent !== agent || owner.store !== transportStoreOf(authentication)) throw new Error('the wire context must be made for the handler\'s agent and the old authentication\'s transport store');
+export function wireAuthenticator(wire, agent) {
+  const madeFor = wireContexts.get(wire);
+  if (madeFor === undefined) throw new TypeError('the wire option must be a createWireContext context');
+  if (madeFor !== agent) throw new Error('the wire context must be made for the handler\'s agent');
   // A retained effect is claimed and settled inside the agent's job fence after asynchronous waits. Recovery is
   // read-only once the request or delegation expires. A request this authenticator did not admit is expired.
   // An expiry once seen is kept, as the old guard's read-back set kept it: a clock that later reads earlier (a correction)

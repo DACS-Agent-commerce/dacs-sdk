@@ -15,7 +15,7 @@ import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation } from '@kynesysl
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { createCompletedOutcomeReader, createOrdinaryCompletionPort, createSellerHttpHandler, endWireAttempt } from '../src/dacs/seller-http.mjs';
-import { SellerTransportError, createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { BUYER, JOB, JOB2, PIN, SELLER, T0, accountingFixture, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 
 // The ordinary completion port runs on the real reservation coordinator, purchase capacity, SQL store and wire journal: no route
@@ -740,12 +740,12 @@ test('the state and buyer-copy routes reserve nothing and touch no journal', asy
 
 test('an agent without callable retainsPaymentWork or assertSettlementCredit is refused at construction', async t => {
   const w = await routeWorld(t);
-  const { wire } = w.handle, authentication = createSellerTransportServerAuth({ sellerSigner: { claim: WORLD_SELLER.claim, sign: WORLD_SELLER.sign }, listingPin: WORLD_PIN, store: w.handle.store, now: w.clock });
+  const { wire } = w.handle;
   for (const name of ['retainsPaymentWork', 'assertSettlementCredit']) for (const value of [undefined, 'not a function', {}]) {
     const agent = { ...w.agent, [name]: value };
-    assert.throws(() => createSellerHttpHandler(agent, { authentication, wire }), TypeError, `${name} ${typeof value}`);
+    assert.throws(() => createSellerHttpHandler(agent, { wire }), TypeError, `${name} ${typeof value}`);
   }
-  assert.equal(typeof createSellerHttpHandler(w.agent, { authentication, wire }), 'function', 'the complete agent constructs');
+  assert.equal(typeof createSellerHttpHandler(w.agent, { wire }), 'function', 'the complete agent constructs');
   assert.equal(w.journalFiles().length, 0);
 });
 

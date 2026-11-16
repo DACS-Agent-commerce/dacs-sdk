@@ -36,9 +36,3 @@ test('transport admits a competing payment to authenticated intake instead of el
   }
  }finally{store?.close();rmSync(dir,{recursive:true,force:true});}
 });
-test('cached delivered transport answer is revalidated before disclosure',async()=>{
- const {createSellerHttpHandler}=await import('../src/dacs/seller-http.mjs');const {exchange}=await import('./helpers/d5-http-fixture.mjs');
- const seller=key().claim,listingPin={listingId:'collision',version:1,contentHash:'b'.repeat(64)};
- const handler=createSellerHttpHandler({claim:seller,listingPin,assertSettlementCredit:()=>{throw new Error('credit suspended')}},{authentication:{seller,listingPin,readRequest:()=>({jobId:JOBS[0]}),validate:()=>{},responseHeader:()=> 'fixture',store:{reserve:()=>({disposition:'cached',status:200,text:'{"status":"delivered"}'})}}});
- const result=await exchange(handler,{url:'/dacs/v1/payments',text:'{}',header:'fixture'});assert.equal(result.status,503);assert.notEqual(JSON.parse(result.text).status,'delivered');
-});

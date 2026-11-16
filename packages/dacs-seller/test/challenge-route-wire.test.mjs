@@ -2,11 +2,10 @@
 // card's title; nonces are random at run time, so tests compare shapes, codes and counts, never values.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { identityBundleHash } from '@kynesyslabs/dacs';
 import * as guard from '../src/kit-operation-guard.mjs';
-import { SellerTransportError, createSellerTransportClientAuth, createSellerTransportServerAuth, sellerContextScopeHash, SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
+import { SellerTransportError, createSellerTransportClientAuth, sellerContextScopeHash, SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
-import { exchange, bundleFor } from './helpers/d5-http-fixture.mjs';
+import { exchange } from './helpers/d5-http-fixture.mjs';
 import { CHALLENGE_LIFETIME_MS, CHALLENGE_PATH, CONTEXT_PATH, JOB, JOB2, T0, challengeWorld, gate, watchSql } from './helpers/challenge-route-fixture.mjs';
 
 const NONCE = /^[0-9a-f]{64}$/;
@@ -301,50 +300,6 @@ test('K2-T10 a challenge body carrying buyerBundleHash is peer_context_mismatch 
   });
 });
 
-test('OP-1 enabling the wire challenge preserves the directly composed context path until its port', async (t) => {
-  const w = await challengeWorld(t);
-  const buyerSigner = { claim: w.buyer.claim, sign: w.buyer.signBytes };
-  const { agent } = w;
-  const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: w.seller.claim, sign: w.seller.signBytes }, listingPin: w.pin, store: w.store, now: () => w.state.time });
-  const oldClient = (agreementHash) => createSellerTransportClientAuth({ buyerSigner, seller: w.seller.claim, resolveJob: () => ({ listingPin: w.pin, agreementHash }), now: () => w.state.time });
-  await t.test('a wire challenge without the host stop predicate refuses construction (fail closed)', () => {
-    assert.throws(() => createSellerHttpHandler(agent, { authentication, context: w.route, wire: w.makeWire({ stopped: undefined }) }),{ name: 'TypeError', message: /stop predicate/ });
-  });
-  await t.test('the old-auth context step is not rejected by the wire challenge option: it reaches the route and gets its signed K1 refusal', async () => {
-    const bundle = bundleFor({ claim: w.buyer.claim, sign: w.buyer.signBytes }, T0);
-    const body = { scope: { ...w.scopeFor(JOB), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle };
-    const text = JSON.stringify(body);
-    const client = oldClient(sellerContextScopeHash(body.scope));
-    const { payload, header } = await client.request(CONTEXT_PATH, body, text);
-    const res = await exchange(w.handler, { url: CONTEXT_PATH, text, header });
-    assert.deepEqual([res.status, JSON.parse(res.text).error], [409, 'context_challenge_mismatch']);
-    client.verifyResponse(payload, { header: res.headers[SELLER_TRANSPORT_HEADER], status: res.status, text: res.text });
-  });
-  await t.test('the challenge on the same handler is the wire handler: an old-domain challenge request is refused at the wire', async () => {
-    const body = { scope: w.scopeFor(JOB) };
-    const text = JSON.stringify(body);
-    const { header } = await oldClient(sellerContextScopeHash(body.scope)).request(CHALLENGE_PATH, body, text);
-    const answer = await w.post({ header, text });
-    assert.deepEqual(summary(answer), [409, 'tp1_profile_missing']);
-    assert.equal(answer.signature, undefined);
-    assert.equal(w.rows().length, 0);
-  });
-  await t.test('the old route\'s challenge on the raw store still issues, with the store\'s default no-op final check', async () => {
-    const answer = await w.route.challenge({ jobId: JOB2, buyer: w.buyer.claim }, { scope: w.scopeFor(JOB2) }, w.store);
-    assert.match(answer.sessionNonce, NONCE);
-    assert.equal(w.rows().filter((row) => row.jobId === JOB2).length, 1);
-  });
-  await t.test('without the wire option the old-auth challenge route is unchanged', async () => {
-    const body = { scope: w.scopeFor(JOB) };
-    const text = JSON.stringify(body);
-    const { header } = await oldClient(sellerContextScopeHash(body.scope)).request(CHALLENGE_PATH, body, text);
-    const res = await exchange(createSellerHttpHandler(agent, { authentication, context: w.route }), { url: CHALLENGE_PATH, text, header });
-    assert.equal(res.status, 200);
-    assert.match(JSON.parse(res.text).sessionNonce, NONCE);
-    assert.equal(w.rows().filter((row) => row.jobId === JOB).length, 1);
-  });
-});
-
 test('a request admitted live but expired when its effect would begin issues nothing, with the stall in {buyer access, known job}', async (t) => {
   for (const stalled of ['access', 'known']) await t.test(`the stall is in the ${stalled} callback`, async (t) => {
     const attempt = async (releasedAt) => {
@@ -582,4 +537,35 @@ test('challenge-last-slot-winner-restart', async (t) => {
   assert.deepEqual(summary(await w.post(loser)), [429, 'context_challenge_limit']);
   assert.equal(w.rows().length, OVERALL_LIMIT);
   assert.ok(w.rows().every((row) => row.issuedAt > T0 - HOUR_MS));
+});
+
+test('a wire challenge without the host stop predicate refuses construction', async (t) => {
+  const w = await challengeWorld(t);
+  assert.throws(() => createSellerHttpHandler(w.agent, { context: w.route, wire: w.makeWire({ stopped: undefined }) }), { name: 'TypeError', message: /stop predicate/ });
+});
+
+test('a handler composed with only the challenge route answers the context step as not found, unsigned', async (t) => {
+  const w = await challengeWorld(t);
+  const answer = await exchange(w.handler, { url: CONTEXT_PATH, text: '{}', header: 'TEST-header' });
+  assert.deepEqual([answer.status, JSON.parse(answer.text).error, answer.headers[SELLER_TRANSPORT_HEADER]], [404, 'not_found', undefined]);
+  assert.equal(w.rows().length, 0);
+});
+
+test('an old-domain challenge request is refused at the wire, unsigned, with nothing written', async (t) => {
+  const w = await challengeWorld(t);
+  const buyerSigner = { claim: w.buyer.claim, sign: w.buyer.signBytes };
+  const body = { scope: w.scopeFor(JOB) }, text = JSON.stringify(body);
+  const client = createSellerTransportClientAuth({ buyerSigner, seller: w.seller.claim, resolveJob: () => ({ listingPin: w.pin, agreementHash: sellerContextScopeHash(body.scope) }), now: () => w.state.time });
+  const { header } = await client.request(CHALLENGE_PATH, body, text);
+  const answer = await w.post({ header, text });
+  assert.deepEqual(summary(answer), [409, 'tp1_profile_missing']);
+  assert.equal(answer.signature, undefined);
+  assert.equal(w.rows().length, 0);
+});
+
+test('the context route\'s challenge on the raw store still issues, with the store\'s default no-op final check', async (t) => {
+  const w = await challengeWorld(t);
+  const answer = await w.route.challenge({ jobId: JOB2, buyer: w.buyer.claim }, { scope: w.scopeFor(JOB2) }, w.store);
+  assert.match(answer.sessionNonce, NONCE);
+  assert.equal(w.rows().filter((row) => row.jobId === JOB2).length, 1);
 });

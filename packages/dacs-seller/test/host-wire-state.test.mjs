@@ -21,7 +21,7 @@ import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PR
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
-import { JOBS, T, exchange, presentContext, world } from './helpers/d5-http-fixture.mjs';
+import { T } from './helpers/d5-http-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
 import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
@@ -30,7 +30,7 @@ import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall, isBoundedCallTimeout } from '../src/dacs/bounded-call.mjs';
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportStore as createUnboundTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER, createSellerTransportStore as createUnboundTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 
 const HOST_URL = new URL('../src/host.mjs', import.meta.url);
@@ -932,29 +932,6 @@ test('P10-T12 replay matrix: for a pending, completed, retry, uncertain, no-effe
   assert.equal(w.tuples(), 4, 'every profiled job that still exists keeps its one tuple');
 });
 
-test('a context step carrying a tuple is refused with nothing kept; after a context step without one, the first proposal keeps its tuple and a proposal under another tuple is refused', async (t) => {
-  const w = await world(t, { recover: presentContext });
-  const [job] = JOBS;
-  const input = await w.wire({ jobId: job });
-  const request = w.auth.readRequest(input.header);
-  const body = JSON.parse(input.text);
-  const client = createSellerTransportClientAuth({ buyerSigner: w.buyer, seller: w.seller.claim, resolveJob: () => ({ listingPin: w.pin, agreementHash: derive('agreement') }), now: w.now });
-  const proposal = async (id) => { const { header } = await client.request(PROPOSALS, { jobId: id }, '{}'); return w.auth.readRequest(header); };
-  const tables = () => { const db = new DatabaseSync(w.path, { readonly: true }); try { return db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(({ name }) => [name, db.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get().n]); } finally { db.close(); } };
-  const before = tables();
-  for (const store of [w.auth.store, w.store]) {
-    assert.throws(() => store.reserve(request, body, { keepProfile: PROFILE, admit: () => w.now() }), MISMATCH);
-    assert.throws(() => store.classify(request, body, { keepProfile: PROFILE }), MISMATCH);
-  }
-  assert.deepEqual(tables(), before, 'the refused context step changed no row');
-  assert.equal((await exchange(w.handler, input)).status, 200, 'the same step without a tuple is admitted');
-  assert.equal(w.store.purchaseProfile(job), null, 'the context step keeps no tuple');
-  assert.equal(w.store.reserve(await proposal(job), {}, { keepProfile: PROFILE }).disposition, 'perform');
-  const other = await proposal(job);
-  assert.throws(() => w.store.reserve(other, {}, { keepProfile: OTHER_PROFILE }), MISMATCH);
-  assert.deepEqual(w.store.purchaseProfile(job), PROFILE);
-});
-
 test('keepPurchaseProfileWithin validates synchronously and persists or rolls back detached tuples', (t) => {
   const w = storeFixture(t), job = jobId('detached');
   let port = sellerStoreInternals(w.store);
@@ -1124,56 +1101,6 @@ test('P10-T17 with maxJobs 3 full and spare reservation capacity, 20 fresh-job r
     assert.equal(w.tuples(), 1);
   });
 });
-
-test('P10-T18 through the real guarded store\'s classify, its dry-run reserve and the real old-auth context route, never a replacement classifier: fresh context work classifies start and known work known with no tuple, as today; after a proposal reservation has kept the job\'s tuple, the context route\'s retry with a fresh request nonce still classifies known and replays its answer; classify given the matching tuple answers as reserve would, a different tuple or an existing job with no kept tuple refuses tp1_purchase_profile_mismatch, and a dry run on a new job with a tuple leaves the tuple count unchanged; the guarded wrappers forward the tuple; the same after restart', async (t) => {
-  const w = await world(t, { recover: presentContext });
-  const [job] = JOBS;
-  const contextRequest = async () => { const input = await w.wire({ jobId: job }); return { input, request: w.auth.readRequest(input.header), body: JSON.parse(input.text) }; };
-  const client = createSellerTransportClientAuth({ buyerSigner: w.buyer, seller: w.seller.claim, resolveJob: () => ({ listingPin: w.pin, agreementHash: derive('agreement') }), now: w.now });
-  const proposal = async (id) => { const { header } = await client.request(PROPOSALS, { jobId: id }, '{}'); return w.auth.readRequest(header); };
-  const tuples = () => { const db = new DatabaseSync(w.path, { readonly: true }); try { return db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n; } finally { db.close(); } };
-  const guarded = w.auth.store;
-
-  const fresh = await contextRequest();
-  assert.equal(guarded.classify(fresh.request, fresh.body), 'start', 'fresh context work classifies start with no tuple');
-  const first = await exchange(w.handler, fresh.input);
-  assert.equal(first.status, 200);
-  const retry = await contextRequest();
-  assert.equal(guarded.classify(retry.request, retry.body), 'known', 'known context work classifies known with no tuple');
-
-  const other = jobId('t18-other');
-  const reservation = guarded.reserve(await proposal(job), {}, { keepProfile: PROFILE });
-  assert.equal(reservation.disposition, 'perform', 'the guarded wrapper forwards the tuple to a new job');
-  assert.equal(tuples(), 1);
-  assert.deepEqual(w.store.purchaseProfile(job), PROFILE);
-
-  const again = await contextRequest();
-  assert.equal(guarded.classify(again.request, again.body), 'known', 'the context retry still classifies known once the job has a tuple');
-  const replay = await exchange(w.handler, again.input);
-  assert.equal(replay.text, first.text, 'and replays its answer');
-  assert.equal(w.effects().writes, 1, 'without new work');
-
-  // Explicitly select the legacy path through the fixture tuple adapter.
-  w.store.reserve(await proposal(other), {}, { keepProfile: undefined });
-  const dryRuns = async (store, label) => {
-    const [matching, different, untupled, legacy, brandNew] = await Promise.all([proposal(job), proposal(job), proposal(other), proposal(other), proposal(jobId('t18-new'))]);
-    assert.equal(store.classify(matching, {}, { keepProfile: PROFILE }), 'known', `${label}: the matching tuple answers as reserve would`);
-    assert.throws(() => store.classify(different, {}, { keepProfile: OTHER_PROFILE }), MISMATCH, `${label}: a different tuple is refused`);
-    assert.throws(() => store.classify(untupled, {}, { keepProfile: PROFILE }), MISMATCH, `${label}: an existing job with no kept tuple is refused`);
-    assert.equal(store.classify(legacy, {}, { keepProfile: undefined }), 'known', `${label}: an absent tuple is the legacy path`);
-    assert.equal(store.classify(brandNew, {}, { keepProfile: PROFILE }), 'start', `${label}: a new job classifies start`);
-    assert.equal(tuples(), 1, `${label}: a dry run keeps no tuple`);
-  };
-  await dryRuns(guarded, 'guarded store');
-
-  const reopened = createSellerTransportStore({ path: w.path, now: w.now });
-  t.after(() => reopened.close());
-  assert.deepEqual(reopened.purchaseProfile(job), PROFILE, 'the tuple survives a restart');
-  const afterRestart = await contextRequest();
-  assert.equal(reopened.classify(afterRestart.request, afterRestart.body), 'known', 'the context retry classifies known after restart');
-  await dryRuns(reopened, 'restarted store');
-});
-
 
 test('R20 detached profiles do not hold job slots', t => {
   const w = storeFixture(t, { maxJobs: 1 }), detached = jobId('profile-only');

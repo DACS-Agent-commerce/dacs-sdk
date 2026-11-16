@@ -225,7 +225,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const agentUrl = agentTransform ? await privateModuleUrl(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], agentTransform) : null;
   const hostModule = await privateModule(new URL('../src/host.mjs', import.meta.url), ['setCutAgent'], source => {
     const cut = source.replace('const REQUIRED =', 'let cutAgent = (agent) => agent; function setCutAgent(value) { cutAgent = value; }\nconst REQUIRED =')
-      .replace('createSellerHttpHandler(agent, { authentication, wire, context })', 'createSellerHttpHandler(cutAgent(agent, wire), { authentication, wire, context })');
+      .replace('createSellerHttpHandler(agent, { wire, context })', 'createSellerHttpHandler(cutAgent(agent, wire), { wire, context })');
     return agentUrl === null ? cut : cut.replace("from './dacs/seller-agent.mjs'", `from '${agentUrl}'`);
   });
   hostModule.setCutAgent(cutAgent);
@@ -3484,9 +3484,7 @@ for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expi
   } };
   const { wire, createBuyer } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: w.buyerKey, seller: w.sellerKey, store, now,
     readCommitmentReceipt: w.capabilities().readCommitmentReceipt, requireDelegation: true });
-  const handler = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({
-    sellerSigner: w.sellerKey, listingPin: pin, store, now, requireDelegation: true,
-  }) });
+  const handler = seller.createSellerHttpHandler(facade, { wire });
   const body = { jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE };
   const rawBody = JSON.stringify(body);
   const signedRequest = async () => {
