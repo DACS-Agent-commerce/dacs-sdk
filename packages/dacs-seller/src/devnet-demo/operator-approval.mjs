@@ -671,7 +671,8 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     // appends nothing. A repeat the checks refuse, or one whose executed transaction is not the recorded one, is
     // false and leaves the line and the reservation as they are.
     if(row.confirmed!==null){
-      if(checks.reason||JSON.stringify(executedTransaction(validity))!==JSON.stringify(row.confirmation))return false;
+      const executed=executedTransaction(validity);
+      if(checks.reason||executed.hash===null||executed.hash!==row.confirmation?.hash||!same(executed.content,row.confirmation.content))return false;
       syncContextLedger(evidencePath);
       return true;
     }

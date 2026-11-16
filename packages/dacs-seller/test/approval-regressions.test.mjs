@@ -629,6 +629,27 @@ test('a retried confirmation carrying another transaction hash than the recorded
  assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
  assert.equal(await f.p(r,confirmationFor(r)),true);
 });
+const reversedKeys=(value)=>Object.fromEntries(Object.entries(value).reverse());
+test('a retried confirmation whose node answer lists the same content in another key order is synced and confirmed',async t=>{
+ const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
+ const reordered=confirmationFor(r),tx=reordered.response.data.transaction;
+ tx.content=reversedKeys({...tx.content,transaction_fee:reversedKeys(tx.content.transaction_fee),gcr_edits:tx.content.gcr_edits.map(reversedKeys)});
+ const original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,reordered),true);
+ assert(synced.includes(f.evidencePath));assert.equal((await confirmationLines(f)).length,1);
+});
+for(const [label,retryHash] of [['the same malformed hash','not-a-hash'],['another malformed hash','also-not-a-hash']])test(`a retried confirmation whose recorded hash was malformed is false and syncs nothing, with ${label}`,async t=>{
+ const f=await fixture(t,purchase),r=payDem(),first=confirmationFor(r),retry=confirmationFor(r);
+ first.response.data.transaction.hash='not-a-hash';retry.response.data.transaction.hash=retryHash;
+ assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,first),{message:'TEST sync failed'});restore();
+ const lines=(await ledgerLines(f)).length,original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,retry),false);assert.equal(synced.includes(f.evidencePath),false);
+ assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
+});
 for(const [label,release,reason] of [['settled as released',(f,r)=>f.p.settle(r,'released'),'wallet-released'],['released',(f,r)=>f.p.releaseHeld(r,'operator-released'),'operator-released']])
  test(`cold2 F2 a decline whose release append failed is ended when later ${label}, and frees the budget`,async t=>{
   const f=await fixture(t,()=>null,{limits:{maxWritesPerHour:1}}),r=vetRequest();
