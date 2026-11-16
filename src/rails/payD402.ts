@@ -16,8 +16,8 @@ import { canonicalDemosTxHash } from "./payDem.js";
  * so `settle()` gets the settlement tx hash back directly. The node's
  * acknowledgement is not proof of payment: the rail reads the transaction back
  * by that hash and reports `ok` only when the node's own record is a confirmed
- * `d402_payment` debited from the buyer, with a balance credit to the advertised
- * recipient for the agreed amount.
+ * `d402_payment` debited from the buyer, with a balance removal of the agreed
+ * amount from the buyer and a balance credit of it to the advertised recipient.
  *
  * Per DACS §4.1 the buyer MUST abort before paying if the 402's advertised
  * terms don't match the negotiated agreement (termsMatchD402) — otherwise
@@ -202,18 +202,26 @@ const RECORD_READ_TIMEOUT_MS = 10_000;
 const CONFIRMED_RECORD_STATUS = "confirmed";
 const D402_PAYMENT_TYPE = "d402_payment";
 
-/** True when `edits` holds a live balance credit of `amount` to `payee`. */
-function creditsPayee(edits: unknown, payee: string, amount: string): boolean {
+/**
+ * True when `edits` holds a live (not rolled back) balance edit of `amount`
+ * for `account`: an `add` is a credit and a `remove` is a debit.
+ */
+function hasBalanceEdit(
+  edits: unknown,
+  operation: "add" | "remove",
+  account: string,
+  amount: string,
+): boolean {
   return Array.isArray(edits) && edits.some((candidate) => {
     const edit = asRecord(candidate);
-    if (edit === null || edit["type"] !== "balance" || edit["operation"] !== "add" ||
+    if (edit === null || edit["type"] !== "balance" || edit["operation"] !== operation ||
         edit["isRollback"] !== false || typeof edit["account"] !== "string" ||
-        normalizeDemosNativeAddress(edit["account"]) !== payee) {
+        normalizeDemosNativeAddress(edit["account"]) !== account) {
       return false;
     }
-    const credited = edit["amount"];
-    return typeof credited === "string" && BASE_UNITS.test(credited) &&
-      BigInt(credited) === BigInt(amount);
+    const edited = edit["amount"];
+    return typeof edited === "string" && BASE_UNITS.test(edited) &&
+      BigInt(edited) === BigInt(amount);
   });
 }
 
@@ -221,8 +229,9 @@ function creditsPayee(edits: unknown, payee: string, amount: string): boolean {
  * True when the node's record is a confirmed `d402_payment` with this hash,
  * debited from `payer` and credited to `payee` for `amount` base units. The
  * signed payload holds `to` and `amount`, `from_ed25519_address` is the debited
- * account, and the balance edits must credit the payee; anything missing or
- * shaped differently is not a match.
+ * account, and the balance edits must both remove the amount from the payer and
+ * credit it to the payee, neither rolled back; anything missing or shaped
+ * differently is not a match.
  */
 function recordShowsTransfer(
   record: unknown,
@@ -250,7 +259,8 @@ function recordShowsTransfer(
   return payee !== null && typeof to === "string" && normalizeDemosNativeAddress(to) === payee &&
     typeof amount === "string" && BASE_UNITS.test(amount) && BASE_UNITS.test(expected.amount) &&
     BigInt(amount) === BigInt(expected.amount) &&
-    creditsPayee(content["gcr_edits"], payee, expected.amount);
+    hasBalanceEdit(content["gcr_edits"], "remove", payer, expected.amount) &&
+    hasBalanceEdit(content["gcr_edits"], "add", payee, expected.amount);
 }
 
 /** Reads the transaction back; a failed or timed-out read is "not shown". */
