@@ -179,3 +179,25 @@ test('two processes competing for the last job slot: one gets it, the other is r
   });
   assert.deepEqual(store.sessions(), [], 'no job record was created for either process');
 });
+
+test('a new job below capacity does not probe or remove reservations of exited holders', async (t) => {
+  const { dir, store } = await openStore(t, 'below-capacity-', { maxJobs: 3 });
+  const [exitedJob, newJob] = Array.from({ length: 2 }, () => core.generateCanonicalJobId());
+  const exited = await startHolder(t, dir, exitedJob);
+  await exited.kill();
+  await store.withJob(newJob, () => store.saveSession({ jobId: newJob }));
+  assert.equal(lockOf(store, exitedJob)?.reason, 'exited', 'the exited holder\'s row is left for releaseStaleLocks');
+});
+
+test('a new job at capacity takes the slot of an exited reservation and leaves a live one', async (t) => {
+  const { dir, store } = await openStore(t, 'at-capacity-', { maxJobs: 2 });
+  const [exitedJob, liveJob, newJob, refusedJob] = Array.from({ length: 4 }, () => core.generateCanonicalJobId());
+  const exited = await startHolder(t, dir, exitedJob);
+  await startHolder(t, dir, liveJob);
+  await exited.kill();
+  await store.withJob(newJob, async () => {
+    assert.equal(lockOf(store, exitedJob), undefined, 'the exited holder\'s row was swept');
+    assert.equal(lockOf(store, liveJob)?.reason, 'live', 'the live holder\'s row stays and counts');
+    await assert.rejects(store.withJob(refusedJob, () => assert.fail('no slot is left')), { code: 'seller_state_capacity' });
+  });
+});

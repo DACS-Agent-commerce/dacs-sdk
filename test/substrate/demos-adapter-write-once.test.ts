@@ -18,7 +18,7 @@ const ACCEPTED = { completion: "accepted", timeoutMs: 1_500, pollMs: 5 } as cons
 const WRITE_ONCE = { timeoutMs: 500, pollMs: 5 } as const;
 const servers: Server[] = [];
 
-/** 521 is answered as a Cloudflare edge does when the origin refused it. */
+/** 521 is answered with a `cf-ray` header, as a server that read the whole post may. */
 type Failure = 502 | 521 | "reset";
 
 interface NodePost {
@@ -353,26 +353,7 @@ describe("DemosAdapter broadcasts that never reached the node", () => {
     expect(finalStages(puts)).toEqual(["canonical-failed", "broadcast-intent"]);
   });
 
-  it("releases the wallet when a Cloudflare edge answers 521 to the broadcast", async () => {
-    // The loopback server stands in for the edge: it answers 521 itself.
-    const node = await startNode({ [BROADCAST]: [521] });
-    const { adapter, puts } = await makeAdapter(node.url);
-
-    const refused = await acceptedError(adapter, "edge-521");
-
-    expect(refused).toMatchObject({
-      code: "broadcast-failed",
-      receipt: { state: "not-broadcast" },
-    });
-    expect(finalStages(puts)).toEqual(["canonical-failed"]);
-
-    const next = await adapter.anchorAndWait("after-edge-521", { value: 2 }, ACCEPTED);
-
-    expect(next).toMatchObject({ state: "accepted" });
-    expect(finalStages(puts)).toEqual(["canonical-failed", "broadcast-intent"]);
-  });
-
-  it.each<Failure>([502, "reset"])(
+  it.each<Failure>([502, 521, "reset"])(
     "keeps an accepted-mode write unresolved when the node answers %s to its broadcast",
     async (failure) => {
       const node = await startNode({ [BROADCAST]: [failure] });
@@ -389,7 +370,7 @@ describe("DemosAdapter broadcasts that never reached the node", () => {
     },
   );
 
-  it.each<Failure>([502, "reset"])(
+  it.each<Failure>([502, 521, "reset"])(
     "keeps a write-once write unresolved when the node answers %s to its broadcast",
     async (failure) => {
       const node = await startNode({ [BROADCAST]: [failure] });

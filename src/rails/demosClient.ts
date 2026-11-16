@@ -16,19 +16,9 @@ const NOT_CONNECTED_CODES: ReadonlySet<unknown> = new Set([
 ]);
 
 /**
- * Cloudflare edge answers that say the edge never connected to the origin:
- * 521 (the origin refused the connection) and 523 (the origin is
- * unreachable). 520, 522 and 524 can follow a connection, so they do not count.
- */
-const NOT_FORWARDED_EDGE_STATUSES: ReadonlySet<unknown> = new Set([521, 523]);
-
-/** The header Cloudflare's edge sets on every answer, error pages included. */
-const CLOUDFLARE_EDGE_HEADER = "cf-ray";
-
-/**
  * Thrown by a {@link createDemosClient} client instead of demosdk's transport
- * error when a transaction post provably never reached the node, so the
- * signed transaction was not submitted. `cause` is the transport error.
+ * error when a transaction post never connected to the node, so the signed
+ * transaction was not submitted. `cause` is the transport error.
  */
 export class TransactionPostNotSentError extends Error {
   override readonly name = "TransactionPostNotSentError";
@@ -68,22 +58,18 @@ function redirectsFollowed(axiosError: unknown): unknown {
 }
 
 /**
- * True only when demosdk's transport error proves the one attempt never
- * reached the node: one attempt, no redirect, and either a connection that
- * never opened or a Cloudflare edge answer saying it did not forward.
- * Everything else, including a reset or timeout after connect and any other
- * 5xx answer, may have been received and stays unknown.
+ * True only when demosdk's transport error shows the one attempt never
+ * connected: one attempt, no redirect, no response, and a refused connection
+ * or an unresolved host name. Everything else, including any HTTP answer
+ * (502 to 504, 521 and 523 too, since any server can send those) and a reset
+ * or timeout after connect, may have been received and stays unknown.
  */
 function provesNotSent(error: unknown): boolean {
   if (field(error, "attempts") !== 1) return false;
   const axiosError = field(error, "cause");
   if (redirectsFollowed(axiosError) !== 0) return false;
-  const response = field(axiosError, "response");
-  if (response === undefined) {
-    return NOT_CONNECTED_CODES.has(field(axiosError, "code"));
-  }
-  return NOT_FORWARDED_EDGE_STATUSES.has(field(response, "status")) &&
-    typeof field(field(response, "headers"), CLOUDFLARE_EDGE_HEADER) === "string";
+  if (field(axiosError, "response") !== undefined) return false;
+  return NOT_CONNECTED_CODES.has(field(axiosError, "code"));
 }
 
 /**

@@ -178,7 +178,8 @@ function optionalPositiveInteger(
   return property.value as number;
 }
 
-function canonicalDemosTxHash(value: unknown): string | null {
+/** @internal Lower-case 64 hex of a Demos transaction hash with or without `0x`; null for anything else. */
+export function canonicalDemosTxHash(value: unknown): string | null {
   if (typeof value !== "string" || value.trim() !== value) return null;
   return value.match(DEMOS_TX_HASH_RE)?.[1]?.toLowerCase() ?? null;
 }
