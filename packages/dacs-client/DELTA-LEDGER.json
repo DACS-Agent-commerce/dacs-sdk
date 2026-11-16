@@ -10101,17 +10101,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF record the merged native transport blob after carrying the broadcast part up",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "663b5d24cda7fb2b517130a96bf0f8ba8ae379b1",
-          "after": "663b5d24cda7fb2b517130a96bf0f8ba8ae379b1"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF read a stabilised genesis on exact agreement of numeric block zero, the chain identity and block one",
       "files": [
         {
@@ -10138,6 +10127,28 @@
           "path": "packages/dacs-client/test/stabilised-genesis-binding.test.mjs",
           "before": null,
           "after": "0f88b8b5cd19939a5d95dd0c9d4cbe2d5f05f19d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged native transport blob after carrying the broadcast part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "663b5d24cda7fb2b517130a96bf0f8ba8ae379b1",
+          "after": "663b5d24cda7fb2b517130a96bf0f8ba8ae379b1"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF check every ledger record against the blobs of the commit it selects",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-blobs.test.mjs",
+          "before": null,
+          "after": "7de4008515b0d812079bd1a1177a3ab263fea6b1"
         }
       ]
     }
