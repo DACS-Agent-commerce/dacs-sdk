@@ -447,7 +447,7 @@ function providerOutcome(answer, scope) {
  * must still bind it (`session_admission_unavailable` 503 otherwise), and buyer access and the known-job check run again; the challenge expiry, the
  * generatedAt window, the profile admission and the start limits are not checked again and no hold or start is made. An `admitted` row is reserved
  * and runs, a settled one answers its stored outcome without a reservation, and a closed one is `context_admission_closed` (409). A running row whose
- * operation completed answers that outcome; one with an unfinished earlier attempt is held (`operation_uncertain` 503, nothing ended or run). * A stored outcome is answered only after `revalidateContextOutcome({ jobId, outcome })` has read the retained records back through the
+ * operation completed answers that outcome; one with an unfinished earlier attempt is held (`operation_uncertain` 503, nothing ended or run). A stored outcome is answered only after `revalidateContextOutcome({ jobId, outcome })` has read the retained records back through the
  * provider and found the same answer; otherwise it throws `seller_source_unavailable` (503) with its cause and changes nothing.
  * `closeAttempts(cause)` closes every attempt still running. `store`, `capacity`, `admissionTransaction` and `coordinator` are the host's one
  * instance of each: the tuple is kept inside the acceptance, so the construction registers its hook before the first admission, and throws a
