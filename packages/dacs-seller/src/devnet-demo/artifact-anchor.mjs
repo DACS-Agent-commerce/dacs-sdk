@@ -633,7 +633,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   const projectionWithinBudget=projection=>{
     try { boundedResolutionValue(projection,{maxBytes:SIGNED_PROJECTION_MAX_BYTES,maxValues:8192,maxDepth:34,maxListEntries:4096});return true; } catch { return false; }
   };
-  // demosdk 4.0.16 sign/GCRGeneration duplicates the CREATE and its metadata.
+  // demosdk 4.0.18 sign/GCRGeneration duplicates the CREATE and its metadata.
   // Long OS strings also cover fee byte overhead after the denomination fork.
   const sdkSignedCandidate=transaction=>{
     const content=clone(transaction.content),op=content.data[1],amount='9007199254740991000000000',from=content.from_ed25519_address;

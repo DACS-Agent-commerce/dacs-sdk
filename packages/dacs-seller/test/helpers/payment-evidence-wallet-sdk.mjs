@@ -1,4 +1,4 @@
-// The pinned demosdk (4.0.16) signing the payment-evidence storage CREATE, for
+// The pinned demosdk (4.0.18) signing the payment-evidence storage CREATE, for
 // the wallet journal tests: Demos.sign of the CREATE
 // buildStorageProgramCreatePayload prepares, with the evidence metadata. Offline:
 // the two node answers sign asks for (getNetworkInfo's denomination fork and
@@ -50,15 +50,18 @@ export async function sdkSignedCreate(input, { nonce, timestamp, artifact = inpu
 }
 
 // A hostile signer's projection: content the SDK did not produce, hashed and
-// signed by the same wallet the way Demos.sign hashes and signs.
+// signed by the same wallet the way Demos.sign hashes and signs. The hash is a
+// transaction's signing preimage, which signMessage signs only with raw: true.
 export async function resignedProjection(content) {
   const hash = sha256Hex(JSON.stringify(content));
-  return { hash, content, signature: await (await sdkWallet(false, null)).signMessage(hash) };
+  return { hash, content, signature: await signMessageAsTestWallet(hash) };
 }
 
 // The test wallet's signature over exactly `message`, as the { type, data } a signed projection carries.
+// raw: true signs the bytes as given, including a bare transaction hash or its chain-bound form, which
+// demosdk otherwise refuses to sign as a message.
 export async function signMessageAsTestWallet(message) {
-  return (await sdkWallet(false, null)).signMessage(message);
+  return (await sdkWallet(false, null)).signMessage(message, { raw: true });
 }
 
 // The node's view of signed content, by the code the SDK shares with it: the

@@ -569,7 +569,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
   `signedTransaction` is the JSON of exactly the public signed projection
   `{ hash, content, signature: { type, data } }` of the Demos signed
-  transaction: of demosdk 4.0.16's `demosclass.js` `sign()` result, only those three members (its
+  transaction: of demosdk 4.0.18's `demosclass.js` `sign()` result, only those three members (its
   `status`, `blockNumber` and `ed25519_signature` are left out; node 61b8e75
   refuses a truthy `status`, which the signature does not cover). Before it is
   kept, the journal checks it is what the node executes and the SR-2 readback
