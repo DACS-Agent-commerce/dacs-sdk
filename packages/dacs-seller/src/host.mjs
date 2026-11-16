@@ -438,13 +438,11 @@ export async function startSellerHost(options) {
     let closing = null;
     // Stops accepting, lets requests in progress finish, waits for the provider
     // work and the sweep still running, then closes the journal and the agent
-    // state they write to and releases the state lock.
+    // state they write to and releases the state lock. A context step already
+    // admitted runs to its own outcome or deadline; stopping refuses only new ones.
     const close = () => closing ??= (async () => {
       stopping = true;
       clearInterval(sweepTimer);
-      contextWork.stop();
-      // Before the first wait: the provider of a live context attempt may sign nothing more from here on.
-      contextRoute.closeAttempts(new SellerTransportError('seller_stopped', 503));
       const socketsClosed = new Promise((resolve) => server.close(resolve));
       server.closeIdleConnections();
       destroyUndispatched();
@@ -454,6 +452,8 @@ export async function startSellerHost(options) {
       // shutdown-induced uncertain effect. A readback past its deadline has
       // already answered uncertain, so this wait stays bounded.
       await Promise.allSettled([...active]);
+      // No request is left to start a provider step, so none starts from here on.
+      contextWork.stop();
       // Only now stop the underlying native work, then wait for it: a
       // capability that honours the signal stops early; one that does not
       // keeps ownership until it finishes.
