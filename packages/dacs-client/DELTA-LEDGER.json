@@ -10312,6 +10312,111 @@
           "after": "6edf96300eaead3ecf369f64ed1f626f1ac4357f"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a native write while a stored evidence CREATE holds the signer",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "cb7be1026524f82794127d071ed37bc9e3a8c549",
+          "after": "f453ffb58a09484125da89d68f74b3928137b9c7"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "bcb216547421660a2cd0de45415cce9a0ad18ba3",
+          "after": "1678957be639d72489fa6cc925da8a27660ee9cb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "a4e588ba8351ad22b97d9234aa0918e2158ecf65",
+          "after": "7449baca4f938c782bfdc29625db69fb82556c43"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "88d543ca451ef7657ff6a2e72b271b1d73264f8f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a native write that a stored evidence CREATE holds before the broadcast, with the public refusal code",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "a36092fb9752a4d5c0ea68f11f228af9b39e0c5c",
+          "after": "6b8764f67b5afcef4f08689733628c8646833c95"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "5c1cc212cd256295f9ee763ea9609f9289fb4b89",
+          "after": "f3362e532723872079c10b44ec296bb36a31313d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF take one signer lock to issue a native write and to claim the signer for an evidence CREATE",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "6b8764f67b5afcef4f08689733628c8646833c95",
+          "after": "110e34c585c8d6f91c6dfa58886a70761956f5fe"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "7e44af5f5f7960f6430b02f5ea22fa26eca75fb3",
+          "after": "feb828af9fa3a2d6a7c00d1e37afc15c251f9c22"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "d064bbbbbe9fa405714bb56eb390b97c7e0fbe4c",
+          "after": "d47721b78cb250ef2dd929852268a54afa699a50"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "f3362e532723872079c10b44ec296bb36a31313d",
+          "after": "826cacbcdce7c240d74c70e9cee597f92ed84d78"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0043ffd03f9e5f66cdb8d4bcde86d982eff599d",
+          "after": "317ee818bdbf709601dc8452f3feb986b14066b2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF let the transaction a stored reservation holds through the native transport's reservation check",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "110e34c585c8d6f91c6dfa58886a70761956f5fe",
+          "after": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "826cacbcdce7c240d74c70e9cee597f92ed84d78",
+          "after": "b9ae1416dbbdb87fa8ad3b55cd22f09ddeebee9a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF free the signer when the evidence CREATE it holds has executed",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "feb828af9fa3a2d6a7c00d1e37afc15c251f9c22",
+          "after": "1917ff8c1b6e594bb6b181fc3b78f9f42f257797"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "b9ae1416dbbdb87fa8ad3b55cd22f09ddeebee9a",
+          "after": "f3a42056739f497fd805935c801cb490cadddb82"
+        }
+      ]
     }
   ]
 }

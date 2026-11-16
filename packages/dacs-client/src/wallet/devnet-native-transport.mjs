@@ -10,6 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
+import { signerReservationKey } from './signer-reservation.mjs';
 import { createDemosChainReader, nonceFromNode, nodeProjectedNonce } from '../dacs/chain.mjs';
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
 import { observePayDemTransferCore } from '@kynesyslabs/dacs/seller';
@@ -321,6 +322,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const binder = makeBinder(),storageRecoveryBinder = makeBinder(true);
   const lane = (address) => nativeWalletLaneKey(pinned, address);
   const intent = (hash) => `devnet/native-transfer/${hash}`;
+  // A stored evidence CREATE owns the signer's next nonce until the chain has used it: a write sent before could take it and leave that
+  // CREATE unexecutable. The reserved CREATE itself is not refused. Before the broadcast this only tells the wallet early that nothing
+  // was sent; the broadcast claim runs it again under the signer's reservation lock, which decides.
+  const refuseWhileReserved = async (from, hash) => {
+    const reserved = (await journal.get(signerReservationKey(pinned, from)))?.active;
+    if (reserved && reserved.signed?.txHash !== hash && nonceFromNode(await node('getAddressNonce', { address: from })) < reserved.nonce) fail('signer_lane_busy', 'a stored payment-evidence write holds this signer; nothing was sent');
+  };
   // Cancelled native payments. The plugin cancels a payment handoff only
   // through cancelNativeTransfer, which keeps its transfer on the payer's lane
   // in this durable journal: its settlement terms (below), the digest of the
@@ -896,6 +904,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           // broadcast claim below still decides, under the lane lock.
           const confirmed=await identityOf(l.confirmed.content);
           if(await cancelledTransfer(address,confirmed)) await refuseCancelled(address,confirmed,'pre-broadcast');
+          await refuseWhileReserved(address,request.hash);
           l.binding=await binder.beforeBroadcast(l.binding);
           if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the connection changed before broadcast');
           l.readyHash=request.hash;
@@ -942,17 +951,24 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       let accepted;
       try {
         accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
-          const previous=await journal.get(lane(tx.content.from));
-          if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || await journal.get(intent(tx.hash))) fail('outcome_unknown','issued native transfers cannot be resent');
-          // Under the lock of the journal claim below: a cancelled transfer is never claimed.
-          const claiming=await identityOf(tx.content);
-          if(await cancelledTransfer(tx.content.from,claiming)) await refuseCancelled(tx.content.from,claiming,'broadcast');
-          const binding=await binder.beforeBroadcast(l.binding);
-          if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the fenced connection changed');
-          if(tx.content.type==='native' && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))>=tx.content.nonce) fail('nonce_consumed','the bound sender nonce was already consumed; no native intent was issued');
-          const issued={ stage:'broadcast-started',hash:tx.hash,nonce:tx.content.nonce,signedTransaction:clone(tx),networkBinding:clone(binding) };
-          if(tx.content.type==='storageProgram') issued.storageWriteGas=clone(call.data?.response?.data?.gas_operation ?? null);
-          await retain(lane(tx.content.from),issued);
+          // The signer's reservation lock is the one lock an evidence CREATE takes to claim the signer, and each side checks the other's
+          // record inside it: the reservation is read and this lane record is written without a claim in between, so a stored evidence
+          // CREATE and this write never take the same nonce.
+          const issued=await journal.withWalletLock(signerReservationKey(pinned,tx.content.from),async () => {
+            await refuseWhileReserved(tx.content.from,tx.hash);
+            const previous=await journal.get(lane(tx.content.from));
+            if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || await journal.get(intent(tx.hash))) fail('outcome_unknown','issued native transfers cannot be resent');
+            // Under the lock of the journal claim below: a cancelled transfer is never claimed.
+            const claiming=await identityOf(tx.content);
+            if(await cancelledTransfer(tx.content.from,claiming)) await refuseCancelled(tx.content.from,claiming,'broadcast');
+            const binding=await binder.beforeBroadcast(l.binding);
+            if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the fenced connection changed');
+            if(tx.content.type==='native' && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))>=tx.content.nonce) fail('nonce_consumed','the bound sender nonce was already consumed; no native intent was issued');
+            const record={ stage:'broadcast-started',hash:tx.hash,nonce:tx.content.nonce,signedTransaction:clone(tx),networkBinding:clone(binding) };
+            if(tx.content.type==='storageProgram') record.storageWriteGas=clone(call.data?.response?.data?.gas_operation ?? null);
+            await retain(lane(tx.content.from),record);
+            return record;
+          });
           await retain(intent(tx.hash),issued);
           const started=now();
           let answer;
