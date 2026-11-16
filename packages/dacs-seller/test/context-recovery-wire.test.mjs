@@ -737,7 +737,9 @@ test('two continuations racing on one admission revision: one resumes the work a
 
 test('three continuations of the same stored bytes after the lease ran out: the first recovers and the others add no row, file, hold or Vet write', async (t) => {
   const { w, answers } = await raceContinuations(t, 3);
-  for (const answer of answers) assert.ok(answer.status === 200 || ['seller_effect_pending', 'peer_store_capacity', 'context_admission_closed'].includes(answer.body.error), answer.text);
+  // A continuation that arrives while the first one's attempt is live is refused; one that arrives after it completed gets the stored answer.
+  for (const answer of answers) assert.ok(answer.status === 200 || answer.body.error === 'seller_effect_pending', answer.text);
+  assert.equal(answers.filter((answer) => answer.status === 200).length >= 1, true);
   assert.deepEqual([w.counts.vetWrites, w.counts.holds.length, w.internals.admissionCounts().starts, w.completions.length], [2, 1, 1, 1]);
 });
 
