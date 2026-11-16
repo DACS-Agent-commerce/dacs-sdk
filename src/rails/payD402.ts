@@ -429,10 +429,27 @@ function withoutPendingMarker(result: PayD402SettleResult): SettleResult {
 }
 
 /**
+ * A payment that was sent and may still land: not `ok`, a hash, and no
+ * permanent failure proof. A job with such a result must not be paid again.
+ */
+function isUnresolvedPayment(result: SettleResult): boolean {
+  return !result.ok && result.txHash.length > 0 && result.errorClass !== "permanent";
+}
+
+/**
  * Bridge a PayD402Rail to the runSession `settle` seam: the rail carries the
  * static D402 paywall coordinates (resolved from the listing) while runSession
  * supplies the per-session amount. A pending payment reaches runSession as
  * `ok: false` with its hash and no `pending` key.
+ *
+ * The bridge pays a job once. After a result that is not `ok` but carries a
+ * hash, a later call for the same `jobId` and `phaseIndex` returns that same
+ * result and does not call the rail. The record lives as long as the returned
+ * function. The bridge cannot reconcile earlier attempts, so a request with
+ * `priorAttempts` or `recoveryOnly` is refused.
+ *
+ * @throws DacsError when the request's payee differs from the paywall
+ *   recipient, or when the request asks for recovery.
  */
 export function payD402Settle(
   rail: PayD402Rail,
@@ -441,6 +458,7 @@ export function payD402Settle(
   const paywallUrl = paywall.url;
   const recipient = paywall.recipient;
   const network = paywall.network ?? "demos";
+  const unresolvedByJobPhase = new Map<string, SettleResult>();
   return (req) => {
     const { amount, expectedPayee } = req;
     if (expectedPayee !== recipient) {
@@ -448,6 +466,14 @@ export function payD402Settle(
         `pay-d402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipient}`,
       );
     }
+    if (req.recoveryOnly === true || (req.priorAttempts?.length ?? 0) > 0) {
+      throw new DacsError(
+        `pay-d402 does not recover earlier attempts for ${req.jobId}; no payment is made`,
+      );
+    }
+    const jobPhase = JSON.stringify([req.jobId, req.phaseIndex ?? 0]);
+    const earlier = unresolvedByJobPhase.get(jobPhase);
+    if (earlier) return Promise.resolve({ ...earlier });
     return rail
       .settle({
         paywallUrl,
@@ -455,6 +481,10 @@ export function payD402Settle(
         amount,
         network,
       })
-      .then(withoutPendingMarker);
+      .then(withoutPendingMarker)
+      .then((result) => {
+        if (isUnresolvedPayment(result)) unresolvedByJobPhase.set(jobPhase, result);
+        return result;
+      });
   };
 }
