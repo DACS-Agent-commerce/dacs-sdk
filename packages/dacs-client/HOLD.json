@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "895010bfe85e60fb50ec4d732700c4162fa89cd0"
+        "blob": "c2123a012bd3aebc7896c05de30101fb7ac02e0d"
       },
       "DELTA-LEDGER.json": {
-        "blob": "fc811dcd7af737a6146e86fe20237844ecdd3ee9"
+        "blob": "4f0daf9f1281dda647feac4ce24fa668fa03fdc3"
       },
       "DELTA-MAP.md": {
-        "blob": "6db6e674c0f71496444becff70488dbea52d4b23"
+        "blob": "04f31d80a0d401ab0d2922f7bb7c76e730184166"
       },
       "DELTA-NOTES.md": {
-        "blob": "4751e9f53bb4bd68efc4642b1bee2ba37cadce4a"
+        "blob": "f4a5d9362bb933dafeb373c023eba6a459e10c6f"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "2324d79ab2d7ce09d0f5c74aac3856787627ce2f"
+        "blob": "fa54e1d875350623218d63e7b60354a542478408"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1319,13 +1319,13 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "f642d45751289149c1e218ebca88b46d74c5811c"
+        "blob": "f7059c1d0c7416202dfb33e09749d19397af70af"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
       },
       "src/wallet/effect-boundary.mjs": {
-        "blob": "be747aab0f805f37b550920e8acea9c023ac7f93"
+        "blob": "8921071044d422042d0b94d63f83eeaa471d6ce8"
       },
       "src/wallet/effect-fence.mjs": {
         "blob": "f084d06e7fcac773a024fb36149b1f68b2826403"
@@ -1425,6 +1425,9 @@
       },
       "test/effect-boundary-operation.test.mjs": {
         "blob": "c5f91f14575651303e144ec91570d7db728034e1"
+      },
+      "test/effect-boundary-stages.test.mjs": {
+        "blob": "73b47b66641da5aa092f2263dc8e3691aa444e62"
       },
       "test/effect-boundary.test.mjs": {
         "blob": "f948151165e3ba48272216e650df2f9bc3c20480"
@@ -1644,6 +1647,9 @@
       },
       "test/helpers/native-dem-delivery-provider.mjs": {
         "blob": "a900bb837a031e97a9fc34f80705bba17f52f3fb"
+      },
+      "test/helpers/native-effect-world.mjs": {
+        "blob": "c35508b7d5355dba417b885f89510e8da73c8f7b"
       },
       "test/helpers/native-lock-order-child.mjs": {
         "blob": "f808491afd7a868398cad255e96315ebda2c0b89"
@@ -1873,8 +1879,11 @@
       "test/native-broadcast-once.test.mjs": {
         "blob": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54"
       },
+      "test/native-confirmation-persistence-cuts.test.mjs": {
+        "blob": "f2350df2fdf2307c7ea7de2d391c54c98284058f"
+      },
       "test/native-effect-paths.test.mjs": {
-        "blob": "33e6f68f1b10e68f6fccca7c6918e3cd291ac4d4"
+        "blob": "7940e3591c6ce56076b9b567942e11f85a5e72bd"
       },
       "test/native-lock-order.test.mjs": {
         "blob": "37e944e9f1b36e944b7af495fe532ba43b208aaa"
