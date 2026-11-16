@@ -669,10 +669,12 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const checks=await confirmationChecks(copy,validity,HOLD_REASONS.has(record.reason));
     // A line already appended for this request: its file sync may have failed, so a repeat syncs it again and
     // appends nothing. A repeat the checks refuse, or one whose executed transaction is not the recorded one, is
-    // false and leaves the line and the reservation as they are.
+    // false and leaves the line and the reservation as they are. A node answer without a hash is recorded and
+    // repeated as no hash; a hash that is present but malformed or different is refused.
     if(row.confirmed!==null){
-      const executed=executedTransaction(validity);
-      if(checks.reason||executed.hash===null||executed.hash!==row.confirmation?.hash||!same(executed.content,row.confirmation.content))return false;
+      if(checks.reason)return false;
+      const executed=executedTransaction(validity),answered=validity.response.data.transaction.hash;
+      if((executed.hash===null&&answered!=null)||executed.hash!==row.confirmation?.hash||!same(executed.content,row.confirmation.content))return false;
       syncContextLedger(evidencePath);
       return true;
     }

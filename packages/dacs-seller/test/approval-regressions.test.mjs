@@ -650,6 +650,35 @@ for(const [label,retryHash] of [['the same malformed hash','not-a-hash'],['anoth
  assert.equal(await f.p(r,retry),false);assert.equal(synced.includes(f.evidencePath),false);
  assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
 });
+test('a retried confirmation whose node answer has no hash is synced and confirmed like its first confirmation',async t=>{
+ const f=await fixture(t,purchase),r=payDem(),first=confirmationFor(r),retry=confirmationFor(r);
+ delete first.response.data.transaction.hash;delete retry.response.data.transaction.hash;
+ assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,first),{message:'TEST sync failed'});restore();
+ const original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,retry),true);
+ assert(synced.includes(f.evidencePath));assert.equal((await confirmationLines(f)).length,1);
+});
+test('a retried confirmation that adds a hash to a recorded hashless answer is false and syncs nothing',async t=>{
+ const f=await fixture(t,purchase),r=payDem(),first=confirmationFor(r);
+ delete first.response.data.transaction.hash;
+ assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,first),{message:'TEST sync failed'});restore();
+ const lines=(await ledgerLines(f)).length,original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,confirmationFor(r)),false);assert.equal(synced.includes(f.evidencePath),false);
+ assert.equal((await ledgerLines(f)).length,lines);
+});
+test('a retried confirmation with a null node answer is false and syncs nothing',async t=>{
+ const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
+ const lines=(await ledgerLines(f)).length,original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,null),false);assert.equal(synced.includes(f.evidencePath),false);
+ assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
+ assert.equal(await f.p(r,confirmationFor(r)),true);
+});
 for(const [label,release,reason] of [['settled as released',(f,r)=>f.p.settle(r,'released'),'wallet-released'],['released',(f,r)=>f.p.releaseHeld(r,'operator-released'),'operator-released']])
  test(`cold2 F2 a decline whose release append failed is ended when later ${label}, and frees the budget`,async t=>{
   const f=await fixture(t,()=>null,{limits:{maxWritesPerHour:1}}),r=vetRequest();
