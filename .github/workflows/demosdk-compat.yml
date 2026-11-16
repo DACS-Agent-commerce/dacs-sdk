@@ -80,7 +80,7 @@ jobs:
         run: |
           if [ "$DEMOSDK" = "newest-in-range" ]; then
             # The peer range is the published contract; dev must match it.
-            # version.test.ts separately checks that the lockfile version is inside the range.
+            # version.test.ts separately pins the lockfile to the range floor.
             spec="$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
             dev="$(node -p "require('./package.json').devDependencies['@kynesyslabs/demosdk']")"
             if [ "$spec" != "$dev" ]; then
@@ -131,8 +131,8 @@ jobs:
       - name: Build
         run: npm run build
 
-  # This job typechecks and runs the demosdk-related tests against exactly 4.0.18, the version the lockfile holds
-  # and the newest one the client's reviewed loading table covers. It never looks up the newest release (the pinned
+  # This job typechecks and runs the demosdk-related tests against exactly 4.0.18, the newest version the client's
+  # reviewed loading table covers; the lockfile holds the range floor, 4.0.17. It never looks up the newest release (the pinned
   # install itself still needs the registry). It runs daily, on manual runs and on pull requests that change this workflow or the dependency
   # files, so a break against 4.0.18 shows up to a day after it reaches the default branch (scheduled runs use the
   # default branch only). The demosdk-pin-drift job above reports newer

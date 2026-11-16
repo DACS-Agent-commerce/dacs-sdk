@@ -26,19 +26,16 @@ describe("public version metadata", () => {
     );
   });
 
-  it("locks a demosdk version inside its published peer range", async () => {
+  it("tests demosdk at the floor of its published peer range", async () => {
     // The compatibility workflow resolves its newest-in-range leg from the
-    // peer range and its locked leg from package-lock.json. The floor itself is
-    // installed and imported by scripts/verify-packed-entry-imports.mjs.
+    // peer range and its locked leg from package-lock.json.
     const packageJson = await import("../package.json", { with: { type: "json" } });
     const peer = packageJson.default.peerDependencies["@kynesyslabs/demosdk"];
     const lock = await import("../package-lock.json", { with: { type: "json" } });
+    const floor = peer.match(/^\^(\d+\.\d+\.\d+)$/);
+    expect(floor).not.toBeNull();
     expect(packageJson.default.devDependencies["@kynesyslabs/demosdk"]).toBe(peer);
-    const floor = peer.match(/^\^(\d+\.\d+\.\d+)$/)?.[1];
-    const locked: string = lock.default.packages["node_modules/@kynesyslabs/demosdk"].version;
-    expect(floor).toBeDefined();
-    expect(locked.split(".")[0]).toBe(floor?.split(".")[0]);
-    expect(locked.localeCompare(floor ?? "", "en", { numeric: true })).toBeGreaterThanOrEqual(0);
+    expect(lock.default.packages["node_modules/@kynesyslabs/demosdk"].version).toBe(floor?.[1]);
   });
 
   it("documents the published demosdk peer range in SECURITY.md", async () => {
