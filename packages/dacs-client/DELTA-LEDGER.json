@@ -10589,6 +10589,18 @@
           "after": "ae9ce572e9076dc07dee3e35b4f307f79c37dcee"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged blob of the wallet session after carrying the shared identity part without the seller observer's layout options up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "1a1969fbb055b2a878436dd8027748273ff3f691",
+          "after": "1a1969fbb055b2a878436dd8027748273ff3f691"
+        }
+      ]
     }
   ]
 }

@@ -1746,6 +1746,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/network-binding.test.mjs:1` | 31226b6c2bded3856ad4411def7ec6df28eaaa2d |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | ada0bb057896b9ff4b6d3e07ef02b7244564c659 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | ae9ce572e9076dc07dee3e35b4f307f79c37dcee |
+| WF | delta(client): WF record the merged blob of the wallet session after carrying the shared identity part without the seller observer's layout options up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1`: 1a1969fbb055b2a878436dd8027748273ff3f691 | |
 
 ## Complete commit and file inventory
 
@@ -5243,6 +5245,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF add the unfenced authority seam and the client's production authority reader | `packages/dacs-client/test/public-api.test.mjs:1` |
 | delta(client): WF add the unfenced authority seam and the client's production authority reader | `scripts/release-policy.json:1` |
 | delta(client): WF record the merged blobs of the identity reader, the native transport, the wallet session and the binding test after carrying the shared identity reader fixes up | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF record the merged blob of the wallet session after carrying the shared identity part without the seller observer's layout options up | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
