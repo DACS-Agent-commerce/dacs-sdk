@@ -18,13 +18,17 @@ const failedBody = (tx, overrides = {}) => ({ hash: tx.hash, blockNumber: BLOCK,
   attrs: { code: CODE, message: NODE_MESSAGE, reference_block: REFERENCE_BLOCK }, ...overrides });
 
 /** A world whose node answers `getTransactionStatus` and `getTxByHash` from `answers`, over a fresh durable journal. */
-function scriptedWorld(t, answers) {
+function scriptedWorld(t, answers, timeoutMs) {
   const dir = mkdtempSync(join(tmpdir(), 'failed-storage-write-'));
   const journal = openDurableWalletJournal({ path: join(dir, 'journal.sqlite'), mode: 'create' });
   t.after(() => { journal.close(); rmSync(dir, { recursive: true, force: true }); });
-  const world = createWorld({ journal, answer: (message) => answers[message]?.() });
+  const world = createWorld({ journal, answer: (message, call) => answers[message]?.(call), timeoutMs });
   return { world, journal };
 }
+
+/** The node's confirmed block BLOCK lists `hashes`; every other block read gets the world's default. */
+const confirmedBlock = (...hashes) => (call) => call.data?.blockNumber === BLOCK
+  ? reply({ number: BLOCK, status: 'confirmed', hash: 'b'.repeat(64), content: { ordered_transactions: hashes } }) : undefined;
 
 /** A retained storage CREATE at nonce 1, as an accepted broadcast left it. */
 async function retainedCreate(world) {
@@ -56,7 +60,8 @@ test('a storage CREATE the node status calls failed reads back as failed, carrie
   const tx = await retainedCreate(world);
   answers.getTransactionStatus = () => reply({ state: 'failed' });
   answers.getTxByHash = () => reply(failedBody(tx));
-  const before = await journal.get(`devnet/native-transfer/${tx.hash}`);
+  answers.getBlockByNumber = confirmedBlock(tx.hash);
+  const before =await journal.get(`devnet/native-transfer/${tx.hash}`);
   assert.deepEqual(await world.readback(tx.hash), expectedFailure(tx));
   assert.deepEqual(await world.recover(tx), { disposition: 'pending', hash: tx.hash, noResend: true }, 'recovery reads the failed write and sends nothing');
   assert.deepEqual(world.sent, { confirms: [], broadcasts: [] });
@@ -69,6 +74,7 @@ test('a storage CREATE included with a failed body reads back as failed, not as 
   const tx = await retainedCreate(world);
   answers.getTransactionStatus = () => reply({ state: 'included', blockNumber: BLOCK });
   answers.getTxByHash = () => reply(failedBody(tx));
+  answers.getBlockByNumber = confirmedBlock(tx.hash);
   assert.deepEqual(await world.readback(tx.hash), expectedFailure(tx));
   assert.deepEqual(world.sent, { confirms: [], broadcasts: [] });
 });
@@ -99,6 +105,7 @@ test('node failure text longer than the limit is left out of the failed result',
   const tx = await retainedCreate(world);
   answers.getTransactionStatus = () => reply({ state: 'included', blockNumber: BLOCK });
   answers.getTxByHash = () => reply(failedBody(tx, { attrs: { code: CODE, message: 'x'.repeat(513), reference_block: -1 } }));
+  answers.getBlockByNumber = confirmedBlock(tx.hash);
   const read = await world.readback(tx.hash);
   assert.deepEqual(read.failure, { blockNumber: BLOCK, code: CODE, message: null, referenceBlock: null });
   assert.equal(read.reason, `the node recorded storage write ${tx.hash} as failed in block ${BLOCK} (${CODE}); nothing was applied. It is never resent or re-made automatically.`);
@@ -134,12 +141,83 @@ test('a storage CREATE included with no body is not read as failed', async (t) =
   assert.deepEqual(world.sent, { confirms: [], broadcasts: [] });
 });
 
+const STATUS_SHAPES = { 'failed status': { state: 'failed' }, 'included status': { state: 'included', blockNumber: BLOCK } };
+const pendingRead = (tx) => ({ disposition: 'pending', hash: tx.hash, nonce: 1, noResend: true });
+
+for (const [shape, status] of Object.entries(STATUS_SHAPES)) {
+  const named = (answers, tx) => { answers.getTransactionStatus = () => reply(status); answers.getTxByHash = () => reply(failedBody(tx)); };
+
+  test(`a failed storage CREATE (${shape}) whose named block omits the hash stays pending`, async (t) => {
+    const answers = {};
+    const { world } = scriptedWorld(t, answers);
+    const tx = await retainedCreate(world);
+    named(answers, tx);
+    answers.getBlockByNumber = confirmedBlock('c'.repeat(64));
+    assert.deepEqual(await world.readback(tx.hash), pendingRead(tx));
+    assert.deepEqual(world.sent, { confirms: [], broadcasts: [] });
+  });
+
+  test(`a failed storage CREATE (${shape}) whose named block is not confirmed stays pending`, async (t) => {
+    const answers = {};
+    const { world } = scriptedWorld(t, answers);
+    const tx = await retainedCreate(world);
+    named(answers, tx);
+    answers.getBlockByNumber = (call) => call.data?.blockNumber === BLOCK
+      ? reply({ number: BLOCK, status: 'pending', hash: 'b'.repeat(64), content: { ordered_transactions: [tx.hash] } }) : undefined;
+    assert.deepEqual(await world.readback(tx.hash), pendingRead(tx));
+  });
+
+  test(`a failed storage CREATE (${shape}) whose named block answers as another block stays pending`, async (t) => {
+    const answers = {};
+    const { world } = scriptedWorld(t, answers);
+    const tx = await retainedCreate(world);
+    named(answers, tx);
+    answers.getBlockByNumber = (call) => call.data?.blockNumber === BLOCK
+      ? reply({ number: BLOCK + 1, status: 'confirmed', hash: 'b'.repeat(64), content: { ordered_transactions: [tx.hash] } }) : undefined;
+    assert.deepEqual(await world.readback(tx.hash), pendingRead(tx));
+  });
+
+  test(`a failed storage CREATE (${shape}) whose named block cannot be read stays pending`, async (t) => {
+    const answers = {};
+    const { world } = scriptedWorld(t, answers);
+    const tx = await retainedCreate(world);
+    named(answers, tx);
+    answers.getBlockByNumber = (call) => call.data?.blockNumber === BLOCK ? unavailable() : undefined;
+    assert.deepEqual(await world.readback(tx.hash), pendingRead(tx));
+    assert.deepEqual(world.sent, { confirms: [], broadcasts: [] });
+  });
+
+  test(`a failed storage CREATE (${shape}) whose named block read times out stays pending`, async (t) => {
+    const answers = {};
+    // The read's own timer does not keep the process alive.
+    const keepAlive = setInterval(() => {}, 20);
+    t.after(() => clearInterval(keepAlive));
+    const { world } = scriptedWorld(t, answers, 50);
+    const tx = await retainedCreate(world);
+    named(answers, tx);
+    answers.getBlockByNumber = (call) => call.data?.blockNumber === BLOCK ? new Promise(() => {}) : undefined;
+    assert.deepEqual(await world.readback(tx.hash), pendingRead(tx));
+  });
+}
+
+test('a failed storage CREATE whose named block read is over the byte limit stays pending', async (t) => {
+  const answers = {};
+  const { world } = scriptedWorld(t, answers);
+  const tx = await retainedCreate(world);
+  answers.getTransactionStatus = () => reply({ state: 'failed' });
+  answers.getTxByHash = () => reply(failedBody(tx));
+  answers.getBlockByNumber = (call) => call.data?.blockNumber === BLOCK
+    ? reply({ number: BLOCK, status: 'confirmed', hash: 'b'.repeat(64), content: { ordered_transactions: [tx.hash], padding: 'x'.repeat(4 * 1024 * 1024) } }) : undefined;
+  assert.deepEqual(await world.readback(tx.hash), pendingRead(tx));
+});
+
 test('a payment nonce whose only retained write is a storage CREATE recorded as failed has no consumer in the source', async (t) => {
   const answers = {};
   const { world } = scriptedWorld(t, answers);
   const tx = await retainedCreate(world);
   answers.getTransactionStatus = () => reply({ state: 'included', blockNumber: BLOCK });
   answers.getTxByHash = () => reply(failedBody(tx));
+  answers.getBlockByNumber = confirmedBlock(tx.hash);
   assert.equal(await world.capability.nativeNonceConsumer(world.wallet.address, { content: transferContent(world, 1) }), null);
 });
 

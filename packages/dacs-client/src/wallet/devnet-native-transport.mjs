@@ -695,9 +695,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // write is never resent or re-made here, and its rows stay as they were.
   // The body must name this hash, sit in the status block when the status
   // names one, and match the retained signed bytes; otherwise it differs.
-  function failedStorageWrite(hash,r,binding,status,tx) {
+  // The named confirmed block is then read and must list the hash. A block that
+  // cannot be read, or does not list it, leaves the write pending, not failed.
+  async function failedStorageWrite(hash,r,binding,status,tx) {
     if(tx.hash!==hash || !Number.isSafeInteger(tx.blockNumber) || tx.blockNumber<0 || (status.blockNumber!==undefined && status.blockNumber!==tx.blockNumber)
       || !storageExecutionMatches(tx.content,r.signedTransaction.content,hash,binding)) fail('readback_unverified','the failed storage write differs from the retained signed transaction');
+    const block=await node('getBlockByNumber',{ blockNumber:tx.blockNumber }).catch(() => null);
+    if(!includedInBlock(block,hash,tx.blockNumber)) return { disposition:'pending',hash,nonce:r.nonce,noResend:true };
     const attrs=tx.attrs ?? {},text=(value)=>typeof value==='string' && value.length<=NODE_FAILURE_TEXT_MAX_LENGTH ? value : null;
     const failure={ blockNumber:tx.blockNumber,code:text(attrs.code),message:text(attrs.message),
       referenceBlock:Number.isSafeInteger(attrs.reference_block) && attrs.reference_block>=0 ? attrs.reference_block : null };
