@@ -4,6 +4,7 @@ import { sign } from 'node:crypto';
 import { canonicalize, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from '@kynesyslabs/dacs';
 import { createSellerTransportClientAuth, createSellerTransportServerAuth, sellerSessionDelegationSigningBytes,
   verifySellerSessionDelegation } from '../src/dacs/seller-transport-auth.mjs';
+import { BAD_KEYS, IDENTITY_SIGNATURE as identitySignature, raisedS } from './helpers/ed25519-edge-cases.mjs';
 
 // Fixed public test seeds, never operator credentials.
 function signer(seed) {
@@ -18,25 +19,6 @@ const now = () => 1000;
 const claim = (key) => `did:demos:agent:${key}`;
 const encoded = (envelope) => Buffer.from(canonicalize(envelope)).toString('base64url');
 
-const GROUP_ORDER = (1n << 252n) + 27742317777372353535851937790883648493n;
-// The same signature with S + L in place of S: the same scalar, not below the group order.
-function raisedS(signature) {
-  const bytes = Buffer.from(signature, 'base64url');
-  const s = BigInt(`0x${Buffer.from(bytes.subarray(32)).reverse().toString('hex')}`) + GROUP_ORDER;
-  Buffer.from(s.toString(16).padStart(64, '0'), 'hex').reverse().copy(bytes, 32);
-  return bytes.toString('base64url');
-}
-// Raw little-endian public keys. y = p + 3 is not small order once reduced, so
-// the seller's small-order check lets it through to the signature verifier.
-const BAD_KEYS = {
-  'small-order y = 1': '01' + '00'.repeat(31),
-  'small-order y = p - 1': 'ec' + 'ff'.repeat(30) + '7f',
-  'y = p': 'ed' + 'ff'.repeat(30) + '7f',
-  'y = p + 1': 'ee' + 'ff'.repeat(30) + '7f',
-  'y = p + 3': 'f0' + 'ff'.repeat(30) + '7f',
-};
-// R is the identity point and S is zero.
-const identitySignature = Buffer.from('01' + '00'.repeat(63), 'hex').toString('base64url');
 
 function server() {
   const store = { journaledOnlyReserve: true, bind() {}, finish() {}, reserve: () => ({ disposition: 'cached' }) };

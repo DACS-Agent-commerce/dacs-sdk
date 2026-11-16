@@ -5,27 +5,10 @@ import assert from 'node:assert/strict';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS } from '@kynesyslabs/dacs/wire';
 import { CLAIM_PREFIX, continuingWorld, jobFor, proposeJob, world } from './helpers/wire-routes-world.mjs';
+import { BAD_KEYS, IDENTITY_SIGNATURE, raisedS } from './helpers/ed25519-edge-cases.mjs';
 
-const GROUP_ORDER = (1n << 252n) + 27742317777372353535851937790883648493n;
 const header64 = (envelope) => Buffer.from(canonicalize(envelope)).toString('base64url');
 const envelopeOf = (header) => JSON.parse(Buffer.from(header, 'base64url'));
-/** The same signature with S + L in place of S: the same scalar, no longer below the group order. */
-const raisedS = (signature) => {
-  const bytes = Buffer.from(signature, 'base64url');
-  const s = BigInt(`0x${Buffer.from(bytes.subarray(32)).reverse().toString('hex')}`) + GROUP_ORDER;
-  Buffer.from(s.toString(16).padStart(64, '0'), 'hex').reverse().copy(bytes, 32);
-  return bytes.toString('base64url');
-};
-// Raw little-endian public keys: two of small order, and three whose y is at or above the field prime.
-const BAD_KEYS = {
-  'small-order y = 1': '01' + '00'.repeat(31),
-  'small-order y = p - 1': 'ec' + 'ff'.repeat(30) + '7f',
-  'y = p': 'ed' + 'ff'.repeat(30) + '7f',
-  'y = p + 1': 'ee' + 'ff'.repeat(30) + '7f',
-  'y = p + 3': 'f0' + 'ff'.repeat(30) + '7f',
-};
-// R is the identity point and S is zero.
-const IDENTITY_SIGNATURE = Buffer.from('01' + '00'.repeat(63), 'hex').toString('base64url');
 const summary = (answer) => ({ status: answer.status, error: answer.body.error, signed: answer.signed });
 
 test('a request signature with S at or above the group order is refused unsigned, and the same request signed normally is admitted', async (t) => {
