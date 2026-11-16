@@ -25,13 +25,17 @@ import { canonicalDemosTxHash } from "./payDem.js";
  *
  * ⚠️ EXPERIMENTAL — preview only. With demosdk 4.0.17 and later, `D402Client.settle`
  * signs and broadcasts the payment, then polls the node for the transaction by
- * hash (60 s by default). It returns `success: true` once the transaction is in
- * a block, a failure when it was refused or included as failed, and
- * `pending: true` with the hash when the poll ends before the transaction is
- * seen. A pending payment may still land, so the rail reports it as
- * `ok: false` with `pending: true` and the hash kept; it is never `ok: true`
+ * hash under a 60-second poll-loop deadline (the default). The deadline is
+ * checked between calls, and a single lookup call has no timeout of its own, so
+ * a stalled call can outlast it. It returns `success: true` once the
+ * transaction is in a block, a failure when it was refused or included as
+ * failed, and `pending: true` with the hash when the poll ends before the
+ * transaction is seen. A pending payment may still land, so the rail reports it
+ * as `ok: false` with `pending: true` and the hash kept; it is never `ok: true`
  * and never the not-sent answer (`ok: false` with an empty hash). Earlier
- * demosdk versions broadcast once and never report `pending`. Per the RAV-R1
+ * demosdk versions broadcast once and never report `pending`. Below demosdk
+ * 4.0.17 (4.0.16 is what the lockfile pins and the peer range allows) the rail
+ * cannot settle, because 4.0.16 calls a route the node does not serve. Per the RAV-R1
  * discipline ("MUST NOT treat a non-`live` rail as live") the rail is still not
  * a production settlement path. `createPayD402Rail` refuses to build unless the
  * caller passes `acknowledgeExperimental: true`, so it can't be wired as `live`
@@ -335,7 +339,9 @@ export async function payD402SettleCore(
  * This rail's availability, in the §9.4.4 spec vocabulary (no SDK-local
  * values). D402 is quarantined pending node-side enablement — that is
  * `operator_gated`: not selectable until an operator enables it, and never
- * auto-selected (RAV-R1).
+ * auto-selected (RAV-R1). Below demosdk 4.0.17 (4.0.16 is what the lockfile
+ * pins and the peer range allows) the rail cannot settle, because 4.0.16 calls
+ * a route the node does not serve.
  * The `acknowledgeExperimental` config flag keeps its name (API stability);
  * it is the caller-side acknowledgement this gate requires.
  */
