@@ -84,12 +84,12 @@ function packageEntry(manifest, pack) {
   return entry;
 }
 
-// Preserve exact versions, locations and integrity; never resolve a fresh range.
 /** The root lock's key for a package at `consumerKey` in the consumer's tree. */
 function rootLockKey(consumerKey) {
   return consumerKey.startsWith(SELLER_CONSUMER_PATH + "/") ? SELLER_WORKSPACE_PATH + consumerKey.slice(SELLER_CONSUMER_PATH.length) : consumerKey;
 }
 
+// Preserve exact versions, locations and integrity; never resolve a fresh range.
 function consumerLock(lock, manifest, core, seller, node, corePack, sellerPack, nodePack) {
   const selected = {
     "": { name: manifest.name, version: manifest.version, dependencies: manifest.dependencies },

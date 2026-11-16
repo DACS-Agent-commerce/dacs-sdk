@@ -1,6 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 type Manifest = { name: string; exports: Record<string, { import?: unknown }> };
@@ -59,5 +61,27 @@ describe("packed entry point import check", () => {
 
     expect(results[0]).toEqual({ specifier: "loads-fine", ok: true });
     expect(results[1]).toMatchObject({ specifier: "imports-a-directory", ok: false, code: "ERR_UNSUPPORTED_DIR_IMPORT" });
+  });
+
+  // The copy's manifest has a peer range that allows no version, so a run that
+  // starts fails at once, before any pack or install.
+  it.each(["directly", "through a symlink"])("runs when started %s", (how) => {
+    const root = mkdtempSync(join(tmpdir(), "packed-entry-main-"));
+    directories.push(root);
+    mkdirSync(join(root, "scripts"));
+    copyFileSync(fileURLToPath(new URL(modulePath, import.meta.url)), join(root, "scripts", "check.mjs"));
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ peerDependencies: { "@kynesyslabs/demosdk": ">2.0.0 <1.0.0" } }),
+    );
+    symlinkSync(fileURLToPath(new URL("../../node_modules", import.meta.url)), join(root, "node_modules"));
+    const entry = join(root, "scripts", "check.mjs");
+    const started = how === "directly" ? entry : join(root, "link.mjs");
+    if (how !== "directly") symlinkSync(entry, started);
+
+    const run = spawnSync(process.execPath, [started], { encoding: "utf8" });
+
+    expect(run.stderr).toContain("range allows no version");
+    expect(run.status).toBe(1);
   });
 });

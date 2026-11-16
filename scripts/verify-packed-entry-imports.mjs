@@ -2,10 +2,11 @@
 // empty ES module project, and imports every exported entry point in a fresh Node process.
 // Run `npm run build` first. It exits 1 when any entry point cannot be imported.
 import { spawnSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import semver from "semver";
 
 const repoRoot = resolve(fileURLToPath(import.meta.url), "../..");
@@ -118,7 +119,7 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
