@@ -53,11 +53,11 @@ const composesOldPath = (source) => handlerCalls(source).some((call) => /\bauthe
   || OLD_WORLD.test(source) || (SERVER_AUTH.test(source) && OLD_AUTH_CHECK.test(source));
 const keyOf = ({ file, title }) => `${file}\u0000${title}`;
 
-test('every listed old-path test exists and is listed once, with a disposition, an owner and a reason; covered files are listed whole', () => {
+test('every listed test exists and is listed once, with a disposition, an owner and a reason; covered files are listed whole', () => {
   const listed = manifest.map((entry) => keyOf(entry.legacy));
   assert.equal(new Set(listed).size, listed.length, 'each legacy test is listed once');
-  const declared = new Map();
-  for (const file of new Set(manifest.map((entry) => entry.legacy.file))) for (const title of titlesOf(file)) declared.set(keyOf({ file, title }), true);
+  const declared = new Set();
+  for (const file of new Set(manifest.map((entry) => entry.legacy.file))) for (const title of titlesOf(file)) declared.add(keyOf({ file, title }));
   assert.deepEqual(listed.filter((key) => !declared.has(key)), [], 'the manifest names a test that does not exist');
   const whole = COVERED_FILES.flatMap((file) => titlesOf(file).map((title) => keyOf({ file, title })));
   assert.deepEqual(whole.filter((key) => !listed.includes(key)), [], 'a test of a covered file is missing from the manifest');
@@ -81,7 +81,8 @@ test('every named replacement is a test that exists; an equivalent names one, an
   }
 });
 
-test('every seller test file that composes the old path has its old-path tests in the manifest', () => {
+// Checked per file: which tests of a file reach the old path is read from a run, not from the source.
+test('every seller test file that composes the old path has tests in the manifest, unless it uses the old auth only to make requests', () => {
   const listedFiles = new Set(manifest.map((entry) => entry.legacy.file));
   const composing = readdirSync(testDirectory).filter((file) => file.endsWith('.test.mjs') && composesOldPath(sourceOf(file)));
   assert.deepEqual(composing.filter((file) => !listedFiles.has(file) && !REQUEST_SETUP_ONLY.includes(file)), [], 'a file composes the old path and lists none of its tests');
