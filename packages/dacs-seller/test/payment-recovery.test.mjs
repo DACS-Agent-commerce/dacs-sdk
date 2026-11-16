@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { paymentEvidenceAddress } from '@kynesyslabs/dacs';
+import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
 import { seller } from './helpers/protocol-fixture.mjs';
 import { PATHS, completions, operationOf } from './helpers/wire-routes-world.mjs';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
@@ -12,6 +13,7 @@ import { deliverableAddress, deliveryEvidenceAddress } from '../src/dacs/purchas
 import { EVIDENCE_SIGNATURE, OTHER_TX, PAYMENT_TX, WORK_SAVE_SIGNATURE, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
 import { DELEGATION_MS, T0, nativePaymentWorld } from './helpers/native-payment-wire-fixture.mjs';
 import { killAndReopen } from './helpers/payment-restart-process.mjs';
+import { arrangeRecord, nativeRecord, omit } from './helpers/completed-source-cells.mjs';
 
 // The deadline of one bounded source read, and how many turns of the event loop a test waits for a read to start.
 const SOURCE_READ_TIMEOUT_MS = 10000;
@@ -660,4 +662,262 @@ for (const [title, killAt, signedBeforeKill] of [
     assert.deepEqual(run.broadcastCreates, run.signedCreates, 'the node received once, and exactly the bytes the wallet signed');
   });
 }
+
+// ---- Each saved checkpoint recovers to one final delivery ----
+
+// The tuple a payment keeps from the work save: its transaction, payer and evidence, and the permit with the authorization it selected.
+const savedWorkOf = (work) => ({ txHash: work.txHash, payerPayingKey: work.payerPayingKey, deliveredAt: work.deliveredAt, permitId: work.intake.permitId, settlementId: work.intake.settlementId,
+  evidenceHash: work.intake.evidenceHash });
+const permitsOf = (state) => Object.fromEntries(Object.entries(state.records).map(([id, record]) => [id, record.selected]));
+const FIXTURE_CHECKPOINTS = [
+  ['the work is saved and the evidence is not signed', (w) => { w.script.signFault = EVIDENCE_SIGNATURE; }],
+  ['the evidence CREATE is written', (w) => { w.f.anchors.controls.failAfterWrite = paymentEvidenceAddress(w.jobId, 'demos-native:DEM', 2); }],
+  ['the Deliverable is written', (w) => { w.f.anchors.controls.failAfterWrite = deliverableAddress(w.jobId); }],
+  ['the delivery evidence is written', (w) => { w.f.anchors.controls.failAfterWrite = deliveryEvidenceAddress(w.jobId); }],
+  ['the final session is saved and the answer cannot be signed', (w) => { w.signing.failures = 1; }],
+];
+
+async function checkFixtureCheckpoints(t) {
+  for (const [label, arrange] of FIXTURE_CHECKPOINTS) for (const restart of [false, true]) {
+    const w = await fixturePaymentWorld(t), cell = `${label}, restart ${restart}`;
+    arrange(w);
+    const cut = await w.pay();
+    assert.notEqual(cut.body.status, 'delivered', `${cell}: the payment stops at the checkpoint: ${cut.text}`);
+    assert.equal(stateOf(w), 'pending', `${cell}: the attempt stays open`);
+    const original = savedWorkOf(w.work()), permits = permitsOf(readReceipts(w));
+    assert.equal(Object.keys(permits).length, 1, `${cell}: one permit is granted`);
+    if (restart) await w.restart();
+    w.lapse();
+    const final = await w.pay();
+    assert.deepEqual([final.status, final.body.status], [200, 'delivered'], cell);
+    assert.equal(stateOf(w), 'completed', cell);
+    assertDeliveredOnce(w);
+    assert.deepEqual([savedWorkOf(w.work()), permitsOf(readReceipts(w))], [original, permits], `${cell}: the saved tuple, permit and authorization are the original`);
+    assert.equal(w.counts.publicSubmits, 1, `${cell}: recovery enters no new public payment call`);
+    const settled = [w.counts.signed.length, w.f.anchors.writes.length, w.counts.publicSubmits];
+    for (const replay of [1, 2]) {
+      assert.equal((await w.pay()).text, final.text, `${cell}: replay ${replay} answers the stored bytes`);
+      assert.deepEqual([w.counts.signed.length, w.f.anchors.writes.length, w.counts.publicSubmits], settled, `${cell}: replay ${replay} adds no effect`);
+    }
+  }
+}
+
+const NATIVE_CHECKPOINTS = [
+  ['the work is saved and the wallet has not signed', (w) => { w.faults.walletSignature = 1; }],
+  ['the evidence CREATE is signed and not sent', (w) => { w.faults.walletBroadcast = 1; }],
+  ['the delivery is written and the answer cannot be signed', (w) => { w.faults.responseSignature = 1; }],
+];
+
+async function checkNativeCheckpoints(t) {
+  for (const [label, arrange] of NATIVE_CHECKPOINTS) for (const restart of [false, true]) {
+    const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay(), cell = `${label}, restart ${restart}`;
+    arrange(w);
+    assert.notEqual((await p.claim(txHash)).status, 'payment-evidenced', `${cell}: the payment stops at the checkpoint`);
+    assert.equal(nativeStateOf(w, p), 'pending', `${cell}: the attempt stays open`);
+    const original = (await w.work(p)).intake, permits = permitsOf(JSON.parse(readFileSync(w.receiptsFile, 'utf8')));
+    if (restart) await w.restart();
+    const final = await p.claim(txHash);
+    assert.equal(final.status, 'payment-evidenced', cell);
+    assertNativeDeliveredOnce(w, p);
+    assert.deepEqual([(await w.work(p)).intake, permitsOf(JSON.parse(readFileSync(w.receiptsFile, 'utf8')))], [original, permits], `${cell}: the saved intake, permit and authorization are the original`);
+    assert.equal(w.grantedReceipts(), 1, `${cell}: one permit is granted`);
+    const settled = [w.counts.evidenceSignatures, w.counts.walletSignatures, w.counts.walletBroadcasts, w.snapshot(p).sources];
+    for (const replay of [1, 2]) {
+      assert.equal((await p.send(txHash, { lapse: false })).body.status, 'payment-evidenced', `${cell}: replay ${replay} answers completed`);
+      assert.deepEqual([w.counts.evidenceSignatures, w.counts.walletSignatures, w.counts.walletBroadcasts, w.snapshot(p).sources], settled, `${cell}: replay ${replay} adds no effect`);
+    }
+  }
+}
+
+// An accepted CREATE the node does not show yet. The wallet has signed and sent it and the seller has kept it as issued, then the process
+// stops before the first readback. After the restart the node still answers pending. Only the seller's own recovery sends the stored bytes
+// again, once; nothing is signed again.
+async function checkAcceptedButUnobserved(t, { label, prefix, laterRequests }) {
+  const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
+  let readback = 'stopped';
+  const binding = w.anchors.source.binding;
+  w.anchors.source.binding = async (query) => {
+    if (readback === 'shown' || !w.node.applied.some((entry) => entry.hash === query.hash && entry.logicalAddress.startsWith(prefix))) return binding(query);
+    if (readback === 'stopped') throw new Error('TEST process stopped before the readback');
+    return { disposition: 'pending' };
+  };
+  // The artifact anchor takes its source when it opens, so the seller reopens over the changed source before the payment starts.
+  await w.restart();
+  const send = async () => (await p.send(txHash)).body;
+  const cut = await send();
+  assert.notEqual(cut.delivery?.status, 'delivered', `${label}: the payment stops with the CREATE unobserved`);
+  readback = 'pending';
+  const showProgram = nativeRecord(w, prefix, () => null);
+  assert.equal(nativeStateOf(w, p), 'pending', label);
+  const initial = { requests: w.anchors.captured.length, walletSignatures: w.counts.walletSignatures, walletBroadcasts: w.counts.walletBroadcasts };
+  assert.deepEqual([w.counts.resends, w.counts.rpcSignatures], [0, 0], `${label}: nothing is resent before recovery`);
+  await w.restart();
+  for (const recovery of [1, 2]) {
+    // The payment evidence is anchored, so the answer is `payment-evidenced`; the delivery is held.
+    assert.notEqual((await send()).delivery?.status, 'delivered', `${label}: recovery ${recovery} holds while the node shows nothing`);
+    assert.deepEqual([w.counts.resends, w.counts.rpcSignatures], [1, 1], `${label}: the retained bytes are resent once, with one RPC authentication, however often recovery runs`);
+  }
+  readback = 'shown';
+  showProgram();
+  assert.equal((await send()).status, 'payment-evidenced', `${label}: recovery completes once the CREATE shows`);
+  assertNativeDeliveredOnce(w, p);
+  // The kept CREATE is never signed again; only the artifact that follows it is signed.
+  const requests = initial.requests + laterRequests;
+  assert.deepEqual([w.anchors.captured.length, w.counts.walletSignatures, w.counts.walletBroadcasts], [requests, initial.walletSignatures, initial.walletBroadcasts], `${label}: no new transaction is signed or sent for the kept CREATE`);
+  assert.deepEqual([w.counts.resends, w.counts.rpcSignatures], [1, 1], label);
+  assert.equal(w.grantedReceipts(), 1, label);
+  for (const replay of [1, 2]) {
+    assert.equal((await p.send(txHash, { lapse: false })).body.delivery?.status, 'delivered', `${label}: replay ${replay}`);
+    assert.deepEqual([w.counts.resends, w.counts.rpcSignatures, w.anchors.captured.length], [1, 1, requests], `${label}: replay ${replay} resends nothing`);
+  }
+}
+
+test('payment recovery continues each saved checkpoint to one final delivery', async (t) => {
+  // The delivery evidence is the request that follows a Deliverable; nothing follows the delivery evidence.
+  await checkAcceptedButUnobserved(t, { label: 'the Deliverable', prefix: 'dacs4:deliverable:', laterRequests: 1 });
+  await checkAcceptedButUnobserved(t, { label: 'the delivery evidence', prefix: 'dacs4:evidence:', laterRequests: 0 });
+  await checkFixtureCheckpoints(t);
+  await checkNativeCheckpoints(t);
+});
+
+// ---- A completed payment's source checks only read ----
+
+const never = () => new Promise(() => {});
+const PASSIVE_FIXTURE_CELLS = [
+  ['the payment evidence is absent', (w) => arrangeRecord(w, paymentEvidenceAddress(w.jobId, 'demos-native:DEM', 2), () => ({ status: 'absent' }))],
+  ['the Deliverable is absent', (w) => arrangeRecord(w, deliverableAddress(w.jobId), () => ({ status: 'absent' }))],
+  ['the delivery evidence cannot be read', (w) => arrangeRecord(w, deliveryEvidenceAddress(w.jobId), () => { throw new Error('TEST delivery unavailable'); })],
+];
+
+async function checkFixturePassiveSources(t) {
+  const w = await fixturePaymentWorld(t), stored = (await w.pay()).text;
+  let recoveries = 0;
+  const reconcile = w.agent.reconcileTransport;
+  w.agent.reconcileTransport = (input) => { recoveries++; return reconcile(input); };
+  // Everything a replay of a completed payment must leave as it was: no recovery, no signature, no write, and the stored state.
+  const effects = () => ({ recoveries, agentSignatures: w.counts.signed.length, publicSubmits: w.counts.publicSubmits, writes: w.f.anchors.writes.length, outcome: operationOf(w, w.jobId, PATHS.payments),
+    session: w.f.agent.durableSessionOf(w.jobId), receipts: readFileSync(RECEIPTS_FILE(w), 'utf8') });
+  const before = effects();
+  for (const when of ['at once', 'after a restart']) {
+    if (when === 'after a restart') await w.restart();
+    for (const [label, arrange] of PASSIVE_FIXTURE_CELLS) {
+      const undo = arrange(w);
+      for (const call of [1, 2]) {
+        const refused = await w.pay();
+        assert.deepEqual([refused.status, refused.body.error, refused.signed], [503, 'seller_source_unavailable', true], `${label}, ${when}, call ${call}`);
+        assert.deepEqual(effects(), before, `${label}, ${when}, call ${call}: nothing recovers, signs or writes`);
+      }
+      undo();
+      assert.equal((await w.pay()).text, stored, `${label}, ${when}: restoring the source returns the stored bytes`);
+    }
+  }
+  // A read that never answers ends at its deadline, and the check is still only a read.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let hung = false;
+  const undo = arrangeRecord(w, deliverableAddress(w.jobId), () => { hung = true; return never(); });
+  const answering = w.pay();
+  for (let turns = 0; !hung; turns++) {
+    assert.ok(turns < EVENT_LOOP_TURNS, 'the Deliverable is read');
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  t.mock.timers.tick(SOURCE_READ_TIMEOUT_MS);
+  const refused = await answering;
+  assert.deepEqual([refused.status, refused.body.error, refused.body.cause], [503, 'seller_source_unavailable', 'timeout']);
+  assert.deepEqual(effects(), before, 'a read that timed out recovers, signs and writes nothing');
+  undo();
+  t.mock.timers.reset();
+  assert.equal((await w.pay()).text, stored);
+}
+
+async function checkNativePassiveSources(t) {
+  const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay(), otherTxHash = p.pay();
+  assert.equal((await p.claim(txHash)).status, 'payment-evidenced');
+  const send = () => p.send(txHash, { lapse: false }), stored = (await send()).text;
+  const cells = [
+    ['the payment evidence is absent', () => nativeRecord(w, 'dacs4:payment:', () => null)],
+    ['the Deliverable is absent', () => nativeRecord(w, 'dacs4:deliverable:', () => null)],
+    ['the delivery evidence cannot be read', () => nativeRecord(w, 'dacs4:evidence:', () => { throw new Error('TEST delivery unavailable'); })],
+    ['the accepted CREATE reads pending', () => { const read = w.anchors.source.binding; w.anchors.source.binding = async () => ({ disposition: 'pending' }); return () => { w.anchors.source.binding = read; }; }],
+  ];
+  // The wallet's steps, the signatures the seller made and the journals of the artifact anchor, with the demo recovery rows among them.
+  // Response signatures are left out: each answer is signed.
+  const effects = () => ({ ...omit(w.snapshot(p), ['rows', 'journal', 'receipts']), signatures: omit(w.counts, ['responseSignatures']),
+    walletSteps: w.steps.filter((entry) => entry.step.startsWith('wallet')).length, requestsToWallet: w.anchors.captured.length,
+    anchorRows: [...w.anchors.journal.rows], sourceRows: [...w.anchors.sourceJournal.rows] });
+  const before = effects();
+  for (const when of ['at once', 'after a restart']) {
+    if (when === 'after a restart') await w.restart();
+    for (const [label, arrange] of cells) {
+      const undo = arrange();
+      for (const call of [1, 2]) {
+        const refused = await send();
+        assert.deepEqual([refused.status, refused.body.error], [503, 'seller_source_unavailable'], `${label}, ${when}, call ${call}`);
+        assert.deepEqual(effects(), before, `${label}, ${when}, call ${call}: nothing recovers, signs, confirms or sends`);
+      }
+      undo();
+      assert.equal((await send()).text, stored, `${label}, ${when}: restoring the source returns the stored bytes`);
+    }
+    const reads = w.transferReads().flat().length, other = await p.send(otherTxHash, { lapse: false });
+    assert.deepEqual([other.status, other.body.error, w.transferReads().flat().length], [409, 'payment_already_recorded', reads], `${when}: another incoming transaction is not read`);
+    assert.deepEqual(effects(), before, `${when}: another incoming transaction changes nothing`);
+  }
+}
+
+test('completed payment source checks stay passive across pending reads and repeated retrieval', async (t) => {
+  await checkFixturePassiveSources(t);
+  await checkNativePassiveSources(t);
+});
+
+// ---- A second job claims the settlement while the seller signs the completed answer ----
+
+// A response signer the test can stop: `stop()` holds the next response signature until `release()`, and `reached` settles once it is held.
+function pausableResponseSigner() {
+  let held = null;
+  const signer = { claim: seller.claim, sign: (bytes) => {
+    if (held === null || !Buffer.from(bytes).toString('utf8').startsWith(DACS_SELLER_HTTP_DOMAINS.response)) return seller.signBytes(bytes);
+    const current = held;
+    held = null;
+    current.reach();
+    return current.released.then(() => seller.signBytes(bytes));
+  } };
+  const stop = () => {
+    held = {};
+    held.reached = new Promise((resolve) => { held.reach = resolve; });
+    held.released = new Promise((resolve) => { held.release = resolve; });
+    return { reached: held.reached, release: held.release };
+  };
+  return { signer, stop };
+}
+
+test('a settlement collision during response signing withholds the completed answer', async (t) => {
+  for (const replay of [false, true]) {
+    const w = await fixturePaymentWorld(t), label = replay ? 'replay of a completed payment' : 'first completion';
+    const { signer, stop } = pausableResponseSigner();
+    await w.withWire({ signer }, async () => {
+      let stored = null;
+      if (replay) {
+        assert.equal((await w.pay()).body.status, 'delivered', label);
+        stored = operationOf(w, w.jobId, PATHS.payments);
+        assert.equal(stored.state, 'completed', label);
+      }
+      const signing = stop(), answering = w.pay();
+      await signing.reached;
+      // The answer's sources have been read and its response is being signed when a second admitted job claims the same transfer.
+      const competing = await w.pay({ id: w.otherJobId });
+      assert.deepEqual([competing.status, competing.body.status, competing.body.reason], [200, 'indeterminate', 'settlement-collision'], `${label}: the competing job is told of the collision`);
+      signing.release();
+      const withheld = await answering;
+      assert.deepEqual([withheld.status, withheld.body.error], [503, 'operation_uncertain'], `${label}: the completed answer is withheld: ${withheld.text}`);
+      assert.equal(withheld.signed, true, `${label}: the refusal is signed`);
+      if (replay) assert.deepEqual(operationOf(w, w.jobId, PATHS.payments), stored, `${label}: the stored outcome is unchanged`);
+      else {
+        assert.equal(stateOf(w), 'pending', `${label}: the attempt stays open`);
+        assert.deepEqual(paymentCompletions(w), [], `${label}: no outcome is recorded`);
+      }
+      assert.deepEqual([w.evidenceCreates(w.otherJobId), w.deliverableWrites(w.otherJobId), w.deliveryEvidenceWrites(w.otherJobId)], [0, 0, 0], `${label}: the competing job gets no evidence or delivery`);
+      assert.throws(() => w.agent.assertSettlementCredit(w.jobId), { code: 'settlement_collision' }, `${label}: the first job lost its credit`);
+    });
+    assert.deepEqual([w.evidenceCreates(), w.deliverableWrites(), w.deliveryEvidenceWrites()], [1, 1, 1], `${label}: the effects done before the collision are kept and nothing is added`);
+  }
+});
 

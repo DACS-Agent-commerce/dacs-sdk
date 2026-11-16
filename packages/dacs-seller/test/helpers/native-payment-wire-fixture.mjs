@@ -68,7 +68,8 @@ let jobSequence = 0;
  * `faults.walletSignature`, `faults.walletBroadcast` and `faults.responseSignature` each fail that many next steps
  * (the wallet faults fail before the step, so nothing is signed or sent). `hold(point)` stops the seller after that step until `release()`.
  *
- * What the seller really did: `counts` (evidence, wallet, broadcast and response signatures), `evidenceCreates`, `deliverableWrites`,
+ * What the seller really did: `counts` (evidence, wallet, broadcast and response signatures, plus `resends` of an accepted CREATE the node
+ * does not show yet and the `rpcSignatures` that authenticated each resend), `evidenceCreates`, `deliverableWrites`,
  * `deliveryEvidenceWrites`, `work`, `wireState`, `steps` (each node read and wallet step in order, with the jobs whose durable lock
  * was held), `transferReads()`, `lockedJobs()`, `grantedReceipts()`, `leaseUntil()` and `snapshot(p)`, which holds what a repeated request must
  * leave as it was.
@@ -105,7 +106,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   draft.offering.deliverable.expectedSizeBytes = Buffer.byteLength(core.canonicalize(sample));
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
 
-  const counts = { evidenceSignatures: 0, walletSignatures: 0, walletBroadcasts: 0, responseSignatures: 0 };
+  const counts = { evidenceSignatures: 0, walletSignatures: 0, walletBroadcasts: 0, responseSignatures: 0, resends: 0, rpcSignatures: 0 };
   const faults = { walletSignature: 0, walletBroadcast: 0, responseSignature: 0 };
   // `hold(point)` stops the next step at that point once the step has happened and counted, until the test calls `release()`. It returns
   // `reached`, which settles when the seller is stopped there. The points are `responseSignature`, `walletSignature` and `walletBroadcast`.
@@ -166,7 +167,14 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   // The evidence and Deliverable CREATEs go through the shipped wallet journal below; the node applies its own copy of what the wallet signed.
   const finalized = finalizedCommitmentReader(node.reader, sellerKey, { substrate: 'demos' });
   const anchors = await anchorFixture({ writer: { claim: sellerKey.claim, sign: sellerKey.sign }, now: clock,
-    artifactKinds: ['FinalityCommitmentRecord', 'CompositeVerificationRecord', 'Deliverable', 'SettlementEvidence'] });
+    artifactKinds: ['FinalityCommitmentRecord', 'CompositeVerificationRecord', 'Deliverable', 'SettlementEvidence'],
+    signRpc: async () => { counts.rpcSignatures++; return 'TEST rpc authentication'; } });
+  // The one resend of an accepted CREATE the node does not show yet: the stored bytes go to the node again, which keeps them once per nonce.
+  anchors.source.recoverStorageWrite = async ({ signedTransaction, signRpc }) => {
+    await signRpc();
+    counts.resends++;
+    node.receive(JSON.stringify(signedTransaction));
+  };
   const readerFor = (kind) => (kind === 'FinalityCommitmentRecord' ? finalized : node.reader);
   anchors.controls.reader = { read: (address, options) => readerFor(options?.expectedArtifactKind).read(address, options),
     verifyReceipt: (input) => readerFor(input.artifactKind).verifyReceipt(input) };
