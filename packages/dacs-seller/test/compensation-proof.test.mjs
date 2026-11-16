@@ -144,7 +144,7 @@ test('a malformed or unknown history record gives an indeterminate result, never
   assert.equal((await classifyAddress(address, sourcesOf({ ...createWith(address, 'signed'), history: { [ARTIFACT]: { records: valid, complete: true, extra: 1 } } }))).kind, 'never-dispatched');
 });
 
-test('a reply over the one MiB read limit is undetermined from every source, and one within it is read', async () => {
+test('a returned reply over the one MiB limit is undetermined from every source, and one within it is read', async () => {
   const address = 'did:demos:agent:' + '7'.repeat(64), padding = 'x'.repeat(1048576), small = 'x'.repeat(1000);
   const retained = createWith(address, ...WITHHELD_PASS);
   assert.equal((await classifyAddress(address, sourcesOf())).kind, 'no-intent', 'the control');
