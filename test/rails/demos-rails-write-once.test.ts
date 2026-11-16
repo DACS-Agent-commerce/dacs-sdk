@@ -199,6 +199,7 @@ describe("Demos payment rails send a transfer once", () => {
       chainId: "demos",
       payer: rail.address,
       payee: RECIPIENT,
+      pending: true,
     });
   });
 
