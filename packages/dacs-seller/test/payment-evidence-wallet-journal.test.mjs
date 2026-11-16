@@ -164,13 +164,13 @@ test('a signCreate answer that is not the signed CREATE it names is refused: not
 const CHAIN_BOUND = (chainId) => (hash) => `demos-tx:v1:${chainId}:${hash}`;
 const activeFork = (chainId) => ({ forks: { osDenomination: { activated: true }, signatureDomain: { activated: true } }, chainId });
 
-test('a CREATE signed over the bare hash is kept while the node\'s signature-domain fork is inactive', async (t) => {
+test('a CREATE signed over the bare hash is kept while the node signature-domain fork is inactive', async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
   assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted');
 });
 
-test('a CREATE signed over the domain-separated message is kept once the node\'s signature-domain fork is active', async (t) => {
+test('a CREATE signed over the domain-separated message is kept once the node signature-domain fork is active', async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
   w.network.answer = activeFork(7);
@@ -201,7 +201,7 @@ test('a kept CREATE signed over the bare hash is refused, and not broadcast agai
   assert.equal(w.calls.broadcast.length, 1, 'the kept bytes were not sent again');
 });
 
-test('a journal reads the node\'s network answer for each call and keeps the cause of a failed read', async (t) => {
+test('a journal reads the node network answer for each call and keeps the cause of a failed read', async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
   w.faults.networkInfo.push('throw');
@@ -219,7 +219,7 @@ test('a journal reads the node\'s network answer for each call and keeps the cau
   assert.equal(w.calls.networkInfo, 8);
 });
 
-test('a kept CREATE is not reconciled or broadcast again while the node\'s network answer is unreadable', async (t) => {
+test('a kept CREATE is not reconciled or broadcast again while the node network answer is unreadable', async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
   w.faults.broadcast.push('throw');
@@ -245,7 +245,7 @@ test('a kept CREATE signed over the domain-separated message is still the same e
   assert.equal(w.calls.sign, 1, 'signed once');
 });
 
-test('a CREATE signed over any other message than the one the node\'s fork selects is refused', async (t) => {
+test('a CREATE signed over any other message than the one the node fork selects is refused', async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
   w.network.answer = activeFork(7);
