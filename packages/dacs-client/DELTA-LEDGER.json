@@ -10115,8 +10115,8 @@
         },
         {
           "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "b9fa8ed56e5f4773403393e9c73f12cb3fc5a5ec",
-          "after": "663b5d24cda7fb2b517130a96bf0f8ba8ae379b1"
+          "before": "bdf6af6c1f45d926416112ce65e7a9062a196282",
+          "after": "f642d45751289149c1e218ebca88b46d74c5811c"
         },
         {
           "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
@@ -10127,6 +10127,17 @@
           "path": "packages/dacs-client/test/stabilised-genesis-binding.test.mjs",
           "before": null,
           "after": "0f88b8b5cd19939a5d95dd0c9d4cbe2d5f05f19d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged native transport blob after carrying the broadcast part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "663b5d24cda7fb2b517130a96bf0f8ba8ae379b1",
+          "after": "663b5d24cda7fb2b517130a96bf0f8ba8ae379b1"
         }
       ]
     }
