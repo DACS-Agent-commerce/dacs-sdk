@@ -597,8 +597,9 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
         capability = await admissionTransaction.reserveContext(request.jobId, (jobLease) => coordinator.reserveCoordinated({ checked: admitted, payload: request, route: request.path,
           operationId: wireOperationId(request), paymentTx: null, keepProfile: wire.binding.profile, retainedWork: false }, { jobLease }));
       } catch (error) {
-        // A reservation that lost to compensation leaves the row to it; any other refusal ends the accepted row here.
-        if (error?.code !== 'context_admission_closed') await endFailedStart(request.jobId);
+        // A reservation that lost to compensation leaves the row to it, and a resend of an accepted presentation never ends the job: an attempt
+        // of its own may be running it. Any other refusal of a first admission ends the accepted row here.
+        if (error?.code !== 'context_admission_closed' && challenge.accepted === undefined) await endFailedStart(request.jobId);
         throw error;
       }
       // A running admission whose operation already completed answers that outcome once it is revalidated; it starts nothing.
