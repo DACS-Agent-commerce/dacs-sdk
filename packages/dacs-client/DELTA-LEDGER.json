@@ -10514,6 +10514,23 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the transport and wallet session blobs chosen after carrying the shared chain identity part fixes up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "b99294c4e83ab918dab703d2aaff5893015f153c",
+          "after": "b99294c4e83ab918dab703d2aaff5893015f153c"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "1a1969fbb055b2a878436dd8027748273ff3f691",
+          "after": "1a1969fbb055b2a878436dd8027748273ff3f691"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF test that a replay after a gate refusal before the broadcast sends the retained bytes once",
       "files": [
         {
