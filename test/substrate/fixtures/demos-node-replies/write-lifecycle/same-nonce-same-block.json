@@ -1,0 +1,131 @@
+{
+  "recording": {
+    "recordedAt": "2026-11-10",
+    "node": "https://node2.demos.sh/",
+    "demosdk": "4.0.16",
+    "values": "what each demosdk method returned to its caller; rows keep only the fields the adapter reads",
+    "writes": "two self-transfers signed at nonce 9 (A 1 DEM, then B 2 DEM 0.3 s later)"
+  },
+  "sender": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+  "writes": {
+    "A": {
+      "hash": "80482adf8fdef6ae14d06af02d9fc3214bfd5924ebaafc6a50315949ad111b05",
+      "nonce": 9,
+      "amountOs": "1000000000"
+    },
+    "B": {
+      "hash": "31b96a94b35f78247ccf49aca9584de9e446b91cb9fde906937143661ca4ea7c",
+      "nonce": 9,
+      "amountOs": "2000000000"
+    }
+  },
+  "rounds": {
+    "B1": {
+      "A": {
+        "getTransactionStatus": {
+          "state": "pending"
+        },
+        "getTxByHash": null
+      },
+      "B": {
+        "getTransactionStatus": {
+          "state": "pending"
+        },
+        "getTxByHash": null
+      },
+      "getAddressNonce": 8
+    },
+    "B40": {
+      "A": {
+        "getTransactionStatus": {
+          "state": "included",
+          "blockNumber": 74933
+        },
+        "getTxByHash": {
+          "content": {
+            "type": "native",
+            "from": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+            "to": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+            "from_ed25519_address": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+            "amount": 1000000000,
+            "nonce": "9",
+            "data": [
+              "native",
+              {
+                "nativeOperation": "send",
+                "args": [
+                  "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+                  "1000000000"
+                ]
+              }
+            ]
+          },
+          "hash": "80482adf8fdef6ae14d06af02d9fc3214bfd5924ebaafc6a50315949ad111b05",
+          "status": "failed",
+          "blockNumber": 74933
+        }
+      },
+      "B": {
+        "getTransactionStatus": {
+          "state": "included",
+          "blockNumber": 74933
+        },
+        "getTxByHash": {
+          "content": {
+            "type": "native",
+            "from": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+            "to": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+            "from_ed25519_address": "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+            "amount": 2000000000,
+            "nonce": "9",
+            "data": [
+              "native",
+              {
+                "nativeOperation": "send",
+                "args": [
+                  "0x3378566c3c10b9a08d9891d2eb13ca67a05b2e075ccb15f2166d9868aeb720c0",
+                  "2000000000"
+                ]
+              }
+            ]
+          },
+          "hash": "31b96a94b35f78247ccf49aca9584de9e446b91cb9fde906937143661ca4ea7c",
+          "status": "confirmed",
+          "blockNumber": 74933
+        }
+      },
+      "getAddressNonce": 9,
+      "getLastBlockNumber": 74933
+    }
+  },
+  "block74933": {
+    "number": 74933,
+    "hash": "e31332491c741997202d26548cda1d67ac0550d9907ee371431bae729b773ebd",
+    "status": "confirmed",
+    "content": {
+      "ordered_transactions": [
+        "31b96a94b35f78247ccf49aca9584de9e446b91cb9fde906937143661ca4ea7c",
+        "80482adf8fdef6ae14d06af02d9fc3214bfd5924ebaafc6a50315949ad111b05"
+      ],
+      "timestamp": 1794332170
+    },
+    "validation_data": {
+      "signatures": {
+        "0x9c64cb7c902d9f100a4fd39f7d084da82abbdc18bd087c5f8df4794631dfb63f": "0x018a42fbaf1c3ec167684310d045e056aea7f3c79cd584a2bcfaa7f9043b792eef0a6c0d4bd8f8af8e850ee5f7181699d97522ea5774af79d46e7ddc07baa901",
+        "0x765ccff781f21af0d2d6fc86b600dff9eac519358ff0846cb527efddbb0f238c": "0xbb0c41f800feedbd27d1b1e0db2d8c8f532941a2c59290bce1b53e8a50ddd52c0e1ed6efd6c83782f2fb27cb38404748c2802d81c585a1692b927d0e9c05390c",
+        "0xa0cf8bbac4d4d7bb1b7a8833e7fcb75da4a740023d5e57951050947acc57f66d": "0x0129aa581319f1930c809c54736b156b13652e96201a0595245a056af8320a7e888af1ca55ce428c756075cd3406869ce3ae0d7a4c7e7d50a76903f7ea34400a",
+        "0xdad5ae081825bcf93353bb76157ae8368c33fee6fc0f692b85155bb37e4ae0ab": "0x184f1e3c2eedc0cbea358ddd03b2a76609415804f18d45b522981bb18d03a47aa991be0ef9bec2dd9b684fdca29f8331729c9d46e52427adca75c3141eb7540b",
+        "0xcd0c811f8772f8ef61ed6b0365ea0f6a9d8bed3fd9b4b527ece00398477a1688": "0x7094bc660935577626bb2277124772baa831f114f38d87166fa941df4a016b9ea2bfc21b541175f320ff117b294212a6f9e9c8b5767a81b416e7af91b9febf00",
+        "0xf4c595bccd71b956e1e6f94965eadad9196aee6463910f97ff4473ff66b19fbe": "0xb01d4a3e9fe950e3931e0c88932280340946bafedcb08211f2d6189f3fdefa5acd7bf8fd844e14034278dccf56e2978f6bb7f1bf509258bb0771887d25534f08",
+        "0x24c664d9ef529f798e979357c6a7a01088226eefe05cfdb77fb42841f771e156": "0x3b5f94f29dce9de5e2336412e114f704e4d780b389742ed2ea0b328f8798e93512dec75711c926272c470bb58a40188560a94e7cb7b8e2515ba394fe0096e507",
+        "0x95cbd7147cf09dc46d91cd6ae8f2912ae0f597fac9c61d0b0c347a46374af80f": "0x36862d458d61f39ca0424a918d8d3ef29269b5b75b6ad1a1ccc5cc2225242829952546c1253dd8fec7dd3fe7acdedfa9551414399fdffcfc50adb2398387ca09",
+        "0xde0ed64ad90e9d28edbc59cefc2745d8afad74cb7f3479cad9ab44ede3fb2a06": "0xbeb233f7eed5ed195a5de9989c78fb88db94ee1a4b25597adbc918d7111f136d8193911524c3819d258d1d129e1a6ea1327c7e26b0868ae50bfe5f902a5a080d",
+        "0xc8bc5866fecf583bc1232f04fa54fd2c5a6f7c15b91c517ac60f468cdc0b8c82": "0x750ef3f4756cbf26aa1b6fbd2ff591b639dd1cf1fe68bb468c7a96e1c0bdece32ac6e3c4dc694075e90fcdb6e957a11c4cd3a4f540d1768ec3b9ac7c9991a404"
+      }
+    }
+  },
+  "unknownMessage": {
+    "error": "Unknown message",
+    "message": "getTxByNonce"
+  }
+}

@@ -7,6 +7,7 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { createAuthorityFixture } from '../fixtures/tp1-authority-reader.mjs';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from './purchase-admission-hook.mjs';
+import { recordingApproval } from './payment-evidence-approval-double.mjs';
 installPurchaseAdmissionHook();
 export const { setPurchaseAdmission } = await loadAdmissionDouble();
 export const api = await import('../../src/wallet/node-wallet-session.mjs');
@@ -56,7 +57,7 @@ export function scriptedNode() {
   };
   return node;
 }
-export async function world(t, { held = false, journalWrap = x => x, ownerWrap = x => x } = {}) {
+export async function world(t, { held = false, journalWrap = x => x, ownerWrap = x => x, createSession = api.createNodeWalletSession, sessionOptions = {} } = {}) {
   setPurchaseAdmission(held ? 'held' : 'testnet-tp1');
   const dir = mkdtempSync(join(tmpdir(), 'node-wallet-session-')), path = join(dir, 'journal.sqlite');
   const node = scriptedNode(), authority = createAuthorityFixture(), key = mnemonicBytes();
@@ -69,7 +70,10 @@ export async function world(t, { held = false, journalWrap = x => x, ownerWrap =
     owners.push(owner);
     const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: owner.currentLocal(), readAuthority: authority.read });
     const admission = { binding, currentLocal: owner.currentLocal };
-    session = await api.createNodeWalletSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock });
+    // A seller composition requires the host's proof that it owns the state directory and its payment-evidence approval ledger.
+    const sellerInputs = createSession === api.createNodeSellerComposition
+      ? { stateOwnership: { directory: dir, held: () => true }, paymentEvidenceApproval: recordingApproval() } : {};
+    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...sellerInputs, ...sessionOptions });
     sessions.push(session);
     return { owner, admission };
   }

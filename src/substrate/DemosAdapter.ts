@@ -18,7 +18,10 @@ import {
   rawPublicKey,
 } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
-import { createDemosClient } from "../rails/demosClient.js";
+import {
+  createDemosClient,
+  TransactionPostNotSentError,
+} from "../rails/demosClient.js";
 import { readBoundedDemosJson } from "../rails/demosRpc.js";
 import {
   assertDemosCciResponseBounds,
@@ -349,7 +352,8 @@ export interface DemosRawClient {
 type BroadcastObservation =
   | { state: "accepted" }
   | { state: "ambiguous" }
-  | { state: "rejected"; cause: unknown };
+  | { state: "rejected"; cause: unknown }
+  | { state: "not-sent"; cause: unknown };
 
 // Coordinates every adapter instance in this JS process. RPC is part of the
 // key so the same wallet used on different networks does not block itself.
@@ -410,6 +414,90 @@ function httpStatus(error: unknown): number | undefined {
     : undefined;
 }
 
+/**
+ * demosdk answers a node call that failed in transport with
+ * `{result: 500, response: <error>}` instead of throwing. A record whose
+ * `result` is a number other than 200 is read as that answer: it carries no
+ * information about the write.
+ */
+function isDemosTransportFailure(value: unknown): boolean {
+  return isRecord(value) && typeof value.result === "number" && value.result !== 200;
+}
+
+/**
+ * The node answers a failure of its own lookup with
+ * `{result: 500, response: {error: "INTERNAL_ERROR"}}`, and demosdk passes back
+ * only `response` for a node call. Like a transport failure, that answer
+ * carries no information about the write. Other `error` answers (a bad hash,
+ * an unknown message) say the request itself is wrong and stay unrecognised.
+ */
+function isDemosNodeReadError(value: unknown): boolean {
+  return isRecord(value) && value.error === "INTERNAL_ERROR" && !("state" in value);
+}
+
+/** A `getTransactionStatus` answer, as demosdk returns it, read strictly. */
+type DemosStatusAnswer =
+  | { state: "pending" | "unknown" | "unrecognised" | "transport-failure" }
+  | { state: "included"; blockNumber: number }
+  | { state: "failed"; blockNumber: number | undefined };
+
+/**
+ * The node answers `{state:"pending"}`, `{state:"unknown"}` (never seen),
+ * `{state:"included", blockNumber}` or `{state:"failed", ...}`. The SDK's
+ * transport-failure answer and the node's own read-error answer are
+ * `transport-failure`; anything else is unrecognised.
+ */
+function demosStatusAnswer(value: unknown): DemosStatusAnswer {
+  if (isDemosTransportFailure(value) || isDemosNodeReadError(value)) {
+    return { state: "transport-failure" };
+  }
+  if (!isRecord(value)) return { state: "unrecognised" };
+  const blockNumber = demosNonNegativeInteger(value.blockNumber);
+  switch (value.state) {
+    case "pending":
+    case "unknown":
+      return { state: value.state };
+    case "included":
+      return blockNumber === undefined
+        ? { state: "unrecognised" }
+        : { state: "included", blockNumber };
+    case "failed":
+      return { state: "failed", blockNumber };
+    default:
+      return { state: "unrecognised" };
+  }
+}
+
+/** A `getTxByHash` answer, as demosdk returns it, read strictly. */
+type DemosRowAnswer =
+  | { status: "none" | "unrecognised" | "transport-failure" }
+  | {
+    status: "confirmed" | "failed";
+    row: Record<string, unknown>;
+    blockNumber: number | undefined;
+  };
+
+/**
+ * `null` means the node has no row yet: a pending write and a never-seen hash
+ * read the same, so it never proves absence. Only a row whose `status` is
+ * `confirmed` or `failed` counts. The SDK's transport-failure answer is
+ * `transport-failure` and is never read as a row; anything else is
+ * unrecognised.
+ */
+function demosRowAnswer(value: unknown): DemosRowAnswer {
+  if (value === null) return { status: "none" };
+  if (isDemosTransportFailure(value)) return { status: "transport-failure" };
+  if (!isRecord(value) ||
+      (value.status !== "confirmed" && value.status !== "failed")) {
+    return { status: "unrecognised" };
+  }
+  return {
+    status: value.status,
+    row: value,
+    blockNumber: demosNonNegativeInteger(value.blockNumber),
+  };
+}
+
 function dahrRequestOptions(headers: Record<string, string> | undefined): {
   headers: Record<string, string>;
   authorization?: string;
@@ -452,6 +540,15 @@ function isDefinitiveBroadcastRejection(value: unknown): boolean {
     result >= 400 &&
     result < 500
   );
+}
+
+/**
+ * A broadcast answer whose `response` is the Demos client's proof that the
+ * post never reached the node, as demosdk's `call` hands back a thrown error.
+ * A node reply is decoded JSON, so it cannot hold that error instance.
+ */
+function broadcastNeverSent(value: unknown): boolean {
+  return isRecord(value) && value.response instanceof TransactionPostNotSentError;
 }
 
 function journalPortableValue(
@@ -652,12 +749,16 @@ export class DemosAdapter implements SubstrateAdapter {
     });
   }
 
-  private delay(ctx: AnchorContext): Promise<void> {
+  private delay(
+    ctx: AnchorContext,
+    timeoutFailure?: () => AnchorWaitError | undefined,
+  ): Promise<void> {
     const delayMs = Math.min(ctx.pollMs, this.remaining(ctx));
     return this.waitFor(
       ctx,
       new Promise<void>((resolve) => setTimeout(resolve, delayMs)),
       "poll delay",
+      timeoutFailure,
     );
   }
 
@@ -1818,11 +1919,44 @@ export class DemosAdapter implements SubstrateAdapter {
     };
   }
 
+  /**
+   * Polls a broadcast write until the node settles it. `signedNonce` is the
+   * journalled nonce of a write this adapter signed; the DAHR wait has none.
+   * Throws `demos-write-unresolved` when the answers cannot settle it (see
+   * `stopUnknownWrite`), or when the deadline passes with only transport
+   * failures answered. It writes nothing, so the journal entry is kept.
+   */
   private async waitForTerminal(
     txRef: string,
     ctx: AnchorContext,
+    signedNonce: number | undefined,
     broadcastPromise?: Promise<unknown>,
   ): Promise<"included" | "failed"> {
+    // A transport-failure answer tells nothing about the write, so the wait
+    // polls on. If no other answer arrives by the deadline, the wait ends
+    // unresolved with what it last read, instead of as a plain timeout.
+    let transportFailures = 0;
+    let recognisedAnswer = false;
+    // The last account-nonce read for an unknown write got a transport-failure
+    // answer: no information, so the wait polls on and the deadline is
+    // unresolved, never a plain timeout.
+    let nonceUnread = false;
+    let accountNonce: number | undefined;
+    let lastBlock: number | undefined;
+    const deadlineFailure = (): AnchorWaitError | undefined =>
+      transportFailures > 0 && (!recognisedAnswer || nonceUnread)
+        ? this.unresolvedWrite(
+          ctx,
+          txRef,
+          signedNonce,
+          lastBlock,
+          (recognisedAnswer
+            ? `the node's account nonce could not be read before the deadline, `
+            : `the node gave no answer before the deadline, `) +
+            `only transport failures: ${transportFailures}; account nonce ` +
+            `${accountNonce ?? "not readable"}`,
+        )
+        : undefined;
     let broadcast: BroadcastObservation | undefined;
     if (broadcastPromise) {
       void broadcastPromise.then(
@@ -1833,7 +1967,9 @@ export class DemosAdapter implements SubstrateAdapter {
               ? { state: "accepted" }
               : isDefinitiveBroadcastRejection(value)
                 ? { state: "rejected", cause: value }
-                : { state: "ambiguous" };
+                : broadcastNeverSent(value)
+                  ? { state: "not-sent", cause: value }
+                  : { state: "ambiguous" };
         },
         () => {
           // A transport error can happen after the node accepted the bytes.
@@ -1845,62 +1981,65 @@ export class DemosAdapter implements SubstrateAdapter {
 
     for (;;) {
       ctx.receipt.attempts.inclusionPolls += 1;
-      let status: unknown;
-      let transaction: unknown;
+      // A node answers `unknown` for bytes it has not received yet. That
+      // answer settles nothing while this process's broadcast may still be in
+      // flight, so the receipt is read before this round's reads go out.
+      const broadcastSettledBeforeRead =
+        ctx.receipt.state !== "broadcast-unknown";
+      let status: DemosStatusAnswer | undefined;
+      let row: DemosRowAnswer | undefined;
       try {
-        const observations = await this.waitFor(
-          ctx,
-          Promise.allSettled([
-            this.#demos.nodeCall("getTransactionStatus", { hash: txRef }),
-            this.#demos.getTxByHash(txRef),
-          ]),
-          "inclusion",
-        );
-        if (observations[0]?.status === "fulfilled") {
-          status = observations[0].value;
-        }
-        if (observations[1]?.status === "fulfilled") {
-          transaction = observations[1].value;
-        }
+        ({ status, row } = await this.readWriteOutcome(txRef, ctx, deadlineFailure));
       } catch (error) {
         if (error instanceof AnchorWaitError) throw error;
         // Observation transport errors are retryable within the original
         // budget and never trigger a rebroadcast of the submitted transaction.
         ctx.receipt.lastObservedState = "status-read-error";
         this.emit(ctx);
-        await this.delay(ctx);
+        await this.delay(ctx, deadlineFailure);
         continue;
       }
 
-      const record =
-        isRecord(status) && isRecord(status.response)
-          ? status.response
-          : status;
-      const state =
-        isRecord(record) && typeof record.state === "string"
-          ? record.state
-          : undefined;
-      if (state) ctx.receipt.lastObservedState = state;
-      // An answer carrying a `result` other than 200 is the node's error
-      // envelope, so it holds no transaction row.
-      const transactionRecord =
-        isRecord(transaction) && "result" in transaction && transaction.result !== 200
-          ? undefined
-          : isRecord(transaction) && isRecord(transaction.response)
-            ? transaction.response
-            : transaction;
-      const executionStatus = isRecord(transactionRecord) &&
-          typeof transactionRecord.status === "string"
-        ? transactionRecord.status
+      if (status) ctx.receipt.lastObservedState = status.state;
+      // Set again below only by this round's nonce read; any other round that
+      // read the hash is not one whose nonce went unread.
+      nonceUnread = false;
+      if (status?.state === "unrecognised" || row?.status === "unrecognised") {
+        throw this.unresolvedWrite(
+          ctx,
+          txRef,
+          signedNonce,
+          await this.readLastBlock(ctx),
+          status?.state === "unrecognised"
+            ? "the node's status answer is not one the adapter recognises"
+            : "the node's transaction row is not one the adapter recognises",
+        );
+      }
+      const answers = [status?.state, row?.status];
+      const roundTransportFailures = answers
+        .filter((answer) => answer === "transport-failure").length;
+      transportFailures += roundTransportFailures;
+      // Only an answer that says something counts: a status other than a
+      // transport failure, or a row. A missing row (`none`) decides nothing.
+      if ((status !== undefined && status.state !== "transport-failure") ||
+          (row !== undefined && row.status !== "transport-failure" && row.status !== "none")) {
+        recognisedAnswer = true;
+      }
+      if (roundTransportFailures > 0 && !recognisedAnswer) {
+        // A read the deadline cut off must not erase what an earlier round read.
+        accountNonce = (await this.readAccountNonce(ctx)) ?? accountNonce;
+        lastBlock = (await this.readLastBlock(ctx)) ?? lastBlock;
+      }
+      const statusBlockNumber = status?.state === "included" ||
+          status?.state === "failed"
+        ? status.blockNumber
         : undefined;
-      const observedBlockNumber = isRecord(transactionRecord) &&
-          typeof transactionRecord.blockNumber === "number"
-        ? transactionRecord.blockNumber
-        : isRecord(record) && typeof record.blockNumber === "number"
-          ? record.blockNumber
-          : undefined;
+      const observedBlockNumber = (row?.status === "confirmed" ||
+          row?.status === "failed"
+        ? row.blockNumber
+        : undefined) ?? statusBlockNumber;
 
-      if (executionStatus === "failed" || state === "failed") {
+      if (row?.status === "failed" || status?.state === "failed") {
         ctx.receipt.state = "failed";
         ctx.receipt.lastObservedState = "failed";
         if (observedBlockNumber !== undefined) {
@@ -1910,7 +2049,7 @@ export class DemosAdapter implements SubstrateAdapter {
         return "failed";
       }
 
-      if (state === "included" || executionStatus === "confirmed") {
+      if (status?.state === "included" || row?.status === "confirmed") {
         const now = Date.now();
         // The status index and canonical transaction row can advance in either
         // order. `included` alone never proves execution success: live Demos
@@ -1930,21 +2069,33 @@ export class DemosAdapter implements SubstrateAdapter {
           ctx.receipt.blockNumber = observedBlockNumber;
         }
         this.emit(ctx);
-        if (executionStatus === "confirmed") {
-          ctx.canonicalTransaction = transactionRecord as Record<string, unknown>;
+        if (row?.status === "confirmed") {
+          ctx.canonicalTransaction = row.row;
           return "included";
         }
-        ctx.receipt.lastObservedState = transaction === undefined
-          ? "included-execution-read-error"
-          : "included-execution-pending";
+        ctx.receipt.lastObservedState =
+          row === undefined || row.status === "transport-failure"
+            ? "included-execution-read-error"
+            : "included-execution-pending";
         this.emit(ctx);
         await this.delay(ctx);
         continue;
       }
 
       // A chain observation is authoritative. Only after checking it do we use
-      // a definitive 4xx broadcast response to fail promptly. Ambiguous 5xx,
-      // timeout, and connection errors keep polling the already-known hash.
+      // a definitive 4xx broadcast response, or a broadcast that never reached
+      // the node, to fail promptly. Ambiguous 5xx, timeout, and other
+      // connection errors keep polling the already-known hash.
+      if (broadcast?.state === "not-sent") {
+        ctx.receipt.state = "not-broadcast";
+        this.emit(ctx);
+        throw this.fail(
+          ctx,
+          "broadcast-failed",
+          `anchor ${ctx.receipt.address ?? txRef} never reached the node`,
+          broadcast.cause,
+        );
+      }
       if (broadcast?.state === "rejected") {
         ctx.receipt.state = "failed";
         this.emit(ctx);
@@ -1954,6 +2105,16 @@ export class DemosAdapter implements SubstrateAdapter {
           `anchor ${ctx.receipt.address ?? txRef} was rejected by the node`,
           broadcast.cause,
         );
+      }
+      if (signedNonce !== undefined && broadcastSettledBeforeRead &&
+          status?.state === "unknown" && row?.status === "none") {
+        nonceUnread =
+          (await this.stopUnknownWrite(txRef, ctx, signedNonce, deadlineFailure)) ===
+            "transport-failure";
+        if (nonceUnread) {
+          transportFailures += 1;
+          lastBlock = (await this.readLastBlock(ctx)) ?? lastBlock;
+        }
       }
       if (
         broadcast?.state === "accepted" &&
@@ -1966,8 +2127,136 @@ export class DemosAdapter implements SubstrateAdapter {
         this.emit(ctx);
       }
       this.emit(ctx);
-      await this.delay(ctx);
+      await this.delay(ctx, deadlineFailure);
     }
+  }
+
+  /** One round of status and row reads; a read that threw is `undefined`. */
+  private async readWriteOutcome(
+    txRef: string,
+    ctx: AnchorContext,
+    deadlineFailure?: () => AnchorWaitError | undefined,
+  ): Promise<{
+    status: DemosStatusAnswer | undefined;
+    row: DemosRowAnswer | undefined;
+  }> {
+    const [status, row] = await this.waitFor(
+      ctx,
+      Promise.allSettled([
+        this.#demos.nodeCall("getTransactionStatus", { hash: txRef }),
+        this.#demos.getTxByHash(txRef),
+      ]),
+      "inclusion",
+      deadlineFailure,
+    );
+    return {
+      status: status.status === "fulfilled"
+        ? demosStatusAnswer(status.value)
+        : undefined,
+      row: row.status === "fulfilled" ? demosRowAnswer(row.value) : undefined,
+    };
+  }
+
+  /**
+   * Ends the wait for a journalled write the node reports as `unknown` with no
+   * row. The account nonce is read first and the hash again after it, so a
+   * write that reaches a block between the two reads is seen rather than
+   * reported unknown. Returns, and the caller keeps polling, when a read threw
+   * or the second hash read shows the node now knows the write. Returns
+   * `transport-failure` when the nonce read got the SDK's transport-failure
+   * answer: no information, so the caller counts it and keeps polling.
+   * @throws AnchorWaitError `demos-write-unresolved` in every other case.
+   */
+  private async stopUnknownWrite(
+    txRef: string,
+    ctx: AnchorContext,
+    signedNonce: number,
+    deadlineFailure?: () => AnchorWaitError | undefined,
+  ): Promise<"transport-failure" | undefined> {
+    let nonceAnswer: unknown;
+    try {
+      // demos.getAddressNonce turns any answer it cannot read into 0.
+      nonceAnswer = await this.waitFor(
+        ctx,
+        this.#demos.nodeCall("getAddressNonce", {
+          address: this.#demos.getAddress(),
+        }),
+        "account nonce read",
+        deadlineFailure,
+      );
+    } catch (error) {
+      if (error instanceof AnchorWaitError) throw error;
+      return undefined;
+    }
+    if (isDemosTransportFailure(nonceAnswer)) return "transport-failure";
+    const accountNonce = demosNonNegativeInteger(nonceAnswer);
+    if (accountNonce === undefined) {
+      throw this.unresolvedWrite(
+        ctx,
+        txRef,
+        signedNonce,
+        await this.readLastBlock(ctx),
+        "the node's account nonce answer is not a non-negative integer",
+      );
+    }
+    const recheck = await this.readWriteOutcome(txRef, ctx);
+    if (recheck.status?.state !== "unknown" || recheck.row?.status !== "none") {
+      return undefined;
+    }
+    throw this.unresolvedWrite(
+      ctx,
+      txRef,
+      signedNonce,
+      await this.readLastBlock(ctx),
+      `the node does not know it; account nonce ${accountNonce}, so nonce ` +
+        `${signedNonce} is ${accountNonce >= signedNonce ? "already used" : "not used yet"}`,
+    );
+  }
+
+  /** The node's last block number for an error message, if it can be read. */
+  private async readLastBlock(ctx: AnchorContext): Promise<number | undefined> {
+    try {
+      return demosNonNegativeInteger(await this.waitFor(
+        ctx,
+        this.#demos.nodeCall("getLastBlockNumber"),
+        "last block read",
+      ));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The wallet's account nonce for an error message, if it can be read. */
+  private async readAccountNonce(ctx: AnchorContext): Promise<number | undefined> {
+    try {
+      return demosNonNegativeInteger(await this.waitFor(
+        ctx,
+        this.#demos.nodeCall("getAddressNonce", {
+          address: this.#demos.getAddress(),
+        }),
+        "account nonce read",
+      ));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private unresolvedWrite(
+    ctx: AnchorContext,
+    txRef: string,
+    signedNonce: number | undefined,
+    lastBlock: number | undefined,
+    reason: string,
+  ): AnchorWaitError {
+    return this.fail(
+      ctx,
+      "demos-write-unresolved",
+      `Demos write ${txRef} (signed nonce ${signedNonce ?? "not known"}, ` +
+        `last block ${lastBlock ?? "not readable"}) is unresolved: ${reason}.` +
+        (signedNonce === undefined
+          ? ""
+          : " Its journal entry is kept, so the wallet stays blocked; nothing is resent."),
+    );
   }
 
   private async waitForNativeJournalVisibility(
@@ -2467,7 +2756,11 @@ export class DemosAdapter implements SubstrateAdapter {
         );
         ctx.receipt.address = retained.nativeAddress;
         ctx.receipt.txRef = retained.txRef;
-        const terminal = await this.waitForTerminal(retained.txRef, ctx);
+        const terminal = await this.waitForTerminal(
+          retained.txRef,
+          ctx,
+          retained.nonce,
+        );
         const current = { ...retained, generation: lease.generation };
         if (terminal === "failed") {
           await lease.put({ ...current, stage: "canonical-failed", updatedAt: Date.now() });
@@ -2498,7 +2791,11 @@ export class DemosAdapter implements SubstrateAdapter {
       ctx.receipt.txRef = retained.txRef;
       let current = { ...retained, generation: lease.generation };
       if (retained.stage === "broadcast-intent") {
-        const terminal = await this.waitForTerminal(retained.txRef, ctx);
+        const terminal = await this.waitForTerminal(
+          retained.txRef,
+          ctx,
+          retained.nonce,
+        );
         if (terminal === "failed") {
           await lease.put({
             ...current,
@@ -2601,7 +2898,7 @@ export class DemosAdapter implements SubstrateAdapter {
     // re-establish canonical terminal state before releasing the wallet lane.
     const terminal = canonicalConfirmed
       ? "included"
-      : await this.waitForTerminal(txRef, ctx);
+      : await this.waitForTerminal(txRef, ctx, signedNonce);
     if (terminal === "included") {
       void key;
       if (this.activeWriteRecord?.nonce !== signedNonce) {
@@ -2908,6 +3205,7 @@ export class DemosAdapter implements SubstrateAdapter {
         const terminal = await this.waitForTerminal(
           preBroadcastTxRef,
           ctx,
+          signedNonce,
           broadcastPromise,
         );
         if (terminal === "failed") {
@@ -3050,13 +3348,17 @@ export class DemosAdapter implements SubstrateAdapter {
     const txRef = preBroadcastTxRef;
 
     if (response?.result !== 200 || !txRef) {
-      const ambiguous = Boolean(txRef) && !isDefinitiveBroadcastRejection(response);
-      ctx.receipt.state = ambiguous ? "broadcast-unknown" : "failed";
+      const notSent = broadcastNeverSent(response);
+      const ambiguous = Boolean(txRef) && !notSent &&
+        !isDefinitiveBroadcastRejection(response);
+      ctx.receipt.state = notSent
+        ? "not-broadcast"
+        : ambiguous ? "broadcast-unknown" : "failed";
       this.emit(ctx);
       const error = this.fail(
         ctx,
         "broadcast-failed",
-        `anchor ${prepared.address} was not accepted by the node`,
+        `anchor ${prepared.address} ${notSent ? "never reached" : "was not accepted by"} the node`,
         response,
       );
       if (!ambiguous) await this.putActiveWrite("canonical-failed");
@@ -3097,7 +3399,7 @@ export class DemosAdapter implements SubstrateAdapter {
     }
 
     try {
-      const terminal = await this.waitForTerminal(txRef, ctx);
+      const terminal = await this.waitForTerminal(txRef, ctx, signedNonce);
       if (terminal === "failed") {
         await this.putActiveWrite("canonical-failed");
         return {
@@ -3675,6 +3977,7 @@ export class DemosAdapter implements SubstrateAdapter {
             terminal = await this.waitForTerminal(
               txRef,
               ctx,
+              signedNonce,
               broadcastPromise,
             );
           } catch (error) {
@@ -3688,6 +3991,12 @@ export class DemosAdapter implements SubstrateAdapter {
                     `immutable anchor ${name} status reconciliation failed`,
                     error,
                   );
+            // A broadcast that never reached the node used no nonce, so its
+            // journal entry is released. Another writer may still have
+            // created the same program, so the winner wait below still runs.
+            if (broadcastNeverSent(completionFailure.cause)) {
+              await this.putActiveWrite("canonical-failed");
+            }
             return this.waitForConcurrentImmutableWinner(
               name,
               data,
@@ -4025,7 +4334,10 @@ export class DemosAdapter implements SubstrateAdapter {
     ctx.receipt.completion = "accepted";
     ctx.receipt.timings.acceptedAt = Date.now();
 
-    const terminal = await this.waitForTerminal(txRef, ctx);
+    // demosdk builds and sends the DAHR transaction inside startProxy, so the
+    // adapter holds no signed nonce or journal entry for it, and an `unknown`
+    // answer keeps polling here.
+    const terminal = await this.waitForTerminal(txRef, ctx, undefined);
     if (terminal === "failed") {
       throw new SubstrateError(`DAHR anchor transaction ${txRef} failed on chain`);
     }

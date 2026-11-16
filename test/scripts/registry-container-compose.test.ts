@@ -47,6 +47,63 @@ it("supplies every required generated Compose variable with inert run-local inpu
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+/** Runs the compose step's environment block and returns the variables the compose command would see. */
+function composeEnvironment(callerEnv: Record<string, string>): Record<string, string> {
+  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
+  const start = source.indexOf("\nenv \\\n");
+  const block = source.slice(start, source.indexOf('    > "$artifact_stage/compose.rendered.yaml"'));
+  const setup = source.slice(source.indexOf("# Inert Compose inputs"), start);
+  const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+  const render = block.replace(/node "\$bounded_support\/bounded-command\.mjs" "\$COMMAND_TIMEOUT_SECONDS" 1 docker compose[\s\S]*/, `${node} -e 'process.stdout.write(JSON.stringify(process.env))'`);
+  const root = mkdtempSync(join(tmpdir(), "dacs-compose-docker-config-"));
+  try {
+    const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], {
+      encoding: "utf8",
+      env: { acceptance_root: root, PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter), ...callerEnv },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    return JSON.parse(result.stdout) as Record<string, string>;
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+it("passes the caller's DOCKER_CONFIG to the compose command", () => {
+  const values = composeEnvironment({ HOME: "/home/caller", DOCKER_CONFIG: "/srv/docker-config" });
+  expect(values.DOCKER_CONFIG).toBe("/srv/docker-config");
+});
+
+it("keeps a relative DOCKER_CONFIG pointing at the caller's directory after the script changes directory", () => {
+  const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
+  const resolveStart = source.indexOf('case "${DOCKER_CONFIG-}" in');
+  expect(resolveStart).toBeGreaterThan(-1);
+  const resolve = source.slice(resolveStart, source.indexOf("esac", resolveStart) + 4);
+  const start = source.indexOf("\nenv \\\n");
+  const block = source.slice(start, source.indexOf('    > "$artifact_stage/compose.rendered.yaml"'));
+  const setup = source.slice(source.indexOf("# Inert Compose inputs"), start);
+  const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+  const render = block.replace(/node "\$bounded_support\/bounded-command\.mjs" "\$COMMAND_TIMEOUT_SECONDS" 1 docker compose[\s\S]*/, `${node} -e 'process.stdout.write(JSON.stringify(process.env))'`);
+  const root = mkdtempSync(join(tmpdir(), "dacs-compose-relative-config-"));
+  try {
+    const caller = join(root, "caller");
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(caller);
+    mkdirSync(elsewhere);
+    const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", `${resolve}\ncd '${elsewhere}'\n${setup}\n${render}`], {
+      encoding: "utf8",
+      cwd: caller,
+      env: { acceptance_root: root, HOME: "/home/caller", DOCKER_CONFIG: "relative-config",
+        PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter) },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const values = JSON.parse(result.stdout) as Record<string, string>;
+    expect(values.DOCKER_CONFIG).toBe(join(caller, "relative-config"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("points the compose command at the caller's ~/.docker when DOCKER_CONFIG is unset", () => {
+  const values = composeEnvironment({ HOME: "/home/caller" });
+  expect(values.DOCKER_CONFIG).toBe("/home/caller/.docker");
+});
+
 it("invokes only Compose config and writes the rendered artifact", () => {
   const source = readFileSync("scripts/verify-registry-container-consumer.sh", "utf8");
   const start = source.indexOf("\nenv \\\n");

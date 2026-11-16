@@ -373,6 +373,7 @@ export {
   type PayD402Rail,
   type PayD402RailConfig,
   type PayD402SettleParams,
+  type PayD402SettleResult,
   type PayD402SettleCoreDeps,
   type D402ClientLike,
   type D402PaymentRequirement,
@@ -380,6 +381,8 @@ export {
 } from "./payD402.js";
 export {
   createPayDemRail,
+  demosAddressFromClaim,
+  normalizeDemosNativeAddress,
   PayDemIncludedNonceVisibilityError,
   payDemSettle,
   payDemSettleCore,
