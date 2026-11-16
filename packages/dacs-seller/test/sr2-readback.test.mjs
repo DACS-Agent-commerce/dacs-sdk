@@ -60,27 +60,52 @@ const signOver = (f, message) => {
   f.signed.signature.data = `0x${seller.signBytes(Buffer.from(message)).toString('hex')}`;
   Object.assign(f.tx, structuredClone(f.signed), { status: 'confirmed', blockNumber: 1 });
 };
-test('readback accepts the bare hash and the configured chain-bound signature', async () => {
-  for (const message of [f => f.signed.hash, f => `demos-tx:v1:7:${f.signed.hash}`]) {
-    const f = readbackFixture({ adapter: { signatureChainId: '7' } });
+const activeFork = chainId => ({ forks: { osDenomination: { activated: true }, signatureDomain: { activated: true } }, chainId });
+const refusedAuthorization = error => error.code === 'invalid' && /exact writer authorization/.test(error.message);
+const asksNetworkInfo = init => JSON.parse(init.body ?? '{}').params?.[0]?.message === 'getNetworkInfo';
+test('readback under an inactive signature-domain fork accepts the bare hash and refuses the chain-bound signature', async () => {
+  const bare = readbackFixture();
+  signOver(bare, bare.signed.hash);
+  assert.equal((await read(bare)).status, 'present');
+  const bound = readbackFixture();
+  signOver(bound, `demos-tx:v1:7:${bound.signed.hash}`);
+  await assert.rejects(read(bound), refusedAuthorization);
+});
+test('readback under an active signature-domain fork accepts the chain-bound signature and refuses the bare hash', async () => {
+  const bound = readbackFixture({ networkInfo: activeFork(7) });
+  signOver(bound, `demos-tx:v1:7:${bound.signed.hash}`);
+  assert.equal((await read(bound)).status, 'present');
+  const bare = readbackFixture({ networkInfo: activeFork(7) });
+  signOver(bare, bare.signed.hash);
+  await assert.rejects(read(bare), refusedAuthorization);
+});
+test('readback refuses a signature over another message than the one the node fork selects', async () => {
+  for (const message of [f => `demos-tx:v1:8:${f.signed.hash}`, f => `demos-tx:v2:7:${f.signed.hash}`, f => `demos-tx:v1:7:7:${f.signed.hash}`, f => `demos-tx:v1:7:${f.signed.hash}\n`]) {
+    const f = readbackFixture({ networkInfo: activeFork(7) });
     signOver(f, message(f));
-    assert.equal((await read(f)).status, 'present');
+    await assert.rejects(read(f), refusedAuthorization);
   }
 });
-test('readback refuses a signature over another message than the bare hash or the configured chain-bound form', async () => {
-  for (const message of [f => `demos-tx:v1:8:${f.signed.hash}`, f => `demos-tx:v2:7:${f.signed.hash}`, f => `demos-tx:v1:7:7:${f.signed.hash}`, f => `${f.signed.hash}\n`]) {
-    const f = readbackFixture({ adapter: { signatureChainId: '7' } });
-    signOver(f, message(f));
-    await assert.rejects(read(f), error => error.code === 'invalid' && /exact writer authorization/.test(error.message));
-  }
-});
-test('readback with no signature chain id refuses a chain-bound signature', async () => {
+test('readback follows the node answer on each read, so a fork that activates later is seen', async () => {
   const f = readbackFixture();
-  signOver(f, `demos-tx:v1:7:${f.signed.hash}`);
-  await assert.rejects(read(f), error => error.code === 'invalid' && /exact writer authorization/.test(error.message));
+  assert.equal((await read(f)).status, 'present');
+  f.state.networkInfo = activeFork(7);
+  await assert.rejects(read(f), refusedAuthorization);
 });
-test('a signature chain id that is not a canonical decimal string is refused when the adapter is made', () => {
-  for (const signatureChainId of ['', '07', 'x7', 7, null]) assert.throws(() => readbackFixture({ adapter: { signatureChainId } }), { name: 'TypeError', message: /signatureChainId/ }, String(signatureChainId));
+test('readback verifies nothing when the node network answer is malformed or has an unsafe chain id', async () => {
+  for (const networkInfo of [null, {}, { forks: {} }, activeFork(null), activeFork(-1), activeFork(2 ** 53), activeFork('7'), { forks: { osDenomination: { activated: true }, signatureDomain: { activated: 'yes' } } }]) {
+    const f = readbackFixture({ networkInfo });
+    await assert.rejects(read(f), error => error.code === 'indeterminate' && /getNetworkInfo|NUMBER-OUTSIDE/.test(error.message), JSON.stringify(networkInfo));
+  }
+});
+test('readback verifies nothing when the node network answer cannot be read', async () => {
+  const unreachable = readbackFixture({ respond: async (url, init) => { if (asksNetworkInfo(init)) throw new Error('TEST node unreachable'); } });
+  await assert.rejects(read(unreachable), error => error.code === 'indeterminate');
+  const refused = readbackFixture({ respond: async (url, init) => { if (asksNetworkInfo(init)) return new Response('TEST refused', { status: 500, headers: { 'x-dacs-simulation': 'fixture' } }); } });
+  await assert.rejects(read(refused), error => error.code === 'indeterminate');
+});
+test('an adapter made with a caller-supplied signature chain id is refused', () => {
+  for (const signatureChainId of ['7', '', 7, null]) assert.throws(() => readbackFixture({ adapter: { signatureChainId } }), { name: 'TypeError', message: /getNetworkInfo/ }, String(signatureChainId));
 });
 test('an empty name index cannot prove authenticated absence', async () => {
   const f = readbackFixture(); f.state.rows = [];

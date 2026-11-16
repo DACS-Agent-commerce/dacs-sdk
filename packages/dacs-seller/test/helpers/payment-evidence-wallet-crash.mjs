@@ -7,6 +7,7 @@
 import { createPaymentEvidenceWalletJournal } from '../../src/index.mjs';
 import DatabaseSync from 'better-sqlite3';
 import { evidenceInput, walletChain } from './payment-evidence-wallet-chain.mjs';
+import { readInactiveForkNetworkInfo } from './network-info.mjs';
 
 const [path, chainFile, cut] = process.argv.slice(2);
 const node = walletChain({ file: chainFile });
@@ -22,7 +23,8 @@ const journal = createPaymentEvidenceWalletJournal({ path,
   signCreate: async (input) => { const answer = await node.signCreate(input); if (cut === 'signed') await die(); return answer; },
   broadcast: async ({ txHash }) => { if (cut === 'kept') await die(); node.land(txHash); if (cut === 'sent') await die(); },
   readAccountNonce: async () => node.accountNonce(),
-  readTransactionState: async ({ txHash }) => node.transactionState(txHash) });
+  readTransactionState: async ({ txHash }) => node.transactionState(txHash),
+  readNetworkInfo: readInactiveForkNetworkInfo });
 await journal.anchorEvidence(evidenceInput(node.claim));
 // Every cut kills the process before this line.
 process.exit(3);

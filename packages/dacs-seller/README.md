@@ -492,7 +492,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
   `createDeliverableWalletJournal({ path, signCreate, broadcast,
-  readAccountNonce, readTransactionState })` is that journal, built as
+  readAccountNonce, readTransactionState, readNetworkInfo })` is that journal, built as
   `createPaymentEvidenceWalletJournal` is (the same primitives, checks and
   nonce rule, in its own file with its own `journalId`; a file made for the
   other kind is refused). Both its operations, `submitAuthorized(input,
@@ -559,7 +559,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
     the cause).
 
   `createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
-  readAccountNonce, readTransactionState })` gives both functions from the
+  readAccountNonce, readTransactionState, readNetworkInfo })` gives both functions from the
   operator's wallet primitives. `signCreate(input)` signs, and does not send,
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
   `signedTransaction` is the JSON of exactly the public signed projection
@@ -576,13 +576,18 @@ per-client limiter so one client cannot exhaust the shared request budget.
   evidence) at this logical address, with `to` and the operation's
   `storageAddress` the address the writer, the program name and the nonce
   derive, from the writer's address (`from` and `from_ed25519_address`), with
-  the writer's Ed25519 signature as `0x` and lower-case hex, over the hash or,
-  when the journal is given `signatureChainId`, over
-  `demos-tx:v1:<signatureChainId>:<hash>`. `signatureChainId` is the node's
-  chain id as a decimal string, taken from the seller's own network
-  configuration; without it only the bare hash is accepted, and any other
-  message is refused. `createNativePaymentEvidenceConsumer` takes the same
-  option for the readback.
+  the writer's Ed25519 signature as `0x` and lower-case hex, over the message
+  the node's `getNetworkInfo` answer selects: the bare hash while the node's
+  `signatureDomain` fork is inactive (or absent), and
+  `demos-tx:v1:<chainId>:<hash>` once it is active, where `chainId` is the
+  answer's safe nonnegative integer `chainId`. Any other message is refused,
+  and so is a bare-hash signature under an active fork. The journal reads the
+  answer through `readNetworkInfo({ signal })` on every call; a read that fails,
+  times out or answers anything unreadable refuses the call
+  (`wallet_signature_domain_unreadable`) before anything is signed or sent. A
+  `signatureChainId` option is refused with a `TypeError`. The SR-2 readback of
+  `createNativePaymentEvidenceConsumer` reads the same answer from its own node
+  on each authentication and answers `indeterminate` when it cannot be read.
   Its fee is the node's to set, up to a ceiling of 50 DEM for the whole debit
   of the write: the network, rpc and additional fee plus the storage and gas
   burns, summed in OS (whole DEM numbers before the node's denomination fork,

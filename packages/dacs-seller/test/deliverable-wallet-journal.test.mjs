@@ -18,6 +18,7 @@ import { deliverableJournalFor } from '../src/dacs/deliverable-wallet-journal.mj
 import { createNativeDemDeliveryCapability, submitNativeDemDelivery } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { deliverableInput, keepUncheckedCreate, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
 import { sdkSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
+import { readInactiveForkNetworkInfo } from './helpers/network-info.mjs';
 
 // The journal's two operations as the agent calls them: for the journal it
 // recorded for the order, with an authorization (by default, one that holds).
@@ -49,7 +50,8 @@ function wallet(t) {
       if (fault !== 'drop') node.land(txHash);
     },
     readAccountNonce: async () => { hooks.duringNonce?.(); return { nonce: node.accountNonce(), blockHeight: node.accountNonce() }; },
-    readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.accountNonce() }) });
+    readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.accountNonce() }),
+    readNetworkInfo: readInactiveForkNetworkInfo });
   return { dir, path, node, calls, faults, hooks, open, input: (extra) => deliverableInput(node.claim, extra) };
 }
 

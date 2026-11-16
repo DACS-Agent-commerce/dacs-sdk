@@ -18,7 +18,7 @@
 // never `applied`; only successful execution is `applied`.
 //
 // createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
-//   readAccountNonce, readTransactionState, now, readTimeoutMs, signatureChainId }):
+//   readAccountNonce, readTransactionState, readNetworkInfo, now, readTimeoutMs }):
 //  - path: absolute path of the journal's SQLite file (created 0600 when
 //    missing), in a directory owned by this user that no one else can write,
 //    reached through no symbolic link and no ancestor others can write (a
@@ -38,9 +38,10 @@
 //    at input.logicalAddress, with `to` and the operation's storageAddress the
 //    address the writer, the program name and the nonce derive, from the
 //    writer's address (`from` and `from_ed25519_address`), with the writer's
-//    Ed25519 signature as 0x and lower-case hex, over the hash or, when
-//    signatureChainId is set, over `demos-tx:v1:<signatureChainId>:<hash>`
-//    (transaction-signature.mjs). Its amount is 0,
+//    Ed25519 signature as 0x and lower-case hex, over the message the node's
+//    signature domain selects (signature-domain.mjs): the hash while the node's
+//    signature-domain fork is inactive, `demos-tx:v1:<chain id>:<hash>` once it
+//    is active. Its amount is 0,
 //    its ACL public and its storage on-chain; its node fee and execution edits
 //    are exactly those demosdk 4.0.16 sign writes (`transaction_fee`: network
 //    and rpc fee, no additional fee or rpc address; `gcr_edits`: the storage fee
@@ -66,9 +67,14 @@
 //    transaction index (including failed transactions) on the same chain.
 //    Its coverage must reach the nonce snapshot's blockHeight. A bare nonce
 //    or an unfenced absence keeps the original signed CREATE alive.
-//  - signatureChainId: the node's chain id as a decimal string, from the seller's
-//    own network configuration. Left out, only a signature over the bare hash is
-//    accepted; a value that is not a decimal string is refused (TypeError).
+//  - readNetworkInfo({ signal }) -> the configured node's getNetworkInfo answer
+//    ({ forks: { osDenomination, signatureDomain? }, chainId }). It is read on
+//    every call, before anything is signed, sent or decided, and every kept and
+//    new CREATE is checked against the domain it selects. A read that fails, times
+//    out or answers anything unreadable refuses the call (wallet_signature_domain_unreadable)
+//    and nothing is signed or sent; a kept CREATE signed under the other domain is
+//    refused as another evidence (wallet_journal_conflict) and not sent again. A
+//    `signatureChainId` option is refused (TypeError): no caller names the domain.
 //  Each read, signCreate and broadcast is given readTimeoutMs (default 10 s) to
 //  settle, and is passed { signal } to stop at the deadline. A signCreate that
 //  does not (wallet_sign_timeout) keeps nothing and frees the journal; a
@@ -107,7 +113,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { addressForClaim } from './demos-claims.mjs';
 import { WRITE_FEE_CEILING_OS } from './effect-boundary.mjs';
-import { assertSignatureChainId, verifyTransactionSignature } from './transaction-signature.mjs';
+import { assertNoCallerSignatureDomain, signatureDomainFromNetworkInfo } from './signature-domain.mjs';
+import { verifyTransactionSignature } from './transaction-signature.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
 
@@ -228,7 +235,7 @@ function permitted(authorize) {
   if (typeof answer?.then === 'function') answer.then(undefined, () => {});
   if (answer !== true) throw Object.assign(new Error(`the wallet effect is no longer authorized${answer instanceof Error ? `: ${reason(answer)}` : ''}`), { code: 'wallet_not_authorized' });
 }
-function signedCreateProblem(answer, input, signatureChainId) {
+function signedCreateProblem(answer, input, signatureDomain) {
   let signed;
   try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
   const content = signed?.content, op = content?.data?.[1];
@@ -247,7 +254,7 @@ function signedCreateProblem(answer, input, signatureChainId) {
       || metadata.contentHash !== input.receiptContentHash || metadata.envelopeHash !== sha256Hex(canonicalize(input.artifact))
       || bindingProblem(metadata, input)) return `is not this ${input.artifactKind === 'Deliverable' ? 'Deliverable' : 'evidence'}'s storage CREATE`;
   if (content.from !== from || content.from_ed25519_address !== from || signed.signature.type !== 'ed25519' || typeof signed.signature.data !== 'string'
-      || !SIGNATURE.test(signed.signature.data) || !verifyTransactionSignature({ address: from, hash: answer.txHash, signature: signed.signature.data, signatureChainId })) return 'is not signed by the writer';
+      || !SIGNATURE.test(signed.signature.data) || !verifyTransactionSignature({ address: from, hash: answer.txHash, signature: signed.signature.data, domain: signatureDomain })) return 'is not signed by the writer';
   const storageAddress = deriveStorageAddress(from, programName, answer.nonce, '');
   if (content.to !== storageAddress || op.storageAddress !== storageAddress) return `is not at the storage address its writer, name and nonce derive (${storageAddress})`;
   if (nonceOf(content.timestamp, 0) === null) return 'has no valid timestamp';
@@ -281,12 +288,13 @@ function assertPrivateDirectory(directory) {
  * readSignedProjection, journalId and close. Throws TypeError for an unusable
  * option, path or file.
  */
-export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000, signatureChainId } = {}) {
-  assertSignatureChainId(signatureChainId);
+export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000, readNetworkInfo, signatureChainId } = {}) {
+  assertNoCallerSignatureDomain({ signatureChainId });
   if (!TABLE_NAME.test(table)) throw new TypeError('the wallet journal table must be named for its kind of artifact');
   if (typeof path !== 'string' || !isAbsolute(path)) throw new TypeError('the wallet journal path must be absolute');
   if (typeof signCreate !== 'function' || typeof broadcast !== 'function' || typeof now !== 'function') throw new TypeError('the wallet journal needs signCreate, broadcast and now functions');
   if (typeof readAccountNonce !== 'function' || typeof readTransactionState !== 'function') throw new TypeError('the wallet journal needs readAccountNonce and readTransactionState, to tell a kept CREATE that can no longer be executed');
+  if (typeof readNetworkInfo !== 'function') throw new TypeError('the wallet journal needs readNetworkInfo, the node\'s getNetworkInfo answer, to know which message a transaction signature covers');
   if (!Number.isSafeInteger(readTimeoutMs) || readTimeoutMs < 1) throw new TypeError('the wallet journal readTimeoutMs must be a positive integer');
   assertPrivateDirectory(dirname(path));
   try { closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)); }
@@ -358,7 +366,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
 
   const rows =(logicalAddress) => db.prepare(`SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM ${table} WHERE logical_address = ? ORDER BY nonce`).all(logicalAddress);
   // One evidence per address: a question about other bytes at a kept address is refused.
-  const keptFor = (input) => {
+  const keptFor = (input, signatureDomain) => {
     if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const kept = rows(input.logicalAddress);
     // A kept CREATE whose whole debit is above the ceiling is never sent again, and nothing more is signed for its address.
@@ -366,7 +374,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       const debitOs = heldDebitOs(row);
       if (debitOs !== null) throw Object.assign(new Error(`the wallet journal keeps the signed CREATE ${row.tx_hash}, whose debit of ${debitOs} OS (fee, storage fee and gas) is above ${FEE_CEILING}; it is held and never broadcast again`), { code: 'write-fee-cap' });
     }
-    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input, signatureChainId))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
+    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input, signatureDomain))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     const live = kept.find((row) => row.superseded_at === null);
     return { live: live ? { signedTransaction: live.signed_transaction, txHash: live.tx_hash, nonce: Number(live.nonce) } : null, highestNonce: kept.length ? Number(kept.at(-1).nonce) : 0 };
   };
@@ -424,18 +432,26 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     } catch (error) { if (error.code === 'SQLITE_BUSY') return undefined; throw error; }
     return live ? { txHash: live.tx_hash, checked: await fate({ txHash: live.tx_hash, nonce: Number(live.nonce) }) } : undefined;
   }
-  // Runs `change(observed)` under the writer lock, after the node was read for it.
+  // The signature domain the node's getNetworkInfo answer selects, read on each call
+  // (a fork can activate while a CREATE is kept). Anything but a readable answer
+  // within the deadline refuses the call before it signs, sends or decides anything.
+  async function readSignatureDomain() {
+    try { return signatureDomainFromNetworkInfo(await withDeadline((signal) => readNetworkInfo({ signal }), () => new Error('timed out'))); }
+    catch (cause) { throw Object.assign(new Error(`the node's signature domain could not be read: ${reason(cause)}`, { cause }), { code: 'wallet_signature_domain_unreadable' }); }
+  }
+  // Runs `change({ signatureDomain, observedFate })` under the writer lock, after the node was read for it.
   async function lockedAfterObserving(input, change) {
-    const observed = await observeFate(input);
-    return locked(() => change(observed));
+    const signatureDomain = await readSignatureDomain();
+    const observedFate = await observeFate(input);
+    return locked(() => change({ signatureDomain, observedFate }));
   }
   // The live kept CREATE after its fate is known; one that can no longer be
   // included is superseded (compare-and-swap on its live row) and none is live.
-  // `observed` is used only for the very CREATE it was read for.
+  // `observed.observedFate` is used only for the very CREATE it was read for.
   async function liveFor(input, observed) {
-    const { live, highestNonce } = keptFor(input);
+    const { live, highestNonce } = keptFor(input, observed.signatureDomain);
     if (!live) return { live: null, highestNonce };
-    const checked = observed?.txHash === live.txHash ? observed.checked : await fate(live);
+    const checked = observed.observedFate?.txHash === live.txHash ? observed.observedFate.checked : await fate(live);
     if (checked.alive) return { live, highestNonce, applied: checked.applied, reason: checked.reason };
     const swap = db.prepare(`UPDATE ${table} SET superseded_at = ? WHERE logical_address = ? AND tx_hash = ? AND superseded_at IS NULL`).run(now(), input.logicalAddress, live.txHash);
     if (swap.changes !== 1) throw Object.assign(new Error('the wallet journal row changed while it was checked'), { code: 'wallet_journal_conflict' });
@@ -449,7 +465,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
         () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
       if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || Buffer.byteLength(answer.signedTransaction, 'utf8') > MAX_SIGNED_TRANSACTION_BYTES
           || typeof answer.txHash !== 'string' || !TX_HASH.test(answer.txHash) || nonceOf(answer.nonce, 1) === null) throw Object.assign(new Error('signCreate answered no signed transaction, hash and nonce'), { code: 'wallet_sign_invalid' });
-      const problem = signedCreateProblem(answer, input, signatureChainId);
+      const problem = signedCreateProblem(answer, input, observed.signatureDomain);
       if (problem) throw Object.assign(new Error(`signCreate's signed transaction ${problem}`), { code: 'wallet_sign_invalid' });
       // A new signature must be able to land where the kept ones cannot.
       if (answer.nonce <= highestNonce) throw Object.assign(new Error(`signCreate answered nonce ${answer.nonce}, not above the kept nonce ${highestNonce}`), { code: 'wallet_sign_invalid' });
@@ -479,7 +495,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return attempt != null && attempt.outcome !== PRE_SIGNING_FAILURE && rows(input.logicalAddress).length === 0;
   }
 
-  function inspectAttempt(input,attempt,ownerChecked=false,acceptedLegacy=false) {
+  function inspectAttempt(input,attempt,signatureDomain,ownerChecked=false,acceptedLegacy=false) {
     const named=attempt?.answer?.txHash;
     const sent=attempt?.outcome==='sent'||['submitted','applied'].includes(attempt?.answer?.status);
       if ((!ownerChecked || named !== undefined || sent) && attemptIsUnbound({ attempt, named, sent }, input)) {
@@ -487,7 +503,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       }
       if (typeof named === 'string'&&!acceptedLegacy) {
         const namedRow = db.prepare(`SELECT superseded_at FROM ${table} WHERE logical_address = ? AND tx_hash = ?`).get(input.logicalAddress, named);
-        const retained = keptFor(input);
+        const retained = keptFor(input, signatureDomain);
         if (namedRow.superseded_at !== null && retained.live) {
           throw Object.assign(new Error('the named CREATE was superseded; reconcile the live successor separately'), { code: 'wallet_journal_stale_attempt' });
         }
@@ -518,7 +534,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       const accepted=db.prepare('SELECT value FROM journal_meta WHERE key = ?').get(key);
       // Remember an accepted legacy name in the same commit as its successor:
       // a lost broadcast answer cannot leave the caller naming a stale row.
-      inspectAttempt(input,attempt,true,accepted?.value===binding);
+      inspectAttempt(input,attempt,observed.signatureDomain,true,accepted?.value===binding);
       db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
       return prepareAnchor(input,observed,permit);
     });
@@ -533,7 +549,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
     const attempt = input?.attempt, named = attempt?.answer?.txHash;
     const kept = await lockedAfterObserving(input, async (observed) => {
-      inspectAttempt(input,attempt);
+      inspectAttempt(input,attempt,observed.signatureDomain);
       return liveFor(input, observed);
     });
     return answerFor(input, named, kept);
