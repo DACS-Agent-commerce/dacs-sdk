@@ -7,6 +7,7 @@ import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { agreementRequest, api, mnemonicBytes, ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
 import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
 import { gateWorld, inPass, openPass, sellerPublications } from './helpers/effect-gate-world.mjs';
+import { confirmThroughFacade, sha, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 import { recordingApproval } from './helpers/payment-evidence-approval-double.mjs';
 import { installNoEgress } from './helpers/no-egress.mjs';
@@ -316,6 +317,31 @@ test("a seller storage CREATE refused while a stored evidence CREATE holds the s
     const sent = await next(w);
     assert.equal(sent.success, true, `${name}: ${JSON.stringify(sent)}`); assert.equal(w.node.broadcasts.length, 1, `the ${name} goes out`);
   }
+});
+
+test("the transaction a reservation holds is not refused when it is sent through the native transport, while another write at its nonce is", async t => {
+  const w = await adapterWorld(t), wallet = await signingWallet(w), signer = wallet.address, tx = signedTransaction(wallet, w.request.params[0]);
+  const requestText = JSON.stringify({ TEST: 'reserved native send' }), holder = deadProcess(w);
+  let held = (await holder.reserve({ signer, operation: 'native', operationKey: 'TEST-reserved-send', readChainNonce: async () => 0 })).reservation;
+  assert.equal(held.active.nonce, tx.content.nonce);
+  held = await holder.bindApprovalIntent(held, requestText); held = await holder.bindApproval(held, { ledgerId: null, requestText });
+  await holder.bindSigned(held, { txHash: tx.hash, projectionText: JSON.stringify(tx), inputDigest: sha('TEST-input') });
+  let at = T0;
+  const send = payload => { at += 1000; w.clock.now = () => at; return inPass(w, async () => {
+    const { answer: confirmed, lease } = await confirmThroughFacade(w, wallet, payload);
+    try {
+      await w.session.transport.binding({ phase: 'broadcast', address: signer, leaseId: lease.leaseId, hash: payload.hash });
+      const identity = `ed25519:${signer}`, timestamp = String(w.clock.now() + 2);
+      const headers = { identity, timestamp, signature: wallet.signBytes(Buffer.from(sha(`${identity}:${timestamp}`))).toString('hex') };
+      return await w.session.transport.rpc({ method: 'execute', params: [{ extra: 'broadcastTx', data: confirmed }] }, headers);
+    } finally { await w.session.transport.binding({ phase: 'release', address: signer, leaseId: lease.leaseId }); }
+  }); };
+  const other = signedTransaction(wallet, buildNativeTransferPayload({ from: signer, to: `0x${'3'.repeat(64)}`, amountOs: '2500000000', nonce: tx.content.nonce, timestamp: T0, encoding: 'os-string' }));
+  await assert.rejects(send(other), { code: 'signer_lane_busy' });
+  assert.equal(w.node.broadcasts.length, 0, 'the other write sent nothing');
+  const answer = await send(tx);
+  assert.equal(answer.result, 200, JSON.stringify(answer));
+  assert.deepEqual(w.node.broadcasts.map(sent => sent.hash), [tx.hash], 'the reserved transaction was sent once');
 });
 
 test("a native write and an evidence CREATE started together never take the same nonce", async t => {

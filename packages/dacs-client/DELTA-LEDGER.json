@@ -10385,6 +10385,22 @@
           "after": "317ee818bdbf709601dc8452f3feb986b14066b2"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF let the transaction a stored reservation holds through the native transport's reservation check",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "110e34c585c8d6f91c6dfa58886a70761956f5fe",
+          "after": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "826cacbcdce7c240d74c70e9cee597f92ed84d78",
+          "after": "b9ae1416dbbdb87fa8ad3b55cd22f09ddeebee9a"
+        }
+      ]
     }
   ]
 }
