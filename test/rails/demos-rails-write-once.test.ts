@@ -47,8 +47,9 @@ function confirmation(transaction: { hash: string; content: Record<string, unkno
  * as many times as `failures` says, later ones succeed. The node never reports
  * a transaction as included.
  */
-async function startNode(failures: Record<string, number>) {
+async function startNode(failures: Record<string, number>, recordsTransfers = false) {
   const keys: string[] = [];
+  let broadcast: { hash: string; content: Record<string, unknown> } | undefined;
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -76,7 +77,12 @@ async function startNode(failures: Record<string, number>) {
         "nodeCall:getNetworkInfo": () => ({ forks: { osDenomination: { activated: true } } }),
         "nodeCall:getAddressNonce": () => 0,
         "nodeCall:getTransactionStatus": () => ({ state: "pending" }),
-        "nodeCall:broadcastNativeTransaction": () => ({ success: true, blockNumber: 7 }),
+        "nodeCall:broadcastNativeTransaction": () => {
+          broadcast = content.data.transaction;
+          return { success: true, blockNumber: 7 };
+        },
+        "nodeCall:getTxByHash": () =>
+          recordsTransfers && broadcast ? { ...broadcast, status: "confirmed" } : null,
       };
       const response = replies[key]?.() ?? {};
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -108,6 +114,41 @@ afterEach(async () => {
   );
 });
 
+/** One 1000-unit payment through the real pay-d402 rail against `node`. */
+async function settleThroughD402Rail(node: { url: string }) {
+  // demosdk's D402 payment leaves `to` empty, which its own signer refuses;
+  // set it so the payment reaches the broadcast.
+  const createPayment = D402Client.prototype.createPayment;
+  vi.spyOn(D402Client.prototype, "createPayment").mockImplementation(
+    async function (
+      this: D402Client,
+      requirement: D402PaymentRequirement,
+      options?: { nonce?: number },
+    ) {
+      const payment = await createPayment.call(this, requirement, options);
+      payment.content.to = requirement.recipient;
+      return payment;
+    },
+  );
+  const rail = await createPayD402Rail({
+    rpc: node.url,
+    secret: SECRET,
+    acknowledgeExperimental: true,
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({ recipient: RECIPIENT, amount: "1000", resourceId: "res-1" }),
+        { status: 402 },
+      ),
+  });
+  const result = await rail.settle({
+    paywallUrl: "http://127.0.0.1/paywalled",
+    recipient: RECIPIENT,
+    amount: "1000",
+    network: "demos",
+  });
+  return { rail, result };
+}
+
 describe("Demos payment rails send a transfer once", () => {
   it("pay-dem broadcasts once when the node answers 502 and reports no inclusion", async () => {
     const node = await startNode({ "execute:broadcastTx": 1 });
@@ -134,37 +175,8 @@ describe("Demos payment rails send a transfer once", () => {
 
   it("pay-d402 broadcasts once when the node answers 502 and reports not ok", async () => {
     const node = await startNode({ "nodeCall:broadcastNativeTransaction": 1 });
-    // demosdk's D402 payment leaves `to` empty, which its own signer refuses;
-    // set it so the payment reaches the broadcast.
-    const createPayment = D402Client.prototype.createPayment;
-    vi.spyOn(D402Client.prototype, "createPayment").mockImplementation(
-      async function (
-        this: D402Client,
-        requirement: D402PaymentRequirement,
-        options?: { nonce?: number },
-      ) {
-        const payment = await createPayment.call(this, requirement, options);
-        payment.content.to = requirement.recipient;
-        return payment;
-      },
-    );
-    const rail = await createPayD402Rail({
-      rpc: node.url,
-      secret: SECRET,
-      acknowledgeExperimental: true,
-      fetchImpl: async () =>
-        new Response(
-          JSON.stringify({ recipient: RECIPIENT, amount: "1000", resourceId: "res-1" }),
-          { status: 402 },
-        ),
-    });
 
-    const result = await rail.settle({
-      paywallUrl: "http://127.0.0.1/paywalled",
-      recipient: RECIPIENT,
-      amount: "1000",
-      network: "demos",
-    });
+    const { rail, result } = await settleThroughD402Rail(node);
 
     expect(node.count("nodeCall:broadcastNativeTransaction")).toBe(1);
     expect(result).toEqual({
@@ -174,5 +186,32 @@ describe("Demos payment rails send a transfer once", () => {
       payer: rail.address,
       payee: RECIPIENT,
     });
+  });
+
+  it("pay-d402 reports ok when the node's record shows the transfer", async () => {
+    const node = await startNode({}, true);
+
+    const { rail, result } = await settleThroughD402Rail(node);
+
+    expect(node.count("nodeCall:broadcastNativeTransaction")).toBe(1);
+    expect(node.count("nodeCall:getTxByHash")).toBe(1);
+    expect(result).toEqual({
+      ok: true,
+      txHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      chainId: "demos",
+      payer: rail.address,
+      payee: RECIPIENT,
+    });
+  });
+
+  it("pay-d402 is not ok when the node acknowledges the broadcast but records no transfer", async () => {
+    const node = await startNode({});
+
+    const { result } = await settleThroughD402Rail(node);
+
+    expect(node.count("nodeCall:broadcastNativeTransaction")).toBe(1);
+    expect(node.count("nodeCall:getTxByHash")).toBe(1);
+    expect(result.ok).toBe(false);
+    expect(result.txHash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
