@@ -10539,6 +10539,22 @@
           "after": "6edf96300eaead3ecf369f64ed1f626f1ac4357f"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF job authority answers participants only for the session wallet's own saved purchase",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/authority-reader.mjs",
+          "before": "ae87ec1f5c387c0b12d0e7f76767c11897aa74fc",
+          "after": "8a02deae5ec2dd3f65b7b63344fcd2714c01d901"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": "a69baa3eab6d7bd8bee037cc43fb492a79e99571",
+          "after": "1c3cb596974a9ac3693411bd157aa095000a3cbc"
+        }
+      ]
     }
   ]
 }
