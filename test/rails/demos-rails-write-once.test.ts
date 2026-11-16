@@ -133,7 +133,15 @@ describe("Demos payment rails send a transfer once", () => {
   });
 
   it("pay-d402 broadcasts once when the node answers 502 and reports not ok", async () => {
-    const node = await startNode({ "nodeCall:broadcastNativeTransaction": 1 });
+    const node = await startNode({ "execute:broadcastTx": 1 });
+    // demosdk waits up to a minute for inclusion after a broadcast; the rail
+    // keeps that default, so shorten it here.
+    const settle = D402Client.prototype.settle;
+    vi.spyOn(D402Client.prototype, "settle").mockImplementation(
+      async function (this: D402Client, payment, options) {
+        return settle.call(this, payment, { ...options, timeoutMs: 300, pollIntervalMs: 20 });
+      },
+    );
     // demosdk's D402 payment leaves `to` empty, which its own signer refuses;
     // set it so the payment reaches the broadcast.
     const createPayment = D402Client.prototype.createPayment;
@@ -166,7 +174,8 @@ describe("Demos payment rails send a transfer once", () => {
       network: "demos",
     });
 
-    expect(node.count("nodeCall:broadcastNativeTransaction")).toBe(1);
+    expect(node.count("execute:confirmTx")).toBe(1);
+    expect(node.count("execute:broadcastTx")).toBe(1);
     expect(result).toEqual({
       ok: false,
       txHash: expect.stringMatching(/^[0-9a-f]{64}$/),
