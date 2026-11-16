@@ -582,7 +582,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `demos-tx:v1:<chainId>:<hash>` once it is active, where `chainId` is the
   answer's safe nonnegative integer `chainId`. Any other message is refused,
   and so is a bare-hash signature under an active fork. The journal reads the
-  answer through `readNetworkInfo({ signal })` on every call; a read that fails,
+  answer through `readNetworkInfo({ signal })` on every call (like the other
+  wallet reads it is given `readTimeoutMs`, and its reader limits the size of
+  the reply); a read that fails,
   times out or answers anything unreadable refuses the call
   (`wallet_signature_domain_unreadable`) before anything is signed or sent. A
   `signatureChainId` option is refused with a `TypeError`. The SR-2 readback of

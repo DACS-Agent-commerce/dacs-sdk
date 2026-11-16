@@ -31,7 +31,7 @@ import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 import { mixedAuthentication, wireBuyer } from './helpers/wire-buyer.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
-import { readInactiveForkNetworkInfo } from './helpers/network-info.mjs';
+import { INACTIVE_FORK_NETWORK_INFO, readInactiveForkNetworkInfo } from './helpers/network-info.mjs';
 import { privateModule, privateModuleUrl } from './helpers/private-module.mjs';
 import { createNativeRetrySeam } from './helpers/native-retry-seam.mjs';
 import { testNetwork, FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
@@ -100,6 +100,7 @@ function demosNode(now = () => NOW) {
   const nodeCall = (message, data) => {
     switch (message) {
       case 'getBlockByNumber': return clone(blocks[data.blockNumber] ?? null);
+      case 'getNetworkInfo': return clone(INACTIVE_FORK_NETWORK_INFO);
       case 'getTransactionStatus': { const tx = txs.get(String(data.hash).toLowerCase()); return tx ? { state: 'included', blockNumber: tx.blockNumber } : { state: 'not-found' }; }
       case 'getTxByHash': return clone(txs.get(String(data.hash).toLowerCase()) ?? null);
       case 'searchStoragePrograms': return faults.indexEmpty(data.query) ? []
