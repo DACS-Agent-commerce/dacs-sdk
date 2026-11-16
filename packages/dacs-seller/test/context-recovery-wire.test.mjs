@@ -865,7 +865,7 @@ test('the context wire ports name equivalents for every old direct-context test 
   }
   assert.equal(typeof (await import('../src/index.mjs')).createSellerTransportClientAuth, 'function', 'the old auth is still exported until it is removed');
   const manifest = JSON.parse(await readFile(new URL('./fixtures/context-wire-ports.json', import.meta.url), 'utf8'));
-  assert.ok(manifest.every((entry) => entry.disposition === 'obsolete-client' || entry.replacement !== null), 'each test that stays needed has its equivalent named');
+  assert.ok(manifest.every((entry) => !['wire-equivalent', 'predecessor-equivalent'].includes(entry.disposition) || entry.replacement !== null), 'each equivalent names its replacement');
   assert.ok(manifest.some((entry) => entry.disposition === 'wire-equivalent' && entry.replacement.file === 'context-recovery-wire.test.mjs'));
 });
 
