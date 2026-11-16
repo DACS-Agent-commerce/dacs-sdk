@@ -11,7 +11,8 @@
 //
 // Order of one write: `reserve` claims the nonce, `bindApprovalIntent` stores the exact approval request text before the
 // approval is prepared, `bindApproval` attaches the approval ledger's id (a null manual id is kept by this instance only),
-// and `bindSigned` stores the signed bytes. The caller sends the bytes only after `bindSigned` returns them.
+// and `bindSigned` stores the signed bytes. The caller sends the bytes only after `bindSigned` returns them. If the
+// approval ends while signed bytes are kept, `renewApproval` stores the id of a replacement for the same request text.
 //
 // A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes and moves the floor past
 // the nonce; `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
@@ -92,7 +93,7 @@ function validateSigned(signed, signer, nonce) {
  * network, chain identity and pin version every record carries. `openApproval(requestText)` resolves null or the one open
  * `{ledgerId, requestText}` for those exact bytes; `settleApproval(ledgerId, outcome, reason)` settles by id and is idempotent
  * for the same outcome. Both refuse until supplied. Returns `reserve`, `bindApprovalIntent`, `bindApproval`, `bindSigned`,
- * `retireUnsigned`, `consume`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
+ * `renewApproval`, `retireUnsigned`, `consume`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
  * Throws `signer_reservation_invalid` for a malformed record or argument, `signer_reservation_stale` for a handle that is
  * not the stored record, `signer_reservation_uncertain` when a failed write cannot be read back, `signer_lane_busy`,
  * `invalid_nonce`, `signer_retirement_unfinished`, `approval_lookup_refused`, `signer_settlement_failed` and `signer_execution_unproven`; journal errors such
@@ -226,6 +227,19 @@ export function createSignerReservations({ journal, pins, openApproval = refused
     });
   }
 
+  /**
+   * Replaces the approval id of signed bytes with the id of another authorization for the same exact request text, after the
+   * earlier one ended, in one write; the execution then settles the new id. Refuses a reservation without signed bytes, a null
+   * id and another request text. The same id again changes nothing.
+   */
+  async function renewApproval(reservation, approval) {
+    check(isText(approval?.ledgerId), 'invalid approval');
+    return update(reservation, ({ active }) => {
+      check(active.signed !== null && active.approvalIntent === approval.requestText, 'renewal needs signed bytes and the bound request text');
+      return active.approvalId === approval.ledgerId ? UNCHANGED : { ...active, approvalId: approval.ledgerId };
+    });
+  }
+
   async function settle(ledgerId, outcome, reason) {
     if (ledgerId === null) return;
     try { await settleApproval(ledgerId, outcome, reason); } catch (cause) { fail('signer_settlement_failed', cause); }
@@ -288,5 +302,5 @@ export function createSignerReservations({ journal, pins, openApproval = refused
       if (record.active?.signed === null) await retireUnsigned(record);
     }
   }
-  return Object.freeze({ reserve, bindApprovalIntent, bindApproval, bindSigned, retireUnsigned, consume, recover, current: readRecord });
+  return Object.freeze({ reserve, bindApprovalIntent, bindApproval, bindSigned, renewApproval, retireUnsigned, consume, recover, current: readRecord });
 }
