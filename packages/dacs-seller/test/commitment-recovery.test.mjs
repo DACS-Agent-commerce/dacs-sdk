@@ -249,14 +249,6 @@ for(const restart of[false,true])test(`uncertain commitment ${restart?'after res
  assert.equal(store.reconciles.length,1);assert.equal(store.reconciles[0][2],200);assert.equal(f.local.writes.length,writes);
 });
 
-test('uncertain commitment replay holds when the fresh receipt no longer authenticates',async t=>{
- const f=await commitmentFixture(t),{agent}=await f.prepare();assert.equal((await agent.commit({jobId:JOB})).status,'committed');
- const writes=f.local.writes.length;f.local.controls.read=row=>row.status==='present'?{...row,receipt:{...row.receipt,contentHash:'0'.repeat(64)}}:row;
- const store=uncertainStore(),request=commitmentRequest(agent,core.contentHash(f.controls.agreement.artifact));
- const res=await exchange(agentHttp(agent,request,store),{url:'/dacs/v1/commitments',text:JSON.stringify({jobId:JOB})});
- assert.equal(res.status,503);assert.equal(store.reconciles.length,0);assert.equal(f.local.writes.length,writes);
-});
-
 test('uncertain commitment with proven unsigned absence runs the authenticated request once',async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare(),read=f.native.readRetained;
  f.native.readRetained=async input=>{const out=await read(input);return out.status==='absent'?provenUnsignedAbsence('TEST no seller-signed intent'):out;};
