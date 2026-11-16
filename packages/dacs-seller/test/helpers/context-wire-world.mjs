@@ -36,10 +36,10 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const { state, calls, agent, buyer, seller, other } = w;
   const now = () => state.time;
   state.mono = 0;
-  const counts = { validations: 0, holds: [], releases: [], resolves: 0, vetWrites: 0, agreementSignatures: 0, reserveAcquisitions: 0 };
+  const counts = { validations: 0, holds: [], releases: [], resolves: 0, vetWrites: 0, agreementSignatures: 0, reserveAcquisitions: 0, sourceReads: 0 };
   // What a test can bend: the presentation admission, the policy hold, the provider's steps and answer, the reservation (`recover` answers a recovery
   // effect the journal never issued), the wire completion (`nullEndFails`, `cutAfterPublish`), the acceptance (`failAcceptance`) and the kind of effect evidence compensation reads (`evidenceKind`).
-  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false, evidenceKind: 'no-intent' };
+  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, source: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false, evidenceKind: 'no-intent' };
   const fakeEffects = new Set(), completions = [];
   // A presentation's profile admission: the agent's own, here a counting stand-in that grants unless a test says otherwise.
   agent.admitSessionPresentation = async ({ jobId, bundle, nonce }) => {
@@ -94,7 +94,13 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     }
     return behaviour.answer ? behaviour.answer(input) : presentAnswer(input);
   };
-  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer: async () => null, resumableBuyer: async () => null,
+  // The passive read of what the provider retained: by default the answer it gave, which a test replaces to change, lose or fail the source.
+  const recoverBuyer = async (input, options) => {
+    counts.sourceReads++;
+    if (behaviour.source) return behaviour.source(input, options);
+    return behaviour.answer ? behaviour.answer(input) : presentAnswer(input);
+  };
+  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer, resumableBuyer: async () => null,
     bindRetainedScope: () => ({ sellerBundlePresentedBy: sellerClaim }) });
   const provider = demDeliveryContextHost(capability);
 

@@ -504,19 +504,6 @@ test('identical attempts in parallel, or a retry while the first validates, answ
   assert.deepEqual([w.counts.validations, w.counts.holds.length, w.internals.admissionCounts().starts], [1, 1, 1]);
 });
 
-test('an accepted presentation sent again is answered session_admission_unavailable 503 with no write and no reservation', async (t) => {
-  const w = await contextWireWorld(t), request = await w.startContext();
-  assert.equal((await w.post(request)).status, 200);
-  await w.settleJob();
-  const before = { holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, reserves: w.reserved.calls };
-  const sql = watchSql(t);
-  const again = await w.post(request);
-  assert.deepEqual(summary(again), [503, 'session_admission_unavailable']);
-  await request.verify(again);
-  assert.equal(sql.writes(), 0, 'no write statement');
-  assert.deepEqual({ holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, reserves: w.reserved.calls }, before);
-});
-
 test('a policy refusal while taking the hold aborts the intent and answers seller_budget_refused 409 with no journal file', async (t) => {
   const w = await contextWireWorld(t), request = await w.startContext();
   w.behaviour.policyReserve = async () => 'TEST over budget';
