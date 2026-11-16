@@ -318,6 +318,19 @@ test("a seller storage CREATE refused while a stored evidence CREATE holds the s
   }
 });
 
+test("a native write and an evidence CREATE started together never take the same nonce", async t => {
+  const w = await adapterWorld(t), input = evidenceInput(w), pass = await openPass(w);
+  // The evidence CREATE is started from here, outside the native write's lock context, as the native write first reads the chain nonce after its confirmation.
+  let reached; const atNonceRead = new Promise(resolve => { reached = resolve; });
+  w.node.intercept = row => { if (row.body.params[0].message === 'getAddressNonce' && w.node.confirms.length > 0) { w.node.intercept = null; reached(); } return undefined; };
+  const evidence = atNonceRead.then(() => w.session.runInEffectPass(pass.handle, () => w.adapter.signCreate(input))).then(value => ({ value }), error => ({ error }));
+  const { native, outcome } = await pass.run(async () => ({ native: await w.send(), outcome: await evidence }));
+  assert.equal(native.success, true); assert.equal(w.node.broadcasts.length, 1);
+  const sent = w.node.broadcasts[0].content.nonce, held = (await recordOf(w))?.active ?? null;
+  if (outcome.error) { assert.ok(codes(outcome.error).includes('signer_lane_busy'), 'the evidence CREATE is refused'); assert.equal(held, null, 'and holds nothing'); }
+  else { assert.notEqual(outcome.value.nonce, sent, 'the evidence CREATE took another nonce'); assert.equal(held.nonce, outcome.value.nonce); }
+});
+
 test("signCreate refuses an input that is not this signer's evidence CREATE, a locked wallet and an aborted call before it reserves anything", async t => {
   const w = await adapterWorld(t), input = evidenceInput(w);
   for (const bad of [null, { ...input, writer: `did:demos:agent:${'3'.repeat(64)}` }, { ...input, logicalAddress: '' }, { ...input, artifact: [] }, { ...input, receiptContentHash: 'abc' }, { ...input, jobId: 7 },

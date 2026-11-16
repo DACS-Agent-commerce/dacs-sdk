@@ -10354,6 +10354,37 @@
           "after": "f3362e532723872079c10b44ec296bb36a31313d"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF take one signer lock to issue a native write and to claim the signer for an evidence CREATE",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "6b8764f67b5afcef4f08689733628c8646833c95",
+          "after": "110e34c585c8d6f91c6dfa58886a70761956f5fe"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "7e44af5f5f7960f6430b02f5ea22fa26eca75fb3",
+          "after": "feb828af9fa3a2d6a7c00d1e37afc15c251f9c22"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "d064bbbbbe9fa405714bb56eb390b97c7e0fbe4c",
+          "after": "d47721b78cb250ef2dd929852268a54afa699a50"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "f3362e532723872079c10b44ec296bb36a31313d",
+          "after": "826cacbcdce7c240d74c70e9cee597f92ed84d78"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0043ffd03f9e5f66cdb8d4bcde86d982eff599d",
+          "after": "317ee818bdbf709601dc8452f3feb986b14066b2"
+        }
+      ]
     }
   ]
 }

@@ -373,8 +373,8 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       const request = checkedInput(input, signer);
       signal.throwIfAborted();
       return inQueue(signal, async () => {
-        await assertNativeLaneIdle();
-        const { reservation, nonce } = await reservations.reserve({ signer, operation: OPERATION, operationKey: request.logicalAddress, readChainNonce, signal });
+        // The lane is checked under the signer's lock, the lock the native transport holds to issue a write, so no write is issued between this check and the claim.
+        const { reservation, nonce } = await reservations.reserve({ signer, operation: OPERATION, operationKey: request.logicalAddress, readChainNonce, signal, beforeClaim: assertNativeLaneIdle });
         const { signed, approvalIntent } = reservation.active;
         if (signed !== null) {
           if (signed.inputDigest !== request.inputDigest) throw refuse('signer_lane_busy');

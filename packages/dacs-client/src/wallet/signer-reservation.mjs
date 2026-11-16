@@ -25,7 +25,8 @@
 // bytes, which no live caller can finish. It needs the host's ownership proof (the state lock is held and the journal lies inside
 // its directory), never uses elapsed time, and never touches the rows of a live handle in this process.
 //
-// Lock order: the kit writer lock, then the signer lock; the signer lock is never re-entered.
+// Lock order: the kit writer lock, then the signer lock; the signer lock is never re-entered. The native transport takes the signer
+// lock inside its own lane lock to issue a write, and nothing here takes a lane lock.
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, sep } from 'node:path';
@@ -159,10 +160,12 @@ export function createSignerReservations({ journal, pins, openApproval = refused
    * no chain read), else a new claim at `max(chain + 1, floor)`, where `chain` is read through `readChainNonce({signal})`.
    * A reservation whose retirement settled its approval but did not commit is finished first (see `retireUnsigned`) and
    * the claim is then new. Another operation holding the signer is `signer_lane_busy`; a nonce without a safe successor is `invalid_nonce`.
+   * `beforeClaim()`, when given, runs first under the signer's lock; a throw refuses the claim and nothing is read or written.
    */
-  async function reserve({ signer, operation, operationKey, readChainNonce, signal } = {}) {
+  async function reserve({ signer, operation, operationKey, readChainNonce, signal, beforeClaim } = {}) {
     check(isAddress(signer) && OPERATIONS.includes(operation) && isText(operationKey) && typeof readChainNonce === 'function', 'invalid claim');
     return journal.withWalletLock(keyOf(signer), async () => {
+      await beforeClaim?.();
       signal?.throwIfAborted();
       let record = await readRecord(signer);
       if (record?.active && unfinishedRetirements.get(signer) === record.active.attemptId) {
