@@ -13,7 +13,7 @@ import { recordingApproval } from './helpers/payment-evidence-approval-double.mj
 import { installNoEgress } from './helpers/no-egress.mjs';
 import { rpcEnvelope, storageWriteConfirmationMatches } from '../src/devnet-demo/storage-write-recovery.mjs';
 import { nativeWalletLaneKey } from '../src/wallet/devnet-native-transport.mjs';
-import { createSignerReservations } from '../src/wallet/signer-reservation.mjs';
+import { createSignerReservations, signerReservationKey } from '../src/wallet/signer-reservation.mjs';
 
 // The kit journal refuses every send while the kit's operation guard is off. This test-only loader hook admits it in this process, so it is
 // registered before the journal module is loaded.
@@ -517,6 +517,83 @@ test("readTransactionState answers applied only for authenticated successful exe
   assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
 });
 
+// The kit journal over the real adapter: the journal asks the adapter for the state of a kept CREATE by its hash alone.
+function wiredJournal(t, w, overrides = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'payment-evidence-adapter-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const journal = createPaymentEvidenceWalletJournal({ path: join(dir, 'journal.sqlite'), signCreate: (asked, options) => signIn(w, asked, options),
+    broadcast: (signed, options) => broadcastIn(w, signed, options), readAccountNonce: () => w.adapter.readAccountNonce(),
+    readTransactionState: asked => w.adapter.readTransactionState(asked), ...overrides });
+  t.after(() => journal.close());
+  return journal;
+}
+const keepBroadcastsOffChain = w => replyFor(w, 'broadcastTx', row => responseOf(ok({ hash: row.body.params[0].data.response.data.transaction.hash })));
+const heldBytes = async w => { const { signed, nonce } = (await recordOf(w)).active; return { txHash: signed.txHash, signedTransaction: signed.projectionText, nonce }; };
+
+test("through the kit journal over the real adapter, job B's evidence is refused signer_lane_busy while job A's sent CREATE has not executed, also after a restart, and goes out at the next nonce once A executed", async t => {
+  const w = await replayWorld(t), journal = wiredJournal(t, w), [inputA, inputB] = [evidenceInput(w, 'a'), evidenceInput(w, 'b')];
+  keepBroadcastsOffChain(w);
+  assert.equal((await journal.anchorEvidence(inputA)).status, 'submitted');
+  const held = await recordOf(w);
+  await assert.rejects(journal.anchorEvidence(inputB), { code: 'signer_lane_busy' });
+  await w.restart();
+  await assert.rejects(journal.anchorEvidence(inputB), { code: 'signer_lane_busy' }, 'after the restart');
+  assert.deepEqual(await recordOf(w), held, 'A still holds the signer'); assert.equal(w.node.broadcasts.length, 1); assert.deepEqual(spentIds(w), []);
+  const first = await heldBytes(w); applyWithoutBroadcast(w, first);
+  assert.equal((await journal.anchorEvidence(inputB)).status, 'submitted');
+  const next = await recordOf(w);
+  assert.equal(next.active.operationKey, inputB.logicalAddress); assert.equal(next.active.nonce, first.nonce + 1);
+  assert.equal(w.node.broadcasts.length, 2); assert.deepEqual(spentIds(w), ['TEST-ledger-1'], 'A\'s authorization was settled spent once');
+});
+
+test("re-anchoring job A after its CREATE executed answers applied and sends nothing; the readback frees the signer for job B", async t => {
+  const w = await replayWorld(t), journal = wiredJournal(t, w), [inputA, inputB] = [evidenceInput(w, 'a'), evidenceInput(w, 'b')];
+  assert.equal((await journal.anchorEvidence(inputA)).status, 'submitted');
+  assert.equal((await journal.anchorEvidence(inputA)).status, 'applied');
+  assert.equal(w.node.broadcasts.length, 1, 'A\'s bytes were not sent again'); assert.equal((await recordOf(w)).active, null);
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+  assert.equal((await journal.anchorEvidence(inputB)).status, 'submitted');
+  assert.equal(w.node.broadcasts.length, 2);
+});
+
+test("re-anchoring job A after job B's signing freed A's executed bytes is refused retained_transaction_invalid and sends no bytes", async t => {
+  const w = await replayWorld(t), journal = wiredJournal(t, w), [inputA, inputB] = [evidenceInput(w, 'a'), evidenceInput(w, 'b')];
+  await journal.anchorEvidence(inputA); await journal.anchorEvidence(inputB);
+  await assert.rejects(journal.anchorEvidence(inputA), { code: 'retained_transaction_invalid' });
+  assert.equal(w.node.broadcasts.length, 2, 'only A and B were sent, once each');
+});
+
+test("with a readback that answers applied, the kit journal over the adapter's signCreate does not send the anchored CREATE again", async t => {
+  const w = await replayWorld(t), sent = [], journal = wiredJournal(t, w, { broadcast: async ({ signedTransaction }) => { sent.push(signedTransaction); }, readTransactionState: async () => 'applied' });
+  assert.equal((await journal.anchorEvidence(evidenceInput(w))).status, 'submitted');
+  assert.equal((await journal.anchorEvidence(evidenceInput(w))).status, 'applied');
+  assert.equal(sent.length, 1);
+});
+
+test("signCreate for another address consumes executed bytes that hold the signer without holding the signer's lock during the chain read; unexecuted bytes still refuse signer_lane_busy", async t => {
+  const w = await replayWorld(t), first = await signIn(w, evidenceInput(w));
+  await assert.rejects(signIn(w, evidenceInput(w, 'b')), { code: 'signer_lane_busy' });
+  applyWithoutBroadcast(w, first);
+  let release; const readStarted = new Promise(resolve => { replyFor(w, 'getTransactionStatus', () => { resolve(); return new Promise(done => { release = done; }); }); });
+  const second = signIn(w, evidenceInput(w, 'b')); await readStarted;
+  const lockKey = signerReservationKey(TP1_APPROVED_IDENTITY_RECORD, signerOf(w));
+  assert.equal(await w.journal().withWalletLock(lockKey, async () => 'free'), 'free', 'the chain read holds no signer lock');
+  w.reply = null; release();
+  assert.equal((await second).nonce, first.nonce + 1);
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1']);
+});
+
+test("readTransactionState with only a hash answers pending, with the cause kept, when no reservation holds that hash", async t => {
+  const w = await replayWorld(t), first = await signIn(w, evidenceInput(w));
+  const answer = await w.adapter.readTransactionState({ txHash: 'f'.repeat(64) });
+  assert.equal(answer.state, 'pending'); assert.equal(w.session.internalCauseOf(answer).code, 'retained_transaction_invalid');
+  assert.equal((await w.adapter.readTransactionState({ txHash: first.txHash })).state, 'pending', 'held but not on the chain');
+  applyWithoutBroadcast(w, first);
+  assert.equal((await w.adapter.readTransactionState({ txHash: first.txHash })).state, 'applied');
+  assert.equal((await recordOf(w)).active, null);
+  assert.equal((await w.adapter.readTransactionState({ txHash: first.txHash })).state, 'pending', 'the freed reservation no longer names the bytes');
+});
+
 // Replies as a live node records them: block one with every member of its `content`, and an executed transaction with the members the node adds.
 const recordedJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'));
 const recordedBlockOne = JSON.parse(recordedJson('../../../conformance/tp1-node-observations/block1.json').body).response;
@@ -772,7 +849,9 @@ test("replies table (confirmTx, broadcastTx, getAddressNonce, getTransactionStat
         replyFor(w, message, row => { const { hash } = row.body.params[0].data.response.data.transaction; return responseOf(forge(ok({ hash }))); });
         await assert.rejects(broadcastIn(w, signed), { code: 'outcome_unknown' }, label); assert.equal(w.node.broadcasts.length, 1, `${label}: one dispatch`);
       } else {
-        applyWithoutBroadcast(w, signed); replyFor(w, message, () => responseOf(forge(readAnswers(signed)[message])));
+        // The nonce read is not part of proving an execution, so those bytes stay unexecuted for it.
+        if (message !== 'getAddressNonce') applyWithoutBroadcast(w, signed);
+        replyFor(w, message, () => responseOf(forge(readAnswers(signed)[message])));
         if (message === 'getAddressNonce') await assert.rejects(w.adapter.readAccountNonce(), error => ['node_reply_invalid', 'invalid_nonce'].includes(error.code), label);
         else assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending', label);
       }
