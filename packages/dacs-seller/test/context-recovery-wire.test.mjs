@@ -289,6 +289,22 @@ for (const [title, stall] of [['before its first Vet write', 'provider'], ['afte
   });
 }
 
+test('a resend that waits for the first attempt and finds the job settled answers the stored outcome', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  const reached = deferred(), gate = deferred();
+  w.behaviour.provider = async () => { reached.resolve(); await gate.promise; };
+  const first = w.post(request);
+  await reached.promise;
+  const resend = w.post(await resign(w, request));
+  await new Promise((resolve) => setImmediate(resolve));
+  gate.resolve();
+  const [firstAnswer, resendAnswer] = [await first, await resend];
+  await w.settleJob();
+  assert.equal(firstAnswer.status, 200, firstAnswer.text);
+  assert.deepEqual([resendAnswer.status, resendAnswer.text], [200, firstAnswer.text]);
+  assert.deepEqual([w.rowOf().state, w.counts.vetWrites, w.counts.holds.length, w.internals.admissionCounts().starts], ['settled', 2, 1, 1]);
+});
+
 test('a completed outcome of a running admission is revalidated and answered without a second start', async (t) => {
   const w = await contextWireWorld(t), { request, answer } = await settled(w);
   // A crash after the outcome was published and before the row settled leaves the row running with a completed operation.

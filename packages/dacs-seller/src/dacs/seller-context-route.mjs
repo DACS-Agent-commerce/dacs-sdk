@@ -444,13 +444,11 @@ function providerOutcome(answer, scope) {
  * trigger a), which releases its hold and slot unless an effect cannot be ruled out; a provider stopped at the deadline or by `closeAttempts`
  * keeps the attempt open. Any other error after the reservation leaves the attempt open and answers `operation_uncertain`, or the 503
  * refusal it carries. The provider's work runs inside `trackContextWork`, which keeps the job's mutex until the work has settled, also
- * after a deadline has answered.
- * A presentation that was already accepted continues: the presented bundle must be the kept one, the kept admission must
- * still bind it (`session_admission_unavailable` 503 otherwise), and buyer access and the known-job check run again; the challenge expiry, the
+ * after a deadline has answered. A presentation that was already accepted continues: the presented bundle must be the kept one, the kept admission
+ * must still bind it (`session_admission_unavailable` 503 otherwise), and buyer access and the known-job check run again; the challenge expiry, the
  * generatedAt window, the profile admission and the start limits are not checked again and no hold or start is made. An `admitted` row is reserved
  * and runs, a settled one answers its stored outcome without a reservation, and a closed one is `context_admission_closed` (409). A running row whose
- * operation completed answers that outcome; one with an unfinished earlier attempt is held (`operation_uncertain` 503, nothing ended or run).
- * A stored outcome is answered only after `revalidateContextOutcome({ jobId, outcome })` has read the retained records back through the
+ * operation completed answers that outcome; one with an unfinished earlier attempt is held (`operation_uncertain` 503, nothing ended or run). A stored outcome is answered only after `revalidateContextOutcome({ jobId, outcome })` has read the retained records back through the
  * provider and found the same answer; otherwise it throws `seller_source_unavailable` (503) with its cause and changes nothing. `readPlannedAgreement({ jobId })` (see `createPlannedAgreementReader`) is registered with `wire` for a state read before any session.
  * `closeAttempts(cause)` closes every attempt still running. `store`, `capacity`, `admissionTransaction` and `coordinator` are the host's one
  * instance of each: the tuple is kept inside the acceptance, so the construction registers its hook before the first admission, and throws a
@@ -597,8 +595,10 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
         capability = await admissionTransaction.reserveContext(request.jobId, (jobLease) => coordinator.reserveCoordinated({ checked: admitted, payload: request, route: request.path,
           operationId: wireOperationId(request), paymentTx: null, keepProfile: wire.binding.profile, retainedWork: false }, { jobLease }));
       } catch (error) {
-        // A reservation that lost to compensation leaves the row to it, and a resend of an accepted presentation never ends the job: an attempt
-        // of its own may be running it. Any other refusal of a first admission ends the accepted row here.
+        // A resend never ends the job: an attempt of its own may be running it, or have settled it while this one waited, which is answered from its stored outcome.
+        const stored = error?.code === 'context_admission_closed' && challenge.accepted !== undefined ? await continueAccepted(request, admitted, challenge) : null;
+        if (stored !== null) return { status: stored.status, text: stored.text, request };
+        // A reservation that lost to compensation leaves the row to it. Any other refusal of a first admission ends the accepted row here.
         if (error?.code !== 'context_admission_closed' && challenge.accepted === undefined) await endFailedStart(request.jobId);
         throw error;
       }
