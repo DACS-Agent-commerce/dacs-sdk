@@ -48,12 +48,13 @@ function scriptedNode() {
 }
 
 // The transport owner's connection. `exclusive` makes it a real fence: one holder, waiters in order.
-// `gate` is awaited at every acquisition, before it is granted. `connectionId` is the connection
-// the owner reports, and `fenceConnectionId` (when set) the one its fences claim to hold.
+// `gate` is awaited at every acquisition, before it is granted, and `contextGate` at every
+// context read, before it answers. `connectionId` is the connection the owner reports, and
+// `fenceConnectionId` (when set) the one its fences claim to hold.
 function connectionOwner(exclusive) {
-  const owner = { acquired:0, released:0, gate:null, held:false, waiters:[], connectionId:CONTEXT.connectionId, fenceConnectionId:null };
+  const owner = { acquired:0, released:0, gate:null, contextGate:null, held:false, waiters:[], connectionId:CONTEXT.connectionId, fenceConnectionId:null };
   const grant = () => { if (!owner.held && owner.waiters.length) { owner.held = true; owner.waiters.shift()(); } };
-  owner.getContext = () => ({ ...CONTEXT, connectionId:owner.connectionId });
+  owner.getContext = async () => { await owner.contextGate?.(); return { ...CONTEXT, connectionId:owner.connectionId }; };
   owner.acquireConnectionFence = async () => {
     owner.acquired++;
     await owner.gate?.();
@@ -134,6 +135,12 @@ export function nativeWorld(t, { exclusive = false } = {}) {
       await transport.binding({ phase:'broadcast', address:key.address, leaseId, hash:signed.hash });
       await w.broadcast(confirmed);
       return signed;
+    },
+    /** Opens the guarded transport, takes the lease, confirms a first transfer and asks for the broadcast phase: the state a broadcast request starts from. */
+    async confirmedPayment(options) {
+      const g = await w.openGuarded(options), { leaseId } = await w.lease(), signed = w.sign(1), confirmed = await w.confirm(signed);
+      await transport.binding({ phase:'broadcast', address:key.address, leaseId, hash:signed.hash });
+      return { g, leaseId, signed, confirmed };
     },
   };
   t.after(async () => { await transport?.close(); journal.close(); setPurchaseAdmission('held'); rmSync(dir, { recursive:true, force:true }); });

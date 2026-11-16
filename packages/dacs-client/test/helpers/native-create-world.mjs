@@ -34,15 +34,20 @@ function deterministicWallet() {
   };
 }
 
-/** A connection owner whose fence queues. `events` receives { op, kind: 'fence' } per acquisition; `queued()` resolves when an acquirer waits. */
+/**
+ * A connection owner whose fence queues. `events` receives { op, kind: 'fence' } per acquisition; `queued()` resolves when an acquirer waits.
+ * `connectionId` is the connection it reports (a test may move it) and `contextGate`, when set, is awaited before every context answer.
+ */
 export function queuingFenceOwner(events = []) {
   let tail = Promise.resolve(), waiting = 0, held = false;
   const watchers = [];
-  return {
+  const owner = {
     events,
+    connectionId: CONTEXT.connectionId,
+    contextGate: null,
     isHeld: () => held,
     queued: () => (waiting > 0 ? Promise.resolve() : new Promise((resolve) => watchers.push(resolve))),
-    getContext: () => ({ ...CONTEXT }),
+    getContext: async () => { await owner.contextGate?.(); return { ...CONTEXT, connectionId: owner.connectionId }; },
     async acquireConnectionFence() {
       events.push({ op: operation.getStore(), kind: 'fence' });
       const previous = tail;
@@ -56,26 +61,46 @@ export function queuingFenceOwner(events = []) {
       return { context: { ...CONTEXT }, release() { if (live) { live = false; held = false; release(); } } };
     },
   };
+  return owner;
 }
 
-/** The journal with every wallet lane acquisition logged as { op, kind: 'lane', key }. */
+/**
+ * The journal with every wallet lane acquisition logged as { op, kind: 'lane', key }. A history
+ * append that runs inside a frame already holding its lane is logged as { kind: 'lane-owned', key }
+ * and takes nothing; one that has to acquire the lane goes through the logged `withWalletLock`.
+ */
 export function countingJournal(journal, events) {
-  return {
+  const frames = new AsyncLocalStorage();
+  const counting = {
     get: (key) => journal.get(key),
     put: (key, value) => journal.put(key, value),
     entries: () => journal.entries(),
-    withWalletLock(key, work) { events.push({ op: operation.getStore(), kind: 'lane', key }); return journal.withWalletLock(key, work); },
+    inspectLocks: () => journal.inspectLocks(),
+    appendUnderLock: (laneKey, key, value) => journal.appendUnderLock(laneKey, key, value),
+    withWalletLock(key, work) {
+      events.push({ op: operation.getStore(), kind: 'lane', key });
+      const held = frames.getStore() ?? new Set();
+      return journal.withWalletLock(key, () => frames.run(new Set(held).add(key), work));
+    },
+    withOwnedOrAcquiredLane(key, work) {
+      if (!frames.getStore()?.has(key)) return counting.withWalletLock(key, work);
+      events.push({ op: operation.getStore(), kind: 'lane-owned', key });
+      return journal.withOwnedOrAcquiredLane(key, work);
+    },
   };
+  return counting;
 }
 
 /**
  * The transport and its test wallet over `journal`. `onNode(message, call)` runs
  * before the scripted node answers any call and may pause or kill the process.
  * `identityAnswer(chainIdentity)` replaces the node's answer to every block read. `stamps` is the transport's RPC stamp source.
+ * `boundary` is the transport's effect boundary, built for `pinVersion`; `node.gas` is the gas_operation every confirmation reports.
  */
-export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, stamps }) {
+export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, stamps, boundary, pinVersion = PINS.pinVersion }) {
   const wallet = deterministicWallet();
-  const sent = { confirms: [], broadcasts: [] };
+  const sent = { confirms: [], broadcasts: [] }, node = { gas: null };
+  const pins = { ...PINS, pinVersion };
   const answerNode = async (init) => {
     const body = JSON.parse(init.body), call = body.params[0], message = call.message ?? call.extra;
     await onNode(message, call);
@@ -86,7 +111,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     if (message === 'getTxByHash') return { result: 400, response: 'error', require_reply: false, extra: null };
     if (message === 'confirmTx') {
       sent.confirms.push(call.data.hash);
-      return reply({ data: { valid: true, reference_block: 0, message: 'TEST validated\n', gas_operation: null, transaction: call.data },
+      return reply({ data: { valid: true, reference_block: 0, message: 'TEST validated\n', gas_operation: node.gas, transaction: call.data },
         signature: { type: 'ed25519', data: `0x${'11'.repeat(64)}` }, rpc_public_key: { type: 'ed25519', data: `0x${'22'.repeat(32)}` } });
     }
     if (message === 'broadcastTx') {
@@ -97,7 +122,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     throw new Error(`unexpected TEST node call ${message}`);
   };
   const fetchImpl = async (url, init) => new Response(JSON.stringify(await answerNode(init)), { headers: { 'content-type': 'application/json' } });
-  const capability = createDevnetDemoTransport({ expected: PINS, transportOwner: owner, journal, fetchImpl, now: () => NOW, stamps, inclusionWaitMs: 0,
+  const capability = createDevnetDemoTransport({ expected: pins, transportOwner: owner, ...(boundary ? { boundary } : {}), journal, fetchImpl, now: () => NOW, stamps, inclusionWaitMs: 0,
     settlementPublication: { artifactKind: 'SettlementEvidence', authority: 'TEST-lock-order-settlement', phase: 'pay-dem', phaseIndex: 2, policy: DEVNET_SETTLEMENT_POLICY, railId: 'demos-native:DEM' },
     deliveryPublication: { artifactKind: 'Deliverable', authority: 'TEST-lock-order-delivery', phase: 'deliver-storage-program', phaseIndex: 3, policy: DEVNET_DELIVERY_POLICY },
     demoArtifactPublication: { policy: DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...DEVNET_DEMO_ARTIFACT_TYPES], authority: DEMO_AUTHORITY } });
@@ -130,7 +155,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
   }
 
   return {
-    capability, wallet, owner, sent, laneKey, makeCreate,
+    capability, wallet, owner, sent, node, laneKey, makeCreate,
     /** Seeds the lane and intent rows of an issued `tx` as a prior run left them. */
     async retain(tx, stage) {
       const row = { hash: tx.hash, nonce: tx.content.nonce, stage, signedTransaction: structuredClone(tx), networkBinding: await binding(),
@@ -138,8 +163,8 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
       await journal.put(laneKey, row);
       await journal.put(`devnet/native-transfer/${tx.hash}`, row);
     },
-    /** Takes the signature lease; it holds the connection fence until released. */
-    async lease() { return capability.binding({ phase: 'signature', address, binding: await binding() }); },
+    /** Takes the signature lease, naming `transfer` when given; it holds the connection fence until released. */
+    async lease(transfer) { return capability.binding({ phase: 'signature', address, binding: await binding(), ...(transfer ? { transfer } : {}) }); },
     async confirm(tx) { return capability.rpc({ method: 'execute', params: [{ extra: 'confirmTx', data: tx }] }, auth()); },
     async broadcast({ leaseId }, confirmation, hash) {
       await capability.binding({ phase: 'broadcast', address, leaseId, hash });
