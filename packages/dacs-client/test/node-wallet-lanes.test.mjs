@@ -25,7 +25,7 @@ const w=await world(t); const results=await Promise.all([w.send(),w.send()]); as
 });
 
 test("confirmTx answering valid:false is confirm_rejected, nothing is broadcast and the lane is released", async t => {
-const w=await world(t); w.node.mode='confirm-refuse'; const result=await w.send(); assert.equal(result.error.code,'confirm_rejected',JSON.stringify(result)); assert.equal(w.node.broadcasts.length,0); w.node.mode='accept'; assert.equal((await w.send()).success,true);
+const w=await world(t); w.node.mode='confirm-refuse'; const result=await w.send(); assert.equal(result.error.code,'confirm_rejected',JSON.stringify(result)); assert.equal(w.node.broadcasts.length,0); w.node.mode='accept'; assert.equal((await w.session.wallet.request(w.requestAt(T0+1))).success,true);
 });
 
 test('restart at signature-return and confirm-send cuts through the Node session', async t => {
@@ -66,7 +66,7 @@ async function crashAndRestart(t, cut) {
   return new Response(JSON.stringify({result:400,response:'error',require_reply:false,extra:null}),{headers:{'content-type':'application/json'}});
  }});t.after(()=>owner.close());
  const {binding}=await bindFixture({local:owner.currentLocal()});setPurchaseAdmission('testnet-tp1');t.after(()=>setPurchaseAdmission('held'));
- const session=await api.createNodeWalletSession({owner,journal,admission:{binding,currentLocal:owner.currentLocal},key:mnemonicBytes(),clock:{now:()=>T0},approve:async()=>true});t.after(()=>session.close());
+ const session=await api.createNodeWalletSession({owner,journal,admission:{binding,currentLocal:owner.currentLocal},key:mnemonicBytes(),stopped:async()=>false,feeCeilingOs:'50000000000',clock:{now:()=>T0},approve:async()=>true});t.after(()=>session.close());
  assert.equal(calls.length,0,'restart alone sends nothing');
  const read=await session.wallet.request({method:'readNativeTransfer',params:[{hash:before.hash}]});assert.equal(read.success,true,JSON.stringify(read));assert.equal(read.data.noResend,true,JSON.stringify(read));
  const result=await session.wallet.request(request);assert.equal(result.error.code,'outcome_unknown');
@@ -121,6 +121,6 @@ test('restart after each confirmation classification preserves refusal versus un
 for(const [mode,code] of [['confirm-refuse','confirm_rejected'],['confirm-lost','upstream_unavailable']]) {
   const w=await world(t); w.node.mode=mode; const first=await w.send(); assert.equal(first.error.code,code,JSON.stringify(first));
   await w.restart(); assert.equal(w.node.broadcasts.length,0,'a restart sends nothing by itself');
-  const again=await w.send(); assert.equal(again.error.code,code,'the class is recomputed from the node answer, never advanced to a send'); assert.equal(w.node.broadcasts.length,0);
+  const again=await w.session.wallet.request(w.requestAt(T0+1)); assert.equal(again.error.code,code,'the class is recomputed from the node answer, never advanced to a send'); assert.equal(w.node.broadcasts.length,0);
 }
 });

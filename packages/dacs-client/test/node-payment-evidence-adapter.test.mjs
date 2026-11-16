@@ -310,7 +310,7 @@ test("the hold refuses signCreate with profile_not_admitted and no node call, an
   setPurchaseAdmission('testnet-tp1');
   for (const missing of ['prepare', 'open', 'reopen', 'confirm', 'settle']) {
     const key = mnemonicBytes(), partial = { ...recordingApproval(), [missing]: undefined };
-    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), key, approve: async () => true, clock: w.clock, approveConfirmedWrite: null,
+    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), key, approve: async () => true, stopped: async () => false, feeCeilingOs: '50000000000', clock: w.clock, approveConfirmedWrite: null,
       publications: sellerPublications(), stateOwnership: { directory: tmpdir(), held: () => true }, paymentEvidenceApproval: partial }), { code: 'invalid_params' }, missing);
     assert.ok(key.every(byte => byte === 0), 'the key is zeroed on refusal');
   }

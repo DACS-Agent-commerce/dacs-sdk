@@ -4,6 +4,7 @@ import { spiedWorld } from './node-wallet-signing-spy.mjs';
 
 export const FEE_CEILING_OS = '50000000000';
 const PASS_WINDOW_MS = 10_000;
+let passCount = 0;
 
 /** Returns fixture TEST- publications for a seller composition. */
 export const sellerPublications = () => ({
@@ -37,8 +38,13 @@ export async function gateWorld(t, { seller = true, qualify, sessionOptions = {}
 export async function openPass(w, { pass = {}, events = [] } = {}) {
   const owner = w.currentOwner?.() ?? w.owner, lease = await owner.acquireConnectionFence();
   const step = name => ({ phase }) => { events.push(`${name}:${phase}`); };
-  const handle = w.session.effectPass({ fence: lease, deadline: w.clock.now() + PASS_WINDOW_MS, refreshAuthority: step('authority'),
-    finalStop: step('stop'), synchronousChecks: [step('sync')], feeCeilingOs: FEE_CEILING_OS, ...pass });
+  // A seller pass names the job operation it belongs to, one operation per pass; a buyer pass is plain.
+  const job = w.session.transport ? { operationClass: 'job-create', operationId: `TEST-job-${++passCount}`, currentAuthorization: () => true } : {};
+  let handle;
+  try {
+    handle = w.session.effectPass({ fence: lease, deadline: w.clock.now() + PASS_WINDOW_MS, refreshAuthority: step('authority'),
+      finalStop: step('stop'), synchronousChecks: [step('sync')], feeCeilingOs: FEE_CEILING_OS, ...job, ...pass });
+  } catch (error) { lease.release(); throw error; }
   const run = async work => {
     try { return await w.session.runInEffectPass(handle, work); } finally { lease.release(); }
   };

@@ -80,20 +80,21 @@ export async function world(t, { held = false, journalWrap = x => x, ownerWrap =
     // A seller composition requires the host's proof that it owns the state directory and its payment-evidence approval ledger.
     const sellerInputs = createSession === api.createNodeSellerComposition
       ? { stateOwnership: { directory: dir, held: () => true }, paymentEvidenceApproval: recordingApproval() } : {};
-    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...sellerInputs, ...sessionOptions });
+    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, stopped: async () => false, feeCeilingOs: '50000000000', ...sellerInputs, ...sessionOptions });
     sessions.push(session);
     return { owner, admission };
   }
   const initial = await start();
   t.after(async () => { setPurchaseAdmission('held'); for (const s of sessions) await s.close(); for (const o of owners) await o.close(); journal.close(); rmSync(dir, { recursive: true, force: true }); });
   const address = session.wallet.getPublicAccount().address;
-  const request = { method: 'sendTransaction', params: [buildNativeTransferPayload({ from: address, to: '0x' + '2'.repeat(64), amountOs: '2500000000', nonce: 1, timestamp: T0, encoding: 'os-string' })] };
-  return { ...initial, path, node, authority, key, clock, request, get session() { return session; },
+  const requestAt = timestamp => ({ method: 'sendTransaction', params: [buildNativeTransferPayload({ from: address, to: '0x' + '2'.repeat(64), amountOs: '2500000000', nonce: 1, timestamp, encoding: 'os-string' })] });
+  const request = requestAt(T0);
+  return { ...initial, path, node, authority, key, clock, request, requestAt, get session() { return session; },
     send: () => session.wallet.request(request), journal: () => journal,
     lane: async () => (await journal.entries()).find(([k]) => k.startsWith('devnet/native-wallet/'))?.[1],
     restart: async () => { await session.close(); journal.close(); return start(); } };
 }
-export async function agreementRequest(w) {
+export async function agreementRequest(w, { complete = false } = {}) {
   const { canonicalize, sha256Hex } = await import('@kynesyslabs/dacs');
   const { createPrivateKey, createPublicKey, sign } = await import('node:crypto');
   const { deriveStorageAddress } = await import('../../src/dacs/wallet-transactions.mjs');
@@ -104,6 +105,12 @@ export async function agreementRequest(w) {
   const scope = { payeeBoundAgreementVersion:'1', derivedFromPattern:'fixed-price', jobId,
     parties:[{role:'buyer',primaryClaim:owner},{role:'seller',primaryClaim:seller}],
     terms:{price:{currency:'DEM',amount:'1'},rail:{railId:'demos-native:DEM',railVersion:1},payoutBindings:[{payeeAddress:'0x'+seller.slice('did:demos:agent:'.length),phaseIndex:2,railId:'demos-native:DEM'}]} };
+  if (complete) {
+    scope.listingRef = { listingId: 'TEST-listing', version: 1, contentHash: 'c'.repeat(64) };
+    scope.generatedAt = T0;
+    Object.assign(scope.terms, { deliverable: { deliverableType: 'storage-program', hash: 'd'.repeat(64) }, deadline: T0 + 60_000 });
+    for (const party of scope.parties) Object.assign(party, { bundleHash: 'e'.repeat(64), vetRecordRef: { anchor: { kind: 'https', locator: 'https://example.invalid/vet' }, contentHash: 'f'.repeat(64) } });
+  }
   const contentHash = sha256Hex(canonicalize(scope)), message = 'dacs-payee-bound-agreement:v1:' + contentHash;
   const signed = await w.session.wallet.request({method:'sign',params:[message]});
   assert.equal(signed.success,true,JSON.stringify(signed));
