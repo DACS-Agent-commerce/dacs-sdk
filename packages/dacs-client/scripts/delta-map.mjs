@@ -76,6 +76,30 @@ export function expectedBlob(records, independent) {
   const blobs=new Set(newest.map(sha=>latest.get(sha)));
   return blobs.size===1?{blob:[...blobs][0]}:{conflict:newest};
 }
+const blobAt=(rev,path)=>{try{return git('rev-parse','--verify',`${rev}:${path}`);}catch{return null;}};
+const describeBlob=sha=>sha??'no file';
+/**
+ * The last-entry rule for a trailing record-only entry (one that changes no
+ * source or test blob itself). `changes` is the ledger in order; its last entry
+ * counts as a real change only if it names a source or test path and, for every
+ * path it records, the recorded blob is the blob committed at HEAD and is not
+ * the blob the earlier entries last recorded (the baseline blob when none
+ * names the path). Returns the failures, each naming its path; none means the
+ * entry counts.
+ */
+export function lastRecordOnlyFailures(changes=readArchive(pkg).ledger.changes) {
+  const last=changes.at(-1), earlier=changes.slice(0,-1);
+  if(!last?.files.some(file=>/^packages\/dacs-client\/(src|test)\//.test(file.path))) return [`${prefix}DELTA-LEDGER.json: last record names no source or test change`];
+  const failures=[];
+  for(const {path,after} of last.files) {
+    const committed=blobAt('HEAD',path);
+    if(after!==committed) failures.push(`${path}: the last record-only entry records ${describeBlob(after)}, but HEAD holds ${describeBlob(committed)}`);
+    const entry=earlier.findLast(change=>change.files.some(file=>file.path===path));
+    const recorded=entry?entry.files.find(file=>file.path===path).after:blobAt(BASELINE,path);
+    if(after===recorded) failures.push(`${path}: the last record-only entry restates ${describeBlob(after)}, the blob the earlier records last recorded; it records nothing new`);
+  }
+  return failures;
+}
 export function checkDeltas(packageDir=pkg) {
   const assembled=view(); const failures=[...assembled.failures]; const active=assembled.ledger; const data={...active,changes:[...(active.supersededChanges??[]),...active.changes]}; const history=commits();
   // Records are checked one by one by their schema; this rule binds the archive.
@@ -107,7 +131,7 @@ export function checkDeltas(packageDir=pkg) {
     if(same.some(sha=>sha==null||c.sha==null||sha===c.sha)) failures.push(`duplicate delta subject ${c.subject}`);
     selectors.set(c.subject,[...same,c.sha]);
     // A record that names its full commit hash needs no delta prefix in the subject: the hash already selects the commit.
-    if(!['D10','D9','D1','D11','D15','D16','D18','D19','D21','D22','D20','D33','D23','D26','D27','D31','D32','D25','D34','D36','D37','D38','D40','WF'].includes(c.delta)||!(c.subject.startsWith(`delta(client): ${c.delta} `)||c.sha!=null||(c.delta==='D11'&&c.subject.startsWith('fix(client): D11 ')))) failures.push(`invalid delta ${c.subject}`);
+    if(!['D10','D9','D1','D11','D15','D16','D18','D19','D21','D22','D20','D33','D23','D26','D27','D31','D32','D25','D34','D36','D37','D38','D40','D42','WF'].includes(c.delta)||!(c.subject.startsWith(`delta(client): ${c.delta} `)||c.sha!=null||(c.delta==='D11'&&c.subject.startsWith('fix(client): D11 ')))) failures.push(`invalid delta ${c.subject}`);
     const matches=history.filter(h=>selects(c,h));
     if(matches.length!==1) failures.push(`delta commit selector must resolve once: ${c.sha==null?c.subject:`${c.sha} ${c.subject}`}`);
     if(matches.length===1) {

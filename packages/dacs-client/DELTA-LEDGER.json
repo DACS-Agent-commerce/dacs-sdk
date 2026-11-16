@@ -9987,6 +9987,17 @@
           "after": "6175c0421d58d74bf403ee1150a32c750011c455"
         }
       ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 accept a trailing record-only ledger entry for a committed blob",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "0db3b89514f68fbba88d99345a0ea7089911e3d7",
+          "after": "5e909c66900348ecfcab0ca9d549363d384052d3"
+        }
+      ]
     }
   ]
 }

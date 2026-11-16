@@ -50,7 +50,7 @@ async function fixture(t, initial = 'original\n') {
   }
   writeFileSync(join(pkg, 'scripts/delta-map.mjs'), checker);
   for (const name of ['delta-assemble.mjs', 'delta-record.mjs', 'source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(pkg, 'scripts', name));
-  const { blob, checkDeltas, table } = await import(pathToFileURL(join(pkg, 'scripts/delta-map.mjs')));
+  const { blob, checkDeltas, lastRecordOnlyFailures, table } = await import(pathToFileURL(join(pkg, 'scripts/delta-map.mjs')));
   json('DELTA-LEDGER.json', { schema: 'dacs-client-deltas/v2', baseline, changes: [] });
   const render = () => writeFileSync(join(pkg, 'DELTA-MAP.md'), table());
   const sourceBlob = () => existsSync(join(dir, path)) ? blob(readFileSync(join(dir, path))) : null;
@@ -96,7 +96,8 @@ async function fixture(t, initial = 'original\n') {
     git('commit', '--quiet', '-m', `TEST merge ${++sequence}`);
   };
   const check = () => checkDeltas().failures;
-  return { baseline, branch, check, git, json, merge, note, read, record, render };
+  const recordOnlyFailures = () => lastRecordOnlyFailures();
+  return { baseline, blob, branch, check, git, json, merge, note, read, record, recordOnlyFailures, render };
 }
 
 async function staleMerge(t, fixed = 'fixed\n', merged = 'original\n') {
@@ -237,3 +238,75 @@ test('a control-only last record is refused with the ledger path even when every
   history.json('DELTA-LEDGER.json', ledger); history.render();
   assert.ok(history.check().some(failure => failure.includes('packages/dacs-client/DELTA-LEDGER.json: last record names no source or test change')));
 });
+
+// A record-only entry changes no blob itself: each file has before equal to after.
+// The last-entry rule accepts one only when it records the blob committed at HEAD
+// and that blob is not the one the earlier entries last recorded for the path.
+const unblob = failures => failures.map(failure => failure.replace(/[0-9a-f]{40}/g, '<blob>'));
+const restates = `${path}: the last record-only entry restates <blob>, the blob the earlier records last recorded; it records nothing new`;
+const notHead = (holds = '<blob>') => `${path}: the last record-only entry records <blob>, but HEAD holds ${holds}`;
+
+// Two parallel records of one path, merged to `merged` bytes that no record names,
+// then one trailing record that records them.
+async function recordedMerge(t, merged) {
+  const history = await fixture(t);
+  history.branch('TEST-side'); history.record('side\n');
+  history.branch('TEST-main', history.baseline); history.record('main\n');
+  history.merge('TEST-side', merged); history.record(merged);
+  return history;
+}
+
+test('a trailing record-only entry for a committed blob no earlier record names is accepted', async t => {
+  const history = await recordedMerge(t, 'combined\n');
+  const last = history.read('DELTA-LEDGER.json').changes.at(-1);
+  assert.ok(last.files.every(file => file.before === file.after), 'the last entry changes no blob itself');
+  assert.deepEqual(history.check(), []);
+  assert.deepEqual(history.recordOnlyFailures(), []);
+});
+
+test('a trailing record-only entry that records a deletion committed at HEAD is accepted', async t => {
+  const history = await recordedMerge(t, null);
+  assert.deepEqual(history.check(), []);
+  assert.deepEqual(history.recordOnlyFailures(), []);
+});
+
+test('a trailing record-only entry that restates the blob last recorded for its path is refused', async t => {
+  const history = await fixture(t);
+  history.record('changed\n'); history.record('changed\n');
+  assert.deepEqual(unblob(history.recordOnlyFailures()), [restates]);
+});
+
+test('a trailing record-only entry that restates the baseline blob of a path no earlier record names is refused', async t => {
+  const history = await fixture(t);
+  history.record('original\n');
+  assert.deepEqual(unblob(history.recordOnlyFailures()), [restates]);
+});
+
+test('a trailing record-only entry for a path unchanged at HEAD is refused when it names another blob', async t => {
+  const history = await fixture(t);
+  history.record('changed\n'); history.record('changed\n');
+  const ledger = history.read('DELTA-LEDGER.json');
+  ledger.changes.at(-1).files[0].after = history.blob(Buffer.from('other\n'));
+  history.json('DELTA-LEDGER.json', ledger);
+  assert.deepEqual(unblob(history.recordOnlyFailures()), [notHead()]);
+});
+
+test('a trailing record-only entry is refused for any one path that fails, and the failure names that path', async t => {
+  const history = await recordedMerge(t, 'combined\n');
+  const other = `${prefix}src/other.mjs`;
+  const ledger = history.read('DELTA-LEDGER.json');
+  ledger.changes.at(-1).files.push({ path: other, before: null, after: history.blob(Buffer.from('extra\n')) });
+  history.json('DELTA-LEDGER.json', ledger);
+  assert.deepEqual(unblob(history.recordOnlyFailures()), [`${other}: the last record-only entry records <blob>, but HEAD holds no file`]);
+});
+
+for (const [what, files] of [['no file', []], ['only a path outside src and test', [{ path: `${prefix}scripts/example.mjs`, before: null, after: 'b'.repeat(40) }]]]) {
+  test(`the record-only rule refuses a last record that names ${what}`, async t => {
+    const history = await fixture(t);
+    history.record('changed\n');
+    const ledger = history.read('DELTA-LEDGER.json');
+    ledger.changes.at(-1).files = files;
+    history.json('DELTA-LEDGER.json', ledger);
+    assert.deepEqual(history.recordOnlyFailures(), [`${prefix}DELTA-LEDGER.json: last record names no source or test change`]);
+  });
+}
