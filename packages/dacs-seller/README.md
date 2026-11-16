@@ -393,6 +393,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
   (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`
   first), and a delegated request for one is refused
+  `peer_delegation_agreement_required`. A state read of a job that has a completed
+  context but no proposal yet is admitted against the Agreement that context plans:
+  it is derived from the retained context input once the retained Vet records have
+  been read back, and its job, parties, Listing and deadline are checked like any
+  Agreement's. A direct state read whose records cannot be read back gets 503
+  `seller_source_unavailable`; a delegated one gets
   `peer_delegation_agreement_required`. A payment, bundle or buyer-copy request
   continues a committed purchase only on the job's durable commitment and
   Agreement, admitted by the wire anew for each request, under the host's own

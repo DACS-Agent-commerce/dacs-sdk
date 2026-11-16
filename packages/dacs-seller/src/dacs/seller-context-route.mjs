@@ -473,10 +473,11 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   const failedProviders = new WeakSet();
   const { db, keepPurchaseProfileWithin } = sellerStoreInternals(store);
   admissionTransaction.addAcceptanceHook(({ jobId, purchaseProfile }) => keepPurchaseProfileWithin(jobId, purchaseProfile));
-  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller),
+  const completedOutcomeOf = completedContextOutcome(wire.journal, seller);
+  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedOutcomeOf,
     acceptedPresentation: (nonce) => ledger.retained(nonce)?.accepted ?? null });
   const revalidateStored = createContextOutcomeRevalidation({ provider, retainedBody: records.retainedBody });
-  const planAgreement = createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf: completedContextOutcome(wire.journal, seller), records, revalidate: revalidateStored });
+  const planAgreement = createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf, records, revalidate: revalidateStored });
   const { sellerBundlePresentedBy } = provider.bindRetainedScope(records.completedScope);
   if (!sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) throw new TypeError('the provider is pinned to a seller presenter other than the Listing\'s');
 
@@ -489,7 +490,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
     return new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
   }
 
-  const continuesAccepted = createContinuationCheck({ ledger, completedOutcomeOf: completedContextOutcome(wire.journal, seller) });
+  const continuesAccepted = createContinuationCheck({ ledger, completedOutcomeOf });
 
   // Everything before the attempt: a refusal here consumes nothing. Resolves with the wire's admission of the request, whose body is the one to use.
   async function openRequest({ rawBody, header, method, path }, onOpened) {

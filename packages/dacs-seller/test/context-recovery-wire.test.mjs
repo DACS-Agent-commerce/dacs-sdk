@@ -471,6 +471,8 @@ test('a state read before any proposal is admitted against the draft planned fro
     w.behaviour.source = async () => { throw Object.assign(new Error('TEST the node failed'), { code: 'node_failed' }); };
     const answer = await stateRead(w, retained.agreementHash, { delegated: false });
     assert.deepEqual([answer.status, answer.body.error], [503, 'seller_source_unavailable']);
+    const delegated = await stateRead(w, retained.agreementHash);
+    assert.deepEqual([delegated.status, delegated.body.error], [409, 'peer_delegation_agreement_required'], 'a delegated read has no draft to be scoped to');
     w.behaviour.source = null;
     assert.equal((await stateRead(w, retained.agreementHash, { delegated: false })).status, 200, 'a source that answers again admits the read');
   });
