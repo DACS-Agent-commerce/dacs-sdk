@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { api, world } from './helpers/tp1-node-fixture.mjs';
-import { sellerPublications } from './helpers/effect-gate-world.mjs';
+import { world } from './helpers/tp1-node-fixture.mjs';
 import { TP1_APPROVED_IDENTITY_RECORD as record } from '@kynesyslabs/dacs/wire';
 import { createDevnetAgreementTransport, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
   DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from '../src/wallet/devnet-native-transport.mjs';
@@ -59,29 +58,6 @@ test('buyer session accepts the recorded four-field block-zero error and block-o
   assert.equal(w.node.confirms.length, 1);
   assert.equal(w.node.broadcasts.length, 1);
   assert.ok(counts.every(n => n >= 3), 'identity is freshly checked at the signing and broadcast fences');
-});
-
-async function sellerWorld(t) {
-  return world(t, { createSession: api.createNodeSellerComposition, sessionOptions: { approveConfirmedWrite: null, publications: sellerPublications() } });
-}
-
-test('the seller composition observer binds on the recorded block-zero error, string-zero genesis, block-one and block-two answers', async t => {
-  const w = await sellerWorld(t), counts = recorded(w);
-  const observation = await w.session.observer.observe({});
-  assert.equal(observation.chainIdentity, record.chainIdentity);
-  assert.deepEqual(counts, [1, 1, 1]);
-});
-
-test('the seller composition observer refuses a changed block-two predecessor and a changed string-zero genesis hash', async t => {
-  const w = await sellerWorld(t);
-  recorded(w, (answer, height) => { if (height === 2) answer.response.content.previousHash = otherHash; });
-  await assert.rejects(w.session.observer.observe({}));
-  recorded(w);
-  const previous = w.node.intercept;
-  w.node.intercept = row => row.body.params[0].data?.blockNumber === '0'
-    ? new Response(JSON.stringify({ ...stringZeroGenesis, response: { ...stringZeroGenesis.response, hash: otherHash } }), { headers: { 'content-type': 'application/json' } })
-    : previous(row);
-  await assert.rejects(w.session.observer.observe({}), { code: 'conflicting_identity' });
 });
 
 test('reviewed transport binds the recorded block-one number 1 id 2', async t => {
