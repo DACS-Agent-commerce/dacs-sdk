@@ -325,22 +325,69 @@ describe("payD402SettleCore", () => {
     expect(res.ok).toBe(false);
   });
 
+  const payerDebit = (over: Record<string, unknown> = {}) => ({
+    type: "balance", operation: "remove", isRollback: false, account: `0x${PAYER}`,
+    txhash: `0x${TX_HASH}`, amount: "1500000000", ...over,
+  });
+  const payeeCredit = (over: Record<string, unknown> = {}) => ({
+    type: "balance", operation: "add", isRollback: false, account: RECIPIENT,
+    txhash: `0x${TX_HASH}`, amount: "1500000000", ...over,
+  });
+
   test("a confirmed record with no balance credit to the payee is not reported ok", async () => {
-    const credit = (over: Record<string, unknown>) => ({
-      type: "balance", operation: "add", isRollback: false, account: RECIPIENT,
-      txhash: `0x${TX_HASH}`, amount: "1500000000", ...over,
-    });
     for (const gcr_edits of [
       undefined,
       [],
-      [credit({ account: `0x${"22".repeat(32)}` })],
-      [credit({ amount: "1" })],
-      [credit({ operation: "remove" })],
-      [credit({ isRollback: true })],
+      [payerDebit()],
+      [payerDebit(), payeeCredit({ account: `0x${"22".repeat(32)}` })],
+      [payerDebit(), payeeCredit({ amount: "1" })],
+      [payerDebit(), payeeCredit({ operation: "remove" })],
+      [payerDebit(), payeeCredit({ isRollback: true })],
     ]) {
       const res = await settleWithRecord(async () => recordedPayment({ content: { gcr_edits } }));
       expect(res.ok).toBe(false);
     }
+  });
+
+  describe("payer debit", () => {
+    test("a confirmed record that credits the payee but has no payer debit is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({ content: { gcr_edits: [payeeCredit()] } }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
+
+    test("a confirmed record whose payer debit is for another amount is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({ content: { gcr_edits: [payerDebit({ amount: "1" }), payeeCredit()] } }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
+
+    test("a confirmed record whose payer debit is rolled back is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({ content: { gcr_edits: [payerDebit({ isRollback: true }), payeeCredit()] } }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
+
+    test("a confirmed record whose only debit is from another account is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({
+          content: { gcr_edits: [payerDebit({ account: `0x${"11".repeat(32)}` }), payeeCredit()] },
+        }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
+
+    test("a confirmed record whose payer edit adds balance instead of removing it is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({
+          content: { gcr_edits: [payerDebit({ operation: "add" }), payeeCredit()] },
+        }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
   });
 
   test("a recorded transfer to another payee is not reported ok", async () => {
