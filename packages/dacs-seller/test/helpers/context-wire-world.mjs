@@ -37,10 +37,14 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const { state, calls, agent, buyer, seller, other } = w;
   const now = () => state.time;
   state.mono = 0;
-  const counts = { validations: 0, holds: [], releases: [], resolves: 0, vetWrites: 0, agreementSignatures: 0, reserveAcquisitions: 0, sourceReads: 0 };
+  const counts = { validations: 0, holds: [], releases: [], resolves: 0, vetWrites: 0, writesByRole: { seller: 0, buyer: 0 }, resumables: 0, agreementSignatures: 0, reserveAcquisitions: 0, sourceReads: 0 };
+  const NON_PASS_ANSWERS = {
+    first: { disposition: 'rejected', reason: 'seller Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' },
+    second: { disposition: 'rejected', reason: 'buyer Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' },
+  };
   // What a test can bend: the presentation admission, the policy hold, the provider's steps and answer, the reservation (`recover` answers a recovery
   // effect the journal never issued), the wire completion (`nullEndFails`, `cutAfterPublish`), the acceptance (`failAcceptance`) and the kind of effect evidence compensation reads (`evidenceKind`).
-  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, source: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false, evidenceKind: 'no-intent' };
+  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, source: null, afterFirstWrite: null, beforeReserve: null, afterReserve: null, beforeAnswer: null, records: null, nonPass: null, unknownIntent: false, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false, evidenceKind: 'no-intent' };
   const fakeEffects = new Set(), completions = [];
   // A presentation's profile admission: the agent's own, here a counting stand-in that grants unless a test says otherwise.
   agent.admitSessionPresentation = async ({ jobId, bundle, nonce }) => {
@@ -65,12 +69,17 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     effectEvidence: async (row) => [row.vetAddresses.buyer, row.vetAddresses.seller].map((address) => ({ address, kind: behaviour.evidenceKind })),
     inspectContextOutcome: operationOf, completeWire, now, ready: () => state.ready(), deadlines: { policyMs: POLICY_DEADLINE_MS } });
   const coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target), admissionTransaction: admission });
-  const reserved = { calls: 0, ownerships: [] };
+  const reserved = { calls: 0, ownerships: [], effects: [] };
   const reserveCoordinated = coordinator.reserveCoordinated.bind(coordinator);
   coordinator.reserveCoordinated = async (input, ownership) => {
     reserved.calls++; reserved.ownerships.push(ownership);
     await behaviour.beforeReserve?.();
-    if (!behaviour.recover) return reserveCoordinated(input, ownership);
+    if (!behaviour.recover) {
+      const effect = await reserveCoordinated(input, ownership);
+      reserved.effects.push(effect);
+      await behaviour.afterReserve?.(effect);
+      return effect;
+    }
     const effect = Object.freeze({ state: 'recover', operationId: wireOperationId(input.payload), attempt: 1, leaseUntil: now() + 300_000 });
     fakeEffects.add(effect);
     return effect;
@@ -89,23 +98,38 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     const agreement = agreementInput({ jobId: input.scope.jobId, listing: w.listing, buyerBundle: input.buyerIdentityBundle, generatedAt: input.scope.generatedAt });
     return { disposition: 'present', value: { scope: structuredClone(input.scope), input: { ...agreement, buyer: { ...agreement.buyer, ...vetRef('buyer') }, seller: { ...agreement.seller, ...vetRef('seller') } } } };
   };
+  // With `behaviour.records` a Set, the provider keeps its Vet records across attempts: the seller's first, then the buyer's. `behaviour.nonPass`
+  // 'first' or 'second' makes that Vet the one that refuses, so the first needs one record and the second two. Without it, every attempt writes twice.
+  const VET_ORDER = ['seller', 'buyer'];
+  const required = () => (behaviour.nonPass === 'first' ? 1 : 2);
+  const missingRoles = () => VET_ORDER.slice(0, required()).filter((role) => !behaviour.records.has(role));
+  const finalAnswer = (input) => (behaviour.nonPass ? NON_PASS_ANSWERS[behaviour.nonPass] : behaviour.answer ? behaviour.answer(input) : presentAnswer(input));
   const resolveBuyer = async (input, options) => {
     counts.resolves++;
+    await null; // the real provider always awaits first, after the attempt has the work's promise
     if (behaviour.provider) await behaviour.provider(input, options);
-    for (let write = 0; write < 2; write++) {
+    const roles = behaviour.records ? missingRoles() : [null, null];
+    for (const [write, role] of roles.entries()) {
       if (options.writable() !== true) throw Object.assign(new Error('the purchase is no longer pending'), { code: 'not-pending' });
       counts.vetWrites++;
+      if (role !== null) { counts.writesByRole[role]++; behaviour.records.add(role); }
       if (write === 0 && behaviour.afterFirstWrite) await behaviour.afterFirstWrite(input, options);
     }
-    return behaviour.answer ? behaviour.answer(input) : presentAnswer(input);
+    await behaviour.beforeAnswer?.(input, options);
+    return finalAnswer(input);
   };
   // The passive read of what the provider retained: by default the answer it gave, which a test replaces to change, lose or fail the source.
   const recoverBuyer = async (input, options) => {
     counts.sourceReads++;
     if (behaviour.source) return behaviour.source(input, options);
+    if (behaviour.records) return missingRoles().length === 0 ? finalAnswer(input) : null;
     return behaviour.answer ? behaviour.answer(input) : presentAnswer(input);
   };
-  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer, resumableBuyer: async () => null,
+  const resumableBuyer = async () => {
+    counts.resumables++;
+    return behaviour.records && !behaviour.unknownIntent && missingRoles().length > 0 ? { writes: missingRoles().length } : null;
+  };
+  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer, resumableBuyer,
     bindRetainedScope: () => ({ sellerBundlePresentedBy: sellerClaim }) });
   const provider = demDeliveryContextHost(capability);
 

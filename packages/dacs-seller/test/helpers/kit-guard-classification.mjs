@@ -36,6 +36,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-challenge-ledger.mjs': { effect: { createSellerChallengeLedger: ['issue', 'issueForOperator'] }, pure: ['deepFreeze'] },
   'src/dacs/seller-completion-records.mjs': { effect: {  }, pure: ['createCompletionRecords'] },
   'src/dacs/seller-context-continuation.mjs': { effect: {  }, pure: ['createAcceptedContinuation', 'createContextOutcomeRevalidation', 'createContinuationCheck'] },
+  'src/dacs/seller-context-recovery.mjs': { effect: {  }, pure: ['resumeContext'] },
   'src/dacs/seller-context-route.mjs': { effect: {  }, pure: ['completedContextOutcome', 'contextOperationView', 'createContextAttempt', 'createSellerContextClient', 'createSellerContextRecords', 'createSellerContextRoute', 'createWireSellerContextRoute', 'sellerContextReason', 'sellerContextRequestUnknown'] },
   'src/dacs/seller-durable-state.mjs': { effect: { createSellerDurableState: ['signOnce', 'anchor'] }, pure: ['SellerRecoveryError'] },
   'src/dacs/seller-effect-routes.mjs': { effect: {  }, pure: ['createSellerEffectRoutes'] },

@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalize, contentHash, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS, completeWireEffect } from '@kynesyslabs/dacs/wire';
 import { completedContextOutcome, createSellerContextRecords } from '../src/dacs/seller-context-route.mjs';
 import { createContextOutcomeRevalidation } from '../src/dacs/seller-context-continuation.mjs';
 import { createPlannedAgreementReader } from '../src/dacs/seller-planned-agreement.mjs';
@@ -254,14 +254,6 @@ test('settled context inspection may answer the same signed request twice withou
       assert.deepEqual(summary(await w.post(replay)), [503, 'seller_source_unavailable']);
     });
   }
-});
-
-test('an unfinished earlier attempt of an accepted admission is held and neither ended nor run again', async (t) => {
-  const w = await contextWireWorld(t), request = await admittedAndCut(w);
-  w.behaviour.recover = true;
-  const answer = await w.post(await resign(w, request));
-  assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'context_recovery_held']);
-  assert.deepEqual([w.counts.resolves, w.completions.length, w.counts.vetWrites], [0, 0, 0]);
 });
 
 test('a completed outcome of a running admission is revalidated and answered without a second start', async (t) => {
@@ -526,4 +518,296 @@ test('a recovered context hashes to the same Agreement as an uninterrupted one a
       assert.deepEqual([value.input.seller.identityBundle.presentedBy, value.input.seller.vetRecordRef.anchor.locator], [SELLER.claim, address(SELLER)]);
     }
   }
+});
+
+// ---- recovery of an unfinished attempt --------------------------------------------------------------------------------------
+// The provider here keeps its Vet records across attempts (`behaviour.records`), so these tests prove the route's decisions: which
+// attempt may run, what it reads first and what it writes. The real provider's own checkpoint cases are in context-provider-checkpoints.test.mjs.
+
+const LEASE_MS = 300_000;
+const DEADLINE_MS = 240_000;
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
+const DIED = 'TEST the process died';
+
+/** The first admission's attempt ends inside the provider after `writes` Vet records, with its journal attempt left pending and its row running. */
+async function cutInsideProvider(w, writes) {
+  const request = await w.startContext();
+  w.behaviour.records ??= new Set();
+  const crash = async () => { w.route.closeAttempts(DIED); };
+  if (writes === 0) w.behaviour.provider = crash; else w.behaviour.afterFirstWrite = crash;
+  assert.deepEqual(summary(await w.post(request)), [503, 'operation_uncertain']);
+  w.behaviour.provider = null; w.behaviour.afterFirstWrite = null;
+  await w.settleJob();
+  assert.deepEqual([w.rowOf().state, w.operationOf(WIRE_JOB).state, w.counts.vetWrites], ['running', 'pending', writes]);
+  return request;
+}
+/** The first admission died after its reservation and before the row's CAS: the row is admitted and the journal's attempt is pending. */
+async function cutBeforeCas(w) {
+  const request = await w.startContext();
+  w.behaviour.records ??= new Set();
+  w.behaviour.afterReserve = async () => { throw new SellerTransportError('context_admission_closed', 409); };
+  assert.deepEqual(summary(await w.post(request)), [409, 'context_admission_closed']);
+  w.behaviour.afterReserve = null;
+  assert.deepEqual([w.rowOf().state, w.operationOf(WIRE_JOB).state], ['admitted', 'pending']);
+  return request;
+}
+/** Both Vets written and the provider cut before its answer was completed. */
+async function cutBeforeOutcome(w) {
+  const request = await w.startContext();
+  w.behaviour.records ??= new Set();
+  w.behaviour.beforeAnswer = async () => { w.route.closeAttempts(DIED); };
+  await w.post(request);
+  w.behaviour.beforeAnswer = null;
+  await w.settleJob();
+  assert.deepEqual([w.rowOf().state, w.operationOf(WIRE_JOB).state], ['running', 'pending']);
+  return request;
+}
+/** The retry after the dead attempt's lease: the same signed body under a new envelope. */
+const retryAfterLease = async (w, request) => { w.advance(LEASE_MS); return w.post(await resign(w, request)); };
+const writesByRole = (w) => [w.counts.writesByRole.seller, w.counts.writesByRole.buyer];
+const holdsAndStarts = (w) => [w.counts.holds.length, w.internals.admissionCounts().starts, w.openHolds().length];
+
+test('a crash between the reservation and its CAS leaves the row admitted: a retry inside the lease is held, and after the lease the recovery finds nothing written and writes both Vets', async (t) => {
+  const w = await contextWireWorld(t), request = await cutBeforeCas(w), hold = w.counts.holds[0].hold;
+  const early = await w.post(await resign(w, request));
+  assert.deepEqual(summary(early), [503, 'seller_effect_pending']);
+  assert.deepEqual([w.rowOf().state, w.counts.resolves], ['admitted', 0]);
+  const answer = await retryAfterLease(w, request);
+  await w.settleJob();
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual([w.reserved.effects.at(-1).state, w.counts.sourceReads, w.counts.vetWrites, writesByRole(w)], ['recover', 1, 2, [1, 1]]);
+  assert.deepEqual([w.rowOf().state, w.operationOf(WIRE_JOB).state, w.counts.releases.map((release) => release.hold)], ['settled', 'completed', [hold]]);
+  assert.deepEqual([w.counts.holds.length, w.internals.admissionCounts().starts], [1, 1]);
+});
+
+test('a crash between the CAS and the first Vet write is recovered by a new attempt that writes both Vets', async (t) => {
+  const w = await contextWireWorld(t), request = await cutInsideProvider(w, 0);
+  const answer = await retryAfterLease(w, request);
+  await w.settleJob();
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual([w.counts.vetWrites, writesByRole(w), holdsAndStarts(w)], [2, [1, 1], [1, 1, 0]]);
+  assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], ['settled', 'success']);
+});
+
+test('a crash after the first Vet record is recovered by writing only the missing Vet, also when a source failure held the first retry', async (t) => {
+  const w = await contextWireWorld(t), request = await cutInsideProvider(w, 1);
+  w.behaviour.source = async () => { throw new Error('TEST the source is down'); };
+  const held = await retryAfterLease(w, request);
+  await w.settleJob();
+  assert.deepEqual([held.status, held.body.error], [503, 'operation_uncertain']);
+  assert.deepEqual([w.operationOf(WIRE_JOB).state, w.rowOf().state, w.counts.vetWrites], ['pending', 'running', 1]);
+  w.behaviour.source = null;
+  const answer = await retryAfterLease(w, request);
+  await w.settleJob();
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual([w.counts.vetWrites, writesByRole(w), holdsAndStarts(w)], [2, [1, 1], [1, 1, 0]]);
+});
+
+test('an address whose intent outcome is unknown keeps the context attempt open and writes nothing', async (t) => {
+  const w = await contextWireWorld(t), request = await cutInsideProvider(w, 1);
+  w.behaviour.unknownIntent = true;
+  const held = await retryAfterLease(w, request);
+  await w.settleJob();
+  assert.deepEqual([held.status, held.body.error, held.body.cause], [503, 'operation_uncertain', 'context_recovery_held']);
+  assert.deepEqual([w.counts.vetWrites, w.counts.resolves, w.operationOf(WIRE_JOB).state, w.rowOf().state, w.openHolds().length], [1, 1, 'pending', 'running', 1]);
+  assert.equal(w.privateRow().attemptFence, 'open', 'only reads were made: no write authority was latched');
+});
+
+test('a crash after both Vets were written is recovered by reading both back, with no new write, and the answer names each party\'s own record', async (t) => {
+  const w = await contextWireWorld(t), request = await cutBeforeOutcome(w);
+  const answer = await retryAfterLease(w, request);
+  await w.settleJob();
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual([w.counts.vetWrites, w.counts.resolves, writesByRole(w)], [2, 1, [1, 1]], 'nothing written by the recovery');
+  const uninterrupted = w.presentAnswer(request.body);
+  assert.deepEqual(answer.body, uninterrupted);
+  assert.equal(contentHash(deriveFixedPriceAgreement(answer.body.value.input)), contentHash(deriveFixedPriceAgreement(uninterrupted.value.input)));
+  const { input } = answer.body.value;
+  assert.deepEqual([input.buyer.vetRecordRef.anchor.locator, input.seller.vetRecordRef.anchor.locator], ['vet-buyer', 'vet-seller']);
+});
+
+test('every crash cut × outcome kind {present, first-Vet non-pass, second-Vet non-pass} is recovered once with at most one write per Vet and then answered from the settled row', async (t) => {
+  const cuts = [['before the CAS', cutBeforeCas], ['before the first write', (w) => cutInsideProvider(w, 0)], ['after the first write', (w) => cutInsideProvider(w, 1)],
+    ['after both writes', cutBeforeOutcome]];
+  const kinds = [['present', null, 2, 'present'], ['first-Vet non-pass', 'first', 1, 'rejected'], ['second-Vet non-pass', 'second', 2, 'rejected']];
+  for (const [cutName, cut] of cuts) {
+    for (const [kindName, nonPass, totalWrites, disposition] of kinds) {
+      await t.test(`${cutName}, ${kindName}`, async (t) => {
+        const w = await contextWireWorld(t);
+        w.behaviour.nonPass = nonPass;
+        const request = await cut(w), answer = await retryAfterLease(w, request);
+        await w.settleJob();
+        assert.deepEqual([answer.status, answer.body.disposition], [200, disposition], answer.text);
+        assert.deepEqual([w.counts.vetWrites, w.counts.writesByRole.seller <= 1, w.counts.writesByRole.buyer <= 1, holdsAndStarts(w).slice(0, 2)], [totalWrites, true, true, [1, 1]]);
+        assert.equal(w.rowOf().state, 'settled');
+        const before = effects(w), again = await w.post(await resign(w, request));
+        assert.deepEqual([again.status, again.text], [200, answer.text]);
+        assert.deepEqual(effects(w), before, 'the settled replay reserves nothing and writes nothing');
+      });
+    }
+  }
+});
+
+test('a crash after the outcome was published and before the row settled is settled by the sweep and then answered with no reservation and no write', async (t) => {
+  for (const [kind, nonPass] of [['present', null], ['first-Vet non-pass', 'first'], ['second-Vet non-pass', 'second']]) {
+    await t.test(kind, async (t) => {
+      const w = await contextWireWorld(t), request = await w.startContext();
+      w.behaviour.records = new Set(); w.behaviour.nonPass = nonPass; w.behaviour.cutAfterPublish = true;
+      await w.post(request);
+      await w.settleJob();
+      w.behaviour.cutAfterPublish = false;
+      assert.deepEqual([w.rowOf().state, w.operationOf(WIRE_JOB).state], ['running', 'completed']);
+      for (let pass = 0; pass < 2; pass++) await w.admission.sweep({ startup: false });
+      assert.deepEqual([w.rowOf().state, w.counts.releases.length, w.openHolds().length], ['settled', 1, 0]);
+      const before = effects(w), answer = await w.post(await resign(w, request));
+      assert.equal(answer.status, 200);
+      assert.deepEqual(effects(w), before);
+    });
+  }
+});
+
+// ---- the deadline, the lease and racing continuations ----------------------------------------------------------------------
+
+/** A first admission whose provider stalls at `stallAt` ('start', 'after-first-write' or 'before-answer') until `release()`. */
+async function stalledAttempt(t, stallAt) {
+  const w = await contextWireWorld(t), request = await w.startContext(), reached = deferred(), release = deferred();
+  w.behaviour.records = new Set();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stall = async () => { reached.resolve(); await release.promise; };
+  if (stallAt === 'start') w.behaviour.provider = stall;
+  if (stallAt === 'after-first-write') w.behaviour.afterFirstWrite = stall;
+  if (stallAt === 'before-answer') w.behaviour.answer = async (input) => { await stall(); return w.presentAnswer(input); };
+  const pending = w.post(request);
+  await reached.promise;
+  return { w, request, pending, release };
+}
+
+test('after the deadline closed an attempt at each of three stall points, a successor after the lease recovers once the stalled work has settled, without a second write per Vet', async (t) => {
+  for (const stallAt of ['start', 'after-first-write', 'before-answer']) {
+    await t.test(stallAt, async (t) => {
+      const { w, request, pending, release } = await stalledAttempt(t, stallAt);
+      w.tick(DEADLINE_MS);
+      t.mock.timers.tick(DEADLINE_MS);
+      const held = await pending;
+      assert.deepEqual([...summary(held), held.body.cause], [503, 'operation_uncertain', 'context_deadline']);
+      release.resolve();
+      await w.settleJob();
+      w.behaviour.provider = null; w.behaviour.afterFirstWrite = null; w.behaviour.answer = null;
+      const answer = await retryAfterLease(w, request);
+      await w.settleJob();
+      assert.equal(answer.status, 200, answer.text);
+      assert.deepEqual([writesByRole(w).every((count) => count === 1), holdsAndStarts(w), w.rowOf().state], [true, [1, 1, 0], 'settled']);
+    });
+  }
+});
+
+test('a context worker that overruns its lease while a successor recovers writes nothing more, its late completion is refused as superseded and the successor\'s outcome stands', async (t) => {
+  const { w, request, pending, release } = await stalledAttempt(t, 'after-first-write');
+  w.advance(LEASE_MS);
+  release.resolve();
+  const stale = await pending;
+  await w.settleJob();
+  assert.deepEqual([stale.body.error, w.counts.vetWrites], ['operation_uncertain', 1], 'the overrun worker is refused its second write');
+  w.behaviour.afterFirstWrite = null;
+  const answer = await w.post(await resign(w, request));
+  await w.settleJob();
+  assert.equal(answer.status, 200, answer.text);
+  const [staleEffect] = w.reserved.effects, stored = w.operationOf(WIRE_JOB).outcome.text;
+  assert.throws(() => completeWireEffect(w.wire.journal, staleEffect, { status: 200, text: '{"disposition":"present"}' }), { code: 'seller_effect_superseded' });
+  assert.deepEqual([w.operationOf(WIRE_JOB).outcome.text, writesByRole(w)], [stored, [1, 1]]);
+});
+
+/** The same retry sent `count` times at once after the dead attempt's lease. */
+async function raceContinuations(t, count) {
+  const w = await contextWireWorld(t), request = await cutInsideProvider(w, 1);
+  w.advance(LEASE_MS);
+  const answers = await Promise.all(Array.from({ length: count }, async () => w.post(await resign(w, request))));
+  await w.settleJob();
+  return { w, answers };
+}
+
+test('two continuations racing on one admission revision: one resumes the work and the other is refused or answered from its outcome, never both running', async (t) => {
+  const { w, answers } = await raceContinuations(t, 2);
+  assert.equal(answers.filter((answer) => answer.status === 200).length >= 1, true);
+  assert.deepEqual([w.counts.resolves, w.completions.length, writesByRole(w)], [2, 1, [1, 1]], 'the cut run and one recovery');
+  assert.equal(new Set(w.reserved.effects.map((effect) => effect.attempt)).size, w.reserved.effects.length, 'no two attempts share a number');
+});
+
+test('three continuations of the same stored bytes after the lease ran out: the first recovers and the others add no row, file, hold or Vet write', async (t) => {
+  const { w, answers } = await raceContinuations(t, 3);
+  for (const answer of answers) assert.ok(answer.status === 200 || ['seller_effect_pending', 'peer_store_capacity', 'context_admission_closed'].includes(answer.body.error), answer.text);
+  assert.deepEqual([w.counts.vetWrites, w.counts.holds.length, w.internals.admissionCounts().starts, w.completions.length], [2, 1, 1, 1]);
+});
+
+test('a retained read that runs past the deadline leaves the context attempt open with its cause and answers 503', async (t) => {
+  const w = await contextWireWorld(t), request = await cutInsideProvider(w, 1), gate = deferred();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  w.behaviour.source = () => gate.promise;
+  w.advance(LEASE_MS);
+  const pending = w.post(await resign(w, request));
+  await flush();
+  w.tick(DEADLINE_MS);
+  t.mock.timers.tick(DEADLINE_MS);
+  const answer = await pending;
+  assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'context_deadline']);
+  assert.deepEqual([w.operationOf(WIRE_JOB).state, w.rowOf().state, w.counts.vetWrites], ['pending', 'running', 1]);
+  gate.resolve(null);
+  await w.settleJob();
+  assert.equal(w.counts.vetWrites, 1, 'the late read grants no write');
+});
+
+// ---- the continuation in drain ----------------------------------------------------------------------------------------------
+
+test('in drain eleven wrong-binding context requests are refused with their own earlier codes, then the purchase\'s continuation recovers and completes with no new Vet write', async (t) => {
+  const w = await contextWireWorld(t), request = await cutBeforeOutcome(w);
+  w.state.ready = () => false;
+  w.advance(LEASE_MS);
+  const scopeChange = (member, value) => { const body = structuredClone(request.body); body.scope[member] = value; return { body, hash: sha256Hex(canonicalize(body.scope)) }; };
+  const profileChange = (change) => async () => {
+    const signed = await resign(w, request), envelope = JSON.parse(Buffer.from(signed.header, 'base64url'));
+    change(envelope.payload);
+    return { ...signed, header: Buffer.from(canonicalize(envelope)).toString('base64url') };
+  };
+  const cases = [
+    ...[['price', { ...request.body.scope.price, amount: '1' }], ['payee', 'another-payee'], ['generatedAt', request.body.scope.generatedAt + 1], ['listingPin', 'another-pin'],
+      ['wallet', 'another-wallet'], ['seller', 'another-seller']].map(([member, value]) => [`changed scope ${member}`, 'peer_agreement_mismatch', async () => resign(w, request, scopeChange(member, value))]),
+    ...[['delegated', { actor: w.other }], ['direct', { actor: w.other, delegated: false }], ['short lived', { actor: w.other, lifetimeMs: 30_000 }]]
+      .map(([name, options]) => [`other buyer ${name}`, 'peer_agreement_party_mismatch', async () => resign(w, request, options)]),
+    ['changed pin version', 'tp1_profile_mismatch', profileChange((payload) => { payload.profile.pinVersion = 'another'; })],
+    ['added profile member', 'tp1_profile_mismatch', profileChange((payload) => { payload.profile.extra = 1; })],
+  ];
+  for (const [name, code, build] of cases) {
+    const before = effects(w), refused = await w.post(await build());
+    assert.deepEqual([name, refused.body?.error], [name, code]);
+    assert.deepEqual(effects(w), before, name);
+  }
+  const answer = await w.post(await resign(w, request));
+  await w.settleJob();
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual([w.counts.vetWrites, w.counts.resolves, w.rowOf().state], [2, 1, 'settled']);
+});
+
+// ---- observation stays passive ----------------------------------------------------------------------------------------------
+
+test('a recovery that only reads keeps write authority unlatched and a completed replay is read with a predicate that is always false', async (t) => {
+  const w = await contextWireWorld(t), request = await cutInsideProvider(w, 1), seen = [];
+  w.behaviour.unknownIntent = true;
+  await retryAfterLease(w, request);
+  await w.settleJob();
+  assert.deepEqual([w.privateRow().attemptFence, w.counts.vetWrites], ['open', 1]);
+  w.behaviour.unknownIntent = false;
+  assert.equal((await retryAfterLease(w, request)).status, 200);
+  await w.settleJob();
+  w.behaviour.source = async (input, options) => { seen.push(options.writable()); return w.presentAnswer(input); };
+  assert.equal((await w.post(await resign(w, request))).status, 200);
+  assert.deepEqual(seen, [false]);
+});
+
+test('a retry inside the live lease of a running attempt is refused seller_effect_pending and neither ends the row nor starts work', async (t) => {
+  const w = await contextWireWorld(t), request = await cutInsideProvider(w, 1), { holds, starts, vetWrites } = effects(w);
+  const answer = await w.post(await resign(w, request));
+  assert.deepEqual(summary(answer), [503, 'seller_effect_pending']);
+  const after = effects(w);
+  assert.deepEqual([w.rowOf().state, w.operationOf(WIRE_JOB).state, after.holds, after.starts, after.vetWrites], ['running', 'pending', holds, starts, vetWrites]);
 });

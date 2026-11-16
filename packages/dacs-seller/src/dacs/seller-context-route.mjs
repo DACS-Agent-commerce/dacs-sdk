@@ -15,6 +15,7 @@ import { SellerRefusedError, sellerFailureAttempt } from './seller-http.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { openWireRequest } from './seller-wire-requests.mjs';
 import { createAcceptedContinuation, createContextOutcomeRevalidation, createContinuationCheck } from './seller-context-continuation.mjs';
+import { resumeContext } from './seller-context-recovery.mjs';
 import { createPlannedAgreementReader } from './seller-planned-agreement.mjs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals, sellerTransportEffect } from './seller-transport-auth.mjs';
 
@@ -449,7 +450,10 @@ function providerOutcome(answer, scope) {
  * still bind it (`session_admission_unavailable` 503 otherwise), and buyer access and the known-job check run again; the challenge expiry, the
  * generatedAt window, the profile admission and the start limits are not checked again and no hold or start is made. An `admitted` row is reserved
  * and runs, a settled one answers its stored outcome without a reservation, and a closed one is `context_admission_closed` (409). A running row whose
- * operation completed answers that outcome; one with an unfinished earlier attempt is held (`operation_uncertain` 503, nothing ended or run).
+ * operation completed answers that outcome. One with an unfinished earlier attempt is refused `seller_effect_pending` (503) while that attempt's lease
+ * lasts, and afterwards recovered by a new attempt (`resumeContext`): it works from the retained request, reads back the retained Vet records, completes
+ * with what they prove or writes only the Vets still missing, and keeps the original hold and start. A recovery that cannot prove what is missing stays
+ * open as `operation_uncertain` (503); neither a refused continuation nor a failed recovery ends the row.
  * A stored outcome is answered only after `revalidateContextOutcome({ jobId, outcome })` has read the retained records back through the
  * provider and found the same answer; otherwise it throws `seller_source_unavailable` (503) with its cause and changes nothing. `readPlannedAgreement({ jobId })` (see `createPlannedAgreementReader`) is registered with `wire` for a state read before any session.
  * `closeAttempts(cause)` closes every attempt still running. `store`, `capacity`, `admissionTransaction` and `coordinator` are the host's one
@@ -537,23 +541,32 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
         firstAdmission: { challengeExpiresAt: ledger.retained(nonce).expiresAt, generatedAt: scope.generatedAt, checkedAt: now() } } });
   }
 
+  // Whether the job's row is still the running row at the revision `capability` was issued for.
+  function holdsAttempt(jobId, capability) {
+    const row = admissionTransaction.admissionRecord(jobId);
+    return row?.state === 'running' && row.rev === capability.rev;
+  }
+
   // The provider's work under the job's effect mutex, kept until the work has settled even when its answer was given at the deadline.
   // Resolves with the outcome once it is durable; rejects with what ended the work, an error after the reservation always being uncertain.
-  function perform(capability, jobId, body) {
+  // `recovering` runs the retained `body` as the recovery of an earlier attempt of an accepted admission (see `resumeContext`).
+  function perform(capability, jobId, body, recovering) {
     let answer, fail;
     const outcome = new Promise((resolve, reject) => { answer = resolve; fail = reject; });
     const uncertain = (error) => (error instanceof SellerTransportError && error.status === 503 ? error : new SellerTransportError('operation_uncertain', 503, { cause: error }));
     const work = () => admissionTransaction.jobEffectMutex(jobId).run(async (jobLease) => {
       let attempt = null, settled = null, failedOnItsOwn = false;
       try {
-        // Only a new attempt may do the work. An attempt the journal hands back as a recovery is ended null, having done nothing.
-        if (capability.effect.state !== 'new') {
+        // Only a new attempt, or the recovery of an accepted admission, may do the work. Any other recovery the journal hands back is ended null, having done nothing.
+        if (capability.effect.state !== 'new' && !recovering) {
           await capability.complete(null, { jobLease });
           throw new SellerTransportError('session_admission_unavailable', 503);
         }
+        // D5 and D6 are separate critical sections: nothing is read or written for an attempt that the row has moved past in between.
+        if (recovering && !holdsAttempt(jobId, capability)) throw new SellerTransportError('context_admission_closed', 409);
         attempt = createContextAttempt({ jobId, effect: capability.effect, capability, admissionTransaction, now, monotonicNow });
         running.add(attempt);
-        const run = attempt.run((options) => provider.resolveBuyer(body, options));
+        const run = attempt.run(recovering ? resumeContext(provider, body) : (options) => provider.resolveBuyer(body, options));
         settled = run.settled;
         const result = await run.result.catch((error) => { failedOnItsOwn = !attempt.isClosed(); throw error; });
         const final = providerOutcome(result, body.scope);
@@ -597,8 +610,9 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
         capability = await admissionTransaction.reserveContext(request.jobId, (jobLease) => coordinator.reserveCoordinated({ checked: admitted, payload: request, route: request.path,
           operationId: wireOperationId(request), paymentTx: null, keepProfile: wire.binding.profile, retainedWork: false }, { jobLease }));
       } catch (error) {
-        // A reservation that lost to compensation leaves the row to it; any other refusal ends the accepted row here.
-        if (error?.code !== 'context_admission_closed') await endFailedStart(request.jobId);
+        // A reservation that lost to compensation leaves the row to it. A first admission's other refusal ends its accepted row here;
+        // a continuation's never does: its row is retained work, and a refusal such as a live earlier attempt changes nothing.
+        if (error?.code !== 'context_admission_closed' && challenge.accepted === undefined) await endFailedStart(request.jobId);
         throw error;
       }
       // A running admission whose operation already completed answers that outcome once it is revalidated; it starts nothing.
@@ -607,11 +621,14 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
         return { status: capability.outcome.status, text: capability.outcome.text, request };
       }
       if (typeof capability.complete !== 'function') throw new SellerTransportError('session_admission_unavailable', 503);
-      // An unfinished earlier attempt is held: it is neither ended nor run again here.
-      if (challenge.accepted !== undefined && capability.effect.state !== 'new') throw new SellerTransportError('operation_uncertain', 503, { cause: 'context_recovery_held' });
+      // The recovery of an unfinished earlier attempt of an accepted admission works from the retained request, never from the retry's body.
+      const recovering = challenge.accepted !== undefined && capability.effect.state === 'recover';
+      const retained = recovering ? records.retainedBody(request.jobId) : null;
+      if (recovering && retained === null) throw new SellerTransportError('operation_uncertain', 503, { cause: 'retained_context_missing' });
       let final;
-      try { final = await perform(capability, request.jobId, body); } catch (error) {
-        if (failedProviders.has(error)) await endFailedStart(request.jobId);
+      try { final = await perform(capability, request.jobId, retained ?? body, recovering); } catch (error) {
+        // A recovery that failed on its own keeps its attempt open: the earlier attempt may have written, so it never ends the row.
+        if (failedProviders.has(error) && !recovering) await endFailedStart(request.jobId);
         throw error;
       }
       return { status: final.status, text: final.text, request };
