@@ -515,13 +515,65 @@ describe("refine", () => {
     }
   });
 
-  it("refuses a Map, a Set or a Date, top level or nested, because freezing cannot make them read-only", () => {
+  it("refuses anything but plain objects and arrays, top level or nested, because freezing cannot make it read-only", () => {
     const schema = refine(() => true, "plain data");
-    for (const input of [new Map([["a", 1]]), new Set([1]), new Date(0), { nested: [new Map()] }]) {
+    const inputs = [
+      new Map([["a", 1]]),
+      new Set([1]),
+      new Date(0),
+      { nested: [new Map()] },
+      new Uint8Array([1, 2]),
+      { bytes: new Uint8Array([1]) },
+      new ArrayBuffer(2),
+      new SharedArrayBuffer(2),
+      new DataView(new ArrayBuffer(2)),
+      new Error("x", { cause: new Map([["a", 1]]) }),
+      /x/u,
+      Object("boxed"),
+      { nested: [Object(1)] },
+    ];
+    for (const input of inputs) {
       expect(is(schema, input)).toBe(false);
+      expect(caught(() => parse(schema, input))).toMatchObject({ code: "schema.invalid_field", expected: "plain data" });
     }
     expect(is(refine((value) => value instanceof Map), new Map())).toBe(false);
-    expect(is(schema, { nested: [1, { n: 2 }] })).toBe(true);
+    expect(is(refine((value) => value instanceof Uint8Array), new Uint8Array([1]))).toBe(false);
+  });
+
+  it("checks the copy before the predicate runs", () => {
+    let calls = 0;
+    const schema = refine(() => { calls += 1; return true; });
+    expect(is(schema, { shared: new SharedArrayBuffer(2) })).toBe(false);
+    expect(calls).toBe(0);
+  });
+
+  it("still accepts plain objects, arrays and primitives, and returns them frozen", () => {
+    const schema = refine(() => true);
+    const output = parse(schema, { list: [1, { n: "x" }], flag: true, none: null, bare: Object.assign(Object.create(null), { k: 1 }) }) as {
+      list: [number, { n: string }];
+      bare: { k: number };
+    };
+    expect(output.list).toEqual([1, { n: "x" }]);
+    expect(output.bare.k).toBe(1);
+    expect(Object.isFrozen(output)).toBe(true);
+    expect(Object.isFrozen(output.list)).toBe(true);
+    expect(Object.isFrozen(output.list[1])).toBe(true);
+    expect(Object.isFrozen(output.bare)).toBe(true);
+    for (const primitive of ["s", 1, true, null, undefined]) expect(parse(schema, primitive)).toBe(primitive);
+  });
+
+  it("answers, and does not throw, for a nested array of any depth", () => {
+    const schema = refine(() => true, "plain data");
+    const nested = (depth: number): unknown => JSON.parse("[".repeat(depth) + "]".repeat(depth));
+    // Whether a 3000-deep copy succeeds depends on the stack left, so only the absence of a throw is fixed.
+    expect(typeof is(schema, nested(3000))).toBe("boolean");
+    try {
+      expect(Object.isFrozen(parse(schema, nested(3000)))).toBe(true);
+    } catch (error) {
+      expect(error).toBeInstanceOf(SchemaError);
+    }
+    expect(is(schema, nested(100_000))).toBe(false);
+    expect(caught(() => parse(schema, nested(100_000)))).toBeInstanceOf(SchemaError);
   });
 });
 

@@ -110,8 +110,10 @@ export function hash(): Schema<string> {
  * as the cause; any other throw is rethrown unchanged. An object is copied
  * first and the predicate checks that copy, which is also what the result
  * holds, so it never aliases the caller's value and cannot differ from what was
- * checked. A value that cannot be copied, or that holds a `Map`, `Set` or
- * `Date` (which freezing cannot make read-only), is bad data.
+ * checked. Only primitives and copyable plain objects and arrays (nested to any
+ * depth the copy allows) are accepted. A value that cannot be copied, or whose
+ * copy holds any other kind of object (such as a `Map`, `Set`, `Date`, typed
+ * array, buffer, `Error` or `RegExp`), is bad data and the predicate never sees it.
  */
 export function refine<T>(predicate: (value: unknown) => value is T, expected?: string): Schema<T>;
 export function refine(predicate: (value: unknown) => boolean, expected?: string): Schema<unknown>;
@@ -122,11 +124,12 @@ export function refine(predicate: (value: unknown) => boolean, expected = "a val
       let snapshot = value;
       if (typeof value === "object" && value !== null) {
         try {
-          snapshot = structuredClone(value);
+          const copy = structuredClone(value);
+          if (!isPlainData(copy)) return fail(path, expected);
+          snapshot = copy;
         } catch {
           return fail(path, expected);
         }
-        if (holdsMutableCollection(snapshot, new Set())) return fail(path, expected);
       }
       try {
         if (!predicate(snapshot)) return fail(path, expected);
@@ -139,12 +142,31 @@ export function refine(predicate: (value: unknown) => boolean, expected = "a val
   };
 }
 
-/** True when `value` is, or reaches through enumerable own properties, a `Map`, `Set` or `Date`, which freezing cannot make read-only. */
-function holdsMutableCollection(value: unknown, seen: Set<object>): boolean {
-  if (typeof value !== "object" || value === null || seen.has(value)) return false;
-  if (value instanceof Map || value instanceof Set || value instanceof Date) return true;
-  seen.add(value);
-  return Object.values(value).some((child) => holdsMutableCollection(child, seen));
+/**
+ * True when every object reachable from `root` is a plain object, an array or
+ * has no prototype, and has no hidden own property other than an array's
+ * `length`. Anything else (a `Map`, `Set`, `Date`, buffer, view, `Error`,
+ * `RegExp` or boxed primitive) cannot be made read-only by freezing. The walk
+ * uses its own stack, so the depth of the value cannot overflow the call stack.
+ */
+function isPlainData(root: object): boolean {
+  const seen = new Set<object>([root]);
+  const pending: object[] = [root];
+  for (let value = pending.pop(); value !== undefined; value = pending.pop()) {
+    const prototype = Object.getPrototypeOf(value);
+    const isArray = prototype === Array.prototype;
+    if (!isArray && prototype !== Object.prototype && prototype !== null) return false;
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || (!descriptor.enumerable && !(isArray && key === "length"))) return false;
+      const child: unknown = descriptor.value;
+      if (typeof child === "object" && child !== null && !seen.has(child)) {
+        seen.add(child);
+        pending.push(child);
+      }
+    }
+  }
+  return true;
 }
 
 /** `schema`, or `undefined`. */
