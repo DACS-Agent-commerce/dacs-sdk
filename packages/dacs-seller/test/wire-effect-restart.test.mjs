@@ -599,33 +599,30 @@ const MAX_EFFECT_ATTEMPTS = 16;
 // Retained payment work without the last hold reason it records, which changes with each recovery.
 const identityOf = (work) => Object.fromEntries(Object.entries(work).filter(([key]) => key !== 'anchorError'));
 
-test('a retained payment that lapses sixteen times becomes unresolved while state remains readable', async (t) => {
+test('a retained payment that stays held through more lease lapses than the crash limit is never refused as unresolved and still completes', async (t) => {
   const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
-  // The seller saves the payment's work and its wallet fails before signing: the attempt stays open with the work retained.
+  // The seller saves the payment's work and its wallet fails before signing: the payment is held with the work retained.
   w.faults.walletSignature = 1;
   assert.equal((await p.send(txHash, { delegated: true })).body.status, 'held');
   const work = await w.work(p);
   assert.ok(work !== undefined, 'the payment work is retained');
   // From here the transfer is not found, so every recovery holds with the same work.
-  nativeTransfer(w, txHash, () => null);
+  const restoreTransfer = nativeTransfer(w, txHash, () => null);
   const untouched = () => [w.counts.walletSignatures, w.evidenceCreates(p), w.deliverableWrites(p), w.deliveryEvidenceWrites(p), w.grantedReceipts()];
   const effectsBefore = untouched();
-  for (let recovery = 1; recovery < MAX_EFFECT_ATTEMPTS; recovery++) {
+  for (let recovery = 1; recovery <= MAX_EFFECT_ATTEMPTS + 4; recovery++) {
     const held = await p.send(txHash, { delegated: true }), view = w.wireState(p);
     assert.equal(held.body.status, 'held', `recovery ${recovery} holds`);
-    assert.deepEqual([view.state, view.attempt], ['pending', recovery], `recovery ${recovery} supersedes the one before and its own attempt is open`);
+    assert.deepEqual([view.state, view.superseded], ['ended', 0], `recovery ${recovery} ends its attempt with no outcome and spends no crash attempt`);
   }
   assert.ok(w.clock() < T0 + DELEGATION_MS, 'every request was signed inside the six-hour delegation');
-  const unresolved = await p.send(txHash, { delegated: true }), view = w.wireState(p);
-  assert.deepEqual([unresolved.status, unresolved.body.error], [500, 'seller_effect_unresolved'], 'request 17 is refused as unresolved');
-  assert.deepEqual([view.state, view.attempt, view.superseded], ['ended', MAX_EFFECT_ATTEMPTS - 1, MAX_EFFECT_ATTEMPTS], 'sixteen attempts were superseded and the last ended with no outcome');
-  const repeated = await p.send(txHash, { delegated: true });
-  assert.equal(repeated.text, unresolved.text, 'the unresolved answer is stored');
-  assert.deepEqual(w.wireState(p), view, 'a repeat reserved no further attempt');
+  assert.deepEqual(untouched(), effectsBefore, 'no signature, CREATE, receipt or delivery was added by the held recoveries');
   await w.restart();
-  assert.equal((await p.send(txHash, { delegated: true })).text, unresolved.text, 'the unresolved answer holds across a restart');
   assert.deepEqual(identityOf(await w.work(p)), identityOf(work), 'the retained work is still readable and keeps its claim, evidence and CREATE address');
-  assert.deepEqual(untouched(), effectsBefore, 'no signature, CREATE, receipt or delivery was added by the recoveries');
+  restoreTransfer();
+  const completed = await p.send(txHash, { delegated: true });
+  assert.deepEqual([completed.body.status, completed.body.delivery.status], ['payment-evidenced', 'delivered']);
+  assert.deepEqual([w.evidenceCreates(p), w.deliverableWrites(p), w.deliveryEvidenceWrites(p)], [1, 1, 1], 'the payment is delivered once');
 });
 
 test('a worker that overruns its lease cannot add a second effect and its operation completes once later', async (t) => {
