@@ -107,8 +107,11 @@ export function hash(): Schema<string> {
 /**
  * Accepts what `predicate` accepts. The predicate says the data is bad by
  * returning false or by throwing a permanent `DacsError`, which `parse` keeps
- * as the cause; any other throw is rethrown unchanged. An accepted object is
- * cloned so the result never aliases the caller's value.
+ * as the cause; any other throw is rethrown unchanged. An object is copied
+ * first and the predicate checks that copy, which is also what the result
+ * holds, so it never aliases the caller's value and cannot differ from what was
+ * checked. A value that cannot be copied, or that holds a `Map`, `Set` or
+ * `Date` (which freezing cannot make read-only), is bad data.
  */
 export function refine<T>(predicate: (value: unknown) => value is T, expected?: string): Schema<T>;
 export function refine(predicate: (value: unknown) => boolean, expected?: string): Schema<unknown>;
@@ -116,15 +119,32 @@ export function refine(predicate: (value: unknown) => boolean, expected = "a val
   if (typeof predicate !== "function") throw new TypeError("refine needs a predicate function");
   return {
     read(value, path) {
+      let snapshot = value;
+      if (typeof value === "object" && value !== null) {
+        try {
+          snapshot = structuredClone(value);
+        } catch {
+          return fail(path, expected);
+        }
+        if (holdsMutableCollection(snapshot, new Set())) return fail(path, expected);
+      }
       try {
-        if (!predicate(value)) return fail(path, expected);
+        if (!predicate(snapshot)) return fail(path, expected);
       } catch (cause) {
         if (cause instanceof DacsError && cause.category === "permanent") return fail(path, expected, cause);
         throw cause;
       }
-      return { ok: true, value: typeof value === "object" && value !== null ? structuredClone(value) : value };
+      return { ok: true, value: snapshot };
     },
   };
+}
+
+/** True when `value` is, or reaches through enumerable own properties, a `Map`, `Set` or `Date`, which freezing cannot make read-only. */
+function holdsMutableCollection(value: unknown, seen: Set<object>): boolean {
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  if (value instanceof Map || value instanceof Set || value instanceof Date) return true;
+  seen.add(value);
+  return Object.values(value).some((child) => holdsMutableCollection(child, seen));
 }
 
 /** `schema`, or `undefined`. */

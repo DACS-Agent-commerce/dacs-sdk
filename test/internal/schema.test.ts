@@ -480,6 +480,49 @@ describe("refine", () => {
     expect(Object.isFrozen(input)).toBe(false);
     expect(Object.isFrozen(input.nested)).toBe(false);
   });
+
+  it("returns the very copy the predicate checked, even when a getter answers differently on each read", () => {
+    const seen: unknown[] = [];
+    const schema = refine((value): value is { signer: string } => {
+      seen.push(value);
+      return (value as { signer: string }).signer === "approved";
+    });
+    for (const [first, later] of [["approved", "attacker"], ["attacker", "approved"]]) {
+      let reads = 0;
+      const input = { get signer() { reads += 1; return reads === 1 ? first : later; } };
+      seen.length = 0;
+      if (first === "approved") {
+        const output = parse(schema, input);
+        expect(output.signer).toBe("approved");
+        expect(output).toBe(seen[0]);
+      } else {
+        expect(is(schema, input)).toBe(false);
+      }
+    }
+  });
+
+  it("says no, and does not throw, for a value that cannot be copied", () => {
+    const schema = refine(() => true, "anything");
+    const uncloneable = [
+      { run() { return 1; } },
+      { symbol: Symbol("x") },
+      new Proxy({}, {}),
+      { get boom(): string { throw new Error("getter"); } },
+    ];
+    for (const input of uncloneable) {
+      expect(is(schema, input)).toBe(false);
+      expect(caught(() => parse(schema, input))).toMatchObject({ code: "schema.invalid_field", expected: "anything" });
+    }
+  });
+
+  it("refuses a Map, a Set or a Date, top level or nested, because freezing cannot make them read-only", () => {
+    const schema = refine(() => true, "plain data");
+    for (const input of [new Map([["a", 1]]), new Set([1]), new Date(0), { nested: [new Map()] }]) {
+      expect(is(schema, input)).toBe(false);
+    }
+    expect(is(refine((value) => value instanceof Map), new Map())).toBe(false);
+    expect(is(schema, { nested: [1, { n: 2 }] })).toBe(true);
+  });
 });
 
 describe("definitions that are wrong are programmer errors", () => {
