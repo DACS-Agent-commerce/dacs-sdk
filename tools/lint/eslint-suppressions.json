@@ -302,11 +302,6 @@
       "count": 1
     }
   },
-  "packages/dacs-seller/test/context-compensation.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "packages/dacs-seller/test/d5-admission.test.mjs": {
     "no-unused-vars": {
       "count": 3
@@ -322,7 +317,7 @@
   },
   "packages/dacs-seller/test/d5-limits-before-effects.test.mjs": {
     "no-unused-vars": {
-      "count": 6
+      "count": 2
     }
   },
   "packages/dacs-seller/test/deliverable-wallet-journal.test.mjs": {
