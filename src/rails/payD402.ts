@@ -439,10 +439,31 @@ function withoutPendingMarker(result: PayD402SettleResult): SettleResult {
 }
 
 /**
+ * A payment that was sent and may still land: not `ok`, a hash, and no
+ * permanent failure proof. A job with such a result must not be paid again.
+ */
+function isUnresolvedPayment(result: SettleResult): boolean {
+  return !result.ok && result.txHash.length > 0 && result.errorClass !== "permanent";
+}
+
+/**
  * Bridge a PayD402Rail to the runSession `settle` seam: the rail carries the
  * static D402 paywall coordinates (resolved from the listing) while runSession
  * supplies the per-session amount. A pending payment reaches runSession as
  * `ok: false` with its hash and no `pending` key.
+ *
+ * While a call for a `jobId` and `phaseIndex` is running, and after it returns
+ * a result that is not `ok` but carries a hash (and is not a permanent
+ * failure), another call for the same job and phase does not call the rail: it
+ * returns that call's result. The hold is dropped when the call throws, returns
+ * no hash, returns a permanent failure, or returns `ok`. It lives in memory, as
+ * long as the returned function: it does not cover other bridge instances or a
+ * restart. The bridge cannot reconcile earlier attempts, so a request with
+ * `priorAttempts` or `recoveryOnly` is refused.
+ *
+ * @throws DacsError when the request's `expectedPayee` differs from the paywall
+ *   recipient, when the request asks for recovery, or when a job and phase
+ *   that are held get a request with a different `amount`.
  */
 export function payD402Settle(
   rail: PayD402Rail,
@@ -451,6 +472,7 @@ export function payD402Settle(
   const paywallUrl = paywall.url;
   const recipient = paywall.recipient;
   const network = paywall.network ?? "demos";
+  const heldByJobPhase = new Map<string, { amount: string; result: Promise<SettleResult> }>();
   return (req) => {
     const { amount, expectedPayee } = req;
     if (expectedPayee !== recipient) {
@@ -458,13 +480,35 @@ export function payD402Settle(
         `pay-d402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipient}`,
       );
     }
-    return rail
-      .settle({
-        paywallUrl,
-        recipient,
-        amount,
-        network,
-      })
-      .then(withoutPendingMarker);
+    if (req.recoveryOnly === true || (req.priorAttempts?.length ?? 0) > 0) {
+      throw new DacsError(
+        `pay-d402 does not recover earlier attempts for ${req.jobId}; no payment is made`,
+      );
+    }
+    const jobPhase = JSON.stringify([req.jobId, req.phaseIndex ?? 0]);
+    const earlier = heldByJobPhase.get(jobPhase);
+    if (earlier) {
+      if (earlier.amount !== amount) {
+        throw new DacsError(
+          `pay-d402 already holds a payment of ${earlier.amount} for ${req.jobId}; a request for ${amount} is refused and no payment is made`,
+        );
+      }
+      return earlier.result.then((result) => ({ ...result }));
+    }
+    const result = Promise.resolve()
+      .then(() => rail.settle({ paywallUrl, recipient, amount, network }))
+      .then(withoutPendingMarker)
+      .then(
+        (settled) => {
+          if (!isUnresolvedPayment(settled)) heldByJobPhase.delete(jobPhase);
+          return settled;
+        },
+        (error: unknown) => {
+          heldByJobPhase.delete(jobPhase);
+          throw error;
+        },
+      );
+    heldByJobPhase.set(jobPhase, { amount, result });
+    return result;
   };
 }

@@ -10,7 +10,9 @@ import {
   type D402PaymentRequirement,
   type D402SettlementResult,
   type PayD402Rail,
+  type PayD402SettleResult,
 } from "../../src/rails/payD402.js";
+import type { SettleRequest } from "../../src/rails/settlementTypes.js";
 
 import { CounterpartyError } from "../../src/errors.js";
 
@@ -533,5 +535,180 @@ describe("payD402Settle bridge destination binding", () => {
       payer: PAYER,
       payee: RECIPIENT,
     });
+  });
+});
+
+describe("payD402Settle bridge settles each job once after an unresolved result", () => {
+  const unresolved: PayD402SettleResult = {
+    ok: false,
+    txHash: "0xunresolvedhash",
+    chainId: "demos:testnet",
+    payer: PAYER,
+    payee: RECIPIENT,
+  };
+
+  function bridgeOver(results: Array<PayD402SettleResult | Error>) {
+    let calls = 0;
+    const rail: PayD402Rail = {
+      address: PAYER,
+      settle: async () => {
+        const next = results[Math.min(calls, results.length - 1)];
+        calls += 1;
+        if (next === undefined) throw new Error("the fake rail needs at least one result");
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    };
+    const settle = payD402Settle(rail, { url: URL, recipient: RECIPIENT, network: "demos:testnet" });
+    return { settle, settleCalls: () => calls };
+  }
+
+  function request(jobId: string, over: Partial<SettleRequest> = {}): SettleRequest {
+    return {
+      rail: "pay-d402",
+      phase: "pay-d402",
+      amount: "1500000000",
+      asset: "DEM",
+      payee: "did:demos:seller",
+      expectedPayee: RECIPIENT,
+      jobId,
+      ...over,
+    };
+  }
+
+  test("a second bridge call for a job with an unresolved hash does not settle again", async () => {
+    const { settle, settleCalls } = bridgeOver([unresolved, { ...unresolved, ok: true, txHash: "0xsecond" }]);
+    const first = await settle(request("job-unresolved"));
+    const second = await settle(request("job-unresolved"));
+    expect(settleCalls()).toBe(1);
+    expect(first.ok).toBe(false);
+    expect(second).toEqual(first);
+  });
+
+  test("a second bridge call for a job whose first payment was pending does not settle again", async () => {
+    const { settle, settleCalls } = bridgeOver([
+      { ...unresolved, pending: true },
+      { ...unresolved, ok: true, txHash: "0xsecond" },
+    ]);
+    await settle(request("job-pending"));
+    const second = await settle(request("job-pending"));
+    expect(settleCalls()).toBe(1);
+    expect(second).toEqual(unresolved);
+  });
+
+  test("a first bridge call that returned no hash can be retried for the same job", async () => {
+    const paid = { ...unresolved, ok: true, txHash: "0xpaid" };
+    const { settle, settleCalls } = bridgeOver([{ ...unresolved, txHash: "" }, paid]);
+    await settle(request("job-no-hash"));
+    const second = await settle(request("job-no-hash"));
+    expect(settleCalls()).toBe(2);
+    expect(second).toEqual(paid);
+  });
+
+  test("a first bridge call that threw before sending can be retried for the same job", async () => {
+    const paid = { ...unresolved, ok: true, txHash: "0xpaid" };
+    const { settle, settleCalls } = bridgeOver([new CounterpartyError("d402: expected HTTP 402"), paid]);
+    await expect(settle(request("job-threw"))).rejects.toThrow(/expected HTTP 402/);
+    const second = await settle(request("job-threw"));
+    expect(settleCalls()).toBe(2);
+    expect(second).toEqual(paid);
+  });
+
+  test("a permanent failure result does not hold the job", async () => {
+    const permanent: PayD402SettleResult = { ...unresolved, errorClass: "permanent" };
+    const { settle, settleCalls } = bridgeOver([permanent, permanent]);
+    await settle(request("job-permanent"));
+    await settle(request("job-permanent"));
+    expect(settleCalls()).toBe(2);
+  });
+
+  test("an unresolved payment holds only its own job and phase", async () => {
+    const { settle, settleCalls } = bridgeOver([unresolved]);
+    await settle(request("job-a"));
+    await settle(request("job-b"));
+    await settle(request("job-a", { phaseIndex: 1 }));
+    expect(settleCalls()).toBe(3);
+    await settle(request("job-a", { phaseIndex: 0 }));
+    expect(settleCalls()).toBe(3);
+  });
+
+  test("a request that carries earlier attempts or asks for recovery is refused before settling", async () => {
+    const { settle, settleCalls } = bridgeOver([unresolved]);
+    const attempt = { txHash: "0xunresolvedhash", chainId: "demos:testnet", ok: false };
+    expect(() => settle(request("job-resume", { priorAttempts: [attempt] }))).toThrow(/does not recover/);
+    expect(() => settle(request("job-resume", { recoveryOnly: true }))).toThrow(/does not recover/);
+    expect(settleCalls()).toBe(0);
+  });
+
+  function gatedBridge(outcome: () => PayD402SettleResult | Error) {
+    let calls = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const rail: PayD402Rail = {
+      address: PAYER,
+      settle: async () => {
+        calls += 1;
+        await gate;
+        const next = outcome();
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    };
+    const settle = payD402Settle(rail, { url: URL, recipient: RECIPIENT, network: "demos:testnet" });
+    return { settle, release, settleCalls: () => calls };
+  }
+
+  test("two overlapping calls for one job make one rail call and share the result", async () => {
+    const { settle, release, settleCalls } = gatedBridge(() => unresolved);
+    const first = settle(request("job-overlap"));
+    const second = settle(request("job-overlap"));
+    release();
+    expect(await first).toEqual(unresolved);
+    expect(await second).toEqual(unresolved);
+    expect(settleCalls()).toBe(1);
+  });
+
+  test("a throw in the first of two overlapping calls lets a later call retry", async () => {
+    let attempt = 0;
+    const paid = { ...unresolved, ok: true, txHash: "0xpaid" };
+    const { settle, release, settleCalls } = gatedBridge(() => {
+      attempt += 1;
+      return attempt === 1 ? new CounterpartyError("d402: expected HTTP 402") : paid;
+    });
+    const first = settle(request("job-overlap-throw"));
+    const second = settle(request("job-overlap-throw"));
+    release();
+    await expect(first).rejects.toThrow(/expected HTTP 402/);
+    await expect(second).rejects.toThrow(/expected HTTP 402/);
+    expect(settleCalls()).toBe(1);
+    expect(await settle(request("job-overlap-throw"))).toEqual(paid);
+    expect(settleCalls()).toBe(2);
+  });
+
+  test("a repeat with a different amount is refused while the job is held", async () => {
+    const { settle, settleCalls } = bridgeOver([unresolved]);
+    await settle(request("job-amount", { amount: "100" }));
+    expect(() => settle(request("job-amount", { amount: "200" }))).toThrow(/already holds a payment of 100/);
+    expect(settleCalls()).toBe(1);
+    expect(await settle(request("job-amount", { amount: "100" }))).toEqual(unresolved);
+    expect(settleCalls()).toBe(1);
+  });
+
+  test("a repeat with a different amount is refused while the first call is running", async () => {
+    const { settle, release, settleCalls } = gatedBridge(() => unresolved);
+    const first = settle(request("job-amount-running", { amount: "100" }));
+    expect(() => settle(request("job-amount-running", { amount: "200" }))).toThrow(/already holds/);
+    release();
+    await first;
+    expect(settleCalls()).toBe(1);
+  });
+
+  test("a successful settle through the bridge is returned unchanged", async () => {
+    const paid = { ...unresolved, ok: true, txHash: "0xpaid" };
+    const { settle, settleCalls } = bridgeOver([paid]);
+    expect(await settle(request("job-paid"))).toEqual(paid);
+    expect(settleCalls()).toBe(1);
   });
 });
