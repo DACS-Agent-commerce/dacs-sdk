@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { AUTHORITY_READ_DEADLINE_MS } from '../src/public-admission.mjs';
 import { runFreshChild } from './helpers/fresh-node-child.mjs';
@@ -17,15 +16,8 @@ const NODE_PATH = new URL('../src/wallet/node-wallet-session.mjs', import.meta.u
 const WIRE_PATH = import.meta.resolve('@kynesyslabs/dacs/wire');
 const heightOf = row => row.body.params[0].data.blockNumber;
 const blockZero = hash => ({ number: 0, status: 'confirmed', hash, content: {} });
-// The recorded block-zero error, block one and block two answer the reviewed Node2 layout the observer reads.
-const observations = new URL('../../../conformance/', import.meta.url);
-const recordedBody = file => JSON.parse(JSON.parse(readFileSync(new URL(file, observations))).body);
-const recorded = { 0: recordedBody('tp1-node-observations/block0-2026-10-20.json'), 1: recordedBody('tp1-node-observations/block1-2026-10-20.json'),
-  2: recordedBody('tp1-node-observations-2026-11-08/block2-2026-11-08.json') };
-const literalError = () => jsonResponse(JSON.stringify(recorded[0]));
-const recordedBlocks = (previousHash = CHAIN) => ({ 0: literalError,
-  1: () => jsonResponse(JSON.stringify({ ...recorded[1], response: { ...recorded[1].response, content: { ...recorded[1].response.content, previousHash } } })),
-  2: () => jsonResponse(JSON.stringify(recorded[2])) });
+const blockOne = previousHash => ({ number: 1, status: 'confirmed', hash: 'b'.repeat(64), content: { previousHash } });
+const literalError = () => jsonResponse(JSON.stringify({ result: 400, response: 'error' }));
 const flushLateWork = () => new Promise(resolve => setImmediate(resolve));
 
 // An observer over a queued owner and the scripted node; `signals` has each request's AbortSignal.
@@ -62,7 +54,7 @@ test('the observer is built from an unopened transport owner and bindTp1Profile 
 test('with a non-reentrant queued owner whose fence is held, a full observation completes with zero fence acquisitions', async t => {
   const w = observerWorld(), lease = await w.owner.acquireConnectionFence(), acquired = w.owner.acquisitions();
   t.after(() => lease.release());
-  for (const answers of [{}, recordedBlocks()]) {
+  for (const answers of [{}, { 0: literalError, 1: () => jsonResponse(JSON.stringify(ok(blockOne(CHAIN)))) }]) {
     answerWith(w, answers);
     const decision = await w.observer.observe({});
     assert.equal(decision.chainIdentity, CHAIN);
@@ -70,7 +62,7 @@ test('with a non-reentrant queued owner whose fence is held, a full observation 
   }
   assert.equal(w.owner.acquisitions(), acquired, 'the observer acquired the fence');
   assert.equal(w.owner.held(), true);
-  assert.deepEqual(w.node.calls.map(heightOf), [0, 0, '0', 1, 2], 'numeric block zero, then numeric zero, string zero, block one and block two');
+  assert.deepEqual(w.node.calls.map(heightOf), [0, 0, '0', 1], 'numeric block zero, then numeric zero, string zero and block one');
 });
 
 test('a connection replacement during an observation refuses; provenance is stable across observations on one generation and changes with it', async () => {
@@ -88,7 +80,7 @@ test('a connection replacement during an observation refuses; provenance is stab
 
 test('one aggregate deadline covers every read of an observation; past it the observation refuses tp1_authority_timeout and a late answer authorizes nothing', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const w = observerWorld(), blockZeroStalled = deferred(), blockOneStalled = deferred(), blockOneStarted = deferred(), laterBlocks = recordedBlocks();
+  const w = observerWorld(), blockZeroStalled = deferred(), blockOneStalled = deferred(), blockOneStarted = deferred();
   answerWith(w, { 0: () => blockZeroStalled.promise, 1: () => { blockOneStarted.resolve(); return blockOneStalled.promise; } });
   const observation = w.observer.observe({});
   const outcome = observation.then(() => 'authorized', error => error);
@@ -99,7 +91,7 @@ test('one aggregate deadline covers every read of an observation; past it the ob
   const error = await outcome;
   assert.equal(error.code, 'tp1_authority_timeout');
   assert.equal(error.cause.kind, 'timeout');
-  blockOneStalled.resolve(laterBlocks[1]());
+  blockOneStalled.resolve(jsonResponse(JSON.stringify(ok(blockOne(CHAIN)))));
   await flushLateWork();
   assert.deepEqual(w.node.calls.map(heightOf), [0, '0', 1], 'the late answer started nothing');
 });
@@ -122,7 +114,7 @@ test('a cancelled observation aborts its in-flight read, starts no queued read a
 test('the expected identity and block-one fallback come from TP1_APPROVED_IDENTITY_RECORD; a node answering another chain or an oversized block is refused with its cause', async () => {
   const refusals = [
     [{ 0: () => jsonResponse(JSON.stringify(ok(blockZero(OTHER_CHAIN)))) }, error => error.code === 'identity_mismatch'],
-    [recordedBlocks(OTHER_CHAIN), error => error.code === 'unavailable' && error.cause?.code === 'identity_mismatch'],
+    [{ 0: literalError, 1: () => jsonResponse(JSON.stringify(ok(blockOne(OTHER_CHAIN)))) }, error => error.code === 'conflicting_identity'],
     ...[true, false].map(declared => [{ 0: () => sizedReply(4 * MIB + 1, { declared }) }, error => error.code === 'unavailable' && error.cause.kind === 'invalid' && /exceeds byte limit/.test(error.cause.message)]),
   ];
   for (const [answers, refused] of refusals) {
@@ -131,7 +123,7 @@ test('the expected identity and block-one fallback come from TP1_APPROVED_IDENTI
     await assert.rejects(w.observer.observe({}), refused);
   }
   const fallback = observerWorld();
-  answerWith(fallback, recordedBlocks());
+  answerWith(fallback, { 0: literalError, 1: () => jsonResponse(JSON.stringify(ok(blockOne(CHAIN)))) });
   assert.equal((await fallback.observer.observe({})).chainIdentity, CHAIN, 'the record supplies the block-one fallback');
   const supplied = observerWorld({ record: { ...TP1_APPROVED_IDENTITY_RECORD, chainIdentity: OTHER_CHAIN }, expected: { chainIdentity: OTHER_CHAIN } });
   answerWith(supplied, { 0: () => jsonResponse(JSON.stringify(ok(blockZero(OTHER_CHAIN)))) });

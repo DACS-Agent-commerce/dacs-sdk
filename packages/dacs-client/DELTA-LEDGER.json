@@ -10493,6 +10493,27 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change)",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "f29cc9acc216d905047a639689fa7895babc36a9",
+          "after": "192016f0d5c93cbdd715fa2b5058bb312bc1d683"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "6b0e4a1deec87b0aec54e0747da4716db26c4c84",
+          "after": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5",
+          "after": "c7e55813ec5c437ed39a0966b6a882470884b57b"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the merged blobs of the identity reader, the native transport, the wallet session and the binding test after carrying the shared identity reader fixes up",
       "compact": true,
       "files": [

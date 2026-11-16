@@ -181,8 +181,7 @@ async function withinAuthorityDeadline(read, signal) {
 /**
  * Returns the fence-free, read-only observer for a node owner: {observe({signal}),
  * readNodeInfo(message, {signal}), provenance()}. Its expected identity and block-one fallback
- * come only from TP1_APPROVED_IDENTITY_RECORD, and it reads the node's block-zero error, block-one layout and
- * block two with the same reviewed Node2 policy as the transport. It acquires no connection fence, takes no
+ * come only from TP1_APPROVED_IDENTITY_RECORD. It acquires no connection fence, takes no
  * journal lock and signs nothing, so it works while a fence is held and before any journal or
  * custody is opened. observe resolves {local, chainIdentity, provenance} for the owner's current
  * connection once the node's chain matches the record; readNodeInfo resolves the node's answer
@@ -194,8 +193,7 @@ async function withinAuthorityDeadline(read, signal) {
  * Throws TypeError for an owner without currentLocal, getContext and fetchImpl.
  */
 export function createNodeObserver({ owner, clock = { now: () => Date.now() } } = {}) {
-  const source = createSourceObserver({ record: TP1_APPROVED_IDENTITY_RECORD, owner, now: () => clock.now(), timeoutMs: AUTHORITY_READ_DEADLINE_MS,
-    blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH });
+  const source = createSourceObserver({ record: TP1_APPROVED_IDENTITY_RECORD, owner, now: () => clock.now(), timeoutMs: AUTHORITY_READ_DEADLINE_MS });
   const provenanceOf = connectionId => `${OBSERVER_PROVENANCE_PREFIX}:${connectionId}`;
   return Object.freeze({
     provenance: () => provenanceOf(owner.currentLocal().connectionId),
