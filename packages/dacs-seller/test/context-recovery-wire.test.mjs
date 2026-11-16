@@ -232,3 +232,31 @@ test('a completed outcome of a running admission is revalidated and answered wit
   assert.deepEqual([after.holds, after.starts, after.vetWrites], [holds, starts, vetWrites]);
   assert.equal(w.counts.sourceReads, 1);
 });
+
+test('register context present and non-pass in shared completed-source matrix T-P11d1-22', async (t) => {
+  const changedAnswer = (answer) => (answer.disposition === 'present'
+    ? { ...answer, value: { ...answer.value, input: { ...answer.value.input, jobId: WIRE_JOB2 } } }
+    : { ...answer, reason: 'seller Vet decision: changed' });
+  const sources = [
+    ['absent', () => null, 'absent'],
+    ['failing', () => { throw Object.assign(new Error('TEST the node failed'), { code: 'node_failed' }); }, 'node_failed'],
+    ['changed', changedAnswer, 'changed'],
+  ];
+  for (const [kind, stored] of [['present', null], ['first-Vet non-pass', FIRST_VET_NON_PASS], ['second-Vet non-pass', SECOND_VET_NON_PASS]]) {
+    for (const [state, source, cause] of sources) {
+      await t.test(`${kind} with a ${state} source`, async (t) => {
+        const w = await contextWireWorld(t);
+        if (stored) w.behaviour.answer = async () => stored;
+        const { request, answer } = await settled(w), outcome = w.operationOf(WIRE_JOB).outcome.text, before = effects(w);
+        w.behaviour.source = async () => source(JSON.parse(answer.text));
+        const refused = await w.post(await resign(w, request));
+        assert.deepEqual([...summary(refused), refused.body.cause], [503, 'seller_source_unavailable', cause]);
+        assert.equal(w.operationOf(WIRE_JOB).outcome.text, outcome, 'the outcome is unchanged');
+        assert.deepEqual(effects(w), before);
+        w.behaviour.source = null;
+        const control = await w.post(await resign(w, request));
+        assert.deepEqual([control.status, control.text], [200, answer.text], 'a valid source answers the stored bytes');
+      });
+    }
+  }
+});
