@@ -394,26 +394,31 @@ test('with the default budget and 9,933 earlier accounting rows, the host still 
 
 const NEW_PURCHASE = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) });
 
-// With one retained accounting row, a request is served while that row is below the reservation budget and the store's record
-// limit, and is refused `peer_store_capacity` once either limit is that row.
-const refusal = ({ status, bytes }) => [status, JSON.parse(bytes).error];
+// A new purchase is admitted by its context request, which takes a whole allotment and one general row of its own before any proposal
+// is sent. With one retained accounting row, that request is served while the reservation budget has room for the row, the allotment
+// and one more unit; it is refused `peer_store_capacity` when the allotment fits and the unit does not, `seller_not_ready` when the
+// allotment does not fit, and `peer_store_capacity` once the store's record limit is the retained row.
+const refusalOf = async (propose) => { const { code, status } = await rejection(propose(NEW_PURCHASE)); return [status, code]; };
 
-test('a host whose reservation budget is one above its retained rows serves a request while maxRecords is at its default', async (t) => {
-  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 2 });
+test('a host whose reservation budget is one above its retained rows and one allotment serves a request while maxRecords is at its default', async (t) => {
+  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 2 + PURCHASE_ALLOTMENT });
   const { answer } = await propose(NEW_PURCHASE);
   assert.equal(answer.status, 200, answer.bytes.toString());
 });
 
-test('a host whose reservation budget equals its retained rows refuses a request while maxRecords is at its default', async (t) => {
-  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 1 });
-  const { answer } = await propose(NEW_PURCHASE);
-  assert.deepEqual(refusal(answer), [503, 'peer_store_capacity']);
+test('a host whose reservation budget equals its retained rows and one allotment refuses a request while maxRecords is at its default', async (t) => {
+  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 1 + PURCHASE_ALLOTMENT });
+  assert.deepEqual(await refusalOf(propose), [503, 'peer_store_capacity']);
+});
+
+test('a host whose reservation budget is one unit short of its retained rows and one allotment refuses a request as not ready', async (t) => {
+  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: PURCHASE_ALLOTMENT });
+  assert.deepEqual(await refusalOf(propose), [503, 'seller_not_ready']);
 });
 
 test('a host whose maxRecords equals its retained rows refuses a request while the reservation budget has room', async (t) => {
   const { propose } = await hostWithAccountingHistory(t, 1, { maxRecords: 1, maxReservationUnits: DEFAULT_RESERVATION_BUDGET });
-  const { answer } = await propose(NEW_PURCHASE);
-  assert.deepEqual(refusal(answer), [503, 'peer_store_capacity']);
+  assert.deepEqual(await refusalOf(propose), [503, 'peer_store_capacity']);
 });
 
 test('a host refuses a zero or fractional reservation budget and names the option', async (t) => {
