@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { proposeJob, world } from './helpers/wire-routes-world.mjs';
+import { proposalWireWorld } from './helpers/proposal-wire-world.mjs';
 
 // The wire bounds the lifetime of the discovery document it is bound to, so a test that lets leases end uses a short one.
 const SHORT_LEASE_MS = 1000;
@@ -38,27 +39,33 @@ test('a proposal worker held before its job check while its lease ends is refuse
   assert.equal((await job.post()).text, successor.text, 'the successor\'s outcome stands');
 });
 
-test('a recovery held after its claim while its lease ends is refused at its next check once a successor has recovered, and settles nothing', async (t) => {
-  const w = await world(t, { leaseMs: SHORT_LEASE_MS }), job = await proposeJob(w, 'lapsed-recovery');
-  // A plain failure after unknown work leaves the attempt open, so each later request after the lease is a recovery.
-  w.agent.answer = () => { throw new Error('TEST the worker failed after an unknown amount of work'); };
-  assert.equal((await job.post()).status, 503);
-  w.agent.answer = undefined;
-  w.state.time += w.leaseMs;
-  let check;
-  const held = await pauseFirstCall(w, 'reconcileTransport', async ({ transport }, settings, original, wait) => {
-    const claim = transport.claim();
-    await wait();
-    try { claim.check(); check = 'live'; } catch (error) { check = `${error.code} ${error.status}`; }
+// The real agent holds its job fence while it recovers, so a recovery can only be overtaken before it enters the agent.
+for (const end of ['completed', 'released']) {
+  test(`a recovery held before the real agent's claim while its lease ends does no work once a successor has ${end} the attempt`, async (t) => {
+    const w = await proposalWireWorld(t);
+    // A plain failure after unknown work leaves the attempt open, so each later request after the lease is a recovery.
+    const received = w.agent.receiveProposal;
+    w.agent.receiveProposal = () => { throw new Error('TEST the worker failed after an unknown amount of work'); };
+    assert.equal((await w.post()).status, 503);
+    w.agent.receiveProposal = received;
+    w.state.time += w.leaseMs;
+    const held = await pauseFirstCall(w, 'reconcileTransport', async (input, settings, original, wait) => { await wait(); return original(input, settings); });
+    const late = w.post();
+    await held.started();
+    w.state.time += w.leaseMs;
+    // A receipt that does not verify makes the successor's recovery reject the proposal and release its effect.
+    if (end === 'released') w.f.admission.verifyReceiptWith(() => 'invalid');
+    const successor = await w.post();
+    assert.equal(successor.status, 200, 'the successor answers');
+    assert.equal(successor.body.disposition, end === 'completed' ? 'complete' : 'rejected');
+    w.f.admission.verifyReceiptWith(null);
+    const signed = w.agreementSignatures(), kept = w.realAgent().durableSessionOf(w.jobId)?.sellerContribution ?? null;
+    held.resume();
+    const lost = await late;
+    assert.deepEqual({ status: lost.status, error: lost.body.error }, { status: 503, error: 'peer_reconciliation_conflict' }, 'the agent\'s claim refuses the late recovery');
+    assert.equal(w.agreementSignatures(), signed, 'the late recovery signed nothing');
+    assert.deepEqual(w.realAgent().durableSessionOf(w.jobId)?.sellerContribution ?? null, kept, 'the late recovery kept nothing');
+    if (end === 'completed') assert.equal((await w.post()).text, successor.text, 'the successor\'s outcome stands');
+    else assert.equal((await w.post()).body.disposition, 'complete', 'the corrected request signs the Agreement once');
   });
-  const late = job.post();
-  await held.started();
-  w.state.time += w.leaseMs;
-  const successor = await job.post();
-  assert.equal(successor.status, 200, 'the successor recovers and completes');
-  held.resume();
-  const lost = await late;
-  assert.equal(check, 'peer_reconciliation_conflict 503', 'the late claim is refused at its check');
-  assert.notEqual(lost.status, 200, 'the late recovery completes nothing');
-  assert.equal((await job.post()).text, successor.text, 'the successor\'s outcome stands');
-});
+}

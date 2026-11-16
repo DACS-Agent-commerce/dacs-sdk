@@ -11,6 +11,22 @@ const header64 = (envelope) => Buffer.from(canonicalize(envelope)).toString('bas
 const envelopeOf = (header) => JSON.parse(Buffer.from(header, 'base64url'));
 const summary = (answer) => ({ status: answer.status, error: answer.body.error, signed: answer.signed });
 
+test('an authentication envelope that repeats a member or carries a number that does not survive parsing is refused unsigned, before any agent call', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'envelope-tokens'), text = JSON.stringify(job.body);
+  const payload = w.payloadFor(PATHS.proposals, text, { jobId: job.jobId, agreementHash: job.agreementHash });
+  const raw = Buffer.from(w.headerFor(payload), 'base64url').toString();
+  const unsafe = `"expiresAt":${Number.MAX_SAFE_INTEGER}`;
+  const changed = { 'a repeated member': raw.replace('"payload":', '"payload":{},"payload":'), 'a repeated signature': raw.replace('"signature":', '"signature":"x","signature":'),
+    'a number with more digits than a double keeps': raw.replace(/"expiresAt":\d+/, `${unsafe}1`) };
+  for (const [name, edited] of Object.entries(changed)) {
+    assert.notEqual(edited, raw, name);
+    const refused = await w.send(PATHS.proposals, { text, header: Buffer.from(edited).toString('base64url') });
+    assert.deepEqual(summary(refused), { status: 401, error: 'wire_json_rejected', signed: false }, name);
+  }
+  assert.equal(w.effects(), 0, 'nothing reached the agent');
+  assert.equal((await w.send(PATHS.proposals, { text, header: Buffer.from(raw).toString('base64url') })).status, 200, 'the same envelope with no change is admitted');
+});
+
 test('a request signature with S at or above the group order is refused unsigned, and the same request signed normally is admitted', async (t) => {
   const w = await world(t), job = await proposeJob(w, 'raised-s');
   const text = JSON.stringify(job.body), payload = w.payloadFor(PATHS.proposals, text, { jobId: job.jobId, agreementHash: job.agreementHash });

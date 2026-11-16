@@ -42,14 +42,19 @@ const titlesOf = (file) => {
   const source = sourceOf(file);
   return [...[...source.matchAll(TITLE)].map((match) => match[2].replaceAll("\\'", "'").replaceAll('\\"', '"')), ...tableTitlesOf(source)];
 };
-/** The argument text of each `createSellerHttpHandler(...)` call in `source`. */
-const handlerCalls = (source) => [...source.matchAll(/createSellerHttpHandler\(/g)].map((match) => {
+/** The argument text of each `createSellerHttpHandler(...)` call in `source`; a name inside a string is source text the test rewrites, not a call. */
+const handlerCalls = (source) => [...source.matchAll(/(?<!['"`])createSellerHttpHandler\(/g)].map((match) => {
   let depth = 1, at = match.index + match[0].length;
   for (; at < source.length && depth > 0; at++) depth += source[at] === '(' ? 1 : source[at] === ')' ? -1 : 0;
   return source.slice(match.index, at);
 });
-/** True when a test file composes the old path: a handler given `authentication` and no `wire`, the old HTTP world, or the old auth's checks. */
-const composesOldPath = (source) => handlerCalls(source).some((call) => /\bauthentication\b/.test(call) && !/\bwire\b/.test(call))
+/**
+ * True when a handler call serves a route with the old server auth: it is given `authentication` and no `wire`, or `wire` and a `context`
+ * option, whose challenge and context step stay on the old auth unless the context route serves them on the wire.
+ */
+const handlerUsesOldAuth = (call) => /\bauthentication\b/.test(call) && (!/\bwire\b/.test(call) || /\bcontext\b/.test(call));
+/** True when a test file composes the old path: a handler that uses the old auth for a route, the old HTTP world, or the old auth's checks. */
+const composesOldPath = (source) => handlerCalls(source).some(handlerUsesOldAuth)
   || OLD_WORLD.test(source) || (SERVER_AUTH.test(source) && OLD_AUTH_CHECK.test(source));
 const keyOf = ({ file, title }) => `${file}\u0000${title}`;
 
@@ -79,6 +84,13 @@ test('every named replacement is a test that exists; an equivalent names one, an
     assert.ok(titlesOf(entry.replacement.file).includes(entry.replacement.title), `${entry.legacy.title} -> ${entry.replacement.title}`);
     assert.notEqual(keyOf(entry.replacement), keyOf(entry.legacy), 'a test is not its own replacement');
   }
+});
+
+test('the old-path scan counts a handler on the old auth, also with the wire when it has a context route, and skips a name inside a string', () => {
+  assert.equal(composesOldPath('createSellerHttpHandler(agent, { authentication })'), true);
+  assert.equal(composesOldPath('createSellerHttpHandler(agent, { authentication, wire, context })'), true, 'the context step of a wire handler stays on the old auth');
+  assert.equal(composesOldPath('createSellerHttpHandler(agent, { authentication, wire })'), false, 'a handler with only the wire serves no route with the old auth');
+  assert.equal(composesOldPath("source.replace('createSellerHttpHandler(agent, { authentication, wire, context })', 'other')"), false);
 });
 
 // Checked per file: which tests of a file reach the old path is read from a run, not from the source.

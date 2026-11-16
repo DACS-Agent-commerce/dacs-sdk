@@ -130,12 +130,12 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
       }
     } finally { db.close(); }
   };
-  /** One context record in the admissions table, so a store limited to one record is full. */
-  const seedContextRecord = () => {
+  /** One context record in the admissions table, so a store limited to one record is full; it counts as a start of `buyer`, another buyer by default. */
+  const seedContextRecord = ({ buyer = OTHER } = {}) => {
     const db = new Database(path);
     try {
       db.exec('CREATE TABLE IF NOT EXISTS peer_context_admissions (job TEXT PRIMARY KEY, buyer TEXT NOT NULL, seller TEXT NOT NULL, listing_pin TEXT NOT NULL, scope_hash TEXT NOT NULL, effect TEXT NOT NULL, admitted_at INTEGER NOT NULL)');
-      db.prepare('INSERT INTO peer_context_admissions VALUES (?,?,?,?,?,?,?)').run(JOB2, OTHER.claim, SELLER.claim, canonicalize(pin), sha256Hex('TEST-scope'), sha256Hex('TEST-effect'), state.time);
+      db.prepare('INSERT INTO peer_context_admissions VALUES (?,?,?,?,?,?,?)').run(JOB2, buyer.claim, SELLER.claim, canonicalize(pin), sha256Hex('TEST-scope'), sha256Hex('TEST-effect'), state.time);
     } finally { db.close(); }
   };
   const restart = () => { store.close(); open(); compose(); };
