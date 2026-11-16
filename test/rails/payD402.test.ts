@@ -159,6 +159,49 @@ describe("payD402SettleCore", () => {
     expect(res.txHash).toBe("0xtried");
   });
 
+  test("a settle still pending after its poll is reported pending, not ok, with its hash kept", async () => {
+    const client = fakeClient({
+      result: { success: false, pending: true, hash: "0xpendinghash", message: "not yet included" },
+    });
+    const res = await payD402SettleCore(params(), {
+      client,
+      fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
+      payerAddress: PAYER,
+    });
+    expect(res).toEqual({
+      ok: false,
+      pending: true,
+      txHash: "0xpendinghash",
+      chainId: "demos:testnet",
+      payer: PAYER,
+      payee: RECIPIENT,
+    });
+    expect(res.errorClass).toBeUndefined();
+  });
+
+  test("a pending settle with no hash throws instead of reporting not sent", async () => {
+    const client = fakeClient({ result: { success: false, pending: true, hash: "" } });
+    await expect(
+      payD402SettleCore(params(), {
+        client,
+        fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
+        payerAddress: PAYER,
+      }),
+    ).rejects.toThrow(/pending.*without a hash/);
+  });
+
+  test("a settle reporting success and pending is never ok", async () => {
+    const client = fakeClient({ result: { success: true, pending: true, hash: "0xpendinghash" } });
+    const res = await payD402SettleCore(params(), {
+      client,
+      fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
+      payerAddress: PAYER,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.pending).toBe(true);
+    expect(res.txHash).toBe("0xpendinghash");
+  });
+
   test("a bare-DEM number amount (pre-fork) is rejected — OS base-unit string required", async () => {
     const client = fakeClient();
     await expect(
@@ -211,5 +254,36 @@ describe("payD402Settle bridge destination binding", () => {
       }),
     ).toThrow(/destination mismatch/);
     expect(calls).toBe(0);
+  });
+
+  test("the runSession bridge hands over a pending payment as ok:false with its hash and no pending key", async () => {
+    const rail: PayD402Rail = {
+      address: PAYER,
+      settle: async () => ({
+        ok: false,
+        pending: true,
+        txHash: "0xpendinghash",
+        chainId: "demos:testnet",
+        payer: PAYER,
+        payee: RECIPIENT,
+      }),
+    };
+    const settle = payD402Settle(rail, { url: URL, recipient: RECIPIENT, network: "demos:testnet" });
+    const res = await settle({
+      rail: "pay-d402",
+      phase: "pay-d402",
+      amount: "1500000000",
+      asset: "DEM",
+      payee: "did:demos:seller",
+      expectedPayee: RECIPIENT,
+      jobId: "pending-bridge",
+    });
+    expect(res).toEqual({
+      ok: false,
+      txHash: "0xpendinghash",
+      chainId: "demos:testnet",
+      payer: PAYER,
+      payee: RECIPIENT,
+    });
   });
 });
