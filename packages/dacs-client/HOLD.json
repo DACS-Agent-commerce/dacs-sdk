@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "eacefad3063441dcf8e4b09c9f6dad70f980b119"
+        "blob": "e5601760745cf22298cdb1d9f945adb5017530bd"
       },
       "DELTA-LEDGER.json": {
-        "blob": "67e8523d22d90783369a1df8c24beef589ddacb5"
+        "blob": "eb45e1da672ea1da53bddb7c62afdc3189f897d5"
       },
       "DELTA-MAP.md": {
-        "blob": "e8a85ba4af19124be48363b4ae50a2dfe67dafa7"
+        "blob": "6255e849f7384e10e958240d80e028fba87c0e57"
       },
       "DELTA-NOTES.md": {
         "blob": "2fd14b834ffa4e44e77d8af6b38f096f32d49d8b"
@@ -1037,7 +1037,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "6525334b429962711d6808ecdddeb416e31b2a46"
+        "blob": "4652ced63f673d168845340a249543d4ca6b36c5"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1070,7 +1070,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "0f2e6679473afc002446fac791617242a521b204"
+        "blob": "dd8c7adeab48ef573f1970420021c6ec2c6121d8"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "5fda029c1ecf1d7476d016ac70a130a25c4b4367"
@@ -1148,7 +1148,7 @@
         "blob": "597a1a6205e46cfb4e1a1a44b768ace3239f0843"
       },
       "src/dacs/dem-delivery-context-consumer.mjs": {
-        "blob": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7"
+        "blob": "b190cb9f28255865882e670bbd9ef45bd9193bba"
       },
       "src/dacs/demos-sr2-adapter.mjs": {
         "blob": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868"
@@ -1175,7 +1175,7 @@
         "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "f6492ec9771611dd72c96e94107384db860ca748"
+        "blob": "8eac38bb49a4929421c3d1362fac362c6fe00cd3"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1247,7 +1247,7 @@
         "blob": "0dcfab473d1256f9de295bc65c0f04926e1ceb62"
       },
       "src/index.mjs": {
-        "blob": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        "blob": "4bf029a4db45b1d876cb4e028bccf6d0824a315f"
       },
       "src/portal-capability.mjs": {
         "blob": "fb1f631894e79e1139d7d66c8ce2e56d97a40ae5"
@@ -1359,6 +1359,9 @@
       },
       "src/wallet/signer-reservation.mjs": {
         "blob": "7e54669ad2d3b2af37aee198f8f4de382d598186"
+      },
+      "test/agreement-context-readback.test.mjs": {
+        "blob": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
       },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
@@ -1697,7 +1700,7 @@
         "blob": "75301fa5bacb1b288b1772e61d7e4bc132604e1e"
       },
       "test/helpers/public-composition-world.mjs": {
-        "blob": "6671b70cf3fad1b68f2e4085c67352d4102a04d4"
+        "blob": "f568fd35048d886ed2eeecd892fdef1b21a9d12c"
       },
       "test/helpers/public-demos-reader-node.mjs": {
         "blob": "d96f4f1c7bf7ac0e485b8cc0f366eb778f561cd5"

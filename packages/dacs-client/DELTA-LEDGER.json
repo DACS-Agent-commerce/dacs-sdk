@@ -9949,6 +9949,37 @@
           "after": "0db3b89514f68fbba88d99345a0ea7089911e3d7"
         }
       ]
+    },
+    {
+      "delta": "D74",
+      "subject": "delta(client): D74 read a held plan step's seller Vet record writes back on a purchase recheck",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs",
+          "before": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7",
+          "after": "b190cb9f28255865882e670bbd9ef45bd9193bba"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f6492ec9771611dd72c96e94107384db860ca748",
+          "after": "8eac38bb49a4929421c3d1362fac362c6fe00cd3"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "4bf029a4db45b1d876cb4e028bccf6d0824a315f"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-readback.test.mjs",
+          "before": null,
+          "after": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+          "before": "6671b70cf3fad1b68f2e4085c67352d4102a04d4",
+          "after": "f568fd35048d886ed2eeecd892fdef1b21a9d12c"
+        }
+      ]
     }
   ]
 }
