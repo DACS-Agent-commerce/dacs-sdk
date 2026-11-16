@@ -169,8 +169,9 @@ key names no row, the host starts not ready, changes nothing and records
 `seller-state: not accepting new purchases: kit_journal_accounting_mismatch: <cause>`.
 The cause is a code and a detail, for example
 `seller_replay_guard_invalid: STORE-ENUMERATION-INCOMPLETE`. It says the journal
-and the store do not agree, or the journal cannot be read whole; it does not name
-the key or the row. The operator restores `seller/`, `transport/` and
+and the store do not agree, or the journal cannot be read whole; it may name a
+key, an operation or a job, and names a file only for an operating-system read
+error. The operator restores `seller/`, `transport/` and
 `wire-journal/` to one consistent copy (the same backup, or the same running
 host), then restarts; each start checks again. Only when the cause is an
 operating-system read error that names a file does the operator repair that file

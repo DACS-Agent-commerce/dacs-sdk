@@ -109,8 +109,9 @@ async function kindOf(address, sources) {
 
 /**
  * Classifies one sink address from `sources`: `no-intent`, `proven-unsigned`, `never-dispatched`, `retired`, `executed` or `undetermined`.
- * Every read runs fresh under a 10,000 ms deadline, and a returned reply of more than 1 MiB or 256 items is not accepted. Each source is
- * given those limits to apply while it reads; the proof itself checks only the deadline and the reply it gets back. Resolves `{ address, kind, cause? }`; a read that throws, times out or
+ * Every read runs fresh under a 10,000 ms deadline, and a returned reply of more than 1 MiB is not accepted; an intent list of more than 256
+ * items (anchor or wallet) or a dispatch history of more than 256 records is not accepted either. Each source is given those limits to apply
+ * while it reads; the proof itself checks only the deadline and the reply it gets back. Resolves `{ address, kind, cause? }`; a read that throws, times out or
  * answers an incomplete or malformed result is `undetermined` with its stored cause. Never rejects.
  */
 export async function classifyAddress(address, sources) {
