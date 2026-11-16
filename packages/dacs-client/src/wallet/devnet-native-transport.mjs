@@ -322,6 +322,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const binder = makeBinder(),storageRecoveryBinder = makeBinder(true);
   const lane = (address) => nativeWalletLaneKey(pinned, address);
   const intent = (hash) => `devnet/native-transfer/${hash}`;
+  // A stored evidence CREATE owns the signer's next nonce until the chain has used it: a write sent before could take it and leave that
+  // CREATE unexecutable. Before the broadcast this only tells the wallet early that nothing
+  // was sent; the broadcast claim runs it again, which decides.
+  const refuseWhileReserved = async (from) => {
+    const reserved = (await journal.get(signerReservationKey(pinned, from)))?.active;
+    if (reserved && nonceFromNode(await node('getAddressNonce', { address: from })) < reserved.nonce) fail('signer_lane_busy', 'a stored payment-evidence write holds this signer; nothing was sent');
+  };
   // Cancelled native payments. The plugin cancels a payment handoff only
   // through cancelNativeTransfer, which keeps its transfer on the payer's lane
   // in this durable journal: its settlement terms (below), the digest of the
@@ -897,6 +904,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           // broadcast claim below still decides, under the lane lock.
           const confirmed=await identityOf(l.confirmed.content);
           if(await cancelledTransfer(address,confirmed)) await refuseCancelled(address,confirmed,'pre-broadcast');
+          await refuseWhileReserved(address);
           l.binding=await binder.beforeBroadcast(l.binding);
           if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the connection changed before broadcast');
           l.readyHash=request.hash;
@@ -943,9 +951,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       let accepted;
       try {
         accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
-          // A stored evidence CREATE owns the signer's next nonce until the chain has used it: a write sent before could take it and leave that CREATE unexecutable.
-          const reserved=(await journal.get(signerReservationKey(pinned,tx.content.from)))?.active;
-          if(reserved && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))<reserved.nonce) fail('signer_lane_busy','a stored payment-evidence write holds this signer; nothing was sent');
+          await refuseWhileReserved(tx.content.from);
           const previous=await journal.get(lane(tx.content.from));
           if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || await journal.get(intent(tx.hash))) fail('outcome_unknown','issued native transfers cannot be resent');
           // Under the lock of the journal claim below: a cancelled transfer is never claimed.
