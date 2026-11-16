@@ -153,6 +153,33 @@ test('a lost answer of a settled admission at full capacity is answered from the
   assert.deepEqual(summary(await w.post(await resign(w, request))), [503, 'seller_source_unavailable']);
   assert.deepEqual(summary(await w.post(newPurchase)), [503, 'seller_not_ready']);
   assert.deepEqual(effects(w), before);
+  const closedRows = [
+    ['an aborted admission', (w) => w.admission.compensate(WIRE_JOB, 'a'), 'aborted'],
+    // A row that reads settled while its operation has no completed outcome, as a compensation that settled without one would leave it.
+    ['a row settled with no completed outcome', (w) => { w.internals.db.prepare('UPDATE kit_context_admissions SET record = json_set(record, \'$.state\', \'settled\') WHERE jobId = ?').run(WIRE_JOB); }, 'settled'],
+  ];
+  for (const [name, close, state] of closedRows) {
+    await t.test(name, async (t) => {
+      const w = await contextWireWorld(t), request = await admittedAndCut(w);
+      await close(w);
+      assert.equal(w.rowOf().state, state);
+      assert.equal(w.operationOf(WIRE_JOB)?.state === 'completed', false);
+      w.state.ready = () => false;
+      const before = effects(w);
+      assert.deepEqual(summary(await w.post(await resign(w, request))), [503, 'seller_not_ready']);
+      assert.deepEqual(effects(w), before);
+    });
+  }
+});
+
+test('a settled answer whose request expires while its records are read back is refused peer_expired and changes nothing', async (t) => {
+  const w = await contextWireWorld(t), { request, answer } = await settled(w), stored = w.operationOf(WIRE_JOB).outcome.text, before = effects(w);
+  const replay = await resign(w, request, { lifetimeMs: 5_000 });
+  w.behaviour.source = async () => { w.advance(5_001); return JSON.parse(answer.text); };
+  assert.deepEqual(summary(await w.post(replay)), [408, 'peer_expired']);
+  assert.equal(w.counts.sourceReads, 1, 'the records were read back before the expiry was checked again');
+  assert.equal(w.operationOf(WIRE_JOB).outcome.text, stored);
+  assert.deepEqual(effects(w), before);
 });
 
 test('an aborted admission\'s interrupted context step is never resumed', async (t) => {
