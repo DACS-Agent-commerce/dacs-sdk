@@ -21,10 +21,20 @@ import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { WIRE_ROUTE_PATHS, createWireContext, wireAuthenticator } from '../src/dacs/seller-wire-requests.mjs';
 import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 
 import { PATHS, CONTINUING, answeredStatus, continuingWorld, BUYER, session, SESSION, PIN, stubAgent, CLAIM_PREFIX, MAX_RESPONSE_BYTES, MAX_BODY_BYTES, MAX_HEADER_CHARS, MAX_REQUEST_LIFETIME_MS, MAX_SIGNED_LIFETIME_MS, SKEW_MS, DAY_MS, JOURNAL_LEASE_MS, derive, jobFor, MUTATING, identityBody, statementsDuring, world, proposeJob } from './helpers/wire-routes-world.mjs';
 
 const OLD_PIN_VERSION = 'dacs-demos-testnet-identity/2026-10-15';
+
+/** A transport store over its own file that belongs to no seller yet, closed when the test ends. */
+const freshTransportStore = async (t, w) => {
+  const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-store-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite'), now: w.clock });
+  t.after(() => store.close());
+  return store;
+};
 
 test('P11a1-T03: a missing revision, an unknown revision or an old pin version is refused before any store access; the own profile is accepted', async (t) => {
   const w = await world(t);
@@ -426,8 +436,21 @@ test('the wire context is checked where it is made and where the handler takes i
   assert.throws(() => handlerWith({ ...w.handle.wire }), /createWireContext/, 'an unbranded copy');
   assert.throws(() => createSellerHttpHandler(w.agent), /createWireContext/, 'no options');
   assert.throws(() => createSellerHttpHandler(w.agent, {}), /createWireContext/, 'no wire');
-  assert.throws(() => handlerWith(createWireContext({ ...valid, signer: BUYER })), /identity must match/, 'another seller');
+  const unbound = await freshTransportStore(t, w);
+  assert.throws(() => handlerWith(createWireContext({ ...valid, store: unbound, signer: BUYER })), /identity must match/, 'a signer other than the seller of the agent');
   assert.doesNotThrow(() => handlerWith(createWireContext(valid)));
+});
+
+test('a wire context is refused over a transport store that belongs to another seller or another Listing', async (t) => {
+  const w = await world(t);
+  const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
+  const contextWith = (overrides) => createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt, ...overrides });
+  const BELONGS_ELSEWHERE = /belongs to another seller, Listing or schema/;
+  assert.doesNotThrow(() => contextWith({}), 'the store of the same seller and Listing');
+  assert.throws(() => contextWith({ signer: BUYER }), BELONGS_ELSEWHERE, 'another seller');
+  assert.throws(() => contextWith({ agent: { ...w.agent, listingPin: { ...PIN, version: PIN.version + 1 } } }), BELONGS_ELSEWHERE, 'another Listing');
+  const unbound = await freshTransportStore(t, w);
+  assert.doesNotThrow(() => contextWith({ store: unbound, signer: BUYER }), 'a store that belongs to no one yet takes its first seller');
 });
 
 test('the handler refuses the removed authentication option, with or without a wire', async (t) => {

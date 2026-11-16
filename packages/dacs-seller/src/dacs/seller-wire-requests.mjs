@@ -130,14 +130,17 @@ function admitAnswerText(text) {
  * `plannedAgreementOf(jobId)` calls it, or answers null while none is bound. `publicEndpoint` is the origin
  * the handler's discovery document names; it is `null` when none is given, and then no discovery document is served. A `signer`
  * with `readOnlyAnswerSigner` signs read answers and discovery through that role; one without it signs them as itself. Returns the
- * frozen context, the only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
+ * frozen context, the only `wire` option `createSellerHttpHandler` takes. Binds `store` to the signer's seller and the agent's Listing pin. Throws a TypeError
+ * for a member of the wrong kind, and an Error when `store` already belongs to another seller or Listing.
  */
 export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion, stopped = null, publicEndpoint = null }) {
-  const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
+  const callables = [tp1Network?.connection, signer?.sign, store?.bind, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
   if (stopped !== null && typeof stopped !== 'function') throw new TypeError('the wire context\'s stop check must be a function');
   if (publicEndpoint !== null && typeof publicEndpoint !== 'string') throw new TypeError('the wire context\'s public endpoint must be a string');
+  // The transport store belongs to one seller and Listing from its first bind on: a store made for another one is refused here.
+  store.bind({ seller: signer.claim, listingPin: agent.listingPin });
   // Set once by the context route; a state read before any session asks it for the draft the job's completed context plans.
   let readPlannedAgreement = null;
   const readSigner = (purpose, body) => (typeof signer.readOnlyAnswerSigner === 'function' ? signer.readOnlyAnswerSigner({ purpose, binding, local: tp1Network.connection(), body }) : signer);
