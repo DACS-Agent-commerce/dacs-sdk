@@ -5,6 +5,7 @@
 // native anchor's reads (those are covered with the real provider in context-provider-checkpoints.test.mjs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { canonicalize, contentHash, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS, completeWireEffect } from '@kynesyslabs/dacs/wire';
 import { completedContextOutcome, createSellerContextRecords } from '../src/dacs/seller-context-route.mjs';
@@ -802,6 +803,18 @@ test('a recovery that only reads keeps write authority unlatched and a completed
   w.behaviour.source = async (input, options) => { seen.push(options.writable()); return w.presentAnswer(input); };
   assert.equal((await w.post(await resign(w, request))).status, 200);
   assert.deepEqual(seen, [false]);
+});
+
+test('the context wire ports name equivalents for every old direct-context test before auth removal', async () => {
+  const sourceOf = (file) => readFile(new URL(`../src/dacs/${file}`, import.meta.url), 'utf8');
+  for (const file of ['seller-context-route.mjs', 'seller-context-continuation.mjs', 'seller-context-recovery.mjs', 'seller-planned-agreement.mjs']) {
+    const source = await sourceOf(file);
+    assert.equal(source.includes('createSellerTransportClientAuth'), false, `${file} uses no old client auth`);
+  }
+  assert.equal(typeof (await import('../src/index.mjs')).createSellerTransportClientAuth, 'function', 'the old auth is still exported until it is removed');
+  const manifest = JSON.parse(await readFile(new URL('./fixtures/context-wire-ports.json', import.meta.url), 'utf8'));
+  assert.ok(manifest.every((entry) => entry.disposition === 'obsolete-client' || entry.replacement !== null), 'each test that stays needed has its equivalent named');
+  assert.ok(manifest.some((entry) => entry.disposition === 'wire-equivalent' && entry.replacement.file === 'context-recovery-wire.test.mjs'));
 });
 
 test('a retry inside the live lease of a running attempt is refused seller_effect_pending and neither ends the row nor starts work', async (t) => {
