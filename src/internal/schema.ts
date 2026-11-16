@@ -111,9 +111,10 @@ export function hash(): Schema<string> {
  * first and the predicate checks that copy, which is also what the result
  * holds, so it never aliases the caller's value and cannot differ from what was
  * checked. Only primitives and copyable plain objects and arrays (nested to any
- * depth the copy allows) are accepted. A value that cannot be copied, or whose
- * copy holds any other kind of object (such as a `Map`, `Set`, `Date`, typed
- * array, buffer, `Error` or `RegExp`), is bad data and the predicate never sees it.
+ * depth the copy allows) are accepted. A function, a value that cannot be
+ * copied, or a value whose copy holds any other kind of object (such as a `Map`,
+ * `Set`, `Date`, typed array, buffer, `Error` or `RegExp`), is bad data and the
+ * predicate never sees it.
  */
 export function refine<T>(predicate: (value: unknown) => value is T, expected?: string): Schema<T>;
 export function refine(predicate: (value: unknown) => boolean, expected?: string): Schema<unknown>;
@@ -121,6 +122,7 @@ export function refine(predicate: (value: unknown) => boolean, expected = "a val
   if (typeof predicate !== "function") throw new TypeError("refine needs a predicate function");
   return {
     read(value, path) {
+      if (typeof value === "function") return fail(path, expected);
       let snapshot = value;
       if (typeof value === "object" && value !== null) {
         try {

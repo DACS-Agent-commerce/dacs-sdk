@@ -540,6 +540,16 @@ describe("refine", () => {
     expect(is(refine((value) => value instanceof Uint8Array), new Uint8Array([1]))).toBe(false);
   });
 
+  it("refuses a function, alone or inside an object, without running the predicate", () => {
+    let calls = 0;
+    const schema = refine(() => { calls += 1; return true; }, "plain data");
+    for (const input of [() => {}, function named() { return 1; }, { run: () => {} }, [() => {}]]) {
+      expect(is(schema, input)).toBe(false);
+      expect(caught(() => parse(schema, input))).toMatchObject({ code: "schema.invalid_field", expected: "plain data" });
+    }
+    expect(calls).toBe(0);
+  });
+
   it("checks the copy before the predicate runs", () => {
     let calls = 0;
     const schema = refine(() => { calls += 1; return true; });
