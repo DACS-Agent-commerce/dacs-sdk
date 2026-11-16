@@ -11,7 +11,8 @@
 //
 // Order of one write: `reserve` claims the nonce, `bindApprovalIntent` stores the exact approval request text before the
 // approval is prepared, `bindApproval` attaches the approval ledger's id (a null manual id is kept by this instance only),
-// and `bindSigned` stores the signed bytes. The caller sends the bytes only after `bindSigned` returns them.
+// and `bindSigned` stores the signed bytes. The caller sends the bytes only after `bindSigned` returns them. If the
+// approval ends while signed bytes are kept, `renewApproval` stores the id of a replacement for the same request text.
 //
 // A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes and moves the floor past
 // the nonce; `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
@@ -24,7 +25,8 @@
 // bytes, which no live caller can finish. It needs the host's ownership proof (the state lock is held and the journal lies inside
 // its directory), never uses elapsed time, and never touches the rows of a live handle in this process.
 //
-// Lock order: the kit writer lock, then the signer lock; the signer lock is never re-entered.
+// Lock order: the kit writer lock, then the signer lock; the signer lock is never re-entered. The native transport takes the signer
+// lock inside its own lane lock to issue a write, and nothing here takes a lane lock.
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, sep } from 'node:path';
@@ -46,6 +48,9 @@ const isCount = value => Number.isSafeInteger(value) && value >= 0;
 const isHex64 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const isAddress = value => typeof value === 'string' && /^0x[a-f0-9]{64}$/.test(value);
 const isText = (value, limit = MAX_ID_BYTES) => typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= limit && !value.includes('\0');
+
+/** The journal key of a signer's reservation record on this network and chain; the native transport reads it to leave a held signer alone. */
+export const signerReservationKey = ({ network, chainIdentity }, signer) => `${KEY_ROOT}/${JSON.stringify([network, chainIdentity, signer])}`;
 
 function fail(code, detail = code) { throw Object.assign(new Error(code, { cause: detail instanceof Error ? detail : new Error(detail) }), { code }); }
 function check(condition, message) { if (!condition) fail('signer_reservation_invalid', message); }
@@ -92,7 +97,7 @@ function validateSigned(signed, signer, nonce) {
  * network, chain identity and pin version every record carries. `openApproval(requestText)` resolves null or the one open
  * `{ledgerId, requestText}` for those exact bytes; `settleApproval(ledgerId, outcome, reason)` settles by id and is idempotent
  * for the same outcome. Both refuse until supplied. Returns `reserve`, `bindApprovalIntent`, `bindApproval`, `bindSigned`,
- * `retireUnsigned`, `consume`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
+ * `renewApproval`, `retireUnsigned`, `consume`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
  * Throws `signer_reservation_invalid` for a malformed record or argument, `signer_reservation_stale` for a handle that is
  * not the stored record, `signer_reservation_uncertain` when a failed write cannot be read back, `signer_lane_busy`,
  * `invalid_nonce`, `signer_retirement_unfinished`, `approval_lookup_refused`, `signer_settlement_failed` and `signer_execution_unproven`; journal errors such
@@ -105,7 +110,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
   // signer -> attemptId of a reservation whose approval was settled `released` for a retirement whose put has not committed.
   // The reservation is still stored, so nothing may sign for it; `reserve` or a repeated `retireUnsigned` finishes it.
   const unfinishedRetirements = new Map();
-  const keyOf = signer => { check(isAddress(signer), 'invalid signer'); return `${KEY_ROOT}/${JSON.stringify([pins.network, pins.chainIdentity, signer])}`; };
+  const keyOf = signer => { check(isAddress(signer), 'invalid signer'); return signerReservationKey(pins, signer); };
 
   function validateActive(active, record) {
     check(isText(active.attemptId) && OPERATIONS.includes(active.operation) && isText(active.operationKey), 'invalid active identity');
@@ -155,10 +160,12 @@ export function createSignerReservations({ journal, pins, openApproval = refused
    * no chain read), else a new claim at `max(chain + 1, floor)`, where `chain` is read through `readChainNonce({signal})`.
    * A reservation whose retirement settled its approval but did not commit is finished first (see `retireUnsigned`) and
    * the claim is then new. Another operation holding the signer is `signer_lane_busy`; a nonce without a safe successor is `invalid_nonce`.
+   * `beforeClaim()`, when given, runs first under the signer's lock; a throw refuses the claim and nothing is read or written.
    */
-  async function reserve({ signer, operation, operationKey, readChainNonce, signal } = {}) {
+  async function reserve({ signer, operation, operationKey, readChainNonce, signal, beforeClaim } = {}) {
     check(isAddress(signer) && OPERATIONS.includes(operation) && isText(operationKey) && typeof readChainNonce === 'function', 'invalid claim');
     return journal.withWalletLock(keyOf(signer), async () => {
+      await beforeClaim?.();
       signal?.throwIfAborted();
       let record = await readRecord(signer);
       if (record?.active && unfinishedRetirements.get(signer) === record.active.attemptId) {
@@ -226,6 +233,19 @@ export function createSignerReservations({ journal, pins, openApproval = refused
     });
   }
 
+  /**
+   * Replaces the approval id of signed bytes with the id of another authorization for the same exact request text, after the
+   * earlier one ended, in one write; the execution then settles the new id. Refuses a reservation without signed bytes, a null
+   * id and another request text. The same id again changes nothing.
+   */
+  async function renewApproval(reservation, approval) {
+    check(isText(approval?.ledgerId), 'invalid approval');
+    return update(reservation, ({ active }) => {
+      check(active.signed !== null && active.approvalIntent === approval.requestText, 'renewal needs signed bytes and the bound request text');
+      return active.approvalId === approval.ledgerId ? UNCHANGED : { ...active, approvalId: approval.ledgerId };
+    });
+  }
+
   async function settle(ledgerId, outcome, reason) {
     if (ledgerId === null) return;
     try { await settleApproval(ledgerId, outcome, reason); } catch (cause) { fail('signer_settlement_failed', cause); }
@@ -288,5 +308,5 @@ export function createSignerReservations({ journal, pins, openApproval = refused
       if (record.active?.signed === null) await retireUnsigned(record);
     }
   }
-  return Object.freeze({ reserve, bindApprovalIntent, bindApproval, bindSigned, retireUnsigned, consume, recover, current: readRecord });
+  return Object.freeze({ reserve, bindApprovalIntent, bindApproval, bindSigned, renewApproval, retireUnsigned, consume, recover, current: readRecord });
 }
