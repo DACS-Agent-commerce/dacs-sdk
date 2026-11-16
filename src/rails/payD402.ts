@@ -23,13 +23,23 @@ import { canonicalDemosTxHash } from "./payDem.js";
  * terms don't match the negotiated agreement (termsMatchD402) — otherwise
  * auto-pay could settle the wrong recipient or amount.
  *
- * ⚠️ EXPERIMENTAL — NOT node-enabled. D402 processing (`d402_payment`) is not
- * live on production Demos nodes yet: the client half exists, the node side does
- * not process the tx. This rail therefore CANNOT settle live today, and per the
- * RAV-R1 discipline ("MUST NOT treat a non-`live` rail as live") it must not be
- * selected as a production settlement path. `createPayD402Rail` refuses to build
- * unless the caller passes `acknowledgeExperimental: true`, so it can't be wired
- * as `live` by accident. It graduates when the node ships d402 processing.
+ * ⚠️ EXPERIMENTAL — preview only. With demosdk 4.0.17 and later, `D402Client.settle`
+ * signs and broadcasts the payment, then polls the node for the transaction by
+ * hash under a 60-second poll-loop deadline (the default). The deadline is
+ * checked between calls, and a single lookup call has no timeout of its own, so
+ * a stalled call can outlast it. It returns `success: true` once the
+ * transaction is in a block, a failure when it was refused or included as
+ * failed, and `pending: true` with the hash when the poll ends before the
+ * transaction is seen. A pending payment may still land, so the rail reports it
+ * as `ok: false` with `pending: true` and the hash kept; it is never `ok: true`
+ * and never the not-sent answer (`ok: false` with an empty hash). Earlier
+ * demosdk versions broadcast once and never report `pending`. Below demosdk
+ * 4.0.17 (4.0.16 is what the lockfile pins and the peer range allows) the rail
+ * cannot settle, because 4.0.16 calls a route the node does not serve. Per the RAV-R1
+ * discipline ("MUST NOT treat a non-`live` rail as live") the rail is still not
+ * a production settlement path. `createPayD402Rail` refuses to build unless the
+ * caller passes `acknowledgeExperimental: true`, so it can't be wired as `live`
+ * by accident.
  *
  * NOTE ON NAMING: this is `pay-d402` (the HTTP-402 protocol rail), distinct from
  * the spec's `pay-dem` (§9.5.9) — the plain `demos.transfer` native rail, which
@@ -58,6 +68,8 @@ export interface D402SettlementResult {
   hash: string;
   blockNumber?: number;
   message?: string;
+  /** Set by demosdk 4.0.17 and later when the payment was broadcast but not yet seen in a block. */
+  pending?: boolean;
 }
 
 /** Minimal structural view of the demosdk D402Client this rail depends on. */
@@ -164,6 +176,15 @@ function parseRequirement(body: unknown): D402PaymentRequirement {
   return { recipient, amount, resourceId, ...(description ? { description } : {}) };
 }
 
+/**
+ * What the rail returns. `pending: true` (always with `ok: false` and the
+ * payment's hash) means the payment was broadcast but not yet seen on chain and
+ * may still land: do not pay again.
+ */
+export interface PayD402SettleResult extends SettleResult {
+  pending?: true;
+}
+
 export interface PayD402SettleCoreDeps {
   client: D402ClientLike;
   fetchImpl: typeof fetch;
@@ -247,12 +268,15 @@ async function transferIsRecorded(
 /**
  * Run the buyer-side D402 flow and return DACS SettlementEvidence inputs.
  * Aborts before signing if the advertised requirement doesn't match the
- * agreement.
+ * agreement. Returns `pending: true` (with `ok: false` and the hash) when the
+ * payment was broadcast but not yet seen on chain.
+ * Throws when the 402 is missing, malformed or does not match the agreement,
+ * and when `settle` reports a pending payment without a hash.
  */
 export async function payD402SettleCore(
   params: PayD402SettleParams,
   deps: PayD402SettleCoreDeps,
-): Promise<SettleResult> {
+): Promise<PayD402SettleResult> {
   const { client, fetchImpl, payerAddress } = deps;
 
   // 1. Initial request — expect a 402 with a payment requirement.
@@ -281,11 +305,20 @@ export async function payD402SettleCore(
   // 4. Sign + broadcast; the buyer gets the settlement tx hash back directly.
   //    The node's acknowledgement is not enough for success: it needs the
   //    success flag and a non-empty hash, and then the node's own record for
-  //    that hash must show this payment. Anything less is reported ok:false
-  //    with the hash kept, and nothing is broadcast again.
+  //    that hash must show this payment. A `pending` result (broadcast, not
+  //    yet seen on chain) is decided first, so it can never be ok:true and the
+  //    record is not read for it. Every result that is not ok keeps its hash,
+  //    so the caller does not mistake it for a payment never sent, and nothing
+  //    is broadcast again.
   const result = await client.settle(payment);
   const txHash = (result?.hash ?? "").trim();
-  const acknowledged = result?.success === true && txHash.length > 0;
+  const pending = result?.pending === true;
+  if (pending && txHash.length === 0) {
+    throw new DacsError(
+      "d402: settle reported a pending payment without a hash; the payment may have been sent, so do not pay again",
+    );
+  }
+  const acknowledged = !pending && result?.success === true && txHash.length > 0;
 
   return {
     ok: acknowledged && await transferIsRecorded(deps.readTransaction, {
@@ -294,6 +327,7 @@ export async function payD402SettleCore(
       payee: requirement.recipient,
       amount: String(requirement.amount),
     }),
+    ...(pending ? { pending: true as const } : {}),
     txHash,
     chainId: params.network,
     payer: payerAddress,
@@ -305,7 +339,9 @@ export async function payD402SettleCore(
  * This rail's availability, in the §9.4.4 spec vocabulary (no SDK-local
  * values). D402 is quarantined pending node-side enablement — that is
  * `operator_gated`: not selectable until an operator enables it, and never
- * auto-selected (RAV-R1).
+ * auto-selected (RAV-R1). Below demosdk 4.0.17 (4.0.16 is what the lockfile
+ * pins and the peer range allows) the rail cannot settle, because 4.0.16 calls
+ * a route the node does not serve.
  * The `acknowledgeExperimental` config flag keeps its name (API stability);
  * it is the caller-side acknowledgement this gate requires.
  */
@@ -321,10 +357,10 @@ export interface PayD402RailConfig {
   /** Override fetch for the paywall request (tests / custom transport). Defaults to global fetch. The transaction-record read always uses global fetch. */
   fetchImpl?: typeof fetch;
   /**
-   * REQUIRED to build the rail: D402 is not node-enabled (§9.4.4 non-`live`), so
-   * this rail cannot settle live. Constructing it without this explicit
-   * acknowledgement throws, so it can never be wired as a `live` path by
-   * accident (RAV-R1). Set `true` only for experimental / preview use.
+   * REQUIRED to build the rail: D402 is a preview rail (§9.4.4 non-`live`).
+   * Constructing it without this explicit acknowledgement throws, so it can
+   * never be wired as a `live` path by accident (RAV-R1). Set `true` only for
+   * experimental / preview use.
    */
   acknowledgeExperimental: boolean;
 }
@@ -333,7 +369,7 @@ export interface PayD402Rail {
   /** The buyer's Demos address. */
   readonly address: string;
   /** Settle one session's payment via the D402 402-flow. */
-  settle(params: PayD402SettleParams): Promise<SettleResult>;
+  settle(params: PayD402SettleParams): Promise<PayD402SettleResult>;
 }
 
 /**
@@ -343,7 +379,7 @@ export interface PayD402Rail {
 export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD402Rail> {
   if (!config?.acknowledgeExperimental) {
     throw new DacsError(
-      "pay-d402 is EXPERIMENTAL and not node-enabled (§9.4.4 non-`live`): it cannot settle live. " +
+      "pay-d402 is EXPERIMENTAL preview (§9.4.4 non-`live`). " +
         "Pass acknowledgeExperimental: true to construct it for preview use — never select it as a live rail (RAV-R1).",
     );
   }
@@ -383,9 +419,20 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
 }
 
 /**
+ * runSession rejects result keys it does not know. A pending payment goes to it
+ * as `ok: false` with the hash kept, which it holds as unresolved and never
+ * records as a failed payment.
+ */
+function withoutPendingMarker(result: PayD402SettleResult): SettleResult {
+  const { pending: _pending, ...settleResult } = result;
+  return settleResult;
+}
+
+/**
  * Bridge a PayD402Rail to the runSession `settle` seam: the rail carries the
  * static D402 paywall coordinates (resolved from the listing) while runSession
- * supplies the per-session amount.
+ * supplies the per-session amount. A pending payment reaches runSession as
+ * `ok: false` with its hash and no `pending` key.
  */
 export function payD402Settle(
   rail: PayD402Rail,
@@ -401,11 +448,13 @@ export function payD402Settle(
         `pay-d402 destination mismatch: request binds ${expectedPayee}, configured paywall pays ${recipient}`,
       );
     }
-    return rail.settle({
-      paywallUrl,
-      recipient,
-      amount,
-      network,
-    });
+    return rail
+      .settle({
+        paywallUrl,
+        recipient,
+        amount,
+        network,
+      })
+      .then(withoutPendingMarker);
   };
 }
