@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { createDemDeliveryContext, demDeliveryContextHost } from '../../src/dacs/dem-delivery-context-consumer.mjs';
+import { agreementInput } from '../../src/dacs/purchase-protocol.mjs';
 import { createWireSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
@@ -83,7 +84,11 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
 
   // The provider: two Vet writes, each asking the attempt's predicate first, as the real provider does before it signs.
   const sellerClaim = seller.claim;
-  const presentAnswer = (input) => ({ disposition: 'present', value: { scope: structuredClone(input.scope), input: { jobId: input.scope.jobId, buyer: vetRef('buyer'), seller: vetRef('seller') } } });
+  // The answer carries a real Agreement input over the request's bundle and generatedAt, with a stand-in Vet record named for each party.
+  const presentAnswer = (input) => {
+    const agreement = agreementInput({ jobId: input.scope.jobId, listing: w.listing, buyerBundle: input.buyerIdentityBundle, generatedAt: input.scope.generatedAt });
+    return { disposition: 'present', value: { scope: structuredClone(input.scope), input: { ...agreement, buyer: { ...agreement.buyer, ...vetRef('buyer') }, seller: { ...agreement.seller, ...vetRef('seller') } } } };
+  };
   const resolveBuyer = async (input, options) => {
     counts.resolves++;
     if (behaviour.provider) await behaviour.provider(input, options);
@@ -120,7 +125,9 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   // After the route's own tuple hook, so a failure here rolls the stored tuple back with the rest of the acceptance.
   admission.addAcceptanceHook(() => { if (behaviour.failAcceptance) throw new Error('TEST the acceptance failed'); });
   const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: w.pin, store: w.store, now, requireDelegation });
-  const handler = createSellerHttpHandler(agent, { authentication, context: { ...w.route, ...route }, wire });
+  /** The host's HTTP handler over `overWire`, another wire context of the same store, agent and route. */
+  const handlerOver = (overWire) => createSellerHttpHandler(agent, { authentication, context: { ...w.route, ...route }, wire: overWire });
+  const handler = handlerOver(wire);
 
   const post = async ({ url = SELLER_CONTEXT_PATH, header, text, chunks }) => {
     const res = await exchange(handler, { url, header, text, chunks });
@@ -165,6 +172,6 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const settleJob = async (jobId = JOB) => { await drain(); await admission.jobEffectMutex(jobId).run(() => {}); await drain(); };
   const privateRow = (jobId = JOB) => JSON.parse(internals.db.prepare('SELECT record FROM kit_context_admissions WHERE jobId = ?').get(jobId).record);
   return { ...w, challenges: () => w.store.challenges, handler, route, admission, countingAdmission, coordinator, capacity, counts, behaviour, provider, post, issue, startContext, rowOf, privateRow, challengeOf, openHolds, internals,
-    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire,
+    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire, handlerOver,
     tick: (ms) => { state.mono += ms; } };
 }

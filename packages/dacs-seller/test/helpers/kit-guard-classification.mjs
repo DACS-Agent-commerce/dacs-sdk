@@ -40,6 +40,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-durable-state.mjs': { effect: { createSellerDurableState: ['signOnce', 'anchor'] }, pure: ['SellerRecoveryError'] },
   'src/dacs/seller-effect-routes.mjs': { effect: {  }, pure: ['createSellerEffectRoutes'] },
   'src/dacs/seller-http.mjs': { effect: { createSellerHttpHandler: ['createSellerHttpHandler'], createSellerAgentClient: ['createSellerAgentClient'] }, pure: ['SellerRefusedError', 'SellerTlsUnusableError', 'SellerUnavailableError', 'createCompletedOutcomeReader', 'createOrdinaryCompletionPort', 'endWireAttempt', 'loopbackSocket', 'sellerFailureAttempt', 'sellerFailureCause'] },
+  'src/dacs/seller-planned-agreement.mjs': { effect: {  }, pure: ['createPlannedAgreementReader', 'plannedStateRecords'] },
   'src/dacs/seller-proposal-time.mjs': { effect: {  }, pure: ['proposalTimeProblem'] },
   'src/dacs/seller-purchase-capacity.mjs': { effect: {  }, pure: ['createPurchaseCapacity', 'ownsPurchaseCapacity'] },
   'src/dacs/seller-reservation-accounting.mjs': { effect: { createReservationAccounting: ['reserveAccounted'], createReservationCoordinator: ['reserveCoordinated'] }, pure: ['requestNonceKey'] },

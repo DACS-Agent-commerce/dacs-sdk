@@ -5,10 +5,17 @@
 // native anchor's reads (those are covered with the real provider in context-provider-checkpoints.test.mjs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, contentHash, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
+import { DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
+import { completedContextOutcome, createSellerContextRecords } from '../src/dacs/seller-context-route.mjs';
+import { createContextOutcomeRevalidation } from '../src/dacs/seller-context-continuation.mjs';
+import { createPlannedAgreementReader } from '../src/dacs/seller-planned-agreement.mjs';
+import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
 import { JOB as WIRE_JOB, JOB2 as WIRE_JOB2, SELLER_CONTEXT_PATH, T0, contextWireWorld } from './helpers/context-wire-world.mjs';
 import { watchSql } from './helpers/challenge-route-fixture.mjs';
+import { exchange } from './helpers/d5-http-fixture.mjs';
+import { BUYER, SELLER, address, assertPresent, orchestratorFixture } from './helpers/vet-orchestrator-fixture.mjs';
 
 const summary = (answer) => [answer.status, answer.body.error];
 const SKEW_MS = 600_000;
@@ -292,6 +299,220 @@ test('register context present and non-pass in the shared completed-source matri
         const control = await w.post(await resign(w, request));
         assert.deepEqual([control.status, control.text], [200, answer.text], 'a valid source answers the stored bytes');
       });
+    }
+  }
+});
+
+const plannedOf = (route, jobId = WIRE_JOB) => route.readPlannedAgreement({ jobId });
+/** The planned Agreement reader a restarted host builds again from the durable records: it keeps nothing of its own. */
+function restartedReader(w) {
+  const { listing, wire, admissionTransaction, ledger, provider } = w.routeOptions, seller = listing.seller.identity.presentedBy, completedOutcomeOf = completedContextOutcome(wire.journal, seller);
+  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedOutcomeOf, acceptedPresentation: (nonce) => ledger.retained(nonce)?.accepted ?? null });
+  return createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf, records, revalidate: createContextOutcomeRevalidation({ provider, retainedBody: records.retainedBody }) });
+}
+const retainedInputOf = (w) => JSON.parse(w.operationOf(WIRE_JOB).outcome.text).value.input;
+const reasonOf = (planned) => [planned.kind, planned.cause.code];
+
+test('planned Agreement draft comes only from source-verified retained completed-context input', async (t) => {
+  await t.test('a completed context gives the Agreement derived from its retained input, the same one again, later and after a restart', async (t) => {
+    const w = await contextWireWorld(t);
+    await settled(w);
+    const row = w.rowOf(), before = effects(w), sql = watchSql(t);
+    const first = await plannedOf(w.route);
+    assert.equal(first.kind, 'present');
+    assert.deepEqual(first.agreement, deriveFixedPriceAgreement(retainedInputOf(w)));
+    assert.equal(first.agreement.generatedAt, T0, 'the original generatedAt');
+    assert.deepEqual(first.retained, { jobId: WIRE_JOB, buyer: w.buyer.claim, seller: w.seller.claim, agreementHash: contentHash(first.agreement) });
+    assert.deepEqual(Object.keys(first.retained), ['jobId', 'buyer', 'seller', 'agreementHash']);
+    assert.notEqual(first.retained.agreementHash, row.contextScopeHash, 'the Agreement binding is not the context scope binding');
+    assert.ok(Object.isFrozen(first) && Object.isFrozen(first.agreement) && Object.isFrozen(first.retained));
+    w.advance(SKEW_MS + 1);
+    const later = await plannedOf(w.route);
+    assert.deepEqual(later, first);
+    assert.notEqual(later.agreement, first.agreement, 'each answer is a copy of its own');
+    assert.deepEqual(await restartedReader(w)(WIRE_JOB), first);
+    assert.deepEqual(w.rowOf(), row);
+    assert.deepEqual(effects(w), before);
+    assert.equal(sql.writes(), 0, 'no write statement');
+    assert.equal(w.counts.agreementSignatures, 0);
+  });
+
+  await t.test('members the caller adds select nothing and a job with no admission has no draft', async (t) => {
+    const w = await contextWireWorld(t), { request } = await settled(w), plain = await plannedOf(w.route);
+    const extra = { buyer: w.other.claim, seller: w.other.claim, agreementHash: '0'.repeat(64), scope: { ...request.scope, generatedAt: 1 }, generatedAt: 1 };
+    assert.deepEqual(await w.route.readPlannedAgreement({ jobId: WIRE_JOB, ...extra }), plain);
+    assert.deepEqual(reasonOf(await plannedOf(w.route, WIRE_JOB2)), ['absent', 'context_admission_missing']);
+  });
+
+  await t.test('a malformed job is refused peer_job_invalid 409 and malformed options are a TypeError', async (t) => {
+    const w = await contextWireWorld(t);
+    await assert.rejects(plannedOf(w.route, 'not-a-job'), { code: 'peer_job_invalid', status: 409 });
+    await assert.rejects(w.route.readPlannedAgreement({}), { code: 'peer_job_invalid', status: 409 });
+    for (const options of [undefined, null, 'job']) await assert.rejects(w.route.readPlannedAgreement(options), TypeError);
+  });
+
+  const foreignInput = (change) => async (w) => { w.behaviour.answer = async (input) => { const answer = w.presentAnswer(input); change(answer.value.input, w); return answer; }; };
+  const absentCases = [
+    ['an admitted context that has not completed', async (w) => { await admittedAndCut(w); }, 'context_not_completed'],
+    ['a first-Vet non-pass', async (w) => { w.behaviour.answer = async () => FIRST_VET_NON_PASS; await settled(w); }, 'context_not_passed'],
+    ['a second-Vet non-pass', async (w) => { w.behaviour.answer = async () => SECOND_VET_NON_PASS; await settled(w); }, 'context_not_passed'],
+    ['an admission whose scope hash is another one', async (w) => {
+      await settled(w);
+      w.internals.db.prepare('UPDATE kit_context_admissions SET record = json_set(record, \'$.contextScopeHash\', ?) WHERE jobId = ?').run('0'.repeat(64), WIRE_JOB);
+    }, 'context_binding_mismatch'],
+    ['an accepted presentation that the challenge no longer keeps', async (w) => {
+      const { request } = await settled(w);
+      w.internals.db.prepare('UPDATE kit_challenges SET accepted = NULL WHERE nonce = ?').run(request.nonce);
+    }, 'context_binding_mismatch'],
+    ['a retained input generated at another time', async (w) => { await foreignInput((input) => { input.generatedAt += 1; })(w); await settled(w); }, 'planned_agreement_mismatch'],
+    ['a retained input for another Listing version', async (w) => {
+      await foreignInput((input) => { const listing = structuredClone(input.verifiedListing.listing); listing.terms.deadlineSecAfterCommit += 60; input.verifiedListing = { disposition: 'verified', listing, pin: listingPin(listing) }; })(w);
+      await settled(w);
+    }, 'planned_agreement_mismatch'],
+    ['a retained input naming another buyer', async (w) => { await foreignInput((input, world) => { input.buyer.identityBundle = { ...input.buyer.identityBundle, presentedBy: world.other.claim }; })(w); await settled(w); }, 'planned_agreement_mismatch'],
+  ];
+  for (const [name, prepare, code] of absentCases) {
+    await t.test(`${name} gives no draft and a cause, and changes nothing`, async (t) => {
+      const w = await contextWireWorld(t);
+      await prepare(w);
+      const before = effects(w), sql = watchSql(t), planned = await plannedOf(w.route);
+      assert.deepEqual(reasonOf(planned), ['absent', code]);
+      assert.deepEqual(Object.keys(planned.cause), ['code', 'status', 'message']);
+      assert.ok(Object.isFrozen(planned));
+      assert.deepEqual(effects(w), before);
+      assert.equal(sql.writes(), 0, 'no write statement');
+      assert.equal(w.counts.agreementSignatures, 0);
+    });
+  }
+
+  const sources = [
+    ['absent', () => null, 'absent'],
+    ['failing', () => { throw Object.assign(new Error('TEST the node failed'), { code: 'node_failed' }); }, 'TEST the node failed'],
+    ['changed', (answer) => ({ ...answer, value: { ...answer.value, input: { ...answer.value.input, jobId: WIRE_JOB2 } } }), 'changed'],
+  ];
+  for (const [state, source, reason] of sources) {
+    await t.test(`a ${state} Vet source is unavailable with its cause and the outcome stays as it was`, async (t) => {
+      const w = await contextWireWorld(t), { answer } = await settled(w), outcome = w.operationOf(WIRE_JOB).outcome.text, before = effects(w);
+      w.behaviour.source = async () => source(JSON.parse(answer.text));
+      const planned = await plannedOf(w.route);
+      assert.deepEqual([...reasonOf(planned), planned.cause.status, planned.cause.message], ['unavailable', 'seller_source_unavailable', 503, reason]);
+      assert.equal(w.operationOf(WIRE_JOB).outcome.text, outcome);
+      assert.deepEqual(effects(w), before);
+      w.behaviour.source = null;
+      assert.equal((await plannedOf(w.route)).kind, 'present', 'a source that answers again gives the draft');
+    });
+  }
+});
+
+const STATE_PATH = DACS_SELLER_HTTP_PATHS.state;
+// What the agent answers a state read for a job that has no proposal session yet.
+const NO_SESSION = { proposal: null, contribution: null };
+
+/** A signed state read of `jobId` that names `agreementHash`; delegated by default. `send` takes the signed request. */
+async function stateRead(w, agreementHash, { jobId = WIRE_JOB, actor = w.buyer, send = (request) => w.post(request), ...signOptions } = {}) {
+  const body = { transportIdentity: { jobId, buyer: actor.claim, seller: w.seller.claim, agreementHash } };
+  const signed = await w.sign({ jobId, actor, body, hash: agreementHash, path: STATE_PATH, ...signOptions });
+  return send({ url: STATE_PATH, header: signed.header, text: signed.text });
+}
+
+/** The same host with a second wire context whose planned Agreement reader is `reader`, and the answer of each request sent through it. */
+function sendThroughReader(w, reader) {
+  const wire = w.makeWire({ capacity: w.capacity, reservations: w.coordinator });
+  wire.bindPlannedAgreementReader(reader);
+  const handler = w.handlerOver(wire);
+  return async (request) => { const res = await exchange(handler, request); return { status: res.status, body: JSON.parse(res.text) }; };
+}
+
+async function settledWithoutSession(t, answer) {
+  const w = await contextWireWorld(t);
+  w.agent.agreementState = () => NO_SESSION;
+  if (answer) w.behaviour.answer = async () => answer;
+  await settled(w);
+  return w;
+}
+
+test('a state read before any proposal is admitted against the draft planned from the retained context and against nothing else', async (t) => {
+  for (const ready of [true, false]) {
+    await t.test(`a delegated read naming the planned Agreement is answered with ready ${ready}, without a commitment, a signature or any write`, async (t) => {
+      const w = await settledWithoutSession(t), { retained } = await plannedOf(w.route);
+      w.state.ready = () => ready;
+      const before = effects(w), sql = watchSql(t);
+      const answer = await stateRead(w, retained.agreementHash);
+      assert.deepEqual([answer.status, answer.body], [200, NO_SESSION]);
+      assert.ok(w.calls.transportAgreementOf > 0, 'the agent is asked for a session first');
+      assert.deepEqual([w.calls.continuationEvidenceOf, w.calls.readCommitmentReceipt, w.counts.agreementSignatures], [0, 0, 0], 'nothing goes into the commitment continuation pair');
+      assert.deepEqual(effects(w), before);
+      assert.equal(sql.writes(), 0, 'no write statement');
+    });
+  }
+
+  await t.test('a read that names the context scope binding, another buyer or a delegation past the Agreement deadline is refused', async (t) => {
+    const w = await settledWithoutSession(t), { retained } = await plannedOf(w.route);
+    const refused = async (name, agreementHash, options, expected) => {
+      const answer = await stateRead(w, agreementHash, options);
+      assert.deepEqual([name, answer.status, answer.body.error], [name, ...expected]);
+    };
+    await refused('the context scope hash', w.rowOf().contextScopeHash, {}, [409, 'peer_agreement_mismatch']);
+    await refused('another buyer', retained.agreementHash, { actor: w.other }, [409, 'peer_agreement_party_mismatch']);
+    await refused('a delegation that outlasts the deadline', retained.agreementHash, { delegation: w.delegationFor({ lifetimeMs: 3_600_001 }) }, [409, 'peer_delegation_deadline']);
+    assert.equal((await stateRead(w, retained.agreementHash, { delegation: w.delegationFor({ lifetimeMs: 3_600_000 }) })).status, 200, 'a delegation that ends at the deadline is admitted');
+  });
+
+  await t.test('a job with no completed context or with a non-pass has no draft: a direct read is unknown and a delegated one has no Agreement to be scoped to', async (t) => {
+    const w = await settledWithoutSession(t, FIRST_VET_NON_PASS);
+    for (const jobId of [WIRE_JOB, WIRE_JOB2]) {
+      const direct = await stateRead(w, '1'.repeat(64), { jobId, delegated: false }), delegated = await stateRead(w, '1'.repeat(64), { jobId });
+      assert.deepEqual([direct.status, direct.body.error, delegated.status, delegated.body.error], [404, 'peer_unknown_job', 409, 'peer_delegation_agreement_required']);
+    }
+  });
+
+  await t.test('a direct read whose source cannot be read answers seller_source_unavailable 503 with its cause and never a draft', async (t) => {
+    const w = await settledWithoutSession(t), { retained } = await plannedOf(w.route);
+    w.behaviour.source = async () => { throw Object.assign(new Error('TEST the node failed'), { code: 'node_failed' }); };
+    const answer = await stateRead(w, retained.agreementHash, { delegated: false });
+    assert.deepEqual([answer.status, answer.body.error], [503, 'seller_source_unavailable']);
+    w.behaviour.source = null;
+    assert.equal((await stateRead(w, retained.agreementHash, { delegated: false })).status, 200, 'a source that answers again admits the read');
+  });
+
+  await t.test('a job whose session exists is answered from the session\'s Agreement and never from the context draft', async (t) => {
+    const w = await settledWithoutSession(t), { agreement, retained } = await plannedOf(w.route);
+    const sessionAgreement = { ...agreement, terms: { ...agreement.terms, deadline: agreement.terms.deadline + 1000 } };
+    w.agent.transportAgreementOf = () => structuredClone(sessionAgreement);
+    const reads = w.counts.sourceReads;
+    assert.deepEqual((({ status, body }) => [status, body.error])(await stateRead(w, retained.agreementHash)), [409, 'peer_agreement_mismatch']);
+    assert.equal((await stateRead(w, contentHash(sessionAgreement))).status, 200);
+    assert.equal(w.counts.sourceReads, reads, 'the context is not read while a session exists');
+  });
+
+  await t.test('a retained record with a member beyond the four is refused where the exact one is admitted', async (t) => {
+    const w = await settledWithoutSession(t), planned = await plannedOf(w.route), { agreementHash } = planned.retained;
+    const exact = await stateRead(w, agreementHash, { send: sendThroughReader(w, async () => planned) });
+    assert.equal(exact.status, 200);
+    const extraMember = await stateRead(w, agreementHash, { send: sendThroughReader(w, async () => ({ ...planned, retained: { ...planned.retained, allocated: false } })) });
+    assert.deepEqual([extraMember.status, extraMember.body.error], [500, 'seller_retained_agreement_required']);
+  });
+});
+
+test('one wire context takes one planned Agreement reader', async (t) => {
+  const w = await contextWireWorld(t);
+  assert.throws(() => w.wire.bindPlannedAgreementReader(async () => null), { name: 'TypeError', message: /planned Agreement reader/ }, 'the route has bound it already');
+  assert.throws(() => w.makeWire().bindPlannedAgreementReader('not a function'), { name: 'TypeError', message: /planned Agreement reader/ });
+});
+
+test('a recovered context hashes to the same Agreement as an uninterrupted one and keeps each party\'s record under its own role', async (t) => {
+  const agreementHashOf = (value) => contentHash(deriveFixedPriceAgreement(value.input));
+  const control = await orchestratorFixture(t, { disk: true, real: true });
+  const controlHash = agreementHashOf(assertPresent(await control.run()));
+  for (const role of ['seller', 'buyer']) {
+    const f = await orchestratorFixture(t, { disk: true, real: true });
+    await f.cut(role, 'signature');
+    const recovered = assertPresent(await f.fresh().resolveBuyer(f.input, { writable: () => true }));
+    const read = assertPresent(await f.fresh().recoverBuyer(f.input));
+    assert.deepEqual([agreementHashOf(recovered), agreementHashOf(read)], [controlHash, controlHash], `${role} cut`);
+    for (const value of [recovered, read]) {
+      assert.deepEqual([value.input.buyer.identityBundle.presentedBy, value.input.buyer.vetRecordRef.anchor.locator], [BUYER.claim, address(BUYER)]);
+      assert.deepEqual([value.input.seller.identityBundle.presentedBy, value.input.seller.vetRecordRef.anchor.locator], [SELLER.claim, address(SELLER)]);
     }
   }
 });

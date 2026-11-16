@@ -15,6 +15,7 @@ import { SellerRefusedError, sellerFailureAttempt } from './seller-http.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { openWireRequest } from './seller-wire-requests.mjs';
 import { createAcceptedContinuation, createContextOutcomeRevalidation, createContinuationCheck } from './seller-context-continuation.mjs';
+import { createPlannedAgreementReader } from './seller-planned-agreement.mjs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals, sellerTransportEffect } from './seller-transport-auth.mjs';
 
 // Per buyer: five accepted starts per rolling hour.
@@ -451,13 +452,16 @@ function providerOutcome(answer, scope) {
  * operation completed answers that outcome; one with an unfinished earlier attempt is held (`operation_uncertain` 503, nothing ended or run).
  * A stored outcome is answered only after `revalidateContextOutcome({ jobId, outcome })` has read the retained records back through the
  * provider and found the same answer; otherwise it throws `seller_source_unavailable` (503) with its cause and changes nothing.
+ * `readPlannedAgreement({ jobId })` resolves the Agreement a job's completed context plans, as `{ kind: 'present', agreement, retained }`, or
+ * `{ kind: 'absent' | 'unavailable', cause }` (see `createPlannedAgreementReader`); it throws `peer_job_invalid` (409) for a malformed job and a
+ * TypeError for malformed options. The route registers it with `wire`, whose state-read admission asks for it while the job has no session.
  * `closeAttempts(cause)` closes every attempt still running. `store`, `capacity`, `admissionTransaction` and `coordinator` are the host's one
  * instance of each: the tuple is kept inside the acceptance, so the construction registers its hook before the first admission, and throws a
  * TypeError for a missing port, an unsupported Listing, a capacity of another store or a provider pinned to another seller presenter.
  */
 export function createWireSellerContextRoute({ listing, wire, store, ledger, admissionTransaction, coordinator, capacity, provider, assertBuyerAccess, knownJob, ready, stopped, now, monotonicNow, trackContextWork }) {
   const support = purchaseSupport(listing);
-  const ports = [assertBuyerAccess, ready, stopped, now, monotonicNow, trackContextWork, wire?.admitPresentation, coordinator?.reserveCoordinated, admissionTransaction?.begin, ledger?.attempt,
+  const ports = [assertBuyerAccess, ready, stopped, now, monotonicNow, trackContextWork, wire?.admitPresentation, wire?.bindPlannedAgreementReader, coordinator?.reserveCoordinated, admissionTransaction?.begin, ledger?.attempt,
     provider?.resolveBuyer, provider?.bindRetainedScope];
   if (!support.supported || !ports.every((port) => typeof port === 'function') || (knownJob !== null && typeof knownJob !== 'function') || !ownsPurchaseCapacity(store, capacity)) {
     throw new TypeError('the wire context route needs a supported Listing, the wire, its stores, ports and provider, buyer access and clocks');
@@ -472,6 +476,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller),
     acceptedPresentation: (nonce) => ledger.retained(nonce)?.accepted ?? null });
   const revalidateStored = createContextOutcomeRevalidation({ provider, retainedBody: records.retainedBody });
+  const planAgreement = createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf: completedContextOutcome(wire.journal, seller), records, revalidate: revalidateStored });
   const { sellerBundlePresentedBy } = provider.bindRetainedScope(records.completedScope);
   if (!sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) throw new TypeError('the provider is pinned to a seller presenter other than the Listing\'s');
 
@@ -517,6 +522,13 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
 
   // A stored outcome is read back through the provider before it is answered; an accepted presentation continues without a first admission.
   const revalidateContextOutcome = (input) => { requireJobId(input?.jobId); return revalidateStored(input); };
+  // The planned Agreement of a job whose proposal session does not exist yet: the wire's state-read admission asks for it.
+  const readPlannedAgreement = async (input) => {
+    if (!record(input)) throw new TypeError('readPlannedAgreement takes { jobId }');
+    requireJobId(input.jobId);
+    return planAgreement(input.jobId);
+  };
+  wire.bindPlannedAgreementReader(readPlannedAgreement);
   const continueAccepted = createAcceptedContinuation({ wire, seller, pin, checkPolicy, admissionRecord: admissionTransaction.admissionRecord, revalidate: revalidateContextOutcome,
     assertLive: (request, delegationExpiresAt) => expiryRecheck(now, request, delegationExpiresAt).assertStillLive() });
 
@@ -619,7 +631,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
     }
   }
 
-  return Object.freeze({ handleContext, revalidateContextOutcome, closeAttempts: (cause) => { for (const attempt of running) attempt.close(cause); } });
+  return Object.freeze({ handleContext, revalidateContextOutcome, readPlannedAgreement, closeAttempts: (cause) => { for (const attempt of running) attempt.close(cause); } });
 }
 
 // Codes this plugin's seller route and transport emit; any other code is
