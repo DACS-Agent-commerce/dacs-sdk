@@ -283,7 +283,12 @@ the producer, retry the same payment claim; do not collect another payment.
 `artifactAnchor` publishes native artifacts for the seller named by `writer`.
 Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
-the signed transaction before sending it. `readRetained({ logicalAddress,
+the signed transaction before sending it. The party Vet provider also passes
+`awaitInclusion: true`: a CREATE that call sends and that still reads back as
+pending is read back again, never sent again, for a bounded time (six minutes
+in the reference anchor) while `authorize()` still answers `true`. Its
+`readBackRecords({ jobId, buyer })` reads a job's retained Vet records back the
+same way and signs or sends nothing. `readRetained({ logicalAddress,
 artifactKind })` must authenticate the exact retained artifact, receipt, native
 transaction reference and signed projection when returning `status: 'present'`;
 `verifyReceipt` independently checks those bindings. Retain one logical record
