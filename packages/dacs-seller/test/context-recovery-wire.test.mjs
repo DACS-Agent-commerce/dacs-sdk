@@ -337,6 +337,15 @@ test('planned Agreement draft comes only from source-verified retained completed
     assert.equal(w.counts.agreementSignatures, 0);
   });
 
+  await t.test('a row left running by a crash after its outcome was published gives the same draft as a settled one', async (t) => {
+    const w = await contextWireWorld(t);
+    await settled(w);
+    const settledRead = await plannedOf(w.route);
+    w.internals.db.prepare('UPDATE kit_context_admissions SET record = json_set(record, \'$.state\', \'running\', \'$.contextOutcome\', NULL) WHERE jobId = ?').run(WIRE_JOB);
+    assert.equal(w.rowOf().state, 'running');
+    assert.deepEqual(await plannedOf(w.route), settledRead);
+  });
+
   await t.test('members the caller adds select nothing and a job with no admission has no draft', async (t) => {
     const w = await contextWireWorld(t), { request } = await settled(w), plain = await plannedOf(w.route);
     const extra = { buyer: w.other.claim, seller: w.other.claim, agreementHash: '0'.repeat(64), scope: { ...request.scope, generatedAt: 1 }, generatedAt: 1 };
