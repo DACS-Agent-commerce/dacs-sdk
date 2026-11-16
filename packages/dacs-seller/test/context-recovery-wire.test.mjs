@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
-import { JOB as WIRE_JOB, JOB2 as WIRE_JOB2, SELLER_CONTEXT_PATH, T0, contextWireWorld } from './helpers/context-wire-world.mjs';
+import { JOB as WIRE_JOB, JOB2 as WIRE_JOB2, SELLER_CONTEXT_PATH, T0, contextWireWorld, deferred } from './helpers/context-wire-world.mjs';
 import { watchSql } from './helpers/challenge-route-fixture.mjs';
 
 const summary = (answer) => [answer.status, answer.body.error];
@@ -256,6 +256,31 @@ test('an unfinished earlier attempt of an accepted admission is held and neither
   assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'context_recovery_held']);
   assert.deepEqual([w.counts.resolves, w.completions.length, w.counts.vetWrites], [0, 0, 0]);
 });
+
+for (const [title, stall] of [['before its first Vet write', 'provider'], ['after its first Vet write', 'afterFirstWrite']]) {
+  test(`a resend that arrives while the first attempt is still running ${title} is answered seller_effect_pending and leaves the job to that attempt`, async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    const reached = deferred(), gate = deferred();
+    w.behaviour[stall] = async () => { reached.resolve(); await gate.promise; };
+    const first = w.post(request);
+    await reached.promise;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let refused = null;
+    w.post(await resign(w, request)).then((answer) => { refused = answer; });
+    try {
+      // The wait for the job's mutex is bounded at ten seconds: time moves on in steps until the resend is answered.
+      for (let step = 0; step < 30 && refused === null; step++) { await new Promise((resolve) => setImmediate(resolve)); t.mock.timers.tick(1000); }
+      assert.notEqual(refused, null, 'the resend is answered while the first attempt is running');
+      assert.deepEqual(summary(refused), [503, 'seller_effect_pending']);
+      assert.equal(w.rowOf().state, 'running', 'the resend does not end the job');
+      assert.equal(w.counts.releases.length, 0);
+    } finally { gate.resolve(); t.mock.timers.reset(); }
+    const answer = await first;
+    await w.settleJob();
+    assert.equal(answer.status, 200, answer.text);
+    assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome, w.counts.vetWrites, w.counts.holds.length, w.counts.releases.length], ['settled', 'success', 2, 1, 1]);
+  });
+}
 
 test('a completed outcome of a running admission is revalidated and answered without a second start', async (t) => {
   const w = await contextWireWorld(t), { request, answer } = await settled(w);
