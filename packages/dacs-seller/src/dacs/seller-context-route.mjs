@@ -380,9 +380,8 @@ function providerOutcome(answer, scope) {
  * trigger a), which releases its hold and slot unless an effect cannot be ruled out; a provider stopped at the deadline or by `closeAttempts`
  * keeps the attempt open. Any other error after the reservation leaves the attempt open and answers `operation_uncertain`, or the 503
  * refusal it carries. The provider's work runs inside `trackContextWork`, which keeps the job's mutex until the work has settled, also
- * after a deadline has answered.
- * A presentation that was already accepted continues: the presented bundle must be the kept one, the kept admission must
- * still bind it (`session_admission_unavailable` 503 otherwise), and buyer access and the known-job check run again; the challenge expiry, the
+ * after a deadline has answered. A presentation that was already accepted continues: the presented bundle must be the kept one, the kept admission
+ * must still bind it (`session_admission_unavailable` 503 otherwise), and buyer access and the known-job check run again; the challenge expiry, the
  * generatedAt window, the profile admission and the start limits are not checked again and no hold or start is made. An `admitted` row is reserved
  * and runs, a settled one answers its stored outcome without a reservation, and a closed one is `context_admission_closed` (409). A running row whose
  * operation completed answers that outcome. One with an unfinished earlier attempt is refused `seller_effect_pending` (503) while that attempt's lease
@@ -409,10 +408,8 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   const failedProviders = new WeakSet();
   const { db, keepPurchaseProfileWithin } = sellerStoreInternals(store);
   admissionTransaction.addAcceptanceHook(({ jobId, purchaseProfile }) => keepPurchaseProfileWithin(jobId, purchaseProfile));
-  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller),
-    acceptedPresentation: (nonce) => ledger.retained(nonce)?.accepted ?? null });
+  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller), acceptedPresentation: (nonce) => ledger.retained(nonce)?.accepted ?? null });
   const revalidateStored = createContextOutcomeRevalidation({ provider, retainedBody: records.retainedBody });
-  const readPlannedAgreement = wire.bindPlannedAgreementReader(createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf: completedContextOutcome(wire.journal, seller), records, revalidate: revalidateStored }));
   const { sellerBundlePresentedBy } = provider.bindRetainedScope(records.completedScope);
   if (!sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) throw new TypeError('the provider is pinned to a seller presenter other than the Listing\'s');
 
@@ -545,6 +542,9 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
         capability = await admissionTransaction.reserveContext(request.jobId, (jobLease) => coordinator.reserveCoordinated({ checked: admitted, payload: request, route: request.path,
           operationId: wireOperationId(request), paymentTx: null, keepProfile: wire.binding.profile, retainedWork: false }, { jobLease }));
       } catch (error) {
+        // A resend never ends the job: an attempt of its own may be running it, or have settled it while this one waited, which is answered from its stored outcome.
+        const stored = error?.code === 'context_admission_closed' && challenge.accepted !== undefined ? await continueAccepted(request, admitted, challenge) : null;
+        if (stored !== null) return { status: stored.status, text: stored.text, request };
         // A reservation that lost to compensation leaves the row to it. A first admission's other refusal ends its accepted row here;
         // a continuation's never does: its row is retained work, and a refusal such as a live earlier attempt changes nothing.
         if (error?.code !== 'context_admission_closed' && challenge.accepted === undefined) await endFailedStart(request.jobId);
@@ -573,6 +573,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
     }
   }
 
+  const readPlannedAgreement = wire.bindPlannedAgreementReader(createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf: completedContextOutcome(wire.journal, seller), records, revalidate: revalidateStored }));
   return Object.freeze({ handleContext, revalidateContextOutcome, readPlannedAgreement, closeAttempts: (cause) => { for (const attempt of running) attempt.close(cause); } });
 }
 

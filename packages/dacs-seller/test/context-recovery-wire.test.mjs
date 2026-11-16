@@ -13,7 +13,7 @@ import { createContextOutcomeRevalidation } from '../src/dacs/seller-context-con
 import { createPlannedAgreementReader } from '../src/dacs/seller-planned-agreement.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
-import { JOB as WIRE_JOB, JOB2 as WIRE_JOB2, SELLER_CONTEXT_PATH, T0, contextWireWorld } from './helpers/context-wire-world.mjs';
+import { JOB as WIRE_JOB, JOB2 as WIRE_JOB2, SELLER_CONTEXT_PATH, T0, contextWireWorld, deferred } from './helpers/context-wire-world.mjs';
 import { watchSql } from './helpers/challenge-route-fixture.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { BUYER, SELLER, address, assertPresent, orchestratorFixture } from './helpers/vet-orchestrator-fixture.mjs';
@@ -255,6 +255,47 @@ test('settled context inspection may answer the same signed request twice withou
       assert.deepEqual(summary(await w.post(replay)), [503, 'seller_source_unavailable']);
     });
   }
+});
+
+for (const [title, stall] of [['before its first Vet write', 'provider'], ['after its first Vet write', 'afterFirstWrite']]) {
+  test(`a resend that arrives while the first attempt is still running ${title} is answered seller_effect_pending and leaves the job to that attempt`, async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    const reached = deferred(), gate = deferred();
+    w.behaviour[stall] = async () => { reached.resolve(); await gate.promise; };
+    const first = w.post(request);
+    await reached.promise;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let refused = null;
+    w.post(await resign(w, request)).then((answer) => { refused = answer; });
+    try {
+      // The wait for the job's mutex is bounded at ten seconds: time moves on in steps until the resend is answered.
+      for (let step = 0; step < 30 && refused === null; step++) { await new Promise((resolve) => setImmediate(resolve)); t.mock.timers.tick(1000); }
+      assert.notEqual(refused, null, 'the resend is answered while the first attempt is running');
+      assert.deepEqual(summary(refused), [503, 'seller_effect_pending']);
+      assert.equal(w.rowOf().state, 'running', 'the resend does not end the job');
+      assert.equal(w.counts.releases.length, 0);
+    } finally { gate.resolve(); t.mock.timers.reset(); }
+    const answer = await first;
+    await w.settleJob();
+    assert.equal(answer.status, 200, answer.text);
+    assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome, w.counts.vetWrites, w.counts.holds.length, w.counts.releases.length], ['settled', 'success', 2, 1, 1]);
+  });
+}
+
+test('a resend that waits for the first attempt and finds the job settled answers the stored outcome', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  const reached = deferred(), gate = deferred();
+  w.behaviour.provider = async () => { reached.resolve(); await gate.promise; };
+  const first = w.post(request);
+  await reached.promise;
+  const resend = w.post(await resign(w, request));
+  await new Promise((resolve) => setImmediate(resolve));
+  gate.resolve();
+  const [firstAnswer, resendAnswer] = [await first, await resend];
+  await w.settleJob();
+  assert.equal(firstAnswer.status, 200, firstAnswer.text);
+  assert.deepEqual([resendAnswer.status, resendAnswer.text], [200, firstAnswer.text]);
+  assert.deepEqual([w.rowOf().state, w.counts.vetWrites, w.counts.holds.length, w.internals.admissionCounts().starts], ['settled', 2, 1, 1]);
 });
 
 test('a completed outcome of a running admission is revalidated and answered without a second start', async (t) => {
@@ -528,7 +569,6 @@ test('a recovered context hashes to the same Agreement as an uninterrupted one a
 const LEASE_MS = 300_000;
 const DEADLINE_MS = 240_000;
 const flush = () => new Promise((resolve) => setImmediate(resolve));
-const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 const DIED = 'TEST the process died';
 
 /** The first admission's attempt ends inside the provider after `writes` Vet records, with its journal attempt left pending and its row running. */
