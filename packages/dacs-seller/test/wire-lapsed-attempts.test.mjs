@@ -1,5 +1,6 @@
 // A proposal worker or recovery that is still running when its lease ends: once a successor has recovered the operation, the
-// late one is refused at its next job check, so it signs and settles nothing, and the successor's outcome stands.
+// late worker is refused at its next job check and the late recovery at the agent's claim, so neither signs or settles anything, and the
+// successor's outcome stands.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { proposeJob, world } from './helpers/wire-routes-world.mjs';
@@ -66,6 +67,9 @@ for (const end of ['completed', 'released']) {
     assert.equal(w.agreementSignatures(), signed, 'the late recovery signed nothing');
     assert.deepEqual(w.realAgent().durableSessionOf(w.jobId)?.sellerContribution ?? null, kept, 'the late recovery kept nothing');
     if (end === 'completed') assert.equal((await w.post()).text, successor.text, 'the successor\'s outcome stands');
-    else assert.equal((await w.post()).body.disposition, 'complete', 'the corrected request signs the Agreement once');
+    else {
+      assert.equal((await w.post()).body.disposition, 'complete', 'the corrected request completes');
+      assert.equal(w.agreementSignatures(), signed + 1, 'the Agreement is signed once, by the corrected request');
+    }
   });
 }

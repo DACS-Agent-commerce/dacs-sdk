@@ -7,7 +7,7 @@ import { JOB } from './protocol-fixture.mjs';
 import { SHORT_LEASE_MS } from './route-recovery-world.mjs';
 
 export const AGREEMENT_SIGNATURE_PREFIX = 'dacs-payee-bound-agreement:v1:';
-/** The context session states a purchase can end in. */
+/** Context session states that end a purchase, so that the agent signs nothing more for it. */
 export const ENDED_SESSIONS = ['aborted-by-other', 'vet-failed'];
 
 /** The awaited steps of the agent's proposal work before it signs. */
