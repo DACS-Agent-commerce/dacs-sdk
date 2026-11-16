@@ -75,8 +75,6 @@ describe("createDemosClient transaction posts that never reached the node", () =
   it.each([
     ["refused connection", connectionError("ECONNREFUSED")],
     ["failed name lookup", connectionError("ENOTFOUND")],
-    ["Cloudflare 521 answer (origin refused the connection)", statusError(521, CLOUDFLARE)],
-    ["Cloudflare 523 answer (origin unreachable)", statusError(523, CLOUDFLARE)],
   ])("treats a %s as never sent and keeps the transport error as its cause", async (_label, cause) => {
     const sent = transportError(cause);
     const { client, options } = clientFailingWith(sent);
@@ -101,6 +99,9 @@ describe("createDemosClient transaction posts that never reached the node", () =
     ["Cloudflare 522 answer", transportError(statusError(522, CLOUDFLARE))],
     ["Cloudflare 524 answer", transportError(statusError(524, CLOUDFLARE))],
     ["521 answer without a cf-ray header", transportError(statusError(521))],
+    ["521 answer with a cf-ray header", transportError(statusError(521, CLOUDFLARE))],
+    ["523 answer without a cf-ray header", transportError(statusError(523))],
+    ["523 answer with a cf-ray header", transportError(statusError(523, CLOUDFLARE))],
     ["refused connection after a redirect", transportError(connectionError("ECONNREFUSED", 1))],
     ["Cloudflare 521 answer after a redirect", transportError(statusError(521, CLOUDFLARE, 1))],
     [
