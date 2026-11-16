@@ -41,7 +41,7 @@ async function settled(w, options) {
 const changed = (bundle) => { bundle.presentedAt += 1; };
 const effects = (w) => ({ holds: w.counts.holds.length, files: w.journalFiles(), vetWrites: w.counts.vetWrites, reserves: w.reserved.calls, starts: w.internals.admissionCounts().starts });
 
-test('K1-A4 after a crash past D4 the identical retry continues to D5 and gets new', async (t) => {
+test('after a crash past D4 the identical retry continues to D5 and gets new', async (t) => {
   const w = await contextWireWorld(t), request = await admittedAndCut(w);
   assert.equal(w.counts.holds.length, 1);
   const again = await w.post(await resign(w, request));
@@ -51,7 +51,7 @@ test('K1-A4 after a crash past D4 the identical retry continues to D5 and gets n
   assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome, w.operationOf(WIRE_JOB).state], ['settled', 'success', 'completed']);
 });
 
-test('K1-A30 continuation after challenge expiry and generatedAt skew, after a restart and for the proposal runs no freshness check and writes nothing to the ledger', async (t) => {
+test('continuation after challenge expiry and generatedAt skew, after a restart and for the proposal runs no freshness check and writes nothing to the ledger', async (t) => {
   const w = await contextWireWorld(t), request = await admittedAndCut(w);
   const challenge = w.challengeOf(request.nonce);
   w.advance(SKEW_MS + 1);
@@ -62,7 +62,7 @@ test('K1-A30 continuation after challenge expiry and generatedAt skew, after a r
   assert.deepEqual(w.challengeOf(request.nonce), challenge, 'the challenge row is unchanged');
 });
 
-test('K1-A31 a changed presentation, a missing retained admission, a refusing authority reader and an invalid Vet receipt are refused without a signature', async (t) => {
+test('a changed presentation, a missing retained admission, a refusing authority reader and an invalid Vet receipt are refused without a signature', async (t) => {
   await t.test('a changed presentation under an accepted nonce', async (t) => {
     const w = await contextWireWorld(t), { request } = await settled(w), before = effects(w);
     assert.deepEqual(summary(await w.post(await w.startContext({ nonce: request.nonce, bundleChange: changed }))), [409, 'peer_agreement_mismatch']);
@@ -90,7 +90,7 @@ test('K1-A31 a changed presentation, a missing retained admission, a refusing au
   });
 });
 
-test('K5-R10 a first-Vet and a second-Vet non-pass are each answered again after revalidation of the one non-pass record, after a restart and at capacity, and never lead to an Agreement signature', async (t) => {
+test('a first-Vet and a second-Vet non-pass are each answered again after revalidation of the one non-pass record, after a restart and at capacity, and never lead to an Agreement signature', async (t) => {
   for (const [name, nonPass, vetWrites] of [['first', FIRST_VET_NON_PASS, 1], ['second', SECOND_VET_NON_PASS, 2]]) {
     await t.test(`${name}-Vet non-pass`, async (t) => {
       const w = await contextWireWorld(t);
@@ -111,7 +111,7 @@ test('K5-R10 a first-Vet and a second-Vet non-pass are each answered again after
   }
 });
 
-test('K2-T17 under ready:false an accepted continuation with a live delegation is admitted and spends one unit of the context slot', async (t) => {
+test('under ready:false an accepted continuation with a live delegation is admitted and spends one unit of the context slot', async (t) => {
   const w = await contextWireWorld(t, { requireDelegation: true }), request = await admittedAndCut(w);
   w.state.ready = () => false;
   const reservesBefore = w.reserved.calls;
@@ -121,7 +121,7 @@ test('K2-T17 under ready:false an accepted continuation with a live delegation i
   assert.deepEqual([w.reserved.calls - reservesBefore, w.counts.vetWrites, w.journalFiles()], [1, 2, 4]);
 });
 
-test('K2-T18 the same continuation under an expired delegation is refused peer_delegation_expired 408 with no readback and no file', async (t) => {
+test('the same continuation under an expired delegation is refused peer_delegation_expired 408 with no readback and no file', async (t) => {
   const w = await contextWireWorld(t, { requireDelegation: true }), request = await admittedAndCut(w), before = effects(w);
   const expired = w.delegationFor({ at: T0 - 120_000, lifetimeMs: 60_000 });
   const answer = await w.post(await resign(w, request, { delegation: expired }));
@@ -130,14 +130,14 @@ test('K2-T18 the same continuation under an expired delegation is refused peer_d
   assert.equal(w.counts.sourceReads, 0);
 });
 
-test('K2-T19 and K5-A18 under ready:false a new purchase\'s first context request is refused seller_not_ready with no row and no file', async (t) => {
+test('under ready:false a new purchase\'s first context request is refused seller_not_ready with no row and no file', async (t) => {
   const w = await contextWireWorld(t), request = await w.startContext();
   w.state.ready = () => false;
   assert.deepEqual(summary(await w.post(request)), [503, 'seller_not_ready']);
   assert.deepEqual([w.rowOf(), w.journalFiles(), w.counts.holds.length], [null, 0, 0]);
 });
 
-test('K2-T22/K5-A22 a lost answer of a settled admission at full capacity is answered from the stored outcome with no reservation, also after a restart; the four paired negatives are refused', async (t) => {
+test('a lost answer of a settled admission at full capacity is answered from the stored outcome with no reservation, also after a restart; the four paired negatives are refused', async (t) => {
   const w = await contextWireWorld(t, { storeOptions: { maxRecords: 100 } }), { request, answer } = await settled(w), newPurchase = await w.startContext({ jobId: WIRE_JOB2 });
   w.state.ready = () => false;
   const before = effects(w), sql = watchSql(t);
@@ -164,7 +164,7 @@ test('an aborted admission\'s interrupted context step is never resumed', async 
   assert.deepEqual(effects(w), before);
 });
 
-test('the accepted-presentation retry of T-P12b1-12 now continues by accepted continuation', async (t) => {
+test('a retry of an accepted presentation continues by accepted continuation and answers the stored outcome', async (t) => {
   const w = await contextWireWorld(t), { request, answer } = await settled(w), before = effects(w);
   const sql = watchSql(t);
   const again = await w.post(request);
@@ -233,7 +233,7 @@ test('a completed outcome of a running admission is revalidated and answered wit
   assert.equal(w.counts.sourceReads, 1);
 });
 
-test('register context present and non-pass in shared completed-source matrix T-P11d1-22', async (t) => {
+test('register context present and non-pass in the shared completed-source matrix', async (t) => {
   const changedAnswer = (answer) => (answer.disposition === 'present'
     ? { ...answer, value: { ...answer.value, input: { ...answer.value.input, jobId: WIRE_JOB2 } } }
     : { ...answer, reason: 'seller Vet decision: changed' });

@@ -2,7 +2,7 @@
 // Admission reserves two writes. Pre-payment writes still require exact
 // seller approval. This is the kit's only context mode.
 import { identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, isIdentityBundle, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
-import { admitPreAgreementRequest, admitWireRequestBody, inspectWireOperation, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { admitPreAgreementRequest, admitWireRequestBody, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { KitOperationGuardError, kitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { sellerData } from '../mcp/seller-content.mjs';
@@ -11,10 +11,10 @@ import { AGREEMENT_CONTEXT_SOURCE } from './agreement-context-consumer.mjs';
 import { DEM_RAIL, canonicalize, purchaseSupport, verifyComponent } from './listing.mjs';
 import { listingPin } from './purchase-protocol.mjs';
 import { deepFreeze } from './seller-challenge-ledger.mjs';
-import { SellerRefusedError, createCompletedOutcomeReader, sellerFailureAttempt } from './seller-http.mjs';
+import { SellerRefusedError, sellerFailureAttempt } from './seller-http.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
-import { sessionAdmissionProblem } from './session-admission.mjs';
 import { openWireRequest } from './seller-wire-requests.mjs';
+import { createAcceptedContinuation, createContextOutcomeRevalidation, createContinuationCheck } from './seller-context-continuation.mjs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals, sellerTransportEffect } from './seller-transport-auth.mjs';
 
 // Per buyer: five accepted starts per rolling hour.
@@ -34,8 +34,6 @@ const GENERATED_AT_SKEW_MS = 10 * 60 * 1000;
 const REASON_MAX = 240;
 // How long one context attempt may run, measured on a monotonic clock from the start of its work.
 const SELLER_CONTEXT_TIMEOUT_MS = 240_000;
-// How long the provider may take to read back the retained records of a stored outcome.
-const SOURCE_REVALIDATION_TIMEOUT_MS = 10_000;
 
 // The challenge scope is the context scope without the bundle hash, which only the presentation carries.
 const CHALLENGE_SCOPE_KEYS = SELLER_CONTEXT_SCOPE_KEYS.filter((key) => key !== 'buyerBundleHash');
@@ -473,6 +471,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   admissionTransaction.addAcceptanceHook(({ jobId, purchaseProfile }) => keepPurchaseProfileWithin(jobId, purchaseProfile));
   const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller),
     acceptedPresentation: (nonce) => ledger.retained(nonce)?.accepted ?? null });
+  const revalidateStored = createContextOutcomeRevalidation({ provider, retainedBody: records.retainedBody });
   const { sellerBundlePresentedBy } = provider.bindRetainedScope(records.completedScope);
   if (!sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) throw new TypeError('the provider is pinned to a seller presenter other than the Listing\'s');
 
@@ -485,18 +484,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
     return new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
   }
 
-  // The completed context operation of a job, or null while it has none.
-  const completedOutcomeOf = completedContextOutcome(wire.journal, seller);
-
-  // Whether the host's own record lets the job's accepted presentation continue while the seller is not ready: its challenge is accepted
-  // with the row's presentation and the row is admitted or running, or settled with a completed context outcome. A row settled by
-  // compensation, aborted or compensating never continues.
-  function continuesAccepted(row) {
-    const challenge = ledger.retained(row.nonce);
-    if (challenge?.state !== 'accepted' || challenge.presentationHash !== row.presentationHash) return false;
-    if (row.state === 'admitted' || row.state === 'running') return true;
-    return row.state === 'settled' && completedOutcomeOf(row.jobId) !== null;
-  }
+  const continuesAccepted = createContinuationCheck({ ledger, completedOutcomeOf: completedContextOutcome(wire.journal, seller) });
 
   // Everything before the attempt: a refusal here consumes nothing. Resolves with the wire's admission of the request, whose body is the one to use.
   async function openRequest({ rawBody, header, method, path }, onOpened) {
@@ -527,44 +515,10 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
     return { owner: result.owner, nonce: input.nonce };
   }
 
-  // The retained context request of an accepted job, `{ scope, buyerIdentityBundle }`, or null when the host cannot rebuild it.
-  const retainedBodyOf = (jobId) => records.retainedBody(jobId);
-
-  // A stored outcome is reported again only once the provider reads back, passively, the records it was made from and they give
-  // the same answer. A present answer needs both Vet records, a non-pass only the record that refused. Any failure is
-  // seller_source_unavailable (503) with its cause, and the stored outcome is never rewritten.
-  async function revalidateContextOutcome({ jobId, outcome }) {
-    requireJobId(jobId);
-    const unavailable = (cause) => new SellerTransportError('seller_source_unavailable', 503, { cause });
-    let stored, body;
-    try { stored = JSON.parse(outcome.text); } catch (cause) { throw unavailable(cause); }
-    if (outcome.status !== 200 || !['present', 'rejected'].includes(stored?.disposition) || (body = retainedBodyOf(jobId)) === null) throw unavailable('retained_context_missing');
-    let recovered;
-    try {
-      recovered = await boundedCall(() => provider.recoverBuyer(structuredClone(body), { writable: () => false, signal: AbortSignal.timeout(SOURCE_REVALIDATION_TIMEOUT_MS) }), { timeoutMs: SOURCE_REVALIDATION_TIMEOUT_MS });
-    } catch (cause) { throw unavailable(cause); }
-    if (!same(recovered, stored)) throw unavailable(recovered === null || recovered === undefined ? 'absent' : 'changed');
-  }
-  const readCompletedOutcome = createCompletedOutcomeReader({ journal: wire.journal, seller }).completedOutcomeWithoutReservation;
-
-  // Accepted continuation (K1): the presented bundle is the one kept, the kept admission still binds, and the stage's current gates run
-  // again. No challenge expiry, generatedAt, profile admission, quota, hold or start is checked or made. A settled admission answers its
-  // stored outcome after revalidation and reserves nothing; it resolves with that outcome, any other state with null.
-  async function continueAccepted(request, { body, delegationExpiresAt }, { accepted }) {
-    const bundle = body.buyerIdentityBundle;
-    if (canonicalize(bundle) !== accepted.buyerBundleText || identityBundleHash(bundle) !== accepted.buyerBundleHash
-        || sessionAdmissionProblem(accepted.admission, { jobId: request.jobId, buyer: bundle.presentedBy, buyerBundleHash: accepted.buyerBundleHash, seller, listingPin: pin }) !== null) {
-      throw new SellerTransportError('session_admission_unavailable', 503);
-    }
-    await checkPolicy(request);
-    const row = admissionTransaction.admissionRecord(request.jobId);
-    if (row === null || !['admitted', 'running', 'settled'].includes(row.state)) throw new SellerTransportError('context_admission_closed', 409);
-    if (row.state !== 'settled') return null;
-    const outcome = await readCompletedOutcome({ path: SELLER_CONTEXT_PATH, jobId: request.jobId, binding: wireOperationBinding(request), revalidate: (stored) => revalidateContextOutcome({ jobId: request.jobId, outcome: stored }) });
-    if (outcome === null) throw new SellerTransportError('context_admission_closed', 409);
-    expiryRecheck(now, request, delegationExpiresAt).assertStillLive();
-    return outcome;
-  }
+  // A stored outcome is read back through the provider before it is answered; an accepted presentation continues without a first admission.
+  const revalidateContextOutcome = (input) => { requireJobId(input?.jobId); return revalidateStored(input); };
+  const continueAccepted = createAcceptedContinuation({ wire, seller, pin, checkPolicy, admissionRecord: admissionTransaction.admissionRecord, revalidate: revalidateContextOutcome,
+    assertLive: (request, delegationExpiresAt) => expiryRecheck(now, request, delegationExpiresAt).assertStillLive() });
 
   // The owning validation in its order, then the intent, hold and acceptance. Returns once the challenge is accepted.
   async function admitFirstContact(request, { body, delegationExpiresAt }, { owner, nonce }) {
