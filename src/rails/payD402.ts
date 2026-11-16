@@ -442,14 +442,18 @@ function isUnresolvedPayment(result: SettleResult): boolean {
  * supplies the per-session amount. A pending payment reaches runSession as
  * `ok: false` with its hash and no `pending` key.
  *
- * The bridge pays a job once. After a result that is not `ok` but carries a
- * hash, a later call for the same `jobId` and `phaseIndex` returns that same
- * result and does not call the rail. The record lives as long as the returned
- * function. The bridge cannot reconcile earlier attempts, so a request with
+ * While a call for a `jobId` and `phaseIndex` is running, and after it returns
+ * a result that is not `ok` but carries a hash (and is not a permanent
+ * failure), another call for the same job and phase does not call the rail: it
+ * returns that call's result. The hold is dropped when the call throws, returns
+ * no hash, returns a permanent failure, or returns `ok`. It lives in memory, as
+ * long as the returned function: it does not cover other bridge instances or a
+ * restart. The bridge cannot reconcile earlier attempts, so a request with
  * `priorAttempts` or `recoveryOnly` is refused.
  *
- * @throws DacsError when the request's payee differs from the paywall
- *   recipient, or when the request asks for recovery.
+ * @throws DacsError when the request's `expectedPayee` differs from the paywall
+ *   recipient, when the request asks for recovery, or when a job and phase
+ *   that are held get a request with a different `amount`.
  */
 export function payD402Settle(
   rail: PayD402Rail,
@@ -458,7 +462,7 @@ export function payD402Settle(
   const paywallUrl = paywall.url;
   const recipient = paywall.recipient;
   const network = paywall.network ?? "demos";
-  const unresolvedByJobPhase = new Map<string, SettleResult>();
+  const heldByJobPhase = new Map<string, { amount: string; result: Promise<SettleResult> }>();
   return (req) => {
     const { amount, expectedPayee } = req;
     if (expectedPayee !== recipient) {
@@ -472,19 +476,29 @@ export function payD402Settle(
       );
     }
     const jobPhase = JSON.stringify([req.jobId, req.phaseIndex ?? 0]);
-    const earlier = unresolvedByJobPhase.get(jobPhase);
-    if (earlier) return Promise.resolve({ ...earlier });
-    return rail
-      .settle({
-        paywallUrl,
-        recipient,
-        amount,
-        network,
-      })
+    const earlier = heldByJobPhase.get(jobPhase);
+    if (earlier) {
+      if (earlier.amount !== amount) {
+        throw new DacsError(
+          `pay-d402 already holds a payment of ${earlier.amount} for ${req.jobId}; a request for ${amount} is refused and no payment is made`,
+        );
+      }
+      return earlier.result.then((result) => ({ ...result }));
+    }
+    const result = Promise.resolve()
+      .then(() => rail.settle({ paywallUrl, recipient, amount, network }))
       .then(withoutPendingMarker)
-      .then((result) => {
-        if (isUnresolvedPayment(result)) unresolvedByJobPhase.set(jobPhase, result);
-        return result;
-      });
+      .then(
+        (settled) => {
+          if (!isUnresolvedPayment(settled)) heldByJobPhase.delete(jobPhase);
+          return settled;
+        },
+        (error: unknown) => {
+          heldByJobPhase.delete(jobPhase);
+          throw error;
+        },
+      );
+    heldByJobPhase.set(jobPhase, { amount, result });
+    return result;
   };
 }
