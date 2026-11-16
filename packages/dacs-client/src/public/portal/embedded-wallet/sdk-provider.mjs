@@ -53,6 +53,13 @@
 
 const ADDRESS = /^0x[0-9a-f]{64}$/;
 const SIGNATURE_HEX = /^(0x)?[0-9a-f]{128}$/;
+const FIELD_PRIME = (1n << 255n) - 19n;
+const GROUP_ORDER = (1n << 252n) + 27742317777372353535851937790883648493n;
+const SMALL_ORDER_Y = new Set([
+  0n, 1n, FIELD_PRIME - 1n,
+  2707385501144840649318225287225658788936804267575313519463743609750303402022n,
+  FIELD_PRIME - 2707385501144840649318225287225658788936804267575313519463743609750303402022n,
+]);
 const HASH = /^[0-9a-f]{64}$/;
 const HANDLE = /^[A-Za-z0-9_-]{1,39}$/;
 const OS_STRING = /^(0|[1-9][0-9]*)$/;
@@ -107,6 +114,20 @@ export class EmbeddedWalletError extends Error {
     super(message, cause === undefined ? undefined : { cause });
     this.code = code;
   }
+}
+
+function littleEndianInteger(bytes) {
+  let value = 0n;
+  for (let i = bytes.length - 1; i >= 0; i--) value = (value << 8n) | BigInt(bytes[i]);
+  return value;
+}
+
+export async function verifyEmbeddedEd25519(publicKey, signature, message) {
+  if (publicKey.length !== 32 || signature.length !== 64 || littleEndianInteger(signature.subarray(32)) >= GROUP_ORDER) return false;
+  const y = littleEndianInteger(publicKey) & ((1n << 255n) - 1n);
+  if (y >= FIELD_PRIME || SMALL_ORDER_Y.has(y)) return false;
+  const key = await crypto.subtle.importKey('raw', publicKey, { name: 'Ed25519' }, false, ['verify']);
+  return crypto.subtle.verify('Ed25519', key, signature, message);
 }
 
 function ok(data) {
@@ -506,8 +527,7 @@ async function normativeAgreementMatches(r, data) {
       const signature = Uint8Array.from(atob(sigs[0].value.replace(/-/g, '+').replace(/_/g, '/') + '=='), (c) => c.charCodeAt(0));
       if (signature.length !== 64 || btoa(String.fromCharCode(...signature)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') !== sigs[0].value) return false;
       const keyBytes = Uint8Array.from(party.slice('did:demos:agent:'.length).match(/../g), (b) => Number.parseInt(b, 16));
-      const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'Ed25519' }, false, ['verify']);
-      if (!await crypto.subtle.verify('Ed25519', key, signature, signedBytes)) return false;
+      if (!await verifyEmbeddedEd25519(keyBytes, signature, signedBytes)) return false;
     } catch { return false; }
   }
   return true;
@@ -539,8 +559,7 @@ async function normativeSettlementMatches(r, data) {
     const scope = anchorJson(Object.fromEntries(Object.entries(data).filter(([k]) => !['signature', 'signatures'].includes(k))));
     const signedBytes = new TextEncoder().encode(`dacs-evidence:v1:${await sha256HexOfText(scope)}`);
     const keyBytes = Uint8Array.from(r.owner.slice('did:demos:agent:'.length).match(/../g), (b) => Number.parseInt(b, 16));
-    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'Ed25519' }, false, ['verify']);
-    return await crypto.subtle.verify('Ed25519', key, signature, signedBytes);
+    return await verifyEmbeddedEd25519(keyBytes, signature, signedBytes);
   } catch { return false; }
 }
 
@@ -599,8 +618,7 @@ async function devnetDemoArtifactMatches(r, data, metadata, transport) {
     const message=new TextEncoder().encode(`${separator}${await sha256HexOfText(scope)}`);
     const sig=Uint8Array.from(atob(signature.value.replace(/-/g,'+').replace(/_/g,'/')+'=='),c=>c.charCodeAt(0));
     const keyBytes=Uint8Array.from(writer.slice('did:demos:agent:'.length).match(/../g),b=>Number.parseInt(b,16));
-    const key=await crypto.subtle.importKey('raw',keyBytes,{name:'Ed25519'},false,['verify']);
-    return sig.length===64 && await crypto.subtle.verify('Ed25519',key,sig,message);
+    return await verifyEmbeddedEd25519(keyBytes,sig,message);
   } catch { return false; }
 }
 
@@ -763,8 +781,7 @@ async function anchorSignatureMatches(signed, address) {
     || await sha256HexOfText(JSON.stringify(signed.content)) !== signed.hash) return false;
   try {
     const bytes = (v) => Uint8Array.from(v.replace(/^0x/, '').match(/../g), (b) => Number.parseInt(b, 16));
-    const key = await crypto.subtle.importKey('raw', bytes(address), { name: 'Ed25519' }, false, ['verify']);
-    return await crypto.subtle.verify('Ed25519', key, bytes(signed.signature.data), new TextEncoder().encode(signed.hash));
+    return await verifyEmbeddedEd25519(bytes(address), bytes(signed.signature.data), new TextEncoder().encode(signed.hash));
   } catch { return false; }
 }
 

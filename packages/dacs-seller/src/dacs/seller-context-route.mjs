@@ -462,8 +462,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   const failedProviders = new WeakSet();
   const { db, keepPurchaseProfileWithin } = sellerStoreInternals(store);
   admissionTransaction.addAcceptanceHook(({ jobId, purchaseProfile }) => keepPurchaseProfileWithin(jobId, purchaseProfile));
-  const operationOf = (jobId) => inspectWireOperation(wire.journal, { seller, jobId, path: SELLER_CONTEXT_PATH });
-  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: (jobId) => { const view = operationOf(jobId); return view.state === 'completed' ? view.outcome : null; } });
+  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller) });
   const { sellerBundlePresentedBy } = provider.bindRetainedScope(records.completedScope);
   if (!sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) throw new TypeError('the provider is pinned to a seller presenter other than the Listing\'s');
 
@@ -703,6 +702,18 @@ function readOrNull(read, jobId) {
 function presentedScope(text) {
   try { const answer = JSON.parse(text); return answer?.disposition === 'present' ? answer.value?.scope : null; } catch { return null; }
 }
+
+/** The wire journal's read-only view of a job's context operation: the `inspectContextOutcome` port of the admission transaction. */
+export const contextOperationView = (journal, seller) => (jobId) => inspectWireOperation(journal, { seller, jobId, path: SELLER_CONTEXT_PATH });
+
+/** The `contextOutcome` reader of `createSellerContextRecords` over a wire journal: a job's completed context outcome `{ status, text }`, or null while it is not completed. */
+export const completedContextOutcome = (journal, seller) => {
+  const operationOf = contextOperationView(journal, seller);
+  return (jobId) => {
+    const view = operationOf(jobId);
+    return view.state === 'completed' ? view.outcome : null;
+  };
+};
 
 // Read-only views of the seller's durable context records for the steps after the route.
 // admission(jobId) is the job's admission row ({ jobId, buyer, seller, listingPin, contextScopeHash, state }) or null.

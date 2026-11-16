@@ -18,15 +18,20 @@
 // CREATE whose answer was lost is sent again, unchanged and only while the order
 // is still authorized, instead of holding the paid order for good.
 // Each new session is opened only for a presentation that carries a
-// challenge this host issued for its job and buyer (`issueSessionChallenge`,
-// which the operator hands to the buyer; the first attempt consumes it) into
-// the transport store's one challenge ledger, an interim entry until the host
-// mounts the context routes (SA-3), on a
+// challenge this host issued for its job and buyer (through the signed
+// challenge route, or `issueSessionChallenge`, which the operator hands to the
+// buyer; the first attempt consumes it) into the transport store's one
+// challenge ledger, on a
 // Listing the agent's own revocation check (core checkListingRevocation over
 // the operator's readings) finds not revoked, and under the operator's
 // seller-owned sessionAdmission (session-admission.mjs): both parties' exact
-// profile and the Vet records the Agreement references. It does not mount the
-// context route itself.
+// profile and the Vet records the Agreement references.
+// The host mounts the challenge route and the context route on the wire, once
+// the startup sweep of unfinished context rows is done. The context route runs
+// the operator's `demDeliveryContext` provider for each admitted request; that
+// work can outlive its answer, so `close()` waits for it before it releases
+// the stores and the state lock. The host takes no policy hold for a context
+// step: it has no approval ledger.
 // Before it opens anything the host binds the SDK's approved TP-1 identity
 // record over the operator's `tp1Network` ({ connection(), readAuthority }); no
 // option, environment variable or file names a record. It then checks the data
@@ -42,19 +47,25 @@ import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
+import { createContextWorkRegistry } from './dacs/context-work-registry.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
-import { demDeliveryContextVetMode } from './dacs/dem-delivery-context-consumer.mjs';
+import { demDeliveryContextHost, demDeliveryContextVetMode } from './dacs/dem-delivery-context-consumer.mjs';
+import { addressForClaim } from './dacs/demos-claims.mjs';
 import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
+import { PASSIVE_RETAINED_READ, isProvenUnsignedAbsence } from './dacs/native-dem-delivery-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
+import { createContextAdmissionTransaction } from './dacs/seller-admission-transaction.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
+import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute, createWireSellerContextRoute } from './dacs/seller-context-route.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
-import { createSellerTransportServerAuth, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
+import { SellerTransportError, createSellerTransportServerAuth, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
+import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
 import { stopRequested } from './devnet-demo/stop-request.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
@@ -67,7 +78,7 @@ import { isPrivateDirectory } from './private-directory.mjs';
 export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network', 'readCommitmentReceipt']);
-const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'host', 'port', 'now', 'contextSessionState']);
+const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'maxReservationUnits', 'host', 'port', 'now', 'contextSessionState']);
 const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 // The startup binding read is bounded; a later answer grants nothing.
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
@@ -83,6 +94,22 @@ const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
 const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000 });
 const MAX_HEADER_SIZE = 16384;
+// The admission transaction bounds its policy call; the host takes no policy hold, so the call answers at once.
+const CONTEXT_POLICY_DEADLINE_MS = 10000;
+const NO_HOLD_POLICY = Object.freeze({ reserve: async () => null, release: async () => {} });
+// How often a running host re-runs the admission sweep over unfinished context rows.
+const SWEEP_INTERVAL_MS = 60000;
+
+// The one old context route object serves the challenge on the wire (`challengeOnWire`) and carries the paths; the wire route serves the
+// context step itself, so every provider and write port the old object takes refuses.
+const oldContextStepRefused = () => { throw new SellerTransportError('session_admission_unavailable', 503); };
+
+// Compensation's evidence for the two Vet sink addresses of a context row: the anchor's own fresh, passive proof that no CREATE intent was
+// kept. Any other answer proves nothing, so the row keeps its hold and its slot.
+const vetAddressEvidence = (anchor) => (row) => Promise.all([row.vetAddresses.buyer, row.vetAddresses.seller].map(async (address) => {
+  const read = await anchor.readRetained({ logicalAddress: address, artifactKind: 'CompositeVerificationRecord', fresh: true, proofOfNoIntent: true }, PASSIVE_RETAINED_READ);
+  return { address, kind: isProvenUnsignedAbsence(read) ? 'proven-unsigned' : 'undetermined' };
+}));
 
 // A native artifact readback is an operator capability. Every accepted read
 // gets the host's shutdown signal and the request deadline, and answers with an
@@ -234,7 +261,11 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
 // before the state lock and any file; `kit_store_format_unsupported` for a data
 // directory from an older kit format; `kit_journal_accounting_mismatch` for a
 // new kit store over a journal that already holds reservations; and the
-// journal's own `seller_replay_guard_invalid` with its detail.
+// journal's own `seller_replay_guard_invalid` with its detail. A demDeliveryContext
+// that is not a complete constructed capability (it needs `recoverBuyer`,
+// `resumableBuyer` and `bindRetainedScope`) is refused with a TypeError before the
+// lock, and a startup sweep that cannot record a row it visited refuses startup with
+// its AggregateError.
 export async function startSellerHost(options) {
   assertKitOperationAdmitted('startSellerHost');
   if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('seller host options must be an object');
@@ -244,13 +275,15 @@ export async function startSellerHost(options) {
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
-    host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
+    maxReservationUnits = maxRecords, host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
   if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
+  if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) throw new TypeError('maxRecords must be a positive integer');
+  if (!Number.isSafeInteger(maxReservationUnits) || maxReservationUnits < 1) throw new TypeError('maxReservationUnits must be a positive integer');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
   if (!isPrivateDirectory(dataDirectory)) throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
   if ((observeDemosTransfer !== undefined && typeof observeDemosTransfer !== 'function') || typeof now !== 'function') throw new TypeError('now and any supplied observeDemosTransfer must be functions');
@@ -265,6 +298,8 @@ export async function startSellerHost(options) {
   if (demDeliveryContextVetMode(demDeliveryContext) !== KIT_TP1_VET_MODE) {
     throw Object.assign(new TypeError(`the seller host runs in the ${KIT_TP1_VET_MODE} Vet mode: demDeliveryContext must be created with vetMode: KIT_TP1_VET_MODE`), { code: 'vet_mode_mismatch' });
   }
+  // The context route's provider handoff: a copied or incomplete capability is refused here, before the lock and any file.
+  const provider = demDeliveryContextHost(demDeliveryContext);
   checkTp1Network(tp1Network);
   // Refuses an unbindable connection before the lock and any file; the signed routes keep the binding.
   const binding = await bindApprovedProfile(tp1Network);
@@ -291,7 +326,7 @@ export async function startSellerHost(options) {
       wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
     // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
-    const capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
+    const capacity = createPurchaseCapacity({ store, now, maxRecords: maxReservationUnits, sessionState: sellerStoreInternals(store).sessionState });
     // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();
@@ -299,8 +334,13 @@ export async function startSellerHost(options) {
     // A purchase whose session already ended gives its unspent units back before anything is served.
     capacity.releaseTerminalAllocations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
+    const sellerClaim = listing.seller.identity.presentedBy;
+    // The agent asks which context requests were admitted through these records; the admission transaction and the journal they read are
+    // opened below, before any request is served.
+    const records = createSellerContextRecords({ listing, admission: (jobId) => admission.admissionRecord(jobId), contextOutcome: (jobId) => completedContextOutcome(journal, sellerClaim)(jobId) });
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'), jobSlotReleased: store.jobSlotReleased,
-      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE });
+      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE,
+      contextRequest: records.exactRequest });
     opened.push(() => agent.close());
     // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
     for (const { job, reason } of agent.releaseStaleLocks()) {
@@ -312,14 +352,29 @@ export async function startSellerHost(options) {
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     let stopping = false;
-    // The seller takes new purchases until it stops. No route allocates purchase capacity yet, so readiness does not read it.
+    // The seller takes new purchases until it stops. A context row with unfinished cleanup keeps its own hold and slot, so it needs no
+    // refusal of other buyers.
     const sellerReady = () => !stopping;
+    // Stopped by the process stop flag or by this host's own close.
+    const hostStopped = () => stopping || stopRequested();
+    const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
+      completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
     // Every effect route reserves through the coordinator and ends its attempt through the completion port.
-    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
+    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission });
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.
-    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
+    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, stopped: hostStopped, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
+    const contextWork = createContextWorkRegistry();
+    const buyerWalletAccess = operatorBuyerAccessConfig(buyerAccess);
+    const assertBuyerAccess = (buyerClaim) => buyerWalletAccess.assertWallet(addressForClaim(buyerClaim));
+    // The route binds the provider's retained-scope reader once, as it is built, before any request or provider work.
+    const contextRoute = createWireSellerContextRoute({ listing, wire, store, ledger: store.challenges, admissionTransaction: admission, coordinator: reservations, capacity, provider, assertBuyerAccess,
+      knownJob: null, ready: sellerReady, stopped: hostStopped, now, monotonicNow: () => performance.now(), trackContextWork: contextWork.track });
+    const context = { ...createSellerContextRoute({ listing, now, assertBuyerAccess, resolveBuyer: oldContextStepRefused, admitPresentation: oldContextStepRefused, writable: oldContextStepRefused,
+      admitWrites: oldContextStepRefused, releaseWrites: oldContextStepRefused, recover: oldContextStepRefused }), ...contextRoute };
+    // Rows an earlier process left unfinished are settled or fenced before any route is mounted.
+    await admission.sweep({ startup: true });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before
@@ -330,7 +385,7 @@ export async function startSellerHost(options) {
     await DURABLE_SYNC.directory(transport);
     await DURABLE_SYNC.directory(dataDirectory);
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
-    const handler = createSellerHttpHandler(agent, { authentication, wire });
+    const handler = createSellerHttpHandler(agent, { authentication, wire, context });
     const active = new Set();
     // Connections with no dispatched request cannot be drained: a buyer that
     // stops after a partial request line would hold server.close() forever,
@@ -374,11 +429,22 @@ export async function startSellerHost(options) {
       server.once('error', reject);
       server.listen({ host, port, exclusive: true }, () => { server.off('error', reject); resolve(); });
     });
+    // Unfinished context rows are swept again while the host runs, one sweep at a time. A sweep that cannot finish a row records its cause on
+    // that row and a later sweep tries again, so a failed pass has nothing more to report here.
+    let sweeping = null;
+    const sweepTimer = setInterval(() => {
+      sweeping ??= admission.sweep({ startup: false }).catch(() => {}).finally(() => { sweeping = null; });
+    }, SWEEP_INTERVAL_MS).unref();
     let closing = null;
-    // Stops accepting, lets requests in progress finish, then closes the
-    // journal and the agent state they write to and releases the state lock.
+    // Stops accepting, lets requests in progress finish, waits for the provider
+    // work and the sweep still running, then closes the journal and the agent
+    // state they write to and releases the state lock.
     const close = () => closing ??= (async () => {
       stopping = true;
+      clearInterval(sweepTimer);
+      contextWork.stop();
+      // Before the first wait: the provider of a live context attempt may sign nothing more from here on.
+      contextRoute.closeAttempts(new SellerTransportError('seller_stopped', 503));
       const socketsClosed = new Promise((resolve) => server.close(resolve));
       server.closeIdleConnections();
       destroyUndispatched();
@@ -392,6 +458,8 @@ export async function startSellerHost(options) {
       // capability that honours the signal stops early; one that does not
       // keeps ownership until it finishes.
       shutdown.abort();
+      // Provider work outlives its answer when the attempt's deadline sent it; its checkpoint persistence still writes to the stores.
+      await Promise.allSettled([sweeping, contextWork.drain()]);
       await artifact.drain();
       // A connection that became idle while its last response was written is
       // swept here; the first sweep could only see it still busy. Any
