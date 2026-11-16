@@ -330,7 +330,7 @@ test('planned Agreement draft comes only from source-verified retained completed
     const later = await plannedOf(w.route);
     assert.deepEqual(later, first);
     assert.notEqual(later.agreement, first.agreement, 'each answer is a copy of its own');
-    assert.deepEqual(await restartedReader(w)(WIRE_JOB), first);
+    assert.deepEqual(await restartedReader(w)({ jobId: WIRE_JOB }), first);
     assert.deepEqual(w.rowOf(), row);
     assert.deepEqual(effects(w), before);
     assert.equal(sql.writes(), 0, 'no write statement');

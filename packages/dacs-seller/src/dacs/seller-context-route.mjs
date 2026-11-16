@@ -451,10 +451,7 @@ function providerOutcome(answer, scope) {
  * and runs, a settled one answers its stored outcome without a reservation, and a closed one is `context_admission_closed` (409). A running row whose
  * operation completed answers that outcome; one with an unfinished earlier attempt is held (`operation_uncertain` 503, nothing ended or run).
  * A stored outcome is answered only after `revalidateContextOutcome({ jobId, outcome })` has read the retained records back through the
- * provider and found the same answer; otherwise it throws `seller_source_unavailable` (503) with its cause and changes nothing.
- * `readPlannedAgreement({ jobId })` resolves the Agreement a job's completed context plans, as `{ kind: 'present', agreement, retained }`, or
- * `{ kind: 'absent' | 'unavailable', cause }` (see `createPlannedAgreementReader`); it throws `peer_job_invalid` (409) for a malformed job and a
- * TypeError for malformed options. The route registers it with `wire`, whose state-read admission asks for it while the job has no session.
+ * provider and found the same answer; otherwise it throws `seller_source_unavailable` (503) with its cause and changes nothing. `readPlannedAgreement({ jobId })` (see `createPlannedAgreementReader`) is registered with `wire` for a state read before any session.
  * `closeAttempts(cause)` closes every attempt still running. `store`, `capacity`, `admissionTransaction` and `coordinator` are the host's one
  * instance of each: the tuple is kept inside the acceptance, so the construction registers its hook before the first admission, and throws a
  * TypeError for a missing port, an unsupported Listing, a capacity of another store or a provider pinned to another seller presenter.
@@ -473,11 +470,10 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   const failedProviders = new WeakSet();
   const { db, keepPurchaseProfileWithin } = sellerStoreInternals(store);
   admissionTransaction.addAcceptanceHook(({ jobId, purchaseProfile }) => keepPurchaseProfileWithin(jobId, purchaseProfile));
-  const completedOutcomeOf = completedContextOutcome(wire.journal, seller);
-  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedOutcomeOf,
+  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller),
     acceptedPresentation: (nonce) => ledger.retained(nonce)?.accepted ?? null });
   const revalidateStored = createContextOutcomeRevalidation({ provider, retainedBody: records.retainedBody });
-  const planAgreement = createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf, records, revalidate: revalidateStored });
+  const readPlannedAgreement = wire.bindPlannedAgreementReader(createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf: completedContextOutcome(wire.journal, seller), records, revalidate: revalidateStored }));
   const { sellerBundlePresentedBy } = provider.bindRetainedScope(records.completedScope);
   if (!sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) throw new TypeError('the provider is pinned to a seller presenter other than the Listing\'s');
 
@@ -490,7 +486,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
     return new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
   }
 
-  const continuesAccepted = createContinuationCheck({ ledger, completedOutcomeOf });
+  const continuesAccepted = createContinuationCheck({ ledger, completedOutcomeOf: completedContextOutcome(wire.journal, seller) });
 
   // Everything before the attempt: a refusal here consumes nothing. Resolves with the wire's admission of the request, whose body is the one to use.
   async function openRequest({ rawBody, header, method, path }, onOpened) {
@@ -523,13 +519,6 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
 
   // A stored outcome is read back through the provider before it is answered; an accepted presentation continues without a first admission.
   const revalidateContextOutcome = (input) => { requireJobId(input?.jobId); return revalidateStored(input); };
-  // The planned Agreement of a job whose proposal session does not exist yet: the wire's state-read admission asks for it.
-  const readPlannedAgreement = async (input) => {
-    if (!record(input)) throw new TypeError('readPlannedAgreement takes { jobId }');
-    requireJobId(input.jobId);
-    return planAgreement(input.jobId);
-  };
-  wire.bindPlannedAgreementReader(readPlannedAgreement);
   const continueAccepted = createAcceptedContinuation({ wire, seller, pin, checkPolicy, admissionRecord: admissionTransaction.admissionRecord, revalidate: revalidateContextOutcome,
     assertLive: (request, delegationExpiresAt) => expiryRecheck(now, request, delegationExpiresAt).assertStillLive() });
 

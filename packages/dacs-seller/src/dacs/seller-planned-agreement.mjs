@@ -1,9 +1,10 @@
 // The Agreement a job's completed context plans, for a state read that arrives before any proposal session exists.
-import { contentHash, deriveFixedPriceAgreement, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
+import { contentHash, deriveFixedPriceAgreement, isCanonicalJobId, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
 import { admitWireArtifact } from '@kynesyslabs/dacs/wire';
 import { canonicalize } from './listing.mjs';
 import { listingPin } from './purchase-protocol.mjs';
 import { deepFreeze } from './seller-challenge-ledger.mjs';
+import { SellerTransportError } from './seller-transport-auth.mjs';
 
 const MS_PER_SECOND = 1_000;
 
@@ -39,8 +40,9 @@ function agreementBoundTo({ input, jobId, row, scope, pin, deadlineMs }) {
 /**
  * The host's reader of a job's planned Agreement. `admissionRecord(jobId)` is the job's admission row and `completedOutcomeOf(jobId)` its
  * completed context outcome `{ status, text }`, or null; `records` is `createSellerContextRecords`' view of both; `revalidate({ jobId, outcome })`
- * reads the outcome's retained Vet records back and throws unless they confirm it. Returns `planAgreement(jobId)`, which never throws for evidence
- * it cannot use. It resolves a frozen `{ kind: 'present', agreement, retained }` once the stored present outcome is confirmed at its source and
+ * reads the outcome's retained Vet records back and throws unless they confirm it. Returns `readPlannedAgreement({ jobId })`, which throws
+ * SellerTransportError `peer_job_invalid` (409) for a malformed job and a TypeError for malformed options, and never throws for evidence it
+ * cannot use. It resolves a frozen `{ kind: 'present', agreement, retained }` once the stored present outcome is confirmed at its source and
  * its input derives the Agreement of this Listing, original generatedAt and deadline and the admitted parties, `{ kind: 'absent', cause }` when the
  * job has no completed present context for the admitted request, and `{ kind: 'unavailable', cause }` when the source cannot confirm it.
  * `retained` holds the job, the admitted parties as stored and the derived Agreement's hash. Nothing is signed or written, and nothing the
@@ -62,8 +64,10 @@ export function createPlannedAgreementReader({ listing, admissionRecord, complet
     if (agreement === null) return absent(AGREEMENT_MISMATCH);
     return { kind: 'present', agreement, retained: { jobId, buyer: row.buyer, seller: row.seller, agreementHash: contentHash(agreement) } };
   }
-  return async (jobId) => {
-    try { return deepFreeze(await plan(jobId)); } catch (error) { return deepFreeze(unavailable(error)); }
+  return async function readPlannedAgreement(input) {
+    if (input === null || typeof input !== 'object') throw new TypeError('readPlannedAgreement takes { jobId }');
+    if (!isCanonicalJobId(input.jobId)) throw new SellerTransportError('peer_job_invalid', 409);
+    try { return deepFreeze(await plan(input.jobId)); } catch (error) { return deepFreeze(unavailable(error)); }
   };
 }
 

@@ -126,7 +126,7 @@ function admitAnswerText(text) {
  * values. `admitPresentation(input)` is the agent's first admission of a presentation (its Listing revocation check and profile
  * admission), which the context route's validation calls; it is `null` for an agent without one. `stopped()` is the host's stop
  * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. `bindPlannedAgreementReader(reader)` is how
- * the context route gives the context one reader of a job's planned Agreement (once; a TypeError for a second or a non-function), and
+ * the context route gives the context one reader of a job's planned Agreement (once; a TypeError for a second or a non-function; it returns the reader), and
  * `plannedAgreementOf(jobId)` calls it, or answers null while none is bound. `publicEndpoint` is the origin
  * the handler's discovery document names; it is `null` when none is given, and then no discovery document is served. A `signer`
  * with `readOnlyAnswerSigner` signs read answers and discovery through that role; one without it signs them as itself. Returns the
@@ -149,6 +149,7 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
     bindPlannedAgreementReader: (reader) => {
       if (typeof reader !== 'function' || readPlannedAgreement !== null) throw new TypeError('the wire context takes one planned Agreement reader, a function');
       readPlannedAgreement = reader;
+      return reader;
     },
     plannedAgreementOf: (jobId) => (readPlannedAgreement === null ? null : readPlannedAgreement({ jobId })) });
   wireContexts.set(context, { agent, store });
