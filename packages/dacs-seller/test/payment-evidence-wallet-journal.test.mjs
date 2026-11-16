@@ -162,7 +162,42 @@ test('a signCreate answer that is not the signed CREATE it names is refused: not
 });
 
 const CHAIN_BOUND = (chainId) => (hash) => `demos-tx:v1:${chainId}:${hash}`;
-const activeFork = (chainId) => ({ forks: { osDenomination: { activated: true }, signatureDomain: { activated: true } }, chainId });
+const activeFork = (chainId, activationHeight = 0) => ({ forks: { osDenomination: { activated: true }, signatureDomain: { activated: true, activationHeight } }, chainId });
+
+test('a CREATE the node already executed stays applied after the fork activates, and a superseded one does not block a new signature', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const { txHash } = await journal.anchorEvidence(w.input());
+  w.network.answer = activeFork(7, 100);
+  assert.deepEqual(await journal.reconcilePaymentEvidence(w.input()), { status: 'applied', txHash }, 'reconcile');
+  assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'applied', txHash }, 'anchor');
+  assert.deepEqual(await journal.ensureEvidence({ ...w.input(), expectedJournalId: journal.journalId }), { status: 'applied', txHash }, 'ensure');
+  assert.equal(w.calls.sign, 1, 'nothing was signed again');
+  assert.equal(w.calls.broadcast.length, 1, 'nothing was broadcast again');
+
+  const v = wallet(t), other = v.open();
+  t.after(() => other.close());
+  v.faults.broadcast.push('drop');
+  const first = (await other.anchorEvidence(v.input())).txHash;
+  v.other();
+  v.network.answer = activeFork(7, 100);
+  v.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
+  assert.equal((await other.reconcilePaymentEvidence(v.input())).status, 'unsigned', 'the overtaken CREATE is superseded');
+  const second = (await other.anchorEvidence(v.input())).txHash;
+  assert.notEqual(second, first, 'signed anew under the active fork');
+  assert.equal(v.calls.sign, 2);
+});
+
+test('a kept CREATE that may still be sent is refused for the other domain, and an unread fate does not excuse it', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.broadcast.push('drop');
+  await journal.anchorEvidence(w.input());
+  w.network.answer = activeFork(7, 100);
+  w.faults.state.push('throw');
+  await assert.rejects(journal.reconcilePaymentEvidence(w.input()), { code: 'wallet_journal_conflict' });
+  assert.equal(w.calls.broadcast.length, 1, 'the kept bytes were not sent again');
+});
 
 test('a CREATE signed over the bare hash is kept while the node signature-domain fork is inactive', async (t) => {
   const w = wallet(t), journal = w.open();
@@ -208,7 +243,7 @@ test('a journal reads the node network answer for each call and keeps the cause 
   await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_signature_domain_unreadable', message: /TEST network info read failed/ });
   w.faults.networkInfo.push('hang');
   await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_signature_domain_unreadable', message: /timed out/ });
-  for (const answer of [null, { forks: {} }, activeFork(null), activeFork(-1), activeFork('7')]) {
+  for (const answer of [null, { forks: {} }, activeFork(null), activeFork(-1), activeFork('7'), activeFork(7, null), activeFork(7, -1), activeFork(7, '0')]) {
     w.network.answer = answer;
     await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_signature_domain_unreadable', message: /getNetworkInfo/ }, JSON.stringify(answer));
   }
@@ -216,7 +251,7 @@ test('a journal reads the node network answer for each call and keeps the cause 
   assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
   w.network.answer = { forks: { osDenomination: { activated: true } } };
   assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted', 'the next call reads the node again');
-  assert.equal(w.calls.networkInfo, 8);
+  assert.equal(w.calls.networkInfo, 11);
 });
 
 test('a kept CREATE is not reconciled or broadcast again while the node network answer is unreadable', async (t) => {

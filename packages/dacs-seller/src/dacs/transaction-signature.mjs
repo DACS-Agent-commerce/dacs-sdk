@@ -7,10 +7,11 @@ import { transactionSignatureMessage } from './signature-domain.mjs';
 /**
  * True only for a valid Ed25519 signature by `address` over the message `domain`
  * (read from the node by `signatureDomainFromNetworkInfo`) gives for the
- * transaction `hash`. A domain not read from a node answer, or a hash that is not
- * 64 lower-case hex digits, is false. Never throws.
+ * transaction `hash` included in block `blockNumber` (omitted: not included yet).
+ * A domain not read from a node answer, or a hash that is not 64 lower-case hex
+ * digits, is false. Never throws.
  */
-export function verifyTransactionSignature({ address, hash, signature, domain }) {
-  const message = transactionSignatureMessage(domain, hash);
+export function verifyTransactionSignature({ address, hash, signature, domain, blockNumber }) {
+  const message = transactionSignatureMessage(domain, hash, blockNumber);
   return message !== null && verifyDemosSignature({ address, message, signature });
 }

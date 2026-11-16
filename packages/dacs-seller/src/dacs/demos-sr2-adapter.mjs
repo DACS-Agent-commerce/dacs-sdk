@@ -317,7 +317,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     if (!object(signed) || !object(signed.content) || tx.hash !== txHash || !object(c) || signed.hash !== txHash
       || sha256Hex(JSON.stringify(signed.content)) !== txHash || signed.signature?.type !== 'ed25519' || !object(tx.signature) || canonicalize(tx.signature) !== canonicalize(signed.signature)
       || signed.content.from !== owner || c.from !== owner || c.from_ed25519_address !== owner
-      || !verifyTransactionSignature({ address: owner, hash: txHash, signature: tx.signature.data, domain })) reject('invalid', 'transaction lacks the exact writer authorization');
+      || !verifyTransactionSignature({ address: owner, hash: txHash, signature: tx.signature.data, domain, blockNumber: tx.blockNumber })) reject('invalid', 'transaction lacks the exact writer authorization');
     if (!creationProvenanceMatches(native, txHash, Boolean(sourceCapability) && (embedded || projected))) {
       reject('invalid', 'native creation provenance does not bind the authenticated transaction');
     }

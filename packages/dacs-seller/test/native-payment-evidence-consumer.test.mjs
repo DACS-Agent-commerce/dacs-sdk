@@ -123,9 +123,9 @@ test('evidence whose CREATE is signed over the chain-bound message is present on
   f.signed.signature.data = `0x${seller.signBytes(Buffer.from(`demos-tx:v1:7:${f.signed.hash}`)).toString('hex')}`;
   Object.assign(f.tx, structuredClone(f.signed), { status: 'confirmed', blockNumber: 1 });
   assert.equal((await f.consumer.readEvidence(f.input)).disposition, 'indeterminate', 'the fork is inactive');
-  f.state.networkInfo = { forks: { osDenomination: { activated: true }, signatureDomain: { activated: true } }, chainId: 7 };
+  f.state.networkInfo = { forks: { osDenomination: { activated: true }, signatureDomain: { activated: true, activationHeight: 0 } }, chainId: 7 };
   assert.equal((await f.consumer.readEvidence(f.input)).disposition, 'present', 'the fork is active');
-  f.state.networkInfo = { forks: { osDenomination: { activated: true }, signatureDomain: { activated: true } }, chainId: 8 };
+  f.state.networkInfo = { forks: { osDenomination: { activated: true }, signatureDomain: { activated: true, activationHeight: 0 } }, chainId: 8 };
   assert.equal((await f.consumer.readEvidence(f.input)).disposition, 'indeterminate', 'the node names another chain id');
 });
 

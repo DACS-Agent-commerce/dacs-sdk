@@ -41,7 +41,8 @@
 //    Ed25519 signature as 0x and lower-case hex, over the message the node's
 //    signature domain selects (signature-domain.mjs): the hash while the node's
 //    signature-domain fork is inactive, `demos-tx:v1:<chain id>:<hash>` once it
-//    is active. Its amount is 0,
+//    is active (for a transaction included before the fork's activationHeight, the
+//    hash). Its amount is 0,
 //    its ACL public and its storage on-chain; its node fee and execution edits
 //    are exactly those demosdk 4.0.16 sign writes (`transaction_fee`: network
 //    and rpc fee, no additional fee or rpc address; `gcr_edits`: the storage fee
@@ -68,12 +69,15 @@
 //    Its coverage must reach the nonce snapshot's blockHeight. A bare nonce
 //    or an unfenced absence keeps the original signed CREATE alive.
 //  - readNetworkInfo({ signal }) -> the configured node's getNetworkInfo answer
-//    ({ forks: { osDenomination, signatureDomain? }, chainId }). It is read on
-//    every call, before anything is signed, sent or decided, and every kept and
-//    new CREATE is checked against the domain it selects. A read that fails, times
+//    ({ forks: { osDenomination, signatureDomain?: { activated, activationHeight } }, chainId }).
+//    It is read on every call, before anything is signed, sent or decided, and
+//    every new CREATE, and every kept CREATE that may still be sent, is checked
+//    against the domain it selects. A read that fails, times
 //    out or answers anything unreadable refuses the call (wallet_signature_domain_unreadable)
-//    and nothing is signed or sent; a kept CREATE signed under the other domain is
-//    refused as another evidence (wallet_journal_conflict) and not sent again. A
+//    and nothing is signed or sent; a kept CREATE that may still be sent and was
+//    signed under the other domain is refused as another evidence
+//    (wallet_journal_conflict) and not sent again. A CREATE the node already
+//    executed, or that was superseded, is not checked against the present domain. A
 //    `signatureChainId` option is refused (TypeError): no caller names the domain.
 //  Each read, signCreate and broadcast is given readTimeoutMs (default 10 s) to
 //  settle, and is passed { signal } to stop at the deadline. A signCreate that
@@ -235,6 +239,9 @@ function permitted(authorize) {
   if (typeof answer?.then === 'function') answer.then(undefined, () => {});
   if (answer !== true) throw Object.assign(new Error(`the wallet effect is no longer authorized${answer instanceof Error ? `: ${reason(answer)}` : ''}`), { code: 'wallet_not_authorized' });
 }
+// With a null `signatureDomain` the signature itself is not checked: a CREATE that
+// will not be sent again (applied, or superseded) was signed under the domain of its
+// own time, which the node's present answer no longer tells.
 function signedCreateProblem(answer, input, signatureDomain) {
   let signed;
   try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
@@ -254,7 +261,7 @@ function signedCreateProblem(answer, input, signatureDomain) {
       || metadata.contentHash !== input.receiptContentHash || metadata.envelopeHash !== sha256Hex(canonicalize(input.artifact))
       || bindingProblem(metadata, input)) return `is not this ${input.artifactKind === 'Deliverable' ? 'Deliverable' : 'evidence'}'s storage CREATE`;
   if (content.from !== from || content.from_ed25519_address !== from || signed.signature.type !== 'ed25519' || typeof signed.signature.data !== 'string'
-      || !SIGNATURE.test(signed.signature.data) || !verifyTransactionSignature({ address: from, hash: answer.txHash, signature: signed.signature.data, domain: signatureDomain })) return 'is not signed by the writer';
+      || !SIGNATURE.test(signed.signature.data) || (signatureDomain !== null && !verifyTransactionSignature({ address: from, hash: answer.txHash, signature: signed.signature.data, domain: signatureDomain }))) return 'is not signed by the writer';
   const storageAddress = deriveStorageAddress(from, programName, answer.nonce, '');
   if (content.to !== storageAddress || op.storageAddress !== storageAddress) return `is not at the storage address its writer, name and nonce derive (${storageAddress})`;
   if (nonceOf(content.timestamp, 0) === null) return 'has no valid timestamp';
@@ -366,7 +373,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
 
   const rows =(logicalAddress) => db.prepare(`SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM ${table} WHERE logical_address = ? ORDER BY nonce`).all(logicalAddress);
   // One evidence per address: a question about other bytes at a kept address is refused.
-  const keptFor = (input, signatureDomain) => {
+  const keptFor = (input) => {
     if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const kept = rows(input.logicalAddress);
     // A kept CREATE whose whole debit is above the ceiling is never sent again, and nothing more is signed for its address.
@@ -374,7 +381,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       const debitOs = heldDebitOs(row);
       if (debitOs !== null) throw Object.assign(new Error(`the wallet journal keeps the signed CREATE ${row.tx_hash}, whose debit of ${debitOs} OS (fee, storage fee and gas) is above ${FEE_CEILING}; it is held and never broadcast again`), { code: 'write-fee-cap' });
     }
-    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input, signatureDomain))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
+    if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input, null))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     const live = kept.find((row) => row.superseded_at === null);
     return { live: live ? { signedTransaction: live.signed_transaction, txHash: live.tx_hash, nonce: Number(live.nonce) } : null, highestNonce: kept.length ? Number(kept.at(-1).nonce) : 0 };
   };
@@ -449,9 +456,11 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   // included is superseded (compare-and-swap on its live row) and none is live.
   // `observed.observedFate` is used only for the very CREATE it was read for.
   async function liveFor(input, observed) {
-    const { live, highestNonce } = keptFor(input, observed.signatureDomain);
+    const { live, highestNonce } = keptFor(input);
     if (!live) return { live: null, highestNonce };
     const checked = observed.observedFate?.txHash === live.txHash ? observed.observedFate.checked : await fate(live);
+    // Only a CREATE that may still be sent must be signed under the domain the node selects now.
+    if (checked.alive && !checked.applied && signedCreateProblem(live, input, observed.signatureDomain)) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     if (checked.alive) return { live, highestNonce, applied: checked.applied, reason: checked.reason };
     const swap = db.prepare(`UPDATE ${table} SET superseded_at = ? WHERE logical_address = ? AND tx_hash = ? AND superseded_at IS NULL`).run(now(), input.logicalAddress, live.txHash);
     if (swap.changes !== 1) throw Object.assign(new Error('the wallet journal row changed while it was checked'), { code: 'wallet_journal_conflict' });
@@ -495,7 +504,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return attempt != null && attempt.outcome !== PRE_SIGNING_FAILURE && rows(input.logicalAddress).length === 0;
   }
 
-  function inspectAttempt(input,attempt,signatureDomain,ownerChecked=false,acceptedLegacy=false) {
+  function inspectAttempt(input,attempt,ownerChecked=false,acceptedLegacy=false) {
     const named=attempt?.answer?.txHash;
     const sent=attempt?.outcome==='sent'||['submitted','applied'].includes(attempt?.answer?.status);
       if ((!ownerChecked || named !== undefined || sent) && attemptIsUnbound({ attempt, named, sent }, input)) {
@@ -503,7 +512,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       }
       if (typeof named === 'string'&&!acceptedLegacy) {
         const namedRow = db.prepare(`SELECT superseded_at FROM ${table} WHERE logical_address = ? AND tx_hash = ?`).get(input.logicalAddress, named);
-        const retained = keptFor(input, signatureDomain);
+        const retained = keptFor(input);
         if (namedRow.superseded_at !== null && retained.live) {
           throw Object.assign(new Error('the named CREATE was superseded; reconcile the live successor separately'), { code: 'wallet_journal_stale_attempt' });
         }
@@ -534,7 +543,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       const accepted=db.prepare('SELECT value FROM journal_meta WHERE key = ?').get(key);
       // Remember an accepted legacy name in the same commit as its successor:
       // a lost broadcast answer cannot leave the caller naming a stale row.
-      inspectAttempt(input,attempt,observed.signatureDomain,true,accepted?.value===binding);
+      inspectAttempt(input,attempt,true,accepted?.value===binding);
       db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
       return prepareAnchor(input,observed,permit);
     });
@@ -549,7 +558,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
     const attempt = input?.attempt, named = attempt?.answer?.txHash;
     const kept = await lockedAfterObserving(input, async (observed) => {
-      inspectAttempt(input,attempt,observed.signatureDomain);
+      inspectAttempt(input,attempt);
       return liveFor(input, observed);
     });
     return answerFor(input, named, kept);

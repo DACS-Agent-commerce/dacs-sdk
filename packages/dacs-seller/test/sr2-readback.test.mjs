@@ -60,7 +60,7 @@ const signOver = (f, message) => {
   f.signed.signature.data = `0x${seller.signBytes(Buffer.from(message)).toString('hex')}`;
   Object.assign(f.tx, structuredClone(f.signed), { status: 'confirmed', blockNumber: 1 });
 };
-const activeFork = chainId => ({ forks: { osDenomination: { activated: true }, signatureDomain: { activated: true } }, chainId });
+const activeFork = (chainId, activationHeight = 0) => ({ forks: { osDenomination: { activated: true }, signatureDomain: { activated: true, activationHeight } }, chainId });
 const refusedAuthorization = error => error.code === 'invalid' && /exact writer authorization/.test(error.message);
 const asksNetworkInfo = init => JSON.parse(init.body ?? '{}').params?.[0]?.message === 'getNetworkInfo';
 test('readback under an inactive signature-domain fork accepts the bare hash and refuses the chain-bound signature', async () => {
@@ -89,11 +89,26 @@ test('readback refuses a signature over another message than the one the node fo
 test('readback follows the node answer on each read, so a fork that activates later is seen', async () => {
   const f = readbackFixture();
   assert.equal((await read(f)).status, 'present');
-  f.state.networkInfo = activeFork(7);
+  f.state.networkInfo = activeFork(7, 1);
   await assert.rejects(read(f), refusedAuthorization);
 });
+test('readback of a transaction included before the fork activated still accepts the bare hash, and one from the activation height on needs the chain-bound signature', async () => {
+  // signOver puts the transaction in block 1.
+  const early = readbackFixture({ networkInfo: activeFork(7, 100) });
+  signOver(early, early.signed.hash);
+  assert.equal((await read(early)).status, 'present', 'block 1, fork active from block 100');
+  const earlyBound = readbackFixture({ networkInfo: activeFork(7, 100) });
+  signOver(earlyBound, `demos-tx:v1:7:${earlyBound.signed.hash}`);
+  await assert.rejects(read(earlyBound), refusedAuthorization);
+  const late = readbackFixture({ networkInfo: activeFork(7, 1) });
+  signOver(late, late.signed.hash);
+  await assert.rejects(read(late), refusedAuthorization);
+  const lateBound = readbackFixture({ networkInfo: activeFork(7, 1) });
+  signOver(lateBound, `demos-tx:v1:7:${lateBound.signed.hash}`);
+  assert.equal((await read(lateBound)).status, 'present', 'block 1, fork active from block 1');
+});
 test('readback verifies nothing when the node network answer is malformed or has an unsafe chain id', async () => {
-  for (const networkInfo of [null, {}, { forks: {} }, activeFork(null), activeFork(-1), activeFork(2 ** 53), activeFork('7'), { forks: { osDenomination: { activated: true }, signatureDomain: { activated: 'yes' } } }]) {
+  for (const networkInfo of [null, {}, { forks: {} }, activeFork(null), activeFork(-1), activeFork(2 ** 53), activeFork('7'), { forks: { osDenomination: { activated: true }, signatureDomain: { activated: true } }, chainId: 7 }, activeFork(7, null), activeFork(7, -1), activeFork(7, '0'), { forks: { osDenomination: { activated: true }, signatureDomain: { activated: 'yes' } } }]) {
     const f = readbackFixture({ networkInfo });
     await assert.rejects(read(f), error => error.code === 'indeterminate' && /getNetworkInfo|NUMBER-OUTSIDE/.test(error.message), JSON.stringify(networkInfo));
   }

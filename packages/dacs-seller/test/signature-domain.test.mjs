@@ -6,7 +6,8 @@ import { assertNoCallerSignatureDomain, signatureDomainFromNetworkInfo, transact
 const HASH = 'a'.repeat(64);
 const preFork = { activated: true };
 const answer = (signatureDomain, chainId) => ({ forks: { osDenomination: preFork, ...(signatureDomain === undefined ? {} : { signatureDomain }) }, ...(chainId === undefined ? {} : { chainId }) });
-const messageFor = (info) => transactionSignatureMessage(signatureDomainFromNetworkInfo(info), HASH);
+const active = { activated: true, activationHeight: 0 };
+const messageFor = (info, blockNumber) => transactionSignatureMessage(signatureDomainFromNetworkInfo(info), HASH, blockNumber);
 
 test('a node answer without the signature-domain fork reads as the bare hash', () => {
   assert.equal(messageFor(answer(undefined)), HASH);
@@ -18,7 +19,7 @@ test('a node answer whose signature-domain fork is inactive reads as the bare ha
 });
 
 test('an active signature-domain fork reads as the chain-bound message for a safe nonnegative chain id', () => {
-  for (const chainId of [0, 7, Number.MAX_SAFE_INTEGER]) assert.equal(messageFor(answer({ activated: true }, chainId)), `demos-tx:v1:${chainId}:${HASH}`, String(chainId));
+  for (const chainId of [0, 7, Number.MAX_SAFE_INTEGER]) assert.equal(messageFor(answer(active, chainId)), `demos-tx:v1:${chainId}:${HASH}`, String(chainId));
 });
 
 test('an answer that is unreadable or malformed yields no domain', () => {
@@ -29,8 +30,29 @@ test('an answer that is unreadable or malformed yields no domain', () => {
 
 test('an active fork with a chain id that is not a safe nonnegative integer yields no domain', () => {
   for (const chainId of [undefined, null, -1, 1.5, NaN, Infinity, 2 ** 53, '7', 7n, [7], { value: 7 }]) {
-    assert.throws(() => signatureDomainFromNetworkInfo(answer({ activated: true }, chainId)), { code: 'signature_domain_unreadable' }, String(chainId));
+    assert.throws(() => signatureDomainFromNetworkInfo(answer(active, chainId)), { code: 'signature_domain_unreadable' }, String(chainId));
   }
+});
+
+test('an active fork without a safe nonnegative activation height yields no domain', () => {
+  for (const activationHeight of [undefined, null, -1, 1.5, NaN, Infinity, 2 ** 53, '0', 0n, [0], { value: 0 }]) {
+    assert.throws(() => signatureDomainFromNetworkInfo(answer({ activated: true, activationHeight }, 7)), { code: 'signature_domain_unreadable' }, String(activationHeight));
+  }
+});
+
+test('the message follows the transaction block against the activation height', () => {
+  const info = answer({ activated: true, activationHeight: 100 }, 7);
+  assert.equal(messageFor(info, 1), HASH, 'included before the activation');
+  assert.equal(messageFor(info, 99), HASH);
+  assert.equal(messageFor(info, 100), `demos-tx:v1:7:${HASH}`, 'included at the activation height');
+  assert.equal(messageFor(info, 5000), `demos-tx:v1:7:${HASH}`);
+  assert.equal(messageFor(info), `demos-tx:v1:7:${HASH}`, 'not included yet');
+  assert.equal(messageFor(answer({ activated: false, activationHeight: 100 }, 7), 1000), HASH, 'an inactive fork never binds');
+});
+
+test('a block number that is not a safe nonnegative integer gives no message', () => {
+  const info = answer(active, 7);
+  for (const bad of [null, -1, 1.5, NaN, Infinity, '1', 1n, [1]]) assert.equal(messageFor(info, bad), null, String(bad));
 });
 
 test('a domain that was not read from a node answer gives no message', () => {
@@ -38,7 +60,7 @@ test('a domain that was not read from a node answer gives no message', () => {
 });
 
 test('a hash that is not 64 lower-case hex digits gives no message', () => {
-  const domain = signatureDomainFromNetworkInfo(answer({ activated: true }, 7));
+  const domain = signatureDomainFromNetworkInfo(answer(active, 7));
   for (const bad of ['', HASH.toUpperCase(), HASH.slice(1), `${HASH}0`, `${HASH}\n`, 7, null, undefined]) assert.equal(transactionSignatureMessage(domain, bad), null, String(bad));
 });
 

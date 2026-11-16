@@ -580,8 +580,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   the node's `getNetworkInfo` answer selects: the bare hash while the node's
   `signatureDomain` fork is inactive (or absent), and
   `demos-tx:v1:<chainId>:<hash>` once it is active, where `chainId` is the
-  answer's safe nonnegative integer `chainId`. Any other message is refused,
-  and so is a bare-hash signature under an active fork. The journal reads the
+  answer's safe nonnegative integer `chainId`; an active fork must also carry a
+  safe nonnegative integer `activationHeight`, and a transaction included in an
+  earlier block is still checked against the bare hash. Any other message is
+  refused, and so is a bare-hash signature for a transaction at or after an
+  active fork's `activationHeight` (a kept CREATE the node already executed is
+  not checked again against the present answer). The journal reads the
   answer through `readNetworkInfo({ signal })` on every call (like the other
   wallet reads it is given `readTimeoutMs`, and its reader limits the size of
   the reply); a read that fails,

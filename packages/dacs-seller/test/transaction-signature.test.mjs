@@ -14,8 +14,17 @@ const hash = sha256Hex('TEST transaction content');
 const signOver = (message) => `0x${sign(null, Buffer.from(message, 'utf8'), privateKeyFromSeed(seed)).toString('hex')}`;
 const networkInfo = (signatureDomain, chainId) => ({ forks: { osDenomination: { activated: true }, ...(signatureDomain ? { signatureDomain } : {}) }, chainId });
 const inactive = signatureDomainFromNetworkInfo(networkInfo({ activated: false }, 7));
-const active = signatureDomainFromNetworkInfo(networkInfo({ activated: true }, 7));
-const verify = (domain, message, signedHash = hash) => verifyTransactionSignature({ address, hash: signedHash, signature: signOver(message), domain });
+const active = signatureDomainFromNetworkInfo(networkInfo({ activated: true, activationHeight: 0 }, 7));
+const activeFrom100 = signatureDomainFromNetworkInfo(networkInfo({ activated: true, activationHeight: 100 }, 7));
+const verify = (domain, message, signedHash = hash, blockNumber) => verifyTransactionSignature({ address, hash: signedHash, signature: signOver(message), domain, blockNumber });
+
+test('a transaction in a block before the activation height verifies over the bare hash only', () => {
+  assert.equal(verify(activeFrom100, hash, hash, 99), true);
+  assert.equal(verify(activeFrom100, `demos-tx:v1:7:${hash}`, hash, 99), false);
+  assert.equal(verify(activeFrom100, `demos-tx:v1:7:${hash}`, hash, 100), true);
+  assert.equal(verify(activeFrom100, hash, hash, 100), false);
+  assert.equal(verify(activeFrom100, hash, hash), false, 'not included yet: it will land after the activation');
+});
 
 test('while the fork is inactive only a signature over the bare hash verifies', () => {
   assert.equal(verify(inactive, hash), true);
