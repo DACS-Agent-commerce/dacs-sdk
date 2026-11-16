@@ -414,7 +414,7 @@ const cutBeforeWalletSignature = async (w, p, txHash) => {
   w.faults.walletSignature = 1;
   const cut = await p.claim(txHash);
   assert.notEqual(cut.status, 'payment-evidenced', 'the payment is not delivered at the cut');
-  assert.equal(nativeStateOf(w, p), 'pending', 'the attempt stays open');
+  assert.equal(nativeStateOf(w, p), 'ended', 'the held answer ends the attempt with no outcome');
   assert.deepEqual([w.counts.walletSignatures, w.counts.walletBroadcasts, w.evidenceCreates(p)], [0, 0, 0], 'the wallet signed and sent nothing');
   return cut;
 };
@@ -433,7 +433,7 @@ for (const restart of [false, true]) for (const [label, answer] of [
     const [, recovery] = w.transferReads();
     assert.deepEqual(recovery?.[0], [p.jobId], 'recovery reads the original transfer again, with the job lock held, before it signs anything');
     assert.equal(w.grantedReceipts(), 1, 'recovery grants no second receipt');
-    assert.equal(nativeStateOf(w, p), 'pending', 'no end record');
+    assert.equal(nativeStateOf(w, p), 'ended', 'the held answer ends the attempt with no outcome');
     assert.deepEqual([w.counts.walletSignatures, w.counts.walletBroadcasts, w.evidenceCreates(p), w.deliverableWrites(p)], [0, 0, 0, 0], 'the wallet signs and sends nothing');
     w.node.script.transferRead = null;
     const final = await p.claim(txHash);
@@ -460,7 +460,7 @@ test('native recovery sends the retained evidence CREATE once and delivers witho
   w.faults.walletBroadcast = 1;
   const cut = await p.claim(txHash);
   assert.notEqual(cut.status, 'payment-evidenced');
-  assert.equal(nativeStateOf(w, p), 'pending', 'the attempt stays open');
+  assert.equal(nativeStateOf(w, p), 'ended', 'the held answer ends the attempt with no outcome');
   assert.deepEqual([w.counts.walletSignatures, w.counts.walletBroadcasts, w.evidenceCreates(p)], [1, 1, 0], 'the evidence CREATE is signed and kept; the node has not received it');
   const granted = Object.keys(JSON.parse(readFileSync(w.receiptsFile, 'utf8')).records);
   assert.deepEqual(w.lockedJobs(), [], 'the cut attempt holds no job lock');
@@ -703,17 +703,18 @@ async function checkFixtureCheckpoints(t) {
 }
 
 const NATIVE_CHECKPOINTS = [
-  ['the work is saved and the wallet has not signed', (w) => { w.faults.walletSignature = 1; }],
-  ['the evidence CREATE is signed and not sent', (w) => { w.faults.walletBroadcast = 1; }],
-  ['the delivery is written and the answer cannot be signed', (w) => { w.faults.responseSignature = 1; }],
+  // The held answers end their attempt with no outcome; an answer that cannot be signed leaves its attempt open.
+  ['the work is saved and the wallet has not signed', (w) => { w.faults.walletSignature = 1; }, 'ended'],
+  ['the evidence CREATE is signed and not sent', (w) => { w.faults.walletBroadcast = 1; }, 'ended'],
+  ['the delivery is written and the answer cannot be signed', (w) => { w.faults.responseSignature = 1; }, 'pending'],
 ];
 
 async function checkNativeCheckpoints(t) {
-  for (const [label, arrange] of NATIVE_CHECKPOINTS) for (const restart of [false, true]) {
+  for (const [label, arrange, attemptAfterCut] of NATIVE_CHECKPOINTS) for (const restart of [false, true]) {
     const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay(), cell = `${label}, restart ${restart}`;
     arrange(w);
     assert.notEqual((await p.claim(txHash)).status, 'payment-evidenced', `${cell}: the payment stops at the checkpoint`);
-    assert.equal(nativeStateOf(w, p), 'pending', `${cell}: the attempt stays open`);
+    assert.equal(nativeStateOf(w, p), attemptAfterCut, `${cell}: the attempt after the checkpoint`);
     const original = (await w.work(p)).intake, permits = permitsOf(JSON.parse(readFileSync(w.receiptsFile, 'utf8')));
     if (restart) await w.restart();
     const final = await p.claim(txHash);
@@ -732,7 +733,7 @@ async function checkNativeCheckpoints(t) {
 // An accepted CREATE the node does not show yet. The wallet has signed and sent it and the seller has kept it as issued, then the process
 // stops before the first readback. After the restart the node still answers pending. Only the seller's own recovery sends the stored bytes
 // again, once; nothing is signed again.
-async function checkAcceptedButUnobserved(t, { label, prefix, laterRequests }) {
+async function checkAcceptedButUnobserved(t, { label, prefix, laterRequests, attemptAfterCut }) {
   const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay();
   let readback = 'stopped';
   const binding = w.anchors.source.binding;
@@ -748,7 +749,7 @@ async function checkAcceptedButUnobserved(t, { label, prefix, laterRequests }) {
   assert.notEqual(cut.delivery?.status, 'delivered', `${label}: the payment stops with the CREATE unobserved`);
   readback = 'pending';
   const showProgram = nativeRecord(w, prefix, () => null);
-  assert.equal(nativeStateOf(w, p), 'pending', label);
+  assert.equal(nativeStateOf(w, p), attemptAfterCut, label);
   const initial = { requests: w.anchors.captured.length, walletSignatures: w.counts.walletSignatures, walletBroadcasts: w.counts.walletBroadcasts };
   assert.deepEqual([w.counts.resends, w.counts.rpcSignatures], [0, 0], `${label}: nothing is resent before recovery`);
   await w.restart();
@@ -774,8 +775,8 @@ async function checkAcceptedButUnobserved(t, { label, prefix, laterRequests }) {
 
 test('payment recovery continues each saved checkpoint to one final delivery', async (t) => {
   // The delivery evidence is the request that follows a Deliverable; nothing follows the delivery evidence.
-  await checkAcceptedButUnobserved(t, { label: 'the Deliverable', prefix: 'dacs4:deliverable:', laterRequests: 1 });
-  await checkAcceptedButUnobserved(t, { label: 'the delivery evidence', prefix: 'dacs4:evidence:', laterRequests: 0 });
+  await checkAcceptedButUnobserved(t, { label: 'the Deliverable', prefix: 'dacs4:deliverable:', laterRequests: 1, attemptAfterCut: 'pending' });
+  await checkAcceptedButUnobserved(t, { label: 'the delivery evidence', prefix: 'dacs4:evidence:', laterRequests: 0, attemptAfterCut: 'ended' });
   await checkFixtureCheckpoints(t);
   await checkNativeCheckpoints(t);
 });
