@@ -468,10 +468,8 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   const failedProviders = new WeakSet();
   const { db, keepPurchaseProfileWithin } = sellerStoreInternals(store);
   admissionTransaction.addAcceptanceHook(({ jobId, purchaseProfile }) => keepPurchaseProfileWithin(jobId, purchaseProfile));
-  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller),
-    acceptedPresentation: (nonce) => ledger.retained(nonce)?.accepted ?? null });
+  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller), acceptedPresentation: (nonce) => ledger.retained(nonce)?.accepted ?? null });
   const revalidateStored = createContextOutcomeRevalidation({ provider, retainedBody: records.retainedBody });
-  const readPlannedAgreement = wire.bindPlannedAgreementReader(createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf: completedContextOutcome(wire.journal, seller), records, revalidate: revalidateStored }));
   const { sellerBundlePresentedBy } = provider.bindRetainedScope(records.completedScope);
   if (!sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) throw new TypeError('the provider is pinned to a seller presenter other than the Listing\'s');
 
@@ -622,6 +620,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
     }
   }
 
+  const readPlannedAgreement = wire.bindPlannedAgreementReader(createPlannedAgreementReader({ listing, admissionRecord: admissionTransaction.admissionRecord, completedOutcomeOf: completedContextOutcome(wire.journal, seller), records, revalidate: revalidateStored }));
   return Object.freeze({ handleContext, revalidateContextOutcome, readPlannedAgreement, closeAttempts: (cause) => { for (const attempt of running) attempt.close(cause); } });
 }
 
