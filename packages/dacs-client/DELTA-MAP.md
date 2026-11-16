@@ -5036,6 +5036,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D76 name demosdk 4.0.17 in the unsigned identity read comment | `packages/dacs-client/records/D76-ad3deea7d13f.json:1` |
 | delta(client): D76 name demosdk 4.0.17 in the unsigned identity read comment | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D76 name demosdk 4.0.17 in the unsigned identity read comment | `packages/dacs-client/src/dacs/chain.mjs:16`, `packages/dacs-client/src/dacs/chain.mjs:29`, `packages/dacs-client/src/dacs/chain.mjs:31`, `packages/dacs-client/src/dacs/chain.mjs:49`, `packages/dacs-client/src/dacs/chain.mjs:80`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:133`, `packages/dacs-client/src/dacs/chain.mjs:142`, `packages/dacs-client/src/dacs/chain.mjs:153`, `packages/dacs-client/src/dacs/chain.mjs:159`, `packages/dacs-client/src/dacs/chain.mjs:172`, `packages/dacs-client/src/dacs/chain.mjs:178`, `packages/dacs-client/src/dacs/chain.mjs:198`, `packages/dacs-client/src/dacs/chain.mjs:204`, `packages/dacs-client/src/dacs/chain.mjs:221`, `packages/dacs-client/src/dacs/chain.mjs:295`, `packages/dacs-client/src/dacs/chain.mjs:324`, `packages/dacs-client/src/dacs/chain.mjs:340`, `packages/dacs-client/src/dacs/chain.mjs:353`, `packages/dacs-client/src/dacs/chain.mjs:355` |
+| delta(client): WF check that the real package assembles clean and ends with its record files | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF check that the real package assembles clean and ends with its record files | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF check that the real package assembles clean and ends with its record files | `packages/dacs-client/records/WF-2fdae2f97472.json:1` |
+| delta(client): WF check that the real package assembles clean and ends with its record files | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF check that the real package assembles clean and ends with its record files | `packages/dacs-client/scripts/delta-assemble.test.mjs:1` |
 
 ## Original moved files
 
