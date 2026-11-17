@@ -16,6 +16,7 @@ import { createAuthorityFixture } from './fixtures/tp1-authority-reader.mjs';
 import { record, ownLocal, shared } from './helpers/chain-identity-fixture.mjs';
 import { queuedOwner } from './helpers/queued-owner.mjs';
 import { deferred, jsonResponse, MIB, ok, sizedReply } from './helpers/source-read-world.mjs';
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 
 // Reuse the retained, signed public CREATE unchanged. The counterparty's
 // endpoint is in its signed metadata; each reader owns a different endpoint.
@@ -26,7 +27,7 @@ function adapterAt(t, endpoint, pinChange = {}) {
   const tx = { ...structuredClone(f.valid), status: 'confirmed', blockNumber: 7 }, op = tx.content.data[1];
   const native = { success: true, storageAddress: op.storageAddress, owner: f.owner, programName: op.programName, data: op.data, metadata: op.metadata, createdByTx: tx.hash, interactionTxs: [tx.hash] };
   const block = { number: 7, status: 'confirmed', hash: 'a'.repeat(64), content: { timestamp: 1790000010, ordered_transactions: [tx.hash] }, validation_data: { TEST: 'single-node-observation', chainIdentity: pins.chainIdentity } };
-  const source = createDevnetAgreementTransport({ expected: pins, now: () => 1790000020000,
+  const source = createDevnetAgreementTransport({ boundary: readOnlyBoundary, expected: pins, now: () => 1790000020000,
     journal: { get: async () => null, put: async () => assert.fail('unexpected write'), entries: async () => [], withWalletLock: (_key, work) => work() },
     transportOwner: { getContext: () => ({ ...context }), acquireConnectionFence: () => ({ context: { ...context }, release() {} }) },
     fetchImpl: async (_url, options) => {

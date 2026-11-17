@@ -22,7 +22,7 @@ for(const mode of ['auth-refuse','auth-stale']) { const w=await world(t); w.node
 
 test("a transport recovery stamp comes from the session's sequencer, so it is above the stamp the session just used and the recovery is not refused for a collision", async t => {
 const stamps=api.createRpcStampSource({now:()=>NOW}), sessionWorld=await world(t); const w=createWorld({journal:sessionWorld.journal(),stamps});t.after(()=>w.capability.close());
-const tx=await w.makeCreate(JOB_IDS[0],1);await w.retain(tx,'broadcast-accepted');
+const tx=await w.makeCreate(JOB_IDS[0],1);await w.retain(tx,'broadcast-accepted',{signed:true});
 const identity=`ed25519:${w.wallet.address}`,timestamp=String(stamps.next(identity));
 const signature=w.wallet.signText(createHash('sha256').update(`${identity}:${timestamp}`).digest('hex'));
 await w.capability.walletBinding({phase:'bind',address:w.wallet.address},{identity,timestamp,signature});
@@ -33,7 +33,7 @@ assert.deepEqual(w.sent.confirms,[tx.hash],'the recovery authenticated and reach
 
 test("a transport recovery stamp colliding with a session stamp ends pending with noResend and no second send", async t => {
 const sessionWorld=await world(t); const w=createWorld({journal:sessionWorld.journal()});t.after(()=>w.capability.close());
-const tx=await w.makeCreate(JOB_IDS[0],1);await w.retain(tx,'broadcast-accepted');
+const tx=await w.makeCreate(JOB_IDS[0],1);await w.retain(tx,'broadcast-accepted',{signed:true});
 const identity=`ed25519:${w.wallet.address}`,stamps=api.createRpcStampSource({now:()=>NOW}),timestamp=String(stamps.next(identity));
 const signature=w.wallet.signText(createHash('sha256').update(`${identity}:${timestamp}`).digest('hex'));
 await w.capability.walletBinding({phase:'bind',address:w.wallet.address},{identity,timestamp,signature});

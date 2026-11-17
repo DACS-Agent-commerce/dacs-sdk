@@ -63,8 +63,11 @@ test('an upper-case or padded chain identity is refused with its cause and never
 
 test('a lane stamped with a retired pin version is readback-only: no lease, no resend, no re-key', async t => {
   const w = world(t);
-  w.open({ pinVersion: RETIRED_PIN });
+  w.open({});
   const { tx } = await w.send(1);
+  for (const [key, row] of await w.journalEntries()) {
+    if (row.networkBinding) await w.plant(key, { ...row, networkBinding: { ...row.networkBinding, pinVersion: RETIRED_PIN } });
+  }
   const retained = JSON.stringify(await w.journalEntries());
   assert.equal(w.node.confirms, 1);
   assert.deepEqual(w.node.broadcasts, [tx.hash]);
@@ -79,9 +82,6 @@ test('a lane stamped with a retired pin version is readback-only: no lease, no r
   }
   assert.equal(w.node.confirms, 1);
   assert.deepEqual(w.node.broadcasts, [tx.hash]);
-  // The same lane under its own pin version keeps the unfinished-transfer refusal.
-  await w.restart({ pinVersion: RETIRED_PIN });
-  await assert.rejects(w.lease(), { code: 'outcome_unknown' });
 });
 
 test('confirm refuses a retained transfer stamped with a retired pin version and sends nothing', async t => {
@@ -108,9 +108,9 @@ test('broadcast refuses a lane stamped with a retired pin version and sends noth
   assert.equal(JSON.stringify(await w.journalEntries()), retained, 'the retired lane is neither rewritten nor re-keyed');
 });
 
-test('a transport refuses a malformed boundary with a TypeError and works as before without one', async t => {
+test('a transport refuses a missing or malformed boundary with a TypeError and sends with a real one', async t => {
   const w = world(t);
-  for (const boundary of [null, 'boundary', {}, { holdFence() {}, signPass() {} }, { holdFence() {}, signPass() {}, dispatchPass: 1 }]) {
+  for (const boundary of [undefined, null, 'boundary', {}, { holdFence() {}, signPass() {} }, { holdFence() {}, signPass() {}, dispatchPass: 1 }]) {
     assert.throws(() => w.open({}, { boundary }), TypeError, JSON.stringify(boundary));
   }
   w.open({});
@@ -617,4 +617,225 @@ test('a broadcast that is not the retained confirmation, byte for byte with its 
   assert.deepEqual(w.node.broadcasts, []);
   assert.equal((await w.broadcast(confirmation)).result, 200);
   assert.deepEqual(w.node.broadcasts, [tx.hash]);
+});
+
+// The tests below run the real Node wallet session over the real transport, effect boundary and SQLite journal, with only the node scripted.
+const { fork } = await import('node:child_process');
+const { once } = await import('node:events');
+const { fileURLToPath } = await import('node:url');
+const { finalizedWorld, cutHistory } = await import('./helpers/finalized-node-world.mjs');
+const { agreementRequest } = await import('./helpers/tp1-node-fixture.mjs');
+const { createDemosSr2WalletBridge } = await import('../src/dacs/demos-sr2-wallet-bridge.mjs');
+const { gateWorld, openPass } = await import('./helpers/effect-gate-world.mjs');
+const { passContext } = await import('../src/wallet/pass-context.mjs');
+const { OS_IDENTITY } = await import('../src/wallet/holder-incarnation.mjs');
+const { resumeRetainedConfirmation } = await import('./helpers/resume-retained-confirmation.mjs');
+const CHILD = fileURLToPath(new URL('./helpers/finalized-node-child.mjs', import.meta.url));
+
+test('through the Node wallet session a send survives a restart at each history cut, refuses at each barrier, never resends a lost answer and honours the host fee ceiling', async t => {
+  for (const cut of ['before-signed', 'signed', 'signed-held', 'dispatch-started', 'dispatch-acknowledged']) await t.test('restart after ' + cut, async t => {
+    let armed = true;
+    const w = await finalizedWorld(t, { journalWrap: journal => ({ ...journal, appendUnderLock: async (lane, key, record) => {
+      if (armed && cut === 'before-signed' && record.state === 'signed') { armed = false; throw Object.assign(new Error('TEST-write-failed'), { code: 'EIO' }); }
+      await journal.appendUnderLock(lane, key, record);
+      if (cut === 'signed-held' && record.state === 'signed') w.state.stopped = true;
+      if (armed && record.state === cut) { armed = false; throw new Error('TEST-crash-after-' + cut); }
+    } }) });
+    await w.build();
+    const request = w.request();
+    await w.send(request);
+    const before = w.node.broadcasts.length, retained = await w.records();
+    assert.ok(cut === 'before-signed' || retained.some(record => record.state === cut), cut);
+    const next = await w.restart();
+    next.state.stopped = false;
+    await next.send(request);
+    assert.equal(next.node.broadcasts.length, cut === 'before-signed' ? 1 : before, cut);
+    if (retained[0]?.bytes && next.node.broadcasts[0]) assert.equal(JSON.stringify(next.node.broadcasts[0]), Buffer.from(retained[0].bytes, 'base64').toString());
+  });
+  for (const phase of ['signed', 'confirm-started', 'dispatch-started']) {
+    for (const change of ['stop', 'hold', 'connection']) await t.test(`a ${change} right after ${phase} withholds the send`, async t => {
+      const w = await finalizedWorld(t, { journalWrap: cutHistory(record => {
+        if (record.state !== phase) return;
+        if (change === 'stop') w.state.stopped = true;
+        if (change === 'hold') setPurchaseAdmission('held');
+        if (change === 'connection') w.owner.replaceConnection();
+      }) });
+      await w.build(); await w.send();
+      assert.equal(w.node.broadcasts.length, 0);
+      assert.ok((await w.records()).some(record => /held|withheld/.test(record.state)), phase + '/' + change);
+      if (phase === 'dispatch-started') {
+        const next = await w.restart(); next.state.stopped = false;
+        await next.send(); assert.equal(next.node.broadcasts.length, 0, 'a withheld broadcast stays readback-only after restart');
+      }
+    });
+  }
+  await t.test('a lost broadcast answer is never resent', async t => {
+    const w = await finalizedWorld(t); await w.build(); w.node.mode = 'drop';
+    await w.send();
+    assert.equal(w.node.broadcasts.length, 1);
+    const next = await w.restart(); await next.send();
+    assert.equal(next.node.broadcasts.length, 1);
+    assert.ok((await next.records()).some(record => record.state === 'dispatch-unknown'));
+  });
+  await t.test('the host fee ceiling includes the fee and has no default', async t => {
+    const w = await finalizedWorld(t, { input: { feeCeilingOs: '1' } }); await w.build();
+    assert.equal((await w.send()).success, false); assert.equal(w.node.broadcasts.length, 0);
+  });
+});
+
+test('a job pass transmits only while its current-authorization check answers true, and a seller pass without a job context is refused', async t => {
+  for (const operationClass of ['job-create', 'payment-evidence', 'job-resume']) {
+    for (const check of ['missing', 'false', 'thenable', 'withdrawn before the boundary check', 'withdrawn while the pass awaits', 'allowed']) await t.test(`${operationClass} pass, check ${check}`, async t => {
+      let current = true;
+      const cause = Object.assign(new Error('TEST-current-authorization'), { code: 'context_admission_closed' });
+      const w = await gateWorld(t, { seller: false, journalWrap: cutHistory(record => { if (check === 'withdrawn before the boundary check' && record.state === 'dispatch-started') current = false; }) });
+      const currentAuthorization = check === 'missing' ? undefined : () => {
+        if (check === 'false') return false;
+        if (check === 'thenable') return Promise.resolve(true);
+        if (!current) throw cause;
+        return true;
+      };
+      const context = passContext({ operationClass, currentAuthorization });
+      const finalStop = ({ phase }) => { if (check === 'withdrawn while the pass awaits' && phase === 'broadcastTx') current = false; };
+      const result = await (await openPass(w, { pass: { context, finalStop } })).run(() => w.send());
+      assert.equal(w.node.broadcasts.length, check === 'allowed' ? 1 : 0);
+      if (check === 'withdrawn before the boundary check') assert.ok((await w.journal().entries()).some(([, record]) => record.state === 'dispatch-withheld'));
+      if (check.startsWith('withdrawn')) {
+        let error = w.session.internalCauseOf(result);
+        while (error && error !== cause) error = error.cause;
+        assert.equal(error, cause, 'the check\'s own error is kept');
+      }
+    });
+  }
+  await t.test('a seller composition refuses a pass whose context is not a job pass', async t => {
+    const w = await gateWorld(t);
+    const lease = await w.currentOwner().acquireConnectionFence();
+    const base = { fence: lease, deadline: w.clock.now() + 1000, refreshAuthority: async () => {}, finalStop: async () => {}, synchronousChecks: [], feeCeilingOs: '50000000000' };
+    for (const context of [undefined, passContext(), {}, { operationClass: 'job-create', currentAuthorization: () => true }]) {
+      assert.throws(() => w.session.effectPass({ ...base, ...(context === undefined ? {} : { context }) }), { code: 'effect_pass_invalid' });
+    }
+    assert.equal(typeof w.session.effectPass({ ...base, context: passContext({ operationClass: 'job-create', currentAuthorization: () => true }) }), 'object');
+    lease.release();
+  });
+});
+
+test('the Node wallet session refuses construction without a stop check and asks it at each effect boundary stage', async t => {
+  const absent = await finalizedWorld(t, { input: { stopped: undefined } });
+  await assert.rejects(absent.build(), TypeError);
+  for (const at of [1, 3, 4, 5]) {
+    let calls = 0;
+    const w = await finalizedWorld(t, { input: { stopped: async () => ++calls === at } });
+    await w.build(); await w.send();
+    assert.equal(w.node.broadcasts.length, 0, 'stop read ' + at);
+    assert.ok(calls >= at);
+  }
+});
+
+test('a session built without a positive fee ceiling, or whose build fails, is refused with its key zeroed and no connection fence held', async t => {
+  for (const feeCeilingOs of [undefined, null, '', 0, '0', '01', '-1']) {
+    const w = await finalizedWorld(t, { input: { feeCeilingOs } });
+    await assert.rejects(w.build(), TypeError);
+    assert.ok(w.key.every(byte => byte === 0));
+    assert.deepEqual(w.effects(), []);
+    assert.equal(w.session, undefined);
+  }
+  for (const input of [{ journal: {} }, { key: Uint8Array.of(255) }]) {
+    const w = await finalizedWorld(t, { input });
+    await assert.rejects(w.build());
+    assert.ok((input.key ?? w.key).every(byte => byte === 0));
+    assert.equal(w.session, undefined);
+    (await w.owner.acquireConnectionFence()).release();
+  }
+});
+
+test('through the Node wallet session a crash after confirmation is resumed once from the original bytes, a lost confirmation sends nothing, and a killed holder is recovered only when provably dead', async t => {
+  await t.test('a confirmation acknowledged before the crash is broadcast once from the retained bytes after restart, with no lane record before the broadcast', async t => {
+    let cut = true;
+    const w = await finalizedWorld(t, { journalWrap: cutHistory(record => { if (cut && record.state === 'confirm-acknowledged') { cut = false; throw new Error('TEST-after-confirm'); } }) });
+    await w.build(); const request = w.request(); await w.send(request);
+    assert.equal(w.node.broadcasts.length, 0);
+    assert.ok((await w.records()).some(record => record.state === 'confirm-acknowledged'));
+    assert.ok(!(await w.journal.entries()).some(([key]) => key.startsWith('devnet/native-wallet/') || key.startsWith('devnet/native-transfer/')));
+    const next = await w.restart();
+    await resumeRetainedConfirmation(next);
+    assert.equal(next.node.broadcasts.length, 1);
+    assert.deepEqual(next.node.broadcasts[0], next.node.confirms[next.node.confirms.length - 1]);
+    assert.equal(JSON.stringify(next.node.broadcasts[0]), Buffer.from((await next.records()).find(record => record.bytes).bytes, 'base64').toString());
+  });
+  await t.test('a lost confirmation answer is recorded unknown across a restart and nothing is broadcast', async t => {
+    const w = await finalizedWorld(t); await w.build(); w.node.mode = 'confirm-lost'; await w.send();
+    assert.ok((await w.records()).some(record => record.state === 'confirm-unknown'));
+    const next = await w.restart(); assert.equal(w.node.broadcasts.length, 0);
+    assert.ok((await next.records()).some(record => record.state === 'confirm-unknown'));
+  });
+  await t.test('a confirmation whose gas changed before the broadcast is refused and nothing is broadcast', async t => {
+    const w = await finalizedWorld(t); await w.build();
+    const boundary = w.session.effectBoundary, dispatch = boundary.dispatchPass;
+    t.mock.method(boundary, 'dispatchPass', async (operation, send, options) => {
+      const answer = await dispatch(operation, send, options);
+      if (options?.stage === 'confirm') answer.response.data.gas_operation = { fees: { network_fee: '1', rpc_fee: '0', additional_fee: '0' } };
+      return answer;
+    });
+    await w.send(); assert.equal(w.node.broadcasts.length, 0);
+  });
+  await t.test('an uncrashed send confirms and then broadcasts', async t => {
+    const w = await finalizedWorld(t); await w.build(); assert.equal((await w.send()).success, true);
+    assert.deepEqual(w.effects(), ['confirmTx', 'broadcastTx']);
+  });
+  for (const cut of ['confirm-acknowledged', 'signed-held', 'dispatch-started']) await t.test('a real child killed at ' + cut + ' leaves a lock that only proof of death recovers', async t => {
+    const w = await finalizedWorld(t); const path = w.path; await w.close();
+    const child = fork(CHILD, [path, cut], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const exited = once(child, 'exit');
+    t.after(() => child.kill('SIGKILL'));
+    const [message] = await Promise.race([once(child, 'message'), exited.then(([exit]) => { throw new Error('TEST-child-exited:' + exit); })]);
+    assert.equal(message.record.state, cut);
+    const paused = await finalizedWorld(t, { path, journalOptions: { lockTimeoutMs: 1 } }); await paused.build();
+    assert.equal((await paused.send()).success, false, 'a live paused owner stays busy');
+    await paused.close();
+    child.kill('SIGKILL'); assert.equal((await exited)[1], 'SIGKILL');
+    if (cut === 'confirm-acknowledged') {
+      const unproven = await finalizedWorld(t, { path, journalOptions: { lockTimeoutMs: 0, identity: { ...OS_IDENTITY, self: null } } });
+      await unproven.build();
+      for (let repeat = 0; repeat < 3; repeat++) assert.equal((await unproven.send()).success, false, 'no identity and repeated timeout never prove death');
+      await unproven.close();
+      const originalLive = await finalizedWorld(t, { path, journalOptions: { lockTimeoutMs: 0, identity: { ...OS_IDENTITY, runningStart: () => message.namespace.start } } });
+      await originalLive.build(); assert.equal((await originalLive.send()).success, false, 'the original start still appears live'); await originalLive.close();
+      const racers = Array.from({ length: 2 }, () => {
+        const racer = fork(CHILD, [path, 'recover-race'], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+        const exit = once(racer, 'exit');
+        t.after(() => racer.kill('SIGKILL'));
+        return { racer, exit, reply: once(racer, 'message') };
+      });
+      const replies = await Promise.all(racers.map(async ({ reply, exit }) => (await Promise.race([reply, exit.then(() => { throw new Error('TEST-racer-exited'); })]))[0]));
+      assert.equal(replies.filter(reply => reply.event === 'cut').length, 1, 'one new owner reaches confirmation');
+      assert.equal(replies.filter(reply => reply.event === 'done' && reply.success === false).length, 1, 'the other remains busy');
+      for (const { racer, exit } of racers) { racer.kill('SIGKILL'); await exit; }
+    }
+    const next = await finalizedWorld(t, { path, journalOptions: { identity: { ...OS_IDENTITY, runningStart: () => 'TEST-different-start' } } }); await next.build();
+    assert.ok((await next.records()).some(record => record.state === cut), 'recovery preserves the committed history');
+    if (cut === 'confirm-acknowledged') await resumeRetainedConfirmation(next);
+    if (cut === 'dispatch-started') { await next.send(); await next.send(); }
+    assert.equal(next.node.broadcasts.length, cut === 'confirm-acknowledged' ? 1 : 0);
+    if (cut === 'confirm-acknowledged') assert.equal(JSON.stringify(next.node.broadcasts[0]), Buffer.from((await next.records()).find(record => record.bytes).bytes, 'base64').toString());
+  });
+});
+
+test('a wallet request whose answer is lost after the node took the CREATE is reconciled by readback after a restart without a second CREATE', async t => {
+  let w = await finalizedWorld(t); await w.build();
+  const request = await agreementRequest(w, { complete: true }), raw = request.params[0];
+  w.node.intercept = row => row.body.params[0].message === 'searchStoragePrograms'
+    ? new Response(JSON.stringify({ result: 200, response: [], require_reply: false, extra: null }), { headers: { 'content-type': 'application/json' } }) : undefined;
+  const bridge = () => createDemosSr2WalletBridge({ rpcUrl: w.owner.local.endpoint, network: w.session.wallet.getWriteProfile().network, journal: w.journal,
+    sourceCapability: w.session.transport, walletFactory: options => {
+      const wallet = w.session.walletFactory(options);
+      return { ...wallet, request: async input => { const answer = await wallet.request(input); return answer.success ? { success: false, error: { code: 'outcome_unknown' } } : answer; } };
+    }, fetchImpl: w.node.fetch, now: w.clock.now });
+  const input = { writer: raw.owner, artifactKind: 'Agreement', logicalAddress: raw.logicalAddress, artifact: raw.transaction.content.data[1].data };
+  const first = await bridge().anchor(input);
+  assert.equal(first.status, 'indeterminate');
+  assert.equal(w.node.broadcasts.length, 1);
+  assert.ok((await w.records()).some(record => record.state === 'dispatch-acknowledged'));
+  w = await w.restart();
+  await bridge().anchor(input);
+  assert.equal(w.node.broadcasts.length, 1, 'the issued plan reconciles without another CREATE');
 });

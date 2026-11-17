@@ -1,8 +1,9 @@
 // Test-only world for the native transport's effect paths: the real transport
 // and durable journal in this process against a scripted TEST node. With
-// `bound` (a tp1 binding fixture) the transport also gets a real effect
-// boundary over the same journal and a first-come owner fence. No network,
-// chain or funds.
+// `bound` (a tp1 binding fixture) the transport's effect boundary is built here
+// over the same journal and a first-come owner fence, with a controlled clock;
+// without it the transport gets `writingBoundary`. No network, chain or funds.
+import { BOUND_PIN_VERSION, writingBoundary } from './transport-boundary.mjs'; // first: it installs the purchase-admission hook before any source module loads
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +18,7 @@ import { controlledClock, createEffectBoundary, digest, setPurchaseAdmission } f
 
 const OWNER = 'TEST-native-owner', PAYEE = '0x' + '7'.repeat(64);
 export const IDENTITY = 'c'.repeat(64);
-export const CURRENT_PIN = 'TEST-native-pins-current', RETIRED_PIN = 'TEST-native-pins-retired';
+export const CURRENT_PIN = BOUND_PIN_VERSION, RETIRED_PIN = 'TEST-native-pins-retired';
 export const PINS = { network: 'testnet', chainIdentity: IDENTITY, pinVersion: CURRENT_PIN, endpoint: 'https://rpc.invalid/', transportAuthority: OWNER };
 const CONTEXT = { network: PINS.network, endpoint: PINS.endpoint, transportAuthority: OWNER, connectionId: 'TEST-connection' };
 export const LANE_PREFIX = 'devnet/native-wallet/';
@@ -89,7 +90,7 @@ export function nativeWorld(t, { bound } = {}) {
     owner = firstComeOwner(fence, gate);
     if (bound) buildBoundary();
     transport = createDevnetNativeTransport({ expected: { ...PINS, ...(bound ? { pinVersion: bound.binding.profile.pinVersion } : {}), ...pins }, journal, fetchImpl: node.fetch, inclusionWaitMs: 0, inclusionPollMs: 1, sleep: async () => {},
-      ...(bound ? { boundary: world.boundary } : {}), ...extra, transportOwner: owner });
+      boundary: bound ? world.boundary : writingBoundary({ owner, journal }), ...extra, transportOwner: owner });
     return transport;
   };
   t.after(async () => { await transport?.close(); journal.close(); rmSync(dir, { recursive: true, force: true }); if (bound) setPurchaseAdmission('held'); });

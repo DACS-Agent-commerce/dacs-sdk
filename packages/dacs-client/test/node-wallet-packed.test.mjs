@@ -59,7 +59,7 @@ test('in a fresh child in the consumer directory, the packed node-wallet entry c
     const binding=await bindTp1Profile({record:TP1_APPROVED_IDENTITY_RECORD,local:owner.local,readAuthority:async scope=>({local:scope.local,chainIdentity:TP1_APPROVED_IDENTITY_RECORD.chainIdentity,provenance:'TEST-packed-authority',sessionId:scope.sessionId,participants:[]})});
     const rows=new Map(), journal={get:async k=>rows.get(k)??null,put:async(k,v)=>rows.set(k,structuredClone(v)),entries:async()=>[...rows],withWalletLock:async(k,work)=>work()};
     const key=new TextEncoder().encode(entropyToMnemonic(randomBytes(32),wordlist));
-    const options={admission:{binding,currentLocal:owner.currentLocal},owner,journal,approve:async()=>true,clock:{now:()=>T0}};
+    const options={admission:{binding,currentLocal:owner.currentLocal},owner,journal,approve:async()=>true,clock:{now:()=>T0},stopped:async()=>false,feeCeilingOs:'50000000000'};
     const bootstrap=await api.createNodeWalletSession({...options,key});
     assert.ok(key.every(byte=>byte===0));
     await bootstrap.close();

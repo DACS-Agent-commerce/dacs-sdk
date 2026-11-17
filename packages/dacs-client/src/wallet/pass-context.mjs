@@ -24,6 +24,9 @@ export function passContext({ operationClass = null, operationId, currentAuthori
   return brand({ operationClass, operationId, currentAuthorization });
 }
 
+/** Returns true for a context `passContext` made, false for anything else. */
+export const isPassContext = (value) => contexts.has(value);
+
 /** Runs `work` with `context` as the current pass context; throws `TypeError` for an object `passContext` did not create. */
 export function runInPassContext(context, work) {
   if (!contexts.has(context)) throw new TypeError('a pass context made by passContext is required');

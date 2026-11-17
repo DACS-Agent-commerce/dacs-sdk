@@ -60,6 +60,9 @@ export async function retainAcceptedCreate(w, wallet, tx) {
   const { pins } = w.session.transport;
   const row = { hash: tx.hash, nonce: tx.content.nonce, stage: 'broadcast-accepted', signedTransaction: tx, networkBinding: await w.session.transport.observeBinding(),
     storageWriteSubmission: 'accepted', storageWriteSubmissionProfile: STORAGE_WRITE_SUBMISSION_PROFILE, storageWriteGas: null };
-  await w.journal().put(`devnet/native-wallet/${JSON.stringify([pins.network, pins.chainIdentity, wallet.address])}`, row);
+  const lane = `devnet/native-wallet/${JSON.stringify([pins.network, pins.chainIdentity, wallet.address])}`;
+  await w.journal().put(lane, row);
   await w.journal().put('devnet/native-transfer/' + tx.hash, row);
+  // The effect boundary's history holds the signed bytes recovery works from.
+  await w.session.effectBoundary.signPass({ operationId: lane, lane, kind: 'create', paidWrite: true, debitOs: '0', pinVersion: pins.pinVersion }, () => Buffer.from(JSON.stringify(tx)));
 }

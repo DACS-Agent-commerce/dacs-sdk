@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createDevnetAgreementTransport} from '../src/wallet/devnet-native-transport.mjs';
 import {createDemosSr2Adapter,createInMemoryDemosSr2Journal} from '../src/dacs/demos-sr2-adapter.mjs';
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 const f=JSON.parse(readFileSync(new URL('./fixtures/sr2-public-creates.json',import.meta.url)));
 const clone=v=>structuredClone(v), writer='did:demos:agent:'+f.owner.slice(2);
 function setup({projection=clone(f.valid),changeTx=()=>{},changeNative=()=>{},changeBlock=()=>{}}={}) {
@@ -15,7 +16,7 @@ function setup({projection=clone(f.valid),changeTx=()=>{},changeNative=()=>{},ch
  let effects=0;
  const journal={get:async()=>null,put:async()=>{effects++;throw Error('write forbidden');},entries:async()=>[],withWalletLock:(_k,w)=>w()};
  const context={network:f.pins.network,endpoint:f.pins.endpoint,transportAuthority:f.pins.transportAuthority,connectionId:'TEST-connection'};
- const source=createDevnetAgreementTransport({expected:f.pins,journal,now:()=>1790000020000,transportOwner:{getContext:()=>({...context}),acquireConnectionFence:()=>({context:{...context},release(){}})},fetchImpl:async(url,options={})=>{
+ const source=createDevnetAgreementTransport({ boundary: readOnlyBoundary,expected:f.pins,journal,now:()=>1790000020000,transportOwner:{getContext:()=>({...context}),acquireConnectionFence:()=>({context:{...context},release(){}})},fetchImpl:async(url,options={})=>{
   const body=options.body?JSON.parse(options.body):null,message=body?.params?.[0]?.message,data=body?.params?.[0]?.data;
   let value;
   if(!body)value=native;

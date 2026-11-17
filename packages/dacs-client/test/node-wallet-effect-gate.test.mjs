@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assertTp1Binding } from '@kynesyslabs/dacs/wire';
-import { agreementRequest, api, mnemonicBytes, ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
+import { agreementRequest, api, finalization, mnemonicBytes, ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
-import { assertFenceFree, FEE_CEILING_OS, gateWorld, microtaskMarker, openPass, sellerPublications } from './helpers/effect-gate-world.mjs';
+import { assertFenceFree, defaultContext, FEE_CEILING_OS, gateWorld, microtaskMarker, openPass, sellerPublications } from './helpers/effect-gate-world.mjs';
 import { confirmThroughFacade, listingCreate, retainAcceptedCreate, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
 import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
 
@@ -219,7 +219,7 @@ test("inside a pass, RPC-authentication header signatures reuse its fence lease 
 
 test("a missing or non-function refreshAuthority refuses effect_pass_invalid; a failing authority callback invokes no signer or fetch, keeps its cause and releases the owning fence", async t => {
   const w = await qualifiedWorld(t), lease = await w.currentOwner().acquireConnectionFence();
-  const base = { fence: lease, deadline: T0 + 1000, refreshAuthority: async () => {}, finalStop: async () => {}, synchronousChecks: [], feeCeilingOs: FEE_CEILING_OS };
+  const base = { fence: lease, deadline: T0 + 1000, refreshAuthority: async () => {}, finalStop: async () => {}, synchronousChecks: [], feeCeilingOs: FEE_CEILING_OS, context: defaultContext(w.session) };
   const invalid = error => error.code === 'effect_pass_invalid';
   assert.equal(typeof w.session.effectPass(base), 'object');
   for (const refreshAuthority of [undefined, null, 'authority', {}, 7]) assert.throws(() => w.session.effectPass({ ...base, refreshAuthority }), invalid);
@@ -229,7 +229,7 @@ test("a missing or non-function refreshAuthority refuses effect_pass_invalid; a 
   }
   assert.throws(() => w.session.runInEffectPass(w.session.effectPass(base), 'work'), { code: 'invalid_params' });
   lease.release();
-  const construction = { admission: w.admission, owner: w.owner, journal: w.journal(), approve: async () => true, clock: w.clock };
+  const construction = { admission: w.admission, owner: w.owner, journal: w.journal(), approve: async () => true, clock: w.clock, ...finalization };
   for (const value of ['nope', null, {}, 7]) {
     const key = mnemonicBytes();
     await assert.rejects(api.createNodeSellerComposition({ ...construction, key, approveConfirmedWrite: null, publications: sellerPublications(), qualify: value }), { code: 'invalid_params' });
@@ -336,11 +336,11 @@ test("a sentinel error thrown inside qualify, refreshAuthority, finalStop or a s
   assert.equal(atTransmission.node.confirms.length, 0);
 });
 
-test("both compositions expose effectPass and runInEffectPass as functions; the seller adds only transport, observer and paymentEvidenceAdapter", async t => {
+test("both compositions expose effectPass and runInEffectPass as functions; the seller adds only observer and paymentEvidenceAdapter", async t => {
   const seller = await qualifiedWorld(t), buyer = await gateWorld(t, { seller: false });
-  const buyerMembers = ['close', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'wallet', 'walletFactory'];
+  const buyerMembers = ['close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'transport', 'wallet', 'walletFactory'];
   assert.deepEqual(Object.keys(buyer.session).sort(), buyerMembers);
-  assert.deepEqual(Object.keys(seller.session).sort(), [...buyerMembers, 'observer', 'paymentEvidenceAdapter', 'transport'].sort());
+  assert.deepEqual(Object.keys(seller.session).sort(), [...buyerMembers, 'observer', 'paymentEvidenceAdapter'].sort());
   for (const session of [seller.session, buyer.session]) for (const name of ['effectPass', 'runInEffectPass']) assert.equal(typeof session[name], 'function', name);
 });
 
@@ -373,7 +373,7 @@ test("a transmission whose request signal aborts while qualify runs is refused t
 test("effectPass refuses null options, a lease from another transport owner, a BigInt or Symbol deadline and a check list with holes as effect_pass_invalid", async t => {
   const w = await qualifiedWorld(t), other = await qualifiedWorld(t);
   const lease = await w.currentOwner().acquireConnectionFence(), foreignLease = await other.currentOwner().acquireConnectionFence();
-  const base = { fence: lease, deadline: T0 + 1000, refreshAuthority: async () => {}, finalStop: async () => {}, synchronousChecks: [], feeCeilingOs: FEE_CEILING_OS };
+  const base = { fence: lease, deadline: T0 + 1000, refreshAuthority: async () => {}, finalStop: async () => {}, synchronousChecks: [], feeCeilingOs: FEE_CEILING_OS, context: defaultContext(w.session) };
   assert.equal(typeof w.session.effectPass(base), 'object');
   assert.throws(() => w.session.effectPass(null), { code: 'effect_pass_invalid' }, 'null options');
   const patches = { 'a lease from another owner': { fence: foreignLease }, 'a BigInt deadline': { deadline: BigInt(T0 + 1000) },
