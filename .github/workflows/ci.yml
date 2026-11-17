@@ -7,7 +7,9 @@ on:
     branches: [main, phase0-completion]
   pull_request:
   merge_group:
-  # A full run (both Node legs, every suite) of any branch by hand, e.g. a pull request's branch before it merges.
+  # A run of any branch by hand, e.g. a pull request's branch before it merges. It runs both Node legs and every
+  # suite, except that the client suite runs on Node 22 only. It tests the branch head as it is, not its merge with
+  # the base branch that a pull request run tests, yet reports the same check names.
   workflow_dispatch:
 
 permissions:
@@ -88,7 +90,8 @@ jobs:
     strategy:
       fail-fast: false
       # One entry per shard: node-version, part (seller-1, client-2, ...), suite and shard (K/N). The seller
-      # suite runs on both legs for every event, pull requests included; the client suite runs on node 22 only. scripts/ci-shards.mjs holds the list and the file split.
+      # suite runs on both legs for every event, pull requests included; the client suite runs on node 22 only.
+      # scripts/ci-shards.mjs holds the list and the file split.
       matrix: ${{ fromJSON(needs.build-test-plan.outputs.matrix) }}
     name: build-test shard (node ${{ matrix.node-version }}, ${{ matrix.part }})
     steps:
