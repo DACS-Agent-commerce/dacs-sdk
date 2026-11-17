@@ -146,7 +146,8 @@ function assertStage(stage) {
  * Every method rejects (`signerFor` throws) with a WireError naming K0's refusal code, keeping its cause; a
  * callback's own error (a signer, a transport, `currentAuthorization`) is passed through unchanged. A signer
  * or transport that has not answered when the pass window ends refuses `eb_sign_timeout` or `eb_send_timeout`
- * and the fence is released; a send that timed out is recorded as the stage's `-unknown` state.
+ * and the fence is released; a send that timed out is recorded as the stage's `-unknown` state, and until it
+ * settles every other dispatch refuses `eb_send_in_flight`.
  * - `withFence(op, work, { context })` runs EB1 to EB5, then `work(held)` with `held.capability`, and releases.
  * - `signPass(op, innerSign, { context })` runs EB5r to EB7; resolves `{ bytes, artifactHash }`, signing only when nothing is retained.
  * - `dispatchPass(held, innerSend, { stage })` runs EB8 to EB9 for the bytes `signPass(held)` returned; resolves the send's answer.
@@ -154,7 +155,7 @@ function assertStage(stage) {
  * - `signerFor(held, inner)` is a wire signer that runs EB5r's final tail inside `sign`.
  * - `recordObserved(op, stage, result)` records a readback that found the stage's transmission; for 'confirm' it
  *   counts as the acknowledgement a broadcast requires. It refuses an `op` stamped with another pin version, and
- *   when the transmission already has an `observed` record with the same result it returns that record
+ *   when `op` already has an `observed` record of the transmission with the same result it returns that record
  *   (`created: false`) instead of adding another.
  * - `replaceConnection(replace, capability)` replaces the connection under the fence and bumps `connectionGeneration()`.
  */
@@ -192,12 +193,25 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
   }
 
   // The answer of a signer or transport call that is already running, which must arrive within the pass window. A late answer is ignored and never unhandled.
-  async function answerWithinWindow(deadline, started, code) {
-    Promise.resolve(started).catch(() => {});
-    const outcome = await within(clock, deadline, () => started);
-    if (outcome.timedOut) throw refuse(code, undefined, timeoutCause(EFFECT_READ_DEADLINE_MS));
+  // The call's answer is taken once, so a thenable's `then` runs once. `onTimeout` receives the still-running answer.
+  async function answerWithinWindow(deadline, started, code, onTimeout) {
+    const answer = Promise.resolve(started);
+    answer.catch(() => {});
+    const outcome = await within(clock, deadline, () => answer);
+    if (outcome.timedOut) {
+      onTimeout?.(answer);
+      throw refuse(code, undefined, timeoutCause(EFFECT_READ_DEADLINE_MS));
+    }
     return outcome.value;
   }
+
+  // A send that timed out may still be running; no other send starts until it has settled.
+  let sendInFlight = false;
+  const holdSendUntilSettled = (answer) => {
+    sendInFlight = true;
+    const done = () => { sendInFlight = false; };
+    answer.then(done, done);
+  };
 
   // EB3: the policy cap and the approval hold. Returns the hold's revision (null without one); a hold that is gone or has changed refuses.
   function checkFeeAndApproval(op, expectedRevision) {
@@ -331,6 +345,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     if (pass.sealed === null) throw refuse('eb_dispatch_without_sign_pass', 'dispatchPass follows a signPass under the same fence');
     assertStage(stage);
     const { bytes, artifactHash } = pass.sealed;
+    if (sendInFlight) throw refuse('eb_send_in_flight', 'an earlier send that timed out has not finished');
     const records = await history.read(op.lane);
     assertLanePin(records);
     if (!KINDS[op.kind].mayResend && unwithdrawnStarts(records, artifactHash).some((record) => record.state === `${stage}-started`)) throw refuse('lane_readback_only', `${stage} may already have reached transport`);
@@ -347,7 +362,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
       throw refusal;
     }
     let answer;
-    try { answer = await answerWithinWindow(pass.deadline, innerSend(Uint8Array.from(bytes)), 'eb_send_timeout'); } catch (error) {
+    try { answer = await answerWithinWindow(pass.deadline, innerSend(Uint8Array.from(bytes)), 'eb_send_timeout', holdSendUntilSettled); } catch (error) {
       // A missing record leaves `-started`, which already means "possibly sent", so the send's own error is what the caller gets.
       await history.append(op.lane, { state: `${stage}-unknown`, ...base(op, artifactHash), of, cause: describeCause(error) }).catch(() => {});
       throw error;
@@ -384,7 +399,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
         const retained = retainedSigned(records, op);
         const started = retained === null ? undefined : unwithdrawnStarts(records, retained.artifactHash).findLast((record) => record.state === `${stage}-started`);
         if (started === undefined) throw refuse('eb_observation_unexpected', `no ${stage} transmission of ${op.operationId} to observe`);
-        const existing = records.find((record) => record.state === 'observed' && record.of === started.seq && sameResult(record, result));
+        const existing = records.find((record) => record.state === 'observed' && record.operationId === op.operationId && record.of === started.seq && sameResult(record, result));
         if (existing !== undefined) return { record: existing, created: false };
         return history.append(op.lane, { state: 'observed', ...base(op, retained.artifactHash), of: started.seq, result });
       });
