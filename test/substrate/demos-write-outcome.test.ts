@@ -497,7 +497,7 @@ describe("Demos write outcome from recorded testnet answers", () => {
     const lease = await journalledTransfer(write);
 
     const error = expectUnresolved(await reconcile(adapter, lease), write);
-    expect(error.message).toContain(`account nonce ${rounds.B36.getAddressNonce}`);
+    expect(error.message).toContain(`last account nonce read ${rounds.B36.getAddressNonce}`);
     const failures = Number(/only transport failures: (\d+)/.exec(error.message)?.[1]);
     expect(failures).toBeGreaterThan(1);
     expect(failures).toBe(reads.filter((read) => read === "getAddressNonce").length);
@@ -589,7 +589,7 @@ describe("Demos write outcome from recorded testnet answers", () => {
     const lease = await journalledTransfer(write);
 
     const error = expectUnresolved(await reconcile(adapter, lease), write);
-    expect(error.message).toContain(`account nonce ${rounds.B36.getAddressNonce}`);
+    expect(error.message).toContain(`last account nonce read ${rounds.B36.getAddressNonce}`);
     expect(error.message).toContain(`last block ${rounds.B36.getLastBlockNumber}`);
     const failures = Number(/only transport failures: (\d+)/.exec(error.message)?.[1]);
     // Each round answered by two transport failures then reads the account
@@ -600,6 +600,31 @@ describe("Demos write outcome from recorded testnet answers", () => {
     expect(broadcast).not.toHaveBeenCalled();
     await lease.release();
   });
+
+  it.each([pending.rounds.B36.getAddressNonce, 0, undefined])(
+    "reports nonce %s from the last successful read after nonce-read transport failures",
+    async (accountNonce) => {
+      const { write, rounds } = pending;
+      const transportFailure = await sdkTransportFailure();
+      const { adapter, reads, broadcast } = scriptedAdapter({
+        reads: [{ getTransactionStatus: transportFailure, getTxByHash: transportFailure }],
+        nonces: accountNonce === undefined
+          ? [transportFailure]
+          : [accountNonce, transportFailure],
+        lastBlock: rounds.B36.getLastBlockNumber,
+      });
+      const lease = await journalledTransfer(write);
+
+      const error = expectUnresolved(await reconcile(adapter, lease), write);
+      expect(reads.filter((read) => read === "getAddressNonce").length).toBeGreaterThan(1);
+      expect(error.message).toContain(accountNonce === undefined
+        ? "account nonce not readable"
+        : `last account nonce read ${accountNonce}`);
+      expect(stages(lease)).toEqual(["broadcast-intent"]);
+      expect(broadcast).not.toHaveBeenCalled();
+      await lease.release();
+    },
+  );
 
   it("a last-block read cut off by the deadline keeps the block number read before it", async () => {
     const { write, rounds } = pending;
@@ -629,7 +654,7 @@ describe("Demos write outcome from recorded testnet answers", () => {
     const lease = await journalledTransfer(write);
 
     const error = expectUnresolved(await reconcile(adapter, lease), write);
-    expect(error.message).toContain(`account nonce ${rounds.B36.getAddressNonce}`);
+    expect(error.message).toContain(`last account nonce read ${rounds.B36.getAddressNonce}`);
     expect(error.message).toContain(`last block ${rounds.B36.getLastBlockNumber}`);
     expect(broadcast).not.toHaveBeenCalled();
     await lease.release();
