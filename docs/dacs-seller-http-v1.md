@@ -1018,7 +1018,7 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `explicit_resume_expired` (408) | a resume proof whose `expiresAt` is not after the verifier's clock, or not after the latest clock any caller has given the in-memory ledger |
 | `explicit_resume_used` (409) | the ledger already holds this proof |
 | `explicit_resume_ledger_full` (503) | the in-memory ledger holds 4,096 live claims; the verifier throws it unchanged |
-| `explicit_resume_ledger_failed` (503) | the host's ledger threw or rejected while recording the claim with an error that has no `explicit_resume_*` code; the ledger's error is the cause and the proof is refused |
+| `explicit_resume_ledger_failed` (503) | the host's ledger threw or rejected while recording the claim with anything other than a `WireError` whose code starts with `explicit_resume_` (such an error is thrown unchanged); the ledger's error is the cause and the proof is refused |
 | `peer_signer_wrong` | a response signed by someone other than the expected seller, or a signer whose claim is not the answer's seller |
 
 The plugin capture does not contain the codes in the rows above from

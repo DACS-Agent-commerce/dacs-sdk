@@ -120,9 +120,9 @@ export interface ExplicitResumeLedger {
   /**
    * Marks `key` used until `expiresAt` by the verifier's clock `time`. Resolves
    * to false if it was already used; throws or rejects if it cannot record the
-   * claim, and the proof is then refused. An error with an `explicit_resume_*`
-   * code reaches the verifier's caller unchanged; any other error becomes
-   * `explicit_resume_ledger_failed`.
+   * claim, and the proof is then refused. A `WireError` from this package whose
+   * code starts with `explicit_resume_` reaches the verifier's caller unchanged;
+   * any other error becomes `explicit_resume_ledger_failed`.
    */
   claim(key: string, expiresAt: number, time: number): boolean | Promise<boolean>;
 }
@@ -193,9 +193,10 @@ function assertMatchesRequest(p: ExplicitCreateResumePayload, request: WireReque
 }
 
 /**
- * Uses the proof up. A ledger error that already carries an `explicit_resume_*`
- * code, such as the in-memory ledger's `explicit_resume_ledger_full`, is thrown
- * unchanged. Any other throw or rejection refuses the proof as
+ * Uses the proof up. A `WireError` whose code starts with `explicit_resume_`,
+ * such as the in-memory ledger's `explicit_resume_ledger_full`, is thrown
+ * unchanged. Any other throw or rejection, including a plain `Error` that carries
+ * such a code, refuses the proof as
  * `explicit_resume_ledger_failed` (503), with the ledger's error as the cause.
  */
 async function claimProof(ledger: ExplicitResumeLedger, key: string, expiresAt: number, time: number): Promise<void> {
