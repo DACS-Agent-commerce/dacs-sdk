@@ -37,8 +37,8 @@ jobs:
   # reviewers and no deployment rule. This job names none, and fails unless
   # npm-prerelease-gated already exists with the runbook's owner step 1
   # protection; the publish job needs it, so it never creates the environment.
-  # It also admits the dispatch (confirmed version, tag, main line, manifests)
-  # before the long verify job starts, so a wrong dispatch stops here.
+  # It also admits the dispatch (confirmed version, tag, main line, manifests);
+  # the verify and publish jobs need it, so a wrong dispatch stops both.
   publish-environment:
     runs-on: ubuntu-latest
     timeout-minutes: 45

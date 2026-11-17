@@ -110,5 +110,5 @@ test("every workflow job that pins npm checks the pinned version in the next ste
       checked += 1;
     });
   }
-  assert.equal(checked, 3);
+  assert.equal(checked, 4);
 });

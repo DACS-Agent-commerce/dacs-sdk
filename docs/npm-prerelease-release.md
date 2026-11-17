@@ -29,8 +29,8 @@ The `publish-environment` job checks the dispatch first, before the `verify`
 job starts: the entered version must equal the version in `package.json`, the
 ref must be the tag `v<version>` on a commit that is on `main`, the version must
 be a prerelease, and all five manifests must carry that version and the publish
-policy. A wrong dispatch stops there, before any suite runs. The `publish` job
-needs that job, so a re-run of only the failed `publish` job keeps its result.
+policy. A wrong dispatch stops there, so the `verify` and `publish` jobs do not
+start. The `publish` job needs that job, so a re-run of only the failed `publish` job keeps its result.
 
 The workflow first runs the registry-shaped Linux and Docker acceptance
 (`registry-container-acceptance.yml`) with advisory-ID drift enforced. The
