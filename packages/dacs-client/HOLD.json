@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "d02ff6792f5ba9641dd91127aa175fe94f6bac04"
+        "blob": "a0409a6417bf7f1257e45ced53654e8ab60886ae"
       },
       "DELTA-LEDGER.json": {
-        "blob": "a1585e6c0ef43236f2e994a60edd2d38359805c2"
+        "blob": "e7eb3983967613c16640cfb382175e51701a9684"
       },
       "DELTA-MAP.md": {
-        "blob": "0536b42a331bf01952625c0fc0ca87b21851c6c0"
+        "blob": "1af0fc509269671183cfcc4580734605197dde11"
       },
       "DELTA-NOTES.md": {
         "blob": "bd5f5a806e441849392a85525d73fcf2fc0d3792"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "c21ca9f4c0192b31b0e7e69edd2e35e45a81244c"
+        "blob": "9e5f99ccb04eca67e3f52c2894053b07f0fa8b90"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1035,6 +1035,12 @@
       "records/.gitkeep": {
         "blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
       },
+      "records/D76-a6c8894d46c4.json": {
+        "blob": "a58a6e211421a26e17879e1016a80588c509b3f0"
+      },
+      "records/D76-ad3deea7d13f.json": {
+        "blob": "5bed51d5af739743aa956cb21d679630161b9ec8"
+      },
       "records/D77-5963710ebcba.json": {
         "blob": "a2764d54efa10f967838d997e5c49ea96c5222b4"
       },
@@ -1044,9 +1050,12 @@
       "records/D77-de0f55395638.json": {
         "blob": "bc2062155d74fe8ce1899b9f6c1ae5158d38eb69"
       },
+      "records/WF-2fdae2f97472.json": {
+        "blob": "6a64564558993581d125dab937c5a3ad185ad917"
+      },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "525a4dc389f407dcc6ca5d4596caeb015dd5914f"
+        "blob": "d8d9ce4d65c91033f66935eabf60e1961b3974a4"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1070,7 +1079,7 @@
         "blob": "47027391032dc93c711fcd3c312330e3876cb7ab"
       },
       "scripts/delta-assemble.test.mjs": {
-        "blob": "169487df8320f94f3fb11bb338e23bc896ab716c"
+        "blob": "3261d1f7984040bcb4e4cd0457ca31a9cf618dd4"
       },
       "scripts/delta-batch-git.test.mjs": {
         "blob": "6b8a3f1df542ae318192787310bacd75bc349a1f"
@@ -1082,7 +1091,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "3f3a138b7da8a127c4a0942b05258fc05445c627"
+        "blob": "167ad02cceea0a9fc9b8e83b429aa1466ae14d98"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "5fda029c1ecf1d7476d016ac70a130a25c4b4367"
@@ -1139,7 +1148,7 @@
         "blob": "540cf6a903cdb9d0f40bef3c22a70ee61c2b0540"
       },
       "src/dacs/chain.mjs": {
-        "blob": "4918f9b53808ff1f9311b70ef892155ed5659eef"
+        "blob": "ad8d99f266a087b826a052730243bc257b1f5789"
       },
       "src/dacs/commit-on-signature.mjs": {
         "blob": "e8e7037514829c256308b6b24339178d90fe1881"
@@ -1340,7 +1349,7 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/demos-quiet-hooks.mjs": {
-        "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
+        "blob": "91d06508f63df5308dece710ffb05aeae26a5bb8"
       },
       "src/wallet/devnet-native-transport.mjs": {
         "blob": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe"
@@ -1406,7 +1415,7 @@
         "blob": "4c560fe287e70b36a42569e63614a44f00ab14fe"
       },
       "test/d11-seam-parameters.test.mjs": {
-        "blob": "4e3f8fe3e81c3706b802f289d12c48f05d3763cb"
+        "blob": "d8b3ffc11f570d455f4a365c18d3e6b64ac025d3"
       },
       "test/delivery-access-model.test.mjs": {
         "blob": "478a2e3976a84f76d8d5afc0cc480e7674c8d32d"
@@ -1907,7 +1916,7 @@
         "blob": "9869cc55d5b9235033ffd0382583a5e3948f5f4f"
       },
       "test/node-demos-loading.test.mjs": {
-        "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
+        "blob": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43"
       },
       "test/node-payment-evidence-adapter.test.mjs": {
         "blob": "f3a42056739f497fd805935c801cb490cadddb82"
