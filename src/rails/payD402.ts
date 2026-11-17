@@ -429,9 +429,9 @@ export async function createPayD402Rail(config: PayD402RailConfig): Promise<PayD
 }
 
 /**
- * runSession rejects result keys it does not know. A pending payment goes to it
- * as `ok: false` with the hash kept, which it holds as unresolved and never
- * records as a failed payment.
+ * A settle result carries only the keys of `SettleResult`. A pending payment
+ * goes to the caller as `ok: false` with the hash kept, so the caller can hold
+ * it as unresolved and never record it as a failed payment.
  */
 function withoutPendingMarker(result: PayD402SettleResult): SettleResult {
   const { pending: _pending, ...settleResult } = result;
@@ -447,10 +447,10 @@ function isUnresolvedPayment(result: SettleResult): boolean {
 }
 
 /**
- * Bridge a PayD402Rail to the runSession `settle` seam: the rail carries the
- * static D402 paywall coordinates (resolved from the listing) while runSession
- * supplies the per-session amount. A pending payment reaches runSession as
- * `ok: false` with its hash and no `pending` key.
+ * Bridge a PayD402Rail to a settle function `(request) => result`: the rail
+ * carries the static D402 paywall coordinates (resolved from the listing) while
+ * the caller supplies the per-request amount. A pending payment reaches the
+ * caller as `ok: false` with its hash and no `pending` key.
  *
  * While a call for a `jobId` and `phaseIndex` is running, and after it returns
  * a result that is not `ok` but carries a hash (and is not a permanent

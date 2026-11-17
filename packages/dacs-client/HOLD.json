@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "67797d75ae0239cf7d79f92a92c7cea2458446b6"
+        "blob": "b9f0d8fe445e71775e382b0b96456e41e63e805e"
       },
       "DELTA-LEDGER.json": {
-        "blob": "d1a9e9a960d76080745e3ef07838ffd5451c3c75"
+        "blob": "7c130d6c192948a0ad9af170c0f63d09c9e2ce22"
       },
       "DELTA-MAP.md": {
-        "blob": "b6ee69834afc4d7b9d7851d4fdd12e25555c629f"
+        "blob": "530657529fed3df0e91afc96417af28c1e0faeec"
       },
       "DELTA-NOTES.md": {
         "blob": "bd5f5a806e441849392a85525d73fcf2fc0d3792"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "c21ca9f4c0192b31b0e7e69edd2e35e45a81244c"
+        "blob": "9e5f99ccb04eca67e3f52c2894053b07f0fa8b90"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1035,9 +1035,27 @@
       "records/.gitkeep": {
         "blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
       },
+      "records/D76-a6c8894d46c4.json": {
+        "blob": "a58a6e211421a26e17879e1016a80588c509b3f0"
+      },
+      "records/D76-ad3deea7d13f.json": {
+        "blob": "5bed51d5af739743aa956cb21d679630161b9ec8"
+      },
+      "records/D77-5963710ebcba.json": {
+        "blob": "a2764d54efa10f967838d997e5c49ea96c5222b4"
+      },
+      "records/D77-6137803ee945.json": {
+        "blob": "1a5cee0c5ebc6676315a051db1c332068e927bbd"
+      },
+      "records/D77-de0f55395638.json": {
+        "blob": "bc2062155d74fe8ce1899b9f6c1ae5158d38eb69"
+      },
+      "records/WF-2fdae2f97472.json": {
+        "blob": "6a64564558993581d125dab937c5a3ad185ad917"
+      },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "28958e106ab7eb83b410ccdd16df03db5a94f021"
+        "blob": "7e89c672e4451d04f6ea29fe62be96aaf9ee2462"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1061,16 +1079,19 @@
         "blob": "47027391032dc93c711fcd3c312330e3876cb7ab"
       },
       "scripts/delta-assemble.test.mjs": {
-        "blob": "92928d159df1092c65d42f4908376dc444d9894f"
+        "blob": "3261d1f7984040bcb4e4cd0457ca31a9cf618dd4"
+      },
+      "scripts/delta-batch-git.test.mjs": {
+        "blob": "6b8a3f1df542ae318192787310bacd75bc349a1f"
       },
       "scripts/delta-continuity.test.mjs": {
-        "blob": "c489755c621b918ae6bb86a111d31dd74c180281"
+        "blob": "ae26d25defbe1a8dc0832373dfba4f1f287feba9"
       },
       "scripts/delta-frontier.test.mjs": {
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "0f2e6679473afc002446fac791617242a521b204"
+        "blob": "8cd38ebad7490f19b5ad8081eeb5d285979ec45a"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "5fda029c1ecf1d7476d016ac70a130a25c4b4367"
@@ -1127,7 +1148,7 @@
         "blob": "540cf6a903cdb9d0f40bef3c22a70ee61c2b0540"
       },
       "src/dacs/chain.mjs": {
-        "blob": "4918f9b53808ff1f9311b70ef892155ed5659eef"
+        "blob": "ad8d99f266a087b826a052730243bc257b1f5789"
       },
       "src/dacs/commit-on-signature.mjs": {
         "blob": "e8e7037514829c256308b6b24339178d90fe1881"
@@ -1148,7 +1169,7 @@
         "blob": "597a1a6205e46cfb4e1a1a44b768ace3239f0843"
       },
       "src/dacs/dem-delivery-context-consumer.mjs": {
-        "blob": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7"
+        "blob": "b190cb9f28255865882e670bbd9ef45bd9193bba"
       },
       "src/dacs/demos-sr2-adapter.mjs": {
         "blob": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868"
@@ -1175,7 +1196,7 @@
         "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "f6492ec9771611dd72c96e94107384db860ca748"
+        "blob": "8eac38bb49a4929421c3d1362fac362c6fe00cd3"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1247,7 +1268,7 @@
         "blob": "0dcfab473d1256f9de295bc65c0f04926e1ceb62"
       },
       "src/index.mjs": {
-        "blob": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        "blob": "4bf029a4db45b1d876cb4e028bccf6d0824a315f"
       },
       "src/portal-capability.mjs": {
         "blob": "fb1f631894e79e1139d7d66c8ce2e56d97a40ae5"
@@ -1328,7 +1349,7 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/demos-quiet-hooks.mjs": {
-        "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
+        "blob": "91d06508f63df5308dece710ffb05aeae26a5bb8"
       },
       "src/wallet/devnet-native-transport.mjs": {
         "blob": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe"
@@ -1363,6 +1384,9 @@
       "src/wallet/signer-reservation.mjs": {
         "blob": "d47721b78cb250ef2dd929852268a54afa699a50"
       },
+      "test/agreement-context-readback.test.mjs": {
+        "blob": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
+      },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
       },
@@ -1394,7 +1418,7 @@
         "blob": "4c560fe287e70b36a42569e63614a44f00ab14fe"
       },
       "test/d11-seam-parameters.test.mjs": {
-        "blob": "4e3f8fe3e81c3706b802f289d12c48f05d3763cb"
+        "blob": "d8b3ffc11f570d455f4a365c18d3e6b64ac025d3"
       },
       "test/delivery-access-model.test.mjs": {
         "blob": "478a2e3976a84f76d8d5afc0cc480e7674c8d32d"
@@ -1403,7 +1427,7 @@
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
       },
       "test/delta-ledger-gate.test.mjs": {
-        "blob": "0db3b89514f68fbba88d99345a0ea7089911e3d7"
+        "blob": "055f2de61cc3fa1100a1a06e0979fc5262ce8d24"
       },
       "test/diagnostic-bounds.test.mjs": {
         "blob": "14c3d2e35b5834c3e7ec0d9571e490f4403209f7"
@@ -1703,7 +1727,7 @@
         "blob": "75301fa5bacb1b288b1772e61d7e4bc132604e1e"
       },
       "test/helpers/public-composition-world.mjs": {
-        "blob": "6671b70cf3fad1b68f2e4085c67352d4102a04d4"
+        "blob": "f568fd35048d886ed2eeecd892fdef1b21a9d12c"
       },
       "test/helpers/public-demos-reader-node.mjs": {
         "blob": "d96f4f1c7bf7ac0e485b8cc0f366eb778f561cd5"
@@ -1895,7 +1919,7 @@
         "blob": "9869cc55d5b9235033ffd0382583a5e3948f5f4f"
       },
       "test/node-demos-loading.test.mjs": {
-        "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
+        "blob": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43"
       },
       "test/node-payment-evidence-adapter.test.mjs": {
         "blob": "f3a42056739f497fd805935c801cb490cadddb82"

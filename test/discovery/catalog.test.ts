@@ -64,6 +64,9 @@ describe("queryListingCatalog (DACS-1 §6.3.6)", () => {
     let requestedUrl: URL | undefined;
     let requestedInit: RequestInit | undefined;
     const fetchImpl: typeof fetch = async (input, init) => {
+      if (new URL(String(input)).pathname === "/.well-known/dacs-directory.json") {
+        return jsonResponse(directoryManifest("v1"));
+      }
       requestedUrl = new URL(String(input));
       requestedInit = init;
       return jsonResponse({ listings: [summary()], total: 1 });
@@ -413,6 +416,255 @@ describe("queryListingCatalog (DACS-1 §6.3.6)", () => {
     ).rejects.toThrow("between 1 and 200");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+});
+
+function directoryManifest(version: "v1" | "v2") {
+  return JSON.parse(readFileSync(
+    new URL(`./fixtures/directory-${version}.json`, import.meta.url), "utf8",
+  )) as { dacsDirectoryVersion: string; catalog: string; filters: string[] };
+}
+
+describe("Directory rate-filter negotiation (#591)", () => {
+  const rates = { minCompletionRate: 0.8, minRating: 4 };
+  const manifestUrl = "https://directory.example/.well-known/dacs-directory.json";
+  const page = { listings: [summary({ reputationHint: {
+    categoryScope: "data.weather", completionRate: null,
+    averageSellerRating: null, bundleCount: 0,
+    windowStart: 0, windowEnd: 1, computedAt: 1,
+  } })] };
+
+  function server(manifest: unknown, status = 200) {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init });
+      return calls.length === 1
+        ? jsonResponse(manifest, { status })
+        : jsonResponse(page);
+    };
+    return { calls, config: catalogConfig(fetchImpl) };
+  }
+
+  test("v1 sends the original query unchanged when both rates are advertised", async () => {
+    const { calls, config } = server(directoryManifest("v1"));
+    const query = { ...rates, category: "data.weather", tag: ["a", "b"], limit: 5, cursor: "next" };
+    expect(await queryListingCatalog(config, query)).toMatchObject({ status: "ok" });
+    expect(calls.map(c => c.url)).toEqual([
+      manifestUrl,
+      config.catalogUrl + "?category=data.weather&tag=a&tag=b&minCompletionRate=0.8&minRating=4&cursor=next&limit=5",
+    ]);
+    expect(calls[0]?.init?.signal).toBe(calls[1]?.init?.signal);
+    for (const call of calls) {
+      expect(call.init).toMatchObject({ method: "GET", credentials: "omit", redirect: "error" });
+      expect(new Headers(call.init?.headers).get("accept")).toBe("application/json");
+    }
+  });
+
+  test.each(["minCompletionRate", "minRating"] as const)(
+    "v1 lists only the missing requested filter: %s", async missing => {
+      const manifest = directoryManifest("v1");
+      manifest.filters = manifest.filters.filter(f => f !== missing);
+      const { calls, config } = server(manifest);
+      expect(await queryListingCatalog(config, rates)).toEqual({
+        status: "indeterminate", reason: expect.any(String),
+        code: "unsupported-filter", filters: [missing],
+      });
+      expect(calls).toHaveLength(1);
+    },
+  );
+
+  test.each([rates, { minRating: 0 }, { minCompletionRate: 0 }])(
+    "v2/TP-1 refuses requested rates without reading listings: %j", async query => {
+      const { calls, config } = server(directoryManifest("v2"));
+      expect(await queryListingCatalog(config, query)).toEqual({
+        status: "indeterminate", reason: expect.any(String),
+        code: "unsupported-filter", filters: Object.keys(query),
+      });
+      expect(calls.map(c => c.url)).toEqual([manifestUrl]);
+    },
+  );
+
+  test("queries without rates skip the manifest and accept null reputation hints", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse(page));
+    const result = await queryListingCatalog(catalogConfig(fetchImpl), { limit: 5 });
+    expect(result).toMatchObject({ status: "ok", page });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain("/api/dacs/listings?limit=5");
+  });
+
+  test("404 preserves the requested filters without identifying a version", async () => {
+    const { calls, config } = server({}, 404);
+    expect(await queryListingCatalog(config, rates)).toMatchObject({ status: "ok", page });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.url).toBe(config.catalogUrl + "?minCompletionRate=0.8&minRating=4");
+  });
+
+  test("uses an explicit manifest URL", async () => {
+    const { calls, config } = server(directoryManifest("v1"));
+    const directoryManifestUrl = "https://capabilities.example/directory.json";
+    expect(await queryListingCatalog({ ...config, directoryManifestUrl }, rates))
+      .toMatchObject({ status: "ok" });
+    expect(calls[0]?.url).toBe(directoryManifestUrl);
+  });
+
+  test.each([
+    ["null", null], ["array", []], ["empty", {}],
+    ["null filters", { ...directoryManifest("v1"), filters: null }],
+    ["non-string filter", { ...directoryManifest("v1"), filters: ["minRating", 1] }],
+    ["mismatched catalog", { ...directoryManifest("v1"), catalog: "https://other.example/api/dacs/listings" }],
+    ["relative catalog", { ...directoryManifest("v1"), catalog: "/api/dacs/listings" }],
+    ["unknown version", { ...directoryManifest("v1"), dacsDirectoryVersion: "99" }],
+    ["numeric version", { ...directoryManifest("v1"), dacsDirectoryVersion: 1 }],
+  ])("malformed, mismatched or unknown manifest blocks listings: %s", async (_name, manifest) => {
+    const { calls, config } = server(manifest);
+    expect(await queryListingCatalog(config, rates)).toMatchObject({ status: "indeterminate" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(manifestUrl);
+  });
+
+  test.each(["json", "utf8", "http", "network", "content-type"])(
+    "unreadable manifest blocks listings: %s", async failure => {
+      const fetchImpl = vi.fn(async () => {
+        if (failure === "network") throw new Error("offline");
+        if (failure === "http") return jsonResponse({}, { status: 503 });
+        if (failure === "utf8") return new Response(new Uint8Array([255]));
+        return new Response(failure === "json" ? "{" : "<html/>", {
+          headers: { "content-type": failure === "content-type" ? "text/html" : "application/json" },
+        });
+      });
+      expect(await queryListingCatalog(catalogConfig(fetchImpl), rates))
+        .toMatchObject({ status: "indeterminate" });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test("does not require unrequested rate capabilities", async () => {
+    const manifest = directoryManifest("v1");
+    manifest.filters = manifest.filters.filter(f => f !== "minCompletionRate");
+    const { calls, config } = server(manifest);
+    expect(await queryListingCatalog(config, { minRating: 0 })).toMatchObject({ status: "ok" });
+    expect(calls[1]?.url).toBe(config.catalogUrl + "?minRating=0");
+  });
+
+  test.each(["headers", "body"] as const)(
+    "the shared deadline bounds non-cooperative manifest %s", async stage => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = vi.fn<typeof fetch>(async () => stage === "headers"
+          ? new Promise<Response>(() => {})
+          : new Response(new ReadableStream({ start() {} })));
+        const pending = queryListingCatalog({
+          ...catalogConfig(fetchImpl), timeoutMs: 100,
+        }, rates);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(await pending).toMatchObject({
+          status: "indeterminate", reason: "catalog request timed out",
+        });
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+      } finally { vi.useRealTimers(); }
+    },
+  );
+
+  test("a pre-aborted request performs no network I/O", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse(directoryManifest("v1")));
+    const controller = new AbortController();
+    controller.abort();
+    expect(await queryListingCatalog(catalogConfig(fetchImpl), rates, { signal: controller.signal }))
+      .toMatchObject({ status: "indeterminate", reason: "catalog request was aborted" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test.each([{ ...rates, limit: 0 }, { minRating: NaN }, { minCompletionRate: 2 }])(
+    "validates the complete query before network I/O: %j", async query => {
+      const fetchImpl = vi.fn(async () => jsonResponse(directoryManifest("v1")));
+      await expect(queryListingCatalog(catalogConfig(fetchImpl), query)).rejects.toThrow(TypeError);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["http://capabilities.example/manifest", "/manifest", "https://user:pass@example.test/manifest"])(
+    "applies URL safeguards to the manifest override: %s", async directoryManifestUrl => {
+      const fetchImpl = vi.fn(async () => jsonResponse(page));
+      await expect(queryListingCatalog({
+        ...catalogConfig(fetchImpl), directoryManifestUrl,
+      }, rates)).rejects.toThrow(TypeError);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["manifest", "listings"] as const)(
+    "enforces the decoded response size bound for %s", async stage => {
+      const manifest = directoryManifest("v1");
+      const limit = JSON.stringify(manifest).length + 10;
+      let calls = 0;
+      const fetchImpl: typeof fetch = async () => {
+        calls++;
+        const value = stage === "manifest" || calls === 2
+          ? { padding: "x".repeat(limit) } : manifest;
+        // No Content-Length: exercise the streamed byte count.
+        return jsonResponse(value);
+      };
+      expect(await queryListingCatalog({
+        ...catalogConfig(fetchImpl), maxResponseBytes: limit,
+      }, rates)).toMatchObject({
+        status: "indeterminate", reason: expect.stringContaining("maxResponseBytes"),
+      });
+      expect(calls).toBe(stage === "manifest" ? 1 : 2);
+    },
+  );
+
+  test.each(["headers", "body"] as const)(
+    "negotiation and listings share one deadline across %s", async stage => {
+      vi.useFakeTimers();
+      try {
+        const signals: (AbortSignal | null | undefined)[] = [];
+        const fetchImpl: typeof fetch = async (_input, init) => {
+          signals.push(init?.signal);
+          if (signals.length === 1) {
+            await new Promise(resolve => setTimeout(resolve, 60));
+            return jsonResponse(directoryManifest("v1"));
+          }
+          if (stage === "headers") return new Promise<Response>(() => {});
+          return new Response(new ReadableStream({ start() {} }));
+        };
+        const pending = queryListingCatalog({
+          ...catalogConfig(fetchImpl), timeoutMs: 100,
+        }, rates);
+        await vi.advanceTimersByTimeAsync(60);
+        expect(signals).toHaveLength(2);
+        await vi.advanceTimersByTimeAsync(40);
+        expect(await pending).toMatchObject({
+          status: "indeterminate", reason: "catalog request timed out",
+        });
+        expect(signals[0]).toBe(signals[1]);
+        expect(signals[1]?.aborted).toBe(true);
+      } finally { vi.useRealTimers(); }
+    },
+  );
+
+  test.each(["manifest", "listings"] as const)(
+    "cancellation bounds a non-cooperative %s body", async stage => {
+      const controller = new AbortController();
+      let notifyStarted!: () => void;
+      const started = new Promise<void>(resolve => { notifyStarted = resolve; });
+      const cancel = vi.fn();
+      let calls = 0;
+      const fetchImpl: typeof fetch = async () => {
+        calls++;
+        if (stage === "listings" && calls === 1) return jsonResponse(directoryManifest("v1"));
+        notifyStarted();
+        return new Response(new ReadableStream({ start() {}, cancel }));
+      };
+      const pending = queryListingCatalog(catalogConfig(fetchImpl), rates, { signal: controller.signal });
+      await started;
+      await Promise.resolve();
+      controller.abort();
+      expect(await pending).toMatchObject({
+        status: "indeterminate", reason: "catalog request was aborted",
+      });
+      expect(calls).toBe(stage === "manifest" ? 1 : 2);
+      expect(cancel).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 describe("createCatalogBindingIndex (DACS-1 §6.3.6 catalog client)", () => {
