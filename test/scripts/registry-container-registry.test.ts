@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 const dispositionModule = "../../scripts/registry-container-disposition.mjs";
 const { registryDependencyViolations } = await import(dispositionModule);
@@ -12,6 +12,11 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 // Sources the stage functions, as the rehearsal does, and runs `body`.
 const runStages = (body: string, env: Record<string, string>) => spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c",
   `source scripts/registry-container-registry.sh\n${body}`], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", ...env } });
+const repoRoot = resolve(".");
+// Same, from an empty directory, so only repo_root can locate the repository.
+const runStagesFromElsewhere = (body: string, env: Record<string, string>) => spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c",
+  `source "$repo_root/scripts/registry-container-registry.sh"\n${body}`],
+{ cwd: scratch(), encoding: "utf8", env: { PATH: process.env.PATH ?? "", repo_root: repoRoot, ...env } });
 
 describe("registry network isolation", () => {
   it("keeps consumers and the image builder off the host network", () => {
@@ -111,7 +116,7 @@ describe("stage failure propagation", () => {
 npm() { echo 11.19.0; }
 run_bounded() { return 7; }
 build_release_set
-echo reached`, { acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
+echo reached`, { repo_root: repoRoot, acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
     expect(result.status, result.stderr).not.toBe(0);
     expect(result.stdout).not.toContain("reached");
   });
@@ -125,10 +130,39 @@ echo reached`, { acceptance_root: join(root, "acceptance"), artifact_stage: arti
 npm() { echo 11.19.0; }
 run_bounded() { printf '%s\\n' "$*" >> "$calls"; }
 build_release_set
-echo reached`, { calls, acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
+echo reached`, { calls, repo_root: repoRoot, acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
-      "npm run conformance:sync", `npm run release:set:verify -- --output-dir ${releaseSet}`]);
+      `npm --prefix ${repoRoot} run conformance:sync`,
+      `npm --prefix ${repoRoot} run release:set:verify -- --output-dir ${releaseSet}`]);
+  });
+
+  it("runs the release-set stage's npm scripts and version read against repo_root from another directory", () => {
+    const { root, artifactStage, releaseSet } = stageRoots();
+    writeFileSync(join(releaseSet, "release-provenance.json"),
+      JSON.stringify({ version: packageVersion, source: { clean: true } }));
+    const result = runStagesFromElsewhere(`
+npm() { echo 11.19.0; }
+run_bounded() { :; }
+build_release_set
+printf '%s' "$version"`, { acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(packageVersion);
+  });
+
+  it("publishes with the repo_root publisher script from another directory", () => {
+    const { root, releaseSet } = stageRoots();
+    for (const name of ["kynesyslabs-dacs", "kynesyslabs-dacs-node", "create-dacs-agent"]) {
+      writeFileSync(join(releaseSet, `${name}-${packageVersion}.tgz`), "fixture");
+    }
+    const calls = join(root, "publish-calls");
+    const result = runStagesFromElsewhere(`
+node() { printf '%s\\n' "$1" >> "$calls"; }
+publish_release_set`, { release_set: releaseSet, version: packageVersion, host_registry: "http://127.0.0.1:1",
+      auth_token: "fixture-auth-token", registry_log: join(root, "registry.log"), calls });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(calls, "utf8").trim().split("\n"))
+      .toEqual(Array(3).fill(join(repoRoot, "scripts", "publish-exact-local-registry.mjs")));
   });
 
   it("exports the prefix of the bootstrapped npm so later host stages do not read the runner's bundled npm", () => {
@@ -141,7 +175,7 @@ echo reached`, { calls, acceptance_root: join(root, "acceptance"), artifact_stag
     const result = runStages(`
 run_bounded() { :; }
 build_release_set
-printf '%s\\n' "$npm_config_prefix"`, { PATH: `${join(prefix, "bin")}:${process.env.PATH ?? ""}`,
+printf '%s\\n' "$npm_config_prefix"`, { PATH: `${join(prefix, "bin")}:${process.env.PATH ?? ""}`, repo_root: repoRoot,
       acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim().split("\n").at(-1)).toBe(realpathSync(prefix));
@@ -205,7 +239,7 @@ start_registry`, { log, registry_log: join(root, "registry.log"), registry_confi
     const result = runStages(`
 node() { printf 'publish\\n' >> "$calls"; return 9; }
 publish_release_set
-echo reached`, { release_set: releaseSet, version: packageVersion, host_registry: "http://127.0.0.1:1",
+echo reached`, { repo_root: repoRoot, release_set: releaseSet, version: packageVersion, host_registry: "http://127.0.0.1:1",
       auth_token: "fixture-auth-token", registry_log: join(root, "registry.log"), calls });
     expect(result.status, result.stderr).not.toBe(0);
     expect(result.stdout).not.toContain("reached");

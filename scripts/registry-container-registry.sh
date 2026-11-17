@@ -93,11 +93,12 @@ build_release_set() {
   npm_bin=$(command -v npm) || return
   export npm_config_prefix
   npm_config_prefix=$(cd "$(dirname "$npm_bin")/.." && pwd -P) || return
-  run_logged "$artifact_stage/release-set.log" run_bounded npm run conformance:sync || return
   run_logged "$artifact_stage/release-set.log" \
-    run_bounded npm run release:set:verify -- --output-dir "$release_set" || return
+    run_bounded npm --prefix "$repo_root" run conformance:sync || return
+  run_logged "$artifact_stage/release-set.log" \
+    run_bounded npm --prefix "$repo_root" run release:set:verify -- --output-dir "$release_set" || return
 
-  version=$(node -p "require('./package.json').version") || return
+  version=$(node -p 'require(process.argv[1]).version' -- "$repo_root/package.json") || return
   node - "$release_set/release-provenance.json" "$version" <<'NODE' || return
 const fs = require("node:fs");
 const provenance = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -220,7 +221,7 @@ publish_release_set() {
     test -f "$package" || return
     # The publisher also proves the registry serves only this candidate version.
     DACS_LOCAL_REGISTRY_TOKEN="$auth_token" \
-      run_logged "$registry_log" node scripts/publish-exact-local-registry.mjs "$package" "$host_registry" ||
+      run_logged "$registry_log" node "$repo_root/scripts/publish-exact-local-registry.mjs" "$package" "$host_registry" ||
       return
   done
 }
