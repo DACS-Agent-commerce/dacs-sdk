@@ -526,7 +526,8 @@ const closingError=()=>Object.assign(new Error('the operator is closing: this se
  * except settleById, and an unreadable ledger rejects with its own error. An unmarked sign line is a session write's,
  * from whichever process and however long ago: authorizeRetained refuses its wallet nonce as sign-authorization-open,
  * and the other operations treat its id as unavailable. It throws when created if the ledger's directory and that
- * directory's parent are both missing, so the operator is never asked about a write that cannot be recorded. */
+ * directory's parent are both missing, so such a path is refused before the operator is asked. Other unwritable
+ * paths, such as a parent that is a regular file, fail at the first write. */
 export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
   if(!OS.test(maxTotalOs??'')||BigInt(maxTotalOs)<=0n)throw new TypeError('maxTotalOs must be a positive canonical OS string');
   if(signal!==null&&!(signal instanceof AbortSignal)&&typeof signal!=='function')throw new TypeError('seller approval signal must be an AbortSignal or a function returning one');
