@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readSync, writeSync } from 'node:fs';
+import { closeSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readSync, statSync, writeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 const NEWLINE=0x0a;
@@ -19,6 +19,13 @@ const syncPath=(path)=>{
 export function syncApprovalLedger(evidencePath){
   const path=resolve(evidencePath),directory=dirname(path);
   for(const target of [path,directory,dirname(directory)])syncPath(target);
+}
+/** Check that appendApprovalLedgerLine can create this ledger's directory: the directory or its parent must exist.
+ * Creates nothing. Throws before any operator prompt when two or more levels are missing. */
+export function assertApprovalLedgerDirectoryCreatable(evidencePath){
+  const directory=dirname(resolve(evidencePath));
+  const exists=(path)=>statSync(path,{throwIfNoEntry:false})!==undefined;
+  if(!exists(directory)&&!exists(dirname(directory)))throw new Error(`approval ledger directory ${directory} cannot be created: its parent ${dirname(directory)} does not exist`);
 }
 /** Append one JSON record synchronously, preserving its boundary and syncing its publication.
  * Creates at most the ledger's own private directory; a missing parent throws ENOENT before anything is created.

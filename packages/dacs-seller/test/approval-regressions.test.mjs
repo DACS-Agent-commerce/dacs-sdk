@@ -36,6 +36,19 @@ test('C-2 real seller projection reaches manual approval and confirms an unpaid 
  await a.settle(r,'spent');assert.equal((await f.read()).rows.find(row=>row.signAuthorized).outcome,'spent');
 });
 
+test('a manual approval whose ledger is two missing directories deep is refused when it is created, before any prompt',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'TEST-approval-ledger-depth-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ let prompts=0;
+ assert.throws(()=>createExactOperatorApproval({maxTotalOs:'10000000000',evidencePath:join(dir,'missing','leaf','ledger'),authorize:()=>{prompts++;return true;}}),/approval ledger directory .*cannot be created/);
+ assert.equal(prompts,0);assert.equal(existsSync(join(dir,'missing')),false);
+});
+
+test('a manual approval whose ledger directory is missing but whose parent exists is created without creating the directory',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'TEST-approval-ledger-leaf-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ createExactOperatorApproval({maxTotalOs:'10000000000',evidencePath:join(dir,'leaf','ledger'),authorize:()=>true});
+ assert.equal(existsSync(join(dir,'leaf')),false);
+});
+
 test('D-1 a request changed during manual approval receives no sign authority',async t=>{
  const f=await fixture(t),r=requestFor({artifactKind:'CompositeVerificationRecord'});
  const manual=createExactOperatorApproval({...f.settings,authorize:()=>{r.content.exactCreate='{"changed":true}';return true;}});
