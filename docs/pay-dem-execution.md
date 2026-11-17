@@ -33,10 +33,11 @@ another hash, is read again every `inclusionPollIntervalMs` until
 `transactionRecordTimeoutMs` (default 30 seconds) ends, then it is
 indeterminate. Every not-ok result keeps the transaction hash. A bound failed
 record carries `errorClass: "permanent"` and a `failureProof` containing its
-hash, signed nonce, block, payer, payee and OS amount. The rail's durable
-settlement log records this terminal outcome and returns it when the same payment
-is settled again, without another debit. The application writes its own session
-checkpoints.
+hash, signed nonce, block, payer, payee and OS amount. The rail itself keeps no log: the
+settlement store passed to the bridge records this terminal outcome and returns it
+when the same payment is settled again, without another debit. After a restart
+the bridge reconciles the stored intent with the node before it returns a stored
+outcome. The application writes its own session checkpoints.
 Unproven or conflicting results keep the intent held. Neither path broadcasts
 again; terminal failure does not authorize a replacement payment. This also
 applies after failure evidence was anchored, including when the anchor's

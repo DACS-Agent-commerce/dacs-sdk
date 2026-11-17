@@ -25,11 +25,11 @@ export interface SettleRequest {
   phaseIndex?: number;
   /**
    * Ordered durable transaction attempts. A recovery request (one with
-   * `recoveryOnly` set) carries them so a fresh process can reconcile every
-   * ambiguous attempt and prove a replacement submission supersedes the
-   * latest one. A request that carries them without `recoveryOnly` makes
-   * `payDemSettle` audit the history read-only. Ordinary fresh settlement
-   * requests omit it.
+   * `recoveryOnly` set) may carry them so a fresh process can reconcile every
+   * ambiguous attempt against the node; reconciliation only reads and never
+   * submits a replacement. A request that carries them without `recoveryOnly`
+   * makes `payDemSettle` audit the history read-only. Ordinary fresh
+   * settlement requests omit it.
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
   /**
