@@ -10509,6 +10509,56 @@
           "after": "f568fd35048d886ed2eeecd892fdef1b21a9d12c"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "sha": "0f3d432cc8159e5f9daa24df85619930d30da89a",
+      "subject": "fix(client): enforce effect admission order and signer deadlines",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "796433f8bc1bca0d06a152305289e52f05f03812",
+          "after": "c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "83bf647eea4cbb4cf4614e97b07b52203356393c",
+          "after": "91cae7c7150797d80f48f80d9d8b5b65b432ffa8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e4a36cde219c0f9b8d899e33e34155a547e49789",
+      "subject": "fix(client): give the signer its own deadline and call the stop check without arguments",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355",
+          "after": "a869f29a4462d0e6e79efa2d4c25ecd5bcd686c0"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "91cae7c7150797d80f48f80d9d8b5b65b432ffa8",
+          "after": "389314001f9655de05dc5c0871199836a2de7183"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a wire request that expired while its authority reads were awaited",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "6ca61271e2daf5de7781479b88a971723597cc10",
+          "after": "c3b84747cf7ccce2ef05712faf388a7645628fae"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
+          "before": "38eeb443a089821c4d313f54db21022689d7b1ff",
+          "after": "04eb2b3da7ba66cc59ad2e0af1280353483464e3"
+        }
+      ]
     }
   ]
 }

@@ -1725,6 +1725,15 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/index.mjs:1` | 4bf029a4db45b1d876cb4e028bccf6d0824a315f |
 | | `packages/dacs-client/test/agreement-context-readback.test.mjs:1` | 9069600b09ede1b6e8bf4e988ead912a2374f1df |
 | | `packages/dacs-client/test/helpers/public-composition-world.mjs:1` | f568fd35048d886ed2eeecd892fdef1b21a9d12c |
+| WF | fix(client): enforce effect admission order and signer deadlines | Git commit selector 0f3d432cc8159e5f9daa24df85619930d30da89a |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355 |
+| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 91cae7c7150797d80f48f80d9d8b5b65b432ffa8 |
+| WF | fix(client): give the signer its own deadline and call the stop check without arguments | Git commit selector e4a36cde219c0f9b8d899e33e34155a547e49789 |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | a869f29a4462d0e6e79efa2d4c25ecd5bcd686c0 |
+| | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 389314001f9655de05dc5c0871199836a2de7183 |
+| WF | delta(client): WF refuse a wire request that expired while its authority reads were awaited | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/seller-wire-authentication.mjs:1` | c3b84747cf7ccce2ef05712faf388a7645628fae |
+| | `packages/dacs-client/test/wire-request-signing.test.mjs:1` | 04eb2b3da7ba66cc59ad2e0af1280353483464e3 |
 | D76 | delta(client): D76 pin the demosdk signing-content test to 4.0.17 | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | d8b3ffc11f570d455f4a365c18d3e6b64ac025d3 |
 | D76 | delta(client): D76 name demosdk 4.0.17 in the unsigned identity read comment | Git subject selector (must resolve exactly once after publication checkpoint) |

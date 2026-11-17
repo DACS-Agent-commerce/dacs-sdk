@@ -33,8 +33,11 @@ another hash, is read again every `inclusionPollIntervalMs` until
 `transactionRecordTimeoutMs` (default 30 seconds) ends, then it is
 indeterminate. Every not-ok result keeps the transaction hash. A bound failed
 record carries `errorClass: "permanent"` and a `failureProof` containing its
-hash, signed nonce, block, payer, payee and OS amount. Rail and session stores
-persist this terminal outcome and return it on resume without another debit.
+hash, signed nonce, block, payer, payee and OS amount. The rail itself keeps no log: the
+settlement store passed to the bridge records this terminal outcome and returns it
+when the same payment is settled again, without another debit. After a restart
+the bridge reconciles the stored intent with the node before it returns a stored
+outcome. The application writes its own session checkpoints.
 Unproven or conflicting results keep the intent held. Neither path broadcasts
 again; terminal failure does not authorize a replacement payment. This also
 applies after failure evidence was anchored, including when the anchor's
@@ -43,9 +46,10 @@ match the retained permanent proof. Configured network labels such as
 `demos:testnet` are bound by the rail's recovery context and durable outcome.
 
 When the rail authenticates the payer's total debit, a successful result may
-include `networkFeeOs`, a canonical non-negative integer OS string. Session
-checkpoints retain this fee across restart; the evidence's payment amount
-continues to describe the agreed transfer amount.
+include `networkFeeOs`, a canonical non-negative integer OS string. The rail's
+durable settlement log retains this fee across restart, and the application
+copies it into its own session checkpoints if it needs it there; the evidence's
+payment amount continues to describe the agreed transfer amount.
 
 The durable `payDemSettle` bridge reauthenticates a recorded native-payment
 success after every restart: it calls the `reconcile` function you built it with,
@@ -279,17 +283,16 @@ shapes before treating another deployment as compatible.
   a count from an unmerged revision.
 - **Indeterminate result class.** PC-4 requires every not-ok outcome to carry
   an `errorClass`, and §9.5.9 maps node or RPC unavailability to `substrate`.
-  An indeterminate pay-dem result is `ok: false` with no `errorClass`. The
-  session saves it as unresolved recovery history, throws, and keeps the
-  intent held. It records no terminal failure and authorizes no replacement
-  payment.
+  An indeterminate pay-dem result is `ok: false` with no `errorClass`. It is
+  not terminal failure evidence and authorizes no replacement payment; the
+  result keeps the transaction hash for recovery.
 
 A bound terminal failed record maps to `permanent`, as §9.5.9's failure modes
 require for a transaction that reaches terminal `failed` on-chain. The SDK takes
 `failed` from the transaction record, because the status index never reports it,
-and preserves `permanent` through the rail result, durable outcome and session
-resume. The proof is an authenticated node observation under the rail's existing
-trust model; malformed or mismatched proof cannot close a session. Failure
+and preserves `permanent` through the rail result and the durable outcome. The
+proof is an authenticated node observation under the rail's existing trust
+model; the bridge refuses a malformed or mismatched proof. Failure
 evidence omits settlement finality. This does not release wallet reservations
 automatically: a failed transaction can have fee effects that require separate
 accounting.
