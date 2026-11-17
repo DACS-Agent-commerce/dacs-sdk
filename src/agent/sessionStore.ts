@@ -4,11 +4,10 @@ import { DacsError } from "../errors.js";
  * Durable session store / checkpoint API — the reusable lifecycle
  * persistence surface for restart-safe buyer and seller services.
  *
- * `runSessionCore` treats on-chain anchors as phase state, so it can only resume
- * when the caller already retained the jobId; the live Butler/Auditor therefore
- * hand-roll app-side JSON stores for job status, anti-replay hashes, receipts,
- * and restart recovery. This is the shared, injectable, schema-versioned surface
- * for that state — the durable substrate that sits BETWEEN irreversible or
+ * On-chain anchors are phase state, so a session can only resume when the
+ * caller already retained the jobId. This is the shared, injectable,
+ * schema-versioned surface for job status, anti-replay hashes, receipts, and
+ * restart recovery — the durable substrate that sits BETWEEN irreversible or
  * externally-visible steps, before all evidence is anchored.
  *
  * It complements the rail-level at-most-once guarantee, which stops a single

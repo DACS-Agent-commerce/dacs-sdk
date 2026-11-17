@@ -31,7 +31,7 @@ export interface SettleRequest {
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
   /**
-   * Set by `runSession` on every `resumeSettlement` request. A bridge honours it
+   * The caller sets this on every `resumeSettlement` request. A bridge honours it
    * by never taking a fresh claim: it settles through its store's `recover`,
    * whose own atomic claim returns a recorded outcome or reconciles an
    * unresolved intent (adopting a payment it proves landed), and refuses when
@@ -58,7 +58,7 @@ export interface SettleResult {
   payee: string;
   /**
    * Rail-specific finality (§9.5.x / PC-6). When a rail knows the finality model
-   * it settled under, it reports it here and runSessionCore records it on the
+   * it settled under, it reports it here and the caller records it on the
    * evidence instead of the default provider-receipt. E.g. §9.5.9 pay-dem →
    * `{ model: "bft-final" }`. Omit for a receipt-confirmed rail.
    */

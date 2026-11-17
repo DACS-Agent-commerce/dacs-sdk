@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assemble } from './delta-assemble.mjs';
-import { recordName } from './delta-record.mjs';
+import { RECORD_NAME, recordName } from './delta-record.mjs';
 
 const scripts = dirname(fileURLToPath(import.meta.url));
 const pkg = join(scripts, '..');
@@ -30,14 +30,30 @@ function record(subject, overrides = {}) {
 }
 const put = (dir, value) => { json(join(dir, 'records', recordName(value)), value); return recordName(value); };
 
-test('with no record files the assembled view is the stored archive', t => {
-  assert.deepEqual(assemble(pkg), { ledger: readJson(join(pkg, 'DELTA-LEDGER.json')), commits: readJson(join(pkg, 'DELTA-COMMITS.json')), failures: [] });
+test('the assembled view starts with the stored archive, and is the archive alone when records/ holds no record', t => {
+  // The package may hold record files; the archive always comes first and unchanged.
+  const stored = { changes: readJson(join(pkg, 'DELTA-LEDGER.json')).changes, commits: readJson(join(pkg, 'DELTA-COMMITS.json')) }, real = assemble(pkg);
+  assert.deepEqual(real.failures, []);
+  assert.deepEqual(real.ledger.changes.slice(0, stored.changes.length), stored.changes);
+  assert.deepEqual(real.commits.slice(0, stored.commits.length), stored.commits);
   const archive = { schema: 'dacs-client-deltas/v2', changes: [{ delta: 'D11', subject: 'one', files: [] }] };
   const dir = packageDir(t, archive, [{ sha: null, subject: 'one', files: ['x'] }]);
   const expected = { ledger: archive, commits: [{ sha: null, subject: 'one', files: ['x'] }], failures: [] };
   assert.deepEqual(assemble(dir), expected);
   mkdirSync(join(dir, 'records')); writeFileSync(join(dir, 'records/.gitkeep'), '');
   assert.deepEqual(assemble(dir), expected);
+});
+
+test('the package assembles with no failures, and its ledger and commits end with its record files', () => {
+  const archive = { ledger: readJson(join(pkg, 'DELTA-LEDGER.json')), commits: readJson(join(pkg, 'DELTA-COMMITS.json')) };
+  const files = readdirSync(join(pkg, 'records')).filter(name => RECORD_NAME.test(name)).sort();
+  const all = files.map(name => ({ name, ...readJson(join(pkg, 'records', name)) }));
+  const replaced = new Set(all.flatMap(record => record.supersedes ?? []));
+  const current = all.filter(record => !replaced.has(record.name));
+  const view = assemble(pkg);
+  assert.deepEqual(view.failures, []);
+  assert.deepEqual(view.ledger.changes.slice(archive.ledger.changes.length).map(change => change.subject), current.filter(record => record.files !== undefined).map(record => record.subject));
+  assert.deepEqual(view.commits.slice(archive.commits.length).map(row => row.subject), current.map(record => record.subject));
 });
 
 test('records follow the archive in file name order', t => {
