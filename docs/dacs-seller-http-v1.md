@@ -113,7 +113,7 @@ function (the seller host answers `seller_stopped`, 503).
 The first failing step decides the refusal. The steps run in this order:
 
 1. The body is at most 64 KiB, or the request is refused `bad_json` (400)
-   before anything else is checked.
+   before any check of the request.
 2. The TP-1 binding.
 3. The envelope was opened under that binding.
 4. The purchase tuple kept for the job.
@@ -152,7 +152,7 @@ Listing is the host's duty.
 The host keeps one admission record per job. Its state is `intent` (the host
 has asked for a capacity hold and has not accepted the presentation),
 `admitted`, `running`, `compensating` (the host is undoing the work),
-`settled` or `aborted`. The host sets `retained.accepted` to true only in
+`settled` or `aborted`. A host may set `retained.accepted` to true only in
 these cases, and only when it retains the exact original accepted presentation
 whose scope hash is this request's `contextScopeHash`:
 
@@ -161,16 +161,21 @@ whose scope hash is this request's `contextScopeHash`:
   outcome with the same immutable binding (`wireOperationBinding`), and the
   host has verified that outcome at its source.
 
-In every other case the flag is false and gives no authority: the record is
-`intent`, `compensating` or `aborted`, or it is `settled` without a completed
-context outcome.
+In every other case the flag must be false and gives no authority: the record
+is `intent`, `compensating` or `aborted`, or it is `settled` without a
+completed context outcome.
 
-A settled job is answered from inspection only. The host returns the outcome's
-exact bytes without calling `reserve()`, starting an attempt, taking a capacity
-hold, starting work or writing a party Vet (identity check) record. This works
-while the host is draining and at capacity. If revalidation at the source
-fails, the answer is `seller_source_unavailable` (503) and the outcome stays
-intact.
+A host that holds a settled job's completed outcome may answer from inspection
+only: return the outcome's exact bytes without calling `reserve()`, starting an
+attempt, taking a capacity hold, starting work or writing a party Vet (identity
+check) record. That works while the host is draining and at capacity. If
+revalidation at the source fails, it answers `seller_source_unavailable` (503)
+and leaves the outcome intact.
+
+The seller host (`@kynesyslabs/dacs-seller`) does not answer settled jobs this
+way. It always passes `retained.accepted: false` on the context route, and an
+accepted presentation sent again gets `session_admission_unavailable` (503),
+or `seller_not_ready` (503) while the host is draining.
 
 The frozen result is `{route, body, delegationExpiresAt, reserve?}`. Use its
 admitted body. Only context has `reserve()`: the host calls it after it has

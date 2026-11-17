@@ -184,7 +184,7 @@ describe("pre-Agreement admission", { timeout: 60_000 }, () => {
     expect(wire.inspectWireOperation(j.handle, (await e.open()).payload)).toEqual({ state: "completed", binding: wire.wireOperationBinding((await e.open()).payload), outcome: OUTCOME });
     expect(j.files()).toEqual(files);
   });
-  it("K2 order: a body over 64 KiB is refused as bad_json before the TP-1 binding is checked", async () => {
+  it("order: a body over 64 KiB is refused as bad_json before the binding is checked", async () => {
     const x = await world();
     for (const route of ROUTES) {
       const j = journal(), e = await exchange(x, route);
@@ -193,7 +193,7 @@ describe("pre-Agreement admission", { timeout: 60_000 }, () => {
       expect(j.files(), route).toEqual([]);
     }
   });
-  it("K2 order: each refusal is the first failing step's code, and no refusal writes anything", async () => {
+  it("order: each refusal is the first failing step's code, and no refusal writes anything", async () => {
     let withdrawn = false;
     const sentinel = new Error("prefix authority refused");
     const x = await world({ readAuthority: scope => {
@@ -240,7 +240,7 @@ describe("pre-Agreement admission", { timeout: 60_000 }, () => {
       expect(j.files()).toEqual([]);
     }
   });
-  it("K2 a request refused as seller_effect_pending cannot be sent again as is; a freshly signed one is pending, then recovers after the lease", async () => {
+  it("a request refused as seller_effect_pending is refused as replayed when reserved again; a freshly signed one is pending, then recovers after the lease", async () => {
     const x = await world(), clock = { now: NOW }, j = journal({ clock: () => clock.now, leaseMs: 1000 });
     expect(await reserve(await admit(await exchange(x, "context"), j))).toMatchObject({ state: "new", attempt: 0 });
     const refused = await admit(await exchange(x, "context"), j);
