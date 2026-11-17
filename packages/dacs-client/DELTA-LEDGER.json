@@ -10419,6 +10419,23 @@
       ]
     },
     {
+      "delta": "D76",
+      "subject": "delta(client): D76 add demosdk 4.0.17 to the reviewed loader table",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/demos-quiet-hooks.mjs",
+          "before": "323ba838b4f2abe9189f84d6688cdaf0914b1972",
+          "after": "91d06508f63df5308dece710ffb05aeae26a5bb8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-demos-loading.test.mjs",
+          "before": "539d876bf79510f9d3bf9e09d99737131a43fdc1",
+          "after": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43"
+        }
+      ]
+    },
+    {
       "delta": "D42",
       "subject": "delta(client): D42 accept a trailing record-only ledger entry for a committed blob",
       "files": [

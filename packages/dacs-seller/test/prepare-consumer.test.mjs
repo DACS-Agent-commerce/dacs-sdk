@@ -98,6 +98,17 @@ test('a new directory is created and prepared, with prepared.json binding runtim
   assert.equal(staleSetupReason(directory, sellerSourceFingerprint([])), null, 'the setup matches the files its seller pack contained');
 });
 
+test('the consumer lock gives the seller the demosdk version its own manifest pins', (t) => {
+  const probe = fixture(t), directory = join(probe.base, 'consumer');
+  const result = probe.run(directory);
+  assert.equal(result.status, 0, result.stderr);
+  const lock = JSON.parse(readFileSync(join(directory, 'package-lock.json'), 'utf8'));
+  const pinned = JSON.parse(readFileSync(join(root, 'packages/dacs-seller/package.json'), 'utf8')).dependencies['@kynesyslabs/demosdk'];
+  const seller = 'node_modules/@kynesyslabs/dacs-seller';
+  const resolved = lock.packages[`${seller}/node_modules/@kynesyslabs/demosdk`] ?? lock.packages['node_modules/@kynesyslabs/demosdk'];
+  assert.equal(resolved.version, pinned);
+});
+
 test('without a directory, each run prepares its own fresh temporary directory', (t) => {
   const probe = fixture(t);
   const first = probe.run(), second = probe.run();
