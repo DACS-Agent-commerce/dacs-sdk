@@ -538,6 +538,15 @@ test('the boundary refuses to be built without a stop check, a binding, a histor
   assert.equal(w.counts.signer, 0);
 });
 
+test('a currentLocal that throws at the binding check refuses tp1_local_binding_changed with its cause and signs nothing', async (t) => {
+  const w = await ebWorld(t);
+  const { history } = w.build();
+  const unreadable = failure('connection_unreadable');
+  const boundary = createEffectBoundary({ stopped: () => false, binding: w.binding, currentLocal: () => { throw unreadable; }, feeCeilingOs: FEE_CEILING_OS, history, clock: w.clock });
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), (error) => error.code === 'tp1_local_binding_changed' && error.cause === unreadable);
+  assert.deepEqual([w.counts.signer, w.counts.transport], [0, 0]);
+});
+
 test('a signer that changes its returned array while the record is written cannot change what is sent', async (t) => {
   const w = await ebWorld(t);
   const { boundary, history } = w.build();

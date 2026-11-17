@@ -165,8 +165,12 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
   let generation = 0;
 
   const newWindow = () => clock.now() + EFFECT_READ_DEADLINE_MS;
+  const connectionUnreadable = (cause) => refuse('tp1_local_binding_changed', 'the current connection cannot be read', cause);
   const localDigest = () => {
-    try { return sha256Hex(canonicalize(currentLocal())); } catch (cause) { throw refuse('tp1_local_binding_changed', 'the current connection cannot be read', cause); }
+    try { return sha256Hex(canonicalize(currentLocal())); } catch (cause) { throw connectionUnreadable(cause); }
+  };
+  const readLocal = () => {
+    try { return currentLocal(); } catch (cause) { throw connectionUnreadable(cause); }
   };
 
   async function checkNotStopped(deadline) {
@@ -178,7 +182,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
   }
 
   async function checkBinding(deadline) {
-    const outcome = await within(clock, deadline, () => assertTp1Binding(binding, currentLocal()));
+    const outcome = await within(clock, deadline, () => assertTp1Binding(binding, readLocal()));
     if (outcome.timedOut) throw refuse('tp1_authority_timeout', undefined, timeoutCause(EFFECT_READ_DEADLINE_MS));
   }
 
