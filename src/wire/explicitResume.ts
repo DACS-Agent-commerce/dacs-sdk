@@ -96,8 +96,9 @@ export interface ExplicitResumeSigningContext {
  * (`tp1_local_binding_changed`, `tp1_binding_required`,
  * `tp1_participant_profile_mismatch` and the others of `assertTp1Binding`,
  * `assertPeerProfile` and `assertTp1Authority`); and
- * `explicit_resume_signature_invalid` (500) for a signature the signer returned malformed. The longest payload the members allow gives a
- * header under `maxHeaderLength`, so no size check is needed here.
+ * `explicit_resume_signature_invalid` (500) for a signature the signer returned
+ * malformed. The longest payload the members allow gives a header under
+ * `maxHeaderLength`, so no size check is needed here.
  */
 export async function signExplicitCreateResume(supplied: ExplicitCreateResumePayload, context: ExplicitResumeSigningContext): Promise<string> {
   const { signer, binding, local, now } = ownedFields(context, ["signer", "binding", "local", "now"]) as unknown as ExplicitResumeSigningContext;
@@ -131,7 +132,8 @@ export interface ExplicitResumeLedger {
  * expired by the latest `time` any caller has passed it, so a caller whose clock
  * is behind cannot use a proof another caller's clock has already released. It
  * throws `explicit_resume_expired` (408) for a proof already expired by that
- * clock, which was never claimed, so it is not reported as used. It throws
+ * clock, whether or not it was ever claimed, because expired claims are
+ * forgotten; it never reports such a proof as used. It throws
  * `wire_input_invalid` (500) for an `expiresAt` or `time` that is not an unsigned
  * integer, and refuses with `explicit_resume_ledger_full` (503) at `MAX_EXPLICIT_RESUME_CLAIMS`.
  */
