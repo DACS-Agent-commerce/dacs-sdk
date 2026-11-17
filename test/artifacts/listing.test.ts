@@ -563,3 +563,40 @@ describe("DACS-1 §6.3.4 Listing text bounds count NFC scalar values", () => {
     expect(isListingEnvelope(withListingText(fixture(), "title", "\uD800"))).toBe(false);
   });
 });
+
+const LISTING_SIZE_LIMIT = 16_384;
+
+const unsignedCanonicalOctets = (listing: Listing): number => {
+  const { signature: _signature, ...unsigned } = listing;
+  return Buffer.byteLength(canonicalize(unsigned), "utf8");
+};
+
+/** The fixture with its inert extension padded so the unsigned form is `octets` long. */
+const listingWithUnsignedOctets = (octets: number): Listing => {
+  const listing = fixture();
+  Object.assign(listing, { futureOptionalMetadata: "" });
+  const padding = octets - unsignedCanonicalOctets(listing);
+  Object.assign(listing, { futureOptionalMetadata: "x".repeat(padding) });
+  return listing;
+};
+
+describe("Listing size limit measures the form without the top-level signature", () => {
+  it("accepts a signed Listing whose unsigned canonical form is exactly 16,384 octets", () => {
+    const listing = listingWithUnsignedOctets(LISTING_SIZE_LIMIT);
+
+    expect(unsignedCanonicalOctets(listing)).toBe(LISTING_SIZE_LIMIT);
+    expect(Buffer.byteLength(canonicalize(listing), "utf8")).toBeGreaterThan(
+      LISTING_SIZE_LIMIT,
+    );
+    expect(isListingEnvelope(listing)).toBe(true);
+    expect(isListing(listing)).toBe(true);
+  });
+
+  it("refuses a signed Listing whose unsigned canonical form is 16,385 octets", () => {
+    const listing = listingWithUnsignedOctets(LISTING_SIZE_LIMIT + 1);
+
+    expect(unsignedCanonicalOctets(listing)).toBe(LISTING_SIZE_LIMIT + 1);
+    expect(isListingEnvelope(listing)).toBe(false);
+    expect(isListing(listing)).toBe(false);
+  });
+});
