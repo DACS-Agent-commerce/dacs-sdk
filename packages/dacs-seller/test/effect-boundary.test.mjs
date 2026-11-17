@@ -379,15 +379,51 @@ test('two overlapping passes on one actor never interleave sign-to-dispatch, and
   assert.ok(w.trace.indexOf('append:dispatch-acknowledged') < w.trace.lastIndexOf('sign'), 'b signed only after a was acknowledged');
   assert.equal(w.counts.signer, 2);
   const parked = gate();
-  const holder = boundary.pass(w.op({ operationId: 'd', lane: 'lane-d' }), w.sign(), async () => { await parked.arrive(); });
+  const holder = boundary.withFence(w.op({ operationId: 'd', lane: 'lane-d' }), async () => { await parked.arrive(); });
   await parked.reached;
   const waiter = assert.rejects(boundary.pass(w.op({ operationId: 'e', lane: 'lane-e' }), w.sign(), w.send()), { code: 'tp1_fence_timeout' });
   await flush();
   await w.clock.advance(DEADLINE_MS + 1);
   await waiter;
-  assert.equal(w.counts.signer, 3, 'the timed-out waiter signed nothing');
+  assert.equal(w.counts.signer, 2, 'the timed-out waiter signed nothing');
   parked.release();
   await holder;
+});
+
+test('a signer that does not answer within the pass window refuses eb_sign_timeout, records nothing and releases the fence', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const inSigner = gate();
+  const outcome = boundary.pass(w.op(), async () => { await inSigner.arrive(); throw failure('signer_late'); }, w.send()).then(() => 'resolved', (error) => error);
+  await inSigner.reached;
+  await w.clock.advance(DEADLINE_MS);
+  assert.equal(await stillPending(outcome), false, 'the pass settled when its window ended');
+  assert.equal((await outcome).code, 'eb_sign_timeout');
+  assert.deepEqual(await states(history), []);
+  await boundary.pass(w.op({ operationId: 'next', lane: 'lane-2' }), w.sign(), w.send());
+  assert.deepEqual([w.counts.signer, w.counts.transport], [1, 1], 'the next pass took the fence');
+  inSigner.release();
+  await flush();
+  assert.deepEqual(await states(history), [], 'a late signer answer records nothing');
+});
+
+// The timeout option only ends the test if the pass never settles; the clock decides the window.
+test('a send that does not answer within the pass window is dispatch-unknown, refuses eb_send_timeout and releases the fence', { timeout: 15000 }, async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const inSend = gate();
+  const outcome = boundary.pass(w.op(), w.sign(), () => inSend.arrive()).then(() => 'resolved', (error) => error);
+  await inSend.reached;
+  await w.clock.advance(DEADLINE_MS);
+  const refusal = await outcome;
+  assert.deepEqual([refusal.code, refusal.cause.name], ['eb_send_timeout', 'TimeoutError']);
+  const unknown = await lastRecord(history);
+  assert.deepEqual([unknown.state, unknown.cause.code], ['dispatch-unknown', 'eb_send_timeout']);
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), { code: 'lane_readback_only' });
+  await boundary.pass(w.op({ operationId: 'next', lane: 'lane-2' }), w.sign(), w.send());
+  inSend.release();
+  await flush();
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown'], 'a late answer adds no acknowledgement');
 });
 
 test('authority reads take no fence and call no signer', async (t) => {

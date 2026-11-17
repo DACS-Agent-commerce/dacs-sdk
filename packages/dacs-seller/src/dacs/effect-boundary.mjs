@@ -7,7 +7,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { WireError, assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
-// Monotonic window for authority and stop reads, in milliseconds: one for EB1 to EB4, and one that starts when the fence is acquired and covers EB5r to EB8f.
+// Monotonic window for authority and stop reads, in milliseconds: one for EB1 to EB4, and one that starts when the fence is acquired and covers EB5r to EB8f, including the signer's and the transport's answers.
 const EFFECT_READ_DEADLINE_MS = 10000;
 // Longest wait for the actor fence, in milliseconds.
 const EFFECT_FENCE_TIMEOUT_MS = 10000;
@@ -141,7 +141,9 @@ function assertStage(stage) {
  * stage), 'seller-create' or 'wire-request' (retained bytes may be sent again by a new pass);
  * `approvalRef` null or `{ revision() }` (null once the hold is gone); `k1Rev` null or `{ expected, current() }`.
  * Every method rejects (`signerFor` throws) with a WireError naming K0's refusal code, keeping its cause; a
- * callback's own error (a signer, a transport, `currentAuthorization`) is passed through unchanged.
+ * callback's own error (a signer, a transport, `currentAuthorization`) is passed through unchanged. A signer
+ * or transport that has not answered when the pass window ends refuses `eb_sign_timeout` or `eb_send_timeout`
+ * and the fence is released; a send that timed out is recorded as the stage's `-unknown` state.
  * - `withFence(op, work, { context })` runs EB1 to EB5, then `work(held)` with `held.capability`, and releases.
  * - `signPass(op, innerSign, { context })` runs EB5r to EB7; resolves `{ bytes, artifactHash }`, signing only when nothing is retained.
  * - `dispatchPass(held, innerSend, { stage })` runs EB8 to EB9 for the bytes `signPass(held)` returned; resolves the send's answer.
@@ -184,6 +186,14 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
   async function checkBinding(deadline) {
     const outcome = await within(clock, deadline, () => assertTp1Binding(binding, readLocal()));
     if (outcome.timedOut) throw refuse('tp1_authority_timeout', undefined, timeoutCause(EFFECT_READ_DEADLINE_MS));
+  }
+
+  // The answer of a signer or transport call that is already running, which must arrive within the pass window. A late answer is ignored and never unhandled.
+  async function answerWithinWindow(deadline, started, code) {
+    Promise.resolve(started).catch(() => {});
+    const outcome = await within(clock, deadline, () => started);
+    if (outcome.timedOut) throw refuse(code, undefined, timeoutCause(EFFECT_READ_DEADLINE_MS));
+    return outcome.value;
   }
 
   // EB3: the policy cap and the approval hold. Returns the hold's revision (null without one); a hold that is gone or has changed refuses.
@@ -285,7 +295,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     await checkNotStopped(deadline);
     recheckNow(pass, op);
     const produced = retained === null ? innerSign() : null;
-    const signed = retained?.bytes ?? await produced;
+    const signed = retained?.bytes ?? await answerWithinWindow(deadline, produced, 'eb_sign_timeout');
     if (!(signed instanceof Uint8Array) || signed.length === 0 || signed.length > MAX_SIGNED_BYTES) throw refuse('eb_signed_bytes_invalid', `the signer must return 1 to ${MAX_SIGNED_BYTES} bytes`);
     // The pass keeps its own copy: the signer may still hold the array it returned, and the hash, the record and every transmission must use the same bytes.
     const bytes = Uint8Array.from(signed);
@@ -334,7 +344,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
       throw refusal;
     }
     let answer;
-    try { answer = await innerSend(Uint8Array.from(bytes)); } catch (error) {
+    try { answer = await answerWithinWindow(pass.deadline, innerSend(Uint8Array.from(bytes)), 'eb_send_timeout'); } catch (error) {
       // A missing record leaves `-started`, which already means "possibly sent", so the send's own error is what the caller gets.
       await history.append(op.lane, { state: `${stage}-unknown`, ...base(op, artifactHash), of, cause: describeCause(error) }).catch(() => {});
       throw error;
