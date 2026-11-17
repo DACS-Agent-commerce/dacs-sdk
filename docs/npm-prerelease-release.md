@@ -40,11 +40,13 @@ host and the generator, then runs conformance, types, the suites of all five
 packages and the release-gate regressions (`release:test`). The publish job needs
 the `verify` job, so none of those suites runs inside its 45-minute limit. The
 publish job installs a pinned release toolchain without a dependency cache,
-requires a clean build tree and builds again. It creates the release set twice
+requires a clean build tree and builds again. It creates the release set once
 with `--strict`, which refuses unless all five packages are releasable at the
 planned version and each package's internal dependencies come earlier in the
-order below. Before its publish step it uploads, as an artifact named for the
-commit and the run attempt (so a re-run of the job does not reuse a name), the
+order below. The strict run packs each package twice and compares the bytes; a
+package that does not pack to the same bytes both times fails the run. Before
+its publish step it uploads, as an artifact named for the commit and the run
+attempt (so a re-run of the job does not reuse a name), the
 five exact tarballs, SHA-256 receipts, combined source provenance (recording
 `strict-five` admission and the order) and one CycloneDX SBOM per package. A preparation run (CI on pull requests) reports
 a private or absent package as not ready, packs the others and records
