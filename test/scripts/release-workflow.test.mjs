@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { parse } from "yaml";
 
@@ -111,6 +111,21 @@ test("every workflow job that pins npm checks the pinned version in the next ste
     });
   }
   assert.equal(checked, 3);
+});
+
+test("the engine-floor job runs the SQLite lease, transaction nesting and iterator tests", () => {
+  const floorTests = [
+    "sqlite-write-lease.test.mjs",
+    "sqlite-lease-result-options.test.mjs",
+    "purchase-tx-nesting.test.mjs",
+    "sqlite-floor-iterators.test.mjs",
+    "sqlite-iterator-own-methods.test.mjs",
+    "sqlite-iterator-own-next-refusal.test.mjs",
+  ];
+  const commands = ci.jobs["buyer-minimum-runtime"].steps.map(step => step.run ?? "").filter(run => run.startsWith("node --test"));
+  const listed = commands.flatMap(run => run.match(/packages\/dacs-client\/test\/\S+\.test\.mjs/g) ?? []);
+  for (const file of floorTests) assert.ok(listed.includes(`packages/dacs-client/test/${file}`), `${file} does not run in the floor job`);
+  for (const file of listed) assert.ok(existsSync(new URL(`../../${file}`, import.meta.url)), `${file} does not exist`);
 });
 
 // A hung step must end the job instead of holding a runner for GitHub's default 360 minutes.
