@@ -370,7 +370,7 @@
         "blob": "e7eb3983967613c16640cfb382175e51701a9684"
       },
       "DELTA-MAP.md": {
-        "blob": "596f3aa50aca2f1aa31281bfa8a0037c3b428d2e"
+        "blob": "1af0fc509269671183cfcc4580734605197dde11"
       },
       "DELTA-NOTES.md": {
         "blob": "bd5f5a806e441849392a85525d73fcf2fc0d3792"
@@ -1041,12 +1041,21 @@
       "records/D76-ad3deea7d13f.json": {
         "blob": "5bed51d5af739743aa956cb21d679630161b9ec8"
       },
+      "records/D77-5963710ebcba.json": {
+        "blob": "a2764d54efa10f967838d997e5c49ea96c5222b4"
+      },
+      "records/D77-6137803ee945.json": {
+        "blob": "1a5cee0c5ebc6676315a051db1c332068e927bbd"
+      },
+      "records/D77-de0f55395638.json": {
+        "blob": "bc2062155d74fe8ce1899b9f6c1ae5158d38eb69"
+      },
       "records/WF-2fdae2f97472.json": {
         "blob": "6a64564558993581d125dab937c5a3ad185ad917"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "9fbb58a9e290d75bd1f93b2860f5bc66ff8e13a2"
+        "blob": "d8d9ce4d65c91033f66935eabf60e1961b3974a4"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1070,7 +1079,10 @@
         "blob": "47027391032dc93c711fcd3c312330e3876cb7ab"
       },
       "scripts/delta-assemble.test.mjs": {
-        "blob": "9d24b9a5551b47930d43e7d428c871b332b04993"
+        "blob": "3261d1f7984040bcb4e4cd0457ca31a9cf618dd4"
+      },
+      "scripts/delta-batch-git.test.mjs": {
+        "blob": "6b8a3f1df542ae318192787310bacd75bc349a1f"
       },
       "scripts/delta-continuity.test.mjs": {
         "blob": "c489755c621b918ae6bb86a111d31dd74c180281"
@@ -1079,7 +1091,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "e9d3c6cbc13ec90b49c5521a2cc69cd3d44602ae"
+        "blob": "167ad02cceea0a9fc9b8e83b429aa1466ae14d98"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "5fda029c1ecf1d7476d016ac70a130a25c4b4367"

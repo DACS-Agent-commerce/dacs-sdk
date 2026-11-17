@@ -30,7 +30,12 @@ function record(subject, overrides = {}) {
 }
 const put = (dir, value) => { json(join(dir, 'records', recordName(value)), value); return recordName(value); };
 
-test('with no record files the assembled view is the stored archive', t => {
+test('the assembled view starts with the stored archive, and is the archive alone when records/ holds no record', t => {
+  // The package may hold record files; the archive always comes first and unchanged.
+  const stored = { changes: readJson(join(pkg, 'DELTA-LEDGER.json')).changes, commits: readJson(join(pkg, 'DELTA-COMMITS.json')) }, real = assemble(pkg);
+  assert.deepEqual(real.failures, []);
+  assert.deepEqual(real.ledger.changes.slice(0, stored.changes.length), stored.changes);
+  assert.deepEqual(real.commits.slice(0, stored.commits.length), stored.commits);
   const archive = { schema: 'dacs-client-deltas/v2', changes: [{ delta: 'D11', subject: 'one', files: [] }] };
   const dir = packageDir(t, archive, [{ sha: null, subject: 'one', files: ['x'] }]);
   const expected = { ledger: archive, commits: [{ sha: null, subject: 'one', files: ['x'] }], failures: [] };
