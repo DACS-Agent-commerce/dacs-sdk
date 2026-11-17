@@ -237,12 +237,7 @@ jobs:
       - name: Package smoke (buyer root)
         run: |
           client_smoke="$RUNNER_TEMP/dacs-client-smoke"
-          mkdir -p "$client_smoke/app"
-          npm pack --ignore-scripts --pack-destination "$client_smoke"
-          npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_smoke"
-          npm pack --workspace @kynesyslabs/dacs-node --pack-destination "$client_smoke"
-          npm install --prefix "$client_smoke/app" --no-audit --ignore-scripts --omit=optional "$client_smoke"/*.tgz
-          (cd "$client_smoke/app" && npm ls --json @kynesyslabs/dacs-node | node -e 'const installed = JSON.parse(require("fs").readFileSync(0, "utf8")).dependencies["@kynesyslabs/dacs-node"]; if (!/^file:.*kynesyslabs-dacs-node-.*\.tgz$/.test(installed?.resolved)) { console.error("dacs-node is not the candidate archive: " + installed?.resolved); process.exit(1); }')
+          bash scripts/pack-buyer-install.sh "$client_smoke"
           (cd "$client_smoke/app" && node --input-type=module -e "const c = await import('@kynesyslabs/dacs-client'); if (typeof c.createPurchaseService !== 'function' || typeof c.NotWiredError !== 'function' || c.canonicalize({ b: 1, a: 2 }) !== '{\"a\":2,\"b\":1}') process.exit(1)")
 
       - name: Package smoke (every entry point imports with the lowest allowed demosdk)
@@ -756,8 +751,8 @@ jobs:
       matrix:
         node-version: ["22.22.2", "24"]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm ci --no-audit
@@ -767,12 +762,7 @@ jobs:
       - name: Check both packed JavaScript entry points at the engine floor
         run: |
           client_minimum="$RUNNER_TEMP/client-minimum"
-          mkdir -p "$client_minimum/app"
-          npm pack --ignore-scripts --pack-destination "$client_minimum"
-          npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_minimum"
-          npm pack --workspace @kynesyslabs/dacs-node --pack-destination "$client_minimum"
-          npm install --prefix "$client_minimum/app" --no-audit --ignore-scripts --omit=optional "$client_minimum"/*.tgz
-          (cd "$client_minimum/app" && npm ls --json @kynesyslabs/dacs-node | node -e 'const installed = JSON.parse(require("fs").readFileSync(0, "utf8")).dependencies["@kynesyslabs/dacs-node"]; if (!/^file:.*kynesyslabs-dacs-node-.*\.tgz$/.test(installed?.resolved)) { console.error("dacs-node is not the candidate archive: " + installed?.resolved); process.exit(1); }')
+          bash scripts/pack-buyer-install.sh "$client_minimum"
           (cd "$client_minimum/app" && node --input-type=module -e "await import('@kynesyslabs/dacs-client'); await import('@kynesyslabs/dacs-client/wallet/durable-journal')")
           cd "$client_minimum/app"
           node --input-type=module <<'NODE'
