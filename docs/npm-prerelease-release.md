@@ -25,6 +25,13 @@ Before approving the workflow:
 4. create the matching tag on that exact `main` commit; and
 5. enter the exact version in the workflow dispatch form.
 
+The `publish-environment` job checks the dispatch first, before the `verify`
+job starts: the entered version must equal the version in `package.json`, the
+ref must be the tag `v<version>` on a commit that is on `main`, the version must
+be a prerelease, and all five manifests must carry that version and the publish
+policy. A wrong dispatch stops there, before any suite runs. The `publish` job
+needs that job, so a re-run of only the failed `publish` job keeps its result.
+
 The workflow first runs the registry-shaped Linux and Docker acceptance
 (`registry-container-acceptance.yml`) with advisory-ID drift enforced. The
 publish job needs that job, so an advisory ID outside the #191 audit baseline,
