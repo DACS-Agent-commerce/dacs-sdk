@@ -334,7 +334,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     const records = await history.read(op.lane);
     assertLanePin(records);
     if (!KINDS[op.kind].mayResend && unwithdrawnStarts(records, artifactHash).some((record) => record.state === `${stage}-started`)) throw refuse('lane_readback_only', `${stage} may already have reached transport`);
-    if (stage === 'broadcast' && !confirmationEstablished(records, artifactHash)) throw refuse('confirm_not_acknowledged', 'broadcast follows an acknowledged confirmation');
+    if (stage === 'broadcast' && !confirmationEstablished(records, artifactHash)) throw refuse('confirm_not_acknowledged', 'broadcast follows a confirmation that was acknowledged or found by readback');
     const intent = await history.append(op.lane, { state: `${stage}-started`, ...base(op, artifactHash) });
     if (!intent.created) throw refuse('lane_readback_only', `${stage} intent was already recorded by an earlier run`);
     const of = intent.record.seq;

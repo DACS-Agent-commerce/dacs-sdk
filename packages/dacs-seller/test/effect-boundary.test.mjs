@@ -616,20 +616,25 @@ test('a transport that changes the bytes it was handed cannot change what a late
   assert.deepEqual(w.sent, [Uint8Array.from([1, 2, 3, 4])]);
 });
 
-test('a confirmation whose reply was lost and is then found by readback lets a restarted pass broadcast, and a dispatch readback does not', async (t) => {
+test('a confirmation whose reply was lost and is then found by readback lets a restarted pass broadcast', async (t) => {
   const w = await ebWorld(t);
   const first = w.build();
   const timeout = failure('ETIMEDOUT');
   await assert.rejects(first.boundary.pass(w.op(), w.sign(), () => { throw timeout; }, { stage: 'confirm' }), (error) => error === timeout);
   const restarted = w.build();
-  await assert.rejects(restarted.boundary.pass(w.op(), w.sign(), w.send(), { stage: 'broadcast' }), { code: 'confirm_not_acknowledged' });
+  await assert.rejects(restarted.boundary.pass(w.op(), w.sign(), w.send(), { stage: 'broadcast' }), (error) => error.code === 'confirm_not_acknowledged' && /acknowledged/.test(error.message) && /readback/.test(error.message));
   await restarted.boundary.recordObserved(w.op(), 'confirm', { found: 1 });
   await restarted.boundary.pass(w.op(), w.sign(), w.send('broadcast'), { stage: 'broadcast' });
   assert.deepEqual([w.counts.signer, w.counts.transport], [1, 1]);
   assert.deepEqual(await states(restarted.history), ['signed', 'confirm-started', 'confirm-unknown', 'observed', 'broadcast-started', 'broadcast-acknowledged']);
-  const other = w.op({ operationId: 'op-2', lane: 'lane-2' });
-  await assert.rejects(restarted.boundary.pass(other, w.sign(), () => { throw timeout; }, { stage: 'dispatch' }), (error) => error === timeout);
-  await restarted.boundary.recordObserved(other, 'dispatch', { found: 1 });
-  await assert.rejects(restarted.boundary.pass(other, w.sign(), w.send(), { stage: 'broadcast' }), { code: 'confirm_not_acknowledged' });
-  assert.equal(w.counts.transport, 1);
+});
+
+test('a dispatch readback does not let a pass broadcast', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary } = w.build();
+  const timeout = failure('ETIMEDOUT');
+  await assert.rejects(boundary.pass(w.op(), w.sign(), () => { throw timeout; }, { stage: 'dispatch' }), (error) => error === timeout);
+  await boundary.recordObserved(w.op(), 'dispatch', { found: 1 });
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send(), { stage: 'broadcast' }), { code: 'confirm_not_acknowledged' });
+  assert.equal(w.counts.transport, 0);
 });
