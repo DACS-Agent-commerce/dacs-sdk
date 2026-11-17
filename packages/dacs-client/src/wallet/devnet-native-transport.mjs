@@ -100,6 +100,10 @@ const TRANSFER_REFUSALS = Object.freeze({
 export const transferRefusal = (error) => Object.hasOwn(TRANSFER_REFUSALS,error?.code ?? '')
   ? [409,{ error:error.code,message:TRANSFER_REFUSALS[error.code],result:409,response:TRANSFER_REFUSALS[error.code],require_reply:false,extra:null }] : null;
 const clone = (v) => structuredClone(v);
+// What the transport calls on the optional effect boundary (`boundary` option of the transport constructors).
+const BOUNDARY_METHODS = ['holdFence', 'signPass', 'dispatchPass'];
+// The lease's expiry timer fires this long after the lease expires, so a timer that fires early still finds it expired.
+const LEASE_EXPIRY_MARGIN_MS = 1;
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const envelope = (response, result = 200) => ({ result, response, require_reply: false, extra: null });
 // A node's reply without any top-level `writeProof`. Only this transport may add
@@ -140,6 +144,14 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // consumer retains it across browser-local signature, SDK confirm and one
 // broadcast. Copying expected values into getContext is not authority; the
 // independently trusted caller must bind these methods to its actual egress.
+//
+// The optional `boundary` option is the client's effect boundary (effect-boundary.mjs),
+// built over the same journal and over a fence that acquires the owner's. A malformed
+// one is a TypeError. With it, the signature lease holds the boundary's fence from the
+// lease to the broadcast, and each confirmation is retained as its own stage in the
+// dispatch history (the exact signed bytes, `confirm-started`, then
+// `confirm-acknowledged` or `confirm-unknown`) before and after the node sees it.
+// Without it the lease holds the owner's fence itself and confirmation keeps no history.
 export function createDevnetNativeTransport(options) { return constructTransport(options,false); }
 export function createDevnetAgreementTransport(options) { return constructTransport(options,true); }
 // Separate opt-in composition. The Agreement-only constructor above remains
@@ -233,7 +245,8 @@ export function createSourceObserver({ record, owner, blockZeroErrorEnvelope = n
 function constructTransport({ expected, transportOwner, journal, fallback = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
   fetchImpl = globalThis.fetch, now = () => Date.now(), stamps = { next: () => now() }, timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
+  settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null, boundary } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
+  if (boundary !== undefined && !BOUNDARY_METHODS.every((name) => typeof boundary?.[name] === 'function')) throw new TypeError(`the effect boundary needs ${BOUNDARY_METHODS.join(', ')}`);
   if (!transportOwner || typeof transportOwner.getContext !== 'function' || typeof transportOwner.acquireConnectionFence !== 'function') throw new TypeError('actual transport-owner context and connection fencing are required');
   if (!journal || !['get','put','entries','withWalletLock'].every((k) => typeof journal[k] === 'function')) throw new TypeError('an explicit durable public native-transfer journal is required');
   if (!Number.isSafeInteger(leaseMs) || leaseMs < 1000 || leaseMs > 60000) throw new TypeError('native connection lease must be bounded from1000 to60000ms');
@@ -478,6 +491,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const stopLease = async (lease, released = false) => {
     if (!lease || leases.get(lease.id) !== lease) return;
     leases.delete(lease.id); byAddress.delete(lease.address);
+    clearTimeout(lease.expiryTimer);
     try { if (released && lease.transfer) await writeClaims(lease.address,(claims) => claims.filter((c) => c.leaseId !== lease.id)); }
     catch { /* fail closed: the claim stays */ }
     finally { await lease.fence.release(); }
@@ -500,7 +514,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     const current = () => l && leases.get(l.id) === l && l.expiresAt > now() && !l.releaseRequested;
     if (!current() || !sameContext(await context(),l.fence.context) || !current()) fail('network_binding_required','the signature/broadcast connection fence is absent or changed');
     l.busy++;
-    return { l, release: async () => { l.busy--; if (l.busy === 0 && l.releaseRequested) await stopLease(l,true); } };
+    return { l, release: async () => { l.busy--; if (l.busy === 0 && (l.releaseRequested || l.expiresAt <= now())) await stopLease(l,l.releaseRequested === true); } };
   };
   // The SDK's RPC authentication: the sender's ed25519 signature over
   // sha256("ed25519:<address>:<timestamp>"). It proves control of the key, and
@@ -594,6 +608,16 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       return await work();
     } finally { await f.release(); }
   }
+  // The signature lease's connection fence. With a boundary it is the boundary's hold on the
+  // owner's fence: admission, stop, fee and binding are checked before the wait and again once
+  // it is held, and the lease's confirmation passes run inside the hold. Without a boundary it
+  // is the owner's own fence.
+  const acquireLeaseFence = async (address, leaseId, transfer) => {
+    if (!boundary) return transportOwner.acquireConnectionFence({ address });
+    const hold = await boundary.holdFence({ operationId:leaseId, lane:lane(address), kind:'native', paidWrite:true, debitOs:transfer?.amountOs ?? '0', pinVersion:pinned.pinVersion });
+    try { return { hold, context:await context(), release:() => hold.release() }; }
+    catch (error) { await hold.release().catch(() => {}); throw error; }
+  };
   async function retain(key, record) {
     await journal.put(key,record);
     if (JSON.stringify(await journal.get(key)) !== JSON.stringify(record)) fail('journal_error','the public issued transfer was not retained exactly');
@@ -646,6 +670,31 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     senderAuth(c.from, headers);
     return tx;
   }
+  // Whether the node's answer is a valid confirmation of these exact bytes that the seller
+  // policy, if any, approved. Any other answer is not one; a changed byte or a refusal throws.
+  const acceptsConfirmation = async (answer, tx) => {
+    if (answer?.result !== 200 || answer.response?.data?.valid !== true) return false;
+    if (JSON.stringify(answer.response.data.transaction) !== JSON.stringify(tx)) fail('signed_bytes_changed','the new native transport requires byte-identical signed confirmation');
+    if (approveConfirmedWrite && (await approveConfirmedWrite(answer)) !== true) fail('approval_required','the seller policy refused the confirmed write');
+    return true;
+  };
+  // The exact signed bytes as the boundary's signed record. A repeated request for the same bytes reuses it.
+  const retainSigned = async (operation, bytes) => {
+    try { return await boundary.signPass(operation, async () => bytes); } catch (error) {
+      if (error?.code === 'eb_operation_signed' && error.details?.artifactHash === sha(bytes)) return { ...operation, artifactHash:error.details.artifactHash };
+      throw error;
+    }
+  };
+  // Runs `confirmOnce` as the boundary's confirm stage inside the lease's hold: the signed
+  // bytes, `confirm-started` before the node sees them, then `confirm-acknowledged` with the
+  // node's answer and gas when `accepted()`, or `confirm-unknown` with the cause.
+  const confirmAsStage = (lease, tx, confirmOnce, accepted) => {
+    const native = tx.content.type === 'native';
+    const operation = { operationId:lease.id, lane:lane(tx.content.from), kind:native ? 'native' : 'create', paidWrite:true,
+      debitOs:native ? transferOf(tx.content)?.amountOs : '0', pinVersion:pinned.pinVersion };
+    return lease.fence.hold.run(async () => boundary.dispatchPass(await retainSigned(operation, Buffer.from(JSON.stringify(tx))), confirmOnce, { explicit:true, stage:'confirm',
+      material:(answer) => accepted() ? { confirmation:answer, gasOperation:answer.response.data.gas_operation ?? null } : undefined }));
+  };
   // Execution projection only: nonce/timestamp may be normalized
   // by RPC, post-fork root amount/fee OS strings may be returned as safe JSON
   // numbers, and empty GCR txhash carriers may become the original hash. The
@@ -878,7 +927,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         refuseUnfinished(previous,'the retained native transfer must be read back; it is never resent');
         const transfer=declaredTransfer(request.transfer);
         if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
-        const fence=await transportOwner.acquireConnectionFence({ address });
+        const leaseId=randomBytes(16).toString('hex'), fence=await acquireLeaseFence(address,leaseId,transfer);
         let l;
         try {
           if (!fence || typeof fence.release !== 'function' || !sameContext(await context(),fence.context)) fail('invalid_transport_owner','actual signature connection fence is unavailable');
@@ -890,14 +939,18 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             const latest=await journal.get(lane(address));
             refuseUnfinished(latest,'an issued native transfer appeared while acquiring the connection fence');
             if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
-            const lease={ id:randomBytes(16).toString('hex'),address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:now(),busy:0,transfer:null };
+            const lease={ id:leaseId,address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:now(),busy:0,transfer:null };
             // Claimed durably before it is returned: a cancellation in any
             // process sees it (transferClaimed).
             if (transfer) await claimTransfer(lease,transfer);
             // Expiry refuses further actions. Its connection is freed by the next
-            // fence acquisition (releaseExpiredLeases), never underneath a running
-            // confirm or broadcast. Provider release / app close ends it earlier.
+            // fence acquisition (releaseExpiredLeases) or, with a boundary, by the
+            // lease's own timer, and when the last running call ends, never
+            // underneath a running confirm or broadcast. Provider release / app
+            // close ends it earlier.
             l=lease; leases.set(l.id,l); byAddress.set(address,l);
+            // With a boundary, other operations take the owner's fence directly, so an abandoned lease frees it at its expiry.
+            if (boundary) l.expiryTimer=setTimeout(() => { void releaseExpiredLeases().catch(() => {}); },leaseMs+LEASE_EXPIRY_MARGIN_MS).unref();
             return { binding,leaseId:l.id,expiresAt:l.expiresAt };
           };
           // A lease that names its transfer is granted under the lane lock: a
@@ -951,13 +1004,15 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         });
         step(tx,'sign','complete',l.signStarted);
         const started=now();
-        const answer=await rawWithoutWriteProof(body,headers);
-        step(tx,'validate','complete',started);
-        if(answer?.result === 200 && answer.response?.data?.valid === true) {
-          if(JSON.stringify(answer.response.data.transaction) !== JSON.stringify(tx)) fail('signed_bytes_changed','the new native transport requires byte-identical signed confirmation');
-          if(approveConfirmedWrite&&(await approveConfirmedWrite(answer))!==true)fail('approval_required','the seller policy refused the confirmed write');
-          l.confirmed=clone(tx);
-        }
+        let accepted=false;
+        const confirmOnce=async()=>{
+          const answer=await rawWithoutWriteProof(body,headers);
+          step(tx,'validate','complete',started);
+          accepted=await acceptsConfirmation(answer,tx);
+          return answer;
+        };
+        const answer=boundary ? await confirmAsStage(l,tx,confirmOnce,() => accepted) : await confirmOnce();
+        if(accepted) l.confirmed=clone(tx);
         return answer;
       }
       if(l.readyHash !== tx.hash || JSON.stringify(l.confirmed) !== JSON.stringify(tx)) fail('native_confirmation_required','the original signed transaction and fresh broadcast binding are required');
