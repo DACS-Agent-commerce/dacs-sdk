@@ -24,8 +24,15 @@ test("two overlapping sends on one wallet serialize on the lane; neither is sent
 const w=await world(t); const results=await Promise.all([w.send(),w.send()]); assert.equal(results.filter(r=>r.success).length,1,JSON.stringify(results)); assert.equal(w.node.broadcasts.length,1);
 });
 
-test("confirmTx answering valid:false is confirm_rejected and nothing is broadcast", async t => {
+test("confirmTx answering valid:false is confirm_rejected, nothing is broadcast and the same request can be sent again", async t => {
 const w=await world(t); w.node.mode='confirm-refuse'; const result=await w.send(); assert.equal(result.error.code,'confirm_rejected',JSON.stringify(result)); assert.equal(w.node.broadcasts.length,0);
+const again=await w.send(); assert.equal(again.error.code,'confirm_rejected','the node is asked again and refuses again',JSON.stringify(again)); assert.equal(w.node.broadcasts.length,0);
+w.node.mode='accept'; const sent=await w.send(); assert.equal(sent.success,true,JSON.stringify(sent)); assert.equal(w.node.broadcasts.length,1);
+});
+
+test("a confirmation the node never answered is asked again for the same request, also after a restart, and an accepted answer then sends once", async t => {
+const w=await world(t); w.node.mode='confirm-lost'; const first=await w.send(); assert.equal(first.error.code,'upstream_unavailable',JSON.stringify(first)); assert.equal(w.node.broadcasts.length,0);
+await w.restart(); w.node.mode='accept'; const sent=await w.send(); assert.equal(sent.success,true,JSON.stringify(sent)); assert.equal(w.node.broadcasts.length,1);
 });
 
 test('restart at signature-return and confirm-send cuts through the Node session', async t => {
@@ -121,6 +128,6 @@ test('restart after each confirmation classification preserves refusal versus un
 for(const [mode,code] of [['confirm-refuse','confirm_rejected'],['confirm-lost','upstream_unavailable']]) {
   const w=await world(t); w.node.mode=mode; const first=await w.send(); assert.equal(first.error.code,code,JSON.stringify(first));
   await w.restart(); assert.equal(w.node.broadcasts.length,0,'a restart sends nothing by itself');
-  const again=await w.send(); assert.equal(again.success,false,'a repeated request never advances to a send'); assert.equal(w.node.broadcasts.length,0);
+  const again=await w.send(); assert.equal(again.error.code,code,'the class is recomputed from the node answer, never advanced to a send'); assert.equal(w.node.broadcasts.length,0);
 }
 });

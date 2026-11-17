@@ -649,7 +649,8 @@ test('through the Node wallet session a send survives a restart at each history 
     const next = await w.restart();
     next.state.stopped = false;
     await next.send(request);
-    assert.equal(next.node.broadcasts.length, cut === 'before-signed' ? 1 : before, cut);
+    // Signed bytes the node never saw (no record past `signed`) go out once when the same request comes again.
+    assert.equal(next.node.broadcasts.length, cut === 'before-signed' || cut === 'signed' ? 1 : before, cut);
     if (retained[0]?.bytes && next.node.broadcasts[0]) assert.equal(JSON.stringify(next.node.broadcasts[0]), Buffer.from(retained[0].bytes, 'base64').toString());
   });
   for (const phase of ['signed', 'confirm-started', 'dispatch-started']) {
@@ -707,14 +708,16 @@ test('a job pass transmits only while its current-authorization check answers tr
       }
     });
   }
-  await t.test('a seller composition refuses a pass whose context is not a job pass', async t => {
+  await t.test('a seller composition takes a pass with no context, as a host outside the package makes it, and refuses a context passContext did not make', async t => {
     const w = await gateWorld(t);
     const lease = await w.currentOwner().acquireConnectionFence();
     const base = { fence: lease, deadline: w.clock.now() + 1000, refreshAuthority: async () => {}, finalStop: async () => {}, synchronousChecks: [], feeCeilingOs: '50000000000' };
-    for (const context of [undefined, passContext(), {}, { operationClass: 'job-create', currentAuthorization: () => true }]) {
-      assert.throws(() => w.session.effectPass({ ...base, ...(context === undefined ? {} : { context }) }), { code: 'effect_pass_invalid' });
+    for (const context of [{}, { operationClass: 'job-create', currentAuthorization: () => true }]) {
+      assert.throws(() => w.session.effectPass({ ...base, context }), { code: 'effect_pass_invalid' });
     }
-    assert.equal(typeof w.session.effectPass({ ...base, context: passContext({ operationClass: 'job-create', currentAuthorization: () => true }) }), 'object');
+    for (const context of [undefined, passContext(), passContext({ operationClass: 'job-create', currentAuthorization: () => true })]) {
+      assert.equal(typeof w.session.effectPass({ ...base, ...(context === undefined ? {} : { context }) }), 'object');
+    }
     lease.release();
   });
 });
@@ -739,9 +742,10 @@ test('a session built without a positive fee ceiling, or whose build fails, is r
     assert.deepEqual(w.effects(), []);
     assert.equal(w.session, undefined);
   }
-  for (const input of [{ journal: {} }, { key: Uint8Array.of(255) }]) {
+  const withoutHistoryMethods = { get: async () => null, put: async () => {}, entries: async () => [], withWalletLock: async (key, work) => work() };
+  for (const input of [{ journal: {} }, { journal: withoutHistoryMethods }, { key: Uint8Array.of(255) }]) {
     const w = await finalizedWorld(t, { input });
-    await assert.rejects(w.build());
+    await assert.rejects(w.build(), input.journal ? TypeError : () => true);
     assert.ok((input.key ?? w.key).every(byte => byte === 0));
     assert.equal(w.session, undefined);
     (await w.owner.acquireConnectionFence()).release();

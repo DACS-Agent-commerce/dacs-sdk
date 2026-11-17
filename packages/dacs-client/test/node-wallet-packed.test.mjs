@@ -57,7 +57,8 @@ test('in a fresh child in the consumer directory, the packed node-wallet entry c
     ${nodeSource}
     const node=scriptedNode(), owner=api.createNodeTransportOwner({endpoint:'https://rpc.example.invalid/',transportAuthority:'vector-authority',fetchImpl:node.fetch});
     const binding=await bindTp1Profile({record:TP1_APPROVED_IDENTITY_RECORD,local:owner.local,readAuthority:async scope=>({local:scope.local,chainIdentity:TP1_APPROVED_IDENTITY_RECORD.chainIdentity,provenance:'TEST-packed-authority',sessionId:scope.sessionId,participants:[]})});
-    const rows=new Map(), journal={get:async k=>rows.get(k)??null,put:async(k,v)=>rows.set(k,structuredClone(v)),entries:async()=>[...rows],withWalletLock:async(k,work)=>work()};
+    const rows=new Map(), journal={get:async k=>rows.get(k)??null,put:async(k,v)=>rows.set(k,structuredClone(v)),entries:async()=>[...rows],withWalletLock:async(k,work)=>work(),
+      withOwnedOrAcquiredLane:async(k,work)=>work(),appendUnderLock:async(k,key,v)=>{if(rows.has(key))throw Object.assign(new Error('exists'),{code:'journal-key-exists'});rows.set(key,structuredClone(v));}};
     const key=new TextEncoder().encode(entropyToMnemonic(randomBytes(32),wordlist));
     const options={admission:{binding,currentLocal:owner.currentLocal},owner,journal,approve:async()=>true,clock:{now:()=>T0},stopped:async()=>false,feeCeilingOs:'50000000000'};
     const bootstrap=await api.createNodeWalletSession({...options,key});

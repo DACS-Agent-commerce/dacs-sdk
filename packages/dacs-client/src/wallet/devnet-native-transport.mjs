@@ -712,8 +712,23 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // Runs `confirmOnce(bytes, final)` as the boundary's confirm stage inside the lease's hold: the signed
   // bytes, `confirm-started` before the node sees them, then `confirm-acknowledged` with the
   // node's answer and gas when `accepted()`, or `confirm-unknown` with the cause.
-  const confirmAsStage = (lease, tx, confirmOnce, accepted) => lease.fence.hold.run(async () => boundary.dispatchPass(await retainSigned(operationOf(lease, tx), Buffer.from(JSON.stringify(tx))), confirmOnce,
-    { explicit:true, stage:'confirm', material:(answer) => accepted() ? { confirmation:answer, gasOperation:answer.response.data.gas_operation ?? null } : undefined }));
+  const confirmAsStage = async (lease, tx, confirmOnce, accepted) => {
+    await continueSignedOperation(lease, tx);
+    return lease.fence.hold.run(async () => boundary.dispatchPass(await retainSigned(operationOf(lease, tx), Buffer.from(JSON.stringify(tx))), confirmOnce,
+      { explicit:true, stage:'confirm', material:(answer) => accepted() ? { confirmation:answer, gasOperation:answer.response.data.gas_operation ?? null } : undefined }));
+  };
+  // Every record of one signed artifact names the same operation. When an earlier lease already signed these exact bytes (a refused or
+  // unanswered confirmation, then the same request again), the lease takes over that operation: its fence hold moves to the earlier
+  // operation id on the same connection, and the boundary's history then decides whether the bytes may be confirmed or sent again.
+  const continueSignedOperation = async (lease, tx) => {
+    const earlier=(await historyOf({ lane:lane(tx.content.from),artifactHash:sha(JSON.stringify(tx)) })).find((record) => record.state === 'signed');
+    if (!earlier || earlier.operationId === lease.operationId) return;
+    const connection=lease.fence.context;
+    await lease.fence.release();
+    lease.operationId=earlier.operationId;
+    lease.fence=await acquireLeaseFence(lease.address,earlier.operationId,transferOf(tx.content));
+    if (!sameContext(lease.fence.context,connection)) fail('connection_changed','the connection changed before the signed bytes were confirmed');
+  };
   // The artifact's records in the boundary's dispatch history, in commit order.
   const historyOf = (artifact) => createEffectHistory({ journal }).read(artifact);
   // The latest confirm-acknowledged record of an artifact, exactly as retained, or undefined.
