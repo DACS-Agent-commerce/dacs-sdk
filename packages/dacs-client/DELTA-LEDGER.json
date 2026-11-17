@@ -10539,6 +10539,22 @@
           "after": "6edf96300eaead3ecf369f64ed1f626f1ac4357f"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF canonicalise the native transport chain identity and refuse retained transfers stamped by a retired pin version",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "b99294c4e83ab918dab703d2aaff5893015f153c",
+          "after": "6c97737d6da71ad4b44013e6cf11b53d1e58fbdd"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": null,
+          "after": "f2eaa495dfd8c8f7e6d1f403337fdf2e9e23a49f"
+        }
+      ]
     }
   ]
 }

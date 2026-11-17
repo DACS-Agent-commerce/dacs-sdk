@@ -125,8 +125,14 @@ export function registerHeldTransportFacade(facade, inner) {
   set.add(facade);
 }
 
-/** Returns the journal key of the native write lane for `address` on the pinned network and chain. */
-export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `devnet/native-wallet/${JSON.stringify([network, chainIdentity, address])}`;
+const BARE_CHAIN_IDENTITY = /^(?:0x)?([0-9a-f]{64})$/;
+// A lower-case 64-hex chain identity, with or without 0x, is returned bare. Any
+// other value is returned unchanged, never lower-cased or trimmed, so the
+// network binder refuses it with its own cause.
+const canonicalChainIdentity = (chainIdentity) => (typeof chainIdentity === 'string' ? BARE_CHAIN_IDENTITY.exec(chainIdentity)?.[1] ?? chainIdentity : chainIdentity);
+
+/** Returns the journal key of the native write lane for `address` on the pinned network and chain. The chain identity is keyed in its bare lower-case form, with or without a 0x prefix. */
+export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `devnet/native-wallet/${JSON.stringify([network, canonicalChainIdentity(chainIdentity), address])}`;
 
 // transportOwner owns the ACTUAL endpoint/connection. acquireConnectionFence()
 // returns { context, release() }, holding that connection until release; its
@@ -215,7 +221,7 @@ export function createSourceObserver({ record, owner, blockZeroErrorEnvelope = n
   if (typeof owner?.currentLocal !== 'function' || typeof owner.getContext !== 'function' || typeof owner.fetchImpl !== 'function') throw new TypeError('an unopened transport owner is required');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new TypeError('the observer read deadline must be a positive integer of milliseconds');
   const { endpoint, transportAuthority } = owner.currentLocal();
-  const expected = { network:record.network, chainIdentity:record.chainIdentity, pinVersion:record.pinVersion, endpoint, transportAuthority };
+  const expected = { network:record.network, chainIdentity:canonicalChainIdentity(record.chainIdentity), pinVersion:record.pinVersion, endpoint, transportAuthority };
   const fallback = { blockZeroUnavailable:'literal-error', documentation:record.provenance.documentation };
   const post = (body, headers = {}, { signal } = {}) => fetchBoundedJson(endpoint, { method:'POST', body, headers, fetchImpl:(...args) => owner.fetchImpl(...args),
     timeoutMs, signal, maxBytes:SOURCE_READ_MAX_BYTES, expectedOrigin:new URL(endpoint).origin });
@@ -246,7 +252,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const closing = new AbortController();
   // The protected binder validates the exact source-supplied HTTPS pin schema.
   // There is no observed-node pin admission or default fallback here.
-  const pinned = expected ? Object.freeze({ ...expected }) : expected;
+  // The chain identity is canonicalised here once; every key, binding and comparison below uses this form.
+  const pinned = expected ? Object.freeze({ ...expected, chainIdentity:canonicalChainIdentity(expected.chainIdentity) }) : expected;
   if (blockZeroErrorEnvelope !== null && blockZeroErrorEnvelope !== DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE) throw new TypeError('the native block-zero error envelope policy is unsupported');
   if (blockZeroErrorEnvelope !== null && fallback === null) throw new TypeError('the native block-zero error envelope requires an explicit binder fallback');
   if (blockOneLayout !== null && blockOneLayout !== DEVNET_NODE2_BLOCK_LAYOUT) throw new TypeError('the native block-one layout policy is unsupported');
@@ -324,6 +331,17 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const binder = makeBinder(),storageRecoveryBinder = makeBinder(true);
   const lane = (address) => nativeWalletLaneKey(pinned, address);
   const intent = (hash) => `devnet/native-transfer/${hash}`;
+  // A retained lane or intent stamped by another pin version belongs to a retired
+  // pin: it is read back only, never reconfirmed, resent or re-keyed.
+  const refuseRetiredPin = (retained) => {
+    if (retained?.networkBinding && retained.networkBinding.pinVersion !== pinned.pinVersion) fail('pin_version_retired','the retained native transfer was issued under another pin version; it is read back only, never resent');
+  };
+  // An unfinished retained lane is read back, never resent.
+  const refuseUnfinished = (retained, message) => {
+    if (!retained || ['observed','failed'].includes(retained.stage)) return;
+    refuseRetiredPin(retained);
+    fail('outcome_unknown',message);
+  };
   // Cancelled native payments. The plugin cancels a payment handoff only
   // through cancelNativeTransfer, which keeps its transfer on the payer's lane
   // in this durable journal: its settlement terms (below), the digest of the
@@ -857,7 +875,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         await releaseExpiredLeases();
         if (byAddress.has(address)) fail('wallet_fenced','a signature connection lease already exists');
         const previous=await journal.get(lane(address));
-        if (previous && !['observed','failed'].includes(previous.stage)) fail('outcome_unknown','the retained native transfer must be read back; it is never resent');
+        refuseUnfinished(previous,'the retained native transfer must be read back; it is never resent');
         const transfer=declaredTransfer(request.transfer);
         if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
         const fence=await transportOwner.acquireConnectionFence({ address });
@@ -865,12 +883,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         try {
           if (!fence || typeof fence.release !== 'function' || !sameContext(await context(),fence.context)) fail('invalid_transport_owner','actual signature connection fence is unavailable');
           const retained=await journal.get(lane(address));
-          if(retained && !['observed','failed'].includes(retained.stage)) fail('outcome_unknown','an issued native transfer appeared while acquiring the connection fence');
+          refuseUnfinished(retained,'an issued native transfer appeared while acquiring the connection fence');
           const binding=await binder.beforeSignature(await binder.recover(request.binding));
           const grant=async () => {
             if (byAddress.has(address)) fail('wallet_fenced','a signature connection lease already exists');
             const latest=await journal.get(lane(address));
-            if (latest && !['observed','failed'].includes(latest.stage)) fail('outcome_unknown','an issued native transfer appeared while acquiring the connection fence');
+            refuseUnfinished(latest,'an issued native transfer appeared while acquiring the connection fence');
             if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
             const lease={ id:randomBytes(16).toString('hex'),address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:now(),busy:0,transfer:null };
             // Claimed durably before it is returned: a cancellation in any
@@ -915,7 +933,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       try {
       if(call.extra === 'confirmTx') {
         l.confirmed=null;l.readyHash=null;
-        if(await journal.get(intent(tx.hash)))fail('outcome_unknown','an issued native hash is readback-only, never reconfirmed or resent');
+        const issuedBefore=await journal.get(intent(tx.hash));
+        if(issuedBefore){refuseRetiredPin(issuedBefore);fail('outcome_unknown','an issued native hash is readback-only, never reconfirmed or resent');}
         const transfer=await identityOf(tx.content);
         // A transfer whose settlement terms cannot be read, or whose payer is
         // not its signer, is not one the cancellation records can name.
@@ -946,7 +965,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       try {
         accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
           const previous=await journal.get(lane(tx.content.from));
-          if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || await journal.get(intent(tx.hash))) fail('outcome_unknown','issued native transfers cannot be resent');
+          const issuedBefore=await journal.get(intent(tx.hash));
+          if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || issuedBefore) { refuseRetiredPin(previous); refuseRetiredPin(issuedBefore); fail('outcome_unknown','issued native transfers cannot be resent'); }
           // Under the lock of the journal claim below: a cancelled transfer is never claimed.
           const claiming=await identityOf(tx.content);
           if(await cancelledTransfer(tx.content.from,claiming)) await refuseCancelled(tx.content.from,claiming,'broadcast');
