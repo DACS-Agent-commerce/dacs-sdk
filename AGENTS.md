@@ -12,9 +12,9 @@ DACS here means Demos Agent Commerce Standards. It is not related to other softw
 
 | Path | What it is for |
 | --- | --- |
-| `src/` | The core TypeScript SDK, published as `@kynesyslabs/dacs`. One folder per subpath export: `agent`, `artifacts`, `canonical`, `commerce`, `crypto`, `discovery`, `identity`, `negotiate`, `rails`, `registry`, `seller`, `substrate`, `wire`, `cli`. `src/bin/dacs.ts` is the `dacs` command. |
-| `packages/dacs-node/` | `@kynesyslabs/dacs-node`: Node.js host contracts and adapters (filesystem, SQLite, HTTP envelope). Published. |
-| `packages/create-dacs-agent/` | `create-dacs-agent`: project generator for the quickstart. Published. |
+| `src/` | The core TypeScript SDK, package name `@kynesyslabs/dacs`. Subpath exports declared in `package.json` "exports": `canonical`, `crypto`, `artifacts`, `identity`, `discovery`, `negotiate`, `rails`, `seller`, `commerce`, `registry`, `cli`, `substrate`, `wire`. Everything else, including `createAgent` (`src/agent/Agent.ts`), comes from the package root. `src/bin/dacs.ts` is the `dacs` command. |
+| `packages/dacs-node/` | `@kynesyslabs/dacs-node`: Node.js host contracts and adapters (filesystem, SQLite, HTTP envelope). |
+| `packages/create-dacs-agent/` | `create-dacs-agent`: project generator for the quickstart. |
 | `packages/dacs-seller/` | `@kynesyslabs/dacs-seller`: self-hosted seller kit (plain ESM JavaScript, `private: true`, loopback). |
 | `packages/dacs-client/` | `@kynesyslabs/dacs-client`: buyer purchase services and read-only diagnostics (plain ESM JavaScript, `private: true`). |
 | `test/` | Root vitest suite and the `node --test` script and seller/client tests. |
@@ -22,6 +22,8 @@ DACS here means Demos Agent Commerce Standards. It is not related to other softw
 | `docs/` | Design and operation notes. Start with `docs/about-the-testnet-release.md` and `docs/testnet-profile-tp1.md`. |
 | `tools/lint/` | Separate lint tool (own `package.json`, never shipped). |
 | `scripts/` | Build, release-check and test-runner scripts used by the npm scripts. |
+
+The packages are not yet published to npm, so install from source.
 
 ## Install and run the checks from source
 
@@ -55,7 +57,14 @@ npm run build
 npm run host:build
 export DACS_SELLER_SMOKE_DIR=/tmp/dacs-seller-consumer
 npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
+npm run conformance:sync
 npm run seller:test
+```
+
+`packages/dacs-client` has no root script. Its own `test` script (package.json) runs `check-hold.mjs` and then every test file in the package:
+
+```bash
+npm test --workspace @kynesyslabs/dacs-client
 ```
 
 Other scripts in the root `package.json`: `client-keys:test`, `kit-client:test`, `release:check`, `package:verify`. Tests that need a funded node (`test:live`, `test:live:pay-dem`) are skipped unless their environment is set; do not run them without the setup in `docs/live-e2e.md`.
