@@ -10897,7 +10897,13 @@
     {
       "delta": "WF",
       "subject": "fix(client): let a repeated request continue its signed operation and accept a plain seller pass",
+      "sha": "cdec245530a8e854bb89cc2585dd09ce58fad379",
       "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "380bcb3a24dd545affb0997c38e98369619930c6",
+          "after": "04d09133fb089ed2bae83722775ac92e26fd1f3e"
+        },
         {
           "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
           "before": "059821f0222109cdda91d88d832428f2d7bafd2e",
