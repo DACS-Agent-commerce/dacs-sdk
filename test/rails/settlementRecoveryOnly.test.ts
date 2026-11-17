@@ -7,6 +7,7 @@ import {
   createInMemorySettlementLog,
   isSettlementBridge,
   declareSettlementBridge,
+  inheritSettlementBridge,
   settlementBindingHash,
   settlementBridgeTraits,
   settlementKey,
@@ -14,7 +15,7 @@ import {
   type SettlementIdempotencyStore,
   type SettlementLog,
 } from "../../src/rails/idempotency.js";
-import { payDemSettle } from "../../src/rails/payDem.js";
+import { payDemSettle, withRecoveredAttempts } from "../../src/rails/payDem.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
 
 // These unit tests exercise the recovery rules with injected capabilities.
@@ -607,5 +608,52 @@ describe("the resume registry", () => {
   test("a bridge that declares nothing has empty traits and a bare function has none", () => {
     expect(settlementBridgeTraits(declareSettlementBridge(async () => evmPaid))).toEqual({});
     expect(settlementBridgeTraits(async () => evmPaid)).toBeUndefined();
+  });
+
+  test("a wrapper around a bridge carries what the bridge declared", () => {
+    const bridge = declareSettlementBridge(async () => evmPaid, { journaled: false });
+    const wrapper = inheritSettlementBridge(bridge, async () => evmPaid);
+    expect(settlementBridgeTraits(wrapper)).toEqual({ journaled: false });
+    expect(isSettlementBridge(inheritSettlementBridge(async () => evmPaid, async () => evmPaid))).toBe(false);
+  });
+});
+
+describe("withRecoveredAttempts", () => {
+  const network = "demos";
+  const stubBridge = () => {
+    const seen: SettleRequest[] = [];
+    const bridge = payDemSettle({ address: payer, settle: vi.fn() }, {}, {
+      store: createIdempotencyStore(createInMemorySettlementLog()),
+      reconcile: async () => null,
+    });
+    const forwarding = vi.fn(async (req: SettleRequest): Promise<SettleResult> => {
+      seen.push(req);
+      throw new Error("stop");
+    });
+    return { bridge, forwarding, seen };
+  };
+
+  test("withRecoveredAttempts adds journal history to a recovery request and keeps the registration", async () => {
+    const { bridge, forwarding, seen } = stubBridge();
+    const wrapped = withRecoveredAttempts(bridge, async () => [{ txHash: hash, chainId: network, ok: false }]);
+    expect(isSettlementBridge(wrapped)).toBe(true);
+    expect(wrapped).not.toBe(bridge);
+    await expect(wrapped({ ...demRequest, recoveryOnly: true })).rejects.toThrow(/proof of absence/);
+
+    const forwarded = withRecoveredAttempts(forwarding, async () => [{ txHash: hash, chainId: network, ok: false }]);
+    await expect(forwarded({ ...demRequest, recoveryOnly: true })).rejects.toThrow("stop");
+    expect(seen[0]?.priorAttempts).toEqual([{ txHash: hash, chainId: network, ok: false }]);
+    expect(isSettlementBridge(forwarded)).toBe(false);
+  });
+
+  test("withRecoveredAttempts leaves a request that is not a recovery, or already has history, untouched", async () => {
+    const { forwarding, seen } = stubBridge();
+    const attempts = vi.fn(async () => [{ txHash: hash, chainId: network, ok: false }]);
+    const wrapped = withRecoveredAttempts(forwarding, attempts);
+    const supplied = [{ txHash: "34".repeat(32), chainId: network, ok: true }];
+    await expect(wrapped(demRequest)).rejects.toThrow("stop");
+    await expect(wrapped({ ...demRequest, recoveryOnly: true, priorAttempts: supplied })).rejects.toThrow("stop");
+    expect(attempts).not.toHaveBeenCalled();
+    expect(seen.map((req) => req.priorAttempts)).toEqual([undefined, supplied]);
   });
 });

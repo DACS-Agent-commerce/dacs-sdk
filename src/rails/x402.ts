@@ -860,10 +860,10 @@ export async function createX402Rail(config: X402RailConfig): Promise<X402Rail> 
 }
 
 /**
- * Bridge an X402Rail to the runSession `settle` seam. The paywall coordinates
- * (url / network / recipientEvm / token) are static for the rail — resolved
- * from the listing + the steward rail descriptor — while runSession supplies the
- * per-session amount.
+ * Bridge an X402Rail to a settle function `(request) => result`. The paywall
+ * coordinates (url / network / recipientEvm / token) are static for the rail —
+ * resolved from the listing + the steward rail descriptor — while the caller
+ * supplies the per-request amount.
  *
  * `paywall.asset` is the canonical ON-CHAIN token id (the ERC-20 contract, same
  * kind of value the 402 advertises), NOT the human Price.asset symbol. It's what

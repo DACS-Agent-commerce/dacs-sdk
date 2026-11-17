@@ -5,7 +5,8 @@
 //
 // `signCreate` reserves the signer for the evidence's logical address and then acts on the stored record:
 //   signed bytes, same input      the stored bytes come back with no new signature and no write.
-//   signed bytes, other input     `signer_lane_busy`. Signed bytes are never retired: only an execution frees them.
+//   signed bytes, other input     `signer_lane_busy`. Signed bytes are never retired: only an execution frees them. For another
+//                                 address, `signCreate` first reads the chain for those bytes and consumes them if they executed.
 //   approval request, no bytes    `signer_reservation_uncertain`: an earlier call stopped while its approval could still be
 //                                 prepared. Startup recovery retires it.
 //   a fresh claim                 reads the fees, stores the approval request, prepares the approval, binds its id, signs
@@ -141,7 +142,8 @@ function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem
  * confirmation or the dispatch has no valid answer; the cause is kept), `locked`, or an abort's reason before the dispatch starts.
  * `readAccountNonce({signal})` resolves the account nonce, or rejects `node_reply_invalid` or `invalid_nonce`.
  * `readTransactionState({signedTransaction, txHash, nonce}, {signal})` resolves `{state: 'applied' | 'pending'}` and never rejects
- * for a failed read; a `pending` answer's cause is `internalCauseOf(answer)`. It starts no read after an abort.
+ * for a failed read; a `pending` answer's cause is `internalCauseOf(answer)`. It starts no read after an abort. Given `{txHash}`
+ * alone, it reads back the bytes and nonce of the reservation holding that hash, and is `pending` when none does.
  */
 export function createPaymentEvidenceCreateAdapter({ reservations, approval, demos, observer, journal, pins, clock, rpcUrl, isWalletLocked, owner, fetchImpl, stamps, recordCause }) {
   const signer = String(demos.getAddress()).toLowerCase(), inQueue = createQueue();
@@ -350,11 +352,18 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     if (!executedMatches(executed, tx, status.blockNumber)) throw refuse('readback_unverified');
     if (!blockListsHash(await nodeRead('getBlockByNumber', { blockNumber: status.blockNumber }, signal), status.blockNumber, tx.hash)) throw refuse('readback_unverified');
   }
+  // A caller that names only the hash gets the bytes and nonce of the reservation holding it; no reservation holds them otherwise.
+  async function retainedFor({ txHash, signedTransaction, nonce }) {
+    if (signedTransaction !== undefined) return { txHash, signedTransaction, nonce };
+    const { active } = (await reservations.current(signer)) ?? {};
+    if (active?.operation !== OPERATION || active.signed?.txHash !== txHash) throw refuse(RETAINED_INVALID);
+    return { txHash, signedTransaction: active.signed.projectionText, nonce: active.nonce };
+  }
   // `applied` after the chain proves the execution of exactly the retained bytes; the reservation holding them, if any, ends and its authorization is spent.
-  async function transactionState(retained, signal) {
+  async function transactionState(asked, signal) {
     try {
       signal.throwIfAborted();
-      const tx = parseRetained(retained), held = await reservationHolding(retained);
+      const retained = await retainedFor(asked), tx = parseRetained(retained), held = await reservationHolding(retained);
       if (retained.nonce !== tx.content.nonce) throw refuse(RETAINED_INVALID);
       await verifyExecution(tx, signal);
       signal.throwIfAborted();
@@ -367,14 +376,24 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     }
   }
 
+  // Signed bytes of another address hold the signer until the chain executes them. The chain is read here, before the signer's lock is taken;
+  // `reserve` then refuses `signer_lane_busy` unless the bytes were consumed.
+  async function freeSignerIfExecuted(logicalAddress, signal) {
+    const { active } = (await reservations.current(signer)) ?? {};
+    if (active?.signed == null || active.operationKey === logicalAddress) return;
+    await transactionState({ txHash: active.signed.txHash }, signal);
+    signal.throwIfAborted();
+  }
+
   return Object.freeze({
     async signCreate(input, { signal = new AbortController().signal } = {}) {
       assertUnlocked();
       const request = checkedInput(input, signer);
       signal.throwIfAborted();
       return inQueue(signal, async () => {
-        await assertNativeLaneIdle();
-        const { reservation, nonce } = await reservations.reserve({ signer, operation: OPERATION, operationKey: request.logicalAddress, readChainNonce, signal });
+        await freeSignerIfExecuted(request.logicalAddress, signal);
+        // The lane is checked under the signer's lock, the lock the native transport holds to issue a write, so no write is issued between this check and the claim.
+        const { reservation, nonce } = await reservations.reserve({ signer, operation: OPERATION, operationKey: request.logicalAddress, readChainNonce, signal, beforeClaim: assertNativeLaneIdle });
         const { signed, approvalIntent } = reservation.active;
         if (signed !== null) {
           if (signed.inputDigest !== request.inputDigest) throw refuse('signer_lane_busy');

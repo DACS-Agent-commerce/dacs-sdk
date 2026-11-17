@@ -594,7 +594,7 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
   });
 });
 
-describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, PB-2 destination)", () => {
+describe("payDemSettle (settlement bridge — §9.5.9 DEM→OS conversion and payee destination check)", () => {
   // A Demos primary claim intrinsically embeds the ed25519 pubkey hex.
   const SELLER_HEX = "a1".repeat(32);
   const PAYEE_CLAIM = `did:demos:agent:${SELLER_HEX}`;

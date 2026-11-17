@@ -237,7 +237,8 @@ check of a party's Agreement contribution; `SellerAgentError` is the seller's
 refusal with its stable code and HTTP status. The other root exports are the
 parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
-`createSellerTransportServerAuth`, `createSellerContextRoute` and the buyer
+`createSellerTransportServerAuth`, `createSellerContextRoute`,
+`createWireSellerContextRoute` (the context step on the wire) and the buyer
 side `createSellerAgentClient`, `createSellerContextClient`,
 `createSellerTransportClientAuth` and `createSellerWireClientAuth`. The host
 answers every route but the challenge and the context step through the wire,
@@ -270,8 +271,8 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `SellerAgentError`, `createPaymentEvidenceWalletJournal`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
-`createSellerContextRoute`, `createSellerContextClient`,
-`createSellerTransportStore`, `createSellerTransportServerAuth`,
+`createSellerContextRoute`, `createWireSellerContextRoute`,
+`createSellerContextClient`, `createSellerTransportStore`, `createSellerTransportServerAuth`,
 `createSellerTransportClientAuth` and `createSellerWireClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
@@ -302,7 +303,21 @@ the producer, retry the same payment claim; do not collect another payment.
 `artifactAnchor` publishes native artifacts for the seller named by `writer`.
 Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
-the signed transaction before sending it. `readRetained({ logicalAddress,
+the signed transaction before sending it. The party Vet provider also passes
+`awaitInclusion: true`: a CREATE that call sends and that still reads back as
+pending is read again every five seconds for a bounded time while `authorize()`
+still answers `true`. The additional polls never send the CREATE again; the
+first pending read can still run the existing one-time recovery send
+(`recoverStorageWrite`) of the retained CREATE, as without `awaitInclusion`. In
+the reference anchor the bound is six minutes after the wallet's answer, and the
+wallet answers only after the transport's own inclusion wait (120 seconds by
+default), so the bound ends about eight minutes after the broadcast. Meanwhile
+the seller's other writes wait behind the pending write, up to that bound,
+instead of failing at once with a retryable error. `readBackRecords({ jobId,
+buyer })` reads a job's two retained Vet records back without signing or
+sending anything; it answers `present` only when both records read back as
+included, and `indeterminate` when one is not written yet or does not read
+back. `readRetained({ logicalAddress,
 artifactKind })` must authenticate the exact retained artifact, receipt, native
 transaction reference and signed projection when returning `status: 'present'`;
 `verifyReceipt` independently checks those bindings. Retain one logical record
@@ -588,7 +603,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
   `signedTransaction` is the JSON of exactly the public signed projection
   `{ hash, content, signature: { type, data } }` of the Demos signed
-  transaction: of demosdk 4.0.16's `demosclass.js` `sign()` result, only those three members (its
+  transaction: of demosdk 4.0.18's `demosclass.js` `sign()` result, only those three members (its
   `status`, `blockNumber` and `ed25519_signature` are left out; node 61b8e75
   refuses a truthy `status`, which the signature does not cover). Before it is
   kept, the journal checks it is what the node executes and the SR-2 readback

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { installNoEgress } from './helpers/no-egress.mjs';
-import { args, open, options, otherSigner, recordKey, signed, signer } from './helpers/signer-reservation-world.mjs';
+import { args, open, options, otherSigner, pins, recordKey, signed, signer } from './helpers/signer-reservation-world.mjs';
 
 const trap = installNoEgress();
 test.after(() => { trap.restore(); assert.deepEqual(trap.attempts, []); });
@@ -45,6 +45,27 @@ function child(t, path, mode, operationKey = 'TEST-child') {
 }
 const rejectCode = (promise, code) => assert.rejects(promise, { code });
 const noChainRead = () => { throw new Error('TEST-unexpected-chain-read'); };
+
+test('signerReservationKey is the journal key the reservation record is stored under', async t => {
+  const w = world(t);
+  await w.reservations.reserve(args());
+  assert.equal(module.signerReservationKey(pins, signer), recordKey());
+  assert.ok(await w.journal.get(module.signerReservationKey(pins, signer)), 'the record is stored under the exported key');
+  assert.equal(await w.journal.get(module.signerReservationKey(pins, otherSigner)), undefined, 'another signer has another key');
+});
+
+test('reserve runs beforeClaim under the signer lock before any read or write, and a refusal from it claims nothing', async t => {
+  const w = world(t), refusal = Object.assign(new Error('TEST-refused'), { code: 'TEST-refused' });
+  let underLock = false;
+  const beforeClaim = async () => {
+    await assert.rejects(w.journal.withWalletLock(recordKey(), async () => {}), { code: 'journal-reentrant' }); underLock = true;
+    assert.equal(await w.journal.get(recordKey()), undefined, 'nothing is stored yet'); throw refusal;
+  };
+  await rejectCode(w.reservations.reserve({ ...args(), readChainNonce: noChainRead, beforeClaim }), 'TEST-refused');
+  assert.equal(underLock, true); assert.equal(await w.journal.get(recordKey()), undefined, 'the refusal claimed nothing');
+  await w.reservations.reserve(args());
+  assert.ok(await w.journal.get(recordKey()), 'the next claim goes through');
+});
 
 test('two different evidence addresses: the second reserve refuses signer_lane_busy and the two never receive the same nonce', async t => {
   const w = world(t), reservation = await w.reservations.bindSigned(await approved(w.reservations), signed());

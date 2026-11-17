@@ -10170,131 +10170,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF cross-check the string-zero genesis in the shared identity reader and compare counterparty CREATEs on the shared chain tuple",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
-          "before": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868",
-          "after": "d0e47878acae8874b2f0eb66b8201bab03e80042"
-        },
-        {
-          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
-          "before": "c2420945f3a5c5dbb1c3101923fd27af3e27398f",
-          "after": "f954dada99f699178563fbfed69cea975993cff2"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "285c2eba321bfb342c99dde92a5ddaa2597cdf57",
-          "after": "fc6572546c25fe38e1228338650572e2a06439c8"
-        },
-        {
-          "path": "packages/dacs-client/test/authority-reader.test.mjs",
-          "before": null,
-          "after": "7b891fd0e31379edd00ee55c86fd12e916cf4236"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
-          "before": null,
-          "after": "b57a7c47e008a17332332980b98b8f730f8b6366"
-        },
-        {
-          "path": "packages/dacs-client/test/network-binding.test.mjs",
-          "before": null,
-          "after": "e4bfba810710cd180fe8eea370f79f8ed48432d2"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
-          "before": "da2946d04f52ac899dfd805ec55b02ddcb3213da",
-          "after": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
-          "before": "f2337a42eebc81e26737556a54eccee74dc3cb3b",
-          "after": "4562053621a6e0820910e21178456be9811e2cd1"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF read the recorded Node2 answers in the source observer and bring the identity fixtures to the reviewed block shape",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
-          "before": "f954dada99f699178563fbfed69cea975993cff2",
-          "after": "974581bbe731439d9cfed3fb255645ce445bdf8a"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
-          "before": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c",
-          "after": "54581e517c5cb670321d09d0d401c703f576809b"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
-          "before": "b57a7c47e008a17332332980b98b8f730f8b6366",
-          "after": "3ceed283a2e1e1a7d2f9c7daafccf6d368066be0"
-        },
-        {
-          "path": "packages/dacs-client/test/network-binding.test.mjs",
-          "before": "e4bfba810710cd180fe8eea370f79f8ed48432d2",
-          "after": "9c1f4f080ef6f461cf6878940485b075b17a11be"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
-          "before": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d",
-          "after": "6b0e4a1deec87b0aec54e0747da4716db26c4c84"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
-          "before": "d2f826dc1bc3db1138b3d4df9ac61b33ffeed121",
-          "after": "bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
-          "before": "4562053621a6e0820910e21178456be9811e2cd1",
-          "after": "704c356cf6fde7f017f441a65604a598e56a578b"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change)",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
-          "before": "54581e517c5cb670321d09d0d401c703f576809b",
-          "after": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
-          "before": "6b0e4a1deec87b0aec54e0747da4716db26c4c84",
-          "after": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d"
-        },
-        {
-          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
-          "before": "bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5",
-          "after": "c7e55813ec5c437ed39a0966b6a882470884b57b"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the blobs chosen for the transport and wallet session after carrying base/main up",
-      "compact": true,
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "8334b5757663dba37d96f0fbe23258bd024eb9fb",
-          "after": "8334b5757663dba37d96f0fbe23258bd024eb9fb"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
-          "before": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4",
-          "after": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF replay the retained payment-evidence CREATE and read its execution back",
       "files": [
         {
@@ -10429,6 +10304,373 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF test that a replay after a gate refusal before the broadcast sends the retained bytes once",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
+          "after": "6edf96300eaead3ecf369f64ed1f626f1ac4357f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a native write while a stored evidence CREATE holds the signer",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "cb7be1026524f82794127d071ed37bc9e3a8c549",
+          "after": "f453ffb58a09484125da89d68f74b3928137b9c7"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "bcb216547421660a2cd0de45415cce9a0ad18ba3",
+          "after": "1678957be639d72489fa6cc925da8a27660ee9cb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "a4e588ba8351ad22b97d9234aa0918e2158ecf65",
+          "after": "7449baca4f938c782bfdc29625db69fb82556c43"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "88d543ca451ef7657ff6a2e72b271b1d73264f8f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a native write that a stored evidence CREATE holds before the broadcast, with the public refusal code",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "a36092fb9752a4d5c0ea68f11f228af9b39e0c5c",
+          "after": "6b8764f67b5afcef4f08689733628c8646833c95"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "5c1cc212cd256295f9ee763ea9609f9289fb4b89",
+          "after": "f3362e532723872079c10b44ec296bb36a31313d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF take one signer lock to issue a native write and to claim the signer for an evidence CREATE",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "6b8764f67b5afcef4f08689733628c8646833c95",
+          "after": "110e34c585c8d6f91c6dfa58886a70761956f5fe"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "7e44af5f5f7960f6430b02f5ea22fa26eca75fb3",
+          "after": "feb828af9fa3a2d6a7c00d1e37afc15c251f9c22"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "d064bbbbbe9fa405714bb56eb390b97c7e0fbe4c",
+          "after": "d47721b78cb250ef2dd929852268a54afa699a50"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "f3362e532723872079c10b44ec296bb36a31313d",
+          "after": "826cacbcdce7c240d74c70e9cee597f92ed84d78"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0043ffd03f9e5f66cdb8d4bcde86d982eff599d",
+          "after": "317ee818bdbf709601dc8452f3feb986b14066b2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF let the transaction a stored reservation holds through the native transport's reservation check",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "110e34c585c8d6f91c6dfa58886a70761956f5fe",
+          "after": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "826cacbcdce7c240d74c70e9cee597f92ed84d78",
+          "after": "b9ae1416dbbdb87fa8ad3b55cd22f09ddeebee9a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF free the signer when the evidence CREATE it holds has executed",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "feb828af9fa3a2d6a7c00d1e37afc15c251f9c22",
+          "after": "1917ff8c1b6e594bb6b181fc3b78f9f42f257797"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "b9ae1416dbbdb87fa8ad3b55cd22f09ddeebee9a",
+          "after": "f3a42056739f497fd805935c801cb490cadddb82"
+        }
+      ]
+    },
+    {
+      "delta": "D76",
+      "subject": "delta(client): D76 add demosdk 4.0.17 to the reviewed loader table",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/demos-quiet-hooks.mjs",
+          "before": "323ba838b4f2abe9189f84d6688cdaf0914b1972",
+          "after": "91d06508f63df5308dece710ffb05aeae26a5bb8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-demos-loading.test.mjs",
+          "before": "539d876bf79510f9d3bf9e09d99737131a43fdc1",
+          "after": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 accept a trailing record-only ledger entry for a committed blob",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "0db3b89514f68fbba88d99345a0ea7089911e3d7",
+          "after": "5e909c66900348ecfcab0ca9d549363d384052d3"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "5e909c66900348ecfcab0ca9d549363d384052d3",
+          "after": "f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 judge a trailing record-only ledger entry by its own commit and the record files",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa",
+          "after": "173bd74d1d40be6ab60e430a2583a604e8b6527b"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 count only record files committed before a trailing record-only ledger entry",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "173bd74d1d40be6ab60e430a2583a604e8b6527b",
+          "after": "055f2de61cc3fa1100a1a06e0979fc5262ce8d24"
+        }
+      ]
+    },
+    {
+      "delta": "D74",
+      "subject": "delta(client): D74 read a held plan step's seller Vet record writes back on a purchase recheck",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs",
+          "before": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7",
+          "after": "b190cb9f28255865882e670bbd9ef45bd9193bba"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f6492ec9771611dd72c96e94107384db860ca748",
+          "after": "8eac38bb49a4929421c3d1362fac362c6fe00cd3"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "4bf029a4db45b1d876cb4e028bccf6d0824a315f"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-readback.test.mjs",
+          "before": null,
+          "after": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+          "before": "6671b70cf3fad1b68f2e4085c67352d4102a04d4",
+          "after": "f568fd35048d886ed2eeecd892fdef1b21a9d12c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "0f3d432cc8159e5f9daa24df85619930d30da89a",
+      "subject": "fix(client): enforce effect admission order and signer deadlines",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "796433f8bc1bca0d06a152305289e52f05f03812",
+          "after": "c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "83bf647eea4cbb4cf4614e97b07b52203356393c",
+          "after": "91cae7c7150797d80f48f80d9d8b5b65b432ffa8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e4a36cde219c0f9b8d899e33e34155a547e49789",
+      "subject": "fix(client): give the signer its own deadline and call the stop check without arguments",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355",
+          "after": "a869f29a4462d0e6e79efa2d4c25ecd5bcd686c0"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "91cae7c7150797d80f48f80d9d8b5b65b432ffa8",
+          "after": "389314001f9655de05dc5c0871199836a2de7183"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF cross-check the string-zero genesis in the shared identity reader and compare counterparty CREATEs on the shared chain tuple",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868",
+          "after": "d0e47878acae8874b2f0eb66b8201bab03e80042"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "c2420945f3a5c5dbb1c3101923fd27af3e27398f",
+          "after": "f954dada99f699178563fbfed69cea975993cff2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "285c2eba321bfb342c99dde92a5ddaa2597cdf57",
+          "after": "fc6572546c25fe38e1228338650572e2a06439c8"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": null,
+          "after": "7b891fd0e31379edd00ee55c86fd12e916cf4236"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+          "before": null,
+          "after": "b57a7c47e008a17332332980b98b8f730f8b6366"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": null,
+          "after": "e4bfba810710cd180fe8eea370f79f8ed48432d2"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "da2946d04f52ac899dfd805ec55b02ddcb3213da",
+          "after": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "f2337a42eebc81e26737556a54eccee74dc3cb3b",
+          "after": "4562053621a6e0820910e21178456be9811e2cd1"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read the recorded Node2 answers in the source observer and bring the identity fixtures to the reviewed block shape",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "f954dada99f699178563fbfed69cea975993cff2",
+          "after": "974581bbe731439d9cfed3fb255645ce445bdf8a"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c",
+          "after": "54581e517c5cb670321d09d0d401c703f576809b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+          "before": "b57a7c47e008a17332332980b98b8f730f8b6366",
+          "after": "3ceed283a2e1e1a7d2f9c7daafccf6d368066be0"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": "e4bfba810710cd180fe8eea370f79f8ed48432d2",
+          "after": "9c1f4f080ef6f461cf6878940485b075b17a11be"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d",
+          "after": "6b0e4a1deec87b0aec54e0747da4716db26c4c84"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "d2f826dc1bc3db1138b3d4df9ac61b33ffeed121",
+          "after": "bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "4562053621a6e0820910e21178456be9811e2cd1",
+          "after": "704c356cf6fde7f017f441a65604a598e56a578b"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change)",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "54581e517c5cb670321d09d0d401c703f576809b",
+          "after": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "6b0e4a1deec87b0aec54e0747da4716db26c4c84",
+          "after": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5",
+          "after": "c7e55813ec5c437ed39a0966b6a882470884b57b"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the blobs chosen for the transport and wallet session after carrying base/main up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "8334b5757663dba37d96f0fbe23258bd024eb9fb",
+          "after": "8334b5757663dba37d96f0fbe23258bd024eb9fb"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4",
+          "after": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the transport and wallet session blobs chosen at the merge of the payment part into the identity part",
       "compact": true,
       "files": [
@@ -10441,17 +10683,6 @@
           "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
           "before": "192016f0d5c93cbdd715fa2b5058bb312bc1d683",
           "after": "192016f0d5c93cbdd715fa2b5058bb312bc1d683"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF test that a replay after a gate refusal before the broadcast sends the retained bytes once",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
-          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
-          "after": "6edf96300eaead3ecf369f64ed1f626f1ac4357f"
         }
       ]
     }
