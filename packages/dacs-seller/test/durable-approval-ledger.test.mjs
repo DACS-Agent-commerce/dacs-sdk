@@ -7,7 +7,8 @@ import { mkdir,mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname,join } from 'node:path';
 import { appendApprovalLedgerLine } from '../src/devnet-demo/approval-ledger-append.mjs';
-import { spyOnFsync } from './helpers/fsync-spy.mjs';const fixture=async(t)=>{const dir=await mkdtemp(join(tmpdir(),'TEST-ledger-append-'));t.after(()=>rm(dir,{recursive:true,force:true}));return dir;};
+import { spyOnFsync } from './helpers/fsync-spy.mjs';
+const CHILD_TIMEOUT_MS=60_000;const fixture=async(t)=>{const dir=await mkdtemp(join(tmpdir(),'TEST-ledger-append-'));t.after(()=>rm(dir,{recursive:true,force:true}));return dir;};
 const recordSyncs=(work)=>{
  const spy=spyOnFsync();
  try{work();}finally{spy.restore();}
@@ -47,8 +48,8 @@ test('a retry in a fresh process syncs the leaf entry a crash left unsynced',asy
  await mkdir(dirname(path),{mode:0o700});await writeFile(path,`${JSON.stringify({record:'first'})}\n`);
  const moduleUrl=new URL('../src/devnet-demo/approval-ledger-append.mjs',import.meta.url).href;
  const spyUrl=new URL('./helpers/fsync-spy.mjs',import.meta.url).href;
- const child=spawnSync(process.execPath,['--input-type=module','-e',syncInChildProcess,'--',path,moduleUrl,spyUrl],{encoding:'utf8'});
- assert.equal(child.status,0,child.stderr);
+ const child=spawnSync(process.execPath,['--input-type=module','-e',syncInChildProcess,'--',path,moduleUrl,spyUrl],{encoding:'utf8',timeout:CHILD_TIMEOUT_MS});
+ assert.equal(child.status,0,child.error?.message??child.stderr);
  const {pid,synced}=JSON.parse(child.stdout);
  assert.notEqual(pid,process.pid);
  for(const expected of [path,dirname(path),dir])assert(synced.includes(expected),expected);
