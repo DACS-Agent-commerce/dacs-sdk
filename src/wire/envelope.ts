@@ -552,7 +552,8 @@ export interface CheckedWireRequest {
   body: JsonRecord;
   /**
    * Only an expired delegation authenticates the request. Such requests can
-   * reach only declared read routes; effect routes are refused by this check.
+   * reach only the routes for which `isReadRoute` is true (`agreements/state`
+   * and `bundles/buyer-copy`); every other route is refused by this check.
    */
   readbackOnly: boolean;
   /**
