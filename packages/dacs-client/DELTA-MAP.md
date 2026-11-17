@@ -1709,6 +1709,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF free the signer when the evidence CREATE it holds has executed | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | 1917ff8c1b6e594bb6b181fc3b78f9f42f257797 |
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | f3a42056739f497fd805935c801cb490cadddb82 |
+| WF | delta(client): WF refuse a wire request that expired while its authority reads were awaited | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/seller-wire-authentication.mjs:1` | c3b84747cf7ccce2ef05712faf388a7645628fae |
+| | `packages/dacs-client/test/wire-request-signing.test.mjs:1` | 04eb2b3da7ba66cc59ad2e0af1280353483464e3 |
 
 ## Complete commit and file inventory
 
@@ -5165,6 +5168,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/src/dacs/seller-wire-authentication.mjs:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/test/wire-request-signing.test.mjs:1` |
 
 ## Original moved files
 
