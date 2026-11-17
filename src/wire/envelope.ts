@@ -384,8 +384,10 @@ function retainedMembers(path: string): string[] {
 /** The retained record's exact members for a route, each well-formed: anything else is `seller_retained_agreement_required` (500). */
 function assertRetainedShape(path: string, retained: JsonRecord | undefined): asserts retained is JsonRecord {
   const stage = isStageRoute(path);
+  const context = path === DACS_SELLER_HTTP_PATHS.context;
   if (!hasKeys(retained, retainedMembers(path)) || !isCanonicalJobId(retained.jobId) || !isHash(retained.agreementHash) ||
-      !isClaim(retained.buyer) || !isClaim(retained.seller) || (stage && typeof retained.allocated !== "boolean")) fail("seller_retained_agreement_required", 500);
+      !isClaim(retained.buyer) || !isClaim(retained.seller) || (stage && typeof retained.allocated !== "boolean") ||
+      (context && typeof retained.accepted !== "boolean")) fail("seller_retained_agreement_required", 500);
 }
 
 /**
@@ -690,7 +692,6 @@ async function admitPreAgreementDelegation({ c, request, delegation, listingPin 
 function admitPreAgreementReadiness(request: WireRequestPayload, c: RequestCheck, retained: JsonRecord): void {
   const context = request.path === DACS_SELLER_HTTP_PATHS.context;
   if (typeof c.ready !== "boolean") fail("seller_readiness_required", 500);
-  if (context && typeof retained.accepted !== "boolean") fail("seller_retained_agreement_required", 500);
   if (!c.ready && !(context && retained.accepted === true)) fail("seller_not_ready", 503);
 }
 
