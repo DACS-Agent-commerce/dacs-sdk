@@ -112,3 +112,14 @@ test("every workflow job that pins npm checks the pinned version in the next ste
   }
   assert.equal(checked, 3);
 });
+
+// A hung step must end the job instead of holding a runner for GitHub's default 360 minutes.
+const MAX_JOB_TIMEOUT_MINUTES = 60;
+test("every job of the CI, package-artifact and secret-scan workflows sets a timeout of at most an hour", () => {
+  for (const { name, jobs } of workflows.filter(({ name }) => ["ci.yml", "package-artifact.yml", "secret-scan.yml"].includes(name))) {
+    for (const [id, job] of Object.entries(jobs)) {
+      const minutes = job["timeout-minutes"];
+      assert.ok(Number.isInteger(minutes) && minutes > 0 && minutes <= MAX_JOB_TIMEOUT_MINUTES, `${name} ${id}: timeout-minutes is ${minutes}`);
+    }
+  }
+});

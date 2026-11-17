@@ -29,6 +29,7 @@ concurrency:
 jobs:
   build-test-plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     name: build-test plan
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -79,6 +80,7 @@ jobs:
     # The same routing applies to build-test-main.
     runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     needs: build-test-plan
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       # One entry per shard: node-version, part (seller-1, client-2, ...), suite and shard (K/N). The seller
@@ -136,6 +138,7 @@ jobs:
   # build-test-main and build-test route to runners by the same runs-on expression (described at build-test).
   build-test-main:
     runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -593,6 +596,7 @@ jobs:
     if: ${{ always() }}
     needs: [build-test-plan, build-test-main, build-test]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -660,6 +664,7 @@ jobs:
 
   packed-live-rail:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -744,6 +749,7 @@ jobs:
 
   buyer-minimum-runtime:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       # One failing Node leg must not cancel the other: each leg is its own engine-floor result.
       fail-fast: false
