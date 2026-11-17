@@ -10685,6 +10685,18 @@
           "after": "192016f0d5c93cbdd715fa2b5058bb312bc1d683"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs blob after merging 38352b8ae465",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "b0596c5f47da58f502486f59e1d0ebc2a383c2dc",
+          "after": "b0596c5f47da58f502486f59e1d0ebc2a383c2dc"
+        }
+      ]
     }
   ]
 }
