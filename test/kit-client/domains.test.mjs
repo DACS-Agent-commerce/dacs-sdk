@@ -1,4 +1,4 @@
-// K12-H6a / K12-H6b: the signing domain of the seller transport, as the kit's host and the client's signer each use it.
+// The signing domain of the seller transport, as the kit's host and the client's signer each use it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';

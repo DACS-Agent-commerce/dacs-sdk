@@ -1,4 +1,4 @@
-// K12-H5: how the client's seller POST classifies a signed answer. The seller side signs each answer under the old transport
+// How the client's seller POST classifies a signed answer. The seller side signs each answer under the old transport
 // domain (fixtures.mjs `signedAnswerHeader`); the exchange is an in-process fetch, so no socket is opened.
 import test from 'node:test';
 import assert from 'node:assert/strict';
