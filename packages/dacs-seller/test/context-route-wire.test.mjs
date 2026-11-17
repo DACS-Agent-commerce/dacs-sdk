@@ -1086,13 +1086,21 @@ test('a proposal, commitment or payment request is refused unless its job has a 
     assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], ['settled', 'vet-non-pass']);
     await assertStagesRefused(w, ['context_admission_closed', 409], 'vet-non-pass');
   });
-  await t.test('a row still running after the provider held its answer', async (t) => {
-    const w = await contextWireWorld(t), request = await w.startContext();
-    w.behaviour.answer = async () => ({ disposition: 'indeterminate', reason: 'TEST the answer is held' });
-    await w.post(request);
+  await t.test('a row still running while the provider holds its answer', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext(), entered = deferred(), release = deferred();
+    w.behaviour.answer = async () => { entered.resolve(); await release.promise; return { disposition: 'indeterminate', reason: 'TEST the answer is held' }; };
+    const stalled = w.post(request);
+    await entered.promise;
     assert.equal(w.rowOf().state, 'running');
     await assertStagesRefused(w, ['session_admission_unavailable', 503], 'running');
-    await w.settleJob();
+    release.resolve(); await stalled; await w.settleJob();
+  });
+  await t.test('a row ended after the provider gave no final answer', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    w.behaviour.answer = async () => ({ disposition: 'indeterminate', reason: 'TEST the answer is held' });
+    await w.post(request); await w.settleJob();
+    assert.equal(w.rowOf().state, 'aborted');
+    await assertStagesRefused(w, ['context_admission_closed', 409], 'ended');
   });
   await t.test('a row still taking its hold', async (t) => {
     const w = await contextWireWorld(t), request = await w.startContext(), entered = deferred(), release = deferred();
