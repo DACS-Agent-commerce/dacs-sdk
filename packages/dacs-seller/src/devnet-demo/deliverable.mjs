@@ -59,10 +59,10 @@ export function isDevnetPurchasedReport(value,{jobId,agreementHash,producer}={})
     && isCanonicalJobId(value.jobId) && typeof value.agreementHash==='string' && /^[0-9a-f]{64}$/.test(value.agreementHash)
     && value.listing!==null && typeof value.listing==='object' && !Array.isArray(value.listing)
     && Object.keys(value.listing).sort().join(',')==='contentHash,listingId,version'
-    && typeof value.listing.listingId==='string' && /^[A-Za-z0-9._~-]{1,128}$/.test(value.listing.listingId) && Number.isSafeInteger(value.listing.version) && value.listing.version>0 && /^[0-9a-f]{64}$/.test(value.listing.contentHash ?? '')
+    && typeof value.listing.listingId==='string' && /^[A-Za-z0-9._~-]{1,128}$/.test(value.listing.listingId) && Number.isSafeInteger(value.listing.version) && value.listing.version>0 && typeof value.listing.contentHash==='string' && /^[0-9a-f]{64}$/.test(value.listing.contentHash)
     && typeof value.settlementId==='string' && value.settlementId.length>0
     && isReportableTitle(value.title)
-    && /^did:demos:agent:[0-9a-f]{64}$/.test(value.producer ?? '')
+    && typeof value.producer==='string' && /^did:demos:agent:[0-9a-f]{64}$/.test(value.producer)
     && value.content?.mediaType==='text/plain; charset=utf-8' && Object.keys(value.content).sort().join(',')==='mediaType,text'
     && reportTextValid(value.content.text) && reportFitsOneCreate(value)
     && (jobId===undefined || value.jobId===jobId) && (agreementHash===undefined || value.agreementHash===agreementHash) && (producer===undefined || value.producer===producer);
