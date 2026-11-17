@@ -85,7 +85,11 @@ export function atomicWriteFile(path, contents, { write = writeFileSync } = {}) 
   } finally { rmSync(temporary, { force: true }); }
 }
 
-/** Replaces a JSON result by sibling rename, removing temporary files even on failure. */
+/** Replaces a JSON result by sibling rename, removing temporary files even on failure. Throws
+ * before writing, and keeps the existing file, when the result is over the evidence byte budget
+ * that a later read admits. */
 export function atomicWriteJson(path, value) {
-  atomicWriteFile(path, JSON.stringify(value, null, 2) + "\n");
+  const contents = JSON.stringify(value, null, 2) + "\n";
+  if (Buffer.byteLength(contents) > EVIDENCE_MAX_BYTES) throw new Error(`evidence byte limit exceeded: ${path}`);
+  atomicWriteFile(path, contents);
 }

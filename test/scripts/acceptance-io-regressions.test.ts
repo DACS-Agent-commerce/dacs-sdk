@@ -179,6 +179,19 @@ describe("atomic JSON writes", () => {
     expect(() => atomicWriteJson(path, { ok: true })).toThrow();
     expect(temporaryFiles(root)).toEqual([]);
   });
+  it("keeps the existing file when the serialised value exceeds the evidence byte limit", () => {
+    const root = scratchRoot("dacs-write-"), path = join(root, "result.json");
+    writeFileSync(path, "old");
+    expect(() => atomicWriteJson(path, { text: "x".repeat(EVIDENCE_MAX_BYTES) })).toThrow(`evidence byte limit exceeded: ${path}`);
+    expect(readFileSync(path, "utf8")).toBe("old");
+    expect(readdirSync(root)).toEqual(["result.json"]);
+  });
+  it("writes a value whose serialisation is exactly the evidence byte limit", () => {
+    const root = scratchRoot("dacs-write-"), path = join(root, "result.json");
+    const overhead = Buffer.byteLength(JSON.stringify({ text: "" }, null, 2) + "\n");
+    atomicWriteJson(path, { text: "x".repeat(EVIDENCE_MAX_BYTES - overhead) });
+    expect(readEvidence(path)).toHaveLength(EVIDENCE_MAX_BYTES);
+  });
   it("writes nothing when the value cannot be serialised", () => {
     const root = scratchRoot("dacs-write-"), path = join(root, "result.json");
     expect(() => atomicWriteJson(path, { count: 1n })).toThrow();
