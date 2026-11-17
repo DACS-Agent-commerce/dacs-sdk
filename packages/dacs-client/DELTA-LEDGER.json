@@ -10893,6 +10893,37 @@
           "after": "ca19616de38519c9ca54fc58b30378a71aec291e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): let a repeated request continue its signed operation and accept a plain seller pass",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "059821f0222109cdda91d88d832428f2d7bafd2e",
+          "after": "1a98b79937aa56aa9437ebd2df3d2361ffd11cde"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "d0fd7e6b27e6ae3399b6a8e16bbc9076735a3c88",
+          "after": "d8f377c18f8ea81f4db0943d978ae46133e09bd2"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "281d5c6f5862a90b07618e58a94dbc8b4d380fde",
+          "after": "cf4563b3981110724b4d0e471b0b82653a7b4d50"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-lanes.test.mjs",
+          "before": "ae22edd7331a950e3fa070390f2155f01a407d46",
+          "after": "48315ddd6ec8c91e244ef36d3c23dd7c6bb8344a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": "3ba5d96e05b5c593c4b5f5a36f2fae243672815d",
+          "after": "dd1514d4b4be7abff9676b4c0c01300820856711"
+        }
+      ]
     }
   ]
 }
