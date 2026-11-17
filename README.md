@@ -733,7 +733,13 @@ const search = await queryListingCatalog(catalog, {
   rail: "x402:default",
   limit: 50,
 });
-if (search.status !== "ok") throw new Error(search.reason);
+if (search.status !== "ok") {
+  // reason explains every indeterminate result. An unsupported rate filter
+  // also returns code: "unsupported-filter" and filters: the requested names
+  // that the Directory does not advertise.
+  if (search.code === "unsupported-filter") console.log(search.filters);
+  throw new Error(search.reason);
+}
 
 const candidate = search.page.listings[0];
 if (!candidate) throw new Error("no matching listing");
@@ -754,6 +760,22 @@ redirect refusal, omitted ambient credentials, response-size limits, and finite
 timeouts are defaults. Plain HTTP requires explicit `allowInsecureHttp: true`
 for trusted development catalogs. `reachabilityHint` and `reputationHint` remain
 operational pre-filters, never validity or trust evidence.
+
+Queries setting `minCompletionRate` or `minRating` first read the Directory's
+`/.well-known/dacs-directory.json` on the catalog origin; set
+`directoryManifestUrl` to override that absolute HTTPS URL. Query arguments are
+validated before any network request. For manifest versions `"1"` and `"2"`,
+the advertised `catalog` URL must match `catalogUrl`, and every requested rate
+filter must appear in `filters`. Otherwise, missing advertised filters produce
+`{ status: "indeterminate", reason, code: "unsupported-filter", filters: [...] }`
+without a listings request. Filters are never silently removed.
+
+A manifest HTTP 404 preserves the original request as a compatibility fallback
+for an unadvertised catalog; it identifies no Directory version. Other unreadable,
+malformed, mismatched or unknown-version manifests return `indeterminate`.
+Queries without rate filters do not read the manifest. Negotiation and listings
+share one `timeoutMs` deadline and caller cancellation signal; `maxResponseBytes`
+bounds each decoded response, including the manifest.
 
 Handle enumeration results by status. A `page` may contain permanent candidate
 `diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
