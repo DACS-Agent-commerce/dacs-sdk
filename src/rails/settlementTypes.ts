@@ -24,14 +24,14 @@ export interface SettleRequest {
    */
   phaseIndex?: number;
   /**
-   * Ordered durable transaction attempts supplied only to `resumeSettlement`.
-   * A fresh process uses this history to reconcile every ambiguous attempt and
-   * prove a replacement submission supersedes the latest one. Ordinary fresh
-   * settlement requests omit it.
+   * Ordered durable transaction attempts supplied only on a recovery
+   * request (one with `recoveryOnly` set). A fresh process uses this history to
+   * reconcile every ambiguous attempt and prove a replacement submission
+   * supersedes the latest one. Ordinary fresh settlement requests omit it.
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
   /**
-   * The caller sets this on every `resumeSettlement` request. A bridge honours it
+   * The caller sets this on every recovery request. A bridge honours it
    * by never taking a fresh claim: it settles through its store's `recover`,
    * whose own atomic claim returns a recorded outcome or reconciles an
    * unresolved intent (adopting a payment it proves landed), and refuses when
