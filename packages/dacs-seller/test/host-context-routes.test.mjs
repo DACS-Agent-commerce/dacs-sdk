@@ -8,10 +8,14 @@ import { Server } from 'node:http';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { HOST_CONTEXT_CALLBACKS } from './helpers/host-context-callbacks.mjs';
-import { contextCapability, contextHostFixture, presentContextAnswer } from './helpers/host-context-client.mjs';
-import { JOB } from './helpers/protocol-fixture.mjs';
+import { contextCapability, contextHostFixture, hostBuyer, presentContextAnswer } from './helpers/host-context-client.mjs';
+import { JOB, NOW } from './helpers/protocol-fixture.mjs';
 
 const OTHER_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0B';
+const THIRD_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0C';
+const ABANDONED_PURCHASE_MS = 3_600_000;
+// One purchase allocation holds 68 units. After its context step 52 stay held (51 unspent, 1 charged), so 100 leaves too little for a second purchase.
+const ONE_PURCHASE_BUDGET = 100;
 const CONTEXT_DEADLINE_MS = 240_000;
 const SWEEP_INTERVAL_MS = 60_000;
 const LEASE_WAIT_MS = 10_000;
@@ -33,6 +37,18 @@ const admissionState = (directory, jobId = JOB) => {
   const db = new Database(join(directory, 'transport', 'transport.sqlite'), { readonly: true });
   try { return db.prepare('SELECT state FROM kit_context_admissions WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
 };
+
+const allocationState = (directory, jobId = JOB) => {
+  const db = new Database(join(directory, 'transport', 'transport.sqlite'), { readonly: true });
+  try { return db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
+};
+
+/** Runs the host's periodic sweep once and waits until `done()` holds, in turns of the event loop and never in wall-clock time. */
+async function sweepUntil(sweep, done) {
+  sweep.callback();
+  for (let turn = 0; turn < 200 && !done(); turn++) await flush();
+  assert.equal(done(), true, 'the sweep did not finish its work');
+}
 
 /**
  * A provider that makes its two Vet writes, each after asking the attempt's predicate, and waits on `gate` at `stall`: `first` (before the
@@ -276,4 +292,54 @@ test('the host runs one unref\'d 60 second sweep at a time, and close stops the 
   await pending;
   await closing;
   assert.equal(existsSync(lockPath(f.dataDirectory)), false);
+});
+
+/** A started host on a clock the test moves, with its periodic sweep captured and the buyers that talk to it. */
+async function hostOnMovingClock(t, f, options = {}) {
+  const clock = { elapsed: 0, now: () => NOW + clock.elapsed };
+  const timers = [], setInterval = globalThis.setInterval;
+  t.mock.method(globalThis, 'setInterval', (callback, ms, ...rest) => { const timer = setInterval(callback, ms, ...rest); timers.push({ callback, ms }); return timer; });
+  const host = await f.start({ maxReservationUnits: ONE_PURCHASE_BUDGET, now: clock.now, ...options });
+  const sweep = timers.find(({ ms }) => ms === SWEEP_INTERVAL_MS);
+  const buyerFor = (jobId) => hostBuyer(host, f.config.listing, { jobId, clock: clock.now });
+  return { clock, sweep, buyerFor, host };
+}
+
+test('the default host frees the units of a purchase that stopped after its context step once an hour has passed, and then admits the next buyer', async (t) => {
+  const f = await contextHostFixture(t), { clock, sweep, buyerFor } = await hostOnMovingClock(t, f);
+  const first = await (await buyerFor(JOB)).requestContext();
+  assert.equal(first.status, 200, first.text);
+  assert.equal(allocationState(f.dataDirectory), 'live', 'the context step keeps the rest of the purchase\'s units');
+  const refused = await (await buyerFor(OTHER_JOB)).requestContext();
+  assert.deepEqual([refused.status, refused.body.error], [503, 'seller_not_ready']);
+
+  clock.elapsed = ABANDONED_PURCHASE_MS - 1;
+  sweep.callback();
+  await flush();
+  assert.equal(allocationState(f.dataDirectory), 'live', 'a purchase younger than an hour keeps its units');
+
+  clock.elapsed = ABANDONED_PURCHASE_MS;
+  await sweepUntil(sweep, () => allocationState(f.dataDirectory) === 'released');
+  const next = await (await buyerFor(THIRD_JOB)).requestContext();
+  assert.equal(next.status, 200, next.text);
+});
+
+test('the default host frees the units of a purchase that was abandoned before it restarted', async (t) => {
+  const f = await contextHostFixture(t), { buyerFor, host } = await hostOnMovingClock(t, f);
+  assert.equal((await (await buyerFor(JOB)).requestContext()).status, 200);
+  await host.close();
+  assert.equal(allocationState(f.dataDirectory), 'live');
+  await f.start({ maxReservationUnits: ONE_PURCHASE_BUDGET, now: () => NOW + 2 * ABANDONED_PURCHASE_MS });
+  assert.equal(allocationState(f.dataDirectory), 'released');
+});
+
+test('a host given its own contextSessionState reads no purchase as abandoned', async (t) => {
+  const f = await contextHostFixture(t), { clock, sweep, buyerFor } = await hostOnMovingClock(t, f, { contextSessionState: () => null });
+  assert.equal((await (await buyerFor(JOB)).requestContext()).status, 200);
+  clock.elapsed = 2 * ABANDONED_PURCHASE_MS;
+  sweep.callback();
+  await flush();
+  assert.equal(allocationState(f.dataDirectory), 'live');
+  const refused = await (await buyerFor(OTHER_JOB)).requestContext();
+  assert.deepEqual([refused.status, refused.body.error], [503, 'seller_not_ready']);
 });

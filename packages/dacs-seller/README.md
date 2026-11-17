@@ -19,7 +19,8 @@ broadcast can still reach a real Demos node: keep them on the fixture too. It
 is not qualified for mainnet. The standalone host preserves job ownership and refuses
 new jobs before admission at `maxJobs` (default 10,000) unless completed work
 can safely retire. Terminal DACS-5 bundle completion is not wired; slot retirement
-needs the `contextSessionState` capability described below.
+needs a terminal session state, which the `contextSessionState` capability or the
+host's own reading of abandoned purchases (described below) supplies.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
@@ -44,7 +45,11 @@ non-null non-string refuses issuance and new work with `session_admission_unavai
 503 and its cause; only explicit `null` means unknown. Promise results are ignored
 and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
-transactions. A host without the capability reclaims nothing. Context route
+transactions. A host given no capability reads one state itself: a purchase that
+settled its context step and has started no proposal, commitment or payment an
+hour after its admission reads as `aborted-by-self`, so its units are given back and
+its job id cannot continue (the buyer starts again with a new job id). A host
+given the capability uses only that. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 
 Verified additive migration is forward-only: the unchanged format marker does not
@@ -72,9 +77,10 @@ Signed reads and the signed challenge reserve nothing. The context route's admis
 allocation and refuses `seller_not_ready` (503) while the whole allotment is not
 free; the host's readiness does not read the units. Terminal allocation cleanup
 runs at startup and when a store reader observes a terminal session through
-`contextSessionState`. There is no periodic terminal cleanup, so with the default
-`contextSessionState` (which names no state) the units a purchase keeps after
-its context step stay allocated.
+`contextSessionState`, and the host's 60-second sweep repeats it while the host
+runs. With no `contextSessionState` the units a purchase keeps after its context
+step are given back once it reads as abandoned (above); with an operator's
+`contextSessionState` they stay allocated until that reader names a terminal state.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
 the old store's checks, startup cleanup and the coordinator) is kept as a durable,

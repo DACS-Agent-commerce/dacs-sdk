@@ -47,6 +47,7 @@ import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { createAbandonedPurchaseState } from './dacs/abandoned-purchase.mjs';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { createContextWorkRegistry } from './dacs/context-work-registry.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
@@ -274,9 +275,9 @@ export async function startSellerHost(options) {
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
-    maxReservationUnits = maxRecords, host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
+    maxReservationUnits = maxRecords, host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
-  if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
+  if (contextSessionState !== null && typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
@@ -321,7 +322,10 @@ export async function startSellerHost(options) {
     // The store comes first: its one challenge ledger is the agent's only challenge store, and the agent checks the
     // sessions it restores against that ledger.
     mkdirSync(transport, { recursive: true, mode: 0o700 });
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, contextSessionState,
+    // Without an operator reader the host reads abandoned purchases itself; the reader is set once the admission records and the journal exist.
+    let abandonedPurchaseState = () => null;
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested,
+      contextSessionState: contextSessionState ?? ((target) => abandonedPurchaseState(target)),
       wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
     // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
@@ -358,6 +362,8 @@ export async function startSellerHost(options) {
     const hostStopped = () => stopping || stopRequested();
     const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
       completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
+    abandonedPurchaseState = createAbandonedPurchaseState({ admissionRecord: admission.admissionRecord, now,
+      operationState: ({ jobId, path }) => inspectWireOperation(journal, { jobId, seller: sellerClaim, path }).state });
     // Every effect route reserves through the coordinator and ends its attempt through the completion port.
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission });
     reservations.addPreAccountingGate(closedBootstrapGate);
@@ -375,8 +381,9 @@ export async function startSellerHost(options) {
       admitWrites: oldContextStepRefused, releaseWrites: oldContextStepRefused, recover: oldContextStepRefused }), ...contextRoute };
     // A purchase whose session already ended gives its unspent units back before anything is served, unless its job holds a recorded
     // payment and the payments operation has no completed answer: that job's paid retry still needs its session and allocation.
-    capacity.releaseTerminalAllocations(({ jobId, seller }) => agent.holdsRecordedPayment(jobId)
-      && inspectWireOperation(journal, { jobId, seller, path: DACS_SELLER_HTTP_PATHS.payments }).state !== 'completed');
+    const keepPaidJobOpen = ({ jobId, seller }) => agent.holdsRecordedPayment(jobId)
+      && inspectWireOperation(journal, { jobId, seller, path: DACS_SELLER_HTTP_PATHS.payments }).state !== 'completed';
+    capacity.releaseTerminalAllocations(keepPaidJobOpen);
     // Rows an earlier process left unfinished are settled or fenced before any route is mounted.
     await admission.sweep({ startup: true });
     // The state directories and the new transport database entry are durable
@@ -433,11 +440,13 @@ export async function startSellerHost(options) {
       server.once('error', reject);
       server.listen({ host, port, exclusive: true }, () => { server.off('error', reject); resolve(); });
     });
-    // Unfinished context rows are swept again while the host runs, one sweep at a time. A sweep that cannot finish a row records its cause on
-    // that row and a later sweep tries again, so a failed pass has nothing more to report here.
+    // Unfinished context rows are swept again while the host runs, one sweep at a time, and the units of purchases whose session has ended
+    // or been abandoned are given back. A sweep that cannot finish a row records its cause on that row and a later sweep tries again, so a
+    // failed pass has nothing more to report here.
     let sweeping = null;
     const sweepTimer = setInterval(() => {
-      sweeping ??= admission.sweep({ startup: false }).catch(() => {}).finally(() => { sweeping = null; });
+      sweeping ??= admission.sweep({ startup: false }).catch(() => {}).then(() => capacity.releaseTerminalAllocations(keepPaidJobOpen)).catch(() => {})
+        .finally(() => { sweeping = null; });
     }, SWEEP_INTERVAL_MS).unref();
     let closing = null;
     // Stops accepting, lets requests in progress finish, waits for the provider

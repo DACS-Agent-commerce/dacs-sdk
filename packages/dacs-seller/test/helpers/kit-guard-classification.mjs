@@ -8,6 +8,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/cli/init.mjs': { effect: {}, pure: ['runInit'] },
   'src/cli/main.mjs': { effect: {}, pure: ['main', 'parseCliArguments'] },
   'src/cli/node-identity.mjs': { effect: {}, pure: ['deriveWalletIdentity', 'generateWalletMnemonic', 'validateMnemonic'] },
+  'src/dacs/abandoned-purchase.mjs': { effect: {}, pure: ['createAbandonedPurchaseState'] },
   'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall', 'isBoundedCallTimeout'] },
   'src/dacs/bounded-reads.mjs': { effect: {  }, pure: ['readFailureCode', 'readRetainedBounded'] },
   'src/dacs/commit-on-signature.mjs': { effect: { signatureCommitmentAnchor: ['signatureCommitmentAnchor'] }, pure: ['commitOnSignatureConfig', 'verifyAgreementCreateAuthorization', 'verifySignatureAgreement'] },
