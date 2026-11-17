@@ -1711,6 +1711,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | f3a42056739f497fd805935c801cb490cadddb82 |
 | D76 | delta(client): D76 add demosdk 4.0.17 to the reviewed loader table | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/demos-quiet-hooks.mjs:1`: 91d06508f63df5308dece710ffb05aeae26a5bb8<br>`packages/dacs-client/test/node-demos-loading.test.mjs:1`: e471ef9edf615b5ad88521496dc8ab4b0eb6fc43 | |
+| D76 | delta(client): D76 pin the demosdk signing-content test to 4.0.17 | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | d8b3ffc11f570d455f4a365c18d3e6b64ac025d3 |
 | D76 | delta(client): D76 name demosdk 4.0.17 in the unsigned identity read comment | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/chain.mjs:16`, `packages/dacs-client/src/dacs/chain.mjs:29`, `packages/dacs-client/src/dacs/chain.mjs:31`, `packages/dacs-client/src/dacs/chain.mjs:49`, `packages/dacs-client/src/dacs/chain.mjs:80`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:133`, `packages/dacs-client/src/dacs/chain.mjs:142`, `packages/dacs-client/src/dacs/chain.mjs:153`, `packages/dacs-client/src/dacs/chain.mjs:159`, `packages/dacs-client/src/dacs/chain.mjs:172`, `packages/dacs-client/src/dacs/chain.mjs:178`, `packages/dacs-client/src/dacs/chain.mjs:198`, `packages/dacs-client/src/dacs/chain.mjs:204`, `packages/dacs-client/src/dacs/chain.mjs:221`, `packages/dacs-client/src/dacs/chain.mjs:295`, `packages/dacs-client/src/dacs/chain.mjs:324`, `packages/dacs-client/src/dacs/chain.mjs:340`, `packages/dacs-client/src/dacs/chain.mjs:353`, `packages/dacs-client/src/dacs/chain.mjs:355` | ad8d99f266a087b826a052730243bc257b1f5789 |
 
@@ -5170,6 +5172,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
 | delta(client): D76 add demosdk 4.0.17 to the reviewed loader table | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/README.md:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-map.mjs:1`<br>`packages/dacs-client/src/wallet/demos-quiet-hooks.mjs:1`<br>`packages/dacs-client/test/node-demos-loading.test.mjs:1` |
+| delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/records/D76-a6c8894d46c4.json:1` |
+| delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
 | delta(client): D76 name demosdk 4.0.17 in the unsigned identity read comment | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): D76 name demosdk 4.0.17 in the unsigned identity read comment | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D76 name demosdk 4.0.17 in the unsigned identity read comment | `packages/dacs-client/records/D76-ad3deea7d13f.json:1` |
