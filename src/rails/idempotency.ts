@@ -850,8 +850,8 @@ export interface SettlementBridgeTraits {
 
 /**
  * The functions an SDK settle bridge returned. Keyed by function identity and
- * private to the SDK: a wrapper is a different object, so `runSession` can tell a
- * resume seam that honours `recoveryOnly` from one it cannot vouch for.
+ * private to the SDK: a wrapper is a different object, so a lookup can tell a
+ * function that honours `recoveryOnly` from one it cannot vouch for.
  */
 const settlementBridges = new WeakMap<object, SettlementBridgeTraits>();
 

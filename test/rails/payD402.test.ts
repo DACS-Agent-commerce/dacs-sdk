@@ -10,10 +10,15 @@ import {
   type D402PaymentRequirement,
   type D402SettlementResult,
   type PayD402Rail,
+  type PayD402SettleResult,
 } from "../../src/rails/payD402.js";
+import type { SettleRequest } from "../../src/rails/settlementTypes.js";
 
-const RECIPIENT = "demos1recipientaddress0000000000000000000000";
-const PAYER = "demos1payeraddress00000000000000000000000000";
+import { CounterpartyError } from "../../src/errors.js";
+
+const RECIPIENT = `0x${"cd".repeat(32)}`;
+const PAYER = "ab".repeat(32);
+const TX_HASH = "ef".repeat(32);
 const URL = "https://seller.example/premium";
 
 describe("termsMatchD402 (§4.1 abort guard, native DEM)", () => {
@@ -52,7 +57,7 @@ function fakeClient(
       return { tx: "unsigned", requirement };
     },
     async settle() {
-      return over.result ?? { success: true, hash: "0xdemhash", blockNumber: 42 };
+      return over.result ?? { success: true, hash: `0x${TX_HASH}`, blockNumber: 42 };
     },
   };
   return self;
@@ -75,6 +80,51 @@ const params = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/** The node's record of a confirmed d402 payment for the happy-path terms. */
+function recordedPayment(over: { status?: string; hash?: string; content?: Record<string, unknown> } = {}) {
+  return {
+    status: "confirmed",
+    hash: `0x${TX_HASH}`,
+    ...over,
+    content: {
+      type: "d402_payment",
+      from: `0x${PAYER}`,
+      from_ed25519_address: `0x${PAYER}`,
+      data: ["d402_payment", { to: RECIPIENT, amount: "1500000000", memo: "resourceId:res-1" }],
+      gcr_edits: [
+        { type: "balance", operation: "remove", isRollback: false, account: `0x${PAYER}`, txhash: `0x${TX_HASH}`, amount: "1500000000" },
+        { type: "balance", operation: "add", isRollback: false, account: RECIPIENT, txhash: `0x${TX_HASH}`, amount: "1500000000" },
+      ],
+      ...over.content,
+    },
+  };
+}
+
+const confirmingRead = async () => recordedPayment();
+
+/** A reader that shows the payment as confirmed and counts how often it is called. */
+function countingRead() {
+  const reader = {
+    calls: 0,
+    read: async () => {
+      reader.calls += 1;
+      return recordedPayment();
+    },
+  };
+  return reader;
+}
+
+const ADVERTISED_REQUIREMENT = { recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" };
+
+async function settleWithRecord(readTransaction: (hash: string) => Promise<unknown>) {
+  return payD402SettleCore(params(), {
+    client: fakeClient(),
+    fetchImpl: fetch402(ADVERTISED_REQUIREMENT),
+    payerAddress: PAYER,
+    readTransaction,
+  });
+}
+
 describe("payD402SettleCore", () => {
   test("happy path: pays the advertised requirement and returns the settlement hash", async () => {
     const client = fakeClient();
@@ -82,9 +132,10 @@ describe("payD402SettleCore", () => {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
+      readTransaction: confirmingRead,
     });
     expect(res.ok).toBe(true);
-    expect(res.txHash).toBe("0xdemhash");
+    expect(res.txHash).toBe(`0x${TX_HASH}`);
     expect(res.payer).toBe(PAYER);
     expect(res.payee).toBe(RECIPIENT);
     expect(res.chainId).toBe("demos:testnet");
@@ -99,6 +150,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({ recipient: "demos1attacker", amount: "1500000000", resourceId: "res-1" }),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/does not match negotiated agreement/);
     expect(created).toBe(0); // never signed
@@ -111,6 +163,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: "999", resourceId: "res-1" }),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/amount mismatch/);
   });
@@ -122,6 +175,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({}, 200),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/expected HTTP 402/);
   });
@@ -133,6 +187,7 @@ describe("payD402SettleCore", () => {
         client,
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000" }),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/resourceId/);
   });
@@ -143,6 +198,7 @@ describe("payD402SettleCore", () => {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
+      readTransaction: confirmingRead,
     });
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe("");
@@ -154,9 +210,245 @@ describe("payD402SettleCore", () => {
       client,
       fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
       payerAddress: PAYER,
+      readTransaction: confirmingRead,
     });
     expect(res.ok).toBe(false);
     expect(res.txHash).toBe("0xtried");
+  });
+
+  test("a settle still pending after its poll is reported pending, not ok, with its hash kept", async () => {
+    const client = fakeClient({
+      result: { success: false, pending: true, hash: "0xpendinghash", message: "not yet included" },
+    });
+    const res = await payD402SettleCore(params(), {
+      client,
+      fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
+      payerAddress: PAYER,
+      readTransaction: confirmingRead,
+    });
+    expect(res).toEqual({
+      ok: false,
+      pending: true,
+      txHash: "0xpendinghash",
+      chainId: "demos:testnet",
+      payer: PAYER,
+      payee: RECIPIENT,
+    });
+    expect(res.errorClass).toBeUndefined();
+  });
+
+  test("a pending settle with no hash throws instead of reporting not sent", async () => {
+    const client = fakeClient({ result: { success: false, pending: true, hash: "" } });
+    await expect(
+      payD402SettleCore(params(), {
+        client,
+        fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
+        payerAddress: PAYER,
+        readTransaction: confirmingRead,
+      }),
+    ).rejects.toThrow(/pending.*without a hash/);
+  });
+
+  test("a settle reporting success and pending is never ok, even when the record shows the payment", async () => {
+    const client = fakeClient({ result: { success: true, pending: true, hash: `0x${TX_HASH}` } });
+    const reader = countingRead();
+    const res = await payD402SettleCore(params(), {
+      client,
+      fetchImpl: fetch402({ recipient: RECIPIENT, amount: "1500000000", resourceId: "res-1" }),
+      payerAddress: PAYER,
+      readTransaction: reader.read,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.pending).toBe(true);
+    expect(res.txHash).toBe(`0x${TX_HASH}`);
+    expect(reader.calls).toBe(0);
+  });
+
+  test("an acknowledged settle whose record is not yet seen is not ok and keeps its hash", async () => {
+    const res = await settleWithRecord(async () => {
+      throw new Error("Demos transaction record not found");
+    });
+    expect(res).toEqual({
+      ok: false,
+      txHash: `0x${TX_HASH}`,
+      chainId: "demos:testnet",
+      payer: PAYER,
+      payee: RECIPIENT,
+    });
+  });
+
+  test("a settle that is not acknowledged is not read back", async () => {
+    let reads = 0;
+    const client = fakeClient({ result: { success: false, hash: "0xtried" } });
+    await payD402SettleCore(params(), {
+      client,
+      fetchImpl: fetch402(ADVERTISED_REQUIREMENT),
+      payerAddress: PAYER,
+      readTransaction: async () => {
+        reads += 1;
+        return recordedPayment();
+      },
+    });
+    expect(reads).toBe(0);
+  });
+
+  test("a matching confirmed record is read back by the acknowledged hash", async () => {
+    const hashes: string[] = [];
+    const res = await settleWithRecord(async (hash) => {
+      hashes.push(hash);
+      return recordedPayment();
+    });
+    expect(res.ok).toBe(true);
+    expect(hashes).toEqual([`0x${TX_HASH}`]);
+  });
+
+  test("a node that acknowledges a settle but records no transfer is not reported ok", async () => {
+    const res = await settleWithRecord(async () => ({}));
+    expect(res.ok).toBe(false);
+    expect(res.txHash).toBe(`0x${TX_HASH}`);
+    expect(res.payee).toBe(RECIPIENT);
+  });
+
+  test("a recorded transfer from another payer is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ content: { from: `0x${"11".repeat(32)}` } }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a record that debits another account is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ content: { from_ed25519_address: `0x${"11".repeat(32)}` } }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a record with no debit account is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ content: { from_ed25519_address: undefined } }));
+    expect(res.ok).toBe(false);
+  });
+
+  const payerDebit = (over: Record<string, unknown> = {}) => ({
+    type: "balance", operation: "remove", isRollback: false, account: `0x${PAYER}`,
+    txhash: `0x${TX_HASH}`, amount: "1500000000", ...over,
+  });
+  const payeeCredit = (over: Record<string, unknown> = {}) => ({
+    type: "balance", operation: "add", isRollback: false, account: RECIPIENT,
+    txhash: `0x${TX_HASH}`, amount: "1500000000", ...over,
+  });
+
+  test("a confirmed record with no balance credit to the payee is not reported ok", async () => {
+    for (const gcr_edits of [
+      undefined,
+      [],
+      [payerDebit()],
+      [payerDebit(), payeeCredit({ account: `0x${"22".repeat(32)}` })],
+      [payerDebit(), payeeCredit({ amount: "1" })],
+      [payerDebit(), payeeCredit({ operation: "remove" })],
+      [payerDebit(), payeeCredit({ isRollback: true })],
+    ]) {
+      const res = await settleWithRecord(async () => recordedPayment({ content: { gcr_edits } }));
+      expect(res.ok).toBe(false);
+    }
+  });
+
+  describe("payer debit", () => {
+    test("a confirmed record that credits the payee but has no payer debit is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({ content: { gcr_edits: [payeeCredit()] } }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
+
+    test("a confirmed record whose payer debit is for another amount is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({ content: { gcr_edits: [payerDebit({ amount: "1" }), payeeCredit()] } }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
+
+    test("a confirmed record whose payer debit is rolled back is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({ content: { gcr_edits: [payerDebit({ isRollback: true }), payeeCredit()] } }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
+
+    test("a confirmed record whose only debit is from another account is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({
+          content: { gcr_edits: [payerDebit({ account: `0x${"11".repeat(32)}` }), payeeCredit()] },
+        }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
+
+    test("a confirmed record whose payer edit adds balance instead of removing it is not reported ok", async () => {
+      const res = await settleWithRecord(async () =>
+        recordedPayment({
+          content: { gcr_edits: [payerDebit({ operation: "add" }), payeeCredit()] },
+        }));
+      expect(res.ok).toBe(false);
+      expect(res.txHash).toBe(`0x${TX_HASH}`);
+    });
+  });
+
+  test("a recorded transfer to another payee is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({
+        content: { data: ["d402_payment", { to: `0x${"22".repeat(32)}`, amount: "1500000000" }] },
+      }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a recorded transfer of another amount is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ content: { data: ["d402_payment", { to: RECIPIENT, amount: "1" }] } }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a record for a different hash is not reported ok", async () => {
+    const res = await settleWithRecord(async () =>
+      recordedPayment({ hash: `0x${"33".repeat(32)}` }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a record that is not confirmed is not reported ok", async () => {
+    const res = await settleWithRecord(async () => recordedPayment({ status: "pending" }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a record that is not a d402 payment is not reported ok", async () => {
+    const res = await settleWithRecord(async () => recordedPayment({ content: { type: "native" } }));
+    expect(res.ok).toBe(false);
+  });
+
+  test("a failed record read is not reported ok", async () => {
+    const res = await settleWithRecord(async () => {
+      throw new Error("Demos transaction record read timed out");
+    });
+    expect(res.ok).toBe(false);
+    expect(res.txHash).toBe(`0x${TX_HASH}`);
+  });
+
+  test("a 402 whose payment the record check could not confirm is refused before paying", async () => {
+    for (const body of [
+      { ...ADVERTISED_REQUIREMENT, amount: "01500000000" },
+      { ...ADVERTISED_REQUIREMENT, amount: "0x59682F00" },
+      { ...ADVERTISED_REQUIREMENT, description: "x".repeat(70_000) },
+      { ...ADVERTISED_REQUIREMENT, resourceId: "r".repeat(70_000) },
+    ]) {
+      let created = 0;
+      const client = fakeClient({ onCreate: () => (created += 1) });
+      await expect(
+        payD402SettleCore(params(), {
+          client,
+          fetchImpl: fetch402(body),
+          payerAddress: PAYER,
+          readTransaction: confirmingRead,
+        }),
+      ).rejects.toThrow(CounterpartyError);
+      expect(created).toBe(0);
+    }
   });
 
   test("a bare-DEM number amount (pre-fork) is rejected — OS base-unit string required", async () => {
@@ -167,6 +459,7 @@ describe("payD402SettleCore", () => {
         // 402 advertises `amount: 2` (pre-fork DEM) instead of OS base units.
         fetchImpl: fetch402({ recipient: RECIPIENT, amount: 2, resourceId: "res-1" }),
         payerAddress: PAYER,
+        readTransaction: confirmingRead,
       }),
     ).rejects.toThrow(/bare number|OS base units/);
   });
@@ -211,5 +504,211 @@ describe("payD402Settle bridge destination binding", () => {
       }),
     ).toThrow(/destination mismatch/);
     expect(calls).toBe(0);
+  });
+
+  test("the settlement bridge hands over a pending payment as ok:false with its hash and no pending key", async () => {
+    const rail: PayD402Rail = {
+      address: PAYER,
+      settle: async () => ({
+        ok: false,
+        pending: true,
+        txHash: "0xpendinghash",
+        chainId: "demos:testnet",
+        payer: PAYER,
+        payee: RECIPIENT,
+      }),
+    };
+    const settle = payD402Settle(rail, { url: URL, recipient: RECIPIENT, network: "demos:testnet" });
+    const res = await settle({
+      rail: "pay-d402",
+      phase: "pay-d402",
+      amount: "1500000000",
+      asset: "DEM",
+      payee: "did:demos:seller",
+      expectedPayee: RECIPIENT,
+      jobId: "pending-bridge",
+    });
+    expect(res).toEqual({
+      ok: false,
+      txHash: "0xpendinghash",
+      chainId: "demos:testnet",
+      payer: PAYER,
+      payee: RECIPIENT,
+    });
+  });
+});
+
+describe("payD402Settle bridge settles each job once after an unresolved result", () => {
+  const unresolved: PayD402SettleResult = {
+    ok: false,
+    txHash: "0xunresolvedhash",
+    chainId: "demos:testnet",
+    payer: PAYER,
+    payee: RECIPIENT,
+  };
+
+  function bridgeOver(results: Array<PayD402SettleResult | Error>) {
+    let calls = 0;
+    const rail: PayD402Rail = {
+      address: PAYER,
+      settle: async () => {
+        const next = results[Math.min(calls, results.length - 1)];
+        calls += 1;
+        if (next === undefined) throw new Error("the fake rail needs at least one result");
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    };
+    const settle = payD402Settle(rail, { url: URL, recipient: RECIPIENT, network: "demos:testnet" });
+    return { settle, settleCalls: () => calls };
+  }
+
+  function request(jobId: string, over: Partial<SettleRequest> = {}): SettleRequest {
+    return {
+      rail: "pay-d402",
+      phase: "pay-d402",
+      amount: "1500000000",
+      asset: "DEM",
+      payee: "did:demos:seller",
+      expectedPayee: RECIPIENT,
+      jobId,
+      ...over,
+    };
+  }
+
+  test("a second bridge call for a job with an unresolved hash does not settle again", async () => {
+    const { settle, settleCalls } = bridgeOver([unresolved, { ...unresolved, ok: true, txHash: "0xsecond" }]);
+    const first = await settle(request("job-unresolved"));
+    const second = await settle(request("job-unresolved"));
+    expect(settleCalls()).toBe(1);
+    expect(first.ok).toBe(false);
+    expect(second).toEqual(first);
+  });
+
+  test("a second bridge call for a job whose first payment was pending does not settle again", async () => {
+    const { settle, settleCalls } = bridgeOver([
+      { ...unresolved, pending: true },
+      { ...unresolved, ok: true, txHash: "0xsecond" },
+    ]);
+    await settle(request("job-pending"));
+    const second = await settle(request("job-pending"));
+    expect(settleCalls()).toBe(1);
+    expect(second).toEqual(unresolved);
+  });
+
+  test("a first bridge call that returned no hash can be retried for the same job", async () => {
+    const paid = { ...unresolved, ok: true, txHash: "0xpaid" };
+    const { settle, settleCalls } = bridgeOver([{ ...unresolved, txHash: "" }, paid]);
+    await settle(request("job-no-hash"));
+    const second = await settle(request("job-no-hash"));
+    expect(settleCalls()).toBe(2);
+    expect(second).toEqual(paid);
+  });
+
+  test("a first bridge call that threw before sending can be retried for the same job", async () => {
+    const paid = { ...unresolved, ok: true, txHash: "0xpaid" };
+    const { settle, settleCalls } = bridgeOver([new CounterpartyError("d402: expected HTTP 402"), paid]);
+    await expect(settle(request("job-threw"))).rejects.toThrow(/expected HTTP 402/);
+    const second = await settle(request("job-threw"));
+    expect(settleCalls()).toBe(2);
+    expect(second).toEqual(paid);
+  });
+
+  test("a permanent failure result does not hold the job", async () => {
+    const permanent: PayD402SettleResult = { ...unresolved, errorClass: "permanent" };
+    const { settle, settleCalls } = bridgeOver([permanent, permanent]);
+    await settle(request("job-permanent"));
+    await settle(request("job-permanent"));
+    expect(settleCalls()).toBe(2);
+  });
+
+  test("an unresolved payment holds only its own job and phase", async () => {
+    const { settle, settleCalls } = bridgeOver([unresolved]);
+    await settle(request("job-a"));
+    await settle(request("job-b"));
+    await settle(request("job-a", { phaseIndex: 1 }));
+    expect(settleCalls()).toBe(3);
+    await settle(request("job-a", { phaseIndex: 0 }));
+    expect(settleCalls()).toBe(3);
+  });
+
+  test("a request that carries earlier attempts or asks for recovery is refused before settling", async () => {
+    const { settle, settleCalls } = bridgeOver([unresolved]);
+    const attempt = { txHash: "0xunresolvedhash", chainId: "demos:testnet", ok: false };
+    expect(() => settle(request("job-resume", { priorAttempts: [attempt] }))).toThrow(/does not recover/);
+    expect(() => settle(request("job-resume", { recoveryOnly: true }))).toThrow(/does not recover/);
+    expect(settleCalls()).toBe(0);
+  });
+
+  function gatedBridge(outcome: () => PayD402SettleResult | Error) {
+    let calls = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const rail: PayD402Rail = {
+      address: PAYER,
+      settle: async () => {
+        calls += 1;
+        await gate;
+        const next = outcome();
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    };
+    const settle = payD402Settle(rail, { url: URL, recipient: RECIPIENT, network: "demos:testnet" });
+    return { settle, release, settleCalls: () => calls };
+  }
+
+  test("two overlapping calls for one job make one rail call and share the result", async () => {
+    const { settle, release, settleCalls } = gatedBridge(() => unresolved);
+    const first = settle(request("job-overlap"));
+    const second = settle(request("job-overlap"));
+    release();
+    expect(await first).toEqual(unresolved);
+    expect(await second).toEqual(unresolved);
+    expect(settleCalls()).toBe(1);
+  });
+
+  test("a throw in the first of two overlapping calls lets a later call retry", async () => {
+    let attempt = 0;
+    const paid = { ...unresolved, ok: true, txHash: "0xpaid" };
+    const { settle, release, settleCalls } = gatedBridge(() => {
+      attempt += 1;
+      return attempt === 1 ? new CounterpartyError("d402: expected HTTP 402") : paid;
+    });
+    const first = settle(request("job-overlap-throw"));
+    const second = settle(request("job-overlap-throw"));
+    release();
+    await expect(first).rejects.toThrow(/expected HTTP 402/);
+    await expect(second).rejects.toThrow(/expected HTTP 402/);
+    expect(settleCalls()).toBe(1);
+    expect(await settle(request("job-overlap-throw"))).toEqual(paid);
+    expect(settleCalls()).toBe(2);
+  });
+
+  test("a repeat with a different amount is refused while the job is held", async () => {
+    const { settle, settleCalls } = bridgeOver([unresolved]);
+    await settle(request("job-amount", { amount: "100" }));
+    expect(() => settle(request("job-amount", { amount: "200" }))).toThrow(/already holds a payment of 100/);
+    expect(settleCalls()).toBe(1);
+    expect(await settle(request("job-amount", { amount: "100" }))).toEqual(unresolved);
+    expect(settleCalls()).toBe(1);
+  });
+
+  test("a repeat with a different amount is refused while the first call is running", async () => {
+    const { settle, release, settleCalls } = gatedBridge(() => unresolved);
+    const first = settle(request("job-amount-running", { amount: "100" }));
+    expect(() => settle(request("job-amount-running", { amount: "200" }))).toThrow(/already holds/);
+    release();
+    await first;
+    expect(settleCalls()).toBe(1);
+  });
+
+  test("a successful settle through the bridge is returned unchanged", async () => {
+    const paid = { ...unresolved, ok: true, txHash: "0xpaid" };
+    const { settle, settleCalls } = bridgeOver([paid]);
+    expect(await settle(request("job-paid"))).toEqual(paid);
+    expect(settleCalls()).toBe(1);
   });
 });

@@ -18,7 +18,10 @@ import {
   rawPublicKey,
 } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
-import { createDemosClient } from "../rails/demosClient.js";
+import {
+  createDemosClient,
+  TransactionPostNotSentError,
+} from "../rails/demosClient.js";
 import { readBoundedDemosJson } from "../rails/demosRpc.js";
 import {
   assertDemosCciResponseBounds,
@@ -349,7 +352,8 @@ export interface DemosRawClient {
 type BroadcastObservation =
   | { state: "accepted" }
   | { state: "ambiguous" }
-  | { state: "rejected"; cause: unknown };
+  | { state: "rejected"; cause: unknown }
+  | { state: "not-sent"; cause: unknown };
 
 // Coordinates every adapter instance in this JS process. RPC is part of the
 // key so the same wallet used on different networks does not block itself.
@@ -536,6 +540,15 @@ function isDefinitiveBroadcastRejection(value: unknown): boolean {
     result >= 400 &&
     result < 500
   );
+}
+
+/**
+ * A broadcast answer whose `response` is the Demos client's proof that the
+ * post never reached the node, as demosdk's `call` hands back a thrown error.
+ * A node reply is decoded JSON, so it cannot hold that error instance.
+ */
+function broadcastNeverSent(value: unknown): boolean {
+  return isRecord(value) && value.response instanceof TransactionPostNotSentError;
 }
 
 function journalPortableValue(
@@ -1954,7 +1967,9 @@ export class DemosAdapter implements SubstrateAdapter {
               ? { state: "accepted" }
               : isDefinitiveBroadcastRejection(value)
                 ? { state: "rejected", cause: value }
-                : { state: "ambiguous" };
+                : broadcastNeverSent(value)
+                  ? { state: "not-sent", cause: value }
+                  : { state: "ambiguous" };
         },
         () => {
           // A transport error can happen after the node accepted the bytes.
@@ -2011,8 +2026,9 @@ export class DemosAdapter implements SubstrateAdapter {
         recognisedAnswer = true;
       }
       if (roundTransportFailures > 0 && !recognisedAnswer) {
-        accountNonce = await this.readAccountNonce(ctx);
-        lastBlock = await this.readLastBlock(ctx);
+        // A read the deadline cut off must not erase what an earlier round read.
+        accountNonce = (await this.readAccountNonce(ctx)) ?? accountNonce;
+        lastBlock = (await this.readLastBlock(ctx)) ?? lastBlock;
       }
       const statusBlockNumber = status?.state === "included" ||
           status?.state === "failed"
@@ -2067,8 +2083,19 @@ export class DemosAdapter implements SubstrateAdapter {
       }
 
       // A chain observation is authoritative. Only after checking it do we use
-      // a definitive 4xx broadcast response to fail promptly. Ambiguous 5xx,
-      // timeout, and connection errors keep polling the already-known hash.
+      // a definitive 4xx broadcast response, or a broadcast that never reached
+      // the node, to fail promptly. Ambiguous 5xx, timeout, and other
+      // connection errors keep polling the already-known hash.
+      if (broadcast?.state === "not-sent") {
+        ctx.receipt.state = "not-broadcast";
+        this.emit(ctx);
+        throw this.fail(
+          ctx,
+          "broadcast-failed",
+          `anchor ${ctx.receipt.address ?? txRef} never reached the node`,
+          broadcast.cause,
+        );
+      }
       if (broadcast?.state === "rejected") {
         ctx.receipt.state = "failed";
         this.emit(ctx);
@@ -2086,7 +2113,7 @@ export class DemosAdapter implements SubstrateAdapter {
             "transport-failure";
         if (nonceUnread) {
           transportFailures += 1;
-          lastBlock = await this.readLastBlock(ctx);
+          lastBlock = (await this.readLastBlock(ctx)) ?? lastBlock;
         }
       }
       if (
@@ -3321,13 +3348,17 @@ export class DemosAdapter implements SubstrateAdapter {
     const txRef = preBroadcastTxRef;
 
     if (response?.result !== 200 || !txRef) {
-      const ambiguous = Boolean(txRef) && !isDefinitiveBroadcastRejection(response);
-      ctx.receipt.state = ambiguous ? "broadcast-unknown" : "failed";
+      const notSent = broadcastNeverSent(response);
+      const ambiguous = Boolean(txRef) && !notSent &&
+        !isDefinitiveBroadcastRejection(response);
+      ctx.receipt.state = notSent
+        ? "not-broadcast"
+        : ambiguous ? "broadcast-unknown" : "failed";
       this.emit(ctx);
       const error = this.fail(
         ctx,
         "broadcast-failed",
-        `anchor ${prepared.address} was not accepted by the node`,
+        `anchor ${prepared.address} ${notSent ? "never reached" : "was not accepted by"} the node`,
         response,
       );
       if (!ambiguous) await this.putActiveWrite("canonical-failed");
@@ -3960,6 +3991,12 @@ export class DemosAdapter implements SubstrateAdapter {
                     `immutable anchor ${name} status reconciliation failed`,
                     error,
                   );
+            // A broadcast that never reached the node used no nonce, so its
+            // journal entry is released. Another writer may still have
+            // created the same program, so the winner wait below still runs.
+            if (broadcastNeverSent(completionFailure.cause)) {
+              await this.putActiveWrite("canonical-failed");
+            }
             return this.waitForConcurrentImmutableWinner(
               name,
               data,

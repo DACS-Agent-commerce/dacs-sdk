@@ -138,6 +138,7 @@
     "acceptance:registry-container": "bash scripts/verify-registry-container-consumer.sh",
     "seller:test": "node scripts/run-seller-tests.mjs",
     "kit-client:test": "node scripts/run-kit-client-tests.mjs test/kit-client/*.test.mjs",
+    "client-keys:test": "node --test test/client-key-validation.test.mjs",
     "seller:prepare": "node scripts/prepare-seller-consumer.mjs"
   },
   "publishConfig": {
@@ -161,7 +162,7 @@
     "xpath": "^0.0.34"
   },
   "peerDependencies": {
-    "@kynesyslabs/demosdk": "^4.0.16",
+    "@kynesyslabs/demosdk": "^4.0.17",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
@@ -175,7 +176,7 @@
     "viem": { "optional": true }
   },
   "devDependencies": {
-    "@kynesyslabs/demosdk": "^4.0.16",
+    "@kynesyslabs/demosdk": "^4.0.17",
     "@types/node": "^20",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
