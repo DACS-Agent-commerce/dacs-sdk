@@ -10,7 +10,9 @@
 //
 // Reviewed statements, by line, at demosdk 4.0.16:
 // GCRGeneration.js lines 173, 246, 249, 250; demosclass.js lines 719, 1547.
+// At demosdk 4.0.17: GCRGeneration.js lines 178, 302, 305, 306; demosclass.js lines 738, 1767, 1773.
 // At demosdk 4.0.18: GCRGeneration.js lines 178, 302, 305, 306; demosclass.js lines 738, 1775, 1781.
+// GCRGeneration.js is the same file in 4.0.17 and 4.0.18, so one table entry covers both.
 import { createHash } from 'node:crypto';
 
 const UNREVIEWED = 'node_wallet_sdk_unreviewed';
@@ -38,6 +40,10 @@ const REVIEWED_SOURCES = Object.freeze({
     sourceSha256: '6b80162f0e15f1e5e85bc4e2831401d47951afbac4d444d4095b0a889369e6c3',
     outputSha256: '085ee6907645912e39bf2dd593c21a055ff6af3220ee273dba4c5e0c17d57ee8',
     statements: [{ line: 719, text: FEE_FALLBACK }, { line: 1547, text: FORK_READ_UNAVAILABLE }],
+  }, {
+    sourceSha256: '047346c552444ab4b969bd86d8d8da838e20a7630649d775d68fe7c31228010d',
+    outputSha256: '17636f276448be902c99cf1306ec97ca488a608c2225119cce940cc6218e07f0',
+    statements: [{ line: 738, text: FEE_FALLBACK }, { line: 1767, text: FORK_READ_REFRESH_FAILED }, { line: 1773, text: FORK_READ_UNAVAILABLE }],
   }, {
     sourceSha256: 'ebc5dd85fe8f73f2c7ecede5e24343ed322eb319ae6f3744d971674a5b94adaa',
     outputSha256: '354b639026f63a7680ac07235d29d422ae90eaa1d763e842ae099604156208d7',

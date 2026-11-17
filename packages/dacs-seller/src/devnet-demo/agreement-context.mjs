@@ -604,7 +604,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
     if(read.status!=='present'){
       guard(job,'counterparty anchor');await markWrite(job);
-      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job)});
+      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job),awaitInclusion:true});
       // A returned refusal and an unknown submission are different outcomes:
       // keep the anchor's own reason and its retryable/terminal class.
       if(read?.status!=='present'){
@@ -718,7 +718,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
             // stores the intent: a purchase cancelled meanwhile stores none
             // and sends nothing. The write mark is inside anchorCall, so a busy
             // store there is a retryable wait like a busy anchor journal.
-            out=await anchorCall(async()=>{await markWrite(job);return anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job)});});
+            out=await anchorCall(async()=>{await markWrite(job);return anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job),awaitInclusion:true});});
           }else{
             // Readback only: a read never creates an intent.
             out=await anchorCall(()=>anchor.read({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord'}));
@@ -997,6 +997,23 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function recoverBuyer({scope,buyerIdentityBundle}){
     const candidate=await readCandidate(scope,buyerIdentityBundle);return candidate?.refused??(candidate?buyerAnswer(candidate):null);
   }
+  // Readback only, for a plan step that ended before its Vet record writes read back as included: each of the
+  // job's two Vet records with a retained intent is read back, never sent again. Nothing is signed or intended;
+  // the anchor saves a record it authenticates as included, so the next plan request completes from it.
+  // Answers present only when both of the job's records have a retained write and each reads back as included,
+  // absent when neither is retained, else indeterminate (a record never written, or one with no readback answer).
+  async function readBackRecords({jobId,buyer}){
+    requireJobId(jobId);assertAccess(buyer);
+    const reads=[];
+    for(const party of [buyer,wallet.claim]){
+      const logicalAddress=compositeVerificationAddress(jobId,party);
+      reads.push(await anchor.hasIntent(logicalAddress)?await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ):null);
+    }
+    if(reads.every(read=>read===null))return{disposition:'absent',reason:'no Vet record write is retained for this job'};
+    if(reads.every(read=>read?.status==='present'))return{disposition:'present',reason:'both Vet records read back as included'};
+    const held=reads.find(read=>read&&read.status!=='present');
+    return{disposition:'indeterminate',reason:(held?`a retained Vet record does not read back yet (${held.status}: ${held.reason ?? 'no reason'})`:'a Vet record is not written yet, or a retained one gave no readback answer').slice(0,240)};
+  }
   async function resolveSeller({jobId,listingPin:pin,buyerIdentityBundle,generatedAt}){
     validate({jobId,generatedAt});assertAccess(buyerIdentityBundle.presentedBy);
     const row=await state.read(jobId);
@@ -1126,7 +1143,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     void completion.then(settled,error=>{settled();logged('release',jobId)(error);});return completion;
   }
   async function sweep(ended){let deleted=0;for(const jobId of await state.jobs())if(ended(jobId)===true&&await drop(jobId))deleted++;return{deleted,usage:store.usage?.()??null};}
-  return{vetMode,resolveBuyer,recoverBuyer,resumableBuyer,resolveSeller,release,sweep,usage:()=>store.usage?.()??null,assertBuyerAccess:assertAccess,contexts,invocations};
+  return{vetMode,resolveBuyer,recoverBuyer,readBackRecords,resumableBuyer,resolveSeller,release,sweep,usage:()=>store.usage?.()??null,assertBuyerAccess:assertAccess,contexts,invocations};
 
 }
 

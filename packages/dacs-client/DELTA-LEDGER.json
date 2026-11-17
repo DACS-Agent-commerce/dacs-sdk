@@ -9927,6 +9927,588 @@
           "after": "f2337a42eebc81e26737556a54eccee74dc3cb3b"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read client delta records through one assembler",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "d268285a6a256119ca07a0d87557610764f5afa8",
+          "after": "29ba56b6264d27cebb8cad969408ceb4bc6774af"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF order delta records by file name and check every recorded path",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "29ba56b6264d27cebb8cad969408ceb4bc6774af",
+          "after": "0db3b89514f68fbba88d99345a0ea7089911e3d7"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "7e54669ad2d3b2af37aee198f8f4de382d598186",
+          "after": "bcb216547421660a2cd0de45415cce9a0ad18ba3"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9",
+          "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test on the retire commit put part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that reserve repeats an unfinished retirement while its finishing write keeps failing",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-retirement.test.mjs",
+          "before": null,
+          "after": "6175c0421d58d74bf403ee1150a32c750011c455"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3ba sign payment-evidence CREATEs on the signer reservation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "fb364397ed046fb1211d620fb5dfa68563715c1a",
+          "after": "fedbd31b661b3ee5540213629d5e895c2a55ea3f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "7e61b54257846f628b2984bc6bee811470401dc2",
+          "after": "16c28532b8fe2b1ff6cf5acc3b50c9987aa87bfe"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": null,
+          "after": "b364d1682f678eb9c063da18de4f5646a0ce4442"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "89db1bf53f2e62853119805060587931c6b7078f",
+          "after": "63a2acf64382c128935d4bacc0c22498b2a0fe6e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "10beba68fcc095df465df8e74e5e0e27fe8dd251",
+          "after": "fb5e0177bac913dd0af186c40d8097af8503fbce"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": null,
+          "after": "a10c91b1ac1ba5e0b3754533229744649f337ce3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "b20c12b6561dea8fadb54a7e3c52e9f83e0e72e4",
+          "after": "78ca854a5b322c34ff1b099ad13b0c3b5b75d5a1"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": null,
+          "after": "659ceb2cc65e2139daf5032d9bf8dc4e1a6a72c7"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "bb26d97d15d59c621b149847feebd7c7095dbe7e",
+          "after": "deabf958f007e8e98be26cc53fd7a7d9f869f635"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "15e7ac95a7940b8712e966a83885505142afd796",
+          "after": "92d81e3b5e5bcc7381036bdc1ca189f54154e8c3"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF rebuild the payment-evidence adapter on the signer reservation record",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "b364d1682f678eb9c063da18de4f5646a0ce4442",
+          "after": "0afa4bcc983436ef2658ed8bbc4f90593edbbeab"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "fa77f92cfb5934b8e80aae284eb0f1f229888433",
+          "after": "caa9f060da7856d60ed8cb0dfd43d4ad6c97dbd7"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "a10c91b1ac1ba5e0b3754533229744649f337ce3",
+          "after": "9eeb7d5e566a2ad64e4eef0ab2a317abd92fa64a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "659ceb2cc65e2139daf5032d9bf8dc4e1a6a72c7",
+          "after": "0c4803853e13c363d12b241e1d5657501538152c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "be72001c276437177160b6a87ce365b7a24d3504",
+          "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test on the payment part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the wallet session merged from the retirement part",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0698e6f10714b3d5256a28af93a630a65018ac6e",
+          "after": "0698e6f10714b3d5256a28af93a630a65018ac6e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF list the payment evidence adapter among the seller members and record the blobs chosen when the lower parts merged",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0698e6f10714b3d5256a28af93a630a65018ac6e",
+          "after": "0698e6f10714b3d5256a28af93a630a65018ac6e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "02c3808d514792df7d0a707767dfb08feb08685c",
+          "after": "02c3808d514792df7d0a707767dfb08feb08685c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "8336e5393f66bcf9184b1b22b44911a9a1a32fbc",
+          "after": "0a89124816f6c933eae528c682873577e0d6edd8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4",
+          "after": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs blob after carrying the retire commit put part up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "3a24de142342cc4ca484ee015a72a9a2262a3f75",
+          "after": "3a24de142342cc4ca484ee015a72a9a2262a3f75"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the blobs chosen for the transport, wallet session and embedded wallet provider after carrying the retire commit put part up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "10714c8e99468837c2ebc47cd666ec638488bf33",
+          "after": "10714c8e99468837c2ebc47cd666ec638488bf33"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "cb7be1026524f82794127d071ed37bc9e3a8c549",
+          "after": "cb7be1026524f82794127d071ed37bc9e3a8c549"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4",
+          "after": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 test that unsent signed bytes hold the signer until their execution",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "0c4803853e13c363d12b241e1d5657501538152c",
+          "after": "a4e588ba8351ad22b97d9234aa0918e2158ecf65"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF replay the retained payment-evidence CREATE and read its execution back",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "16c28532b8fe2b1ff6cf5acc3b50c9987aa87bfe",
+          "after": "4fdcc1cb090c890ef2e90babc3e2d801e5f69c3e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "0afa4bcc983436ef2658ed8bbc4f90593edbbeab",
+          "after": "784ba66530fcc1030fb4c0dc837fcb4a7b65c4dc"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "caa9f060da7856d60ed8cb0dfd43d4ad6c97dbd7",
+          "after": "eaef929c56a238c6a47cacd1646bbed80d0fb40e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "bcb216547421660a2cd0de45415cce9a0ad18ba3",
+          "after": "9bd5c322d57372369babd53cc4a456aca3ed723a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "11db4783591d76f54036ef9c5d176ef9f54cc62e",
+          "after": "47fcf62e29a1560193069ee1ba7737eff82ae214"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "9eeb7d5e566a2ad64e4eef0ab2a317abd92fa64a",
+          "after": "67912a3a4bc79b56a4f36e47fed8cb148b3c5da1"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "0c4803853e13c363d12b241e1d5657501538152c",
+          "after": "eeb6174390def3dcf19749b82ca0d6e38aac620c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "be72001c276437177160b6a87ce365b7a24d3504",
+          "after": "ad2ca009773a8e1616f265734de2560d80d9285f"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-rpc-clock.test.mjs",
+          "before": "026f7fffb6ac5e064067f5352eb021788490322c",
+          "after": "23a5c14494356db736948abef01b67602c97eea8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test after carrying the payment-evidence part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "fd5942a7d5ff71be33366dd8c04bd757e9f85ce6",
+          "after": "fd5942a7d5ff71be33366dd8c04bd757e9f85ce6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "784ba66530fcc1030fb4c0dc837fcb4a7b65c4dc",
+          "after": "7e44af5f5f7960f6430b02f5ea22fa26eca75fb3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b9290c0f6b1673b099a1a66597ef46bdaa14c387",
+          "after": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "eeb6174390def3dcf19749b82ca0d6e38aac620c",
+          "after": "f47e93e24b21002ae87f0b7ec1b7d67abf30422e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged payment evidence adapter test after carrying the payment part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
+          "after": "75588decc6f7f051ba27c3f90bd6b9a04031cc45"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the wallet session merged from the payment part",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b9290c0f6b1673b099a1a66597ef46bdaa14c387",
+          "after": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs blob after carrying the client payment part up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "dd3f7330a8c14441d35ec5bc82a62ba5ac7b003a",
+          "after": "dd3f7330a8c14441d35ec5bc82a62ba5ac7b003a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the transport and wallet session blobs chosen after carrying the payment part fixes up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "8b6671bded9bac9912a64b7bf58f97fd5cacb373",
+          "after": "8b6671bded9bac9912a64b7bf58f97fd5cacb373"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "192016f0d5c93cbdd715fa2b5058bb312bc1d683",
+          "after": "192016f0d5c93cbdd715fa2b5058bb312bc1d683"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that a replay after a gate refusal before the broadcast sends the retained bytes once",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
+          "after": "6edf96300eaead3ecf369f64ed1f626f1ac4357f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a native write while a stored evidence CREATE holds the signer",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "cb7be1026524f82794127d071ed37bc9e3a8c549",
+          "after": "f453ffb58a09484125da89d68f74b3928137b9c7"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "bcb216547421660a2cd0de45415cce9a0ad18ba3",
+          "after": "1678957be639d72489fa6cc925da8a27660ee9cb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "a4e588ba8351ad22b97d9234aa0918e2158ecf65",
+          "after": "7449baca4f938c782bfdc29625db69fb82556c43"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "88d543ca451ef7657ff6a2e72b271b1d73264f8f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a native write that a stored evidence CREATE holds before the broadcast, with the public refusal code",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "a36092fb9752a4d5c0ea68f11f228af9b39e0c5c",
+          "after": "6b8764f67b5afcef4f08689733628c8646833c95"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "5c1cc212cd256295f9ee763ea9609f9289fb4b89",
+          "after": "f3362e532723872079c10b44ec296bb36a31313d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF take one signer lock to issue a native write and to claim the signer for an evidence CREATE",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "6b8764f67b5afcef4f08689733628c8646833c95",
+          "after": "110e34c585c8d6f91c6dfa58886a70761956f5fe"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "7e44af5f5f7960f6430b02f5ea22fa26eca75fb3",
+          "after": "feb828af9fa3a2d6a7c00d1e37afc15c251f9c22"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "d064bbbbbe9fa405714bb56eb390b97c7e0fbe4c",
+          "after": "d47721b78cb250ef2dd929852268a54afa699a50"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "f3362e532723872079c10b44ec296bb36a31313d",
+          "after": "826cacbcdce7c240d74c70e9cee597f92ed84d78"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0043ffd03f9e5f66cdb8d4bcde86d982eff599d",
+          "after": "317ee818bdbf709601dc8452f3feb986b14066b2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF let the transaction a stored reservation holds through the native transport's reservation check",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "110e34c585c8d6f91c6dfa58886a70761956f5fe",
+          "after": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "826cacbcdce7c240d74c70e9cee597f92ed84d78",
+          "after": "b9ae1416dbbdb87fa8ad3b55cd22f09ddeebee9a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF free the signer when the evidence CREATE it holds has executed",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "feb828af9fa3a2d6a7c00d1e37afc15c251f9c22",
+          "after": "1917ff8c1b6e594bb6b181fc3b78f9f42f257797"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "b9ae1416dbbdb87fa8ad3b55cd22f09ddeebee9a",
+          "after": "f3a42056739f497fd805935c801cb490cadddb82"
+        }
+      ]
+    },
+    {
+      "delta": "D76",
+      "subject": "delta(client): D76 add demosdk 4.0.17 to the reviewed loader table",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/demos-quiet-hooks.mjs",
+          "before": "323ba838b4f2abe9189f84d6688cdaf0914b1972",
+          "after": "91d06508f63df5308dece710ffb05aeae26a5bb8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-demos-loading.test.mjs",
+          "before": "539d876bf79510f9d3bf9e09d99737131a43fdc1",
+          "after": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 accept a trailing record-only ledger entry for a committed blob",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "0db3b89514f68fbba88d99345a0ea7089911e3d7",
+          "after": "5e909c66900348ecfcab0ca9d549363d384052d3"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "5e909c66900348ecfcab0ca9d549363d384052d3",
+          "after": "f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 judge a trailing record-only ledger entry by its own commit and the record files",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa",
+          "after": "173bd74d1d40be6ab60e430a2583a604e8b6527b"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 count only record files committed before a trailing record-only ledger entry",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "173bd74d1d40be6ab60e430a2583a604e8b6527b",
+          "after": "055f2de61cc3fa1100a1a06e0979fc5262ce8d24"
+        }
+      ]
+    },
+    {
+      "delta": "D74",
+      "subject": "delta(client): D74 read a held plan step's seller Vet record writes back on a purchase recheck",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs",
+          "before": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7",
+          "after": "b190cb9f28255865882e670bbd9ef45bd9193bba"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f6492ec9771611dd72c96e94107384db860ca748",
+          "after": "8eac38bb49a4929421c3d1362fac362c6fe00cd3"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "4bf029a4db45b1d876cb4e028bccf6d0824a315f"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-readback.test.mjs",
+          "before": null,
+          "after": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+          "before": "6671b70cf3fad1b68f2e4085c67352d4102a04d4",
+          "after": "f568fd35048d886ed2eeecd892fdef1b21a9d12c"
+        }
+      ]
     }
   ]
 }

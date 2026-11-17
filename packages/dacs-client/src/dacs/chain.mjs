@@ -292,7 +292,7 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
   // result is unavailable (never "no identities"), and the same decoded-value
   // bound is applied before returning the envelope.
   //
-  // Request headers: pinned demosdk 4.0.16 (the dacs peer range ^4.0.16 and the
+  // Request headers: pinned demosdk 4.0.17 (the dacs peer range ^4.0.17 and the
   // embedded wallet's runtime) calls rpcCall(request, demos.walletConnected),
   // so without a wallet it sends the read UNSIGNED, with the auth headers
   // present but empty: identity "ed25519:", signature "", timestamp "". This

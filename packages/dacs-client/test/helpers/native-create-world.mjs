@@ -71,9 +71,9 @@ export function countingJournal(journal, events) {
 /**
  * The transport and its test wallet over `journal`. `onNode(message, call)` runs
  * before the scripted node answers any call and may pause or kill the process.
- * `identityAnswer(chainIdentity)` replaces the node's answer to every block read.
+ * `identityAnswer(chainIdentity)` replaces the node's answer to every block read. `stamps` is the transport's RPC stamp source.
  */
-export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null }) {
+export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, stamps }) {
   const wallet = deterministicWallet();
   const sent = { confirms: [], broadcasts: [] };
   const answerNode = async (init) => {
@@ -97,7 +97,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     throw new Error(`unexpected TEST node call ${message}`);
   };
   const fetchImpl = async (url, init) => new Response(JSON.stringify(await answerNode(init)), { headers: { 'content-type': 'application/json' } });
-  const capability = createDevnetDemoTransport({ expected: PINS, transportOwner: owner, journal, fetchImpl, now: () => NOW, inclusionWaitMs: 0,
+  const capability = createDevnetDemoTransport({ expected: PINS, transportOwner: owner, journal, fetchImpl, now: () => NOW, stamps, inclusionWaitMs: 0,
     settlementPublication: { artifactKind: 'SettlementEvidence', authority: 'TEST-lock-order-settlement', phase: 'pay-dem', phaseIndex: 2, policy: DEVNET_SETTLEMENT_POLICY, railId: 'demos-native:DEM' },
     deliveryPublication: { artifactKind: 'Deliverable', authority: 'TEST-lock-order-delivery', phase: 'deliver-storage-program', phaseIndex: 3, policy: DEVNET_DELIVERY_POLICY },
     demoArtifactPublication: { policy: DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...DEVNET_DEMO_ARTIFACT_TYPES], authority: DEMO_AUTHORITY } });

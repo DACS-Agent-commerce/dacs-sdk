@@ -1,8 +1,9 @@
 // Module resolve hook for the seller tests (registered by
 // payment-evidence-wallet-sdk.mjs): demosdk 4.0.16 publishes one extensionless
-// ESM directory import, demoswork/operations/, which plain Node refuses. The
-// same rule as packages/dacs-node/src/demosLoaderHook.ts, in JavaScript, since
-// the seller tests run before the host kit is built.
+// ESM directory import, demoswork/operations/, which plain Node refuses; the
+// seller's 4.0.18 imports without this hook, which only acts if that error
+// occurs. The same rule as packages/dacs-node/src/demosLoaderHook.ts, in
+// JavaScript, since the seller tests run before the host kit is built.
 const DEMOS_OPERATIONS_DIRECTORY = '/@kynesyslabs/demosdk/build/demoswork/operations/';
 
 export async function resolve(specifier, context, nextResolve) {
