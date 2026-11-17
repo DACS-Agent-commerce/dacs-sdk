@@ -815,8 +815,6 @@ export {
   type SessionLoad,
   type TransitionInput,
   type TransitionResult,
-  createFsSessionStore,
-  type FsSessionStoreOptions,
   // Generation-fenced v2 is a separate, explicit API; no v1 value is upgraded.
   FENCED_SESSION_STORE_VERSION,
   assertFencedCheckpointPayloadShape,

@@ -578,7 +578,6 @@ type FsDemosWriteJournalOptions
 type FsDurableRfqLifecycleStoreOptions
 type FsFencedSessionStoreOptions
 type FsSellerReceiptStoreOptions
-type FsSessionStoreOptions
 type FsWalletSpendStateStoreOptionsV1
 type FsX402BuyerSettlementStoreOptions
 type FsX402PaywallSettlementStoreOptions
@@ -1532,7 +1531,6 @@ value createFsDemosWriteJournal
 value createFsDurableRfqLifecycleStore
 value createFsFencedSessionStore
 value createFsSellerReceiptStore
-value createFsSessionStore
 value createFsWalletSpendStateStoreV1
 value createFsX402BuyerSettlementStore
 value createFsX402PaywallSettlementStore
