@@ -1733,6 +1733,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | fix(client): give the signer its own deadline and call the stop check without arguments | Git commit selector e4a36cde219c0f9b8d899e33e34155a547e49789 |
 | | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | a869f29a4462d0e6e79efa2d4c25ecd5bcd686c0 |
 | | `packages/dacs-client/test/effect-boundary-operation.test.mjs:1` | 389314001f9655de05dc5c0871199836a2de7183 |
+| WF | delta(client): WF refuse a wire request that expired while its authority reads were awaited | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/seller-wire-authentication.mjs:1` | c3b84747cf7ccce2ef05712faf388a7645628fae |
+| | `packages/dacs-client/test/wire-request-signing.test.mjs:1` | 04eb2b3da7ba66cc59ad2e0af1280353483464e3 |
 | WF | delta(client): WF cross-check the string-zero genesis in the shared identity reader and compare counterparty CREATEs on the shared chain tuple | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/demos-sr2-adapter.mjs:285` | d0e47878acae8874b2f0eb66b8201bab03e80042 |
 | | `packages/dacs-client/src/dacs/network-binding.mjs:13`, `packages/dacs-client/src/dacs/network-binding.mjs:37`, `packages/dacs-client/src/dacs/network-binding.mjs:44`, `packages/dacs-client/src/dacs/network-binding.mjs:132`, `packages/dacs-client/src/dacs/network-binding.mjs:160`, `packages/dacs-client/src/dacs/network-binding.mjs:199`, `packages/dacs-client/src/dacs/network-binding.mjs:219`, `packages/dacs-client/src/dacs/network-binding.mjs:233`, `packages/dacs-client/src/dacs/network-binding.mjs:244`, `packages/dacs-client/src/dacs/network-binding.mjs:282`, `packages/dacs-client/src/dacs/network-binding.mjs:288`, `packages/dacs-client/src/dacs/network-binding.mjs:296` | f954dada99f699178563fbfed69cea975993cff2 |
@@ -5263,6 +5266,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | chore(client): record effect boundary admission and deadline checks | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): give the signer its own deadline and call the stop check without arguments | `packages/dacs-client/src/wallet/effect-boundary.mjs:1`<br>`packages/dacs-client/test/effect-boundary-operation.test.mjs:1`<br>`src/wire/validate.ts:1` |
 | chore(client): record signer deadline and stop check changes | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/src/dacs/seller-wire-authentication.mjs:1` |
+| delta(client): WF refuse a wire request that expired while its authority reads were awaited | `packages/dacs-client/test/wire-request-signing.test.mjs:1` |
 | delta(client): WF cross-check the string-zero genesis in the shared identity reader and compare counterparty CREATEs on the shared chain tuple | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): WF cross-check the string-zero genesis in the shared identity reader and compare counterparty CREATEs on the shared chain tuple | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): WF cross-check the string-zero genesis in the shared identity reader and compare counterparty CREATEs on the shared chain tuple | `packages/dacs-client/DELTA-MAP.md:1` |

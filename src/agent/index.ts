@@ -316,10 +316,6 @@ export {
   type TransitionResult,
 } from "./sessionStore.js";
 export {
-  createFsSessionStore,
-  type FsSessionStoreOptions,
-} from "./sessionStoreFs.js";
-export {
   FENCED_SESSION_STORE_VERSION,
   assertCheckpointPayloadShape as assertFencedCheckpointPayloadShape,
   assertSessionPaymentAuthorizationShape as assertFencedSessionPaymentAuthorizationShape,
