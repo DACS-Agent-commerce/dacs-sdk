@@ -2,7 +2,8 @@
 
 A self-hosted DACS seller: one seller agent for one signed fixed-price DEM
 Listing, behind the authenticated seller transport and its durable journal, on
-loopback. The agent runs negotiation (DACS-3), the finalized commitment,
+a public listener (a TLS-terminating reverse proxy in front of loopback, or its
+own TLS; see "Listener modes"). The agent runs negotiation (DACS-3), the finalized commitment,
 `pay-dem` payment intake and delivery through the core SDK
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
 evidence and native DEM delivery capabilities, which the host requires. This
@@ -113,8 +114,9 @@ const host = await startSellerHost({
   maxRecords: 10000,     // optional limit on the store's live nonce, challenge and context records and retained accounting rows
   maxReservationUnits: 10000, // optional reservation budget, default maxRecords; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
-  host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
-  port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
+  listener,              // required: { mode: 'proxy', host: '127.0.0.1' | '::1', port, publicOrigin } or
+                         // { mode: 'tls', host: <IP address>, port, publicOrigin, tls: { cert, key } };
+                         // publicOrigin is the Listing's seller.publicEndpoint, byte for byte (see "Listener modes")
   now,                   // optional () -> epoch milliseconds; default Date.now
   observeDemosTransfer, // optional compatibility option; native intake uses nativePaymentEvidence's observer
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
@@ -146,7 +148,8 @@ const host = await startSellerHost({
 });
 // journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
 // deliveryJournal = createDeliverableWalletJournal(...) (below); the host refuses any other pair.
-// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
+// host.url is the local listener (http://127.0.0.1:<port>, or https://<host>:<port> in tls mode) and host.publicOrigin
+// the origin the Listing advertises; host.close() drains requests and closes the state.
 // host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
 ```
 
@@ -355,10 +358,35 @@ The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
 per-client limiter so one client cannot exhaust the shared request budget.
 
+## Listener modes
+
+`listener` is required and there is no default mode. No other option and no environment variable changes it.
+
+- `proxy`: the host listens on literal loopback (`127.0.0.1` or `::1`) over plain HTTP. A reverse proxy that
+  terminates TLS for the Listing's origin forwards requests to it. The host answers loopback sockets only.
+- `tls`: the host listens on an IP address with the operator's certificate and key (PEM text or a `Buffer`) and
+  serves HTTPS itself. `start` refuses a certificate and key that are not a usable pair. A client gets 10 s to finish
+  the TLS handshake.
+
+In both modes `publicOrigin` must be an endpoint the wire accepts (`https://` and an authority, nothing after it) and
+must equal the Listing's `seller.publicEndpoint` byte for byte; otherwise start refuses with
+`listener_origin_mismatch`. A malformed `listener` refuses with `listener_invalid`. Both refusals come before the
+state lock and before any socket is opened.
+
+The host serves a request only under the `Host` that `publicOrigin` names (its authority, compared without regard to
+letter case, and with `:443` added when the authority names no port). A missing, repeated or other `Host` is answered
+421 `host_not_served` before the body is read; `X-Forwarded-Host` and the other forwarding headers are never read. A
+repeated `content-type`, `content-encoding` or peer header is answered 400 `duplicate_header` before the body is read.
+A reverse proxy must therefore pass the public `Host` through.
+
+In `tls` mode the host has no per-client limiter, and the global limiter described above (120 requests a minute, eight at once) is all that
+protects it from one client. Put a proxy with a per-client limiter in front of the host (proxy mode) for a public deployment.
+
 ## What the host does and does not do
 
 - It fails closed on configuration: unknown options, a missing capability, a
-  non-loopback host, a relative, shared or symlinked data directory, or a
+  malformed `listener` (proxy mode on a non-loopback host, a `publicOrigin` that is not the
+  Listing's endpoint), a relative, shared or symlinked data directory, or a
   signer that does not control the Listing are refused before anything starts.
   Two private stores also check the ancestors of their own paths: the party
   Vet store requires each ancestor to be owned by root or by this user and not
