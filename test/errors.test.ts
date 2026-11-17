@@ -6,6 +6,7 @@ import {
   DacsError,
   faultCategory,
   isDacsErrorCode,
+  NotImplementedError,
   SubstrateError,
   TransientError,
   UnsupportedCapabilityError,
@@ -36,6 +37,14 @@ describe("fault classification (T9)", () => {
   test("foreign errors default to transient (never blame a party)", () => {
     expect(faultCategory(new Error("ECONNRESET"))).toBe("transient");
     expect(faultCategory("oops")).toBe("transient");
+  });
+
+  test("NotImplementedError names only the unavailable feature", () => {
+    const error = new NotImplementedError("anchor batching");
+    expect(error.message).toBe("Not implemented: anchor batching");
+    expect(error.category).toBe("permanent");
+    // @ts-expect-error the constructor takes the feature name only
+    expect(new NotImplementedError("anchor batching", "extra").message).toBe("Not implemented: anchor batching");
   });
 
   test("subclasses remain instanceof DacsError", () => {

@@ -108,15 +108,12 @@ export function faultCategory(err: unknown): FaultCategory {
 }
 
 /**
- * Thrown by an operation this build declares but does not implement. Callers
- * classify it as `permanent`: retrying does not help.
+ * Thrown by an operation that is declared but not available. `feature` names
+ * what is unavailable. The error is `permanent`: retrying does not help.
  */
 export class NotImplementedError extends DacsError {
-  constructor(feature: string, taskRef?: string) {
-    super(
-      `Not implemented: ${feature}` +
-        (taskRef ? ` (planned: ${taskRef})` : ""),
-    );
+  constructor(feature: string) {
+    super(`Not implemented: ${feature}`);
     this.name = "NotImplementedError";
   }
 }
