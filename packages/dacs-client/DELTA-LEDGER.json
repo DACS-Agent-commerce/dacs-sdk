@@ -10428,6 +10428,23 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs and node-payment-evidence-adapter.test.mjs blobs after merging e7779f616086",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "329a6389acde26b90d6f126e5cc99a3f4c809993",
+          "after": "329a6389acde26b90d6f126e5cc99a3f4c809993"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "ed43d9413d5d0e7178a91ec3d175507f1944b4ea",
+          "after": "ed43d9413d5d0e7178a91ec3d175507f1944b4ea"
+        }
+      ]
+    },
+    {
       "delta": "D75",
       "subject": "delta(client): D75 read back a storage CREATE the node recorded as failed as a final failed result",
       "files": [
