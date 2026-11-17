@@ -33,6 +33,7 @@ test('reviewed imports preserve forbidden dependency checks', async t => {
   const cases = [
     ['another importer', 'src/wallet/unreviewed.mjs', "import '../public/portal/embedded-wallet/sdk-provider.mjs';", /forbidden import/],
     ['another portal target', 'src/wallet/node-wallet-session.mjs', "import '../public/portal/unreviewed.mjs';", /forbidden import/],
+    ['another portal target from the payment evidence adapter', 'src/wallet/node-payment-evidence-adapter.mjs', "import '../public/portal/unreviewed.mjs';", /forbidden import/],
     ['an unreviewed re-export', 'src/wallet/unreviewed.mjs', "export * from '../public/portal/embedded-wallet/sdk-provider.mjs';", /forbidden import/],
     ['a dependency directory', 'src/wallet/unreviewed.mjs', "import '../node_modules/dependency.mjs';", /forbidden import/],
     ['a build directory', 'src/wallet/unreviewed.mjs', "import '../dist/dependency.mjs';", /forbidden import/],

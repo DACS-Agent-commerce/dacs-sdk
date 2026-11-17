@@ -1739,6 +1739,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/scripts/delta-batch-git.test.mjs:1` | 399653bd946e426742e42ef0cf46fceca640c49c |
 | D77 | delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/scripts/delta-batch-git.test.mjs:1` | 6b8a3f1df542ae318192787310bacd75bc349a1f |
+| D78 | delta(client): D78 let the import audit accept the payment evidence adapter's provider import | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/scripts/check-imports.test.mjs:1` | 8ab39a389c6714a7eebdc46204dada4415cff793 |
 
 ## Complete commit and file inventory
 
@@ -5269,6 +5271,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/scripts/delta-assemble.test.mjs:1` |
 | delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/scripts/delta-batch-git.test.mjs:1` |
 | delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D78 let the import audit accept the payment evidence adapter's provider import | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D78 let the import audit accept the payment evidence adapter's provider import | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D78 let the import audit accept the payment evidence adapter's provider import | `packages/dacs-client/records/D78-cd9b6e9aecae.json:1` |
+| delta(client): D78 let the import audit accept the payment evidence adapter's provider import | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D78 let the import audit accept the payment evidence adapter's provider import | `packages/dacs-client/scripts/check-imports.mjs:1` |
+| delta(client): D78 let the import audit accept the payment evidence adapter's provider import | `packages/dacs-client/scripts/check-imports.test.mjs:1` |
+| delta(client): D78 let the import audit accept the payment evidence adapter's provider import | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): WF check that the real package assembles clean and ends with its record files | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF check that the real package assembles clean and ends with its record files | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF check that the real package assembles clean and ends with its record files | `packages/dacs-client/records/WF-2fdae2f97472.json:1` |
