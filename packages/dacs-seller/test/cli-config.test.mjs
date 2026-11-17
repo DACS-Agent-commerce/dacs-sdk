@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { buildListingDraft } from '../src/dacs/listing.mjs';
 import { SELLER_POLICY_DEFAULTS } from '../src/devnet-demo/operator-approval.mjs';
@@ -196,6 +198,12 @@ test('sellerApproval.mode other than manual or policy is refused at sellerApprov
   for (const mode of ['auto', 'Policy', '', 1, null]) {
     assert.throws(() => parseSellerConfig(bytes(set(config(), 'sellerApproval', { mode }))), fieldError('sellerApproval.mode'));
   }
+});
+
+test('config.mjs loads without loading the durable-state module', () => {
+  const register = fileURLToPath(new URL('./helpers/refuse-durable-state-register.mjs', import.meta.url));
+  const configUrl = new URL('../src/cli/config.mjs', import.meta.url).href;
+  assert.doesNotThrow(() => execFileSync(process.execPath, ['--import', pathToFileURL(register).href, '--input-type=module', '--eval', `await import(${JSON.stringify(configUrl)})`], { stdio: 'pipe' }));
 });
 
 test('seller.json accepts unset operator fields for init', async () => {

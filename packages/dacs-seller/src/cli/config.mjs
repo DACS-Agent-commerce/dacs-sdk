@@ -3,7 +3,7 @@ import { types as nodeTypes } from 'node:util';
 import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
 import { isPublicEndpoint } from '@kynesyslabs/dacs/wire';
 import { buildListingDraft, normalizeDemAmount } from '../dacs/listing.mjs';
-import { DEFAULT_SELLER_MAX_JOBS } from '../dacs/seller-durable-state.mjs';
+import { DEFAULT_SELLER_MAX_JOBS } from '../dacs/seller-capacity-defaults.mjs';
 import { sellerApprovalSettings, SELLER_POLICY_DEFAULTS } from '../devnet-demo/operator-approval.mjs';
 
 // The size limit of seller.json, the format string it carries and the names of the two files in the data directory.
