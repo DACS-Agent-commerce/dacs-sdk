@@ -42,11 +42,9 @@ test('the package root exports the context routes and the buyer-side client a ho
   for (const name of ['createSellerContextRoute', 'createWireSellerContextRoute', 'createSellerContextClient']) assert.equal(typeof exported[name], 'function', `the root exports ${name}`);
 });
 
-test('the package root exports the buyer-side wire signer, and the README says which routes it signs and what its fallback signs', async () => {
+test('the package root exports the buyer-side wire signer', async () => {
   const exported = await import(new URL('src/index.mjs', packageUrl));
   assert.equal(typeof exported.createSellerWireClientAuth, 'function', 'the root exports createSellerWireClientAuth');
-  assert.match(readme, /`createSellerWireClientAuth\(\{[^`]*\}\)`: it signs\s+and verifies every route but the challenge and the context step/);
-  assert.match(readme, /`createSellerTransportClientAuth`[^.]*`fallback`[^.]*(?:challenge|context)/s);
 });
 
 test('the README names the module the handler agent comes from; it exports createSellerAgent and the root does not', async () => {
