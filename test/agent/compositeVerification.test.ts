@@ -571,6 +571,54 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code });
   });
 
+  test("accepts an evaluated party written with an optional parameter", async () => {
+    const f = await fixture();
+    const keyParty = `key:${"ab".repeat(32)}`;
+    const record = await withRecord(f.record, {
+      evaluatedParty: `${keyParty}?alias=work`,
+    });
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        { ...f.expected, evaluatedParty: keyParty },
+        f.deps,
+      ),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  test("accepts a record signer written as a parameter variant of the verifier", async () => {
+    const f = await fixture();
+    const { signature: _signature, ...unsigned } = f.record;
+    const record = (await signComponentArtifact(unsigned, "dacs-composite:v1:", {
+      algorithm: "ed25519",
+      signer: `${VERIFIER}?alias=work`,
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+    })) as CompositeVerificationRecord;
+    await expect(
+      verifyCompositeVerificationRecord(record, f.expected, {
+        ...f.deps,
+        resolvePublicKey: async (signature) =>
+          signature.signer.startsWith(VERIFIER) ? VERIFIER_KEY : null,
+      }),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  test("rejects a record signed by a different identity that shares the verifier's parameters", async () => {
+    const f = await fixture();
+    const { signature: _signature, ...unsigned } = f.record;
+    const record = (await signComponentArtifact(unsigned, "dacs-composite:v1:", {
+      algorithm: "ed25519",
+      signer: `${AUTHORITY}?alias=work`,
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+    })) as CompositeVerificationRecord;
+    await expect(
+      verifyCompositeVerificationRecord(record, f.expected, {
+        ...f.deps,
+        resolvePublicKey: async () => VERIFIER_KEY,
+      }),
+    ).resolves.toMatchObject({ status: "invalid", code: "record-signature" });
+  });
+
   test("rejects missing/malformed/currently unsupported signatures and shapes", async () => {
     const f = await fixture();
     const { signature: _signature, ...unsigned } = f.record;

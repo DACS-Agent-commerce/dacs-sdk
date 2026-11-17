@@ -509,7 +509,7 @@ const operatorRecipeJobs = new WeakSet();
 export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, vetMode, invocation, now, evidence, presence, sessionSnapshot, sessionRegistryPins }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
-  if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
+  if (record.jobId !== jobId || !sameCanonicalClaimIdentity(record.evaluatedParty, party) || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
   if (!sameCanonicalClaimIdentity(record.signature.signer, verifier) || (ref.signer !== undefined && !sameCanonicalClaimIdentity(ref.signer, verifier)) || !isCanonicalBase64Url(record.signature.value)
       || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) {
     return isOrchestratorVetMode(vetMode) && role === 'seller' ? 'the Vet record is not signed by the seller as orchestrator verifier' : 'the Vet record is not signed by its counterparty verifier';

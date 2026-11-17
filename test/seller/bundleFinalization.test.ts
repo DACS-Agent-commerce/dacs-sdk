@@ -163,9 +163,11 @@ function fixture(
     resolvedPayment?: boolean;
     repeatedPayment?: boolean;
     extraSignerIsLosingBidder?: boolean;
+    buyerVetPartyWithParameter?: boolean;
   } = {},
 ) {
   const attested = deliveryMode === "attested";
+  const buyerVetParty = options.buyerVetPartyWithParameter ? `${BUYER}?alias=work` : BUYER;
   const procurement = options.procurement === true;
   const listingPublisher =
     options.listingPublisherOverride ?? (procurement ? BUYER : SELLER);
@@ -372,7 +374,7 @@ function fixture(
       verifier,
     );
   const buyerVet = makeVetRecord(
-    BUYER,
+    buyerVetParty,
     "b".repeat(64),
     buyerVerifyRef,
     buyerVetRequirement,
@@ -942,7 +944,7 @@ function fixture(
       vetRequirements: [
         {
           vetRecordRef: buyerVetRef,
-          evaluatedParty: BUYER,
+          evaluatedParty: buyerVetParty,
           requirement: buyerVetRequirement,
           verifier: SELLER,
           freshness: [],
@@ -2192,6 +2194,16 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
       /resolved agreement|unauthorized or incomplete signer set/,
     );
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("accepts a Vet record whose evaluated party carries an optional parameter", async () => {
+    const f = fixture("pure", "storage", false, false, false, {
+      buyerVetPartyWithParameter: true,
+    });
+
+    await expect(
+      finalizeCompletedSellerBundleCore(f.input, f.provider),
+    ).resolves.toBeDefined();
   });
 
   test("locally rejects a resumed completed bundle missing the seller signature", async () => {

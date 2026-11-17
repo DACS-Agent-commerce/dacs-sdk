@@ -1598,7 +1598,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
   }
 
   if (record.jobId !== expectedSnapshot.jobId) return invalid("job-mismatch");
-  if (record.evaluatedParty !== expectedSnapshot.evaluatedParty) {
+  if (!sameCanonicalClaimIdentity(record.evaluatedParty, expectedSnapshot.evaluatedParty)) {
     return invalid("evaluated-party-mismatch");
   }
   if (record.bundleHash !== expectedSnapshot.bundleHash) {
@@ -1662,7 +1662,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
     "dacs-composite:v1:",
     {
       isSignerAuthorized: (_artifact, signature) =>
-        signature.signer === expectedSnapshot.verifier,
+        sameCanonicalClaimIdentity(signature.signer, expectedSnapshot.verifier),
       resolvePublicKey: capturedDeps.resolvePublicKey,
       verify: capturedDeps.verify,
     },
