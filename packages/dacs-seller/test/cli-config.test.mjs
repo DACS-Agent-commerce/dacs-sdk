@@ -200,6 +200,36 @@ test('sellerApproval.mode other than manual or policy is refused at sellerApprov
   }
 });
 
+test('a refused price names listing.priceDem in one error with no refusal nested as its cause', async () => {
+  const { parseSellerConfig, listingTermsFromConfig } = await load();
+  const tooLarge = '9007199.254740992';
+  assert.throws(() => parseSellerConfig(bytes(set(config(), 'listing.priceDem', tooLarge))), error => {
+    assert.equal(error.field, 'listing.priceDem');
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+  const parsed = parseSellerConfig(bytes(config()));
+  parsed.listing.priceDem = tooLarge;
+  assert.throws(() => listingTermsFromConfig(parsed, 'TEST-seller'), error => {
+    assert.equal(error.field, 'listing.priceDem');
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+});
+
+test('a Listing that differs from the rebuilt draft is refused with listing_terms_unrecognized and no nested cause', async () => {
+  const { listingTermsFromListing } = await load();
+  const value = config(), seller = 'did:demos:agent:' + '12'.repeat(32);
+  const identityBundle = { bundleVersion: '1', presentedBy: seller, presentedAt: 1000, claims: [{ ref: seller }], presentation: { kind: 'per-claim', signatures: [{ ref: seller, signature: 'TEST-signature' }] } };
+  const draft = buildListingDraft({ ...value.listing, identityBundle, publicEndpoint: value.publicOrigin, listingVersion: 1, notBefore: 1000, notAfter: 2000 });
+  assert.throws(() => listingTermsFromListing(set(structuredClone(draft), 'offering.extra', true)), error => {
+    assert.equal(error.code, 'listing_terms_unrecognized');
+    assert.equal(error.field, '$');
+    assert.equal(error.cause, undefined);
+    return true;
+  });
+});
+
 test('config.mjs loads without loading the durable-state module', () => {
   const register = fileURLToPath(new URL('./helpers/refuse-durable-state-register.mjs', import.meta.url));
   const configUrl = new URL('../src/cli/config.mjs', import.meta.url).href;

@@ -61,16 +61,17 @@ function positiveInteger(value, field, maximum = Number.MAX_SAFE_INTEGER) {
   requireValue(Number.isSafeInteger(value) && value > 0 && value <= maximum, field);
 }
 function price(value) {
+  let result;
   try {
     if (typeof value === 'number') {
       value = String(value);
       const [coefficient, exponent] = value.split('e-');
       if (exponent !== undefined) value = '0.' + '0'.repeat(Number(exponent) - 1) + coefficient.replace('.', '');
     }
-    const result = normalizeDemAmount(value);
-    requireValue(BigInt(result.amountOs) <= BigInt(Number.MAX_SAFE_INTEGER), 'listing.priceDem');
-    return result.amount;
+    result = normalizeDemAmount(value);
   } catch (cause) { fail('listing.priceDem', cause); }
+  requireValue(BigInt(result.amountOs) <= BigInt(Number.MAX_SAFE_INTEGER), 'listing.priceDem');
+  return result.amount;
 }
 // Only inspect grammar already checked by raw admission, including when its
 // numeric profile refused. Keep exact price digits and attach numeric failures
@@ -205,15 +206,17 @@ export function listingTermsFromConfig(config, seller) {
 
 /** Returns represented terms, ignoring version/times/signatures; throws listing_terms_unrecognized for non-produced Listing bytes. */
 export function listingTermsFromListing(listing) {
+  let terms, matchesRebuiltDraft;
   try {
-    const terms = { seller: listing.seller.identity.presentedBy, listingId: listing.listingId, publicEndpoint: listing.seller.publicEndpoint,
+    terms = { seller: listing.seller.identity.presentedBy, listingId: listing.listingId, publicEndpoint: listing.seller.publicEndpoint,
       displayName: listing.seller.displayName, title: listing.offering.title, description: listing.offering.description,
       category: listing.offering.category, tags: listing.offering.tags, priceDem: price(listing.pricing.price.amount),
       deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit };
     const rebuilt = buildListingDraft({ ...terms, identityBundle: listing.seller.identity, listingVersion: listing.listingVersion,
       notBefore: listing.validity.notBefore, notAfter: listing.validity.notAfter, expectedSizeBytes: listing.offering.deliverable.expectedSizeBytes });
     const unsigned = { ...listing }; delete unsigned.signature;
-    if (canonicalize(rebuilt) !== canonicalize(unsigned)) fail('$', undefined, 'listing_terms_unrecognized');
-    return terms;
+    matchesRebuiltDraft = canonicalize(rebuilt) === canonicalize(unsigned);
   } catch (cause) { fail('$', cause, 'listing_terms_unrecognized'); }
+  if (!matchesRebuiltDraft) fail('$', undefined, 'listing_terms_unrecognized');
+  return terms;
 }
