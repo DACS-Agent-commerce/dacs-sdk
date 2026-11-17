@@ -14,6 +14,7 @@ const EFFECT_FENCE_TIMEOUT_MS = 10000;
 const MAX_SIGNED_BYTES = 262144;
 const MAX_OPERATION_ID_LENGTH = 256;
 const MAX_CAUSE_MESSAGE_LENGTH = 256;
+const UNDESCRIBABLE_CAUSE_MESSAGE = 'the thrown value has no string form';
 const STAGES = ['dispatch', 'confirm', 'broadcast'];
 const JOB_OPERATION_CLASSES = ['job-create', 'payment-evidence', 'job-resume'];
 // Whether the retained bytes may be sent again after an earlier stage may have reached transport (K0 lane policy).
@@ -27,8 +28,10 @@ const refuse = (code, detail, cause, status = 500) => new WireError(code, status
 const timeoutCause = (ms) => Object.assign(new Error(`no answer within ${ms} ms`), { name: 'TimeoutError' });
 const parseOs = (value) => (typeof value === 'bigint' && value >= 0n ? value : typeof value === 'string' && /^\d+$/.test(value) ? BigInt(value) : null);
 const hashOf = (bytes) => createHash('sha256').update(bytes).digest('hex');
-// What a history record keeps of a refusal or a transport error: its code (or name) and a bounded message.
-const describeCause = (error) => ({ code: String(error?.code ?? error?.name ?? 'Error'), message: String(error?.message ?? error).slice(0, MAX_CAUSE_MESSAGE_LENGTH) });
+// What a history record keeps of a refusal or a transport error: its code (or name) and a bounded message. A thrown value with no string form gets a fixed description.
+const describeCause = (error) => {
+  try { return { code: String(error?.code ?? error?.name ?? 'Error'), message: String(error?.message ?? error).slice(0, MAX_CAUSE_MESSAGE_LENGTH) }; } catch { return { code: 'Error', message: UNDESCRIBABLE_CAUSE_MESSAGE }; }
+};
 // The artifact's `${stage}-started` records with no durable withheld record of their own: each may have reached transport.
 const unwithdrawnStarts = (records, artifactHash) => records.filter((record) => record.artifactHash === artifactHash && record.state.endsWith('-started')
   && !records.some((other) => other.state === record.state.replace('-started', '-withheld') && other.of === record.seq));

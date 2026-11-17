@@ -132,6 +132,16 @@ test('a transport that throws after the receiver recorded the bytes is dispatch-
   assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown', 'observed']);
 });
 
+test('a send that rejects with a value that has no string form is still dispatch-unknown and its own rejection reaches the caller', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const rejection = Object.create(null);
+  await assert.rejects(boundary.pass(w.op(), w.sign(), async () => { throw rejection; }), (error) => error === rejection);
+  const unknown = await lastRecord(history);
+  assert.deepEqual([unknown.state, unknown.cause.code, typeof unknown.cause.message], ['dispatch-unknown', 'Error', 'string']);
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), { code: 'lane_readback_only' });
+});
+
 test('an acknowledged confirmation then a crash broadcasts once on restart; a lost confirmation answer is confirm-unknown and never advances', async (t) => {
   const w = await ebWorld(t);
   const first = w.build();
