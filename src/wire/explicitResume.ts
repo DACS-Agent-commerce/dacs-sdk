@@ -90,7 +90,7 @@ export interface ExplicitResumeSigningContext {
  * Throws `explicit_resume_invalid` (500) for a payload that is not exactly the
  * proof's members, a signer other than the payload's buyer, or an `expiresAt`
  * outside the signer's lifetime; the TP-1 binding and authority errors of the
- * other signers; and `explicit_resume_signature_invalid` for a signature
+ * other signers; and `explicit_resume_signature_invalid` (500) for a signature
  * the signer returned malformed. The longest payload the members allow gives a
  * header under `maxHeaderLength`, so no size check is needed here.
  */
@@ -104,7 +104,7 @@ export async function signExplicitCreateResume(supplied: ExplicitCreateResumePay
   if (!isUint(now) || payload.expiresAt <= now || payload.expiresAt - now > DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs) fail(INVALID, 500, "LIFETIME");
   const participants = [payload.buyer, payload.seller];
   await assertTp1Authority(binding, local, participants, payload.jobId);
-  const signature = envelopeSignatureBytes(await signer.sign(bytes), SIGNATURE_INVALID).toString("base64url");
+  const signature = envelopeSignatureBytes(await signer.sign(bytes), SIGNATURE_INVALID, 500).toString("base64url");
   await assertTp1Authority(binding, local, participants, payload.jobId);
   return encodeHeader(payload, signature);
 }

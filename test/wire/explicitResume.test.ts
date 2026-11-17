@@ -113,6 +113,12 @@ it("refuses to sign for a signer that is not the payload's buyer", async () => {
   await refused(() => signWith(f, f.payload, { claim: SELLER, sign: f.buyerSigner.sign }), "explicit_resume_invalid");
 });
 
+it("refuses a malformed signature from the local signer as its own fault with status 500", async () => {
+  const f = await fixture();
+  const malformed = { claim: BUYER, sign: () => "not a signature" };
+  await expect(signWith(f, f.payload, malformed)).rejects.toMatchObject({ code: "explicit_resume_signature_invalid", status: 500 });
+});
+
 it("refuses to sign or verify on a changed connection or without a binding", async () => {
   const f = await fixture();
   const signed = await signWith(f, f.payload);
