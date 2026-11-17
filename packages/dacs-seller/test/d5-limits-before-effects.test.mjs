@@ -31,15 +31,13 @@ test('transport job capacity is independent of live nonce capacity, with complet
 });
 
 test('context records, the context client and the transport auth refuse malformed IDs before store, policy, Vet or readback callbacks',async t=>{
- const w=await world(t),input=await w.wire(),original=JSON.parse(input.text),request=w.auth.readRequest(input.header);
+ const w=await world(t),input=await w.wire(),original=JSON.parse(input.text),request=input.request;
  for(const jobId of [undefined,null,7,'job-0',JOBS[0].toLowerCase(),JOBS[0].slice(1),'8'+JOBS[0].slice(1)]){
  const p={...request,jobId},body={...original,scope:{...original.scope,jobId}},before=w.counts();
   const {createSellerContextClient,createSellerContextRecords}=await import('../src/dacs/seller-context-route.mjs');
   const records=createSellerContextRecords({listing:w.listing,admission:()=>assert.fail('records read an admission for a malformed job'),contextOutcome:()=>assert.fail('records read an outcome for a malformed job')});
   assert.throws(()=>records.exactRequest({jobId,buyerBundle:body.buyerIdentityBundle,generatedAt:T}),{code:'peer_job_invalid'});
   assert.throws(()=>records.completedScope({jobId,buyer:w.buyer.claim}),{code:'peer_job_invalid'});
-  assert.throws(()=>w.auth.validate(p,{}),{code:'peer_request_unauthenticated'});
-  await assert.rejects(w.auth.responseHeader(p,200,'{}'),{code:'peer_job_invalid'});
   await assert.rejects(createSellerContextClient({clientFor:()=>assert.fail('client resolved malformed job')}).resolveBuyer(body),{code:'peer_job_invalid'});
   const client=createSellerTransportClientAuth({buyerSigner:w.buyer,seller:w.seller.claim,resolveJob:()=>assert.fail('transport resolved malformed job')});
   await assert.rejects(client.request(SELLER_CONTEXT_PATH,body,JSON.stringify(body)),{code:'peer_job_invalid'});

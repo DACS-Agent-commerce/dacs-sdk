@@ -8,7 +8,7 @@ import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs
 import {railSteward} from './helpers/rail-authority-fixture.mjs';
 import {seller,buyer,JOB,NOW} from './helpers/protocol-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
-import {createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportClientAuth} from '../src/dacs/seller-transport-auth.mjs';
 import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
 import {SellerAgentError,transportOutcome} from '../src/dacs/seller-agent.mjs';
 import {createOperatorBuyerAccess} from '../src/devnet-demo/buyer-access.mjs';
@@ -64,15 +64,15 @@ test('transport recovery keeps failures uncertain',async t=>{
 });
 
 function command(agent,path,body,agreementHash){const rawBody=Buffer.from(JSON.stringify(body));return{body,rawBody,request:{method:'POST',path,jobId:body.transportIdentity?.jobId??body.jobId,buyer:buyer.claim,seller:seller.claim,listingPin:agent.listingPin,agreementHash,bodyHash:core.sha256Hex(rawBody)}};}
-// A real store, its server auth and a signed request over it.
+// A real store, bound to the seller and Listing, and a signed request over it.
 async function transport(t,agent,dir,body,path='/dacs/v1/agreements/proposals',storeOptions={}){
  const now=storeOptions.now??(()=>NOW);
  const store=createSellerTransportStore({path:join(dir,'TEST-recovery.sqlite'),now,...storeOptions});t.after(()=>store.close());
  let hash=body.proposal?.plan.agreementHash??core.contentHash(agent.transportAgreementOf(body.jobId));
  const client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:agent.listingPin,agreementHash:hash}),now});
- const auth=createSellerTransportServerAuth({sellerSigner:{claim:seller.claim,sign:seller.signBytes},listingPin:agent.listingPin,store,now});
- const envelope=await client.request(path,body,JSON.stringify(body)),request=auth.readRequest(envelope.header);
- return{store,request,client,auth,setHash:value=>{hash=value;}};
+ store.bind({seller:seller.claim,listingPin:agent.listingPin});
+ const{payload:request}=await client.request(path,body,JSON.stringify(body));
+ return{store,request,client,setHash:value=>{hash=value;}};
 }
 
 test('read-only commitment reconciliation neither signs nor publishes absent work and authenticates retained work',async()=>{

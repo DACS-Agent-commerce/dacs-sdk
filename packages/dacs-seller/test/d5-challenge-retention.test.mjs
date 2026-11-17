@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
-const { createSellerTransportClientAuth, createSellerTransportServerAuth, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
+const { createSellerTransportClientAuth, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
 const { createSellerTransportStore } = await import('./helpers/bound-transport-store.mjs');
 const buyer = 'did:demos:agent:' + 'a'.repeat(64), seller = 'did:demos:agent:' + 'b'.repeat(64);
 const HOUR = 3600000;
@@ -799,13 +799,11 @@ test('global nonce capacity bounds full-window counters for distinct authenticat
     const rawBody = Buffer.from(JSON.stringify(body)), path = '/dacs/v1/agreements/state';
     const client = createSellerTransportClientAuth({ buyerSigner, seller: sellerSigner.claim, resolveJob: () => ({ listingPin, agreementHash }), now: w.now,
       lifetimeMs: 1, nonce: () => Buffer.alloc(24, seed).toString('base64url') });
-    const server = createSellerTransportServerAuth({ sellerSigner, listingPin, store: w.store, now: w.now });
-    const signed = await client.request(path, body, rawBody), p = server.readRequest(signed.header);
-    server.validate(p, { method: 'POST', path, body, rawBody });
-    if (allowed) assert.equal(server.store.reserve(p, body).disposition, 'cached');
+    const { payload: p } = await client.request(path, body, rawBody);
+    if (allowed) assert.equal(w.store.reserve(p, body).disposition, 'cached');
     else noMutations(() => {
-      assert.throws(() => server.store.classify(p, body), { code: 'peer_store_capacity', status: 503 });
-      assert.throws(() => server.store.reserve(p, body), { code: 'peer_store_capacity', status: 503 });
+      assert.throws(() => w.store.classify(p, body), { code: 'peer_store_capacity', status: 503 });
+      assert.throws(() => w.store.reserve(p, body), { code: 'peer_store_capacity', status: 503 });
     });
     assert.equal(w.count('peer_nonce_retention'), 1);
     assert.equal(w.count('peer_nonces'), 1);

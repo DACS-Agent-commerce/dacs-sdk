@@ -8,9 +8,8 @@ import { Server } from 'node:net';
 import Database from 'better-sqlite3';
 import { canonicalize, DacsError, generateCanonicalJobId, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
-import { createSellerTransportServerAuth, createSellerTransportClientAuth,
-  sellerContextScopeHash, sellerContextChallengeScope, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH,
-  sellerSessionDelegationSigningBytes, SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { sellerContextScopeHash, sellerContextChallengeScope, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH,
+  SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_PROFILE_ID, TP1_PROFILE_REVISION, TP1_BASE_REVISION } from '@kynesyslabs/dacs/wire';
 import { createSellerChallengeLedger } from '../src/dacs/seller-challenge-ledger.mjs';
 import { KIT_TP1_VET_MODE } from '../src/host.mjs';
@@ -38,7 +37,6 @@ const barrier = () => { let resolve, reject; const promise = new Promise((a, b) 
 const errorOf = async promise => { try { await promise; } catch (error) { return error; } assert.fail('expected refusal'); };
 const titles = {
   "T06": "a body-check refusal after the attempt records `failed`; no current-generation row is left `attempted`",
-  "T10": "an expired delegation cannot issue or attempt through the guarded store",
   "T12": "host start closes earlier-generation attempts before the listener opens",
   "T20": "with `maxRecords` 1 and the clock advanced past the nonce window each time, three signed context requests naming an unknown, a consumed and a mismatched challenge each refuse with their K1 code while `peer_nonces` and `peer_nonce_retention` never exceed one row each (expired rows are reclaimed before any refusal is recorded; a dry-run `classify` writes nothing), also after reopening, and the ledger gains no row for the unknown nonce",
   "T15": "the existing route- and store-level challenge tests pass unchanged in name on the one ledger",
@@ -106,22 +104,6 @@ async function fixture(t, options = {}) {
     reopen() { store.close(); open(); }, closeLost() { store.challenges.closeLostValidations(); store.recoverLostContextReservations(); } };
 }
 
-
-test(card('T10'), async t => {
-  const f = await fixture(t), body = f.challengeBody(), session = testWallet(3);
-  const payload = { version: '1', kind: 'seller-session-delegation', buyer: buyer.claim, sessionPublicKey: session.claim.slice('did:demos:agent:'.length),
-    seller: seller.claim, listingPin: f.pin, jobId: JOB, notBefore: T0, expiresAt: T0 + 1000 };
-  const delegation = { payload, signature: buyer.signBytes(sellerSessionDelegationSigningBytes(payload)).toString('base64url') };
-  const auth = createSellerTransportServerAuth({ sellerSigner: signer(seller), listingPin: f.pin, store: f.store, now: f.now, requireDelegation: true });
-  const client = createSellerTransportClientAuth({ sessionSigner: signer(session), delegation, seller: seller.claim, now: f.now, lifetimeMs: 100,
-    resolveJob: () => ({ listingPin: f.pin, agreementHash: sellerContextScopeHash(body.scope) }) });
-  const text = JSON.stringify(body), { header } = await client.request(SELLER_CONTEXT_CHALLENGE_PATH, body, text);
-  const request = auth.readRequest(header); auth.validate(request, { method: 'POST', path: SELLER_CONTEXT_CHALLENGE_PATH, rawBody: Buffer.from(text), body });
-  f.advance(1000);
-  for (const action of [() => auth.store.challenges.issue(request, sellerContextScopeHash(body.scope)),
-    () => auth.store.challenges.issueForOperator(request), () => auth.store.challenges.attempt({ request })]) assert.throws(action, { code: 'peer_delegation_expired' });
-  assert.equal(f.rows().length, 0);
-});
 
 async function hostFixture(t, edit = source => source) {
   const f = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE }), dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-one-nonce-host-'));

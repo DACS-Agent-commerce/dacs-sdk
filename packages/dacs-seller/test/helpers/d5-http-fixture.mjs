@@ -14,7 +14,7 @@ import {join} from 'node:path';
 import {PassThrough} from 'node:stream';
 import {identityBundleHash} from '@kynesyslabs/dacs';
 // The transport comes from the package root, as a host composes it.
-const {createSellerTransportServerAuth,createSellerTransportClientAuth}=await import('../../src/index.mjs');
+const {createSellerTransportClientAuth}=await import('../../src/index.mjs');
 const {createSellerTransportStore}=await import('./bound-transport-store.mjs');
 const {SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../../src/dacs/seller-transport-auth.mjs');
 const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX','01ARZ3NDEKTSV4RRFFQ69G5FAY','01ARZ3NDEKTSV4RRFFQ69G5FAZ'];
@@ -25,14 +25,14 @@ function exchange(handler,{text='{}',header,url=SELLER_CONTEXT_PATH,headers={},m
  const res={destroyed:false,writableEnded:false,headersSent:false,writeHead(status,h){this.status=status;this.headers=h;this.headersSent=true},end(text){this.text=text;this.writableEnded=true;}};
  const pending=handler(req,res);queueMicrotask(()=>{for(const chunk of chunks??[text])req.write(chunk);req.end()});return Promise.resolve(pending).then(()=>res);
 }
-// A signed context request over a bound transport store, made with the transport's own client and read back with its server auth, for the
-// store-level tests that need such a request. No HTTP handler or context route runs on it.
+// A signed context request over a bound transport store, made with the transport's own client, for the store-level tests that need
+// such a request. No HTTP handler or context route runs on it.
 const START_LIMITS={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1};
 async function world(t){
  const dir=await mkdtemp(join(tmpdir(),'d5-wire-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=T;
  const seller=key(),buyer=key(),other=key(),listing=fixtureListing({...seller,signBytes:seller.sign},{now:T}),pin=listingPin(listing),support=purchaseSupport(listing);
  const path=join(dir,'transport.sqlite'),store=withFixtureProfile(createSellerTransportStore({path,maxRecords:10000,maxJobs:10000,maxChallenges:10000,maxContextRecords:10000,contextSessionState:()=>null,contextStartLimits:START_LIMITS,maxNoncesPerBuyerPerWindow:120,now:()=>time}));t.after(()=>store.close());
- const auth=createSellerTransportServerAuth({sellerSigner:seller,listingPin:pin,store,now:()=>time});
+ store.bind({seller:seller.claim,listingPin:pin});
  const bundles=new Map();
  const wire=async({actor=buyer,jobId=JOBS[0],alter=()=>{}}={})=>{
   const cacheKey=actor.claim+jobId;
@@ -54,10 +54,10 @@ async function world(t){
   bundle.presentation.signatures[0].signature=actor.sign(Buffer.from('dacs-bundle-presentation:v1:'+scope.buyerBundleHash)).toString('base64url');
   const text=JSON.stringify(body);
   const client=createSellerTransportClientAuth({buyerSigner:actor,seller:seller.claim,resolveJob:()=>({listingPin:pin,agreementHash:sellerContextScopeHash(scope)}),now:()=>time});
-  const {header}=await client.request(SELLER_CONTEXT_PATH,body,text);return {text,header};
+  const {header,payload}=await client.request(SELLER_CONTEXT_PATH,body,text);return {text,header,request:payload};
  };
  const counts=()=>{const db=new DatabaseSync(path,{readonly:true});try{return Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'peer_%' AND name NOT IN ('peer_meta','kit_challenges') ORDER BY name").all().map(({name})=>[name,db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n]))}finally{db.close()}};
- return {wire,store,auth,buyer,other,seller,listing,pin,path,counts,now:()=>time,advance:ms=>{time+=ms}};
+ return {wire,store,buyer,other,seller,listing,pin,path,counts,now:()=>time,advance:ms=>{time+=ms}};
 }
 
 export {JOBS,T,key,bundleFor,exchange,world};

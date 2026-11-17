@@ -159,11 +159,6 @@ function delegationSignatureBytes(signature) {
   try { return decodeSignature(signature); } catch { fail('peer_delegation_signature_invalid'); }
 }
 
-/** Return canonical base64url wallet signature bytes; throw on malformed input. */
-export function normalizeSellerSessionDelegationSignature(signature) {
-  return delegationSignatureBytes(signature).toString('base64url');
-}
-
 // time: also require notBefore <= time < expiresAt. allowExpired keeps only
 // the notBefore check; it is for readback of already journaled effects (see
 // docs/SELLER-SESSION-DELEGATION.md), never for starting a new seller effect.
@@ -680,7 +675,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     return accepted;
   }
   // The routes hold a whole request; the ledger keeps its job and buyer. Without a delegation to check
-  // (this store's own callers), the final liveness check is a no-op: the guarded store of the server auth passes its own.
+  // (this store's own callers), the final liveness check is a no-op: the context route passes its own.
   const challenges = Object.freeze({ ...ledger, acceptWithin,
     issue: (request, challengeScopeHash, authorization = NO_DELEGATION) => ledger.issue({ jobId: request?.jobId, buyer: request?.buyer }, challengeScopeHash, authorization),
     issueForOperator: request => ledger.issueForOperator({ jobId: request?.jobId, buyer: request?.buyer }),
@@ -1058,128 +1053,6 @@ export function sellerStoreInternals(store) {
   const internals = typeof store === 'object' && store !== null ? storeInternals.get(store) : undefined;
   if (internals === undefined) throw new TypeError('sellerStoreInternals needs a store from createSellerTransportStore');
   return internals;
-}
-
-// The raw store each server auth was made over: `authentication.store` is the guarded wrapper, which names no owner.
-const authenticationStores = new WeakMap();
-
-/** The raw transport store `authentication` (from createSellerTransportServerAuth) journals in; `undefined` for any other value. */
-export const transportStoreOf = (authentication) => authenticationStores.get(authentication);
-
-/** Create request validation and response signing over a supplied store; throw on invalid configuration. */
-export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = MAX_TRANSPORT_LIFETIME_MS, requireDelegation = false }) {
-  assertKitOperationAdmitted('createSellerTransportServerAuth');
-  checkSigner(sellerSigner);
-  if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > MAX_TRANSPORT_LIFETIME_MS) throw new Error('seller transport configuration is invalid');
-  if (typeof requireDelegation !== 'boolean' || store.journaledOnlyReserve !== true) throw new Error('seller delegation configuration is invalid');
-  const delegations = new WeakMap();
-  const authenticatedRequests = new WeakMap();
-  // Expired request or delegation: only read back effects already journaled for the job.
-  const readbackOnly = new WeakSet();
-  const isReadbackOnly = (request) => {
-    if (!authenticatedRequests.has(request)) fail('peer_request_unauthenticated');
-    const time = now();
-    if (!uint(time) || request.expiresAt <= time || delegations.get(request)?.payload.expiresAt <= time) readbackOnly.add(request);
-    return readbackOnly.has(request);
-  };
-  const refuseExpired = request => fail(delegations.get(request)?.payload.expiresAt <= now() ? 'peer_delegation_expired' : 'peer_expired', 408);
-  const guardedStore = Object.freeze({
-    bind: (value) => store.bind(value),
-    // An expired delegation cannot issue or consume a challenge; the ledger repeats the check as its last step.
-    challenges: Object.freeze({ ...store.challenges,
-      issue: (request, challengeScopeHash) => isReadbackOnly(request) ? refuseExpired(request)
-        : store.challenges.issue(request, challengeScopeHash, { assertStillLive: () => { if (isReadbackOnly(request)) refuseExpired(request); } }),
-      issueForOperator: request => isReadbackOnly(request) ? refuseExpired(request) : store.challenges.issueForOperator(request),
-      attempt: input => isReadbackOnly(input.request) ? refuseExpired(input.request) : store.challenges.attempt(input),
-    }),
-    reserve: (request, body, options = {}) => store.reserve(request, body, isReadbackOnly(request) ? { ...options, journaledOnly: true } : options),
-    ...(typeof store.classify === 'function' ? { classify: (request, body, options = {}) => store.classify(request, body, isReadbackOnly(request) ? { ...options, journaledOnly: true } : options) } : {}),
-    ...(typeof store.contextAdmission === 'function' ? { contextAdmission: (jobId) => store.contextAdmission(jobId) } : {}),
-    ...(typeof store.contextAnswer === 'function' ? { contextAnswer: (jobId) => store.contextAnswer(jobId) } : {}),
-    ...(typeof store.contextHoldState === 'function' ? { contextHoldState: input => store.contextHoldState(input) } : {}),
-    finish: (...args) => store.finish(...args),
-    ...(typeof store.assertPending === 'function' ? { assertPending: reservation => store.assertPending(reservation) } : {}),
-    // An expired delegation may still take an effect to read it back, never to run it again.
-    ...(typeof store.claim === 'function' ? { claim: (reservation, request, options = {}) => store.claim(reservation, request, isReadbackOnly(request) ? { ...options, live: false } : options) } : {}),
-    // Settle against the fenced claim's granted mode; legacy context reservations still use the current clock.
-    ...(typeof store.reconcile === 'function' ? { reconcile: (reservation, request, status, text, options = {}) => (reservation?.live===false||(reservation?.live===undefined&&isReadbackOnly(request))) && (options.retry || options.noEffect)
-      ? refuseExpired(request) : store.reconcile(reservation, request, status, text, options) } : {}),
-    // Running a step again is new work: never for an expired delegation.
-    ...(typeof store.resume === 'function' ? { resume: (reservation, request) => isReadbackOnly(request) ? refuseExpired(request) : store.resume(reservation, request) } : {}),
-    close: () => store.close?.(),
-  });
-  const pin = clone(listingPin);
-  store.bind({ seller: sellerSigner.claim, listingPin: pin });
-  const authentication = {
-    seller: sellerSigner.claim,
-    listingPin: pin,
-    store: guardedStore,
-    requireDelegation,
-    // True when request or delegation expiry permits only journaled readback;
-    // reconciliation may complete retained work but cannot start an effect.
-    readbackOnly: isReadbackOnly,
-    // Check-only cached refreshes must still be live when agent work starts.
-    assertLive(request) { if (isReadbackOnly(request)) refuseExpired(request); },
-    readRequest(header) {
-      const request = verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) });
-      authenticatedRequests.set(request, canonicalize(request));
-      return request;
-    },
-    validate(request, { method, path, rawBody, body, agreement, onAuthenticatedBody, onRejectedBody }) {
-      const authenticated = authenticatedRequests.get(request);
-      if (authenticated === undefined) fail('peer_request_unauthenticated');
-      let current;
-      try { current = canonicalize(request); }
-      catch (cause) { throw new SellerTransportError('peer_request_mismatch', 401, { cause }); }
-      if (!payloadValid(request, 'request') || current !== authenticated) fail('peer_request_mismatch');
-      requireJobId(request?.jobId);
-      if (request.seller !== sellerSigner.claim) fail('peer_audience_wrong');
-      if (request.method !== method || request.path !== path || request.bodyHash !== sha256Hex(rawBody)) fail('peer_request_mismatch');
-      const time = now();
-      // An expired retry can follow a previously completed effect. It is a
-      // timeout/unknown answer, never proof that the operation was refused.
-      if (!uint(time) || request.expiresAt <= time || request.expiresAt > time + maxLifetimeMs) fail('peer_expired', 408);
-      if (!exact(request.listingPin, pin)) fail('peer_listing_mismatch', 409);
-      let admittedBody;
-      try {
-        admittedBody = admitRawJson(rawBody);
-        if (!exact(admittedBody, body)) fail('peer_body_mismatch', 409);
-      } catch (cause) {
-        if (cause instanceof SellerTransportError) throw cause;
-        throw new SellerTransportError('peer_body_invalid', 409, { cause });
-      }
-      const delegation = delegations.get(request);
-      if (requireDelegation && !delegation) fail('peer_delegation_required');
-      if (delegation) {
-        const draft = admittedBody.proposal?.plan?.draft;
-        for (const artifact of [draft, agreement].filter((value) => value != null)) {
-          if (artifact.jobId !== request.jobId || !exact(artifact.listingRef, pin) ||
-              artifact.parties?.find((party) => party.role === 'buyer')?.primaryClaim !== request.buyer ||
-              artifact.parties?.find((party) => party.role === 'seller')?.primaryClaim !== request.seller) fail('peer_delegation_agreement_mismatch', 409);
-          if (!uint(artifact.terms?.deadline)) fail('peer_delegation_deadline', 409);
-          verifySellerSessionDelegation(delegation, { deadline: artifact.terms.deadline });
-        }
-        verifySellerSessionDelegation(delegation, { buyer: request.buyer, seller: request.seller, listingPin: pin, jobId: request.jobId, time, allowExpired: true });
-        // Live delegation: the request must also end by its expiry. Expired
-        // delegation: readback of already journaled effects only (the store
-        // refuses a new effect with peer_delegation_expired, 408).
-        if (time < delegation.payload.expiresAt) {
-          if (request.expiresAt > delegation.payload.expiresAt) fail('peer_delegation_expired', 408);
-        } else readbackOnly.add(request);
-      }
-      try { validateBody(request,admittedBody); }
-      catch(error) { onRejectedBody?.(admittedBody); throw error; }
-      onAuthenticatedBody?.(admittedBody);
-      return admittedBody;
-    },
-    async responseHeader(request, status, text) {
-      requireJobId(request?.jobId);
-      const payload = { ...clone(request), kind: 'response', bodyHash: sha256Hex(text), expiresAt: now() + maxLifetimeMs, requestHash: sha256Hex(canonicalize(request)), status };
-      return signedHeader(payload, sellerSigner);
-    },
-  };
-  authenticationStores.set(authentication, store);
-  return authentication;
 }
 
 // A delegated app supplies only its session signer and the wallet-signed

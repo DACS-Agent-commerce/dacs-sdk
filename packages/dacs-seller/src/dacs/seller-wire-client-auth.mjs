@@ -1,7 +1,7 @@
 // The kit's buyer-side wire signer: the `authentication` adapter `createSellerAgentClient` takes for a host that answers
 // through `./wire`. It signs each request with `signWireRequest` (the binding's TP-1 profile in every request) and verifies
-// each answer with `verifyWireResponse` over the exact received bytes. The challenge and the context step still use the old
-// server auth (seller-http.mjs), so they go to a `fallback` adapter, `createSellerTransportClientAuth`, and nothing else does.
+// each answer with `verifyWireResponse` over the exact received bytes. The challenge and the context step still sign with the
+// old client auth, so they go to a `fallback` adapter, `createSellerTransportClientAuth`, and nothing else does.
 import { WireError, isPublicEndpoint, signWireRequest, verifyWireResponse } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';

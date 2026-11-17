@@ -17,7 +17,7 @@ import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs
 const CONTEXT = 'dacs-node2-seller-context-admission/v1';
 async function fixture(t) {
   const w = await world(t), input = await w.wire();
-  const request = w.auth.readRequest(input.header), body = JSON.parse(input.text);
+  const { request } = input, body = JSON.parse(input.text);
   const evidencePath = join(dirname(w.path), 'approval.jsonl');
   const config = { evidencePath, sellerApproval: { mode: 'policy', maxWriteTotalOs: '4', maxWritesPerHour: 2, maxTotalOsPerHour: '8' }, now: w.now };
   const hold = { jobId: request.jobId, effect: sellerTransportEffect(request), writes: 2, hold: sellerTransportEffect(request) };

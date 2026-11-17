@@ -382,11 +382,6 @@
       "count": 1
     }
   },
-  "packages/dacs-seller/test/seller-transport-auth.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "packages/dacs-seller/test/signed-listing.test.mjs": {
     "no-unused-vars": {
       "count": 2

@@ -30,7 +30,7 @@ const GUARD_SITES = {
   'src/dacs/seller-admission-transaction.mjs': ['begin', 'runningCheck', 'reserveContext', 'complete', 'compensate'],
   'src/dacs/seller-challenge-ledger.mjs': ['issue', 'issueForOperator'],
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
-  'src/dacs/seller-transport-auth.mjs': ['createSellerTransportServerAuth', 'createSellerTransportClientAuth'],
+  'src/dacs/seller-transport-auth.mjs': ['createSellerTransportClientAuth'],
   'src/dacs/seller-reservation-accounting.mjs': ['reserveAccounted', 'reserveCoordinated'],
   'src/dacs/seller-wire-client-auth.mjs': ['createSellerWireClientAuth'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],

@@ -1,9 +1,8 @@
-// The old server auth stays in the source until its own removal; no HTTP handler serves a request with it any more. An old-path test is one
-// that runs on the old HTTP world (the directly composed context route) or calls the old auth's own checks.
-// The manifest in fixtures/context-wire-ports.json gives each of them one disposition: the wire test that asserts the same property
-// (wire-equivalent), the store or coordinator test of what the wire uses (predecessor-equivalent), the wire's own behaviour where the old
-// one goes with the old path (retired), a buyer-side client test the client package owns (obsolete-client), or a property no wire test
-// shows yet (gap). No test is dropped without its replacement or its reason.
+// The old server auth is gone from the source and no test calls it. The tests that ran on the old path and still exist are listed in
+// fixtures/context-wire-ports.json, each with one disposition: the wire test that asserts the same property (wire-equivalent), the store
+// or coordinator test of what the wire uses (predecessor-equivalent), the wire's own behaviour where the old one went with the old path
+// (retired), a buyer-side client test the client package owns (obsolete-client), or a property no wire test shows yet (gap). A test
+// leaves the list when it is deleted, with its wire test or its reason named in the change that deletes it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -12,19 +11,14 @@ import { fileURLToPath } from 'node:url';
 const testDirectory = fileURLToPath(new URL('.', import.meta.url));
 const manifest = JSON.parse(readFileSync(new URL('./fixtures/context-wire-ports.json', import.meta.url), 'utf8'));
 // Files whose every test is listed, also those that never reach the old path.
-const COVERED_FILES = ['d5-limits-before-effects.test.mjs', 'd5-recovery.test.mjs', 'd5-challenge-retention.test.mjs', 'seller-transport-auth.test.mjs'];
-// Files that use the old auth only to make a signed request object for a store-level test: none of their tests is served by it.
-const REQUEST_SETUP_ONLY = ['context-hold-startup.test.mjs', 'transport-reconciliation.test.mjs'];
+const COVERED_FILES = ['d5-limits-before-effects.test.mjs', 'd5-recovery.test.mjs', 'd5-challenge-retention.test.mjs'];
 const DISPOSITIONS = ['wire-equivalent', 'predecessor-equivalent', 'retired', 'obsolete-client', 'gap'];
 const NAME_A_REPLACEMENT = ['wire-equivalent', 'predecessor-equivalent'];
 const NAME_NONE = ['obsolete-client', 'gap'];
-const REMOVAL_OWNERS = ['P11a2', 'P11c2ba', 'P12c'];
+const REMOVAL_OWNERS = ['P11c2ba', 'P12c'];
 // A title as written in a string or template literal, for a test, a subtest, or a test declared in a `for` loop.
 const TITLE = /^[ \t]*(?:for\s*\(.*?\)\s*)*(?:await t\.)?test\((['"`])((?:\\.|(?!\1).)*)\1/gm;
 const SERVER_AUTH = /createSellerTransportServerAuth\(/;
-const OLD_AUTH_CHECK = /\.(?:readRequest|validate|responseHeader|readbackOnly|assertLive)\(/;
-// The HTTP world whose handler serves the directly composed context route with the old auth.
-const OLD_WORLD = /^import \{[^}\n]*\bworld\b[^}\n]*\} from '\.\/helpers\/d5-http-fixture\.mjs'|\{ ?world: \w+[^}\n]*\} = await import\('\.\/helpers\/d5-http-fixture\.mjs'\)/m;
 
 const sourceOf = (file) => readFileSync(testDirectory + file, 'utf8');
 /** Titles a file gives through a table: `test(name('ID'), ...)` where `const name = id => \`<prefix>${id} ${titles[id]}\``. */
@@ -42,8 +36,6 @@ const titlesOf = (file) => {
   const source = sourceOf(file);
   return [...[...source.matchAll(TITLE)].map((match) => match[2].replaceAll("\\'", "'").replaceAll('\\"', '"')), ...tableTitlesOf(source)];
 };
-/** True when a test file composes the old path: the old HTTP world, or the old auth's own checks beside the old auth. */
-const composesOldPath = (source) => OLD_WORLD.test(source) || (SERVER_AUTH.test(source) && OLD_AUTH_CHECK.test(source));
 const keyOf = ({ file, title }) => `${file}\u0000${title}`;
 
 test('every listed test exists and is listed once, with a disposition, an owner and a reason; covered files are listed whole', () => {
@@ -74,10 +66,7 @@ test('every named replacement is a test that exists; an equivalent names one, an
   }
 });
 
-// Checked per file: which tests of a file reach the old path is read from a run, not from the source.
-test('every seller test file that composes the old path has tests in the manifest, unless it uses the old auth only to make requests', () => {
-  const listedFiles = new Set(manifest.map((entry) => entry.legacy.file));
-  const composing = readdirSync(testDirectory).filter((file) => file.endsWith('.test.mjs') && composesOldPath(sourceOf(file)));
-  assert.deepEqual(composing.filter((file) => !listedFiles.has(file) && !REQUEST_SETUP_ONLY.includes(file)), [], 'a file composes the old path and lists none of its tests');
-  assert.deepEqual(REQUEST_SETUP_ONLY.filter((file) => !composing.includes(file) || listedFiles.has(file)), [], 'a request-setup file no longer uses the old auth, or has listed tests');
+test('no seller test file calls the old server auth', () => {
+  const calling = readdirSync(testDirectory).filter((file) => file.endsWith('.test.mjs') && SERVER_AUTH.test(sourceOf(file)));
+  assert.deepEqual(calling, []);
 });

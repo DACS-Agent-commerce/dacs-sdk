@@ -25,7 +25,7 @@ const SELLER_BIN = 'bin/dacs-seller.mjs';
 const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerContextClient', 'createSellerContextRoute', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
-  'createSellerTransportServerAuth', 'createSellerTransportStore', 'createSellerWireClientAuth', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
+  'createSellerTransportStore', 'createSellerWireClientAuth', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
 const INSTALLED_RUN_TIMEOUT_MS = 120000;
 const INSTALLED_TEST_TIMEOUT_MS = 600000;
 

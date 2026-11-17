@@ -5,7 +5,7 @@ const {sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.m
 const {proposalTimeProblem}=await import('../src/dacs/seller-proposal-time.mjs');
 
 test('R1 only the exact admitted request extends proposal time, and the Agreement deadline remains exclusive',async t=>{
- const w=await world(t),input=await w.wire(),body=JSON.parse(input.text),request=w.auth.readRequest(input.header);
+ const w=await world(t),input=await w.wire(),body=JSON.parse(input.text),request=input.request;
  const {createSellerContextRecords}=await import('../src/dacs/seller-context-route.mjs');
  // The old store's admission row, shaped as K1's admission row the records read.
  const admission=jobId=>{const old=w.store.contextAdmission(jobId);return old&&{jobId,buyer:old.buyer,seller:old.seller,listingPin:old.listingPin,contextScopeHash:old.scopeHash,state:'admitted'};};

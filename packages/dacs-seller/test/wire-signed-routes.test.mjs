@@ -819,6 +819,14 @@ test('a payment whose transaction hash is not a string is refused peer_payment_m
   }
 });
 
+test('a payment whose transaction hash is a string that is not 64 hexadecimal digits is refused peer_payment_mismatch, signed, before any payment call', async (t) => {
+  const w = await continuingWorld(t);
+  for (const txHash of ['invalid', 'a'.repeat(63), 'a'.repeat(65), `0x${'g'.repeat(64)}`]) {
+    const refused = await assertRefusedWithoutWork(w, PATHS.payments, () => w.post(PATHS.payments, { ...w.bodyFor(PATHS.payments), txHash }, { jobId: w.jobId, agreementHash: w.agreementHash }), 'peer_payment_mismatch');
+    assert.deepEqual({ status: refused.status, signed: refused.signed }, { status: 409, signed: true }, txHash);
+  }
+});
+
 test("P11a1-T15: a continuing route without a commitment, with another job's commitment, or with a failing receipt reader is refused with zero agent calls and its cause", async (t) => {
   const w = await continuingWorld(t), evidence = w.agent.continuationEvidenceOf;
   for (const path of CONTINUING) {
@@ -1087,7 +1095,11 @@ test('an old-domain request on every route, challenge and context included, is r
   assert.deepEqual(statements, [], 'no route touched the store');
 
   const c = await contextWireWorld(t), context = await c.startContext({ signOptions: { delegated: false } });
-  const counters = () => { const { connection, ...agentCalls } = c.calls; return { rows: c.rows(), files: c.journalFiles(), reserved: c.reserved.calls, holds: c.counts.holds.length, validations: c.counts.validations, agentCalls }; };
+  const counters = () => {
+    const agentCalls = { ...c.calls };
+    delete agentCalls.connection; // the wire's own connection check, made while it opens each request
+    return { rows: c.rows(), files: c.journalFiles(), reserved: c.reserved.calls, holds: c.counts.holds.length, validations: c.counts.validations, agentCalls };
+  };
   const before = counters();
   const challenge = await c.sign({ delegated: false });
   for (const [name, request] of [['challenge', challenge], ['context', context]]) {
