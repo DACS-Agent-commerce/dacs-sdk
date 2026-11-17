@@ -139,6 +139,20 @@ test('the operator custody wallet checks a guarded write again right before it s
  }
 });
 
+test('the operator custody wallet keeps the error its authorize check threw as the cause of the refusal', async () => {
+ const failure=new Error('TEST job fence lost');
+ for (const throws of [true, false]) {
+  const attempt=createOperatorApprovalAttempt(async()=>true);
+  const refusal=await attempt.run(async()=>{
+   try{await attempt.approve({method:'sendTransaction'});}catch(error){return error;}
+   return null;
+  },()=>{if(throws)throw failure;return 'TEST settlement contested';});
+  assert.equal(refusal.code,'not-authorized',`throws ${throws}`);
+  if(throws)assert.equal(refusal.cause,failure,'the refusal carries the thrown error');
+  else assert.equal(Object.hasOwn(refusal,'cause'),false,'a refusal without a thrown error has no cause');
+ }
+});
+
 test('the guarded SDK class signs as before outside a guarded write', async () => {
  const attempt=createOperatorApprovalAttempt(async()=>true);
  const Demos=attempt.guardSigning(class{async sign(tx){return {...tx,signed:true};}});

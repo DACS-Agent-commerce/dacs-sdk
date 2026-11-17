@@ -107,8 +107,8 @@ export function createOperatorApprovalAttempt(approve){
   const scope=new AsyncLocalStorage();
   const checkWrite=(when)=>{
     const authorize=scope.getStore()?.authorize;if(!authorize)return;
-    let allowed;try{allowed=authorize();}catch(error){allowed=error;}
-    if(allowed!==true)throw Object.assign(new Error(`the write was withdrawn ${when}; nothing was signed`),{code:'not-authorized'});
+    let allowed,thrown;try{allowed=authorize();}catch(cause){thrown={cause};}
+    if(allowed!==true)throw Object.assign(new Error(`the write was withdrawn ${when}; nothing was signed`,thrown),{code:'not-authorized'});
   };
   return{
     approve:typeof approve==='function'?async(request)=>{
