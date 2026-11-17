@@ -419,6 +419,19 @@ test('a completed payment answers only the claim it was made for: another transa
   assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed');
 });
 
+test('a completed payments operation answers a later claim for another transaction with its first outcome and runs no intake', async t => {
+  const w = await continuingWorld(t);
+  const first = await w.request(PATHS.payments);
+  assert.equal(first.status, 200);
+  const attemptFiles = () => w.journalFiles().filter(name => name.startsWith('o-'));
+  const calls = { ...w.agent.calls }, attempts = attemptFiles();
+  const later = await w.post(PATHS.payments, { ...w.bodyFor(PATHS.payments), txHash: derive('another-transaction') }, { jobId: w.jobId, agreementHash: w.agreementHash });
+  assert.deepEqual([later.status, later.text], [200, first.text], 'the first outcome is sent again');
+  assert.deepEqual(w.agent.calls, calls, 'the payment ran once');
+  assert.deepEqual(attemptFiles(), attempts, 'no new attempt file');
+  assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed');
+});
+
 test('a completed payments replay reads the request\'s authority once more before it is answered', async t => {
   const w = await continuingWorld(t);
   assert.equal((await w.request(PATHS.payments)).status, 200);

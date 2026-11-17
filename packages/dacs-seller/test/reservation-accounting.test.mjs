@@ -37,14 +37,6 @@ const admitContextRecord = (f, jobId) => {
     .run(jobId, BUYER.claim, SELLER.claim, JSON.stringify(PIN), sha256Hex('context scope'), sha256Hex('context effect'), T0);
 };
 const contextPayload = (f, change = {}) => f.payload({ path: CONTEXT, agreementHash: sha256Hex('context scope'), ...change });
-// The old path's requests, as a route runs them: a context step leaves one admission and no job row or tuple.
-const oldReserve = (f, p) => f.store().reserve(p, p.path === CONTEXT ? { scope: { jobId: p.jobId } } : {},
-  p.path === CONTEXT ? { admit: f.now } : { keepProfile: FIXTURE_PROFILE });
-const oldContextStep = (f, jobId = JOB) => f.store().finish(oldReserve(f, contextPayload(f, { jobId })), 200, '{}');
-const admissionOnly = (f, jobId = JOB) => {
-  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_context_admissions WHERE job = ?').get(jobId).n, 1);
-  assert.equal(f.jobRows().length, 0); assert.equal(f.tuples(), 0);
-};
 
 test("P11b1-T01 a buyer's 121st reservation in the window is refused with no row or file, and admitted when the window moves", async t => {
   const f = await accountingFixture(t);
@@ -195,8 +187,7 @@ test('P11b1-T11 a second payment claim after the operation completed is accounte
 
 test('P11b1-T12 the ported job and nonce capacity cases pass at accounting level', async t => {
   const f = await accountingFixture(t, { maxJobs: 2, maxNoncesPerBuyerPerWindow: 2, maxContextRecords: 1 });
-  const old = f.store().reserve(f.payload(), {}, { keepProfile: FIXTURE_PROFILE });
-  f.store().finish(old, 200, '{}'); // One legacy job and its tuple count as one job, and its nonce as one unit.
+  await f.reserve(f.args()); // One job and its tuple count as one job, and its nonce as one unit.
   await f.reserve(f.args(readOf(f)));
   await assert.rejects(f.reserve(f.args()), refused('peer_buyer_nonce_limit'));
   // An independent buyer has its own window; its job consumes the last job slot.
@@ -235,7 +226,7 @@ test('accounting writes no job row or tuple for a context start, so a later prop
   assert.equal((await f.reserve(f.args(contextPayload(f)))).state, 'new');
   assert.equal(f.rows().length, 1); assert.equal(f.jobRows().length, 0); assert.equal(f.tuples(), 0);
   assert.deepEqual(f.holds(), [{ jobId: JOB, buyer: BUYER.claim, seller: SELLER.claim, listing_pin: canonicalize(PIN), context: 1 }]);
-  assert.doesNotThrow(() => f.store().reserve(f.payload(), {}, { keepProfile: FIXTURE_PROFILE }));
+  assert.equal((await f.reserve(f.args(f.payload()))).state, 'new');
 });
 
 test("a context start's scope hash never becomes the job's Agreement: the first proposal keeps its own identity and tuple", async t => {
@@ -246,12 +237,6 @@ test("a context start's scope hash never becomes the job's Agreement: the first 
   const { jobId, buyer, seller, listingPin, agreementHash } = proposal;
   assert.deepEqual(f.jobRows(), [{ job: JOB, context: canonicalize({ jobId, buyer, seller, listingPin, agreementHash }) }]);
   assert.equal(f.tuples(), 1); assert.equal(f.rows().length, 2); assert.equal(f.holds().length, 1); assert.equal(f.holds()[0].context, 1);
-});
-
-test('accounting admits an accounted proposal for a job whose only record is the old context admission', async t => {
-  const f = await accountingFixture(t); oldContextStep(f); admissionOnly(f);
-  assert.equal((await f.reserve(f.args(f.payload()))).state, 'new');
-  assert.equal(f.rows().length, 1); assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
 });
 
 test('the store decides a new job and a context start: caller-supplied newJob and contextStart flags change nothing', async t => {
@@ -265,46 +250,7 @@ test('the store decides a new job and a context start: caller-supplied newJob an
   assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.holds()[0].context, 0);
 });
 
-test('accounting refuses a context retry for a job whose only record is the old context admission: the old effect holds the slot', async t => {
-  const f = await accountingFixture(t, { maxContextRecords: 1 }); oldContextStep(f); admissionOnly(f);
-  await assert.rejects(f.reserve(f.args(contextPayload(f))), refused('peer_operation_conflict', 409));
-  admissionOnly(f); f.reopen(); assert.equal(f.rows().length, 0); assert.equal(f.holds().length, 0); assert.equal(f.files().length, 0);
-  assert.doesNotThrow(() => f.store().reserve(f.payload(), {}, { keepProfile: FIXTURE_PROFILE }));
-});
-
-test('an admission-only job already holds its job slot: its proposal is admitted at full capacity and another job is refused', async t => {
-  const f = await accountingFixture(t, { maxJobs: 1 }); oldContextStep(f);
-  await assert.rejects(f.reserve(f.args(f.payload({ jobId: JOB2 }))), refused('peer_job_capacity', 503));
-  assert.equal((await f.reserve(f.args(f.payload()))).state, 'new');
-  await assert.rejects(f.reserve(f.args(f.payload({ jobId: JOB2 }))), refused('peer_job_capacity', 503));
-  f.reopen(); assert.equal(f.rows().length, 1); assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
-});
-
-test('an admission-only job progresses at full job and context capacity: its proposal and first tuple, with its context retry refused, before and after restart', async t => {
-  for (const restart of [false, true]) {
-    const f = await accountingFixture(t, { maxJobs: 1, maxContextRecords: 1 }); oldContextStep(f);
-    if (restart) f.reopen();
-    await assert.rejects(f.reserve(f.args(contextPayload(f))), refused('peer_operation_conflict', 409));
-    if (restart) f.reopen();
-    assert.equal(f.tuples(), 0);
-    assert.equal((await f.reserve(f.args(f.payload()))).state, 'new');
-    assert.equal(f.tuples(), 1); assert.equal(f.jobRows().length, 1);
-    if (restart) f.reopen();
-    await assert.rejects(f.reserve(f.args(contextPayload(f))), refused('peer_operation_conflict', 409));
-    await assert.rejects(f.reserve(f.args(contextPayload(f, { jobId: JOB2 }))), refused('peer_job_capacity', 503));
-    assert.equal(f.rows().length, 1); assert.equal(f.holds().length, 1);
-  }
-});
-
-test('accounting still refuses a proposal whose tuple differs after the old context admission and a first proposal', async t => {
-  const f = await accountingFixture(t); oldContextStep(f);
-  await f.reserve(f.args(f.payload()));
-  const other = { ...FIXTURE_PROFILE, revision: 'other-revision' };
-  await assert.rejects(f.reserve(f.args(f.payload(), { keepProfile: other })), refused('tp1_purchase_profile_mismatch', 500));
-  assert.equal(f.rows().length, 1); assert.equal(f.tuples(), 1);
-});
-
-test('accounting keeps a fresh job row and its tuple together, with the identity the old reserve path compares', async t => {
+test('accounting keeps a fresh job row and its tuple together, with the identity later requests compare', async t => {
   const f = await accountingFixture(t);
   const payload = f.payload();
   await f.reserve(f.args(payload));
@@ -316,107 +262,6 @@ test('accounting keeps a fresh job row and its tuple together, with the identity
   assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
 });
 
-test('a charged accounting job is not reclaimed by the old reserve path at job capacity', async t => {
-  const f = await accountingFixture(t, { maxJobs: 1 });
-  await f.reserve(f.args());
-  assert.throws(() => f.store().reserve(f.payload({ jobId: JOB2 }), {}, { keepProfile: FIXTURE_PROFILE }), refused('peer_job_capacity', 503));
-  f.reopen();
-  assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.rows().length, 1);
-});
-
-test("the old path retires a safe charged hold and keeps a context record whose wire operation is missing", async t => {
-  // The job also has a completed old-path effect, so only the terminal branch could select it.
-  let terminal = false;
-  const contextSessionState = ({ jobId }) => terminal && jobId === JOB ? 'finalised' : null;
-  const f = await accountingFixture(t, { maxJobs: 1, contextSessionState });
-  f.store().finish(oldReserve(f, f.payload()), 200, '{}');
-  await f.reserve(f.args(readOf(f)));
-  terminal = true; f.setTime(T0 + 30000);
-  assert.throws(() => oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })), refused('peer_job_capacity', 503));
-  terminal = false; f.setTime(T0 + 7200000); f.reopen();
-  assert.throws(() => oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })), refused('peer_job_capacity', 503));
-  assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.holds().length, 1);
-  terminal = true;
-  assert.equal(oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })).disposition, 'perform');
-  assert.deepEqual(f.jobRows().map(row => row.job), [JOB2]);
-  assert.equal(f.tuples(), 1); assert.equal(f.holds().length, 1);
-  terminal = false;
-  const c = await accountingFixture(t, { maxContextRecords: 1, contextSessionState });
-  oldContextStep(c);
-  await c.reserve(c.args(c.payload()));
-  c.setTime(T0 + 7200000); c.reopen(); terminal = true;
-  assert.throws(() => oldReserve(c, contextPayload(c, { buyer: OTHER.claim, jobId: JOB2 })), refused('peer_context_capacity', 503));
-  assert.equal(c.db.prepare('SELECT COUNT(*) AS n FROM peer_context_admissions WHERE job = ?').get(JOB).n, 1);
-});
-
-test('the old path still retires a terminal admission-only job to free a job slot it now counts', async t => {
-  let terminal = false;
-  const f = await accountingFixture(t, { maxJobs: 1, contextSessionState: ({ jobId }) => terminal && jobId === JOB ? 'finalised' : null });
-  oldContextStep(f);
-  assert.throws(() => oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })), refused('peer_job_capacity', 503));
-  f.setTime(T0 + 7200000); terminal = true;
-  assert.doesNotThrow(() => oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })));
-  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_context_admissions').get().n, 1);
-  assert.equal(f.db.prepare('SELECT context_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).context_retired, 1);
-  assert.deepEqual(f.jobRows().map(row => row.job), [JOB2]);
-});
-
-// A (admission only) and B (a job row) are held, with any live jobs beside them; the host then restarts with a cap of one.
-const JOB4 = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
-const overCap = async (t, terminalJobs, live = []) => {
-  let terminal = [];
-  const options = { maxJobs: 4, maxContextRecords: 4, contextSessionState: ({ jobId }) => terminal.includes(jobId) ? 'finalised' : null };
-  const f = await accountingFixture(t, options);
-  oldContextStep(f, JOB);
-  for (const jobId of [JOB2, ...live]) f.store().finish(oldReserve(f, f.payload({ jobId })), 200, '{}');
-  Object.assign(options, { maxJobs: 1, maxContextRecords: 1 });
-  f.setTime(T0 + 7200000); f.reopen(); terminal = terminalJobs;
-  return f;
-};
-const ledgerJobs = (f) => f.db.prepare(`SELECT job FROM (SELECT job FROM peer_jobs UNION SELECT job FROM peer_context_admissions
-  UNION SELECT jobId FROM kit_job_holds) jobs WHERE NOT EXISTS (
-    SELECT 1 FROM kit_slot_retirements r WHERE r.job = jobs.job AND r.job_retired = 1) ORDER BY job`).all().map(row => row.job);
-const startC = (f, extra = {}) => f.store().reserve(contextPayload(f, { buyer: OTHER.claim, jobId: JOB3 }), { scope: { jobId: JOB3 } }, { admit: f.now, ...extra });
-
-test('a job count above the cap after a restart counts a retired admission-only job once: the context start is refused with nothing retired', async t => {
-  const f = await overCap(t, [JOB]);
-  const before = ledgerJobs(f);
-  assert.deepEqual(before, [JOB, JOB2].sort());
-  assert.throws(() => startC(f), refused('peer_job_capacity', 503));
-  assert.deepEqual(ledgerJobs(f), before);
-  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_context_admissions WHERE job = ?').get(JOB3).n, 0);
-});
-
-test('a dry check of a context start above the cap after a restart is refused the same way and writes nothing', async t => {
-  const f = await overCap(t, [JOB]);
-  const before = ledgerJobs(f);
-  assert.throws(() => startC(f, { dryRun: true }), refused('peer_job_capacity', 503));
-  assert.deepEqual(ledgerJobs(f), before);
-});
-
-test('a retirable job is not skipped when an admission-only job is also in the plan: both leave and the context start is admitted', async t => {
-  const f = await overCap(t, [JOB, JOB2]);
-  assert.equal(startC(f).disposition, 'perform');
-  assert.deepEqual(ledgerJobs(f), [JOB3]);
-});
-
-test('a ledger over the cap by two with only one job able to leave still refuses a context start', async t => {
-  const f = await overCap(t, [JOB], [JOB4]);
-  const before = ledgerJobs(f);
-  assert.equal(before.length, 3);
-  assert.throws(() => startC(f), refused('peer_job_capacity', 503));
-  assert.deepEqual(ledgerJobs(f), before);
-});
-
-test('a retired admission-only job frees its slot at the limit without a restart: the context start is admitted beside the live job', async t => {
-  let terminal = false;
-  const f = await accountingFixture(t, { maxJobs: 2, maxContextRecords: 1, contextSessionState: ({ jobId }) => terminal && jobId === JOB ? 'finalised' : null });
-  oldContextStep(f, JOB);
-  f.store().finish(oldReserve(f, f.payload({ jobId: JOB2 })), 200, '{}');
-  f.setTime(T0 + 7200000); terminal = true;
-  assert.equal(startC(f).disposition, 'perform');
-  assert.deepEqual(ledgerJobs(f), [JOB2, JOB3].sort());
-});
 
 test('accounting-payment-tuple-commit-cuts', async t => {
   for (const table of ['kit_job_holds', 'kit_payment_transactions', 'kit_reservations', 'peer_jobs', 'kit_purchase_profiles']) {
@@ -618,32 +463,13 @@ test('the reservation ledger lists the sources and writers the matrix below cove
   const writers = table => source.match(new RegExp(`INSERT (?:OR \\w+ )?INTO ${table}\\b`, 'g'))?.length ?? 0;
   assert.equal(writers('kit_slot_retirements'), 2, 'the store retirement writer keeps terminal flags and open ownership');
   assert.equal([...RESERVATION_LEDGER.jobs, ...RESERVATION_LEDGER.contextRecords].some(sql => /kit_purchase_profiles|kit_slot_retirements/.test(sql)), false, 'tuples and ownership proofs hold no slots');
-  // peer_nonce_retention: the legacy-row upgrade and the old reservation (K1 refusals live in the challenge ledger);
-  // peer_jobs: the old proposal and accounting's first purchase; K1 admissions retain their own intent before a tuple.
+  // peer_nonce_retention: the upgrade of earlier rows (K1 refusals live in the challenge ledger);
+  // peer_jobs: accounting's first purchase; K1 admissions retain their own intent before a tuple.
   assert.deepEqual(Object.fromEntries(['peer_nonce_retention', 'peer_jobs', 'peer_context_admissions', 'kit_job_holds', 'kit_reservations', 'kit_context_admissions']
-    .map(table => [table, writers(table)])), { peer_nonce_retention: 2, peer_jobs: 2, peer_context_admissions: 1, kit_job_holds: 1, kit_reservations: 1, kit_context_admissions: 1 });
+    .map(table => [table, writers(table)])), { peer_nonce_retention: 1, peer_jobs: 1, peer_context_admissions: 0, kit_job_holds: 1, kit_reservations: 1, kit_context_admissions: 1 });
 });
 
 const WRITERS = [
-  { name: 'an old proposal', job: true, context: false, write: f => { oldReserve(f, f.payload()); } },
-  { name: 'an old context admission', job: true, context: true, write: f => oldContextStep(f) },
-  { name: 'a retained no-effect refusal', job: false, context: false, owner: true,
-    write: f => {
-      const request = f.payload(), text = JSON.stringify({ error: 'buyer_bundle_unauthenticated' });
-      f.store().finish(oldReserve(f, request), 422, text, { noEffect: true });
-      assert.equal(f.jobRows().length, 0); assert.equal(f.tuples(), 0);
-      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
-      assert.deepEqual(f.db.prepare('SELECT buyer, agreement_hash FROM kit_job_owners WHERE job = ?').get(JOB),
-        { buyer: BUYER.claim, agreement_hash: null });
-      return { request, text };
-    },
-    replay: (f, { request, text }) => {
-      const expected = { disposition: 'cached', status: 422, text };
-      assert.deepEqual(oldReserve(f, request), expected);
-      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 1);
-      assert.deepEqual(f.db.prepare('SELECT buyer, created_at FROM peer_nonce_retention').all(), [{ buyer: BUYER.claim, created_at: T0 }]);
-      assert.equal(f.jobRows().length, 0); assert.equal(f.tuples(), 0);
-    } },
   { name: 'an accounted proposal', job: true, context: false, write: f => f.reserve(f.args()) },
   { name: 'an accounted context start', job: true, context: true, write: f => f.reserve(f.args(contextPayload(f))) },
   { name: 'an accounted context start that crashes before its reservation', job: true, context: true,
@@ -668,7 +494,6 @@ const LIMITS = [
     refusal: refused('peer_job_conflict', 409) },
 ];
 const READERS = [
-  { name: 'old', read: (f, p) => Promise.resolve().then(() => oldReserve(f, p)) },
   { name: 'accounted', read: (f, p) => f.reserve(f.args(p)) },
 ];
 for (const writer of WRITERS) for (const limit of LIMITS) for (const reader of READERS) {
@@ -682,12 +507,11 @@ for (const writer of WRITERS) for (const limit of LIMITS) for (const reader of R
   });
 }
 
-test('F1: a context start that crashed after its commit holds its job slot after restart against both paths, and its own retry needs no second slot', async t => {
+test('F1: a context start that crashed after its commit holds its job slot after restart, and its own retry needs no second slot', async t => {
   const f = await accountingFixture(t, { maxJobs: 1 });
   await assert.rejects(f.reserve(f.args(contextPayload(f), { checked: { reserve: crash } })), error => error === cause);
   f.reopen();
   await assert.rejects(f.reserve(f.args(f.payload({ jobId: JOB2 }))), refused('peer_job_capacity', 503));
-  assert.throws(() => oldReserve(f, f.payload({ jobId: JOB2 })), refused('peer_job_capacity', 503));
   assert.equal((await f.reserve(f.args(contextPayload(f)))).state, 'new');
   assert.equal((await f.reserve(f.args(f.payload()))).state, 'new');
   assert.equal(f.holds().length, 1); assert.equal(f.rows().length, 3);
@@ -701,28 +525,24 @@ test('F1c: a second accounted context start for another job is refused at one co
   f.reopen(); assert.equal(f.rows().length, 2); assert.equal(f.holds().length, 1);
 });
 
-test('F2: one buyer window counts both paths in either order and interleaved; other buyers stay independent; the exact window end admits again', async t => {
-  const orders = [['old', 'accounted'], ['accounted', 'old'], ['old', 'accounted', 'old', 'accounted']];
-  for (const order of orders) {
-    const limit = order.length / 2;
-    const f = await accountingFixture(t, { maxNoncesPerBuyerPerWindow: limit });
-    const send = (path, p) => path === 'old' ? Promise.resolve().then(() => oldReserve(f, p)) : f.reserve(f.args(p));
-    // Each request is its own job: one job and route takes one effect, whichever path reserves it.
-    let jobs = 0;
-    const fresh = (change = {}) => f.payload({ jobId: jobAt(jobs++), ...change });
-    for (const path of order.slice(0, limit)) await send(path, fresh());
-    for (const path of order.slice(limit)) await assert.rejects(send(path, fresh()), refused('peer_buyer_nonce_limit', 429));
-    for (const path of order.slice(limit)) await send(path, fresh({ buyer: OTHER.claim }));
-    f.setTime(T0 + 59999);
-    await assert.rejects(send(order.at(-1), fresh()), refused('peer_buyer_nonce_limit', 429));
-    f.setTime(T0 + 60000);
-    await send(order.at(-1), fresh());
-  }
+test('F2: one buyer window counts every reservation; other buyers stay independent; the exact window end admits again', async t => {
+  const limit = 2;
+  const f = await accountingFixture(t, { maxNoncesPerBuyerPerWindow: limit });
+  const send = p => f.reserve(f.args(p));
+  // Each request is its own job: one job and route takes one effect.
+  let jobs = 0;
+  const fresh = (change = {}) => f.payload({ jobId: jobAt(jobs++), ...change });
+  for (let i = 0; i < limit; i++) await send(fresh());
+  for (let i = 0; i < limit; i++) await assert.rejects(send(fresh()), refused('peer_buyer_nonce_limit', 429));
+  for (let i = 0; i < limit; i++) await send(fresh({ buyer: OTHER.claim }));
+  f.setTime(T0 + 59999);
+  await assert.rejects(send(fresh()), refused('peer_buyer_nonce_limit', 429));
+  f.setTime(T0 + 60000);
+  await send(fresh());
 });
 
 test("D-9: another buyer's accounted proposal cannot take over a job held by an admission or an accounted context start, also after restart and while pending", async t => {
   const holders = [
-    { name: 'old context admission', hold: f => oldContextStep(f) },
     { name: 'accounted context start', hold: f => f.reserve(f.args(contextPayload(f))) },
     { name: 'pending accounted context start', hold: f => assert.rejects(f.reserve(f.args(contextPayload(f), { checked: { reserve: crash } })), error => error === cause) },
   ];
@@ -739,31 +559,15 @@ test("D-9: another buyer's accounted proposal cannot take over a job held by an 
   }
 });
 
-test("the old path refuses another buyer's request for a job an accounted context start holds", async t => {
-  const f = await accountingFixture(t);
-  await f.reserve(f.args(contextPayload(f)));
-  assert.throws(() => oldReserve(f, f.payload({ buyer: OTHER.claim })), refused('peer_job_conflict', 409));
-  assert.throws(() => oldReserve(f, contextPayload(f, { buyer: OTHER.claim })), refused('peer_job_conflict', 409));
-  assert.equal(f.jobRows().length, 0);
-  assert.doesNotThrow(() => oldReserve(f, f.payload()));
-});
-
 test('a job that already holds the only context record is issued a fresh challenge for its retry; another job is not', async t => {
-  const holders = [
-    { name: 'old context admission', hold: f => oldContextStep(f), retry: 'cached' },
-    // The accounted start holds the context slot: the old path no longer runs the same job's context step.
-    { name: 'accounted context start', hold: f => f.reserve(f.args(contextPayload(f))), conflict: true },
-  ];
-  for (const holder of holders) for (const restart of [false, true]) await t.test(`${holder.name}${restart ? ' after restart' : ''}`, async t => {
+  for (const restart of [false, true]) await t.test(`accounted context start${restart ? ' after restart' : ''}`, async t => {
     const f = await accountingFixture(t, { maxContextRecords: 1 });
-    await holder.hold(f);
+    await f.reserve(f.args(contextPayload(f)));
     if (restart) f.reopen();
     const issue = (jobId = JOB) => f.store().challenges.issue({ jobId, buyer: BUYER.claim }, sha256Hex('context scope'));
     const challenge = issue();
-    assert.equal(challenge.expiresAt, T0 + SESSION_CHALLENGE_LIFETIME_MS, holder.name);
-    assert.throws(() => issue(JOB2), refused('peer_context_capacity', 503), holder.name);
-    if (holder.conflict) assert.throws(() => oldReserve(f, contextPayload(f)), refused('peer_operation_conflict', 409), holder.name);
-    else assert.equal(oldReserve(f, contextPayload(f)).disposition, holder.retry, holder.name);
+    assert.equal(challenge.expiresAt, T0 + SESSION_CHALLENGE_LIFETIME_MS);
+    assert.throws(() => issue(JOB2), refused('peer_context_capacity', 503));
   });
 });
 
@@ -783,15 +587,6 @@ test('a proposal that crashed after its commit keeps the job on its Agreement: a
   }
   assert.equal(JSON.parse(f.jobRows()[0].context).agreementHash, f.payload().agreementHash);
   assert.equal((await f.reserve(await f.admit())).state, 'new');
-});
-
-test('the old path wrote the job with its Agreement: an accounted request for another Agreement is refused with no row or file, and the old path agrees', async t => {
-  const f = await accountingFixture(t);
-  f.store().finish(oldReserve(f, f.payload()), 200, '{}');
-  const before = state(f);
-  await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: OTHER_AGREEMENT }))), refused('peer_job_conflict', 409));
-  assert.deepEqual(state(f), before); assert.deepEqual(f.files(), []);
-  assert.throws(() => oldReserve(f, f.payload({ agreementHash: OTHER_AGREEMENT })), refused('peer_job_conflict', 409));
 });
 
 test('a completed accounted proposal fixes the Agreement for the job\'s payment on another route, which publishes no file', async t => {
@@ -828,32 +623,27 @@ test('another Agreement is refused while the first proposal is still awaiting it
 test('a job with a job row still admits its own context start, the same Agreement, and a full-window refusal comes before the Agreement check', async t => {
   const f = await accountingFixture(t, { maxNoncesPerBuyerPerWindow: 3 });
   assert.equal((await f.reserve(f.args(f.payload()))).state, 'new');
-  assert.doesNotThrow(() => oldReserve(f, contextPayload(f)));
+  assert.equal((await f.reserve(f.args(contextPayload(f)))).state, 'new');
   assert.equal((await f.reserve(f.args(contextPayload(f, { jobId: JOB2 })))).state, 'new');
   assert.equal(f.jobRows().length, 1);
   await assert.rejects(f.reserve(f.args(f.payload({ agreementHash: OTHER_AGREEMENT }))), refused('peer_buyer_nonce_limit', 429));
 });
 
-// One rule per refusal of the old reserve path that reads journal state: both paths apply it before any write.
 const terminalFixture = async (t, options = {}) => {
   const session = { state: null };
   const f = await accountingFixture(t, { ...options, contextSessionState: ({ jobId }) => jobId === JOB ? session.state : null });
   return [f, session];
 };
-const slots = f => f.db.prepare('SELECT COUNT(*) AS n FROM peer_slots').get().n;
-const txHash = 'ab'.repeat(32);
-const oldPayment = (f, p) => f.store().reserve({ ...p, nonce: f.payload().nonce }, { txHash }, { keepProfile: FIXTURE_PROFILE });
 const wireRefusal = Object.assign(new Error('TEST refused'), { code: 'TEST-refused', status: 409 });
 const refuses = async () => { throw wireRefusal; };
 
-test('a fresh accounted proposal or context start for a terminal session is refused with nothing written, as the old path refuses it', async t => {
+test('a fresh accounted proposal or context start for a terminal session is refused with nothing written', async t => {
   for (const start of ['proposal', 'context']) for (const restart of [false, true]) {
     const [f, session] = await terminalFixture(t);
     session.state = 'finalised';
     if (restart) f.reopen();
     await assert.rejects(start === 'proposal' ? f.reserve(await f.admit()) : f.reserve(await f.admitContext()), refused('context_session_terminal', 409), start);
     f.assertEmpty();
-    assert.throws(() => oldReserve(f, start === 'proposal' ? f.payload() : contextPayload(f)), refused('context_session_terminal', 409), start);
   }
 });
 
@@ -971,64 +761,11 @@ test('a terminal session with no wire reader refuses a fresh start whose only ro
   assert.equal(f.rows().length, 1);
 });
 
-test('an accounted proposal holds its job and route against the old path: reserve and classify refuse, also after restart and a crash', async t => {
-  for (const mode of ['new', 'restart', 'crash']) {
-    const f = await accountingFixture(t);
-    if (mode === 'crash') await assert.rejects(f.reserve(f.args(f.payload(), { checked: { reserve: crash } })), error => error === cause);
-    else await f.reserve(f.args());
-    if (mode === 'restart') f.reopen();
-    assert.throws(() => oldReserve(f, f.payload()), refused('peer_operation_conflict', 409), mode);
-    assert.throws(() => f.store().classify(f.payload(), {}, { keepProfile: FIXTURE_PROFILE }), refused('peer_operation_conflict', 409), mode);
-    assert.equal(slots(f), 0); assert.equal(f.rows().length, 1);
-  }
-});
-
-for (const route of ['proposal', 'context']) {
-  const request = f => route === 'proposal' ? f.payload() : contextPayload(f);
-  test(`the old ${route} holds its job and route against an accounted one: nothing is charged, held or published, also after restart`, async t => {
-    for (const restart of [false, true]) {
-      const f = await accountingFixture(t);
-      oldReserve(f, request(f));
-      if (restart) f.reopen();
-      const tuples = f.tuples();
-      await assert.rejects(f.reserve(f.args(request(f))), refused('peer_operation_conflict', 409), route);
-      assert.equal(f.rows().length, 0); assert.equal(f.holds().length, 0); assert.equal(f.files().length, 0); assert.equal(f.tuples(), tuples);
-    }
-  });
-  test(`an accounted ${route} holds its job and route against the old one, also after restart`, async t => {
-    for (const restart of [false, true]) {
-      const f = await accountingFixture(t);
-      await f.reserve(f.args(request(f)));
-      if (restart) f.reopen();
-      assert.throws(() => oldReserve(f, request(f)), refused('peer_operation_conflict', 409), route);
-      assert.equal(slots(f), 0); assert.equal(f.rows().length, 1);
-    }
-  });
-}
-
-test('an accounted payment and an old payment for the same job hold one effect between them, in either order', async t => {
-  const first = await accountingFixture(t);
-  const input = await first.payment();
-  await first.reserve(input);
-  assert.throws(() => oldPayment(first, input.payload), refused('peer_operation_conflict', 409));
-  assert.equal(slots(first), 0);
-  const second = await accountingFixture(t);
-  const next = await second.payment();
-  const { agreementHash, listingPin: pin } = next.payload;
-  second.store().finish(oldReserve(second, second.payload({ agreementHash, listingPin: pin })), 200, '{}');
-  oldPayment(second, next.payload);
-  second.reopen();
-  await assert.rejects(second.reserve(next), refused('peer_operation_conflict', 409));
-  assert.equal(second.rows().length, 0); assert.equal(second.payments().length, 0); assert.equal(second.files().length, 0);
-});
-
 test('a refused accounted reservation holds no slot, and a read route takes none', async t => {
   const f = await accountingFixture(t);
   await assert.rejects(f.reserve(f.args(f.payload(), { checked: { reserve: refuses } })), refused('TEST-refused', 409));
   assert.equal(f.rows()[0].state, 'refused');
-  assert.doesNotThrow(() => oldReserve(f, f.payload()));
   assert.equal((await f.reserve(f.args(readOf(f)))).state, 'new');
-  assert.doesNotThrow(() => oldReserve(f, readOf(f)));
 });
 
 test('an accounted read of an unknown job is refused before any charge, and the proposal that follows is admitted', async t => {
@@ -1040,8 +777,6 @@ test('an accounted read of an unknown job is refused before any charge, and the 
     assert.equal((await f.reserve(f.args())).state, 'new', path);
     assert.equal(f.jobRows().length, 1);
   }
-  const f = await accountingFixture(t);
-  assert.throws(() => oldReserve(f, f.payload({ path: BUYER_COPY })), refused('peer_unknown_job', 404));
 });
 
 // Total capacity is shared by both writers and keeps every committed accounting charge.
@@ -1084,58 +819,11 @@ test('accounting store capacity retains definite refusal charges', async t => {
   assert.equal(f.files().length, 0);
 });
 
-test('accounting store capacity is enforced by the old reserve path', async t => {
-  const f = await accountingFixture(t, { maxRecords: 1, maxJobs: 10 });
-  await f.reserve(f.args());
-  assert.throws(() => oldReserve(f, f.payload({ jobId: JOB2 })), refused('peer_store_capacity', 503));
-  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 0);
-  assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
-});
-
-test('accounting store capacity includes live old nonces', async t => {
-  const f = await accountingFixture(t, { maxRecords: 1, maxJobs: 10 });
-  oldReserve(f, f.payload({ jobId: JOB2 }));
-  await assert.rejects(f.reserve(f.args()), refused('peer_store_capacity', 503));
-  assert.equal(f.rows().length, 0); assert.equal(f.holds().length, 0);
-  assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
-});
-
-test('accounting store capacity combines both paths at the exact boundary', async t => {
-  for (const writer of ['old', 'accounted']) {
-    const f = await accountingFixture(t, { maxRecords: 2, maxJobs: 10 });
-    oldReserve(f, f.payload({ jobId: JOB2 }));
-    await f.reserve(f.args());
-    if (writer === 'old') assert.throws(() => oldReserve(f, f.payload({ jobId: JOB3 })), refused('peer_store_capacity', 503));
-    else await assert.rejects(f.reserve(f.args()), refused('peer_store_capacity', 503));
-    assert.equal(f.rows().length, 1);
-    assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 1);
-  }
-});
-
 test('accounting store capacity is durable across reopen', async t => {
   const f = await accountingFixture(t, { maxRecords: 1 });
   await f.reserve(f.args()); f.setTime(T0 + REPLAY_WINDOW_MS - 1); f.reopen();
   await assert.rejects(f.reserve(f.args()), refused('peer_store_capacity', 503));
   assert.equal(f.rows().length, 1); assert.equal(f.holds().length, 1); assert.equal(f.tuples(), 1);
-});
-
-test('accounting store capacity excludes reclaimable old nonces after their retention window', async t => {
-  const f = await accountingFixture(t, { maxRecords: 1, maxJobs: 10 });
-  f.store().finish(oldReserve(f, f.payload({ jobId: JOB2, expiresAt: T0 + 1 })), 200, '{}');
-  f.setTime(T0 + 60000);
-  assert.equal((await f.reserve(f.args())).state, 'new');
-  assert.equal(f.rows().length, 1);
-});
-
-test('accounting store capacity includes old rate retention and unresolved effects', async t => {
-  for (const completed of [true, false]) {
-    const f = await accountingFixture(t, { maxRecords: 1, maxJobs: 10 });
-    const reservation = oldReserve(f, f.payload({ jobId: JOB2, expiresAt: T0 + 1 }));
-    if (completed) f.store().finish(reservation, 200, '{}');
-    f.setTime(T0 + (completed ? 2 : 60000));
-    await assert.rejects(f.reserve(f.args()), refused('peer_store_capacity', 503));
-    assert.equal(f.rows().length, 0);
-  }
 });
 
 test('accounting store capacity serializes two connections before the wire settles', async t => {
@@ -1178,16 +866,6 @@ test('a full record cap frees itself after the replay window', async t => {
   assert.deepEqual(f.rows().map(row => row.state), ['new', ...Array(6).fill('refused')], 'expired polls remain durable without filling capacity');
 });
 
-test('the old reserve path does not count settled rows outside the replay window', async t => {
-  const f = await accountingFixture(t, { maxRecords: 3 });
-  assert.equal((await f.reserve(await f.admit())).state, 'new');
-  await pollWhilePending(f, 2);
-  assert.throws(() => oldReserve(f, f.payload({ jobId: JOB2 })), refused('peer_store_capacity', 503));
-  f.setTime(T0 + REPLAY_WINDOW_MS);
-  assert.doesNotThrow(() => oldReserve(f, f.payload({ jobId: JOB2 })));
-  assert.equal(f.rows().length, 3, 'the old path leaves the accounting records intact');
-});
-
 test('rows that expired before a restart remain durable and uncounted after reopen', async t => {
   const f = await accountingFixture(t, { maxRecords: 3 });
   assert.equal((await f.reserve(await f.admit())).state, 'new');
@@ -1216,7 +894,6 @@ test('retirement retains route records and their slot guard', async t => {
   const rows = f.rows();
   assert.equal(rows.length, 5, 'all prior route records remain alongside the new job');
   assert.deepEqual(rows.map(row => [row.jobId, row.state]), [[JOB, 'new'], [JOB, 'recover'], [JOB, 'completed'], [JOB, 'refused'], [JOB2, 'new']]);
-  assert.throws(() => oldReserve(f, f.payload()), refused('peer_operation_conflict', 409), 'the old path still finds the accounted effect');
 });
 
 test('a refused charge leaves the expired rows in place', async t => {

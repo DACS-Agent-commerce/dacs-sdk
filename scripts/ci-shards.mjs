@@ -114,7 +114,6 @@ export const WEIGHTS = {
     "refused-deliverable-republish.test.mjs": 1,
     "request-validation.test.mjs": 1,
     "reservation-accounting.test.mjs": 37,
-    "reservation-retention.test.mjs": 1,
     "retained-vet-readers.test.mjs": 6,
     "seller-agent-contracts.test.mjs": 1,
     "seller-client-deadline.test.mjs": 1,

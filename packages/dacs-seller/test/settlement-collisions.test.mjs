@@ -21,18 +21,3 @@ for(const jobs of [JOBS,[...JOBS].reverse()])test(`SB-2 collision suspends both 
  }finally{store?.close();rmSync(dir,{recursive:true,force:true});}
 });
 
-
-test('transport admits a competing payment to authenticated intake instead of electing the first sender',async()=>{
- const {createSellerTransportStore}=await import('./helpers/bound-transport-store.mjs');
- const {withFixtureProfile}=await import('./helpers/wire-authority-fixture.mjs');
- const dir=mkdtempSync(join(tmpdir(),'transport-collision-')),store=withFixtureProfile(createSellerTransportStore({path:join(dir,'transport.sqlite'),now:()=>1800000000000}));
- const buyer=key().claim,seller=key().claim,listingPin={listingId:'collision',version:1,contentHash:'b'.repeat(64)};
- try{
-  for(const [i,jobId] of JOBS.entries()){
-   const request={jobId,buyer,seller,listingPin,agreementHash:'c'.repeat(64),nonce:String(i).repeat(32),expiresAt:1800000030000,method:'POST',path:'/dacs/v1/agreements/proposals',bodyHash:'d'.repeat(64)};
-   const proposal=store.reserve(request,{});store.finish(proposal,200,'{}');
-   const payment=store.reserve({...request,path:'/dacs/v1/payments',nonce:String(i+2).repeat(32)},{jobId,txHash:'e'.repeat(64),payerPayingKey:buyer});
-   assert.equal(payment.disposition,'perform');store.finish(payment,200,'{}');
-  }
- }finally{store?.close();rmSync(dir,{recursive:true,force:true});}
-});

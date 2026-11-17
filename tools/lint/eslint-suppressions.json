@@ -304,14 +304,6 @@
       "count": 3
     }
   },
-  "packages/dacs-seller/test/d5-challenge-retention.test.mjs": {
-    "getter-return": {
-      "count": 2
-    },
-    "no-unused-vars": {
-      "count": 5
-    }
-  },
   "packages/dacs-seller/test/deliverable-wallet-journal.test.mjs": {
     "no-unused-vars": {
       "count": 2

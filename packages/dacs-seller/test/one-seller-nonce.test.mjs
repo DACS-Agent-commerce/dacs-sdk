@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -10,7 +10,6 @@ import { canonicalize, DacsError, generateCanonicalJobId, identityBundleHash, sh
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { sellerContextScopeHash, sellerContextChallengeScope, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH,
   SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
-import { TP1_APPROVED_IDENTITY_RECORD, TP1_PROFILE_ID, TP1_PROFILE_REVISION, TP1_BASE_REVISION } from '@kynesyslabs/dacs/wire';
 import { createSellerChallengeLedger } from '../src/dacs/seller-challenge-ledger.mjs';
 import { KIT_TP1_VET_MODE } from '../src/host.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
@@ -21,10 +20,9 @@ import { createSellerAgent } from '../src/dacs/seller-agent.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { purchaseSupport } from '../src/dacs/listing.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from '../src/dacs/agreement-context-consumer.mjs';
-import { admittedSession } from './helpers/challenge-api.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
-import { testNetwork, withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
+import { testNetwork } from './helpers/wire-authority-fixture.mjs';
 
 const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000;
 const buyer = testWallet(1), seller = testWallet(2);
@@ -62,8 +60,7 @@ async function fixture(t, options = {}) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, 'transport.sqlite'), listing = options.listing ?? fixtureListing(seller, { now: T0 }), pin = listingPin(listing), support = purchaseSupport(listing);
   let time = options.time ?? T0, store, generation = 0;
-  const policy = { admission: options.policy?.admission ?? (({ jobId, bundle }) => admittedSession({ jobId, bundle, bundleHash: identityBundleHash(bundle), seller: seller.claim, listingPin: pin })) };
-  const open = () => store = withFixtureProfile(createSellerTransportStore({ path, now: () => time, generation: `TEST-generation-${++generation}`, ...options.store }));
+  const open = () => store = createSellerTransportStore({ path, now: () => time, generation: `TEST-generation-${++generation}`, ...options.store });
   open(); t.after(() => store.close());
   const rows = (table = 'kit_challenges') => {
     const db = new Database(path, { readonly: true });
@@ -85,22 +82,14 @@ async function fixture(t, options = {}) {
     const body = { scope: { ...scope(jobId), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle };
     return { body, request: request(body), nonce: sessionNonce };
   };
-  // The first context admission as the ledger and the journal see it: the nonce attempt, the session admission of the presentation, the
-  // journal reservation and the acceptance of the nonce. A failed admission records the attempt as failed. Resolves with the reservation.
-  const accept = async ({ body, request }) => {
+  // The ledger's attempt for a context step with this nonce: the refusal it records, thrown as an error.
+  const attempt = async ({ body, request }) => {
     const nonce = body.buyerIdentityBundle.sessionNonce, owned = store.challenges.attempt({ request, path: 'context', nonce, jobId: request.jobId, buyer: request.buyer,
       challengeScopeHash: sellerContextScopeHash(sellerContextChallengeScope(body.scope)), presentationHash: sha256Hex(canonicalize(body.buyerIdentityBundle)) });
     if (owned.kind === 'refused') throw new SellerTransportError(owned.code, owned.status, { cause: owned.cause });
-    let admission;
-    try { admission = await policy.admission({ jobId: request.jobId, bundle: structuredClone(body.buyerIdentityBundle), nonce }); }
-    catch (error) { store.challenges.recordFailed(owned.owner, nonce, error.code ?? 'operation_uncertain'); throw error; }
-    const reservation = store.reserve(request, body, { admit: () => time, challengeNonce: nonce });
-    store.challenges.accept(owned.owner, nonce, { buyerBundleText: canonicalize(body.buyerIdentityBundle), buyerBundleHash: identityBundleHash(body.buyerIdentityBundle), admission,
-      admittedAt: store.contextAdmission(request.jobId)?.admittedAt, firstAdmission: { challengeExpiresAt: store.challenges.retained(nonce).expiresAt, generatedAt: body.scope.generatedAt, checkedAt: time } });
-    return reservation;
+    return owned;
   };
-  return { policy, rows, scope, challengeBody, request, issue, input, accept, path, listing, pin,
-    get store() { return store; }, advance: ms => { time += ms; }, now: () => time,
+  return { rows, scope, challengeBody, request, issue, input, attempt, path, listing, pin,    get store() { return store; }, advance: ms => { time += ms; }, now: () => time,
     reopen() { store.close(); open(); }, closeLost() { store.challenges.closeLostValidations(); store.recoverLostContextReservations(); } };
 }
 
@@ -177,7 +166,6 @@ test(card('T18'), async t => {
 });
 
 // ---- the agent on the one ledger (P09a2b) ----
-const LIFETIME = 600000, OTHER_BUYER = testWallet(5);
 const watchWrites = t => {
   const writes = [], prepare = Database.prototype.prepare;
   const mock = t.mock.method(Database.prototype, 'prepare', function (sql) {
@@ -210,7 +198,7 @@ async function composed(t, storeOptions = {}) {
   };
   const pa = await proposalAdmissionFixture(t, { ledger });
   f = await fixture(t, { parties: { buyer: agentBuyer, seller: agentSeller }, listing: pa.listing, time: NOW,
-    policy: { admission: value => agent.admitSessionPresentation(value) }, store: storeOptions });
+    store: storeOptions });
   agent = await pa.open();
   const present = (nonce, { party = agentBuyer, amend = () => {} } = {}) => {
     const bundle = { bundleVersion: '1', presentedBy: party.claim, presentedAt: f.now(), sessionNonce: nonce, claims: [{ ref: party.claim }] };
@@ -244,95 +232,6 @@ const sellerChallengeRows = c => {
   try { return db.prepare("SELECT id FROM seller_effects WHERE id LIKE 'session-challenge:%' OR id LIKE 'session-job:%'").all(); } finally { db.close(); }
 };
 
-test(card('T01'), async t => {
-  const c = await composed(t), input = await c.f.input();
-  assert.equal((await c.f.accept(input)).disposition, 'perform');
-  assert.equal(c.f.rows().length, 1); assert.equal(c.admitReads(), 1); assert.equal(c.f.store.challenges.retained(input.nonce).state, 'accepted');
-  const watch = watchWrites(t);
-  await refusalOf(c.proposal(input.body.buyerIdentityBundle), 'proposal_not_assembled', 503);
-  watch.stop();
-  assert.deepEqual(watch.writes, []); assert.equal(c.admitReads(), 1); assert.equal(c.f.rows().length, 1);
-});
-
-test(card('T02'), async t => {
-  const c = await composed(t), operator = await c.agent.issueSessionChallenge({ jobId: JOB, buyer: agentBuyer.claim });
-  const input = await c.f.input(), other = c.present(operator.sessionNonce);
-  await c.f.accept(input);
-  await c.reopen();
-  const taken = await refusalOf(c.proposal(other), 'job_taken', 409);
-  assert.match(taken.message, /bound to another buyer or bundle/);
-  assert.equal(c.f.store.challenges.retained(operator.sessionNonce).failure.code, 'job_taken');
-  assert.equal(c.admitReads(), 1);
-  const watch = watchWrites(t);
-  await refusalOf(c.proposal(input.body.buyerIdentityBundle), 'proposal_not_assembled', 503);
-  watch.stop();
-  assert.deepEqual(watch.writes, []); assert.equal(c.admitReads(), 1);
-  assert.equal(c.f.store.challenges.jobBinding(JOB).nonce, input.nonce);
-});
-
-for (const bundleKind of ['plain', 'extension']) for (const path of ['context', 'operator']) for (const restarted of [false, true]) for (const expired of [false, true]) {
-  test(`${card('T03')} [${bundleKind}, ${path}, ${restarted ? 'restarted' : 'live'}, ${expired ? 'expired' : 'fresh'}]`, async t => {
-    const c = await composed(t), amend = bundleKind === 'extension' ? bundle => { bundle.signature = 'TEST-extension-member'; bundle.signatures = ['TEST-extension-members']; } : undefined;
-    let bundle, nonce;
-    if (path === 'context') {
-      const input = await c.f.input(JOB, amend); nonce = input.nonce; bundle = input.body.buyerIdentityBundle;
-      await c.f.accept(input);
-    } else {
-      nonce = (await c.agent.issueSessionChallenge({ jobId: JOB, buyer: agentBuyer.claim })).sessionNonce; bundle = c.present(nonce, { amend });
-      await refusalOf(c.proposal(bundle), 'proposal_not_assembled', 503);
-    }
-    if (bundleKind === 'extension') assert.deepEqual(Object.keys(bundle).filter(key => key.startsWith('signature')), ['signature', 'signatures']);
-    if (restarted) await c.reopen();
-    if (expired) c.advance(LIFETIME + 1);
-    const accepted = c.f.store.challenges.retained(nonce), reads = c.admitReads();
-    for (const buyerArgument of [agentBuyer.claim, agentBuyer.claim + '?jurisdiction=GB']) {
-      const watch = watchWrites(t);
-      await refusalOf(c.proposal(bundle, { buyerArgument }), 'proposal_not_assembled', 503);
-      watch.stop();
-      assert.deepEqual(watch.writes, []); assert.equal(c.admitReads(), reads);
-    }
-    assert.equal(accepted.accepted.buyerBundleText, canonicalize(bundle));
-    assert.equal(c.agent.stageOf(JOB), 'proposed');
-    await c.retainProposedSession(bundle);
-    assert.equal(c.agent.stageOf(JOB), 'proposed', 'the retained-session reader accepts the exact retained bundle after reopening');
-    for (const [label, attempt] of [
-      ['other buyer', () => c.proposal(c.present(nonce, { party: OTHER_BUYER }), { buyerArgument: OTHER_BUYER.claim })],
-      ['other complete bundle', () => c.proposal(c.present(nonce, { amend: other => { other.presentedAt += 1; amend?.(other); } }))],
-      ['other job', () => c.proposal(bundle, { jobId: JOB2 })]]) {
-      const watch = watchWrites(t), error = await errorOf(attempt());
-      watch.stop();
-      assert.equal(error.code, 'session_not_admitted', label); assert.equal(error.status, 409, label);
-      assert.match(error.message, /context_challenge_consumed/, label);
-      assert.deepEqual(watch.writes, [], label); assert.deepEqual(c.f.store.challenges.retained(nonce), accepted, label); assert.equal(c.admitReads(), reads, label);
-    }
-  });
-}
-
-test(card('T04'), async t => {
-  const c = await composed(t), input = await c.f.input(), gate = barrier();
-  c.f.policy.admission = async value => { await gate.promise; return c.agent.admitSessionPresentation(value); };
-  const validating = c.f.accept(input);
-  assert.equal(c.f.store.challenges.retained(input.nonce).state, 'attempted');
-  const watch = watchWrites(t);
-  await refusalOf(c.proposal(input.body.buyerIdentityBundle), 'session_admission_unavailable', 503);
-  watch.stop();
-  assert.deepEqual(watch.writes, []); assert.equal(c.f.store.challenges.retained(input.nonce).state, 'attempted');
-  gate.resolve(); assert.equal((await validating).disposition, 'perform');
-  assert.equal(c.f.store.challenges.retained(input.nonce).state, 'accepted');
-});
-
-test(card('T07'), async t => {
-  const c = await composed(t), input = await c.f.input();
-  await c.f.accept(input);
-  const operator = await c.agent.issueSessionChallenge({ jobId: JOB2, buyer: agentBuyer.claim });
-  await refusalOf(c.proposal(c.present(operator.sessionNonce), { jobId: JOB2 }), 'proposal_not_assembled', 503);
-  assert.deepEqual(c.f.rows('sqlite_master').filter(row => row.name === 'peer_context_challenges'), []);
-  assert.deepEqual(sellerChallengeRows(c), []);
-  const source = new URL('../src/', import.meta.url), manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  await assert.rejects(readFile(new URL('dacs/session-challenge-limits.mjs', source)), { code: 'ENOENT' });
-  assert.deepEqual(manifest.files.filter(entry => entry.includes('session-challenge-limits')), []);
-});
-
 test(card('T08'), async t => {
   const c = await composed(t), watch = watchWrites(t);
   const error = await refusalOf(c.proposal(c.present(sha256Hex('TEST self-derived nonce'))), 'session_not_admitted', 409);
@@ -348,7 +247,7 @@ test(card('T09'), async t => {
   assert.equal(c.f.store.challenges.retained(operator.sessionNonce).state, 'accepted'); assert.equal(c.admitReads(), 1);
   const second = await c.agent.issueSessionChallenge({ jobId: JOB2, buyer: agentBuyer.claim });
   const input = await c.f.input(JOB2, bundle => { bundle.sessionNonce = second.sessionNonce; });
-  assert.equal((await errorOf(c.f.accept(input))).code, 'context_challenge_mismatch');
+  assert.equal((await errorOf(c.f.attempt(input))).code, 'context_challenge_mismatch');
   const row = c.f.store.challenges.retained(second.sessionNonce);
   assert.equal(row.state, 'failed'); assert.equal(row.failure.code, 'context_challenge_mismatch'); assert.equal(c.admitReads(), 1);
 });
@@ -462,12 +361,6 @@ function unavailable(error, source) {
   else { assert.ok(error.cause instanceof TypeError); assert.equal(error.cause.cause, source.answer); }
   return true;
 }
-const recoveryTables = ['kit_challenges', 'peer_effects', 'peer_effect_jobs', 'peer_jobs', 'peer_context_admissions', 'kit_purchase_profiles', 'kit_context_reservations'];
-const recoverySnapshot = f => recoveryTables.map(table => [table, f.rows(table)]);
-const proposalInput = (f, jobId = JOB) => {
-  const body = { jobId, proposal: {} }, request = f.request({ scope: f.scope(jobId) }, '/dacs/v1/agreements/proposals');
-  return { body, request: { ...request, bodyHash: sha256Hex(JSON.stringify(body)) } };
-};
 test('standalone ledger uses the shared adapter to refuse unavailable state', async t => {
   for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
     const source = unreadableSource(name), directory = await mkdtemp(join(tmpdir(), 'TEST-observer-'));
@@ -486,69 +379,6 @@ test('mapped session error preserves its identity', async t => {
   const f = await fixture(t, { store: { contextSessionState: () => { throw error; } } });
   assert.throws(() => f.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope')), actual => actual === error);
   assert.equal(f.rows().length, 0);
-});
-
-test('transport gates refuse unreadable authority', async t => {
-  for (const gate of ['proposal', 'context start', 'resume', 'claim', 'claim check', 'assertPending']) for (const name of ['throws', 'thenable', 'non-state']) await t.test(`${gate}: ${name}`, async t => {
-    const source = unreadableSource(name); let broken = false;
-    const f = await fixture(t, { store: { contextSessionState: () => broken ? source.read() : null } });
-    let invoke;
-    if (gate === 'context start') {
-      const input = await f.input(); invoke = () => f.store.reserve(input.request, input.body, { admit: f.now });
-    } else if (gate === 'resume') {
-      const input = await f.input(), first = f.store.reserve(input.request, input.body, { admit: f.now });
-      f.store.finish(first, 503, '{}');
-      const retained = f.store.reserve(input.request, input.body);
-      invoke = () => f.store.resume(retained, input.request);
-    } else {
-      const { request, body } = proposalInput(f);
-      if (gate === 'proposal') invoke = () => f.store.reserve(request, body);
-      else {
-        const first = f.store.reserve(request, body);
-        if (gate === 'assertPending') invoke = () => f.store.assertPending(first);
-        else {
-          f.store.finish(first, 503, '{}');
-          const retained = f.store.reserve(request, body);
-          invoke = gate === 'claim' ? () => f.store.claim(retained, request) : f.store.claim(retained, request).check;
-        }
-      }
-    }
-    const before = recoverySnapshot(f); broken = true;
-    assert.throws(invoke, error => unavailable(error, source)); assert.deepEqual(recoverySnapshot(f), before);
-  });
-});
-
-test('R19 unreadable reclamation keeps the old holder', async t => {
-  for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
-    const source = unreadableSource(name); let broken = false, terminal = false;
-    const f = await fixture(t, { store: { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === JOB ? terminal ? 'finalised' : broken ? source.read() : null : null } });
-    const { request, body } = proposalInput(f);
-    const profile = { id: TP1_PROFILE_ID, revision: TP1_PROFILE_REVISION, base: TP1_BASE_REVISION,
-      chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, pinVersion: TP1_APPROVED_IDENTITY_RECORD.pinVersion };
-    const first = f.store.reserve(request, body, { keepProfile: profile }); f.store.finish(first, 200, '{}');
-    f.advance(HOUR + 1); const before = recoverySnapshot(f), nonces = [f.rows('peer_nonces'), f.rows('peer_nonce_retention')]; broken = true;
-    const next = proposalInput(f, JOB2);
-    assert.throws(() => f.store.reserve(next.request, next.body), error => { assert.ok(['peer_job_capacity', 'session_admission_unavailable'].includes(error.code)); assert.equal(error.status, 503); return true; });
-    assert.deepEqual(recoverySnapshot(f), before); assert.deepEqual([f.rows('peer_nonces'), f.rows('peer_nonce_retention')], nonces);
-    terminal = true; assert.equal(f.store.reserve(next.request, next.body).disposition, 'perform');
-    assert.ok(!f.rows('peer_jobs').some(row => row.job === JOB));
-  });
-});
-
-test('R19 explicit unknown and terminal controls', async t => {
-  for (const state of [null, 'negotiating', 'finalised']) await t.test(String(state), async t => {
-    const f = await fixture(t, { store: { contextSessionState: () => state } }), { request, body } = proposalInput(f);
-    if (state === 'finalised') assert.throws(() => f.store.reserve(request, body), { code: 'context_session_terminal', status: 409 });
-    else assert.equal(f.store.reserve(request, body).disposition, 'perform');
-  });
-});
-
-test('R21 direct store refuses pending context reconciliation', async t => {
-  const f = await fixture(t), input = await f.input(), first = f.store.reserve(input.request, input.body, { admit: f.now });
-  const retained = f.store.reserve(input.request, input.body), before = recoverySnapshot(f);
-  assert.equal(first.disposition, 'perform'); assert.equal(retained.disposition, 'uncertain');
-  assert.throws(() => f.store.reconcile(retained, input.request, 200, '{}'), { code: 'peer_reconciliation_conflict', status: 503 });
-  assert.deepEqual(recoverySnapshot(f), before);
 });
 
 

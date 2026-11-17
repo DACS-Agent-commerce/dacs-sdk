@@ -1,4 +1,3 @@
-import { withFixtureProfile } from './wire-authority-fixture.mjs';
 import { fixtureListing } from '../fixtures/listings.mjs';
 import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { purchaseSupport } from '../../src/dacs/listing.mjs';
@@ -31,7 +30,7 @@ const START_LIMITS={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1};
 async function world(t){
  const dir=await mkdtemp(join(tmpdir(),'d5-wire-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=T;
  const seller=key(),buyer=key(),other=key(),listing=fixtureListing({...seller,signBytes:seller.sign},{now:T}),pin=listingPin(listing),support=purchaseSupport(listing);
- const path=join(dir,'transport.sqlite'),store=withFixtureProfile(createSellerTransportStore({path,maxRecords:10000,maxJobs:10000,maxChallenges:10000,maxContextRecords:10000,contextSessionState:()=>null,contextStartLimits:START_LIMITS,maxNoncesPerBuyerPerWindow:120,now:()=>time}));t.after(()=>store.close());
+ const path=join(dir,'transport.sqlite'),store=createSellerTransportStore({path,maxRecords:10000,maxJobs:10000,maxChallenges:10000,maxContextRecords:10000,contextSessionState:()=>null,contextStartLimits:START_LIMITS,maxNoncesPerBuyerPerWindow:120,now:()=>time});t.after(()=>store.close());
  store.bind({seller:seller.claim,listingPin:pin});
  const bundles=new Map();
  const wire=async({actor=buyer,jobId=JOBS[0],alter=()=>{}}={})=>{
