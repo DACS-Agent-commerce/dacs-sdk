@@ -166,10 +166,11 @@ export interface SessionRecord {
 }
 
 /**
- * Validate the complete persisted v1 record. The fenced filesystem store uses
- * this to recognise a v1 record and reports it as unsupported; mutation paths
- * use the narrower checkpoint/receipt validators before a bad value can be
- * written.
+ * Validate the complete persisted v1 record. The in-memory store runs this
+ * before every write. The fenced filesystem store calls it when it scans
+ * existing files, so a valid v1 file still counts as holding its agreement;
+ * loading a v1 file reports it as unsupported. Mutation paths also use the
+ * narrower checkpoint/receipt validators before a bad value can be written.
  */
 export function sessionRecordShapeViolation(value: unknown): string | null {
   if (!isPlainRecord(value)) return "session record must be an object";
