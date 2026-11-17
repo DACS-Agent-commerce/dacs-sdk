@@ -141,6 +141,14 @@ describe("the gated publish workflow", () => {
     ])).toBe(true);
   });
 
+  it("the gated workflow's verify job installs the same pinned npm client as the publish job, and requires it, before npm ci and the suites", () => {
+    const pin = commandsOf(publishSteps).find((command) => command.includes("npm install --global"));
+    expect(pin).toContain("npm@11.19.0");
+    expect(isInOrder(commandsOf(verifySteps), [
+      pin ?? "", "test \"$(npm --version)\" = 11.19.0", "npm ci", ...SUITE_COMMANDS,
+    ])).toBe(true);
+  });
+
   it("the gated workflow's publish job requires a clean build tree, builds, and builds the release set before it publishes", () => {
     expect(isInOrder(commandsOf(publishSteps), [
       "npm ci",
