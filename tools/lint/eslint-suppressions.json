@@ -234,9 +234,6 @@
   "packages/dacs-seller/src/dacs/seller-context-route.mjs": {
     "no-unused-vars": {
       "count": 2
-    },
-    "no-useless-assignment": {
-      "count": 3
     }
   },
   "packages/dacs-seller/src/dacs/seller-durable-state.mjs": {
@@ -315,11 +312,6 @@
       "count": 5
     }
   },
-  "packages/dacs-seller/test/d5-limits-before-effects.test.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "packages/dacs-seller/test/deliverable-wallet-journal.test.mjs": {
     "no-unused-vars": {
       "count": 2
@@ -328,11 +320,6 @@
   "packages/dacs-seller/test/devnet-storage-write-recovery.test.mjs": {
     "no-unused-vars": {
       "count": 2
-    }
-  },
-  "packages/dacs-seller/test/helpers/d5-http-fixture.mjs": {
-    "no-unused-vars": {
-      "count": 7
     }
   },
   "packages/dacs-seller/test/helpers/finalized-commitment-reader.mjs": {
