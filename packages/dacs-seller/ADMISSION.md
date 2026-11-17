@@ -29,7 +29,7 @@ pre-payment write. #59's admission reserves capacity; it is not signing authorit
 | Malformed CREATE, wrong local binding, closed pre-payment job, excessive pre-payment debit | Refused; no manual fallback | These fail validation independently of cancellation uncertainty | d5-admission.test.mjs A5 |
 | Listing, or any write in manual mode | Held for exact seller approval | Publication and manual mode confer no automatic authority | d5-admission.test.mjs A6 (Listing, Vet and Deliverable in manual mode) |
 | Paid-job policy refusal | Held for exact seller approval, with exact confirmation | Retain paid state and allow the seller to complete it | d5-admission.test.mjs A7 |
-| Known request/effect, including uncertain work | Cached answer or readback only; a shutdown cut may resume only with proven unsigned absence and a new bounded hold | Retries confer no new start authority; unknown issuance stays counted | d5-limits-before-effects.test.mjs B4; d5-admission.test.mjs A4, A8; d5-limits-before-effects.test.mjs B14; d5-limits-before-effects.test.mjs B20; d5-recovery.test.mjs R2 (real provider/SDK, separate processes; host harness pending D12) |
+| Known request/effect, including uncertain work | Cached answer or readback only; an unfinished context step is recovered from the retained request: retained Vet records are read back, only the missing ones are written, under the original hold and start, and work that cannot be proven stays uncertain | Retries confer no new start authority; unknown issuance stays counted | d5-limits-before-effects.test.mjs B4; d5-admission.test.mjs A4, A8; d5-limits-before-effects.test.mjs B14; d5-limits-before-effects.test.mjs B20; d5-recovery.test.mjs R2 (real provider/SDK, separate processes; host harness pending D12) |
 | Fresh context at the buyer, global or journal capacity limit | Refused after required nonce consumption, before a hold, decision-log line, new effect or provider call | Bound unpaid traffic before effects | d5-limits-before-effects.test.mjs B1–B3, B5–B6, B17–B19, B26, B36; d5-challenge-retention.test.mjs T10–T13, T17–T18 |
 | Fresh context or challenge for a terminal seller session, including a different buyer after cleanup | Refused with context_session_terminal before mutation or a provider call | Terminal state is authoritative by job and survives transport cleanup | d5-challenge-retention.test.mjs T11, T19 |
 | Fresh Agreement job at the retained job limit | Refused with peer_job_capacity before mutation unless enough unused bindings can be reclaimed | Real effects keep their bindings; definite no-effect completion frees unused bindings | d5-challenge-retention.test.mjs T7–T9, T15–T17, T20 |
@@ -160,10 +160,13 @@ is required even when admission refuses; holds, provider calls and new effects
 remain absent on refusal. Buyer-owned seller challenges use a separate durable
 ledger and the exact accepted seller presentation is retained per job.
 
-The transport reservation commits before policy admission opens its hold. A
-policy refusal or exception cleans up fresh work and retains resumed
-uncertainty. The two ledgers are not one atomic transaction: older runs and
-crashes after completion or during release can leave open policy holds.
+A context start records its intent, opens its policy hold and accepts the
+presentation before the wire reservation commits. A reservation refused after
+the acceptance, or a provider that fails by itself, ends the row and releases
+its hold and slot unless an effect cannot be ruled out. The admission records
+and the wire journal are not one atomic transaction: a crash after completion
+or during release can leave an unfinished row or an open policy hold, which the
+startup and periodic sweeps finish or retry.
 
 A host mounting the context route must hold its process-lifetime seller state
 lock, open its retained transport store, and pass that same store to policy
@@ -267,8 +270,10 @@ other access models locally before any publication.
 
 Canonical job IDs are checked at the transport envelope, the wire challenge and
 context routes, journal entries, context records and client, and party-Vet
-provider before hashing or protocol callbacks. T21–T22 and B38/B40 cover malformed aliases, case, length,
-range and types; B41 preserves consumption for a canonical cross-job attempt.
+provider before hashing or protocol callbacks. T21–T22, B38 and the
+d5-limits-before-effects test "context records, the context client and the
+transport auth refuse malformed IDs before store, policy, Vet or readback
+callbacks" cover malformed aliases, case, length, range and types; B41 preserves consumption for a canonical cross-job attempt.
 B39 verifies that old or future bundle presentedAt values do not gate admission.
 B42–B43 cover malformed job IDs in signed request bodies and definite client
 refusal attribution. Native boundary vectors also cover report production,
