@@ -14,7 +14,7 @@ const manifest = JSON.parse(readFileSync(new URL('./fixtures/context-wire-ports.
 // Files whose every test is listed, also those that never reach the old path.
 const COVERED_FILES = ['d5-limits-before-effects.test.mjs', 'd5-recovery.test.mjs', 'd5-challenge-retention.test.mjs', 'seller-transport-auth.test.mjs'];
 // Files that use the old auth only to make a signed request object for a store-level test: none of their tests is served by it.
-const REQUEST_SETUP_ONLY = ['context-hold-startup.test.mjs', 'reservation-accounting.test.mjs', 'context-compensation.test.mjs', 'host-wire-state.test.mjs', 'transport-reconciliation.test.mjs', 'vet-orchestrator-route.test.mjs'];
+const REQUEST_SETUP_ONLY = ['context-hold-startup.test.mjs', 'reservation-accounting.test.mjs', 'context-compensation.test.mjs', 'transport-reconciliation.test.mjs'];
 const DISPOSITIONS = ['wire-equivalent', 'predecessor-equivalent', 'retired', 'obsolete-client', 'gap'];
 const NAME_A_REPLACEMENT = ['wire-equivalent', 'predecessor-equivalent'];
 const NAME_NONE = ['obsolete-client', 'gap'];
