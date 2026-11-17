@@ -24,7 +24,9 @@ import { AGREEMENT_CONTEXT_SOURCE } from '../src/dacs/agreement-context-consumer
 import { admittedSession } from './helpers/challenge-api.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
+import { proxyListener } from './helpers/listener-host.mjs';
 import { testNetwork, withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
+import { FIXTURE_ENDPOINT } from './helpers/wire-buyer.mjs';
 
 const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000;
 const buyer = testWallet(1), seller = testWallet(2);
@@ -106,7 +108,7 @@ async function fixture(t, options = {}) {
 
 
 async function hostFixture(t, edit = source => source) {
-  const f = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE }), dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-one-nonce-host-'));
+  const f = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE, publicEndpoint: FIXTURE_ENDPOINT }), dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-one-nonce-host-'));
   const { nativeArtifactAnchor, ...config } = f.config;
   // The host builds its own durable directory, ledger and signing mode, and fixes the Vet mode (`vetMode` is an agent option, not a host option).
   for (const name of ['durableDirectory', 'commitOnSignature', 'challengeLedger', 'vetMode']) delete config[name];
@@ -115,7 +117,7 @@ async function hostFixture(t, edit = source => source) {
   const api = await privateModule(new URL('../src/host.mjs', import.meta.url), ['testStore', 'setStartupFailure'], source => edit(
     source.replace("const generation = randomBytes(16).toString('hex');", "if (failStartup) throw new Error('TEST generation source failed'); const generation = randomBytes(16).toString('hex');").replace('const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });', 'const journal = Object.freeze({});').replace('const REQUIRED =', 'let testStore; let failStartup = false; function setStartupFailure(value) { failStartup = value; }\nconst REQUIRED =').replace('opened.push(() => store.close());', 'testStore = store; opened.push(() => store.close());')));
   const start = async changes => current = await api.startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor,
-    dataDirectory, tp1Network: testNetwork(), now: () => NOW, ...changes });
+    dataDirectory, tp1Network: testNetwork(), listener: proxyListener(), now: () => NOW, ...changes });
   t.after(async () => { await current?.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { start, api, close: () => current.close(), path: join(dataDirectory, 'transport', 'transport.sqlite') };
 }

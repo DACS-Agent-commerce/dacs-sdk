@@ -25,7 +25,8 @@ import { T } from './helpers/d5-http-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
 import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
-import { wireBuyer } from './helpers/wire-buyer.mjs';
+import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
+import { LISTING_AUTHORITY, proxyListener } from './helpers/listener-host.mjs';
 import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall, isBoundedCallTimeout } from '../src/dacs/bounded-call.mjs';
@@ -80,7 +81,7 @@ const sub = (source, from, to) => {
 // The host with one test seam that adds no runtime API: it records the binding
 // and the journal handle the host obtains, through the real SDK functions.
 async function hostFixture(t) {
-  const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE });
+  const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE, publicEndpoint: FIXTURE_ENDPOINT });
   const dataDirectory = realpathSync(await mkdtemp(join(tmpdir(), 'TEST-host-wire-state-')));
   const { nativeArtifactAnchor, ...config } = f.config;
   delete config.challengeLedger; // the host builds its own ledger
@@ -99,7 +100,7 @@ const REQUIRED =`);
   const recorded = { bindings: [], journals: [] };
   api.setTestRecorder(recorded);
   const hosts = [];
-  const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), now: () => NOW };
+  const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), listener: proxyListener(), now: () => NOW };
   const start = async (changes = {}) => {
     const host = await api.startSellerHost({ ...options, ...changes });
     hosts.push(host);
@@ -115,7 +116,7 @@ const REQUIRED =`);
 
 /** One signed request posted to a running host over loopback HTTP: `{ status, header, bytes, payload }`. */
 const postSigned = (host, { payload, header, text, path = payload.path }) => new Promise((resolve, reject) => {
-  const sent = httpRequest(`${host.url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: header } }, (res) => {
+  const sent = httpRequest(`${host.url}${path}`, { method: 'POST', headers: { host: LISTING_AUTHORITY, 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: header } }, (res) => {
     const chunks = [];
     res.on('data', (chunk) => chunks.push(chunk));
     res.on('end', () => resolve({ status: res.statusCode, header: res.headers[SELLER_TRANSPORT_HEADER], bytes: Buffer.concat(chunks), payload }));
