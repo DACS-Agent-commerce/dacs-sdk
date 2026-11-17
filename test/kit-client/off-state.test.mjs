@@ -1,7 +1,7 @@
 // The harness ships nowhere and runs only where the client can: static checks of the package file lists and of the CI workflow.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -69,19 +69,51 @@ function spawnNode(args, env) {
   return spawnSync(process.execPath, ['--experimental-vm-modules', ...args], { cwd: REPOSITORY_ROOT, encoding: 'utf8', timeout: CHILD_DEADLINE_MS, env: { ...inherited, ...env } });
 }
 
-/** Runs the teardown probe in a child process and returns what it reported (the host's URL and state directory) with its exit status. */
-async function runTeardownProbe() {
+/**
+ * Runs node on `nodeArgs` in a child that reports through the file named by KIT_CLIENT_PROBE_OUT, and returns what it reported with its exit status.
+ * The child gets the caller's NODE_OPTIONS and the loader. Throws, naming the exit status, stdout and stderr, when the child ends without reporting.
+ * Node's test runner writes a failing test's error to stdout, so stdout carries the cause for a `--test` child.
+ */
+async function runProbeChild(nodeArgs) {
   const directory = await mkdtemp(join(tmpdir(), 'TEST-kit-client-probe-'));
   try {
     const out = join(directory, 'probe.json');
-    const child = spawnNode(['--test', 'test/kit-client/teardown-probe.mjs'], { NODE_OPTIONS: LOADER_OPTION, KIT_CLIENT_PROBE_OUT: out });
+    const nodeOptions = [process.env.NODE_OPTIONS, LOADER_OPTION].filter(Boolean).join(' ');
+    const child = spawnNode(nodeArgs, { NODE_OPTIONS: nodeOptions, KIT_CLIENT_PROBE_OUT: out });
+    if (child.error || child.status === null || !existsSync(out)) {
+      throw new Error(`probe child ended without reporting (status ${child.status}, signal ${child.signal}, error ${child.error?.message})\nstdout: ${child.stdout}\nstderr: ${child.stderr}`);
+    }
     return { status: child.status, ...JSON.parse(readFileSync(out, 'utf8')) };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 }
 
-test('harness failure closes hosts, nodes and state locks before a rerun', async () => {
+/** Runs the teardown probe in a child process and returns what it reported (the host's URL and state directory) with its exit status. */
+const runTeardownProbe = () => runProbeChild(['--test', 'test/kit-client/teardown-probe.mjs']);
+
+test('a probe child that ends without reporting is named with its exit status, stdout and stderr', async () => {
+  await assert.rejects(
+    runProbeChild(['-e', "console.log('TEST child stdout'); console.error('TEST child stderr'); process.exit(3)"]),
+    /status 3[\s\S]*TEST child stdout[\s\S]*TEST child stderr/u,
+  );
+});
+
+test("a probe child keeps the caller's NODE_OPTIONS next to the loader", async () => {
+  const callerOption = '--max-old-space-size=256';
+  const original = process.env.NODE_OPTIONS;
+  process.env.NODE_OPTIONS = [original, callerOption].filter(Boolean).join(' ');
+  try {
+    const { nodeOptions } = await runProbeChild(['-e', "require('node:fs').writeFileSync(process.env.KIT_CLIENT_PROBE_OUT, JSON.stringify({ nodeOptions: process.env.NODE_OPTIONS }))"]);
+    assert.ok(nodeOptions.includes(callerOption), 'the caller option reaches the child');
+    assert.ok(nodeOptions.includes(LOADER_OPTION), 'the loader reaches the child');
+  } finally {
+    if (original === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = original;
+  }
+});
+
+test('harness failure closes the host and removes its state directory before a rerun', async () => {
   const first = await runTeardownProbe();
   assert.equal(first.status, 1, 'the probe failed on purpose and exited on its own');
   assert.equal(first.listening, false, 'the failed test left no listening host');
