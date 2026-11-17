@@ -473,7 +473,7 @@ async function unsyncedSignLine(t){
  assert.equal((await f.p.decide(r)).outcome,'held');
  try{
   fs.fsyncSync=fd=>{if(fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');return fsyncSync(fd);};
-  fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&++appends===2)throw new Error('TEST append failed');return openSync(path,flags,...rest);};
+  fs.openSync=(path,flags,...rest)=>{if(flags==='a+'&&++appends===2)throw new Error('TEST append failed');return openSync(path,flags,...rest);};
   syncBuiltinESMExports();
   // Not 'unsigned': its sign line is still open on the ledger (cold F2).
   await assert.rejects(f.p.authorizeHeld(r,true),{message:'TEST sync failed'});
@@ -575,7 +575,7 @@ test('policy mode without its purchase and source context is refused',async t=>{
 // failingAppends(t, n, skip): after `skip` more ledger append opens, the next n fail with EIO; returns the restore.
 function failingAppends(t,count,skip=0){
  const{openSync}=fs;let left=count;
- fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
+ fs.openSync=(path,flags,...rest)=>{if(flags==='a+'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a+'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
  syncBuiltinESMExports();
  const restore=()=>{fs.openSync=openSync;syncBuiltinESMExports();};t.after(restore);return restore;
 }
