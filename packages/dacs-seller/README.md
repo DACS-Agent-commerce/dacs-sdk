@@ -405,6 +405,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   One live process owns a data directory (`seller-state.lock`): a second host,
   in this process or another, is refused; the lock of a process that is
   provably gone is taken over, and any doubt refuses until it is removed by hand.
+  On macOS and the BSDs the boot is identified by `kern.boottime`, which a
+  wall-clock step moves. After a step, the lock of a process that crashed before
+  it names another boot and is not taken over: confirm that no operator process
+  runs, then remove `seller-state.lock` by hand.
   Holding that lock, the host recovers what a holder that is gone left before it
   serves: it releases every job lock row `releaseAbandonedLock` would release
   (never a live holder, nor one on this boot whose lease cannot be checked),
