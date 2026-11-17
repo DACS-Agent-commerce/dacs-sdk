@@ -823,10 +823,10 @@ export interface Agent {
    * Anyone: resolve a subject's full cross-context identity (DACS-1) — its
    * primary claim plus all eight production Demos CCI contexts bound to it in
    * the GCR, not just the wallet key. Accepts a DID / `0x…` / bare-hex
-   * primary key; other canonical claim refs are passed through (reverse
-   * resolution is a substrate follow-up). Lookup conveniences are never
-   * retained: the returned `primaryClaim` is a canonical parameter-free CF-3
-   * identity.
+   * primary key; other canonical claim refs are passed through (use
+   * `findByClaim` to go from a linked claim to its subject). Lookup
+   * conveniences are never retained: the returned `primaryClaim` is a
+   * canonical parameter-free CF-3 identity.
    */
   resolveIdentity(subject: string): Promise<CciRecord>;
   /**

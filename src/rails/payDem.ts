@@ -1884,9 +1884,10 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         ...(recovery === undefined ? {} : { recovery }),
       }) satisfies Readonly<PayDemPreparedTransfer>;
 
-      // This is the last operation before the only irreversible call. A funded
-      // runner's hook fsyncs hash + nonce and the already-validated immutable
-      // transfer facts. Any journal failure aborts before broadcast.
+      // This is the last operation before the only irreversible call. The
+      // caller's `journalPreparedTransfer` hook, when set, durably records hash
+      // + nonce and the already-validated immutable transfer facts. Any journal
+      // failure aborts before broadcast.
       const preparedJournal = invocationJournal ?? journalPreparedTransfer;
       if (preparedJournal) await preparedJournal(prepared);
       if (assertCurrentBeforeBroadcast) await assertCurrentBeforeBroadcast();
@@ -2351,9 +2352,11 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  *
  * This is a guard on the current §9.5.1-legacy `AgreementDocument` path — NOT
  * PB-1..PB-3 conformance, which apply to a `PayeeBoundAgreementDocument` whose
- * destination is selected from a signed `terms.payoutBindings`. The
- * payee-bound-artifact path is separate follow-up work; here `req.payee` is the
- * listing seller carried through the fixed-price agreement.
+ * destination is selected from a signed `terms.payoutBindings`. A payee-bound
+ * agreement is not paid through this bridge: the fixed-price pay-dem buyer
+ * payment selects its destination from `terms.payoutBindings` and calls the
+ * rail's `settle` itself. Here `req.payee` is the listing seller carried
+ * through the fixed-price agreement.
  *
  * SAFE BY DEFAULT: settlement is submitted at most once per
  * `(railId, jobId, phaseIndex)`. The caller must supply a durable store; add a
@@ -2365,7 +2368,7 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
  * chain moves integer OS base units (1 DEM = 10^9 OS). This asserts the currency
  * is DEM and converts decimal → OS before handing off to the rail — WITHOUT this,
- * "5" DEM was submitted as 5 OS (a billionth of the agreed amount), settled silently.
+ * "5" DEM would be submitted as 5 OS (a billionth of the agreed amount).
  */
 export function payDemSettle(
   rail: PayDemRail,
