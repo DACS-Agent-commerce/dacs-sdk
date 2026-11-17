@@ -37,9 +37,9 @@ test('the README lists exactly the exports of the package root', async () => {
   assert.deepEqual(listed, exported);
 });
 
-test('the package root exports the context route and its buyer-side client a host mounts and calls', async () => {
+test('the package root exports the context routes and the buyer-side client a host mounts and calls', async () => {
   const exported = await import(new URL('src/index.mjs', packageUrl));
-  for (const name of ['createSellerContextRoute', 'createSellerContextClient']) assert.equal(typeof exported[name], 'function', `the root exports ${name}`);
+  for (const name of ['createSellerContextRoute', 'createWireSellerContextRoute', 'createSellerContextClient']) assert.equal(typeof exported[name], 'function', `the root exports ${name}`);
 });
 
 test('the package root exports the buyer-side wire signer, and the README says which routes it signs and which keep the old client auth', async () => {

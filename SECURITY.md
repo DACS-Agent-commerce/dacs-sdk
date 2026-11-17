@@ -14,7 +14,7 @@ the package root loads them:
 | `re2-wasm` | RE2 regular expressions for `raw` recipes |
 
 The live Demos, x402 and EVM integrations are optional peers:
-`peerDependencies: { "@kynesyslabs/demosdk": "^4.0.16" }` (plus `@x402/core`,
+`peerDependencies: { "@kynesyslabs/demosdk": "^4.0.17" }` (plus `@x402/core`,
 `@x402/evm`, `@x402/fetch` and `viem`), each marked optional in
 `peerDependenciesMeta`, so npm does not install them. They are development
 dependencies here for build and test coverage. Code reached from the package

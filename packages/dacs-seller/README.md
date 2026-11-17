@@ -165,21 +165,30 @@ that a crash left reserving is marked with what the journal holds for it (its
 charge stays counted), and the slot of an operation that completed before the
 slot was returned is returned once. If the journal cannot be read whole, or a
 key names no row, the host starts not ready, changes nothing and records
-`kit_journal_accounting_mismatch` with its cause, and writes that cause to
-stderr. The operator restores `seller/`, `transport/` and `wire-journal/` to one
-consistent copy (the same backup, or the same running host) or repairs the
-unreadable file the line names, then restarts; each start checks again.
+`kit_journal_accounting_mismatch` with its cause, and writes one line to stderr:
+`seller-state: not accepting new purchases: kit_journal_accounting_mismatch: <cause>`.
+The cause is a code and a detail, for example
+`seller_replay_guard_invalid: STORE-ENUMERATION-INCOMPLETE`. It says the journal
+and the store do not agree, or the journal cannot be read whole; it may name a
+key, an operation or a job, and names a file only for an operating-system read
+error. The operator restores `seller/`, `transport/` and
+`wire-journal/` to one consistent copy (the same backup, or the same running
+host), then restarts; each start checks again. Only when the cause is an
+operating-system read error that names a file does the operator repair that file
+instead.
 
 Signed effect routes reserve through one reservation coordinator, which commits
 accounting before the wire journal publishes their attempt. A final answer
 completes the operation and returns its route slot; a later request is answered
 from it, after the existing source checks. A `waiting` proposal that kept no work
 ends the attempt without an outcome, and the next request recovers at once, the
-agent reconciling first. Retained payment work keeps its attempt open instead: a
-`held` payment, or evidence whose delivery is not done, is not ended and not
-stored. A payment that kept nothing (`indeterminate` before the evidence
-checkpoint, or `rejected`) still ends without an outcome. An uncertain or open
-attempt stays open: a request inside its 300 s lease gets `seller_effect_pending`,
+agent reconciling first. A payment answer that says the payment is in progress,
+a `held` payment or evidence whose delivery is not done, ends its attempt the
+same way and is not stored: waiting for a transfer is not a crash, so it spends
+none of the 16 attempts below. A payment that kept nothing (`indeterminate`
+before the evidence checkpoint, or `rejected`) also ends without an outcome. An
+uncertain or open attempt stays open, as does any other answer or refusal while
+payment work is unfinished: a request inside its 300 s lease gets `seller_effect_pending`,
 and the first after it recovers, spending one of 16 attempts at each lapse; after
 16 lapsed attempts the operation answers `seller_effect_unresolved`. A final
 payment answer is stored only after its sources are read again, and returns the
@@ -228,7 +237,8 @@ check of a party's Agreement contribution; `SellerAgentError` is the seller's
 refusal with its stable code and HTTP status. The other root exports are the
 parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
-`createSellerTransportServerAuth`, `createSellerContextRoute` and the buyer
+`createSellerTransportServerAuth`, `createSellerContextRoute`,
+`createWireSellerContextRoute` (the context step on the wire) and the buyer
 side `createSellerAgentClient`, `createSellerContextClient`,
 `createSellerTransportClientAuth` and `createSellerWireClientAuth`. The host
 answers every route but the challenge and the context step through the wire,
@@ -261,8 +271,8 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `SellerAgentError`, `createPaymentEvidenceWalletJournal`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
-`createSellerContextRoute`, `createSellerContextClient`,
-`createSellerTransportStore`, `createSellerTransportServerAuth`,
+`createSellerContextRoute`, `createWireSellerContextRoute`,
+`createSellerContextClient`, `createSellerTransportStore`, `createSellerTransportServerAuth`,
 `createSellerTransportClientAuth` and `createSellerWireClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
@@ -293,7 +303,21 @@ the producer, retry the same payment claim; do not collect another payment.
 `artifactAnchor` publishes native artifacts for the seller named by `writer`.
 Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
-the signed transaction before sending it. `readRetained({ logicalAddress,
+the signed transaction before sending it. The party Vet provider also passes
+`awaitInclusion: true`: a CREATE that call sends and that still reads back as
+pending is read again every five seconds for a bounded time while `authorize()`
+still answers `true`. The additional polls never send the CREATE again; the
+first pending read can still run the existing one-time recovery send
+(`recoverStorageWrite`) of the retained CREATE, as without `awaitInclusion`. In
+the reference anchor the bound is six minutes after the wallet's answer, and the
+wallet answers only after the transport's own inclusion wait (120 seconds by
+default), so the bound ends about eight minutes after the broadcast. Meanwhile
+the seller's other writes wait behind the pending write, up to that bound,
+instead of failing at once with a retryable error. `readBackRecords({ jobId,
+buyer })` reads a job's two retained Vet records back without signing or
+sending anything; it answers `present` only when both records read back as
+included, and `indeterminate` when one is not written yet or does not read
+back. `readRetained({ logicalAddress,
 artifactKind })` must authenticate the exact retained artifact, receipt, native
 transaction reference and signed projection when returning `status: 'present'`;
 `verifyReceipt` independently checks those bindings. Retain one logical record
@@ -429,8 +453,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, keeps the attempt open: the first request after its 300 s lease
-  recovers and runs the agent's retained work again (reading back first), and a
+  done yet, ends the attempt with no outcome: the next request recovers at once
+  and runs the agent's retained work again (reading back first), and a
   different claim for the job is still
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
@@ -579,7 +603,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
   `signedTransaction` is the JSON of exactly the public signed projection
   `{ hash, content, signature: { type, data } }` of the Demos signed
-  transaction: of demosdk 4.0.16's `demosclass.js` `sign()` result, only those three members (its
+  transaction: of demosdk 4.0.18's `demosclass.js` `sign()` result, only those three members (its
   `status`, `blockNumber` and `ed25519_signature` are left out; node 61b8e75
   refuses a truthy `status`, which the signature does not cover). Before it is
   kept, the journal checks it is what the node executes and the SR-2 readback

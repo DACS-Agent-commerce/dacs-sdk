@@ -42,14 +42,33 @@ export const isDemDeliveryContextAuthority = (value) => typeof value === 'string
 
 // release (optional): told when a job's plan is saved or its purchase ended,
 // so the provider can drop that job's entries. usage (optional): the
-// provider's store capacity, for the health report.
-export function createDemDeliveryContext({ authority, resolveBuyer, resolveSeller, release = null, usage = null }) {
-  if (!isDemDeliveryContextAuthority(authority) || typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || (release !== null && typeof release !== 'function') || (usage !== null && typeof usage !== 'function')) {
+// provider's store capacity, for the health report. readBack (optional):
+// reads a job's retained seller Vet record writes back, and signs or sends
+// nothing ({jobId, buyer} -> {disposition, reason}).
+export function createDemDeliveryContext({ authority, resolveBuyer, resolveSeller, release = null, usage = null, readBack = null }) {
+  if (!isDemDeliveryContextAuthority(authority) || typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || [release, usage, readBack].some((hook) => hook !== null && typeof hook !== 'function')) {
     throw new TypeError('DEM delivery context requires explicit TEST authority and buyer/seller resolvers');
   }
   const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority });
-  capabilities.set(capability, { authority, resolveBuyer, resolveSeller, release, usage });
+  capabilities.set(capability, { authority, resolveBuyer, resolveSeller, release, usage, readBack });
   return capability;
+}
+
+// The provider's readback-only pass over a job's retained seller Vet record
+// writes. Answers {disposition: 'present', reason} only when the provider
+// says every retained record reads back; a missing readBack, a throw or any
+// other answer is held.
+export async function readBackDemDeliveryContext(capability, { jobId, buyer }) {
+  const readBack = capabilityFor(capability)?.readBack;
+  if (!readBack) return held('indeterminate', 'DEM delivery context has no readback');
+  let answer;
+  try { answer = await readBack({ jobId, buyer }); }
+  catch (error) { return held('indeterminate', `DEM delivery context readback failed: ${failureText(error)}`); }
+  try {
+    const disposition = answer?.disposition, reason = answer?.reason;
+    const text = typeof reason === 'string' ? reason : 'no reason';
+    return disposition === 'present' ? { disposition, reason: cutText(text, 240) } : held(disposition, text);
+  } catch { return held('indeterminate', 'DEM delivery context readback answer is unreadable'); }
 }
 
 // The provider store's used and remaining capacity, or null.
