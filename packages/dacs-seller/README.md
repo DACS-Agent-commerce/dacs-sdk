@@ -588,6 +588,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   configuration; without it only the bare hash is accepted, and any other
   message is refused. `createNativePaymentEvidenceConsumer` takes the same
   option for the readback.
+  SR-2 readback and the core Demos write-evidence checks support only the
+  program name returned by `logicalToStorageProgramName(logicalAddress)`.
+  A correctly signed CREATE using another native program name is unsupported,
+  even when the exact native address and signed projection are supplied; it is
+  refused with `only SDK-derived program names are supported`. This restriction
+  also applies to native payment evidence readback.
   Its fee is the node's to set, up to a ceiling of 50 DEM for the whole debit
   of the write: the network, rpc and additional fee plus the storage and gas
   burns, summed in OS (whole DEM numbers before the node's denomination fork,

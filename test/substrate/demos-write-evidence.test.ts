@@ -357,3 +357,20 @@ describe("Demos write evidence that is not final", () => {
     })).toThrow(/does not contain Demos write evidence/);
   });
 });
+
+
+describe("Demos write evidence program-name support", () => {
+  it("explains the SDK naming restriction for an otherwise bound alternate name", () => {
+    const alternate = structuredClone(evidence);
+    const signed = JSON.parse(alternate.signedTransaction);
+    signed.content.data[1].programName = "other-implementation-deliverable";
+    alternate.nativeRead!.programName = signed.content.data[1].programName;
+    alternate.signedTransaction = canonicalize(signed);
+    alternate.signedTransactionHash = demosSignedTransactionProofHash(signed);
+    expect(() => assertDemosWriteEvidence(alternate))
+      .toThrow(/only SDK-derived program names are supported/);
+  });
+  it("continues accepting the SDK-derived program name", () => {
+    expect(() => assertDemosWriteEvidence(evidence)).not.toThrow();
+  });
+});
