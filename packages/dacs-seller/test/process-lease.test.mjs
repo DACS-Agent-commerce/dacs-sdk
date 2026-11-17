@@ -196,6 +196,18 @@ test('BSD-shaped identities: only the same kernel boot with a free lease is exit
   assert.equal(leaseHolderState(dir, { ...holder, namespace: null }, { self }), 'no-identity');
 });
 
+test('a holder recorded in another PID namespace on this boot is exited when its lease is free, and live when it is held', async t => {
+  const dir = await directory(t), live = await worker(t, dir, 'lease'), dead = await worker(t, dir, 'lease');
+  await kill(dead.child);
+  const self = { ...PROCESS_NAMESPACE, pids: 'proc' };
+  const elsewhere = { ...PROCESS_NAMESPACE, ns: `${PROCESS_NAMESPACE.ns}0` };
+  // Its PID here runs a process with the recorded start; in its own namespace that PID is not this one.
+  const sharedPid = { process: dead.process, pid: process.pid, namespace: elsewhere };
+  assert.equal(leaseHolderState(dir, sharedPid, { self }), 'exited');
+  assert.equal(leaseHolderState(dir, { ...dead, namespace: { ...dead.namespace, ns: elsewhere.ns } }, { self }), 'exited');
+  assert.equal(leaseHolderState(dir, { ...live, pid: process.pid, namespace: { ...live.namespace, ns: elsewhere.ns } }, { self }), 'live');
+});
+
 test('leases that cannot be checked are never free', async t => {
   const dir = await directory(t), dead = await worker(t, dir, 'lease');
   await kill(dead.child);

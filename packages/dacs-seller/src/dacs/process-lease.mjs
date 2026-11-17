@@ -184,7 +184,10 @@ function holderRunsHere(holder, self, readStat) {
  * runs it or something whose start can't be read); 'no-identity' (it, or this
  * process, has no boot identity); 'other-boot' (no free lease here can prove
  * it gone); 'exited' (same boot, lease free, PID not running it); or
- * 'lease-unproven' (same boot, its lease can't be checked). `self` and
+ * 'lease-unproven' (same boot, its lease can't be checked). A holder recorded
+ * in another PID namespace on this boot is judged by its lease alone: free is
+ * 'exited', held is 'live'. Its PID means nothing here, so it never keeps the
+ * holder live, and the kernel lease is the proof. `self` and
  * `readStat` replace this process's identity and the /proc/<pid>/stat read.
  */
 export function leaseHolderState(dir, holder, { self = PROCESS_NAMESPACE, readStat = procStat } = {}) {
