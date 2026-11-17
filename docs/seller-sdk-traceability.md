@@ -145,8 +145,9 @@ simplified signed bundle surface in this PR.
 
 `runDurableFulfilmentCore` composes the public, generation-fenced
 `FencedSessionStoreV2` with the repaired seller fulfilment core. This is a
-separate versioned API: the legacy `SessionStore` v1 exports and semantics remain
-unchanged, and a v1 store is never accepted or implicitly upgraded as v2. The
+separate versioned API: the remaining `SessionStore` v1 exports (the in-memory
+store and its types) keep their semantics, the plain filesystem constructor is
+removed, and a v1 store is never accepted or implicitly upgraded as v2. The
 durable layer adds operational recovery state only; it does not alter or invent
 a signed DACS artifact.
 
