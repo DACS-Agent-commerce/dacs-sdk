@@ -100,10 +100,12 @@ function discardFailedLease(file, created, lease, fd) {
  * 0600 whatever the umask (opened read-only, SQLite would take only a shared
  * lock), and the descriptor that created it stays open. Returns the lease id.
  * Throws ProcessLeaseError when the directory or lease file is unsafe or the
- * lease is held or can't be locked. Any other failure (a missing directory, a
- * permission error, a full disk, a SQLite error) is thrown as the original
- * filesystem or SQLite error, unwrapped. Either way nothing is registered, and
- * a failed call removes the file it created, so a later call can try again.
+ * lease is held or can't be locked; any error while taking the lock, SQLite's
+ * included, becomes seller_state_lease_unavailable. A failure before that (a
+ * missing directory, a permission error, a full disk while creating the file or
+ * opening the database) is thrown as the original filesystem or SQLite error,
+ * unwrapped. Either way nothing is registered, and a failed call removes the
+ * file it created, so a later call can try again.
  */
 export function takeLease(dir) {
   const canonical = realpathSync(dir);
