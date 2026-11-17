@@ -93,6 +93,7 @@ writeFileSync(signer, [
   '',
 ].join('\n'), { mode: 0o755 });
 gitIn(small, 'config', 'gpg.program', signer);
+gitIn(small, 'config', 'gpg.format', 'openpgp');
 gitIn(small, 'config', 'log.showSignature', 'true');
 writeFileSync(join(small, 'a'), 'a1\n'); writeFileSync(join(small, 'b\r'), 'b1\n');
 gitIn(small, 'add', '--all'); gitIn(small, 'commit', '--quiet', '-m', 'first');
