@@ -81,7 +81,7 @@ async function runTeardownProbe() {
   }
 }
 
-test('harness failure closes hosts, nodes and state locks before a rerun', async () => {
+test('harness failure closes the host and removes its state directory before a rerun', async () => {
   const first = await runTeardownProbe();
   assert.equal(first.status, 1, 'the probe failed on purpose and exited on its own');
   assert.equal(first.listening, false, 'the failed test left no listening host');
