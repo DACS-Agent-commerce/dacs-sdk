@@ -188,6 +188,7 @@ export function checkDeltas(packageDir=pkg) {
   const originals=JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'),'utf8')).files.map(f=>f.path);
   const allowed=new Set([...originals,...evidence.deltas.changes.flatMap(c=>c.files.map(f=>f.path)),...data.changes.flatMap(c=>c.files.map(f=>f.path)),...Object.keys(anchor.files)]);
   const planned=[...allowed].map(path=>`${BASELINE}:${path}`);
+  for(const path of Object.keys(anchor.files)) planned.push(`${anchor.commit}:${path}`);
   for(const [c,commitsSelected] of matched) if(commitsSelected.length===1) for(const f of c.files) planned.push(`${commitsSelected[0].sha}^:${f.path}`,`${commitsSelected[0].sha}:${f.path}`);
   const looked=blobIds(planned);
   const blobAt=spec=>{ if(!looked.has(spec)) throw new Error(`blob lookup was not planned: ${spec}`); return looked.get(spec); };
@@ -206,7 +207,10 @@ export function checkDeltas(packageDir=pkg) {
   const sourceManifest=evidence.sourceManifest;
   if(JSON.stringify(sourceManifest)!==JSON.stringify(JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'))))) failures.push('source manifest differs from archived source/delta evidence');
   if(data.schema!=='dacs-client-deltas/v2'||data.baseline!==BASELINE) failures.push('delta ledger baseline/schema changed');
-  const selectors=new Map(), recorded=new Map();
+  for(const [path,want] of Object.entries(anchor.files)) {
+    if(blobAt(`${anchor.commit}:${path}`)!==want) failures.push(`${path}: the anchor blob differs from the file at the anchor commit`);
+  }
+  const selectors=new Map(), recorded=new Map(), skipped=[];
   for(const c of data.changes) {
     if(c.sha!=null&&!/^[0-9a-f]{40}$/.test(c.sha)) failures.push(`delta commit selector sha is not a full commit hash: ${c.subject}`);
     const same=selectors.get(c.subject)??[];
@@ -219,7 +223,8 @@ export function checkDeltas(packageDir=pkg) {
     if(matches.length===1) {
       const sha=matches[0].sha;
       for(const f of c.files) {
-        if(anchored(f.path)&&!afterAnchor.has(sha)) failures.push(`${f.path}: delta ${c.delta} selects ${sha}, which the anchor already contains`);
+        // The anchor already holds the result of a commit it contains, so such a record does not enter the chain.
+        if(anchored(f.path)&&!afterAnchor.has(sha)) skipped.push(`${f.path}: delta ${c.delta} ${sha} is contained in the anchor; skipped`);
         else recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,before:f.before,after:f.after}]);
         for(const [rev,want] of [[`${sha}^`,f.before],[sha,f.after]]) {
           if(blobAt(`${rev}:${f.path}`)!==want) failures.push(`${f.path}: delta ${c.delta} blob differs at ${rev}`);
@@ -303,7 +308,7 @@ export function checkDeltas(packageDir=pkg) {
     if(actual!==expected||head!==expected||index!==expected) failures.push(`${path}: current blob differs from enumerated deltas`);
   }
   if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(assembled)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
-  return {failures,allowed};
+  return {failures,allowed,skipped};
 }
 if(process.argv[1]===fileURLToPath(import.meta.url)) {
   if(process.argv[2]==='--record') {

@@ -138,6 +138,7 @@ function main() {
   const deltaMode = args.packageDir === DELTA_PACKAGE && existsSync(join(args.packageDir, 'DELTA-LEDGER.json'));
   const deltaResult = deltaMode ? checkDeltas(args.packageDir) : null;
   if (deltaResult) failures.push(...deltaResult.failures);
+  for (const line of deltaResult?.skipped ?? []) console.log(`[check-provenance] ${line}`);
   const listed = new Set();
   if (manifest.package !== PACKAGE) failures.push(`manifest package ${JSON.stringify(manifest.package)} is not ${PACKAGE}`);
   if (manifest.sourceRepository !== SOURCE_REPOSITORY) failures.push(`manifest sourceRepository ${JSON.stringify(manifest.sourceRepository)} is not ${SOURCE_REPOSITORY}`);

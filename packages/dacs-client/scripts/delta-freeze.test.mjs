@@ -141,11 +141,11 @@ function recordOldReadmeCommit(s, anchor) {
 
 // A branch cut before the anchor's last change to an anchored file holds an older copy of it.
 // Its record cannot chain from the anchor's copy, so check-provenance refuses it until the branch is rebased onto the anchor.
-test('a README record must select a commit after the anchor; a branch cut where README already equals the anchor copy may record it', t => {
+test('a README record of a commit the anchor contains is left out of the chain; a branch cut where README already equals the anchor copy may record it', t => {
   const s = scratch(t), { commit: anchor } = readAnchor(s.dir);
-  const old = recordOldReadmeCommit(s, anchor);
+  recordOldReadmeCommit(s, anchor);
   s.git('add', '--', P); s.git('commit', '-qm', 'TEST record a README commit before the anchor');
-  assert.deepEqual(derived(s), [`${P}README.md: delta WF selects ${old}, which the anchor already contains`]);
+  assert.deepEqual(derived(s), []);
   const early = scratch(t), main = early.git('branch', '--show-current');
   const parent = early.git('rev-list', '--parents', '-n', '1', anchor).split(' ').slice(1)
     .find(sha => early.git('rev-parse', `${sha}:${P}README.md`) === readAnchor(early.dir).files[`${P}README.md`]);
