@@ -10436,6 +10436,50 @@
       ]
     },
     {
+      "delta": "D42",
+      "subject": "delta(client): D42 accept a trailing record-only ledger entry for a committed blob",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "0db3b89514f68fbba88d99345a0ea7089911e3d7",
+          "after": "5e909c66900348ecfcab0ca9d549363d384052d3"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "5e909c66900348ecfcab0ca9d549363d384052d3",
+          "after": "f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 judge a trailing record-only ledger entry by its own commit and the record files",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa",
+          "after": "173bd74d1d40be6ab60e430a2583a604e8b6527b"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 count only record files committed before a trailing record-only ledger entry",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "173bd74d1d40be6ab60e430a2583a604e8b6527b",
+          "after": "055f2de61cc3fa1100a1a06e0979fc5262ce8d24"
+        }
+      ]
+    },
+    {
       "delta": "D74",
       "subject": "delta(client): D74 read a held plan step's seller Vet record writes back on a purchase recheck",
       "files": [
