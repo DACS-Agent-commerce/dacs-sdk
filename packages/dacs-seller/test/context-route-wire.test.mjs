@@ -355,6 +355,7 @@ function assertConsumedNothing(w, nonce) {
   assert.equal(w.challengeOf(nonce).state, 'issued');
   assertNothingStarted(w);
 }
+const allocationState = (w) => w.internals.db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(WIRE_JOB).state;
 const refusedWith = async (w, options, expected) => {
   const request = await w.startContext(options), answer = await w.post(request);
   assert.deepEqual(summary(answer), expected);
@@ -603,7 +604,6 @@ test('a provider error after the reservation answers 503 operation_uncertain, wr
 test('a failed start after an accepted admission ends its row, releases its hold and slot, and a retry is admitted', async (t) => {
   // Room for one purchase: a second one is admitted only once the first one's slot is free.
   const oneSlot = { storeOptions: { maxRecords: 100 } };
-  const allocationState = (w) => w.internals.db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(WIRE_JOB).state;
   const retryAdmitted = async (w) => assert.equal((await w.post(await w.startContext({ jobId: WIRE_JOB2 }))).status, 200);
   await t.test('a direct request that expires between its acceptance and the reservation', async (t) => {
     const monotonicBase = performance.now();
@@ -650,19 +650,41 @@ test('a failed start after an accepted admission ends its row, releases its hold
   });
 });
 
-test('a held or malformed provider answer is never a final outcome: it stays open as operation_uncertain with the answer as its cause', async (t) => {
+test('a held or malformed provider answer to a direct request is no final outcome: it answers operation_uncertain, ends the row and releases its hold and slot', async (t) => {
   const answers = [['absent', { disposition: 'absent', reason: 'TEST no context', code: 'context_absent' }], ['malformed', { disposition: 'present' }],
+    ['rejected for another reason', { disposition: 'rejected', reason: 'TEST conflict', code: 'context_conflict' }], ['null', null],
     ['another scope', (input) => ({ ...w0.presentAnswer(input), value: { ...w0.presentAnswer(input).value, scope: { ...input.scope, price: { ...input.scope.price, amount: '9' } } } })]];
   let w0;
   for (const [name, answer] of answers) {
     w0 = await contextWireWorld(t);
-    const request = await w0.startContext();
+    const request = await w0.startContext({ signOptions: { delegated: false } });
     w0.behaviour.answer = async (input) => (typeof answer === 'function' ? answer(input) : answer);
     const reply = await w0.post(request);
     await w0.settleJob();
     assert.deepEqual([name, ...summary(reply)], [name, 503, 'operation_uncertain']);
-    assert.deepEqual([w0.rowOf().state, w0.operationOf(WIRE_JOB).state, w0.completions.length], ['running', 'pending', 0], name);
+    assert.deepEqual([w0.rowOf().state, w0.openHolds().length, allocationState(w0), w0.operationOf(WIRE_JOB).state, w0.completions.length], ['aborted', 0, 'released', 'pending', 0], name);
   }
+});
+
+test('a row that cannot be ended when the provider settles does not change the answer, and a later compensation still ends it', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext({ signOptions: { delegated: false } });
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  w.behaviour.answer = async () => { guard.setKitOperationGuardForTest('off'); return { disposition: 'absent', reason: 'TEST no context', code: 'context_absent' }; };
+  assert.deepEqual(summary(await w.post(request)), [503, 'operation_uncertain']);
+  await w.settleJob();
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  assert.deepEqual([w.rowOf().state, w.openHolds().length], ['running', 1], 'nothing ended the row while the guard was off');
+  await w.admission.compensate(WIRE_JOB, 'a');
+  assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w)], ['aborted', 0, 'released']);
+});
+
+test('a held provider answer whose Vet writes cannot be ruled out keeps the row compensating with its hold and slot', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext({ signOptions: { delegated: false } });
+  w.behaviour.evidenceKind = 'signed';
+  w.behaviour.answer = async () => ({ disposition: 'absent', reason: 'TEST no context', code: 'context_absent' });
+  assert.deepEqual(summary(await w.post(request)), [503, 'operation_uncertain']);
+  await w.settleJob();
+  assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w), w.counts.vetWrites], ['compensating', 1, 'live', 2]);
 });
 
 test('a barrier in one job\'s policy hold call does not delay another job\'s admission', async (t) => {
@@ -711,7 +733,7 @@ test('with the guard off the context route answers kit_operation_guard_off befor
 
 /** Runs one request whose provider stalls at `stallAt` ('start', 'after-first-write' or 'before-answer') until `release()`; returns the world, the pending post and the gate. */
 async function stalledProvider(t, stallAt) {
-  const w = await contextWireWorld(t), request = await w.startContext(), reached = deferred(), release = deferred();
+  const w = await contextWireWorld(t), request = await w.startContext({ signOptions: { delegated: false } }), reached = deferred(), release = deferred();
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const stall = async () => { reached.resolve(); await release.promise; };
   if (stallAt === 'start') w.behaviour.provider = stall;
@@ -731,11 +753,13 @@ async function passDeadline(t, { w, request, pending }, atMs = DEADLINE_MS) {
   assert.equal(w.openHolds().length, 1, 'the hold is kept');
   assert.equal(w.operationOf(WIRE_JOB).state, 'pending', 'the attempt stays open');
 }
-/** After the late work ran out: no outcome, no end record, and the row still running. */
-function assertNoOutcome(w) {
+/** After the late work ran out: no outcome and no end record; the row is ended, or stays compensating when the work's effect cannot be ruled out. */
+function assertNoOutcome(w, rowState) {
   assert.equal(w.completions.length, 0, 'nothing completed it');
   assert.notEqual(w.operationOf(WIRE_JOB).state, 'completed');
-  assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], ['running', null]);
+  assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], [rowState, null]);
+  const kept = rowState === 'compensating';
+  assert.deepEqual([w.openHolds().length, allocationState(w)], kept ? [1, 'live'] : [0, 'released'], 'the hold and slot follow the row');
 }
 
 test('a provider stalled before the first Vet signature: at 240,000 ms the attempt closes and answers 503 operation_uncertain with cause context_deadline; released later it signs nothing', async (t) => {
@@ -746,30 +770,33 @@ test('a provider stalled before the first Vet signature: at 240,000 ms the attem
   w.advance(300_000);
   await flush();
   assert.equal(freed, false, 'the mutex stays until the provider settles');
+  assert.equal(w.rowOf().state, 'running', 'the row is not ended while the provider still runs');
   release.resolve();
   await probe;
   await w.settleJob();
   assert.equal(w.counts.vetWrites, 0, 'released later it signs nothing');
-  assertNoOutcome(w);
+  assertNoOutcome(w, 'aborted');
 });
 
 test('a provider stalled after a Vet record signature, before its transmission: the timeout closes the attempt and the late work transmits nothing', async (t) => {
   const stalled = await stalledProvider(t, 'after-first-write'), { w, release } = stalled;
+  w.behaviour.evidenceKind = 'signed';
   await passDeadline(t, stalled);
   assert.equal(w.counts.vetWrites, 1);
   release.resolve();
   await w.settleJob();
   assert.equal(w.counts.vetWrites, 1, 'the closed predicate refuses the second write');
-  assertNoOutcome(w);
+  assertNoOutcome(w, 'compensating');
 });
 
 test('a provider stalled after dispatch with its answer lost: the timeout answers 503 and the late result neither completes nor overwrites the outcome', async (t) => {
   const stalled = await stalledProvider(t, 'before-answer'), { w, release } = stalled;
+  w.behaviour.evidenceKind = 'signed';
   await passDeadline(t, stalled);
   release.resolve();
   await w.settleJob();
   assert.equal(w.counts.vetWrites, 2, 'what was dispatched stays dispatched');
-  assertNoOutcome(w);
+  assertNoOutcome(w, 'compensating');
 });
 
 test('a provider result at 239,999 ms completes normally', async (t) => {
@@ -783,17 +810,17 @@ test('a provider result at 239,999 ms completes normally', async (t) => {
   assert.deepEqual([w.counts.vetWrites, w.completions.length, w.rowOf().state, w.rowOf().contextOutcome], [2, 1, 'settled', 'success']);
 });
 
-test('closing the attempts while a provider runs answers with the given cause, keeps the hold and the open attempt, and lets the late work sign nothing', async (t) => {
+test('closing the attempts while a provider runs answers with the given cause and keeps the open attempt; once the late work settles the row is ended and it signed nothing', async (t) => {
   const { w, request, pending, release } = await stalledProvider(t, 'start');
   w.route.closeAttempts(new SellerTransportError('seller_stopped', 503));
   const answer = await pending;
   assert.deepEqual(summary(answer), [503, 'seller_stopped']);
   await request.verify(answer);
-  assert.deepEqual([w.openHolds().length, w.operationOf(WIRE_JOB).state], [1, 'pending']);
+  assert.deepEqual([w.rowOf().state, w.openHolds().length, w.operationOf(WIRE_JOB).state], ['running', 1, 'pending']);
   release.resolve();
   await w.settleJob();
   assert.equal(w.counts.vetWrites, 0);
-  assertNoOutcome(w);
+  assertNoOutcome(w, 'aborted');
 });
 
 // ---- the first validation ------------------------------------------------------------------------------------------------
@@ -949,16 +976,13 @@ test('a reservation that loses to compensation ends only its just-issued attempt
   });
 });
 
-test('the outcome is durable in the journal before the row settles or the hold is released, and a later pass settles from the journal and releases the original hold once without running the provider again', async (t) => {
-  const w = await contextWireWorld(t), request = await w.startContext();
+test('a completion that fails after the outcome is durable in the journal settles the direct request\'s row from the journal and releases the original hold once without running the provider again', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext({ signOptions: { delegated: false } });
   w.behaviour.cutAfterPublish = true;
   const answer = await w.post(request);
   await w.settleJob();
   assert.deepEqual(summary(answer), [503, 'operation_uncertain']);
   assert.equal(w.operationOf(WIRE_JOB).state, 'completed', 'published first');
-  assert.deepEqual([w.rowOf().state, w.counts.releases.length], ['running', 0], 'not settled and not released yet');
-  w.behaviour.cutAfterPublish = false;
-  await w.admission.sweep({ startup: false });
   assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], ['settled', 'success']);
   assert.deepEqual(w.counts.releases.map((release) => release.hold), [w.counts.holds[0].hold]);
   assert.equal(w.counts.resolves, 1, 'the provider is not run again');
@@ -1108,13 +1132,21 @@ test('a proposal, commitment or payment request is refused unless its job has a 
     assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], ['settled', 'vet-non-pass']);
     await assertStagesRefused(w, ['context_admission_closed', 409], 'vet-non-pass');
   });
-  await t.test('a row still running after the provider held its answer', async (t) => {
-    const w = await contextWireWorld(t), request = await w.startContext();
-    w.behaviour.answer = async () => ({ disposition: 'indeterminate', reason: 'TEST the answer is held' });
-    await w.post(request);
+  await t.test('a row still running while the provider holds its answer', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext(), entered = deferred(), release = deferred();
+    w.behaviour.answer = async () => { entered.resolve(); await release.promise; return { disposition: 'indeterminate', reason: 'TEST the answer is held' }; };
+    const stalled = w.post(request);
+    await entered.promise;
     assert.equal(w.rowOf().state, 'running');
     await assertStagesRefused(w, ['session_admission_unavailable', 503], 'running');
-    await w.settleJob();
+    release.resolve(); await stalled; await w.settleJob();
+  });
+  await t.test('a row ended after the provider gave no final answer', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    w.behaviour.answer = async () => ({ disposition: 'indeterminate', reason: 'TEST the answer is held' });
+    await w.post(request); await w.settleJob();
+    assert.equal(w.rowOf().state, 'aborted');
+    await assertStagesRefused(w, ['context_admission_closed', 409], 'ended');
   });
   await t.test('a row still taking its hold', async (t) => {
     const w = await contextWireWorld(t), request = await w.startContext(), entered = deferred(), release = deferred();
