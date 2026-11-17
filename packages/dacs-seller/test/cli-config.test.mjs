@@ -182,6 +182,22 @@ test('seller.json validates RPC URLs, listeners and capacity defaults', async ()
   assert.doesNotThrow(() => parseSellerConfig(bytes(set(config(), 'listener.host', '::1'))));
 });
 
+test('seller.json refuses a path that ends in a slash at the field that holds it', async () => {
+  const { parseSellerConfig } = await load();
+  const withSlash = config(); withSlash.dataDirectory = '/TEST-seller/';
+  assert.throws(() => parseSellerConfig(bytes(withSlash)), fieldError('dataDirectory'));
+  const tls = config(); tls.listener = { mode: 'tls', host: '::', port: 443, certificatePath: '/TEST-cert/', privateKeyPath: '/TEST-key' };
+  assert.throws(() => parseSellerConfig(bytes(tls)), fieldError('listener.certificatePath'));
+  assert.throws(() => parseSellerConfig(bytes(set(config(), 'service', { kind: 'text-module', modulePath: '/TEST-service.mjs/' }))), fieldError('service.modulePath'));
+});
+
+test('sellerApproval.mode other than manual or policy is refused at sellerApproval.mode', async () => {
+  const { parseSellerConfig } = await load();
+  for (const mode of ['auto', 'Policy', '', 1, null]) {
+    assert.throws(() => parseSellerConfig(bytes(set(config(), 'sellerApproval', { mode }))), fieldError('sellerApproval.mode'));
+  }
+});
+
 test('seller.json accepts unset operator fields for init', async () => {
   const { parseSellerConfig } = await load();
   const value = config();

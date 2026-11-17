@@ -15,7 +15,8 @@ const NULL_IS_A_CHOICE_FIELD = 'directoryOrigin';
 const SERVICE_TEXT_MAX_BYTES = 16_384;
 const MAX_TAGS = 16, MAX_TAG_LENGTH = 32, MAX_SHORT_TEXT = 200, MAX_DESCRIPTION = 2000;
 const MAX_PRICE_SIGNIFICANT_DIGITS = 15, MAX_PORT = 65535;
-const LISTING_KEYS = ['listingId', 'displayName', 'title', 'description', 'category', 'tags', 'priceDem', 'deadlineSecAfterCommit'];
+const APPROVAL_MODES = ['manual', 'policy'];
+const LISTING_KEYS =['listingId', 'displayName', 'title', 'description', 'category', 'tags', 'priceDem', 'deadlineSecAfterCommit'];
 const CONFIG_KEYS = ['format', 'dataDirectory', 'keyPath', 'rpcUrl', 'publicOrigin', 'listener', 'directoryOrigin', 'listing', 'service', 'sellerApproval', 'maxRecords', 'maxJobs'];
 
 /**
@@ -43,7 +44,7 @@ function closed(value, keys, prefix, required = keys) {
   for (const key of required) requireValue(Object.hasOwn(value, key), pathOf(prefix, key));
 }
 function absolutePath(value, field) {
-  requireValue(typeof value === 'string' && isAbsolute(value) && normalize(value) === value && !value.includes('\0'), field);
+  requireValue(typeof value === 'string' && isAbsolute(value) && normalize(value) === value && !value.endsWith('/') && !value.includes('\0'), field);
 }
 function httpsUrl(value, field) {
   requireValue(typeof value === 'string' && /^https:\/\/[^/\\]/.test(value) && !/[\\\s?#]/.test(value), field);
@@ -134,8 +135,9 @@ function serviceConfig(value) {
 }
 function approvalConfig(value) {
   closed(value, value?.mode === 'manual' ? ['mode'] : ['mode', ...Object.keys(SELLER_POLICY_DEFAULTS)], 'sellerApproval', ['mode']);
+  requireValue(APPROVAL_MODES.includes(value.mode), 'sellerApproval.mode');
   let settings;
-  // The kit's settings check names the failing key in its message; that name becomes the refused field.
+  // The kit's settings check names the failing limit in its message; that name becomes the refused field.
   try { settings = sellerApprovalSettings(value); }
   catch (cause) { fail(cause.message.match(/sellerApproval(?:\.[A-Za-z]+)?/)?.[0] ?? 'sellerApproval', cause); }
   if (settings.mode === 'policy') requireValue(BigInt(settings.maxWriteTotalOs) <= BigInt(SELLER_POLICY_DEFAULTS.maxWriteTotalOs), 'sellerApproval.maxWriteTotalOs');
