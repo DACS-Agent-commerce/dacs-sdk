@@ -84,7 +84,13 @@ export default [
   {
     // Checks that need type information: a missed `await` on money or wallet
     // calls is the mistake we most want caught.
-    files: ["src/**/*.ts", "test/**/*.ts", "packages/*/src/**/*.ts", "packages/*/test/**/*.ts"],
+    files: [
+      "src/**/*.ts",
+      "test/**/*.ts",
+      "packages/*/src/**/*.ts",
+      "packages/*/test/**/*.ts",
+      "packages/*/test-postgres/**/*.ts",
+    ],
     languageOptions: {
       parserOptions: {
         projectService: true,

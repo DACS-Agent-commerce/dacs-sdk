@@ -12,6 +12,20 @@ const eslint = new ESLint({
   overrideConfigFile: fileURLToPath(new URL("./eslint.config.mjs", import.meta.url)),
 });
 
+const typeAwareRules = [
+  "@typescript-eslint/await-thenable",
+  "@typescript-eslint/no-floating-promises",
+  "@typescript-eslint/no-misused-promises",
+];
+
+test("type-aware rules cover the Postgres integration tests", async () => {
+  const config = await eslint.calculateConfigForFile("packages/dacs-node/test-postgres/example.test.ts");
+  for (const rule of typeAwareRules) {
+    assert.equal(config.rules?.[rule]?.[0], 2, `${rule} should be an error`);
+  }
+  assert.ok(config.languageOptions?.parserOptions?.projectService, "type information should be loaded");
+});
+
 test("an unused variable in TypeScript is reported", async () => {
   const [result] = await eslint.lintText("const unusedValue = 1;\nexport {};\n", {
     filePath: "scripts/unused-variable-fixture.ts",

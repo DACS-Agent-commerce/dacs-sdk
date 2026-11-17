@@ -89,4 +89,4 @@ What it does not see:
 ## What's left out
 
 - `test/package-consumer/`: its own project, which needs the packed packages.
-- Type-aware checks cover TypeScript under `src`, `test` and `packages/*/{src,test}`. JavaScript files have no types to read, so a missed `await` isn't caught there.
+- Type-aware checks cover TypeScript under `src`, `test` and `packages/*/{src,test,test-postgres}`. JavaScript files have no types to read, so a missed `await` isn't caught there.
