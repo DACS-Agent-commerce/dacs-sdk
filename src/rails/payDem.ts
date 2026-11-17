@@ -245,7 +245,7 @@ export interface PayDemSettleParams {
    */
   maxTotalDebitOs?: string;
   /**
-   * Optional PC-7 recovery identity supplied by the runSession bridge. When
+   * Optional PC-7 recovery identity supplied by the settle bridge. When
    * present it is persisted with the prepared transaction before broadcast so
    * a durable journal can bind the signed hash to the exact rail/session/phase
    * idempotency key instead of relying on transaction identity alone.
@@ -1575,7 +1575,7 @@ export async function observeDemosExecutionByHash(
  * transaction record) by the signed hash.
  *
  * The low-level rail signs a fresh transaction on every call. The exported
- * runSession bridge, {@link payDemSettle}, therefore wraps it in the shared
+ * settle bridge, {@link payDemSettle}, therefore wraps it in the shared
  * session/phase-keyed settlement idempotency store.
  */
 export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDemRail> {
@@ -2337,7 +2337,7 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
 }
 
 /**
- * Bridge an SDK factory PayDemRail to the runSession `settle` seam.
+ * Bridge an SDK factory PayDemRail to a settle function `(request) => result`.
  * Custom rails are refused before a submission claim or native effect.
  *
  * DESTINATION (legacy safety guard, not PB-2 conformance): the transfer
@@ -2781,9 +2781,9 @@ export function payDemSettle(
  * prepared-transfer journal. For a recovery request that carries no history it
  * calls `attempts` and forwards the request with what it returns; a request that
  * already carries history, or is not a recovery, is forwarded unchanged. The
- * wrapper keeps `bridge`'s registration and declared traits, so `runSession`
- * accepts it. It only adds history: the bridge still decides whether the
- * payment landed, and still never pays on a recovery request.
+ * wrapper keeps `bridge`'s registration and declared traits. It only adds
+ * history: the bridge still decides whether the payment landed, and still
+ * never pays on a recovery request.
  *
  * @returns A function with the same shape as `bridge`.
  * @throws Whatever `attempts` or `bridge` throws; nothing is caught.

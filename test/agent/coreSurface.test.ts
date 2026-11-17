@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-// #14: the injectable buyer-session core must be reachable from the PUBLIC
-// barrel — not only via a deep `src/agent/runSessionCore.js` import past the
-// package `exports` map. These imports resolving is itself the assertion.
+// The core entry points must be reachable from the PUBLIC barrel, not only
+// via a deep import past the package `exports` map. These imports resolving is
+// itself the assertion.
 import {
   FENCED_SESSION_STORE_VERSION,
   SESSION_STORE_VERSION,
@@ -50,8 +50,6 @@ import {
   lookupBundleCopies,
   x402PaywallCore,
   x402PaywallSettlementKey,
-  runSessionCore,
-  legacyMvpSessionAnchorName,
   sellerFulfilmentId,
   type SellerFulfilmentDeps,
   type DurableSellerFulfilmentDeps,
@@ -69,7 +67,6 @@ import {
   type CounterpartyBundleFinalizationProvider,
   type DurableFinalizedBuyerBundle,
   type SessionSettlementContext,
-  type SessionDeps,
   type TerminalBundleAuthorityInput,
   type TerminalBundlePlan,
   type TerminalBundleSigningMode,
@@ -94,7 +91,6 @@ import {
   advanceTerminalBundleDurable as agentAdvanceTerminalBundleDurable,
   getTerminalBundleFinalizationStatus as agentGetTerminalBundleFinalizationStatus,
   verifyFinalizedTerminalBundleReadOnly as agentVerifyFinalizedTerminalBundleReadOnly,
-  legacyMvpSessionAnchorName as agentLegacyMvpSessionAnchorName,
 } from "../../src/agent/index.js";
 import {
   FENCED_SESSION_STORE_VERSION as sellerFencedSessionStoreVersion,
@@ -135,10 +131,6 @@ describe("public core surface (#14)", () => {
     expect(agentDeriveReputationWithValidation).toBe(
       deriveReputationWithValidation,
     );
-  });
-
-  it("F1: runSessionCore is exported from the barrel", () => {
-    expect(typeof runSessionCore).toBe("function");
   });
 
   it("#272: settlement-verified reputation producer and replay APIs are public", () => {
@@ -192,12 +184,6 @@ describe("public core surface (#14)", () => {
     expect(sellerCreateInMemoryFencedSessionStore).toBe(
       createInMemoryFencedSessionStore,
     );
-  });
-
-  it("F1: SessionDeps is exported (compile-time) so a custom substrate can be wired", () => {
-    // Type-only use — if SessionDeps weren't exported this file wouldn't compile.
-    const partial: Partial<SessionDeps> = { buyerId: "did:demos:buyer" };
-    expect(partial.buyerId).toBe("did:demos:buyer");
   });
 
   it("#17: seller fulfilment core and dependency contract are public", () => {
@@ -363,19 +349,5 @@ describe("public core surface (#14)", () => {
     expect(railsX402PaywallCore).toBe(x402PaywallCore);
     expect(sellerX402PaywallSettlementKey).toBe(x402PaywallSettlementKey);
     expect(railsX402PaywallSettlementKey).toBe(x402PaywallSettlementKey);
-  });
-
-  it("#178: exposes historical session names only under an explicit legacy label", () => {
-    expect(agentLegacyMvpSessionAnchorName).toBe(legacyMvpSessionAnchorName);
-    expect(Object.isFrozen(legacyMvpSessionAnchorName)).toBe(true);
-    expect(legacyMvpSessionAnchorName.agreement("job-1")).toBe(
-      "dacs3:agreement:job-1",
-    );
-    expect(legacyMvpSessionAnchorName.evidence("job-1")).toBe(
-      "dacs4:evidence:job-1",
-    );
-    expect(legacyMvpSessionAnchorName.bundle("job-1")).toBe(
-      "dacs5:bundle:job-1",
-    );
   });
 });

@@ -578,7 +578,6 @@ type FsDemosWriteJournalOptions
 type FsDurableRfqLifecycleStoreOptions
 type FsFencedSessionStoreOptions
 type FsSellerReceiptStoreOptions
-type FsSessionStoreOptions
 type FsWalletSpendStateStoreOptionsV1
 type FsX402BuyerSettlementStoreOptions
 type FsX402PaywallSettlementStoreOptions
@@ -1039,7 +1038,6 @@ type SellerX402EventTxRef
 type SellerX402RailDefinition
 type SellerX402TxRef
 type SessionCheckpoint
-type SessionDeps
 type SessionLease
 type SessionLoad
 type SessionOutcome
@@ -1047,7 +1045,6 @@ type SessionParty
 type SessionPhase
 type SessionReceipt
 type SessionRecord
-type SessionResult
 type SessionSettlementContext
 type SessionSettlementDisposition
 type SessionSettlementFinalityPolicy
@@ -1062,8 +1059,6 @@ type SessionSettlementVerification
 type SessionSettlementVerificationProvider
 type SessionSigner
 type SessionStore
-type SessionTerms
-type SessionVetRequest
 type SettleRequest
 type SettleResult
 type SettlementBinding
@@ -1207,7 +1202,6 @@ type VerifyResultRef
 type VerifyResultSignature
 type VetDeps
 type VetFailureTerminalSessionRecord
-type VetFinalityAuthenticationRequest
 type VetMethodOutcome
 type VetOperationCheckpoint
 type VetOperationStore
@@ -1537,7 +1531,6 @@ value createFsDemosWriteJournal
 value createFsDurableRfqLifecycleStore
 value createFsFencedSessionStore
 value createFsSellerReceiptStore
-value createFsSessionStore
 value createFsWalletSpendStateStoreV1
 value createFsX402BuyerSettlementStore
 value createFsX402PaywallSettlementStore
@@ -1764,7 +1757,6 @@ value jid1PaymentEvidenceAddress
 value jid1RatingAddress
 value legacyAttestationAddress
 value legacyBundleAddress
-value legacyMvpSessionAnchorName
 value legacyPaymentEvidenceAddress
 value legacyRatingAddress
 value listingAddress
@@ -1860,7 +1852,6 @@ value runDurableFulfilmentCore
 value runDurableFulfilmentToDeliveryReady
 value runFulfilmentCore
 value runSealedEnvelopeCore
-value runSessionCore
 value saltHasEnoughEntropy
 value sameCanonicalClaimIdentity
 value sanitizeText

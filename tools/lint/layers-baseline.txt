@@ -8,7 +8,6 @@ src/agent/runDurableFulfilmentCore.ts -> src/seller/fulfilmentAuditSource.ts
 src/agent/runDurableFulfilmentCore.ts -> src/seller/paymentIntake.ts
 src/agent/runFulfilmentCore.ts -> src/seller/fulfilmentAuditSource.ts
 src/agent/runFulfilmentCore.ts -> src/seller/paymentIntake.ts
-src/agent/runSessionCore.ts -> src/seller/x402Receipt.ts
 src/artifacts/validators.ts -> src/identity/claimReference.ts
 src/canonical/addressing.ts -> src/negotiate/jobId.ts
 src/canonical/jid1Addressing.ts -> src/negotiate/jobId.ts

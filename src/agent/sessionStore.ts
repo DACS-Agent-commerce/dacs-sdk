@@ -4,11 +4,10 @@ import { DacsError } from "../errors.js";
  * Durable session store / checkpoint API — the reusable lifecycle
  * persistence surface for restart-safe buyer and seller services.
  *
- * `runSessionCore` treats on-chain anchors as phase state, so it can only resume
- * when the caller already retained the jobId; the live Butler/Auditor therefore
- * hand-roll app-side JSON stores for job status, anti-replay hashes, receipts,
- * and restart recovery. This is the shared, injectable, schema-versioned surface
- * for that state — the durable substrate that sits BETWEEN irreversible or
+ * On-chain anchors are phase state, so a session can only resume when the
+ * caller already retained the jobId. This is the shared, injectable,
+ * schema-versioned surface for job status, anti-replay hashes, receipts, and
+ * restart recovery — the durable substrate that sits BETWEEN irreversible or
  * externally-visible steps, before all evidence is anchored.
  *
  * It complements the rail-level at-most-once guarantee, which stops a single
@@ -167,9 +166,11 @@ export interface SessionRecord {
 }
 
 /**
- * Validate the complete persisted v1 record. Filesystem readers use this before
- * returning `ok`; mutation paths use the narrower checkpoint/receipt validators
- * before a bad value can be written.
+ * Validate the complete persisted v1 record. The in-memory store runs this
+ * before every write. The fenced filesystem store calls it when it scans
+ * existing files, so a valid v1 file still counts as holding its agreement;
+ * loading a v1 file reports it as unsupported. Mutation paths also use the
+ * narrower checkpoint/receipt validators before a bad value can be written.
  */
 export function sessionRecordShapeViolation(value: unknown): string | null {
   if (!isPlainRecord(value)) return "session record must be an object";
