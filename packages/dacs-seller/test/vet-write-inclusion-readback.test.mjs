@@ -117,6 +117,34 @@ test('readBackRecords reads a retained Vet record back with nothing signed or se
   assert.equal((await p.readBackRecords({ jobId: JOB, buyer: BUYER.claim })).disposition, 'present', 'both records read back');
 });
 
+test('a restart between the two Vet record readbacks leaves both retained records unchanged, and the next readback answers as an uninterrupted one', async (t) => {
+  const f = await orchestratorFixture(t, { real: true, disk: true, signRpc: async () => 'TEST rpc authentication' });
+  const recoveries = [];
+  f.native.source.recoverStorageWrite = async ({ signedTransaction }) => { recoveries.push(signedTransaction.hash); return { resent: false }; };
+  assertPresent(await f.run());
+  const retained = async () => structuredClone({ chain: [...f.records], party: await f.row(), anchor: [...f.native.journal.rows], source: [...f.native.sourceJournal.rows] });
+  const uninterrupted = await f.provider().readBackRecords({ jobId: JOB, buyer: BUYER.claim });
+  assert.equal(uninterrupted.disposition, 'present');
+  const before = await retained(), signatures = f.controls.signatures.length, requests = f.native.captured.length;
+
+  const readBefore = [];
+  f.controls.onRead = (logicalAddress) => {
+    readBefore.push(logicalAddress);
+    if (logicalAddress === address(SELLER)) throw new Error('TEST process stopped before the second readback');
+  };
+  await assert.rejects(f.provider().readBackRecords({ jobId: JOB, buyer: BUYER.claim }), /TEST process stopped/);
+  f.controls.onRead = undefined;
+  assert.ok(readBefore.includes(address(BUYER)), 'the first record was read back before the stop');
+  assert.deepEqual(await retained(), before, 'the stop changed no retained record');
+
+  const afterRestart = await f.fresh().readBackRecords({ jobId: JOB, buyer: BUYER.claim });
+  assert.deepEqual(afterRestart, uninterrupted);
+  assert.deepEqual(await retained(), before, 'the next readback changed no retained record');
+  assert.equal(f.controls.signatures.length, signatures, 'nothing was signed');
+  assert.equal(f.native.captured.length, requests, 'no wallet request');
+  assert.deepEqual(recoveries, [], 'nothing was sent again');
+});
+
 test('readBackRecords answers indeterminate, not present, when a retained record gives no readback answer', async (t) => {
   const f = await orchestratorFixture(t);
   assertPresent(await f.run());
