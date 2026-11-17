@@ -418,7 +418,10 @@ below):
    those no attempt follows included, and refuses a corrupt or too large journal.
 
    While an attempt's lease (60 s by default) is live, another request for
-   the operation is `seller_effect_pending` (503: retry later). Once the
+   the operation is `seller_effect_pending` (503). The refused request's nonce
+   key is already recorded, so sending the same signed request again is
+   `peer_request_replayed` (409). To try again, the buyer signs a new request
+   with a new nonce. Once the
    effect's own write is durable, the handler records its outcome with
    `completeWireEffect(journal, effect, { status, text })`. The outcome is
    kept once (a different one is `seller_effect_conflict`). The text must be

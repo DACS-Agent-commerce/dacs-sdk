@@ -231,6 +231,16 @@ describe("pre-Agreement admission", { timeout: 60_000 }, () => {
       expect(j.files()).toEqual([]);
     }
   });
+  it("K2 a request refused as seller_effect_pending cannot be sent again as is; a freshly signed one is pending, then recovers after the lease", async () => {
+    const x = await world(), clock = { now: NOW }, j = journal({ clock: () => clock.now, leaseMs: 1000 });
+    expect(await reserve(await admit(await exchange(x, "context"), j))).toMatchObject({ state: "new", attempt: 0 });
+    const refused = await admit(await exchange(x, "context"), j);
+    await expect(reserve(refused)).rejects.toMatchObject(refusal("seller_effect_pending", 503));
+    await expect(reserve(refused)).rejects.toMatchObject(refusal("peer_request_replayed"));
+    clock.now += 1000;
+    await expect(reserve(refused)).rejects.toMatchObject(refusal("peer_request_replayed"));
+    expect(await reserve(await admit(await exchange(x, "context"), j))).toMatchObject({ state: "recover", attempt: 1 });
+  });
   it("K2 a request body member named accepted or ready changes nothing", async () => {
     const x = await world();
     for (const route of ROUTES) {
