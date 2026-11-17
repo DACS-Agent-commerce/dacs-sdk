@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "50d69905aa0cefca2f376d4b23b70c39032a5a19"
+        "blob": "57507b9772bc7a180cd30b3022c0df7436b0457b"
       },
       "DELTA-LEDGER.json": {
-        "blob": "1318d5088965cba65cce03368f2bebbfdcb50af4"
+        "blob": "7cec5ec0c1bc413a48f9134d21caa4b4ea762d86"
       },
       "DELTA-MAP.md": {
-        "blob": "f1f5a185a94e9762e084853594251773cd57a6cc"
+        "blob": "df51832705a11c406e9b19abe1620c72b28d7901"
       },
       "DELTA-NOTES.md": {
         "blob": "f9227d9a8c63161861dc3784ef9bc082afdddf3a"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "62b6a46d32bec22e5d5c057c2f687970024b0a0b"
+        "blob": "fc7c945e3f268948faab3a4199878bc0a0a7a5f1"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "d4fa46046f0c4c79e727d8ae8d5119995e2dda3e"
+        "blob": "f9f0a41312a50c215b3ba9f219dfb6208592bff3"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "f91a9f6504d7601ab2ceefa0c33e087ee24a08b1"
@@ -1313,7 +1313,7 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "a36092fb9752a4d5c0ea68f11f228af9b39e0c5c"
+        "blob": "329a6389acde26b90d6f126e5cc99a3f4c809993"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
@@ -1425,6 +1425,9 @@
       },
       "test/engine-floor-portability.test.mjs": {
         "blob": "8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"
+      },
+      "test/failed-storage-write-readback.test.mjs": {
+        "blob": "4782e765d80be69e40384fdd1685745565903eeb"
       },
       "test/fetch-abort-settle.test.mjs": {
         "blob": "3293ce72e25868798e7b7f29aecc1c155a4d11e3"
@@ -1628,7 +1631,7 @@
         "blob": "a2ee2468f0dbae5c68043a50a73b404691b36ba5"
       },
       "test/helpers/native-create-world.mjs": {
-        "blob": "47fcf62e29a1560193069ee1ba7737eff82ae214"
+        "blob": "ef4c287993a93058fe2a0b120df3951c6f4fdcc5"
       },
       "test/helpers/native-dem-delivery-provider.mjs": {
         "blob": "a900bb837a031e97a9fc34f80705bba17f52f3fb"

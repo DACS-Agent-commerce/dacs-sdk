@@ -10426,6 +10426,65 @@
           "after": "0969d1afb9f2c2b26cd8b5f57344486ae587ef4b"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs and node-payment-evidence-adapter.test.mjs blobs after merging e7779f616086",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "329a6389acde26b90d6f126e5cc99a3f4c809993",
+          "after": "329a6389acde26b90d6f126e5cc99a3f4c809993"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "ed43d9413d5d0e7178a91ec3d175507f1944b4ea",
+          "after": "ed43d9413d5d0e7178a91ec3d175507f1944b4ea"
+        }
+      ]
+    },
+    {
+      "delta": "D75",
+      "subject": "delta(client): D75 read back a storage CREATE the node recorded as failed as a final failed result",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "a36092fb9752a4d5c0ea68f11f228af9b39e0c5c",
+          "after": "afcc9327f24835d214f427a5813ae5becf8370bb"
+        },
+        {
+          "path": "packages/dacs-client/test/failed-storage-write-readback.test.mjs",
+          "before": null,
+          "after": "271e5f16eb1114ccd7882f15070cdcb44bf8ee4b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "47fcf62e29a1560193069ee1ba7737eff82ae214",
+          "after": "f46255d2190c1f35021ba9dc5fc5fdf0f7c3adc7"
+        }
+      ]
+    },
+    {
+      "delta": "D75",
+      "subject": "delta(client): D75 keep a failed storage CREATE pending unless its named block lists the hash",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "afcc9327f24835d214f427a5813ae5becf8370bb",
+          "after": "329a6389acde26b90d6f126e5cc99a3f4c809993"
+        },
+        {
+          "path": "packages/dacs-client/test/failed-storage-write-readback.test.mjs",
+          "before": "271e5f16eb1114ccd7882f15070cdcb44bf8ee4b",
+          "after": "4782e765d80be69e40384fdd1685745565903eeb"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "f46255d2190c1f35021ba9dc5fc5fdf0f7c3adc7",
+          "after": "ef4c287993a93058fe2a0b120df3951c6f4fdcc5"
+        }
+      ]
     }
   ]
 }

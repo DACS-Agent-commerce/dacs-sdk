@@ -76,6 +76,9 @@ const PASSIVE_TRANSFER_TIMEOUT_MS = 10_000;
 // `maxBytes` (readRpc) can only lower it. The binder accepts a read up to a minute old.
 const SOURCE_READ_MAX_BYTES = 4 * 1024 * 1024;
 const IDENTITY_MAX_AGE_MS = 60000;
+// The longest failure code or message from the node that a failed storage
+// write's result repeats; a longer one is left out as unknown.
+const NODE_FAILURE_TEXT_MAX_LENGTH = 512;
 // A refused header set is the wallet's to fix, usually its clock. Relays answer
 // these codes with 409 (never a status the SDK resends) and this message only.
 const AUTH_REFUSALS = Object.freeze({
@@ -687,6 +690,25 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       network:pinned.network,chainIdentity:pinned.chainIdentity,attribution:'tuple-only',finality:'not-established',commitmentOnChain:false };
     return receipt;
   }
+  // A storage CREATE the node recorded as failed (status included or failed,
+  // body failed). Its execution applied nothing. The result is final: the
+  // write is never resent or re-made here, and its rows stay as they were.
+  // The body must name this hash, sit in the status block when the status
+  // names one, and match the retained signed bytes; otherwise it differs.
+  // The named confirmed block is then read and must list the hash. A block that
+  // cannot be read, or does not list it, leaves the write pending, not failed.
+  async function failedStorageWrite(hash,r,binding,status,tx) {
+    if(tx.hash!==hash || !Number.isSafeInteger(tx.blockNumber) || tx.blockNumber<0 || (status.blockNumber!==undefined && status.blockNumber!==tx.blockNumber)
+      || !storageExecutionMatches(tx.content,r.signedTransaction.content,hash,binding)) fail('readback_unverified','the failed storage write differs from the retained signed transaction');
+    const block=await node('getBlockByNumber',{ blockNumber:tx.blockNumber }).catch(() => null);
+    if(!includedInBlock(block,hash,tx.blockNumber)) return { disposition:'pending',hash,nonce:r.nonce,noResend:true };
+    const attrs=tx.attrs ?? {},text=(value)=>typeof value==='string' && value.length<=NODE_FAILURE_TEXT_MAX_LENGTH ? value : null;
+    const failure={ blockNumber:tx.blockNumber,code:text(attrs.code),message:text(attrs.message),
+      referenceBlock:Number.isSafeInteger(attrs.reference_block) && attrs.reference_block>=0 ? attrs.reference_block : null };
+    const cause=failure.code===null ? '' : ` (${failure.code}${failure.message===null ? '' : `: ${failure.message}`})`;
+    return { disposition:'failed',hash,nonce:r.nonce,noResend:true,resolved:false,failure,
+      reason:`the node recorded storage write ${hash} as failed in block ${tx.blockNumber}${cause}; nothing was applied. It is never resent or re-made automatically.` };
+  }
   async function readback(address, hash, writeProof, failedNonceFence, consumedByHash) {
     if (!ADDRESS.test(address ?? '') || !HASH.test(hash ?? '')) fail('invalid_params','a public native writer and hash are required');
     return fenced(() => journal.withWalletLock(lane(address), async () => {
@@ -731,11 +753,17 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           return {disposition:'failed',hash,nonce:r.nonce,noResend:true,resolved:true,consumedByHash};
         }
         const status=await node('getTransactionStatus',{ hash });
+        const storageWrite=r.signedTransaction.content.type==='storageProgram';
+        if (storageWrite && status?.state==='failed') {
+          const tx=await node('getTxByHash',{hash});
+          if(tx?.status==='failed') return failedStorageWrite(hash,r,binding,status,tx);
+        }
         if (status?.state !== 'included' || !Number.isSafeInteger(status.blockNumber)) return { disposition:'pending',hash,nonce:r.nonce,noResend:true };
         const proofStarted=now(),cached=writeProofs.get(hash);
         writeProofs.delete(hash);
         const reused=cached && writeProof && canonicalize(writeProof)===canonicalize({disposition:'included',receipt:cached.receipt,noResend:true}) && sameContext(cached.context,await context()) && cached.signed===JSON.stringify(r.signedTransaction) && cached.receipt.blockNumber===status.blockNumber;
         const tx=reused?null:await node('getTxByHash',{hash});
+        if(storageWrite && tx?.status==='failed') return failedStorageWrite(hash,r,binding,status,tx);
         if(agreement && r.signedTransaction.content.type==='native' && tx?.status==='failed'){
           if(!Number.isSafeInteger(status.blockNumber) || status.blockNumber<0 || tx.hash!==hash || tx.blockNumber!==status.blockNumber || !executedMatches(tx.content,r.signedTransaction.content,hash))fail('readback_unverified','the failed native transfer differs from the retained signed transaction');
           let resolved=r.stage==='failed';
