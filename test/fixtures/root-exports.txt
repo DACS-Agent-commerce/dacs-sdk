@@ -214,7 +214,6 @@ type ChannelMessageSignatureVerificationInput
 type ChannelMessageSignatureVerifier
 type ChannelMessageSigningInput
 type ChannelMessageType
-type CheckpointValue
 type ClaimQualificationAuthentication
 type ClaimQualificationAuthority
 type ClaimQualificationBundleRequirement
@@ -1037,14 +1036,8 @@ type SellerVerificationResult
 type SellerX402EventTxRef
 type SellerX402RailDefinition
 type SellerX402TxRef
-type SessionCheckpoint
-type SessionLease
-type SessionLoad
 type SessionOutcome
 type SessionParty
-type SessionPhase
-type SessionReceipt
-type SessionRecord
 type SessionSettlementContext
 type SessionSettlementDisposition
 type SessionSettlementFinalityPolicy
@@ -1058,7 +1051,6 @@ type SessionSettlementRevalidation
 type SessionSettlementVerification
 type SessionSettlementVerificationProvider
 type SessionSigner
-type SessionStore
 type SettleRequest
 type SettleResult
 type SettlementBinding
@@ -1155,8 +1147,6 @@ type TerminalBundleTransportIdentity
 type TerminalBundleVerification
 type TerminalIrreversibleEffectObservation
 type TerminalPhaseAuthority
-type TransitionInput
-type TransitionResult
 type TrustedRailOperatorContext
 type TwoSidedBundles
 type TwoSidedSession
@@ -1403,7 +1393,6 @@ value SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR
 value SELLER_FULFILMENT_VET_MODES
 value SELLER_RECEIPT_STORE_VERSION
 value SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY
-value SESSION_STORE_VERSION
 value SIGNATURE_DOMAIN_SEPARATORS
 value SubstrateError
 value TIER1_SCHEMES
@@ -1431,7 +1420,6 @@ value aggregatePresenceAwareCompositeVerification
 value ap2CheckoutSignaturePolicy
 value ap2RegistrationEligibility
 value assembleTerminalBundleForOwnRole
-value assertCheckpointPayloadShape
 value assertDacsPublicHttpsUrlV1
 value assertDemosCciResponseBounds
 value assertDemosWriteEvidence
@@ -1547,7 +1535,6 @@ value createInMemoryFixedPriceX402CoordinatorStore
 value createInMemoryPaymentEvidenceHandshakeStore
 value createInMemoryRfqLifecycleNetwork
 value createInMemorySellerReceiptStore
-value createInMemorySessionStore
 value createInMemorySettlementLog
 value createInMemorySolanaSplSettlementStore
 value createInMemoryWalletSpendStateStore
