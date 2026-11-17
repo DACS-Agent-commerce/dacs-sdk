@@ -40,7 +40,12 @@ export interface ExplicitCreateResumePayload {
   agreementHash: string;
   /** `wireRequestHash` of the request that carries the header. */
   requestHash: string;
-  /** Names this proof in the ledger; a nonce is used once per buyer, seller and profile. */
+  /**
+   * Names this proof in the ledger. The ledger key is the buyer, seller, profile
+   * and nonce, without `expiresAt`, so a nonce is refused only while its claim is
+   * live, that is until the earlier proof's `expiresAt`; a ledger that forgets
+   * expired claims lets a new proof reuse the nonce after that.
+   */
   nonce: string;
   expiresAt: number;
   profile: Tp1WireProfile;
