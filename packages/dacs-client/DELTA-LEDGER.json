@@ -10559,6 +10559,27 @@
           "after": "04eb2b3da7ba66cc59ad2e0af1280353483464e3"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read back a storage CREATE the node recorded as failed as a final failed result",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe",
+          "after": "f9fe0d9b800c9be68400556d20ea19bb667cd8be"
+        },
+        {
+          "path": "packages/dacs-client/test/failed-storage-write-readback.test.mjs",
+          "before": null,
+          "after": "4782e765d80be69e40384fdd1685745565903eeb"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "47fcf62e29a1560193069ee1ba7737eff82ae214",
+          "after": "8c4d0b377bec9c7635f30cdca3e75aee1f9088f2"
+        }
+      ]
     }
   ]
 }

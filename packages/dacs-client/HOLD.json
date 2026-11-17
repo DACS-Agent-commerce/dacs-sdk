@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "bc7892710fb068f0204f3b33be68c96be6162e71"
+        "blob": "1a261ec8f8d5ddb58bfeb7f6d90b6a3732f7d2f3"
       },
       "DELTA-LEDGER.json": {
-        "blob": "9635435b222e32c0b9522ceb47cc0842c8e11c22"
+        "blob": "d2b1ef280081bde2496e851b4c2b03b2030c661d"
       },
       "DELTA-MAP.md": {
-        "blob": "dfa6312e09a448118bd7b1af3b24bf8edc1bd28c"
+        "blob": "7a626d0b8c39e23f832696605b683ae69ec73fa8"
       },
       "DELTA-NOTES.md": {
         "blob": "bd5f5a806e441849392a85525d73fcf2fc0d3792"
@@ -1055,7 +1055,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "d919e87d3054424fd7aab64c11c56312ffb0d51e"
+        "blob": "6dd66ed94eecd622c082d167de326d10bdee238f"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1352,7 +1352,7 @@
         "blob": "91d06508f63df5308dece710ffb05aeae26a5bb8"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe"
+        "blob": "f9fe0d9b800c9be68400556d20ea19bb667cd8be"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
@@ -1467,6 +1467,9 @@
       },
       "test/engine-floor-portability.test.mjs": {
         "blob": "8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"
+      },
+      "test/failed-storage-write-readback.test.mjs": {
+        "blob": "4782e765d80be69e40384fdd1685745565903eeb"
       },
       "test/fetch-abort-settle.test.mjs": {
         "blob": "3293ce72e25868798e7b7f29aecc1c155a4d11e3"
@@ -1670,7 +1673,7 @@
         "blob": "a2ee2468f0dbae5c68043a50a73b404691b36ba5"
       },
       "test/helpers/native-create-world.mjs": {
-        "blob": "47fcf62e29a1560193069ee1ba7737eff82ae214"
+        "blob": "8c4d0b377bec9c7635f30cdca3e75aee1f9088f2"
       },
       "test/helpers/native-dem-delivery-provider.mjs": {
         "blob": "a900bb837a031e97a9fc34f80705bba17f52f3fb"
