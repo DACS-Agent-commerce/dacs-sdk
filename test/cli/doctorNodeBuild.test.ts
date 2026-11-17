@@ -236,6 +236,7 @@ describe("dacs doctor node build check", () => {
       "https://user:pass@node.example/",
       "https://user:pass@node.example",
       "https://token-only@node.example",
+      "https://:password-only@node.example",
     ]) {
       const fetchImpl = stubFetch(async () => jsonReply(recordedVersionReply.body));
 
