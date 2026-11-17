@@ -169,10 +169,10 @@ function snapshotListingArtifact(
 
 /**
  * Authenticate a structurally valid Listing without applying its admission
- * clock. Recovery uses this narrower gate only after runSessionCore proves an
+ * clock. A caller may use this narrower gate only after it has proven an
  * exact, cryptographically authenticated Agreement and successful payment for
- * the requested job. Discovery uses verifyReadableListingArtifact below;
- * runSessionCore retains the DACS-1 §6.3.4 fresh-admission clock policy.
+ * the requested job. Discovery uses verifyReadableListingArtifact below, which
+ * applies the DACS-1 §6.3.4 fresh-admission clock policy.
  */
 async function authenticateListingSnapshot(
   raw: Record<string, unknown>,

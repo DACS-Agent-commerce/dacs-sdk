@@ -1,0 +1,13 @@
+{
+  "format": "dacs-node-read-observations/v1",
+  "capturedAt": "2026-11-08T11:35:27Z",
+  "endpoint": "https://node2.demos.sh/",
+  "confirmedEqualFrom": "https://demosnode.discus.sh/",
+  "network": "TP-1",
+  "blockNumber": 2,
+  "nodeBuild": null,
+  "provenance": "Read-only RPC read of TP-1 block 2, confirmed equal from the second endpoint. The node build was not recorded.",
+  "sha256": {
+    "block2-2026-11-08.json": "065be6804d6643869c24d5049f1cbda41a9c6dced54747def92a4b6b0c1c0737"
+  }
+}

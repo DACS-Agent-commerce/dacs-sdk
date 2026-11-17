@@ -22,7 +22,7 @@ import type {
 } from "./types.js";
 import { isChainTxRef } from "./validators.js";
 
-/** Pre-normative buyer-only agreement emitted by early runSessionCore releases. */
+/** Pre-normative buyer-only agreement shape. */
 export interface LegacyMvpAgreementDocument {
   jobId: string;
   pattern: string;

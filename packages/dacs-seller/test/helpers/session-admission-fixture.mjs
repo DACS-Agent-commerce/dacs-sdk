@@ -45,6 +45,9 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
   return {
     calls,
     vetRecord,
+    // The records and receipts made so far, for a fixture in another process to restore.
+    retain: () => ({ records: [...records], receipts: [...receipts], made }),
+    restore: (state) => { for (const [hash, record] of state.records) records.set(hash, record); for (const [hash, receipt] of state.receipts) receipts.set(hash, receipt); made = state.made; },
     // The answer for the next admissions: (admitted, query) => answer, or null.
     answerWith: (fn) => { overrides = fn; },
     // The revocation surfaces for the next readings: (active, query) => surfaces (or a throw), or null.
