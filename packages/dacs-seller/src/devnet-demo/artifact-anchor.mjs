@@ -99,6 +99,11 @@ const REFUSED_DEAD='dead', REFUSED_INCOMPLETE='incomplete';
 // this is refused before it is hashed.
 const SIGNED_CREATE_MAX_BYTES=4*MAX_STORAGE_ARTIFACT_BYTES;
 const SIGNED_PROJECTION_MAX_BYTES=SIGNED_CREATE_MAX_BYTES+1024; // Authentication envelope above the signed-content budget.
+// A node can include a CREATE after the transport's own inclusion wait has ended. With awaitInclusion, publish
+// reads a CREATE it sent back again for at most this long after the wallet's answer, once per poll. The wallet
+// answers only after the transport's own inclusion wait (120 s by default), so the bound ends that much later
+// than the broadcast.
+const ISSUED_READBACK_MS=6*60_000, ISSUED_READBACK_POLL_MS=5_000;
 
 // The caller authenticates expectedSigner: the Vet verifier or commitment
 // orchestrator, which may differ from the native storage owner. In the
@@ -211,6 +216,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   const owner=wallet.getPublicAccount()?.address;
   const claim=owner ? `did:demos:agent:${owner.slice(2)}` : null;
   const signRpc=Object.hasOwn(ports,'signRpc')?ports.signRpc:storageWriteRpcSigner(signer,claim);
+  const sleep=ports.sleep ?? (ms=>new Promise(resolve=>setTimeout(resolve,ms)));
   if(!owner || wallet.getWriteProfile()?.demoArtifactPublication?.policy!==DEVNET_DEMO_ARTIFACT_POLICY) throw new TypeError('the packaged seller wallet does not carry the demo artifact publication policy');
   const keyFor=(logicalAddress)=>{
     const jobPrefix=/^(?:dacs2:composite:|dacs3:commit:|dacs4:deliverable:|dacs4:evidence:)/.exec(logicalAddress);
@@ -373,7 +379,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     if(fate===REFUSED_INCOMPLETE) return {status:'indeterminate',reason:'broadcast_rejected: the original demo CREATE was sent again and the index is not complete past its nonce',noResend:true};
     return {status:'rejected',reason:refusal,noResend:true};
   }
-  async function observe(input,retained,writeProof,{fresh=false,resend=false,authorizeResend}={}) {
+  // readAgain (optional): while the readback answers pending, observe asks it whether to read once more, and reads
+  // again passively (never a resend). publish passes it only for a CREATE it sent itself (awaitInclusion).
+  async function observe(input,retained,writeProof,{fresh=false,resend=false,authorizeResend,readAgain}={}) {
     let hash=retained.hash;
     if(!hash) {
       const hashes=(await snapshot()).addressHashes.get(input.logicalAddress);
@@ -394,7 +402,8 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     const cached=cacheable&&!fresh?immutable.get(cacheKey):null;
     if(cached){await sourceCapability.observeBinding();return cached;}
     const refused=broadcastRejected(retained);
-    const included=await observeSource(hash,projection,writeProof,{resend:resend&&(!refused||await refusedCreateMayResend(hash,projection)),refused,authorizeResend});
+    let included=await observeSource(hash,projection,writeProof,{resend:resend&&(!refused||await refusedCreateMayResend(hash,projection)),refused,authorizeResend});
+    while(included.disposition==='pending'&&readAgain&&await readAgain()) included=await observeSource(hash,projection,writeProof,{resend:false});
     if(refused&&included.disposition==='absent') return refusedAbsence(hash,projection,retained);
     if(included.disposition!=='included') return {status:'indeterminate',reason:`the original demo CREATE has no authenticated inclusion readback (${included.disposition}: ${included.reason ?? included.error ?? 'no reason'})`,noResend:true};
     const record=await reader.read(input.logicalAddress,{expectedWriter:claim,expectedArtifactKind:input.artifactKind,...(input.deliveryBinding?{expectedDeliveryBinding:input.deliveryBinding}:{}),signedProjection:projection});
@@ -428,9 +437,15 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // A retained CREATE is sent again (its original bytes) only through authorize,
   // which is asked once more right before the resend; without authorize, or when
   // it answers anything but true, the retained intent is only read back.
-  async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,authorizeSigning,reaskDenied=false}) {
+  // awaitInclusion (optional, needs authorize): a CREATE this call sends that reads back pending is read back
+  // again, never sent again, once per ISSUED_READBACK_POLL_MS for up to ISSUED_READBACK_MS after the wallet's
+  // answer (which itself comes after the transport's inclusion wait), while authorize still answers true. A
+  // retained intent is read back once, as without it. Like the transport's own inclusion wait, this keeps the
+  // seller's nonce lane, so no other seller CREATE is prepared meanwhile.
+  async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,authorizeSigning,reaskDenied=false,awaitInclusion=false}) {
     assertKitOperationAdmitted('publish');
     if(authorize!==undefined&&typeof authorize!=='function') fail('invalid','publish authorization must be a function');
+    if(awaitInclusion&&!authorize) fail('invalid','awaiting inclusion needs the caller\'s authorization check');
     if(authorizeSigning!==undefined&&(typeof authorizeSigning!=='function'||wallet.guardsSigning!==true)) fail('not-authorized','the wallet cannot check this write right before it signs; no intent was stored and nothing was sent');
     if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,writer,verifier,vetMode)) fail('invalid','demo artifact kind, producer, or signed shape differs');
     if(artifactKind==='SettlementEvidence'&&logicalAddress!==`dacs4:evidence:${artifact.jobId}`)fail('invalid','delivery evidence address differs from its job');
@@ -549,8 +564,19 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       }
       const issued={...intent,stage:'issued',hash};
       await journal.put(keyFor(logicalAddress),issued);
-      return observe(input,issued,answer.data.writeProof,resendOptions);
+      return observe(input,issued,answer.data.writeProof,{...resendOptions,...(awaitInclusion?{readAgain:issuedReadbackGate(authorize)}:{})});
     })));
+  }
+  // observe's readAgain for a CREATE publish just sent: waits one poll, then answers true only while
+  // ISSUED_READBACK_MS has not passed since the wallet's answer and authorize still answers true (a throw ends it too).
+  function issuedReadbackGate(authorize) {
+    const deadline=now()+ISSUED_READBACK_MS;
+    return async()=>{
+      const left=deadline-now();
+      if(left<=0) return false;
+      await sleep(Math.min(ISSUED_READBACK_POLL_MS,left));
+      try { return await authorize()===true; } catch { return false; }
+    };
   }
   // options.resend (default false): a read is passive. It reads the chain back and
   // never rebroadcasts the retained CREATE or records a resend. true sends the

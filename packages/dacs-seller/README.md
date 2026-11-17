@@ -302,7 +302,21 @@ the producer, retry the same payment claim; do not collect another payment.
 `artifactAnchor` publishes native artifacts for the seller named by `writer`.
 Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
-the signed transaction before sending it. `readRetained({ logicalAddress,
+the signed transaction before sending it. The party Vet provider also passes
+`awaitInclusion: true`: a CREATE that call sends and that still reads back as
+pending is read again every five seconds for a bounded time while `authorize()`
+still answers `true`. The additional polls never send the CREATE again; the
+first pending read can still run the existing one-time recovery send
+(`recoverStorageWrite`) of the retained CREATE, as without `awaitInclusion`. In
+the reference anchor the bound is six minutes after the wallet's answer, and the
+wallet answers only after the transport's own inclusion wait (120 seconds by
+default), so the bound ends about eight minutes after the broadcast. Meanwhile
+the seller's other writes wait behind the pending write, up to that bound,
+instead of failing at once with a retryable error. `readBackRecords({ jobId,
+buyer })` reads a job's two retained Vet records back without signing or
+sending anything; it answers `present` only when both records read back as
+included, and `indeterminate` when one is not written yet or does not read
+back. `readRetained({ logicalAddress,
 artifactKind })` must authenticate the exact retained artifact, receipt, native
 transaction reference and signed projection when returning `status: 'present'`;
 `verifyReceipt` independently checks those bindings. Retain one logical record
