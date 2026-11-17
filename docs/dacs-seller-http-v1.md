@@ -9,10 +9,14 @@
 own endpoint: the route table, the signed request and response envelopes, the
 seller session delegation, the discovery document and endpoint proof, their
 exact signing bytes, and validators. It has no HTTP server or client. Its one
-store, and its only I/O, is the seller's request journal
-(`openWireRequestJournal`), a local directory: on an effect route the
+store is the seller's request journal
+(`openWireRequestJournal`), a local directory. Its I/O is that directory and
+the journal's restart probe. On an effect route the
 `reserve()` that `checkWireRequest` returns writes and syncs journal entries
-synchronously, so it blocks the calling thread for those writes. The seller host (`@kynesyslabs/dacs-seller`) and the
+synchronously, so it blocks the calling thread for those writes. Opening the
+journal runs the restart probe, which starts two Node child processes one
+after the other with `spawnSync` (each limited to 5 seconds), so opening
+blocks the calling thread until both exit. The seller host (`@kynesyslabs/dacs-seller`) and the
 buyer client (`@kynesyslabs/dacs-client`) are its intended consumers.
 
 It is the wire the buyer plugins run today, ported from the plugin
