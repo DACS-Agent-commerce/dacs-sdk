@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readArchive } from '../scripts/delta-assemble.mjs';
 import { lastRecordOnlyFailures, pkg } from '../scripts/delta-map.mjs';
-test("with this PR's delta records, `check-provenance.mjs --local-only` exits 0 on the PR head and on the head merged with current main; the last ledger entry names a source or test change, or is a record-only entry that records, for each path, the blob committed at HEAD when no other entry, superseded ones included, recorded that blob for the path; no copied path has two newest records or a recorded final blob other than head; any stale, parallel, conflicting or control-only-last record fails with the path named", () => {
+test("with this PR's delta records, `check-provenance.mjs --local-only` exits 0 on the PR head and on the head merged with current main; the last ledger entry names a source or test change, or is a record-only entry that records, for each path, the blob committed at its own commit when no other entry or record file, superseded ones included, recorded that blob for the path; no copied path has two newest records or a recorded final blob other than head; any stale, parallel, conflicting or control-only-last record fails with the path named", () => {
  const env={...process.env};delete env.NODE_TEST_CONTEXT;
  const ledger=readArchive(pkg).ledger;
  const last=ledger.changes.at(-1),cwd=fileURLToPath(new URL('../../..',import.meta.url));

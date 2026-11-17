@@ -137,20 +137,28 @@ const describeBlob=sha=>sha??'no file';
 /**
  * The last-entry rule for a trailing record-only entry (one that changes no
  * source or test blob itself). The last entry of `ledger.changes` counts as a
- * real change only if it names a source or test path and, for every path it
- * records, the recorded blob is the blob committed at HEAD and no earlier entry
- * recorded it for that path. Earlier entries are every other entry in
- * `changes` and in `supersededChanges`, in any order; when none names the path,
- * the baseline blob counts as recorded. Returns the failures, each naming its
- * path; none means the entry counts.
+ * real change only if it names a source or test path, selects one commit, and,
+ * for every path it records, the recorded blob is the blob committed at that
+ * commit and no earlier entry recorded it for that path. The blob at the entry's
+ * own commit never changes, so a later recorded change to the path does not
+ * affect the answer. `archive` is the ledger file; `combined` is the ledger the
+ * gates read (the file followed by the `records/` files). Earlier entries are
+ * every entry of `combined` except the trailing one, `supersededChanges`
+ * included, in any order; when none names the path, the baseline blob counts as
+ * recorded. Returns the failures, each naming its path; none means the entry
+ * counts.
  */
-export function lastRecordOnlyFailures(ledger=readArchive(pkg).ledger) {
-  const last=ledger.changes.at(-1), earlier=[...(ledger.supersededChanges??[]),...ledger.changes.slice(0,-1)];
+export function lastRecordOnlyFailures(archive=readArchive(pkg).ledger, combined=view().ledger) {
+  const last=archive.changes.at(-1);
   if(!last?.files.some(file=>/^packages\/dacs-client\/(src|test)\//.test(file.path))) return [`${prefix}DELTA-LEDGER.json: last record names no source or test change`];
+  const selected=commits().filter(commit=>selects(last,commit));
+  if(selected.length!==1) return [`${prefix}DELTA-LEDGER.json: the last record-only entry selects ${selected.length} commits, not one`];
+  // Record files follow the ledger file's entries in the combined view.
+  const earlier=[...(combined.supersededChanges??[]),...combined.changes.filter((_,at)=>at!==archive.changes.length-1)];
   const failures=[];
   for(const {path,after} of last.files) {
-    const committed=blobAt('HEAD',path);
-    if(after!==committed) failures.push(`${path}: the last record-only entry records ${describeBlob(after)}, but HEAD holds ${describeBlob(committed)}`);
+    const committed=blobAt(selected[0].sha,path);
+    if(after!==committed) failures.push(`${path}: the last record-only entry records ${describeBlob(after)}, but its commit holds ${describeBlob(committed)}`);
     const named=earlier.flatMap(change=>change.files.filter(file=>file.path===path));
     const recorded=named.length?named.map(file=>file.after):[blobAt(BASELINE,path)];
     if(recorded.includes(after)) failures.push(`${path}: the last record-only entry restates ${describeBlob(after)}, a blob already recorded for it; it records nothing new`);
