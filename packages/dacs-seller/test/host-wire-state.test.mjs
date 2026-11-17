@@ -133,6 +133,8 @@ const verifiedAnswer = (buyerWire, { payload, header, status, bytes }) => buyerW
 const lockReleased = (f) => assert.deepEqual(namesIn(f.dataDirectory).filter((name) => name.startsWith(LOCK_FILE_PREFIX)), [], 'the state lock is released');
 const writeMarker = (f) => writeFileSync(f.path(MARKER_FILE), MARKER_TEXT, { mode: 0o600 });
 const makePrivateDirectory = (path) => { mkdirSync(path, { mode: 0o700 }); chmodSync(path, 0o700); return path; };
+// A directory sync reports its failure wrapped, with the injected error as cause; a file sync reports it as is.
+const injectedFailure = (error) => error.cause ?? error;
 const rejection = async (promise) => { try { await promise; } catch (error) { return error; } return assert.fail('expected a rejection'); };
 
 // A durable-sync step with the data directory's listing at that moment. `fail(event)`
@@ -531,13 +533,14 @@ test('P10-T07 table: newly created state entry (marker, seller/, transport/, wir
       const f = await hostFixture(subtest);
       const log = [];
       const error = await withHostSyncs(f, log, () => rejection(f.start()), { fail: covering(f) });
-      assert.equal(error.message, SYNC_FAILURE);
+      assert.equal(injectedFailure(error).message, SYNC_FAILURE);
       assert.equal(log.some((event) => event.kind === 'listen'), false, 'nothing was served');
       lockReleased(f);
     });
     await t.test(`a crash just after the sync covering ${entry} restarts safely`, async (subtest) => {
       const f = await hostFixture(subtest);
-      assert.equal((await withHostSyncs(f, [], () => rejection(f.start()), { fail: covering(f), after: true })).message, SYNC_FAILURE);
+      const error = await withHostSyncs(f, [], () => rejection(f.start()), { fail: covering(f), after: true });
+      assert.equal(injectedFailure(error).message, SYNC_FAILURE);
       await assertSafeRestart(f, `a crash after ${entry}`);
     });
   }
