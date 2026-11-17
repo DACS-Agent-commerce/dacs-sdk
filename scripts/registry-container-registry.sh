@@ -162,17 +162,25 @@ start_registry() {
   esac
 }
 
-# Waits up to 30 bounded pings for Verdaccio; exits 1 with its log otherwise.
+# Waits up to 30 bounded pings for Verdaccio. Otherwise appends its container
+# log, curl's last error line and the retry-exhaustion line to $registry_log and
+# exits with curl's final status (1 when the last reply was not a ready one), so
+# the failure classifier can tell a refused connection from other causes.
 wait_for_registry() {
   stage=registry-ready
   require_bounded_http || return 1
   ready=0
-  local ping
-  for attempt in $(seq 1 30); do
+  local ping ping_status=0 ping_error_line
+  local max_attempts=30 max_error_bytes=1024
+  for attempt in $(seq 1 "$max_attempts"); do
+    ping_status=0
+    # curl is silent on success, so `ping` is the body then and, after a failure,
+    # holds curl's error message (--show-error) for the log below.
+    ping=$(curl "${http_json_curl[@]}" "$host_registry/-/ping" 2>&1) || ping_status=$?
     # Verdaccio answers its ping with a JSON object; a 200 carrying anything else
     # (an empty or malformed body from an intermediary) is not readiness. `--`
     # keeps a reply that starts with `-` an argument instead of a node option.
-    if ping=$(curl "${http_json_curl[@]}" "$host_registry/-/ping") &&
+    if [ "$ping_status" -eq 0 ] &&
       node -e 'const value = JSON.parse(process.argv[1]);
         if (!value || typeof value !== "object" || Array.isArray(value)) process.exit(1)' -- "$ping"; then
       ready=1
@@ -182,7 +190,14 @@ wait_for_registry() {
   done
   if [ "$ready" -ne 1 ]; then
     docker logs "$registry_container" 2>&1 | tee -a "$registry_log" >&2
-    exit 1
+    {
+      if [ "$ping_status" -ne 0 ]; then
+        ping_error_line=$(printf '%s\n' "$ping" | grep -o 'curl: ([0-9]*) .*' | tail -n 1 | head -c "$max_error_bytes" || true)
+        if [ -n "$ping_error_line" ]; then printf '%s\n' "$ping_error_line"; fi
+      fi
+      echo "registry ping did not succeed within $max_attempts attempts"
+    } | tee -a "$registry_log" >&2
+    exit "$((ping_status == 0 ? 1 : ping_status))"
   fi
 }
 

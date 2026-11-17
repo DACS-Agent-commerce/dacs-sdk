@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 const dispositionModule = "../../scripts/registry-container-disposition.mjs";
-const { registryDependencyViolations } = await import(dispositionModule);
+const { registryDependencyViolations, classifyAcceptanceFailure } = await import(dispositionModule);
 const roots: string[] = [];
 const scratch = () => { const root = mkdtempSync(join(tmpdir(), "dacs-registry-bring-up-")); roots.push(root); return root; };
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -368,13 +368,13 @@ printf '%s' "$auth_token"`, { host_registry: "http://127.0.0.1:1", registry_log:
   });
 
   it.each([["readiness", "wait_for_registry"], ["authentication", "authenticate_registry"]])(
-    "bounds a simulated stalled or oversized %s response and never publishes", (kind, stage) => {
+    "bounds a simulated stalled or oversized %s response and never publishes", (_kind, stage) => {
       const root = scratch();
       for (const failure of [28, 63]) {
         const result = runStages(`${stub}source scripts/bounded-http.sh\n${stage}\necho published > "$published"`, {
           TEST_CURL_VERSION: "8.5.0", TEST_FAILURE_CODE: String(failure), host_registry: "http://127.0.0.1:1",
           registry_container: "fixture", registry_log: join(root, "registry.log"), published: join(root, "published") });
-        expect(result.status, result.stderr).toBe(kind === "readiness" ? 1 : failure);
+        expect(result.status, result.stderr).toBe(failure);
         expect(existsSync(join(root, "published"))).toBe(false);
       }
     });
@@ -417,6 +417,60 @@ printf 'ready=%s' "$ready"`, { host_registry: "http://127.0.0.1:1", registry_con
         registry_log: join(scratch(), "registry.log") });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("ready=1");
+  });
+});
+
+describe("registry readiness failure record", () => {
+  const retryLine = "registry ping did not succeed within 30 attempts";
+  const refused = "curl: (7) Failed to connect to 127.0.0.1 port 4873 after 0 ms: Couldn't connect to server";
+  // Runs a wait whose every ping is `curlBody`; returns the exit status and the registry log it left.
+  const failingWait = (curlBody: string) => {
+    const root = scratch();
+    const registryLog = join(root, "registry.log");
+    const result = runStages(`
+http_json_curl=(--disable)
+curl() {
+${curlBody}
+}
+sleep() { :; }
+docker() { echo "verdaccio container log"; }
+wait_for_registry
+echo reached`, { host_registry: "http://127.0.0.1:1", registry_container: "fixture", registry_log: registryLog,
+      counter: join(root, "counter") });
+    expect(result.stdout).not.toContain("reached");
+    return { status: result.status, log: readFileSync(registryLog, "utf8") };
+  };
+  const classifyWait = ({ status, log }: { status: number | null; log: string }) => classifyAcceptanceFailure({
+    stage: "registry-ready", exitCode: status, read: (name: string) => name === "registry.log" ? log : undefined }).failureClass;
+
+  it("records curl's last error and the retry-exhaustion line in the registry log when the ping never succeeds", () => {
+    const wait = failingWait(`echo "${refused}" >&2; return 7`);
+    expect(wait.log.trim().split("\n")).toEqual(["verdaccio container log", refused, retryLine]);
+  });
+
+  it("exits the readiness wait with curl's final status and message, not an earlier attempt's", () => {
+    const wait = failingWait(`n=$(cat "$counter" 2>/dev/null || echo 0)
+echo $((n + 1)) > "$counter"
+if [ "$n" -lt 29 ]; then echo "${refused}" >&2; return 7; fi
+echo "curl: (28) Operation timed out after 15001 milliseconds" >&2
+return 28`);
+    expect(wait.status).toBe(28);
+    expect(wait.log).toContain("curl: (28) Operation timed out");
+    expect(wait.log).not.toContain("curl: (7)");
+  });
+
+  it("exits 1 with no curl line when the registry answers with a reply that is not ready", () => {
+    const wait = failingWait("printf 'not-json'");
+    expect(wait.status).toBe(1);
+    expect(wait.log.trim().split("\n")).toEqual(["verdaccio container log", retryLine]);
+  });
+
+  it("classifies a registry that refuses every ping as network", () => {
+    expect(classifyWait(failingWait(`echo "${refused}" >&2; return 7`))).toBe("network");
+  });
+
+  it("classifies a registry that rejects every ping with a client error as functional", () => {
+    expect(classifyWait(failingWait(`echo "curl: (22) The requested URL returned error: 403" >&2; return 22`))).toBe("functional");
   });
 });
 
