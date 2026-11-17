@@ -347,6 +347,22 @@ test('a trailing record-only entry is refused for a blob that a record file alre
   assert.deepEqual(unblob(history.recordOnlyFailures()), [restates]);
 });
 
+test('a trailing record-only entry that restates the baseline blob is refused although a later record file changes its path', async t => {
+  const history = await fixture(t);
+  history.record('original\n');
+  history.recordFile('changed\n');
+  assert.deepEqual(history.check(), []);
+  assert.deepEqual(unblob(history.recordOnlyFailures()), [restates]);
+});
+
+test('a trailing record-only entry stays accepted when later record files return its path to the recorded bytes', async t => {
+  const history = await recordedMerge(t, 'combined\n');
+  history.recordFile('later\n');
+  history.recordFile('combined\n');
+  assert.deepEqual(history.check(), []);
+  assert.deepEqual(history.recordOnlyFailures(), []);
+});
+
 for (const [what, files] of [['no file', []], ['only a path outside src and test', [{ path: `${prefix}scripts/example.mjs`, before: null, after: 'b'.repeat(40) }]]]) {
   test(`the record-only rule refuses a last record that names ${what}`, async t => {
     const history = await fixture(t);

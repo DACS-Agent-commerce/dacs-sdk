@@ -10467,6 +10467,17 @@
           "after": "173bd74d1d40be6ab60e430a2583a604e8b6527b"
         }
       ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 count only record files committed before a trailing record-only ledger entry",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "173bd74d1d40be6ab60e430a2583a604e8b6527b",
+          "after": "055f2de61cc3fa1100a1a06e0979fc5262ce8d24"
+        }
+      ]
     }
   ]
 }

@@ -1717,6 +1717,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` | f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa |
 | D42 | delta(client): D42 judge a trailing record-only ledger entry by its own commit and the record files | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` | 173bd74d1d40be6ab60e430a2583a604e8b6527b |
+| D42 | delta(client): D42 count only record files committed before a trailing record-only ledger entry | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` | 055f2de61cc3fa1100a1a06e0979fc5262ce8d24 |
 | D76 | delta(client): D76 pin the demosdk signing-content test to 4.0.17 | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | d8b3ffc11f570d455f4a365c18d3e6b64ac025d3 |
 | D76 | delta(client): D76 name demosdk 4.0.17 in the unsigned identity read comment | Git subject selector (must resolve exactly once after publication checkpoint) |
@@ -5206,6 +5208,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D42 judge a trailing record-only ledger entry by its own commit and the record files | `packages/dacs-client/scripts/delta-continuity.test.mjs:1` |
 | delta(client): D42 judge a trailing record-only ledger entry by its own commit and the record files | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): D42 judge a trailing record-only ledger entry by its own commit and the record files | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
+| delta(client): D42 count only record files committed before a trailing record-only ledger entry | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D42 count only record files committed before a trailing record-only ledger entry | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D42 count only record files committed before a trailing record-only ledger entry | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D42 count only record files committed before a trailing record-only ledger entry | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D42 count only record files committed before a trailing record-only ledger entry | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D42 count only record files committed before a trailing record-only ledger entry | `packages/dacs-client/scripts/delta-continuity.test.mjs:1` |
+| delta(client): D42 count only record files committed before a trailing record-only ledger entry | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D42 count only record files committed before a trailing record-only ledger entry | `packages/dacs-client/test/delta-ledger-gate.test.mjs:1` |
 | delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/records/D76-a6c8894d46c4.json:1` |

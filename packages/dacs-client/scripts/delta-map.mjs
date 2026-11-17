@@ -143,18 +143,21 @@ const describeBlob=sha=>sha??'no file';
  * own commit never changes, so a later recorded change to the path does not
  * affect the answer. `archive` is the ledger file; `combined` is the ledger the
  * gates read (the file followed by the `records/` files). Earlier entries are
- * every entry of `combined` except the trailing one, `supersededChanges`
- * included, in any order; when none names the path, the baseline blob counts as
- * recorded. Returns the failures, each naming its path; none means the entry
- * counts.
+ * the other entries of the ledger file, `supersededChanges` included, in any
+ * order, and the entries of the `records/` files whose commit comes before the
+ * trailing entry's commit; a record file committed after it never counts. When
+ * no earlier entry names the path, the baseline blob counts as recorded.
+ * Returns the failures, each naming its path; none means the entry counts.
  */
 export function lastRecordOnlyFailures(archive=readArchive(pkg).ledger, combined=view().ledger) {
   const last=archive.changes.at(-1);
   if(!last?.files.some(file=>/^packages\/dacs-client\/(src|test)\//.test(file.path))) return [`${prefix}DELTA-LEDGER.json: last record names no source or test change`];
-  const selected=commits().filter(commit=>selects(last,commit));
+  const history=commits(), selected=history.filter(commit=>selects(last,commit));
   if(selected.length!==1) return [`${prefix}DELTA-LEDGER.json: the last record-only entry selects ${selected.length} commits, not one`];
-  // Record files follow the ledger file's entries in the combined view.
-  const earlier=[...(combined.supersededChanges??[]),...combined.changes.filter((_,at)=>at!==archive.changes.length-1)];
+  // Record files follow the ledger file's entries in the combined view; only those committed before the trailing entry count.
+  const below=commitsIn(`${BASELINE}..${selected[0].sha}^`), superseded=archive.supersededChanges??[];
+  const fromFiles=[...(combined.supersededChanges??[]).slice(superseded.length),...combined.changes.slice(archive.changes.length)];
+  const earlier=[...superseded,...archive.changes.slice(0,-1),...fromFiles.filter(change=>history.some(commit=>selects(change,commit)&&below.has(commit.sha)))];
   const failures=[];
   for(const {path,after} of last.files) {
     const committed=blobAt(selected[0].sha,path);
