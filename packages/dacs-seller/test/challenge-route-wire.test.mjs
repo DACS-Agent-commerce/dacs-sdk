@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import * as guard from '../src/kit-operation-guard.mjs';
 import { SellerTransportError, createSellerTransportClientAuth, sellerContextScopeHash, SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { CHALLENGE_LIFETIME_MS, CHALLENGE_PATH, CONTEXT_PATH, JOB, JOB2, T0, challengeWorld, gate, watchSql } from './helpers/challenge-route-fixture.mjs';
 
@@ -542,6 +543,14 @@ test('challenge-last-slot-winner-restart', async (t) => {
 test('a wire challenge without the host stop predicate refuses construction', async (t) => {
   const w = await challengeWorld(t);
   assert.throws(() => createSellerHttpHandler(w.agent, { context: w.route, wire: w.makeWire({ stopped: undefined }) }), { name: 'TypeError', message: /stop predicate/ });
+});
+
+test('the challenge route is built from a Listing and buyer access alone, and refuses a missing buyer access or a known-job port that is not a function', async (t) => {
+  const w = await challengeWorld(t);
+  const build = (options) => () => createSellerContextRoute({ listing: w.listing, assertBuyerAccess: async () => {}, now: () => w.state.time, ...options });
+  assert.doesNotThrow(build({}));
+  assert.throws(build({ assertBuyerAccess: undefined }), TypeError);
+  assert.throws(build({ knownJob: 'job' }), TypeError);
 });
 
 test('a handler composed with only the challenge route answers the context step as not found, unsigned', async (t) => {
