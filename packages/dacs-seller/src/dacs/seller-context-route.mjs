@@ -2,7 +2,7 @@
 // Admission reserves two writes. Pre-payment writes still require exact
 // seller approval. This is the kit's only context mode.
 import { identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, isIdentityBundle, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
-import { admitPreAgreementRequest, admitWireRequestBody, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { admitPreAgreementRequest, admitWireRequestBody, inspectWireOperation, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { KitOperationGuardError, kitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { sellerData } from '../mcp/seller-content.mjs';
@@ -26,6 +26,8 @@ export const SELLER_CONTEXT_LIMITS = Object.freeze({ maxStartsPerBuyerPerHour: 5
 const VET_WRITES = 2;
 // The deadline of each buyer-access and known-job callback (DC18).
 const POLICY_READ_TIMEOUT_MS = 10_000;
+// The deadline of the Vet readback that checks a saved present answer before it is sent again.
+const REPLAY_READBACK_TIMEOUT_MS = 10_000;
 const HOUR_MS = 3_600_000;
 // The seller's clock window for the buyer's generatedAt (seller-agent.mjs).
 const GENERATED_AT_SKEW_MS = 10 * 60 * 1000;
@@ -443,7 +445,9 @@ function providerOutcome(answer, scope) {
  * keeps the attempt open. Any other error after the reservation leaves the attempt open and answers `operation_uncertain`, or the 503
  * refusal it carries. The provider's work runs inside `trackContextWork`, which keeps the job's mutex until the work has settled, also
  * after a deadline has answered.
- * A presentation that was already accepted is answered `session_admission_unavailable` (503) without a write.
+ * A presentation that was already accepted is answered with the answer its first request completed, after the buyer's access and, for a
+ * present answer, both Vet records are read again; without a completed answer, or when a read fails, it is answered
+ * `session_admission_unavailable` (503). It writes nothing and starts no provider step.
  * `closeAttempts(cause)` closes every attempt still running. `store`, `capacity`, `admissionTransaction` and `coordinator` are the host's one
  * instance of each: the tuple is kept inside the acceptance, so the construction registers its hook before the first admission, and throws a
  * TypeError for a missing port, an unsupported Listing, a capacity of another store or a provider pinned to another seller presenter.
@@ -495,12 +499,31 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
       method, path, rawBody, now: now(), requireDelegation: wire.requireDelegation, ready: ready(), requestJournal: wire.journal, retained });
   }
 
-  // The nonce attempt: this caller owns the challenge until it accepts or fails it. An accepted presentation sent again is not served yet.
+  // The nonce attempt: this caller owns the challenge until it accepts or fails it. Returns null for an accepted presentation sent again,
+  // which owns nothing and is answered by `replayCompletedAnswer`.
   function attemptChallenge(request, body) {
     const input = challengeAttemptInput(request, body), result = ledger.attempt(input);
     if (result.kind === 'refused') throw new SellerTransportError(result.code, result.status, { cause: result.cause });
-    if (result.kind === 'continuation') throw new SellerTransportError('session_admission_unavailable', 503);
+    if (result.kind === 'continuation') return null;
     return { owner: result.owner, nonce: input.nonce };
+  }
+
+  // An accepted presentation sent again gets the answer its first request completed, so a buyer that lost that answer can go on. Nothing is
+  // written and no provider step runs: without a completed answer for this request the answer is `session_admission_unavailable` (503). The buyer's
+  // access is read again, and a present answer is sent only while both Vet records still read back as present.
+  async function replayCompletedAnswer(request, body) {
+    const view = inspectWireOperation(wire.journal, request);
+    if (view.state !== 'completed' || view.binding !== wireOperationBinding(request)) throw new SellerTransportError('session_admission_unavailable', 503);
+    await checkPolicy(request);
+    const { status, text } = view.outcome;
+    if (status === 200 && savedDisposition(text) === 'present') {
+      const readback = new AbortController();
+      let answer;
+      try { answer = await boundedCall(() => provider.recoverBuyer(structuredClone(body), { writable: () => false, signal: readback.signal }), { timeoutMs: REPLAY_READBACK_TIMEOUT_MS }); }
+      catch (cause) { throw new SellerTransportError('session_admission_unavailable', 503, { cause }); } finally { readback.abort(); }
+      if (answer?.disposition !== 'present') throw new SellerTransportError('session_admission_unavailable', 503);
+    }
+    return { status, text };
   }
 
   // The owning validation in its order, then the intent, hold and acceptance. Returns once the challenge is accepted.
@@ -562,6 +585,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
       const admitted = await openRequest(input, (payload) => { request = payload; });
       const { body } = admitted;
       const challenge = attemptChallenge(request, body);
+      if (challenge === null) return { ...await replayCompletedAnswer(request, body), request };
       try { await admitFirstContact(request, admitted, challenge); } catch (error) {
         const { code, status } = refusalOf(error);
         // A challenge that cannot be failed here is closed by the startup pass.

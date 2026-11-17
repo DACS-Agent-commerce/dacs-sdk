@@ -37,10 +37,10 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const { state, calls, agent, buyer, seller, other } = w;
   const now = () => state.time;
   state.mono = 0;
-  const counts = { validations: 0, holds: [], releases: [], resolves: 0, vetWrites: 0, agreementSignatures: 0, reserveAcquisitions: 0 };
-  // What a test can bend: the presentation admission, the policy hold, the provider's steps and answer, the reservation (`recover` answers a recovery
+  const counts = { validations: 0, holds: [], releases: [], resolves: 0, readbacks: 0, vetWrites: 0, agreementSignatures: 0, reserveAcquisitions: 0 };
+  // What a test can bend: the presentation admission, the policy hold, the provider's steps, answer and Vet readback, the reservation (`recover` answers a recovery
   // effect the journal never issued), the wire completion (`nullEndFails`, `cutAfterPublish`), the acceptance (`failAcceptance`) and the kind of effect evidence compensation reads (`evidenceKind`).
-  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false, evidenceKind: 'no-intent' };
+  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, readback: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, failAcceptance: false, evidenceKind: 'no-intent' };
   const fakeEffects = new Set(), completions = [];
   // A presentation's profile admission: the agent's own, here a counting stand-in that grants unless a test says otherwise.
   agent.admitSessionPresentation = async ({ jobId, bundle, nonce }) => {
@@ -95,7 +95,13 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     }
     return behaviour.answer ? behaviour.answer(input) : presentAnswer(input);
   };
-  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer: async () => null, resumableBuyer: async () => null,
+  // The read-only readback of the Vet records: it answers the present answer unless `behaviour.readback` says otherwise, and never writes.
+  const recoverBuyer = async (input, options) => {
+    counts.readbacks++;
+    if (options.writable() !== false) throw new Error('TEST a readback must not be allowed to write');
+    return behaviour.readback ? behaviour.readback(input) : presentAnswer(input);
+  };
+  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer, resumableBuyer: async () => null,
     bindRetainedScope: () => ({ sellerBundlePresentedBy: sellerClaim }) });
   const provider = demDeliveryContextHost(capability);
 

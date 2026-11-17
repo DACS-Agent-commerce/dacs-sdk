@@ -506,17 +506,51 @@ test('identical attempts in parallel, or a retry while the first validates, answ
   assert.deepEqual([w.counts.validations, w.counts.holds.length, w.internals.admissionCounts().starts], [1, 1, 1]);
 });
 
-test('an accepted presentation sent again is answered session_admission_unavailable 503 with no write and no reservation', async (t) => {
+test('an accepted presentation sent again after its answer completed gets that same answer, read back from the Vet records, with no write and no new provider work', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  const first = await w.post(request);
+  assert.equal(first.status, 200);
+  await w.settleJob();
+  const before = { holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, resolves: w.counts.resolves, reserves: w.reserved.calls };
+  const sql = watchSql(t);
+  const again = await w.post(request);
+  assert.deepEqual([again.status, again.text], [first.status, first.text]);
+  await request.verify(again);
+  assert.equal(sql.writes(), 0, 'no write statement');
+  assert.deepEqual({ holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, resolves: w.counts.resolves, reserves: w.reserved.calls }, before);
+  assert.equal(w.counts.readbacks, 1, 'the saved present answer was read back once');
+});
+
+test('a completed context answer is not sent again when the Vet records no longer read back as present', async (t) => {
   const w = await contextWireWorld(t), request = await w.startContext();
   assert.equal((await w.post(request)).status, 200);
   await w.settleJob();
-  const before = { holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, reserves: w.reserved.calls };
-  const sql = watchSql(t);
+  for (const readback of [async () => null, async () => ({ disposition: 'absent', reason: 'TEST the record is gone' }), async () => { throw new Error('TEST the readback failed'); }]) {
+    w.behaviour.readback = readback;
+    assert.deepEqual(summary(await w.post(request)), [503, 'session_admission_unavailable']);
+  }
+});
+
+test('a completed context answer is not sent again after the buyer\'s access has closed', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  assert.equal((await w.post(request)).status, 200);
+  await w.settleJob();
+  w.policy.access = refusal('buyer_access_closed', 409);
+  assert.deepEqual(summary(await w.post(request)), [409, 'buyer_access_closed']);
+  assert.equal(w.counts.readbacks, 0, 'nothing is read back for a buyer that is refused');
+});
+
+test('an accepted presentation sent again while its first request is still running is answered session_admission_unavailable 503 and starts no second provider work', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext(), entered = deferred(), release = deferred();
+  w.behaviour.provider = async () => { entered.resolve(); await release.promise; };
+  const first = w.post(request);
+  await entered.promise;
   const again = await w.post(request);
   assert.deepEqual(summary(again), [503, 'session_admission_unavailable']);
-  await request.verify(again);
-  assert.equal(sql.writes(), 0, 'no write statement');
-  assert.deepEqual({ holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, reserves: w.reserved.calls }, before);
+  release.resolve();
+  assert.equal((await first).status, 200);
+  await w.settleJob();
+  assert.deepEqual([w.counts.resolves, w.counts.readbacks], [1, 0]);
 });
 
 test('a policy refusal while taking the hold aborts the intent and answers seller_budget_refused 409 with no journal file', async (t) => {
