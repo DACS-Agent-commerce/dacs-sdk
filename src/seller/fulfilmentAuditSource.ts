@@ -457,7 +457,7 @@ export function sellerFulfilmentVetBindingsOf(
     const key = canonicalize(party.vetRecordRef);
     const existing = bindings.get(key) ??
       { primaryClaim: party.primaryClaim, bundleHash: party.bundleHash, roles: new Set<string>() };
-    if (!sameCanonicalClaimIdentity(existing.primaryClaim, party.primaryClaim) || existing.bundleHash !== party.bundleHash) return null;
+    if (existing.primaryClaim !== party.primaryClaim || existing.bundleHash !== party.bundleHash) return null;
     existing.roles.add(party.role);
     bindings.set(key, existing);
   }
@@ -673,7 +673,7 @@ export function sellerFulfilmentVetRequirementsViolation(
       }
       const key = canonicalize(party.vetRecordRef);
       const existing = bindings.get(key);
-      if (existing && (!sameCanonicalClaimIdentity(existing.primaryClaim, party.primaryClaim) ||
+      if (existing && (existing.primaryClaim !== party.primaryClaim ||
           typeof existing.bundleHash !== "string" || !HASH_RE.test(existing.bundleHash) ||
           existing.bundleHash !== party.bundleHash)) {
         return "one Vet record cannot represent different authenticated party identities";

@@ -1598,7 +1598,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
   }
 
   if (record.jobId !== expectedSnapshot.jobId) return invalid("job-mismatch");
-  if (!sameCanonicalClaimIdentity(record.evaluatedParty, expectedSnapshot.evaluatedParty)) {
+  if (record.evaluatedParty !== expectedSnapshot.evaluatedParty) {
     return invalid("evaluated-party-mismatch");
   }
   if (record.bundleHash !== expectedSnapshot.bundleHash) {

@@ -538,25 +538,25 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     })).toBeNull();
   });
 
-  test("accepts one shared record whose buyer and seller claims differ only by a parameter", () => {
+  test("refuses one shared record whose buyer and seller claims differ only by a parameter", () => {
     const buyerParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim), bundleHash: "b".repeat(64) };
     const sellerParty = { ...buyerParty, primaryClaim: `${buyerClaim}?alias=work` };
     expect(sellerFulfilmentVetRequirementsViolation([invocation(buyerParty, buyerClaim)], {
       jobId, buyer: buyerParty, seller: sellerParty, buyerRequirement,
-    })).toBeNull();
+    })).not.toBeNull();
   });
 
-  test("keys a roster's shared Vet record by identity when claims differ only by a parameter", () => {
+  test("does not share a roster's Vet record between claims that differ only by a parameter", () => {
     const vetRecordRef = recordRef(buyerClaim, sellerClaim);
     const bindings = sellerFulfilmentVetBindingsOf([
       { role: "buyer", primaryClaim: buyerClaim, bundleHash: "b".repeat(64), vetRecordRef },
       { role: "seller", primaryClaim: `${buyerClaim}?alias=work`, bundleHash: "b".repeat(64), vetRecordRef },
     ] as never);
-    expect(bindings?.get(canonicalize(vetRecordRef))?.roles).toEqual(new Set(["buyer", "seller"]));
+    expect(bindings).toBeNull();
   });
 
   describe("TP-1 G3 orchestrator Vet mode", () => {
-    const orchestrator =SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
+    const orchestrator = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
     const counterparty = SELLER_FULFILMENT_VET_MODES.counterparty;
     const sellerSigned = { primaryClaim: sellerClaim, vetRecordRef: recordRef(sellerClaim, sellerClaim) };
     const sellerSignedPair: [SellerFulfilmentVetRequirementInvocation, SellerFulfilmentVetRequirementInvocation] =

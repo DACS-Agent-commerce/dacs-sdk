@@ -2196,14 +2196,15 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });
 
-  test("accepts a Vet record whose evaluated party carries an optional parameter", async () => {
+  test("rejects a Vet record whose evaluated party differs from the session party by a parameter", async () => {
     const f = fixture("pure", "storage", false, false, false, {
       buyerVetPartyWithParameter: true,
     });
 
-    await expect(
-      finalizeCompletedSellerBundleCore(f.input, f.provider),
-    ).resolves.toBeDefined();
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /invalid Vet record\/requirement invocation/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });
 
   test("locally rejects a resumed completed bundle missing the seller signature", async () => {

@@ -120,13 +120,14 @@ test('a correctly signed Vet record does not require the optional reference sign
   assert.notEqual(await vetRecordProblem({ ...f.record, signature: { ...f.record.signature, value: Buffer.alloc(64).toString('base64url') } }, f), null);
 });
 
-test('a Vet record evaluating the party by a parameter variant of its claim is admitted', async () => {
+test('a Vet record evaluating a parameter variant of the party claim is refused unless the party is that exact string', async () => {
   const f = await vetFixture();
   const { signature: _signature, ...unsigned } = f.record;
   const record = await signComponentArtifact({ ...unsigned, evaluatedParty: `${buyer.claim}?alias=work` },
     ARTIFACT_SEPARATORS.CompositeVerificationRecord, { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes });
-  assert.equal(await vetRecordProblem(record, { ...f, record, ref: { ...f.ref, contentHash: contentHash(record) } }), null);
-  assert.notEqual(await vetRecordProblem(record, { ...f, record, party: seller.claim, ref: { ...f.ref, contentHash: contentHash(record) } }), null);
+  const ref = { ...f.ref, contentHash: contentHash(record) };
+  assert.notEqual(await vetRecordProblem(record, { ...f, record, ref }), null);
+  assert.equal(await vetRecordProblem(record, { ...f, record, ref, party: `${buyer.claim}?alias=work` }), null);
 });
 
 test('Vet receipt policy checks the exact record reference, observation and finality state', async () => {

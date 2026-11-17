@@ -571,7 +571,7 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code });
   });
 
-  test("accepts an evaluated party written with an optional parameter", async () => {
+  test("rejects an evaluated party that differs from the expected party by a parameter", async () => {
     const f = await fixture();
     const keyParty = `key:${"ab".repeat(32)}`;
     const record = await withRecord(f.record, {
@@ -583,7 +583,7 @@ describe("strict DACS-2 composite verification closure", () => {
         { ...f.expected, evaluatedParty: keyParty },
         f.deps,
       ),
-    ).resolves.toMatchObject({ status: "valid" });
+    ).resolves.toMatchObject({ status: "invalid", code: "evaluated-party-mismatch" });
   });
 
   test("accepts a record signer written as a parameter variant of the verifier", async () => {

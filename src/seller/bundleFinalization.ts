@@ -47,7 +47,6 @@ import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { ed25519Sign, signedBytes } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
-import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   assertNoRawSessionSeed,
   attestationBundleHash,
@@ -2076,8 +2075,8 @@ async function auditResolvedDependencyGraph(
       !invocation ||
       !isCompositeVerificationRecord(record) ||
       record.jobId !== session.jobId ||
-      !sameCanonicalClaimIdentity(record.evaluatedParty, expected[0]!.primaryClaim) ||
-      !sameCanonicalClaimIdentity(invocation.evaluatedParty, record.evaluatedParty) ||
+      record.evaluatedParty !== expected[0]!.primaryClaim ||
+      invocation.evaluatedParty !== record.evaluatedParty ||
       record.bundleHash !== expected[0]!.bundleHash ||
       invocation.verifier !== expectedVerifier ||
       (listingOwned && !exact(invocation.requirement, listing.buyerRequirement))
