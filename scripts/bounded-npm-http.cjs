@@ -23,20 +23,33 @@ function responseBudget(path) {
 // and the characters of numbers and of true, false and null.
 const JSON_BYTES_OUTSIDE_STRINGS = new Set(Buffer.from('\t\n\r []{},:"+-.0123456789truefalsnE'));
 
+// Bytes npm's streaming parser takes without looking at them after a UTF-8 lead
+// byte inside a string, quote and backslash included. Other high bytes count as
+// ordinary string bytes.
+function continuationBytes(lead) {
+  if (lead >= 0xf0 && lead <= 0xf4) return 3;
+  if (lead >= 0xe0 && lead < 0xf0) return 2;
+  if (lead >= 0xc2 && lead < 0xe0) return 1;
+  return 0;
+}
+
 // Count tokens, not parsed objects: npm can consume multiple roots and duplicate
 // keys. Syntax remains npm's responsibility, except that counting stops at the
 // first byte no JSON text can hold outside a string: npm refuses the body there,
-// and a binary download is not JSON. State survives every chunk boundary.
+// and a binary download is not JSON. Strings end where npm's parser ends them.
+// State survives every chunk boundary.
 function jsonScanner() {
   const containers = [];
-  let entries = 0, string = false, escaped = false, notJson = false;
+  let entries = 0, string = false, escaped = false, notJson = false, continuation = 0;
   return bytes => {
     if (notJson) return;
     for (const byte of bytes) {
       if (string) {
-        if (escaped) escaped = false;
+        if (continuation > 0) continuation--;
+        else if (escaped) escaped = false;
         else if (byte === 92) escaped = true;
         else if (byte === 34) string = false;
+        else continuation = continuationBytes(byte);
         continue;
       }
       if (!JSON_BYTES_OUTSIDE_STRINGS.has(byte)) { notJson = true; return; }
