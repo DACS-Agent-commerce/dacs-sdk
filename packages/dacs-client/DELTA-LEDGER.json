@@ -10511,6 +10511,40 @@
       ]
     },
     {
+      "delta": "WF",
+      "sha": "0f3d432cc8159e5f9daa24df85619930d30da89a",
+      "subject": "fix(client): enforce effect admission order and signer deadlines",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "796433f8bc1bca0d06a152305289e52f05f03812",
+          "after": "c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "83bf647eea4cbb4cf4614e97b07b52203356393c",
+          "after": "91cae7c7150797d80f48f80d9d8b5b65b432ffa8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e4a36cde219c0f9b8d899e33e34155a547e49789",
+      "subject": "fix(client): give the signer its own deadline and call the stop check without arguments",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355",
+          "after": "a869f29a4462d0e6e79efa2d4c25ecd5bcd686c0"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "91cae7c7150797d80f48f80d9d8b5b65b432ffa8",
+          "after": "389314001f9655de05dc5c0871199836a2de7183"
+        }
+      ]
+    },
+    {
       "delta": "D39",
       "subject": "delta(client): D39 remove the unused guarded SQLite module",
       "files": [

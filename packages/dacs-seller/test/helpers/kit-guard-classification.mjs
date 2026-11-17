@@ -35,7 +35,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-admission-transaction.mjs': { effect: { createContextAdmissionTransaction: ['begin', 'runningCheck', 'reserveContext', 'complete', 'compensate'] }, pure: ['admissionTransactionInternals', 'assertAdmissionJobLease', 'evidenceProof', 'storedCause'] },
   'src/dacs/seller-challenge-ledger.mjs': { effect: { createSellerChallengeLedger: ['issue', 'issueForOperator'] }, pure: ['deepFreeze'] },
   'src/dacs/seller-completion-records.mjs': { effect: {  }, pure: ['createCompletionRecords'] },
-  'src/dacs/seller-context-route.mjs': { effect: {  }, pure: ['createContextAttempt', 'createSellerContextClient', 'createSellerContextRecords', 'createSellerContextRoute', 'sellerContextReason', 'sellerContextRequestUnknown'] },
+  'src/dacs/seller-context-route.mjs': { effect: {  }, pure: ['createContextAttempt', 'createSellerContextClient', 'createSellerContextRecords', 'createSellerContextRoute', 'createWireSellerContextRoute', 'sellerContextReason', 'sellerContextRequestUnknown'] },
   'src/dacs/seller-durable-state.mjs': { effect: { createSellerDurableState: ['signOnce', 'anchor'] }, pure: ['SellerRecoveryError'] },
   'src/dacs/seller-effect-routes.mjs': { effect: {  }, pure: ['createSellerEffectRoutes'] },
   'src/dacs/seller-http.mjs': { effect: { createSellerHttpHandler: ['createSellerHttpHandler'], createSellerAgentClient: ['createSellerAgentClient'] }, pure: ['SellerRefusedError', 'SellerTlsUnusableError', 'SellerUnavailableError', 'createCompletedOutcomeReader', 'createOrdinaryCompletionPort', 'endWireAttempt', 'loopbackSocket', 'sellerFailureAttempt', 'sellerFailureCause'] },
