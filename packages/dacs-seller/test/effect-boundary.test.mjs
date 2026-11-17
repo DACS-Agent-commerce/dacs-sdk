@@ -422,6 +422,13 @@ test('EB3 admits a debit equal to 50 DEM and refuses 50 DEM plus 1 OS before any
   assert.equal(w.counts.signer, 2, 'only the in-ceiling paid write and the unpaid write signed');
 });
 
+test('the write-fee-cap refusal names the configured ceiling in OS', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary } = w.build({ feeCeilingOs: '5000' });
+  await assert.rejects(boundary.pass(w.op({ debitOs: '5001' }), w.sign(), w.send()), (error) => error.code === 'write-fee-cap' && /above the 5000 OS ceiling per write/.test(error.message) && !/50 DEM/.test(error.message));
+  assert.equal(w.counts.signer, 0);
+});
+
 test('a lane stamped with another pin version is readback-only: pin_version_retired', async (t) => {
   const w = await ebWorld(t);
   const first = w.build();

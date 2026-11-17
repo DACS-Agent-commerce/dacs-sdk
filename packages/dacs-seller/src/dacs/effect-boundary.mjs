@@ -180,7 +180,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     if (op.paidWrite) {
       if (ceiling === null) throw refuse('fee_ceiling_required', 'no per-write fee ceiling was supplied');
       const debit = parseOs(op.debitOs);
-      if (debit === null || debit > ceiling) throw refuse('write-fee-cap', 'above the 50 DEM ceiling per write');
+      if (debit === null || debit > ceiling) throw refuse('write-fee-cap', `above the ${ceiling} OS ceiling per write`);
     }
     return checkApproval(op, expectedRevision);
   }
