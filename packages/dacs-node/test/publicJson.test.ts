@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  DacsPublicJsonError,
   isDacsPublicAddressV1,
   readDacsPublicJsonV1,
 } from "../src/publicJson.js";
@@ -114,5 +115,59 @@ describe("public JSON reader", () => {
     await expect(readDacsPublicJsonV1("https://seller.example/a", {
       dependencies: dependencies({ status: 200, contentType: "application/json", bytes: new Uint8Array([0xff]) }),
     })).rejects.toMatchObject({ reasonCode: "public-json-body-invalid" });
+  });
+
+  describe("request failures", () => {
+    const failWith = (error: unknown) => readDacsPublicJsonV1("https://seller.example/a", {
+      dependencies: {
+        resolveHost: async () => ["8.8.8.8"],
+        request: async () => { throw error; },
+      },
+    });
+    const nodeError = (code: string) => Object.assign(new Error(code), { code });
+
+    it("keeps the original request error as the cause of the failure", async () => {
+      const original = new Error("socket closed");
+      const failure = await failWith(original).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(DacsPublicJsonError);
+      expect(failure).toMatchObject({ reasonCode: "public-json-request-unavailable" });
+      expect((failure as DacsPublicJsonError).cause).toBe(original);
+    });
+
+    it.each([
+      "CERT_HAS_EXPIRED",
+      "DEPTH_ZERO_SELF_SIGNED_CERT",
+      "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+      "ERR_TLS_CERT_ALTNAME_INVALID",
+    ])("reports a TLS failure as public-json-tls-failed (%s)", async (code) => {
+      const original = nodeError(code);
+      const failure = await failWith(original).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ reasonCode: "public-json-tls-failed" });
+      expect((failure as DacsPublicJsonError).cause).toBe(original);
+    });
+
+    it.each([
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "EHOSTUNREACH",
+      "ENETUNREACH",
+    ])("reports a connection failure as public-json-connection-failed (%s)", async (code) => {
+      const original = nodeError(code);
+      const failure = await failWith(original).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ reasonCode: "public-json-connection-failed" });
+      expect((failure as DacsPublicJsonError).cause).toBe(original);
+    });
+
+    it("keeps public-json-request-unavailable for an error of unknown class", async () => {
+      await expect(failWith(nodeError("EACCES")))
+        .rejects.toMatchObject({ reasonCode: "public-json-request-unavailable" });
+      await expect(failWith("not an error object"))
+        .rejects.toMatchObject({ reasonCode: "public-json-request-unavailable" });
+    });
+
+    it("passes a DacsPublicJsonError from the request through unchanged", async () => {
+      const original = new DacsPublicJsonError("public-json-response-too-large");
+      await expect(failWith(original)).rejects.toBe(original);
+    });
   });
 });
