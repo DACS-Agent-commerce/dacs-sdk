@@ -3544,7 +3544,8 @@ describe("acceptance failure class", () => {
     writeFileSync(join(stage, "registry.log"), Buffer.from([0x63, 0x75, 0x72, 0x6c, 0xff]));
     expect(failureSummaryCli(stage, "registry-auth", "7").status).toBe(0);
     expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: false,
-      failureClass: "functional", exitCode: 7, failureEvidence: ["evidence classification failed: evidence is not valid UTF-8"] });
+      failureClass: "functional", exitCode: 7,
+      failureEvidence: [`evidence classification failed: evidence is not valid UTF-8: ${join(stage, "registry.log")}`] });
   });
 
   // The audit stage is the --audit-policy command alone. Run it on `audit` and
