@@ -33,7 +33,7 @@ describe("complete live doctor gate", () => {
     let clock = 1_000;
     const report = await runDacsLiveDoctorV1({
       ...BASE,
-      now: () => clock,
+      monotonicNow: () => clock,
       probes: {
         "local.node-version": () => {
           clock += elapsed;
@@ -50,7 +50,7 @@ describe("complete live doctor gate", () => {
       let clock = 1_000;
       return runDacsLiveDoctorV1({
         ...BASE,
-        now: () => clock,
+        monotonicNow: () => clock,
         probes: {
           "local.node-version": () => {
             clock += elapsed;
