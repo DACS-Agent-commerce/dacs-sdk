@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "D77",
+  "subject": "delta(client): D77 sign the fixture commits in OpenPGP format whatever the global signing format",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/scripts/delta-batch-git.test.mjs",
+      "before": "6b8a3f1df542ae318192787310bacd75bc349a1f",
+      "after": "3b5b2ad7cae272cef9cb18cac813e4c8f8e9178d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/DELTA-MAP.md",
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/D77-4da76c037377.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/delta-batch-git.test.mjs"
+  ]
+}
