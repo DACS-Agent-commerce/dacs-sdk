@@ -1709,6 +1709,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF free the signer when the evidence CREATE it holds has executed | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` | 1917ff8c1b6e594bb6b181fc3b78f9f42f257797 |
 | | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` | f3a42056739f497fd805935c801cb490cadddb82 |
+| D77 | delta(client): D77 read the provenance history with a few Git runs instead of one per commit | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/scripts/delta-batch-git.test.mjs:1` | 399653bd946e426742e42ef0cf46fceca640c49c |
+| D77 | delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/scripts/delta-batch-git.test.mjs:1` | 6b8a3f1df542ae318192787310bacd75bc349a1f |
 
 ## Complete commit and file inventory
 
@@ -5165,6 +5169,25 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/records/D77-5963710ebcba.json:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/records/D77-6137803ee945.json:1` |
+| delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/scripts/delta-assemble.test.mjs:1` |
+| delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/scripts/delta-batch-git.test.mjs:1` |
+| delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/records/D77-de0f55395638.json:1` |
+| delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/scripts/delta-assemble.test.mjs:1` |
+| delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/scripts/delta-batch-git.test.mjs:1` |
+| delta(client): D77 keep the batched Git reads exact when Git prints signatures or a path ends in a carriage return | `packages/dacs-client/scripts/delta-map.mjs:1` |
 
 ## Original moved files
 
