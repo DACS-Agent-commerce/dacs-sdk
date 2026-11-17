@@ -125,11 +125,6 @@
       "count": 3
     }
   },
-  "packages/dacs-client/test/helpers/commitment-node-junk.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "packages/dacs-client/test/helpers/devnet-live-composition-app.mjs": {
     "no-unused-vars": {
       "count": 1
