@@ -182,11 +182,13 @@ accounting before the wire journal publishes their attempt. A final answer
 completes the operation and returns its route slot; a later request is answered
 from it, after the existing source checks. A `waiting` proposal that kept no work
 ends the attempt without an outcome, and the next request recovers at once, the
-agent reconciling first. Retained payment work keeps its attempt open instead: a
-`held` payment, or evidence whose delivery is not done, is not ended and not
-stored. A payment that kept nothing (`indeterminate` before the evidence
-checkpoint, or `rejected`) still ends without an outcome. An uncertain or open
-attempt stays open: a request inside its 300 s lease gets `seller_effect_pending`,
+agent reconciling first. A payment answer that says the payment is in progress,
+a `held` payment or evidence whose delivery is not done, ends its attempt the
+same way and is not stored: waiting for a transfer is not a crash, so it spends
+none of the 16 attempts below. A payment that kept nothing (`indeterminate`
+before the evidence checkpoint, or `rejected`) also ends without an outcome. An
+uncertain or open attempt stays open, as does any other answer or refusal while
+payment work is unfinished: a request inside its 300 s lease gets `seller_effect_pending`,
 and the first after it recovers, spending one of 16 attempts at each lapse; after
 16 lapsed attempts the operation answers `seller_effect_unresolved`. A final
 payment answer is stored only after its sources are read again, and returns the
@@ -436,8 +438,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, keeps the attempt open: the first request after its 300 s lease
-  recovers and runs the agent's retained work again (reading back first), and a
+  done yet, ends the attempt with no outcome: the next request recovers at once
+  and runs the agent's retained work again (reading back first), and a
   different claim for the job is still
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
