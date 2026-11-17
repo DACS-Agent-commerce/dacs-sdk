@@ -153,6 +153,60 @@ test('the operator custody wallet keeps the error its authorize check threw as t
  }
 });
 
+// A wallet like the session's: whatever is assigned to `crypto` is wrapped, so the value read back is never the value assigned.
+function walletWithWrappingCrypto(){
+ const counts={keyLayers:0,keySignatures:0};
+ const wrap=(inner)=>({sign:(...args)=>{counts.keyLayers++;return inner.sign(...args);}});
+ const Demos=class{
+  #crypto=null;
+  constructor(){this.crypto={sign:async()=>{counts.keySignatures++;return 'signature';}};}
+  get crypto(){return this.#crypto;}
+  set crypto(inner){this.#crypto=inner&&wrap(inner);}
+  async sign(){return this.crypto.sign('ed25519','message');}
+ };
+ // The wrapper layers a key signature passes through.
+ const layersOnKeySignature=(demos)=>{counts.keyLayers=0;demos.crypto.sign('ed25519','message');return counts.keyLayers;};
+ return {Demos,counts,layersOnKeySignature};
+}
+
+test('guarded signing adds no wrapper layer to the wallet\'s crypto however many signatures it makes', async () => {
+ const {Demos,layersOnKeySignature}=walletWithWrappingCrypto();
+ const attempt=createOperatorApprovalAttempt(async()=>true);
+ let checks=0;
+ const demos=new (attempt.guardSigning(Demos))();
+ const perSignature=[],layers=[];
+ for (let signature=0;signature<3;signature++) {
+  checks=0;
+  assert.equal(await attempt.run(()=>demos.sign(),()=>{checks++;return true;}),'signature');
+  perSignature.push(checks);layers.push(layersOnKeySignature(demos));
+ }
+ assert.deepEqual(perSignature,[2,2,2],'each signature is checked at entry and once at the key');
+ assert.equal(layers[2],layers[0],'the third signature left the key as many layers deep as the first');
+});
+
+test('guarded signing guards a key the wallet receives after a lock', async () => {
+ const {Demos,counts}=walletWithWrappingCrypto();
+ const attempt=createOperatorApprovalAttempt(async()=>true);
+ const demos=new (attempt.guardSigning(Demos))();
+ assert.equal(await attempt.run(()=>demos.sign(),()=>true),'signature');
+ demos.crypto=null;
+ demos.crypto={sign:async()=>{counts.keySignatures++;return 'second key';}};
+ counts.keySignatures=0;
+ let checks=0;
+ await assert.rejects(attempt.run(()=>demos.sign(),()=>checks++===0?true:'TEST withdrawn at the key'),error=>error.code==='not-authorized');
+ assert.equal(counts.keySignatures,0,'the second key signed nothing');
+});
+
+test('a key signature made outside a guarded sign() is not checked against the write', async () => {
+ const {Demos}=walletWithWrappingCrypto();
+ const attempt=createOperatorApprovalAttempt(async()=>true);
+ const demos=new (attempt.guardSigning(Demos))();
+ assert.equal(await attempt.run(()=>demos.sign(),()=>true),'signature');
+ let checks=0;
+ await attempt.run(async()=>{await demos.crypto.sign('ed25519','rpc authentication');},()=>{checks++;return 'TEST withdrawn';});
+ assert.equal(checks,0,'only a signature inside sign() runs the write\'s check');
+});
+
 test('the guarded SDK class signs as before outside a guarded write', async () => {
  const attempt=createOperatorApprovalAttempt(async()=>true);
  const Demos=attempt.guardSigning(class{async sign(tx){return {...tx,signed:true};}});
