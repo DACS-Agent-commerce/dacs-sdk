@@ -10,7 +10,8 @@ import { ancestorsIn, blobIds, commitsIn, independentIn, readHistory } from './d
 // on a history with merges, a rename, a deleted path and a path with a newline.
 const repo = mkdtempSync(join(tmpdir(), 'delta-batch-git-'));
 after(() => rmSync(repo, { recursive: true, force: true }));
-const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { encoding: 'utf8', stdio: 'pipe' }).trimEnd();
+const gitIn = (dir, ...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { encoding: 'utf8', stdio: 'pipe' }).trimEnd();
+const git = (...args) => gitIn(repo, ...args);
 const lines = text => text.split('\n').filter(Boolean);
 const commit = (message, files = {}) => {
   for (const [path, text] of Object.entries(files)) {
@@ -75,6 +76,45 @@ test('blobIds returns what git rev-parse --verify returns for present, deleted, 
   const expected = new Map(specs.map(spec => { try { return [spec, git('rev-parse', '--verify', spec)]; } catch { return [spec, null]; } }));
   assert.deepEqual(blobIds(specs, repo), expected);
   assert.ok([...expected.values()].includes(null) && new Set(expected.values()).size > 10);
+});
+
+// A second, small history whose commits are signed by a stand-in signing program, with the repository's own
+// config set to print signatures in `git log`, and with files whose names end in a carriage return.
+const small = mkdtempSync(join(tmpdir(), 'delta-batch-git-small-'));
+after(() => rmSync(small, { recursive: true, force: true }));
+gitIn(small, 'init', '--quiet', '--initial-branch=main');
+const signer = join(small, '.git', 'stand-in-signer');
+writeFileSync(signer, [
+  '#!/bin/sh',
+  'case " $* " in *" --verify "*) echo "[GNUPG:] GOODSIG 0 stand-in"; echo "gpg: Good signature from stand-in" >&2; exit 0;; esac',
+  'cat > /dev/null',
+  'echo "[GNUPG:] SIG_CREATED D 1 8 00 0 stand-in" >&2',
+  'printf -- "-----BEGIN PGP SIGNATURE-----\\n\\nc3RhbmQtaW4=\\n-----END PGP SIGNATURE-----\\n"',
+  '',
+].join('\n'), { mode: 0o755 });
+gitIn(small, 'config', 'gpg.program', signer);
+gitIn(small, 'config', 'log.showSignature', 'true');
+writeFileSync(join(small, 'a'), 'a1\n'); writeFileSync(join(small, 'b\r'), 'b1\n');
+gitIn(small, 'add', '--all'); gitIn(small, 'commit', '--quiet', '-m', 'first');
+const smallBase = gitIn(small, 'rev-parse', 'HEAD');
+writeFileSync(join(small, 'a'), 'a2\n');
+gitIn(small, 'commit', '--quiet', '-a', '-S', '-m', 'second');
+writeFileSync(join(small, 'b\r'), 'b2\n');
+gitIn(small, 'commit', '--quiet', '-a', '-S', '-m', 'third');
+
+test('readHistory gives the per-commit answer when the Git config prints signatures in git log', () => {
+  const printed = gitIn(small, 'log', '--no-renames', '--name-only', '--format=%x00%H %P', `${smallBase}..HEAD`);
+  assert.match(printed, /Good signature/, 'with this config a plain git log prints signature lines');
+  const signed = readHistory(small, smallBase);
+  assert.deepEqual([...signed.keys()].sort(), lines(gitIn(small, 'rev-list', `${smallBase}..HEAD`)).sort());
+  for (const [sha, entry] of signed) assert.deepEqual(entry.files, lines(gitIn(small, 'diff', '--no-renames', '--name-only', `${sha}^`, sha)), sha);
+});
+
+test('blobIds returns what git rev-parse --verify returns for paths that end in a carriage return', () => {
+  const specs = ['HEAD:a', 'HEAD:a\r', 'HEAD:b', 'HEAD:b\r', `${smallBase}:b\r`, 'HEAD:a\r\n', 'HEAD:b\r\n'];
+  const expected = new Map(specs.map(spec => { try { return [spec, gitIn(small, 'rev-parse', '--verify', spec)]; } catch { return [spec, null]; } }));
+  assert.deepEqual(blobIds(specs, small), expected);
+  assert.deepEqual([...expected.values()].map(id => id === null), [false, true, true, false, false, true, true]);
 });
 
 test('commitsIn returns the commits git merge-base --is-ancestor accepts below the head', () => {

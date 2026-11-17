@@ -21,13 +21,14 @@ export const git = (...args) => gitIn(root, args);
 /**
  * Reads the commits of `base..HEAD` of `repo` with one `git log`. Returns a Map
  * from commit to {parents, files}: `files` is what `git diff --no-renames
- * --name-only <parent> <commit>` lists (empty for a merge), limited to `paths`
- * when given. Throws when Git fails.
+ * --name-only <parent> <commit>` lists (empty for a merge). With `paths`, only
+ * the commits that touch those paths are returned, each with just those paths;
+ * the others are left out. Throws when Git fails.
  */
 export function readHistory(repo = root, base = BASELINE, paths = []) {
   const history = new Map();
   let entry = null;
-  for (const line of gitIn(repo, ['log', '--no-renames', '--name-only', '--format=%x00%H %P', `${base}..HEAD`, ...(paths.length ? ['--full-history', '--', ...paths] : [])]).split('\n')) {
+  for (const line of gitIn(repo, ['log', '--no-show-signature', '--no-renames', '--name-only', '--format=%x00%H %P', `${base}..HEAD`, ...(paths.length ? ['--full-history', '--', ...paths] : [])]).split('\n')) {
     if (line.startsWith('\0')) { const [sha, ...parents] = line.slice(1).split(' '); entry = { parents: parents.filter(Boolean), files: [] }; history.set(sha, entry); }
     else if (line !== '') entry.files.push(line);
   }
@@ -56,14 +57,16 @@ export function independentIn(history, shas) {
 /**
  * Looks up `<commit>:<path>` specs with one `git cat-file --batch-check`.
  * Returns a Map from each spec to its object id, or null where Git has no such
- * object (where `git rev-parse --verify` fails). A spec with a newline cannot
- * ride the line protocol and is asked on its own.
+ * object (where `git rev-parse --verify` fails). A spec with a newline or a
+ * carriage return cannot ride the line protocol (which drops a trailing `\r`)
+ * and is asked on its own.
  */
 export function blobIds(specs, repo = root) {
-  const ids = new Map(), listed = [...new Set(specs)].filter(spec => !spec.includes('\n'));
+  const alone = spec => /[\r\n]/.test(spec);
+  const ids = new Map(), listed = [...new Set(specs)].filter(spec => !alone(spec));
   const answers = listed.length ? gitIn(repo, ['cat-file', '--batch-check=%(objectname)'], { input: `${listed.join('\n')}\n`, stdio: ['pipe', 'pipe', 'pipe'] }).split('\n') : [];
   listed.forEach((spec, at) => ids.set(spec, /^[0-9a-f]{40}$/.test(answers[at]) ? answers[at] : null));
-  for (const spec of specs) if (spec.includes('\n')) ids.set(spec, (() => { try { return gitIn(repo, ['rev-parse', '--verify', spec]); } catch { return null; } })());
+  for (const spec of specs) if (alone(spec)) ids.set(spec, (() => { try { return gitIn(repo, ['rev-parse', '--verify', spec]); } catch { return null; } })());
   return ids;
 }
 export const blob = bytes => createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
