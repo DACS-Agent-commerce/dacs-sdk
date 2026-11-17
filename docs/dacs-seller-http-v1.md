@@ -509,8 +509,9 @@ Listing pin, job, lane, Agreement hash, profile and request hash are the
 request's (and the delegation's, when there is one), that
 `time < expiresAt <= time + 60,000`, and then claims the proof in the ledger.
 A refused proof is never claimed, so a mismatched request does not use it up;
-a proof the ledger already holds is refused (`explicit_resume_used`), and a
-ledger that cannot record the claim refuses it (`explicit_resume_ledger_failed`).
+a proof the ledger already holds is refused (`explicit_resume_used`), a full
+in-memory ledger refuses it (`explicit_resume_ledger_full`), and a ledger that
+cannot record the claim for another reason refuses it (`explicit_resume_ledger_failed`).
 `signExplicitCreateResume` signs one owned copy of a payload for the buyer's own
 signer, under the signer's TP-1 binding and authority (checked before and after
 the signature, as `signWireEnvelope` does), with `expiresAt` after its clock and
@@ -1015,8 +1016,8 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `explicit_resume_mismatch` (409) | a resume proof whose buyer, seller, Listing pin, job, lane, Agreement hash, profile or request hash differs from the request carrying it |
 | `explicit_resume_expired` (408) | a resume proof whose `expiresAt` is not after the verifier's clock |
 | `explicit_resume_used` (409) | the ledger already holds this proof |
-| `explicit_resume_ledger_full` (503) | the in-memory ledger holds 4,096 live claims |
-| `explicit_resume_ledger_failed` (503) | the host's ledger threw or rejected while recording the claim; the ledger's error is the cause and the proof is refused |
+| `explicit_resume_ledger_full` (503) | the in-memory ledger holds 4,096 live claims; the verifier throws it unchanged |
+| `explicit_resume_ledger_failed` (503) | the host's ledger threw or rejected while recording the claim with an error that has no `explicit_resume_*` code; the ledger's error is the cause and the proof is refused |
 | `peer_signer_wrong` | a response signed by someone other than the expected seller, or a signer whose claim is not the answer's seller |
 
 The plugin capture does not contain the codes in the rows above from

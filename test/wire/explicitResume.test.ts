@@ -161,6 +161,15 @@ it("a ledger that cannot record refuses the proof with its cause and leaves it u
   expect(await wire.verifyExplicitCreateResume(signed, f.scope())).toEqual(f.payload);
 });
 
+it("a full in-memory ledger refuses one more verified proof as explicit_resume_ledger_full and leaves it unused", async () => {
+  const f = await fixture();
+  const signed = await signWith(f, f.payload);
+  const ledger = wire.createExplicitResumeLedger();
+  for (let i = 0; i < wire.MAX_EXPLICIT_RESUME_CLAIMS; i++) ledger.claim(`live-${i}`, NOW + 30_000, NOW);
+  await expect(wire.verifyExplicitCreateResume(signed, { ...f.scope(), ledger })).rejects.toMatchObject({ code: "explicit_resume_ledger_full", status: 503 });
+  expect(await wire.verifyExplicitCreateResume(signed, f.scope())).toEqual(f.payload);
+});
+
 it("a durable ledger rebuilt after a restart still refuses a proof the earlier process used", async () => {
   const f = await fixture();
   const signed = await signWith(f, f.payload);

@@ -17,7 +17,7 @@ import { assertPeerProfile, assertTp1Authority, assertTp1Binding, isTp1WireProfi
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from "./routes.js";
 import {
   admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, isUint, NONCE, ownedArtifact, ownedConfig,
-  ownedFields, sameCanonical, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
+  ownedFields, sameCanonical, verifyEd25519, WireError, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 /** Most unexpired proofs the in-memory ledger holds; past it a claim is refused rather than a live one forgotten. */
@@ -109,7 +109,9 @@ export interface ExplicitResumeLedger {
   /**
    * Marks `key` used until `expiresAt` by the verifier's clock `time`. Resolves
    * to false if it was already used; throws or rejects if it cannot record the
-   * claim, and the proof is then refused.
+   * claim, and the proof is then refused. An error with an `explicit_resume_*`
+   * code reaches the verifier's caller unchanged; any other error becomes
+   * `explicit_resume_ledger_failed`.
    */
   claim(key: string, expiresAt: number, time: number): boolean | Promise<boolean>;
 }
@@ -176,10 +178,20 @@ function assertMatchesRequest(p: ExplicitCreateResumePayload, request: WireReque
   }
 }
 
-/** Uses the proof up. A ledger that throws or rejects refuses the proof as `explicit_resume_ledger_failed` (503), with the ledger's error as the cause. */
+/**
+ * Uses the proof up. A ledger error that already carries an `explicit_resume_*`
+ * code, such as the in-memory ledger's `explicit_resume_ledger_full`, is thrown
+ * unchanged. Any other throw or rejection refuses the proof as
+ * `explicit_resume_ledger_failed` (503), with the ledger's error as the cause.
+ */
 async function claimProof(ledger: ExplicitResumeLedger, key: string, expiresAt: number, time: number): Promise<void> {
   let claimed: boolean;
-  try { claimed = await ledger.claim(key, expiresAt, time); } catch (cause) { return fail("explicit_resume_ledger_failed", 503, undefined, cause); }
+  try {
+    claimed = await ledger.claim(key, expiresAt, time);
+  } catch (cause) {
+    if (cause instanceof WireError && cause.code.startsWith("explicit_resume_")) throw cause;
+    return fail("explicit_resume_ledger_failed", 503, undefined, cause);
+  }
   if (claimed !== true) fail("explicit_resume_used", 409);
 }
 
@@ -193,7 +205,8 @@ async function claimProof(ledger: ExplicitResumeLedger, key: string, expiresAt: 
  * canonical, or with other than the proof's members or lifetime;
  * `explicit_resume_signature_invalid` (401); `explicit_resume_mismatch` (409)
  * for any difference from the request; `explicit_resume_expired` (408);
- * `explicit_resume_used` (409); `explicit_resume_ledger_failed` (503) when the
+ * `explicit_resume_used` (409); `explicit_resume_ledger_full` (503) when the
+ * in-memory ledger is full; `explicit_resume_ledger_failed` (503) when another
  * ledger cannot record the claim; and `wire_input_invalid` (500) for an incomplete scope.
  */
 export async function verifyExplicitCreateResume(header: unknown, scope: ExplicitResumeScope): Promise<ExplicitCreateResumePayload> {
