@@ -801,7 +801,7 @@ export {
   type SettleRequest,
   type SettleResult,
   type SettlementRecoveryAttempt,
-  // Legacy v1 session store API. Its public names and behaviour remain stable.
+  // Version 1 session store API: the in-memory store and its types. Its public names and behaviour remain stable.
   assertCheckpointPayloadShape,
   createInMemorySessionStore,
   SESSION_STORE_VERSION,
