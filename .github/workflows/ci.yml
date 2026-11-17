@@ -227,7 +227,7 @@ jobs:
           grep -q "Cannot find module 'viem/accounts'" "$smoke_root/live-without-peers.log"
           (cd "$smoke_root/app" && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller'), import('@kynesyslabs/dacs/commerce')]).then(([root, seller, commerce]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || root.SESSION_STORE_VERSION !== 1 || typeof commerce.createFixedPriceX402BuyerCoordinator !== 'function' || commerce.createFixedPriceX402BuyerCoordinator !== root.createFixedPriceX402BuyerCoordinator || typeof commerce.createBuyerPaymentEvidenceHandshake !== 'function') process.exit(1) })")
           node scripts/check-npm-advisories.mjs --prefix "$smoke_root/app" --scope all --omit dev --omit optional --threshold low
-          npm install --prefix "$smoke_root/app" --no-audit --save-dev --ignore-scripts @kynesyslabs/demosdk@^4.0.16 @x402/core@^2.15.0 @x402/evm@^2.15.0 @x402/fetch@^2.15.0 viem@^2.55.19
+          npm install --prefix "$smoke_root/app" --no-audit --save-dev --ignore-scripts @kynesyslabs/demosdk@^4.0.17 @x402/core@^2.15.0 @x402/evm@^2.15.0 @x402/fetch@^2.15.0 viem@^2.55.19
           (cd "$smoke_root/app" && node --input-type=module -e "if (!import.meta.resolve('@kynesyslabs/demosdk/websdk')) process.exit(1)")
           "$smoke_root/app/node_modules/.bin/tsc" -p "$smoke_root/app/tsconfig.live.json"
 
@@ -242,6 +242,9 @@ jobs:
           (cd "$client_smoke/app" && npm ls --json @kynesyslabs/dacs-node | node -e 'const installed = JSON.parse(require("fs").readFileSync(0, "utf8")).dependencies["@kynesyslabs/dacs-node"]; if (!/^file:.*kynesyslabs-dacs-node-.*\.tgz$/.test(installed?.resolved)) { console.error("dacs-node is not the candidate archive: " + installed?.resolved); process.exit(1); }')
           (cd "$client_smoke/app" && node --input-type=module -e "const c = await import('@kynesyslabs/dacs-client'); if (typeof c.createPurchaseService !== 'function' || typeof c.NotWiredError !== 'function' || c.canonicalize({ b: 1, a: 2 }) !== '{\"a\":2,\"b\":1}') process.exit(1)")
 
+      - name: Package smoke (every entry point imports with the lowest allowed demosdk)
+        run: node scripts/verify-packed-entry-imports.mjs
+
       # The packed buyer must refuse Node below the engines floor. The node 22 leg installs Node 20.19.0 and then
       # 22.13.0 for these checks only, and sets up its own Node again after them.
       - name: Use Node 20.19.0 for the buyer refusal check
@@ -249,6 +252,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20.19.0"
+
+      - name: Package smoke (every entry point imports with the lowest allowed demosdk on Node 20.19.0)
+        if: matrix.node-version == '22'
+        run: |
+          test "$(node --version)" = v20.19.0
+          node scripts/verify-packed-entry-imports.mjs
 
       - name: Package smoke (buyer purchase factories refuse Node 20 with runtime_unsupported)
         if: matrix.node-version == '22'
