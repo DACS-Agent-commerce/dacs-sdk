@@ -41,6 +41,22 @@ function addFile(namespace, parts, name) {
   node.file = true;
 }
 
+// Reads the header size field as tar does: octal text, or base-256 (a 0x80
+// marker byte, then the size big-endian). Any other high-bit byte, and a
+// base-256 size beyond the safe integer range, is refused here.
+function headerSize(block) {
+  const field = block.subarray(124, 136);
+  if (field[0] === 0x80) {
+    const size = field.subarray(1).reduce((total, byte) => total * 256 + byte, 0);
+    if (!Number.isSafeInteger(size)) throw new Error("packed tarball entry has a malformed size");
+    return size;
+  }
+  if (field.some(byte => byte > 0x7f)) throw new Error("packed tarball entry has a malformed size");
+  const rawSize = field.toString("ascii").replace(/\0.*$/s, "").trim();
+  if (!/^[0-7]*$/.test(rawSize)) throw new Error("packed tarball entry has a malformed size");
+  return Number.parseInt(rawSize || "0", 8);
+}
+
 // The trusted parser advances its own cursor. We feed fixed blocks solely to
 // observe its terminator event and refuse any later nonzero bytes.
 function validateFraming(tar, tarModule, limits) {
@@ -59,9 +75,7 @@ function validateFraming(tar, tarModule, limits) {
     filter: (name, entry) => {
       count();
       boundPath(name, limits);
-      const rawSize = block.toString("ascii", 124, 136).replace(/\0.*$/s, "").trim();
-      if (!/^[0-7]*$/.test(rawSize)) throw new Error("packed tarball entry has a malformed size");
-      const size = Number.parseInt(rawSize || "0", 8);
+      const size = headerSize(block);
       if (entry.type === "Directory" && size !== 0) throw new Error("packed tarball directory has a nonzero size");
       if (entry.type !== "Directory" && size !== entry.size) throw new Error("pax size differs from the entry header in the packed tarball");
       if (SKIPPED_TYPES.has(entry.type)) return false;

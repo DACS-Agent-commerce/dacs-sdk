@@ -10,6 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
+import { signerReservationKey } from './signer-reservation.mjs';
 import { createDemosChainReader, nonceFromNode, nodeProjectedNonce } from '../dacs/chain.mjs';
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
 import { observePayDemTransferCore } from '@kynesyslabs/dacs/seller';
@@ -22,6 +23,16 @@ export const DEVNET_NATIVE_PROFILE = 'devnet-native';
 // the run-reviewed Node2 RPC representation which the transport may unwrap.
 export const DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE = 'node2-result-400-error-require-reply-false-block-number-not-provided/v1';
 export const DEVNET_NODE2_BLOCK_LAYOUT = 'node2-number-id-plus-one-empty-extra/v1';
+// Reviewed hash of TP-1 block two. Its predecessor is the recorded block one;
+// this pin is never learned from a live read.
+export const TP1_REVIEWED_BLOCK_TWO_HASH = 'ee41ad17448a9723b1040b41a4d375ab9071f5a9bcdd363bc22dba150faf1bd5';
+const NODE2_CONTENT_FIELDS = ['ordered_transactions','encrypted_transactions_hashes','per_address_transactions','web2data','previousHash','timestamp','peerlist','l2ps_partecipating_nodes','l2ps_banned_nodes','native_tables_hashes'];
+function reviewedNode2Block(answer) {
+  const block = answer?.response, content = block?.content;
+  return rpcEnvelope(answer,200,'') && storageWriteIdentityMatches(block)
+    && content !== null && typeof content === 'object' && !Array.isArray(content)
+    && Object.keys(content).length === NODE2_CONTENT_FIELDS.length && NODE2_CONTENT_FIELDS.every(key=>Object.hasOwn(content,key)) ? block : null;
+}
 const capabilities = new WeakSet();
 const agreementCapabilities = new WeakSet();
 const settlementCapabilities = new WeakSet();
@@ -115,6 +126,9 @@ export function registerHeldTransportFacade(facade, inner) {
   set.add(facade);
 }
 
+/** Returns the journal key of the native write lane for `address` on the pinned network and chain. */
+export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `devnet/native-wallet/${JSON.stringify([network, chainIdentity, address])}`;
+
 // transportOwner owns the ACTUAL endpoint/connection. acquireConnectionFence()
 // returns { context, release() }, holding that connection until release; its
 // { address } argument names the wallet the fence is for, if any. The
@@ -133,7 +147,7 @@ export function createDevnetDeliveryTransport(options) { return constructTranspo
 export function createDevnetDemoTransport(options) { return constructTransport(options,true,true,true,true); }
 // The identity block reader behind every binder: the transport's, in normal and strict recovery
 // modes, and the observer's. Each dependency is a parameter and strictEnvelope has no default.
-function sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post, now }) {
+function sourceBlockReader({ chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post, now }) {
   if (typeof strictEnvelope !== 'boolean') throw new TypeError('the identity reader requires an explicit strictEnvelope');
   return {
     getContext: context,
@@ -156,12 +170,13 @@ function sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, r
       const observedFourField = rpcEnvelope(answer,400,'Block number not provided') && answer.response === 'error';
       const reviewedShape = blockZeroErrorEnvelope === null ? legacyTwoField
         : blockZeroErrorEnvelope === DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE && observedFourField;
+      if (height === 0 && blockZeroErrorEnvelope !== null && (answer === 'error' || answer?.response === 'error') && !reviewedShape) fail('malformed_observation','the reviewed Node2 block-zero error envelope differs');
       const node2LiteralBlockZeroError = height === 0 && fallback !== null && reviewedShape;
       if(strictEnvelope && !rpcEnvelope(answer,200,'') && !(node2LiteralBlockZeroError && observedFourField)) fail('malformed_observation','storage recovery requires an exact identity RPC envelope');
       if(strictEnvelope && !node2LiteralBlockZeroError && !storageWriteIdentityMatches(answer.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
       let value = node2LiteralBlockZeroError ? 'error' : answer;
       if (height === 1 && blockOneLayout === DEVNET_NODE2_BLOCK_LAYOUT) {
-        const first = rpcEnvelope(answer,200,'') ? answer.response : null;
+        const first = reviewedNode2Block(answer);
         const firstIdentity = first?.content?.previousHash;
         if (first?.number !== 1 || first?.id !== 2 || first?.status !== 'confirmed' || !HASH.test(first?.hash ?? '') || !HASH.test(firstIdentity ?? '') || first.hash === firstIdentity
           || (Object.hasOwn(first,'previousHash') && first.previousHash !== firstIdentity)
@@ -169,12 +184,16 @@ function sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, r
         signal?.throwIfAborted();
         const secondAnswer = await post({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:2 } }] }, {}, { signal });
         if(strictEnvelope && !storageWriteIdentityMatches(secondAnswer?.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
-        const second = rpcEnvelope(secondAnswer,200,'') ? secondAnswer.response : null;
+        const second = reviewedNode2Block(secondAnswer);
         const secondPrevious = second?.content?.previousHash;
         if (second?.number !== 2 || second?.id !== 3 || second?.status !== 'confirmed' || !HASH.test(second?.hash ?? '') || second.hash === first.hash || secondPrevious !== first.hash
           || (Object.hasOwn(second,'previousHash') && second.previousHash !== first.hash)
           || ['chainIdentity','genesisHash'].some((key)=>Object.hasOwn(second,key)&&second[key]!==firstIdentity)) fail('malformed_observation','the reviewed Node2 block-two continuation differs');
         if (second.hash !== reviewedBlockTwoHash) fail('identity_mismatch','the fresh Node2 block-two hash differs from exact admission review');
+        if (firstIdentity !== chainIdentity) fail('identity_mismatch','the fresh Node2 block-one predecessor differs from the pinned chain identity');
+        const reads = canonicalize([first,second]);
+        if (reviewedReads.value !== undefined && reads !== reviewedReads.value) fail('identity_mismatch','the reviewed Node2 blocks changed between identity reads');
+        reviewedReads.value = reads;
         const { id:_databaseId, ...binderBlock } = first;
         value = { ...answer, response:binderBlock };
       }
@@ -198,12 +217,13 @@ export function createSourceObserver({ record, owner, blockZeroErrorEnvelope = n
   const fallback = { blockZeroUnavailable:'literal-error', documentation:record.provenance.documentation };
   const post = (body, headers = {}, { signal } = {}) => fetchBoundedJson(endpoint, { method:'POST', body, headers, fetchImpl:(...args) => owner.fetchImpl(...args),
     timeoutMs, signal, maxBytes:SOURCE_READ_MAX_BYTES, expectedOrigin:new URL(endpoint).origin });
+  const reviewedReads = {};
   const bind = ({ signal } = {}) => createDemosNetworkBinder({ expected, fallback, now, timeoutMs, maxAgeMs:IDENTITY_MAX_AGE_MS,
-    reader:sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope:false, signal, context:async () => owner.getContext(), post, now }) }).bind();
+    reader:sourceBlockReader({ chainIdentity:expected.chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope:false, signal, context:async () => owner.getContext(), post, now }) }).bind();
   return Object.freeze({ bind, post });
 }
 function constructTransport({ expected, transportOwner, journal, fallback = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
-  fetchImpl = globalThis.fetch, now = () => Date.now(), monotonicNow = () => performance.now(), timeoutMs = 10000,
+  fetchImpl = globalThis.fetch, now = () => Date.now(), stamps = { next: () => now() }, monotonicNow = () => performance.now(), timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
   if (!transportOwner || typeof transportOwner.getContext !== 'function' || typeof transportOwner.acquireConnectionFence !== 'function') throw new TypeError('actual transport-owner context and connection fencing are required');
@@ -296,11 +316,19 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (answer?.result !== 200) fail('upstream_unavailable', 'the pinned node did not return a usable observation');
     return answer.response;
   };
+  const reviewedReads = {};
   const makeBinder = (strictEnvelope=false, signal, bindTimeoutMs=timeoutMs) => createDemosNetworkBinder({ expected:pinned, fallback, now, timeoutMs:bindTimeoutMs, maxAgeMs:IDENTITY_MAX_AGE_MS,
-    reader:sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post:raw, now }) });
+    reader:sourceBlockReader({ chainIdentity:pinned.chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post:raw, now }) });
   const binder = makeBinder(),storageRecoveryBinder = makeBinder(true);
-  const lane = (address) => `devnet/native-wallet/${JSON.stringify([pinned.network,pinned.chainIdentity,address])}`;
+  const lane = (address) => nativeWalletLaneKey(pinned, address);
   const intent = (hash) => `devnet/native-transfer/${hash}`;
+  // A stored evidence CREATE owns the signer's next nonce until the chain has used it: a write sent before could take it and leave that
+  // CREATE unexecutable. The reserved CREATE itself is not refused. Before the broadcast this only tells the wallet early that nothing
+  // was sent; the broadcast claim runs it again under the signer's reservation lock, which decides.
+  const refuseWhileReserved = async (from, hash) => {
+    const reserved = (await journal.get(signerReservationKey(pinned, from)))?.active;
+    if (reserved && reserved.signed?.txHash !== hash && nonceFromNode(await node('getAddressNonce', { address: from })) < reserved.nonce) fail('signer_lane_busy', 'a stored payment-evidence write holds this signer; nothing was sent');
+  };
   // Cancelled native payments. The plugin cancels a payment handoff only
   // through cancelNativeTransfer, which keeps its transfer on the payer's lane
   // in this durable journal: its settlement terms (below), the digest of the
@@ -519,9 +547,34 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (r) { sharedAuth-=r.used.size; r.reserved=true; }
     else authRecords.set(identity,{ used:new Set(),floor:-Infinity,reserved:true });
   };
-  async function fenced(work, address) {
+  // Ends a wait for a lock or a connection fence with the abort reason as soon
+  // as `signal` aborts. `wait` receives a function to call when the grant
+  // arrives; an abort after that no longer ends the wait, so granted work runs
+  // to completion. After an abort the wait itself goes on in the background
+  // until the lock or fence is granted or the journal gives up on the lock
+  // with 'journal-busy' (after its lockTimeoutMs). No work runs after the
+  // abort, and a lock or fence granted after it is released without any.
+  function untilAborted(signal, wait) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const giveUp = () => reject(signal.reason);
+      const granted = () => signal.removeEventListener('abort', giveUp);
+      signal.addEventListener('abort', giveUp, { once: true });
+      wait(granted).then(resolve, reject).finally(granted);
+    });
+  }
+  const lockUnlessAborted = (signal, key, work) => untilAborted(signal, granted =>
+    journal.withWalletLock(key, () => { granted(); signal.throwIfAborted(); return work(); }));
+  const fenceUnlessAborted = (signal, address) => untilAborted(signal, granted =>
+    Promise.resolve().then(() => transportOwner.acquireConnectionFence({ address })).then(f => {
+      granted();
+      if (!signal.aborted) return f;
+      // The caller already has the abort reason; a failed release has no one to report to.
+      Promise.resolve().then(() => f?.release?.()).catch(() => {});
+    }));
+  async function fenced(work, address, signal) {
     await releaseExpiredLeases();
-    const f = await transportOwner.acquireConnectionFence({ address });
+    const f = await (signal ? fenceUnlessAborted(signal, address) : transportOwner.acquireConnectionFence({ address }));
     if (!f || typeof f.release !== 'function') fail('invalid_transport_owner','actual connection fence acquisition failed');
     try {
       if (!sameContext(await context(),f.context)) fail('connection_changed','the acquired connection differs from actual egress');
@@ -750,7 +803,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           binding=await storageRecoveryBinder.recover(r.networkBinding);
           if(!await absent()) return {disposition:'pending',hash,noResend:true};
           const headers=async()=>{
-            const identity=`ed25519:${address}`,timestamp=String(now());
+            const identity=`ed25519:${address}`,timestamp=String(stamps.next(identity));
             return {identity,timestamp,signature:await signRpc(sha(`${identity}:${timestamp}`))};
           };
           const confirmBody={method:'execute',params:[{extra:'confirmTx',data:clone(tx)}]},auth=await headers();
@@ -851,6 +904,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           // broadcast claim below still decides, under the lane lock.
           const confirmed=await identityOf(l.confirmed.content);
           if(await cancelledTransfer(address,confirmed)) await refuseCancelled(address,confirmed,'pre-broadcast');
+          await refuseWhileReserved(address,request.hash);
           l.binding=await binder.beforeBroadcast(l.binding);
           if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the connection changed before broadcast');
           l.readyHash=request.hash;
@@ -897,17 +951,24 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       let accepted;
       try {
         accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
-          const previous=await journal.get(lane(tx.content.from));
-          if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || await journal.get(intent(tx.hash))) fail('outcome_unknown','issued native transfers cannot be resent');
-          // Under the lock of the journal claim below: a cancelled transfer is never claimed.
-          const claiming=await identityOf(tx.content);
-          if(await cancelledTransfer(tx.content.from,claiming)) await refuseCancelled(tx.content.from,claiming,'broadcast');
-          const binding=await binder.beforeBroadcast(l.binding);
-          if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the fenced connection changed');
-          if(tx.content.type==='native' && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))>=tx.content.nonce) fail('nonce_consumed','the bound sender nonce was already consumed; no native intent was issued');
-          const issued={ stage:'broadcast-started',hash:tx.hash,nonce:tx.content.nonce,signedTransaction:clone(tx),networkBinding:clone(binding) };
-          if(tx.content.type==='storageProgram') issued.storageWriteGas=clone(call.data?.response?.data?.gas_operation ?? null);
-          await retain(lane(tx.content.from),issued);
+          // The signer's reservation lock is the one lock an evidence CREATE takes to claim the signer, and each side checks the other's
+          // record inside it: the reservation is read and this lane record is written without a claim in between, so a stored evidence
+          // CREATE and this write never take the same nonce.
+          const issued=await journal.withWalletLock(signerReservationKey(pinned,tx.content.from),async () => {
+            await refuseWhileReserved(tx.content.from,tx.hash);
+            const previous=await journal.get(lane(tx.content.from));
+            if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || await journal.get(intent(tx.hash))) fail('outcome_unknown','issued native transfers cannot be resent');
+            // Under the lock of the journal claim below: a cancelled transfer is never claimed.
+            const claiming=await identityOf(tx.content);
+            if(await cancelledTransfer(tx.content.from,claiming)) await refuseCancelled(tx.content.from,claiming,'broadcast');
+            const binding=await binder.beforeBroadcast(l.binding);
+            if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the fenced connection changed');
+            if(tx.content.type==='native' && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))>=tx.content.nonce) fail('nonce_consumed','the bound sender nonce was already consumed; no native intent was issued');
+            const record={ stage:'broadcast-started',hash:tx.hash,nonce:tx.content.nonce,signedTransaction:clone(tx),networkBinding:clone(binding) };
+            if(tx.content.type==='storageProgram') record.storageWriteGas=clone(call.data?.response?.data?.gas_operation ?? null);
+            await retain(lane(tx.content.from),record);
+            return record;
+          });
           await retain(intent(tx.hash),issued);
           const started=monotonicNow();
           let answer;
@@ -987,8 +1048,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // 'included'}; rejects invalid_params, readback_unverified, a binding
   // failure, or the abort reason (caller, close(), or OutboundError 'timeout').
   // Abort contract: fetchImpl and transportOwner honour AbortSignal and settle.
-  // An abort stops new steps and aborts requests; it abandons no running work,
-  // and close() aborts and then waits for it.
+  // An abort stops new steps and aborts requests, and close() aborts and then
+  // waits for reads that are running. An abort or the deadline ends a wait for
+  // the source-read lock or the connection fence at once. After that, no read
+  // runs, and a lock or fence granted after the abort is released without a
+  // read. close() does not wait for an ended lock or fence wait, which goes on
+  // until the lock or fence is granted or the journal gives up on the lock
+  // with 'journal-busy'.
   async function observePassiveTransfer(hash, options={}) {
     if(typeof hash!=='string' || !HASH.test(hash)) fail('invalid_params','a canonical native transaction hash is required');
     const stop=AbortSignal.any([closing.signal,...(options.signal?[options.signal]:[])]);
@@ -1005,7 +1071,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     }); reads.push(answer); return answer; };
     const client={ getTransactionStatus:(h)=>read('getTransactionStatus',{hash:h}), getBlockByNumber:(n)=>read('getBlockByNumber',{blockNumber:n}),
       getTxByHash:async(h)=>{ const tx=await read('getTxByHash',{hash:h}); body=clone(tx); return tx; } };
-    const result=await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>{ signal.throwIfAborted(); return fenced(async()=>{
+    const result=await lockUnlessAborted(signal,'devnet/source-read/'+declaration.bindingId,()=>fenced(async()=>{
       signal.throwIfAborted();
       const c=await context(), binder=makeBinder(false,signal);
       await (retained ? binder.recover(issued.networkBinding) : binder.bind());
@@ -1014,7 +1080,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       signal.throwIfAborted();
       if(!sameContext(await context(),c)) fail('connection_changed','the connection changed during passive observation');
       return observation;
-    }); });
+    },undefined,signal));
     // The core converts read errors to observations; keep this boundary's refusal after draining reads.
     if(nestedEnvelope) refuseEnvelope();
     if(result.status!=='included') return result;

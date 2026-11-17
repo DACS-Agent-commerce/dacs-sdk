@@ -218,9 +218,9 @@ test('package wallet helpers preserve the provider digest and confirmation contr
 
 });
 
-test('post-fork prepared digest agrees with demosdk 4.0.16 serialized signing content', async () => {
+test('post-fork prepared digest agrees with demosdk 4.0.17 serialized signing content', async () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/demosdk')), 'utf8'));
-  assert.equal(manifest.version, '4.0.16');
+  assert.equal(manifest.version, '4.0.17');
   const { serializeTransactionContent } = await import(new URL('denomination/serializerGate.js', import.meta.resolve('@kynesyslabs/demosdk')));
   const content = { type: 'native', from: '0x' + 'a'.repeat(64), to: '0x' + 'b'.repeat(64), amount: '1000000000',
     data: ['native', { nativeOperation: 'send', args: ['0x' + 'b'.repeat(64), '1000000000'] }], nonce: 7, timestamp: 1 };

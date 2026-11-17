@@ -122,7 +122,8 @@ function admitAnswerText(text) {
  * `signedListing`; `binding` (whose authority reader carries its own deadline), `signer`, `journal`, `store` (the raw transport
  * store, which backs accounting and retained purchases), `reservations` (the reservation coordinator every effect route reserves
  * through), `completion` (the completion port that ends the attempts it issued), `readCommitmentReceipt` and `requireDelegation` are
- * values. `stopped()` is the host's stop
+ * values. `admitPresentation(input)` is the agent's first admission of a presentation (its Listing revocation check and profile
+ * admission), which the context route's validation calls; it is `null` for an agent without one. `stopped()` is the host's stop
  * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. `publicEndpoint` is the origin
  * the handler's discovery document names; it is `null` when none is given, and then no discovery document is served. A `signer`
  * with `readOnlyAnswerSigner` signs read answers and discovery through that role; one without it signs them as itself. Returns the
@@ -137,6 +138,7 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
   const readSigner = (purpose, body) => (typeof signer.readOnlyAnswerSigner === 'function' ? signer.readOnlyAnswerSigner({ purpose, binding, local: tp1Network.connection(), body }) : signer);
   const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt, publicEndpoint, readSigner,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
+    admitPresentation: typeof agent.admitSessionPresentation === 'function' ? (input) => agent.admitSessionPresentation(input) : null,
     stopped: stopped === null ? null : () => stopped(),
     retainedFor: (input) => retainedFor(agent, input, { store, capacity }), continuationFor: (input) => continuationFor(agent, input, signedListing) });
   wireContexts.set(context, { agent, store });

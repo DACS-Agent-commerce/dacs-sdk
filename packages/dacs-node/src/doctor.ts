@@ -98,6 +98,7 @@ export interface DacsLiveDoctorCheckV1 {
   summary: string;
   reasonCode?: string;
   facts?: Readonly<Record<string, PublicFact>>;
+  /** Elapsed milliseconds, rounded to three decimal places. */
   durationMs: number;
 }
 
@@ -366,7 +367,7 @@ async function runProbe(
       timeout,
     ]);
     const completedAt = monotonicNow();
-    const durationMs = Math.max(0, completedAt - startedAt);
+    const durationMs = Number(Math.max(0, completedAt - startedAt).toFixed(3));
     const result: Readonly<DacsLiveDoctorProbeResultV1> = observed ?? Object.freeze({
       status: "blocked" as const,
       reasonCode: controller.signal.aborted ? "probe-timeout-or-abort" : "probe-result-invalid",
