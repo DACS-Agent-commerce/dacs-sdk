@@ -10580,6 +10580,17 @@
           "after": "f23d2e87435ff65e1de401dae91f14760099f6d8"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged index.mjs blob after merging the base",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "79a38ade5963d24c148db6424e62ff12d5f6381d",
+          "after": "79a38ade5963d24c148db6424e62ff12d5f6381d"
+        }
+      ]
     }
   ]
 }
