@@ -531,6 +531,18 @@ test('a completed context answer is not sent again when the Vet records no longe
   }
 });
 
+test('a Vet readback that stalls for 10 s ends a retried context request with session_admission_unavailable 503', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  assert.equal((await w.post(request)).status, 200);
+  await w.settleJob();
+  w.behaviour.readback = () => new Promise(() => {});
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = w.post(request);
+  await flush();
+  t.mock.timers.tick(POLICY_DEADLINE_MS);
+  assert.deepEqual(summary(await pending), [503, 'session_admission_unavailable']);
+});
+
 test('a completed context answer is not sent again after the buyer\'s access has closed', async (t) => {
   const w = await contextWireWorld(t), request = await w.startContext();
   assert.equal((await w.post(request)).status, 200);
