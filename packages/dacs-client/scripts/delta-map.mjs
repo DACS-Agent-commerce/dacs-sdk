@@ -251,7 +251,7 @@ export function checkDeltas(packageDir=pkg) {
   // must all hold the newest recorded blob; a merge that keeps a stale side,
   // rolls back or deletes a recorded file fails here.
   for(const path of allowed) {
-    let expected=null;
+    let expected;
     if(recorded.has(path)) {
       const result=expectedBlob(recorded.get(path),independent);
       if(result.conflict) { failures.push(`${path}: newest records disagree (${result.conflict.join(', ')}); record the chosen blob after the merge`); continue; }

@@ -5169,6 +5169,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs:1` |
 | delta(client): WF free the signer when the evidence CREATE it holds has executed | `packages/dacs-client/test/node-payment-evidence-adapter.test.mjs:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/records/D77-5963710ebcba.json:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D77 declare the expected blob without a value the allowed-path loop never reads | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D77 read the provenance history with a few Git runs instead of one per commit | `packages/dacs-client/records/D77-6137803ee945.json:1` |
