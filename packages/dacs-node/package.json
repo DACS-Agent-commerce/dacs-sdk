@@ -2,6 +2,16 @@
   "name": "@kynesyslabs/dacs-node",
   "version": "0.1.0-alpha.0",
   "description": "Production Node.js host contracts and adapters for the DACS SDK.",
+  "keywords": [
+    "dacs",
+    "ai-agents",
+    "agent-commerce",
+    "agent-payments",
+    "mcp",
+    "verified-data",
+    "procurement",
+    "demos"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",

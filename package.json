@@ -2,6 +2,16 @@
   "name": "@kynesyslabs/dacs",
   "version": "0.1.0-alpha.0",
   "description": "TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents — the reusable runtime for the Identify → Vet → Negotiate → Settle → Verify lifecycle.",
+  "keywords": [
+    "dacs",
+    "ai-agents",
+    "agent-commerce",
+    "agent-payments",
+    "mcp",
+    "verified-data",
+    "procurement",
+    "demos"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
