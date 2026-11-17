@@ -556,7 +556,8 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     });
   }
   // Fences a row that is still running with trigger (a), in one transaction with the read. A startup sweep runs before any begin, so a running
-  // row it finds belongs to a process that stopped, direct request or delegated. An admitted row is left alone: a retry still continues it.
+  // row it finds belongs to a process that stopped, direct request or delegated. An `admitted` row is not ended at startup: such a leftover
+  // keeps its hold and slot.
   function fenceRunningLeftover(jobId) {
     return transaction(() => {
       const row = read(jobId);

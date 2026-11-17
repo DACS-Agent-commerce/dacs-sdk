@@ -650,12 +650,16 @@ async function answerWhileGuardOff(t, w, request, answer) {
   return reply;
 }
 const NO_CONTEXT = () => ({ disposition: 'absent', reason: 'TEST no context', code: 'context_absent' });
+// Purchase capacity for exactly one job at a time: a job takes 69 units (its 68-unit allotment and one accounting row) and its accounting row
+// stays after release, so a second job is admitted only once the first job's allotment is returned.
+const ONE_JOB_UNITS = 70;
 
 for (const [kind, signOptions] of [['direct', { delegated: false }], ['delegated', {}]]) {
   test(`a startup sweep ends a ${kind} request's running row left by a stopped process, frees its hold and slot, and a new job takes the slot`, async (t) => {
-    const w = await contextWireWorld(t, { storeOptions: { maxRecords: 100 } }), request = await w.startContext({ signOptions });
+    const w = await contextWireWorld(t, { storeOptions: { maxRecords: 100, capacityUnits: ONE_JOB_UNITS } }), request = await w.startContext({ signOptions });
     assert.deepEqual(summary(await answerWhileGuardOff(t, w, request, NO_CONTEXT)), [503, 'operation_uncertain']);
     assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w)], ['running', 1, 'live'], 'the row was left running');
+    assert.equal(w.capacity.capacityReport().ready, false, 'the left row holds the only slot');
     const restarted = await w.restartHost();
     await restarted.admission.sweep({ startup: true });
     assert.deepEqual([restarted.rowOf().state, allocationState(restarted)], ['aborted', 'released']);
