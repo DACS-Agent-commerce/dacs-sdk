@@ -10114,6 +10114,28 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF record the blobs chosen for the transport, wallet session and embedded wallet provider after carrying the retire commit put part up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "10714c8e99468837c2ebc47cd666ec638488bf33",
+          "after": "10714c8e99468837c2ebc47cd666ec638488bf33"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "cb7be1026524f82794127d071ed37bc9e3a8c549",
+          "after": "cb7be1026524f82794127d071ed37bc9e3a8c549"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4",
+          "after": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4"
+        }
+      ]
+    },
+    {
       "delta": "D11",
       "subject": "fix(client): D11 test that unsent signed bytes hold the signer until their execution",
       "files": [
@@ -10238,6 +10260,34 @@
           "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
           "before": "dd3f7330a8c14441d35ec5bc82a62ba5ac7b003a",
           "after": "dd3f7330a8c14441d35ec5bc82a62ba5ac7b003a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the transport and wallet session blobs chosen after carrying the payment part fixes up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "8b6671bded9bac9912a64b7bf58f97fd5cacb373",
+          "after": "8b6671bded9bac9912a64b7bf58f97fd5cacb373"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "192016f0d5c93cbdd715fa2b5058bb312bc1d683",
+          "after": "192016f0d5c93cbdd715fa2b5058bb312bc1d683"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that a replay after a gate refusal before the broadcast sends the retained bytes once",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
+          "after": "6edf96300eaead3ecf369f64ed1f626f1ac4357f"
         }
       ]
     },
