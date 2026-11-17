@@ -91,7 +91,41 @@ it("gives a real Agent's queued request its full socket deadline", async () => {
   } finally { blocker.destroy(); queued.destroy(); agent.destroy(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
-it.each(["headers", "body", "late-admission"])("bounds total time after socket assignment through %s", async phase => {
+// Runs a download whose chunks arrive after the given gaps on a virtual clock. Resolves
+// with the admitted body, or with the error and the clock reading when it was delivered.
+async function runDownload(gaps: number[]) {
+  let clock = 0, next = 0;
+  const timers = new Map<number, { at: number; callback: () => void }>();
+  const expireDue = () => { for (const [id, timer] of [...timers]) if (timer.at <= clock) { timers.delete(id); timer.callback(); } };
+  const pending = Object.assign(new EventEmitter(), { path: "/fixture.tgz", setHeader: () => {}, destroy: () => {} });
+  const transport = { request: () => pending };
+  installBoundedNpmHttp({ transports: [transport], now: () => clock,
+    schedule: (callback: () => void, ms: number) => { const id = ++next; timers.set(id, { at: clock + ms, callback }); return id; },
+    cancel: (id: number) => timers.delete(id) });
+  const piece = Buffer.from("PK\x03\x04archive");
+  async function* chunks() { yield piece; for (const gap of gaps) { clock += gap; expireDue(); yield piece; } }
+  const outcome = new Promise<{ body?: Buffer; error?: Error; clock: number }>(resolve => {
+    pending.once("error", error => resolve({ error, clock }));
+    pending.once("response", (reply: Readable) => { void reply.toArray().then((parts: Buffer[]) => resolve({ body: Buffer.concat(parts), clock })); });
+  });
+  transport.request(); pending.emit("socket", {});
+  pending.emit("response", Object.assign(Readable.from(chunks(), { highWaterMark: 0 }), { headers: {}, statusCode: 200 }));
+  return { ...(await outcome), piece };
+}
+
+it("keeps a download going past the idle limit in total while each chunk follows the last within it", async () => {
+  const result = await runDownload([10_000, 10_000, 10_000, 10_000]);
+  expect(result.error).toBeUndefined();
+  expect(result.body).toEqual(Buffer.concat(Array(5).fill(result.piece)));
+});
+
+it("times out once the idle limit passes without a chunk, however long the download has run", async () => {
+  const result = await runDownload([10_000, 10_000, 16_000]);
+  expect(result.error).toMatchObject({ code: "ETIMEDOUT" });
+  expect(result.clock).toBe(36_000);
+});
+
+it.each(["headers", "body", "late-admission"])("times out after the idle limit following socket assignment through %s", async phase => {
   const transport = { request, get: request }; let clock = 0; let expire: (() => void) | undefined;
   installBoundedNpmHttp({ transports: [transport], now: () => clock,
     schedule: (callback: () => void) => { expire = callback; return 1; }, cancel: () => {} });

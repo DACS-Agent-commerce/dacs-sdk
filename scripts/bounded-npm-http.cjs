@@ -74,8 +74,9 @@ function jsonScanner() {
 /** Buffers original wire bytes, incrementally admitting JSON tokens or gzip output.
  * Throws ELIMIT on overflow; json is retained for callers using the old signature,
  * but no route or caller can turn off token admission. Encoded bodies are refused.
- * Aborting `signal` stops reading and decompression and rejects with its reason. */
-async function readBoundedResponse(response, maximum, json = true, archiveMaximum = maximum, signal) {
+ * Aborting `signal` stops reading and decompression and rejects with its reason.
+ * Calls `onChunk` for each non-empty chunk read. */
+async function readBoundedResponse(response, maximum, json = true, archiveMaximum = maximum, signal, onChunk) {
   signal?.throwIfAborted();
   if (Number(response.headers["content-length"]) > maximum) throw limitError("byte");
   const encoding = response.headers["content-encoding"]?.toLowerCase();
@@ -100,6 +101,7 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
     signal?.addEventListener("abort", abort, { once: true });
     for await (const chunk of response) {
       if (!chunk.length) continue;
+      onChunk?.();
       if (encoding && encoding !== "identity") throw new Error("unsupported npm HTTP content encoding: " + encoding);
       length += chunk.length;
       if (length > maximum) throw limitError("byte");
@@ -116,7 +118,9 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   finally { signal?.removeEventListener("abort", abort); gunzip?.destroy(); }
 }
 
-/** Installs opt-in HTTP(S) admission, with one socket-to-admission deadline per request. */
+/** Installs opt-in HTTP(S) admission. A request fails with ETIMEDOUT when NPM_HTTP_TIMEOUT_MS
+ * passes after its socket opens, or after the last response chunk, without progress.
+ * The byte budget bounds the total size. */
 function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeout, cancel = clearTimeout,
   now = () => performance.now() } = {}) {
   for (const transport of transports) {
@@ -126,7 +130,7 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
       // Headers already written (Expect: 100-continue, raw header array) cannot change;
       // an encoded reply is still refused when it arrives.
       if (!pending.headersSent) pending.setHeader("accept-encoding", "identity");
-      let failed = false, timer, deadline, response;
+      let failed = false, timer, deadline, armedFor, response;
       // Admission can outlive the request (its body may already be read), so the
       // deadline and request failures cancel admission directly.
       const admission = new AbortController();
@@ -138,10 +142,17 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
         stop(error); response.destroy(); pending.destroy();
         emit.call(pending, "error", error);
       };
+      // Chunks move the deadline; the timer is not re-armed per chunk. When it fires
+      // and the deadline has moved past it, it waits for the new deadline instead.
+      const expire = () => {
+        timer = undefined;
+        if (deadline > armedFor && deadline > now()) { armedFor = deadline; timer = schedule(expire, deadline - now()); return; }
+        if (response) fail(timeoutError()); else pending.destroy(timeoutError());
+      };
       pending.once("socket", () => {
         if (failed) return;
-        deadline = now() + NPM_HTTP_TIMEOUT_MS;
-        timer = schedule(() => response ? fail(timeoutError()) : pending.destroy(timeoutError()), NPM_HTTP_TIMEOUT_MS);
+        deadline = armedFor = now() + NPM_HTTP_TIMEOUT_MS;
+        timer = schedule(expire, NPM_HTTP_TIMEOUT_MS);
       });
       pending.once("error", error => stop(error));
       pending.once("abort", () => stop());
@@ -156,7 +167,8 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
         if (pending.method === "HEAD" || response.statusCode === 204 || response.statusCode === 304) {
           clear(); return emit.call(this, event, response, ...rest);
         }
-        readBoundedResponse(response, responseBudget(pending.path), true, NPM_TARBALL_MAX_UNPACKED_BYTES, admission.signal).then(bytes => {
+        readBoundedResponse(response, responseBudget(pending.path), true, NPM_TARBALL_MAX_UNPACKED_BYTES, admission.signal,
+          () => { if (deadline !== undefined) deadline = now() + NPM_HTTP_TIMEOUT_MS; }).then(bytes => {
           if (deadline !== undefined && now() >= deadline) { fail(timeoutError()); return; }
           if (failed) return;
           clear();
