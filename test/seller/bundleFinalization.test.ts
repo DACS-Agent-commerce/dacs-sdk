@@ -162,6 +162,7 @@ function fixture(
     sellerVetDecision?: "pass" | "fail" | "indeterminate" | "error";
     resolvedPayment?: boolean;
     repeatedPayment?: boolean;
+    extraSignerIsLosingBidder?: boolean;
   } = {},
 ) {
   const attested = deliveryMode === "attested";
@@ -414,6 +415,14 @@ function fixture(
         primaryClaim: SELLER,
         vetRecordRef: sellerVetRef,
       },
+      ...(options.extraSignerIsLosingBidder
+        ? [{
+            role: "bidder-non-winning" as const,
+            bundleHash: "c".repeat(64),
+            primaryClaim: OUTSIDER,
+            vetRecordRef: buyerVetRef,
+          }]
+        : []),
     ],
     terms: {
       deliverable: {
@@ -2166,6 +2175,18 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
 
   test("rejects a fixed-price agreement carrying an extra non-party signer", async () => {
     const f = fixture("pure", "storage", false, false, true);
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /resolved agreement|unauthorized or incomplete signer set/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a sealed-envelope agreement carrying a losing bidder signature", async () => {
+    const f = fixture("pure", "storage", false, false, true, {
+      procurement: true,
+      extraSignerIsLosingBidder: true,
+    });
 
     await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
       /resolved agreement|unauthorized or incomplete signer set/,

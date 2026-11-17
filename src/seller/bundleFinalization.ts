@@ -1972,23 +1972,13 @@ async function auditResolvedDependencyGraph(
     throw new DacsError("bundle vetRecords do not exactly cover the agreement/session parties");
   }
   const agreementSigners = agreement.signatures.map((signature) => signature.party);
-  const agreementParties = new Map(
-    agreement.parties.map((party) => [party.primaryClaim, party.role] as const),
-  );
+  const agreementParties = new Set(agreement.parties.map((party) => party.primaryClaim));
   if (
     new Set(agreementSigners).size !== agreementSigners.length ||
     !agreementSigners.includes(session.buyer.primaryClaim) ||
     !agreementSigners.includes(session.seller.primaryClaim) ||
     agreementSigners.some((claim) => !agreementParties.has(claim)) ||
-    (agreement.derivedFromPattern !== "sealed-envelope" &&
-      agreementSigners.length !== 2) ||
-    (agreement.derivedFromPattern === "sealed-envelope" &&
-      agreementSigners.some(
-        (claim) =>
-          claim !== session.buyer.primaryClaim &&
-          claim !== session.seller.primaryClaim &&
-          agreementParties.get(claim) !== "bidder-non-winning",
-      ))
+    agreementSigners.length !== 2
   ) {
     throw new DacsError("payee-bound agreement carries an unauthorized or incomplete signer set");
   }
