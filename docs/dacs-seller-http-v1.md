@@ -705,8 +705,11 @@ Listing, and every other proof check applies.
 A buyer's proof can still say `ready: true` for up to ten minutes after the
 seller drains, so the seller enforces its own current state: `checkWireRequest`
 requires `ready` (whether it accepts new purchases now) on the proposal,
-commitment, commitment-signature and context routes and refuses each while it
-is `false` (`seller_not_ready`, 503), except a retained stage (step 3). On the payment and delivery routes it
+commitment and commitment-signature routes and refuses each while it
+is `false` (`seller_not_ready`, 503), except a retained stage (step 3). The
+context route is not checked here: `checkWireRequest` refuses it with
+`wire_route_requires_preagreement`, and `admitPreAgreementRequest` checks
+`ready` for it (see Pre-Agreement admission). On the payment and delivery routes it
 requires the job's finalized commitment instead, checked the same way with
 the seller's own receipt reader. Read routes enforce retained request scope
 without repeating CA-7, bar `bundles/buyer-copy`, which needs the same commitment evidence; successful readback authentication does not attest an Agreement.
