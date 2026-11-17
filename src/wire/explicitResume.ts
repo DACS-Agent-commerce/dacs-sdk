@@ -16,7 +16,7 @@ import { wireRequestHash, type WireRequestPayload } from "./envelope.js";
 import { assertPeerProfile, assertTp1Authority, assertTp1Binding, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from "./routes.js";
 import {
-  admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, isUint, NONCE, ownedArtifact, ownedConfig,
+  admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, isRecord, isUint, NONCE, ownedArtifact, ownedConfig,
   ownedFields, sameCanonical, verifyEd25519, WireError, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
@@ -74,6 +74,8 @@ export function explicitCreateResumeSigningBytes(payload: ExplicitCreateResumePa
   return resumeBytes(ownedArtifact(payload, INVALID, 500), 500);
 }
 
+const isSigner = (signer: unknown): signer is WireSigner => isRecord(signer) && typeof signer.claim === "string" && typeof signer.sign === "function";
+
 /** What `signExplicitCreateResume` needs besides the payload. */
 export interface ExplicitResumeSigningContext {
   signer: WireSigner;
@@ -88,10 +90,13 @@ export interface ExplicitResumeSigningContext {
  * Signs one owned copy of the payload under the current TP-1 binding and returns
  * the `x-dacs-seller-resume` header for that copy.
  * Throws `explicit_resume_invalid` (500) for a payload that is not exactly the
- * proof's members, a signer other than the payload's buyer, or an `expiresAt`
- * outside the signer's lifetime; the TP-1 binding and authority errors of the
- * other signers; and `explicit_resume_signature_invalid` (500) for a signature
- * the signer returned malformed. The longest payload the members allow gives a
+ * proof's members, a signer that has no string `claim` or no `sign` function,
+ * a signer other than the payload's buyer, or an `expiresAt` outside the
+ * signer's lifetime; the TP-1 binding, profile and authority errors
+ * (`tp1_local_binding_changed`, `tp1_binding_required`,
+ * `tp1_participant_profile_mismatch` and the others of `assertTp1Binding`,
+ * `assertPeerProfile` and `assertTp1Authority`); and
+ * `explicit_resume_signature_invalid` (500) for a signature the signer returned malformed. The longest payload the members allow gives a
  * header under `maxHeaderLength`, so no size check is needed here.
  */
 export async function signExplicitCreateResume(supplied: ExplicitCreateResumePayload, context: ExplicitResumeSigningContext): Promise<string> {
@@ -100,7 +105,7 @@ export async function signExplicitCreateResume(supplied: ExplicitCreateResumePay
   await assertTp1Binding(binding, local);
   const bytes = resumeBytes(payload, 500);
   await assertPeerProfile(payload.profile, binding, 500);
-  if (signer.claim !== payload.buyer) fail(INVALID, 500, "SIGNER");
+  if (!isSigner(signer) || signer.claim !== payload.buyer) fail(INVALID, 500, "SIGNER");
   if (!isUint(now) || payload.expiresAt <= now || payload.expiresAt - now > DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs) fail(INVALID, 500, "LIFETIME");
   const participants = [payload.buyer, payload.seller];
   await assertTp1Authority(binding, local, participants, payload.jobId);
@@ -208,7 +213,9 @@ async function claimProof(ledger: ExplicitResumeLedger, key: string, expiresAt: 
  * used up. Order: scope, TP-1 binding, header size and encoding, admission,
  * profile, exact members, signature, participants' authority, request match,
  * expiry, one-use claim.
- * Throws `explicit_resume_invalid` (401) for a header past the limit, not
+ * Throws the TP-1 binding, profile and authority errors of `assertTp1Binding`,
+ * `assertPeerProfile` and `assertTp1Authority`;
+ * `explicit_resume_invalid` (401) for a header past the limit, not
  * canonical, or with other than the proof's members or lifetime;
  * `explicit_resume_signature_invalid` (401); `explicit_resume_mismatch` (409)
  * for any difference from the request; `explicit_resume_expired` (408);
