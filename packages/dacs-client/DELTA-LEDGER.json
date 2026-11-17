@@ -10591,6 +10591,92 @@
           "after": "55e43c7588b2288cd4318963c8f2432fecbbe1f5"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF run the native broadcast and CREATE recovery as boundary passes with the last check right before the request",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "425db6b296eb44b913962a5ceeed9c94ed30bf5d",
+          "after": "0ef56425e8575a030542d5cae82dfcbbf173e7e9"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "f2929f175127e9a2075543880e6e76b5156eed59",
+          "after": "434de30a7c87fc6d9f5fcf36e5b42291f05d6184"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/pass-context.mjs",
+          "before": null,
+          "after": "790542ef8d43d04aa069bf98fc75c260e648aa4e"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-stages.test.mjs",
+          "before": "e619fd0b1ca77e1055f8b4274a1d38d25d63e325",
+          "after": "c860a7fcd62e3e2dd5baf9177784328df3c39277"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/context-gate.mjs",
+          "before": null,
+          "after": "dc6f8bbe303ec654b62f458608f8f4fc302639dd"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-boundary.mjs",
+          "before": null,
+          "after": "439c667b1e6f716ecf7c430c8ef3b0024442d6e0"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "47fcf62e29a1560193069ee1ba7737eff82ae214",
+          "after": "185079ec9fdc608edcf81c4c9bec236a26562122"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-effect-world.mjs",
+          "before": "875cc28402af364d1056d171fb826b1a5d0e9e6e",
+          "after": "20f065179adfac6c1d155bdc3fb4ebaf35370ffa"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/pass-context-fixture.mjs",
+          "before": null,
+          "after": "a9255725078543aca75d57db18244e7b7b6fbe3c"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-answer-split-record-cuts.test.mjs",
+          "before": null,
+          "after": "c1a6c2a8feaf3f45f225e1a32725c13a4bef09e2"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-split-record-cuts.test.mjs",
+          "before": null,
+          "after": "7882fcc300bbc699caa917eb9241663cf8a7126f"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmed-before-broadcast-cut.test.mjs",
+          "before": null,
+          "after": "54f90c1b1d92690153d3883c85b882a0d017af2a"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "55e43c7588b2288cd4318963c8f2432fecbbe1f5",
+          "after": "6947f8d2ad780ef349aa868c245c46343006271e"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "37e944e9f1b36e944b7af495fe532ba43b208aaa",
+          "after": "3b93a5d544b482aac6c1f874eaed8de952e560a5"
+        },
+        {
+          "path": "packages/dacs-client/test/native-recovery-reservation-crash-cuts.test.mjs",
+          "before": null,
+          "after": "f3e5f3945d0629e243eccfea79d3953a4242027a"
+        },
+        {
+          "path": "packages/dacs-client/test/pass-context.test.mjs",
+          "before": null,
+          "after": "a5a6f42bc371993c9985ba4181b9af79322bfec1"
+        }
+      ]
     }
   ]
 }

@@ -12,6 +12,7 @@ import { createDevnetNativeTransport, nativeWalletLaneKey } from '../../src/wall
 import { openDurableWalletJournal } from '../../src/wallet/durable-journal.mjs';
 import { createEffectFence } from '../../src/wallet/effect-fence.mjs';
 import { createEffectHistory } from '../../src/wallet/effect-history.mjs';
+import { contextGate } from './context-gate.mjs';
 import { controlledClock, createEffectBoundary, digest, setPurchaseAdmission } from './effect-boundary-fixture.mjs';
 
 const OWNER = 'TEST-native-owner', PAYEE = '0x' + '7'.repeat(64);
@@ -55,13 +56,13 @@ function testNode() {
   return node;
 }
 
-/** The transport owner's connection fence: one holder at a time, in arrival order, counted in `fence`. */
-function firstComeOwner(fence) {
+/** The transport owner's connection fence: one holder at a time, in arrival order, counted in `fence`; `fence.onAcquire` runs as each acquisition starts. */
+function firstComeOwner(fence, gate) {
   const waiters = [];
   let held = false;
   const grant = () => { if (!held && waiters.length) { held = true; waiters.shift()(); } };
-  const acquire = () => { fence.acquired++; return new Promise(resolve => { waiters.push(() => resolve({ context: { ...CONTEXT }, release() { held = false; fence.released++; grant(); } })); grant(); }); };
-  return { getContext: () => ({ ...CONTEXT }), acquireConnectionFence: acquire };
+  const acquire = () => { fence.acquired++; fence.onAcquire?.(); return new Promise(resolve => { waiters.push(() => resolve({ context: { ...CONTEXT }, release() { held = false; fence.released++; grant(); } })); grant(); }); };
+  return { getContext: async () => { await gate.pass(); return { ...CONTEXT }; }, acquireConnectionFence: acquire };
 }
 
 export function nativeWorld(t, { bound } = {}) {
@@ -72,17 +73,20 @@ export function nativeWorld(t, { bound } = {}) {
   const signText = message => sign(null, Buffer.from(message, 'utf8'), privateKey).toString('hex');
   let stamp = Date.now() + 60000, journal = openDurableWalletJournal({ path, mode: 'create' }), transport = null, owner = null;
   const auth = () => { const identity = `ed25519:${address}`, timestamp = String(stamp++); return { identity, timestamp, signature: signText(sha(`${identity}:${timestamp}`)) }; };
-  const world = { node, fence, address, clock: controlledClock(), stopped: false, bound };
+  const gate = contextGate();
+  const world = { node, fence, address, clock: controlledClock(), stopped: false, bound, feeCeilingOs: '50000000000' };
+  /** `gate.hold()` makes the next getContext call of the transport owner wait until `release()`; `reached` tells when it was called. */
+  world.gate = gate;
   if (bound) setPurchaseAdmission('testnet-tp1');
   const buildBoundary = () => {
     world.history = createEffectHistory({ journal });
     world.effectFence = createEffectFence({ acquire: () => owner.acquireConnectionFence({ address }), currentLocal: () => digest(bound.currentLocal()),
       setTimer: world.clock.setTimer, clearTimer: world.clock.clearTimer });
-    world.boundary = createEffectBoundary({ binding: bound.binding, currentLocal: bound.currentLocal, stopped: async () => world.stopped, feeCeilingOs: '50000000000',
+    world.boundary = createEffectBoundary({ binding: bound.binding, currentLocal: bound.currentLocal, stopped: async () => world.stopped, feeCeilingOs: world.feeCeilingOs,
       history: world.history, fence: world.effectFence, clock: world.clock });
   };
   const open = (pins, extra = {}) => {
-    owner = firstComeOwner(fence);
+    owner = firstComeOwner(fence, gate);
     if (bound) buildBoundary();
     transport = createDevnetNativeTransport({ expected: { ...PINS, ...(bound ? { pinVersion: bound.binding.profile.pinVersion } : {}), ...pins }, journal, fetchImpl: node.fetch, inclusionWaitMs: 0, inclusionPollMs: 1, sleep: async () => {},
       ...(bound ? { boundary: world.boundary } : {}), ...extra, transportOwner: owner });
@@ -97,8 +101,12 @@ export function nativeWorld(t, { bound } = {}) {
     const hash = sha(JSON.stringify(content));
     return { content, signature: { type: 'ed25519', data: signText(hash) }, hash, status: '', blockNumber: null };
   };
-  Object.assign(world, { open, signedTransfer,
+  Object.assign(world, { open, signedTransfer, authHeaders: auth,
     transport: () => transport,
+    journal: () => journal,
+    /** The journal as the transport sees it with a write failing: pass it as `open(pins, { journal })`. `fails(key, value)` picks the write. */
+    faultyJournal: fails => ({ get: key => journal.get(key), entries: () => journal.entries(), withWalletLock: (key, work) => journal.withWalletLock(key, work),
+      put: (key, value) => { if (fails(key, value)) throw new Error('TEST-journal-cut'); return journal.put(key, value); } }),
     journalEntries: async () => await journal.entries(),
     plant: (key, record) => journal.put(key, record),
     bind: async (who = address) => (await transport.binding({ phase: 'bind', address: who })).binding,

@@ -1,6 +1,8 @@
 // The native transport's pinned chain identity and pin version, and its
 // effect boundary: the signature lease holds the boundary's connection fence,
-// and confirmation is retained as its own stage in the dispatch history.
+// confirmation is retained as its own stage in the dispatch history, and the
+// broadcast and CREATE recovery run as boundary passes whose last check sits
+// right before the request.
 // A lower-case chain identity written with or without 0x is the same pin: it is
 // canonicalised once to its bare form, and every lane key and stored binding
 // uses that form. Upper-case or padded identities are refused with the
@@ -10,11 +12,15 @@
 // scripted TEST node. No network, chain or funds.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { TP1_APPROVED_IDENTITY_RECORD, TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES } from '@kynesyslabs/dacs/wire';
 import { NetworkBindingError } from '../src/dacs/network-binding.mjs';
 import { nativeWalletLaneKey } from '../src/wallet/devnet-native-transport.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
-import { cutAppend, flush, setPurchaseAdmission } from './helpers/effect-boundary-fixture.mjs';
+import { createEffectBoundary, cutAppend, flush, setPurchaseAdmission } from './helpers/effect-boundary-fixture.mjs';
+import { boundedCreateWorld } from './helpers/native-create-boundary.mjs';
+import { JOB_IDS } from './helpers/native-create-world.mjs';
 import { CURRENT_PIN, IDENTITY, LANE_PREFIX, PINS, RETIRED_PIN, nativeWorld as world } from './helpers/native-effect-world.mjs';
+import { inPass } from './helpers/pass-context-fixture.mjs';
 
 const LEASE_MS = 1000;
 const OTHER_PURCHASE = '0x' + '9'.repeat(64);
@@ -353,4 +359,262 @@ test('a second transaction signed in a lease that already retained one is refuse
   await w.confirm(w.signedTransfer(1));
   await assert.rejects(w.confirm(w.signedTransfer(2)), { code: 'eb_operation_signed' });
   assert.equal(w.node.confirms, 1);
+});
+
+// Broadcast and recovery through the boundary.
+const RECORD_REFUSALS = [[{ ...TP1_APPROVED_IDENTITY_RECORD, recordId: 'self-made/2026-01-01' }, 'tp1_identity_unapproved'],
+  [{ ...TP1_APPROVED_IDENTITY_RECORD, network: 'demos-mainnet' }, 'tp1_identity_record_invalid'],
+  [{ ...TP1_APPROVED_IDENTITY_RECORD, chainIdentity: TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES[0] }, 'tp1_identity_fixture']];
+const CHANGES = [['a stop', 'writes_stopped', w => { w.stopped = true; }],
+  ['a re-hold', 'profile_not_admitted', () => setPurchaseAdmission('held')],
+  ['a reconnect behind the fence', 'tp1_local_binding_changed', w => { w.bound.current.connectionId = 'TEST-reconnected'; }]];
+const NOTHING_SENT = { confirmTx: 1, broadcastTx: 1 };
+
+test('native payment, storage CREATE, confirmation, broadcast and recovery sign and transmit zero times for a mainnet-labelled, self-approved or refused record', async t => {
+  const w = world(t), c = await boundedCreateWorld(t);
+  for (const [record, code] of RECORD_REFUSALS) {
+    await assert.rejects(bindFixture({ record }), { code });
+    assert.throws(() => createEffectBoundary({ currentLocal: () => ({}), stopped: async () => false, history: w.history, fence: {}, binding: undefined }), TypeError, 'no binding, no boundary');
+  }
+  assert.equal(w.node.confirms + w.node.broadcasts.length, 0);
+  assert.equal(w.fence.acquired, 0);
+  assert.deepEqual(c.calls, { confirmTx: 0, broadcastTx: 0 });
+  assert.equal(c.owner.events.length, 0);
+});
+
+test('the approved record signs and transmits once on each native path', async t => {
+  const w = world(t, { bound: await bindFixture() });
+  w.open({});
+  const { tx } = await w.send(1);
+  assert.equal(w.node.confirms, 1);
+  assert.deepEqual(w.node.broadcasts, [tx.hash]);
+  assert.deepEqual(states(await w.records(tx)), ['signed', 'confirm-started', 'confirm-acknowledged', 'signed', 'dispatch-started', 'dispatch-acknowledged']);
+  const c = await boundedCreateWorld(t), { tx: create } = await c.send(JOB_IDS[0], 1);
+  assert.deepEqual(c.calls, NOTHING_SENT);
+  assert.deepEqual(await c.world.recover(create), { disposition: 'pending', hash: create.hash, noResend: true });
+  assert.deepEqual(c.calls, { confirmTx: 2, broadcastTx: 2 }, 'recovery confirms once and resends once');
+  assert.deepEqual((await c.states(create)).slice(6), ['signed', 'recovery-confirm-started', 'recovery-confirm-acknowledged', 'signed', 'recovery-dispatch-started', 'recovery-dispatch-acknowledged']);
+});
+
+test('a swap between transmit and recovery leaves recovery readback-only', async t => {
+  const c = await boundedCreateWorld(t), { tx } = await c.send(JOB_IDS[0], 1);
+  const retained = JSON.stringify(await c.journal.entries());
+  c.bound.current.connectionId = 'TEST-swapped';
+  assert.deepEqual(await c.world.recover(tx), { disposition: 'pending', hash: tx.hash, noResend: true });
+  assert.deepEqual(c.calls, NOTHING_SENT);
+  assert.equal(JSON.stringify(await c.journal.entries()), retained, 'recovery keeps the lane key, the bytes and the history');
+});
+
+test('the connection changing at fence acquisition, the final authority read and intent persistence signs nothing where signing had not begun and transmits nothing', async t => {
+  const bound = await bindFixture(), w = world(t, { bound });
+  w.open({});
+  // At fence acquisition: no lease is granted, so nothing is signed, and the fence is released.
+  const binding = await w.bind();
+  w.fence.onAcquire = () => { bound.current.connectionId = 'TEST-moved'; };
+  await assert.rejects(w.signature(binding), { code: 'tp1_local_binding_changed' });
+  w.fence.onAcquire = null;
+  assert.equal(w.fence.released, w.fence.acquired);
+  assert.equal(w.node.confirms, 0);
+  // At the authority read that starts the signed record, and at the final one of the confirmation pass (its third).
+  bound.current.connectionId = 'vector-conn-1';
+  const lease = await w.lease(), tx = w.signedTransfer(1), early = w.signedTransfer(9);
+  for (const [read, target, expected] of [[1, early, []], [3, tx, ['signed', 'confirm-started', 'confirm-withheld']]]) {
+    let reads = 0;
+    bound.authority.state.gate = async () => { if (++reads === read) bound.current.connectionId = 'TEST-moved'; };
+    await assert.rejects(w.confirm(target), { code: 'tp1_local_binding_changed' });
+    bound.authority.state.gate = null;
+    bound.current.connectionId = 'vector-conn-1';
+    assert.deepEqual(states(await w.records(target)).slice(0, 3), expected);
+  }
+  // At the persistence of the broadcast intent.
+  bound.current.connectionId = 'vector-conn-1';
+  await w.release(lease.leaseId);
+  const next = await w.lease(), other = w.signedTransfer(2), confirmation = await w.confirm(other);
+  await w.prepareBroadcast(next.leaseId, other.hash);
+  cutAppend(w, 'dispatch-started', { mutate: () => { bound.current.connectionId = 'TEST-moved'; } });
+  await assert.rejects(w.broadcast(confirmation), { code: 'tp1_local_binding_changed' });
+  assert.deepEqual(w.node.broadcasts, []);
+  assert.deepEqual(states(await w.records(other)).slice(-2), ['dispatch-started', 'dispatch-withheld']);
+  assert.equal(w.node.confirms, 1);
+});
+
+test('no host ceiling refuses fee_ceiling_required; a 50 DEM debit passes; 50 DEM plus 1 OS refuses before signing; a confirmed debit above the ceiling refuses before broadcast', async t => {
+  const none = world(t, { bound: await bindFixture() });
+  none.feeCeilingOs = undefined;
+  none.open({});
+  await assert.rejects(none.lease(), { code: 'fee_ceiling_required' });
+  assert.equal(none.fence.released, none.fence.acquired);
+
+  const w = world(t, { bound: await bindFixture() });
+  w.open({});
+  const fees = (network, rpc, additional) => ({ fees: { network_fee: network, rpc_fee: rpc, additional_fee: additional } });
+  w.node.gas = fees('1000000000', '1000000000', '0');
+  const lease = await w.lease(), edge = w.signedTransfer(1, '48000000000');
+  const confirmation = await w.confirm(edge);
+  await w.prepareBroadcast(lease.leaseId, edge.hash);
+  assert.equal((await w.broadcast(confirmation)).result, 200, 'a confirmed debit of exactly 50 DEM passes');
+
+  for (const [gas, label] of [[fees('1000000000', '1000000000', '1'), 'one OS above'], [fees('1000000000', 1000000000, '0'), 'a fee that is not a decimal string'], [fees('1000000000', '1000000000', undefined), 'a missing fee']]) {
+    const retry = world(t, { bound: await bindFixture() });
+    retry.open({});
+    retry.node.gas = gas;
+    const own = await retry.lease(), tx = retry.signedTransfer(1, '48000000000'), answer = await retry.confirm(tx);
+    await retry.prepareBroadcast(own.leaseId, tx.hash);
+    await assert.rejects(retry.broadcast(answer), { code: 'write-fee-cap' }, label);
+    assert.deepEqual(retry.node.broadcasts, [], label);
+    assert.deepEqual(states(await retry.records(tx)).slice(-2), ['dispatch-started', 'dispatch-withheld'], label);
+    assert.equal((await retry.journalEntries()).some(([key]) => key.startsWith(LANE_PREFIX)), false, `${label}: no lane row is written`);
+  }
+});
+
+test('a native send is broadcast once and stays readback-only across restart; a recovery resend happens at most once and never under a stop or a re-hold', async t => {
+  const w = world(t, { bound: await bindFixture() });
+  w.open({});
+  const { tx } = await w.send(1);
+  await w.restart({});
+  await assert.rejects(w.lease(), { code: 'outcome_unknown' });
+  assert.deepEqual(w.node.broadcasts, [tx.hash]);
+
+  const c = await boundedCreateWorld(t), { tx: create } = await c.send(JOB_IDS[0], 1), pending = { disposition: 'pending', hash: create.hash, noResend: true };
+  c.stopped = true;
+  assert.deepEqual(await c.world.recover(create), pending);
+  c.stopped = false;
+  setPurchaseAdmission('held');
+  assert.deepEqual(await c.world.recover(create), pending);
+  assert.deepEqual(c.calls, NOTHING_SENT, 'a stop or a re-hold sends nothing');
+  setPurchaseAdmission('testnet-tp1');
+  assert.deepEqual(await c.world.recover(create), pending);
+  assert.deepEqual(c.calls, { confirmTx: 2, broadcastTx: 2 }, 'once admitted, recovery resends once');
+  assert.deepEqual(await c.world.recover(create), pending);
+  c.restart();
+  assert.deepEqual(await c.world.recover(create), pending);
+  assert.deepEqual(c.calls, { confirmTx: 2, broadcastTx: 2 }, 'neither a repeat nor a restart resends');
+});
+
+test('while held, every native path refuses profile_not_admitted with zero signer, fence and transport calls', async t => {
+  const w = world(t, { bound: await bindFixture() });
+  w.open({});
+  const binding = await w.bind(), tx = w.signedTransfer(1), lease = await w.signature(binding), acquired = w.fence.acquired;
+  setPurchaseAdmission('held');
+  await assert.rejects(w.confirm(tx), { code: 'profile_not_admitted' });
+  setPurchaseAdmission('testnet-tp1');
+  const confirmation = await w.confirm(tx);
+  await w.prepareBroadcast(lease.leaseId, tx.hash);
+  setPurchaseAdmission('held');
+  await assert.rejects(w.broadcast(confirmation), { code: 'profile_not_admitted' });
+  await assert.rejects(w.signature(binding), { code: 'profile_not_admitted' });
+  assert.equal(w.fence.acquired, acquired, 'no fence is taken');
+  assert.equal(w.node.confirms, 1, 'the one confirmation is the one made while admitted');
+  assert.deepEqual(w.node.broadcasts, []);
+
+  setPurchaseAdmission('testnet-tp1');
+  const c = await boundedCreateWorld(t), { tx: create } = await c.send(JOB_IDS[0], 1), fences = c.owner.events.length;
+  setPurchaseAdmission('held');
+  assert.deepEqual(await c.world.recover(create), { disposition: 'pending', hash: create.hash, noResend: true });
+  assert.equal(c.owner.events.length, fences, 'recovery takes no fence');
+  assert.deepEqual(c.calls, NOTHING_SENT);
+});
+
+// Runs `run()` with the transport's next getContext call after `arm`'s trigger held (once), applies `change`, releases it, and returns the outcome.
+async function refusedAfterContext(world, arm, run, change) {
+  let held;
+  arm(() => { held ??= world.gate.hold(); });
+  const outcome = run().then(value => ({ value }), error => ({ error }));
+  await settleUntil(() => held?.reached === true);
+  change();
+  held.release();
+  return outcome;
+}
+
+test("with the real transport's final getContext() held pending, a stop, a re-hold or a reconnect behind the fence, then release: zero fetchImpl calls and the withheld state on initial confirmation, initial broadcast, recovery confirmation and recovery resend", async t => {
+  for (const [label, code, change] of CHANGES) {
+    const bound = await bindFixture(), w = world(t, { bound });
+    w.open({});
+    const lease = await w.lease(), tx = w.signedTransfer(1);
+    let outcome = await refusedAfterContext(w, mutate => cutAppend(w, 'confirm-started', { mutate }), () => w.confirm(tx), () => change(w));
+    assert.equal(outcome.error?.code, code, `initial confirmation after ${label}`);
+    assert.equal(w.node.confirms, 0);
+    assert.equal(states(await w.records(tx)).at(-1), 'confirm-withheld');
+    assert.equal((await w.records(tx)).at(-1).cause.code, code);
+
+    setPurchaseAdmission('testnet-tp1'); w.stopped = false; bound.current.connectionId = 'vector-conn-1';
+    await w.release(lease.leaseId);
+    const next = await w.lease(), other = w.signedTransfer(2), confirmation = await w.confirm(other);
+    await w.prepareBroadcast(next.leaseId, other.hash);
+    outcome = await refusedAfterContext(w, mutate => cutAppend(w, 'dispatch-started', { mutate }), () => w.broadcast(confirmation), () => change(w));
+    assert.equal(outcome.error?.code, code, `initial broadcast after ${label}`);
+    assert.deepEqual(w.node.broadcasts, []);
+    assert.equal(states(await w.records(other)).at(-1), 'dispatch-withheld');
+
+    setPurchaseAdmission('testnet-tp1');
+    const c = await boundedCreateWorld(t), { tx: create } = await c.send(JOB_IDS[0], 1);
+    outcome = await refusedAfterContext(c, mutate => cutAppend(c, 'recovery-confirm-started', { mutate }), () => c.world.recover(create), () => change(c));
+    assert.equal(outcome.value?.disposition, 'pending');
+    assert.deepEqual(c.calls, NOTHING_SENT, `recovery confirmation after ${label}`);
+    assert.equal((await c.states(create)).at(-1), 'recovery-confirm-withheld');
+    assert.equal((await c.records(create)).at(-1).cause.code, code);
+  }
+  for (const [label, code, change] of CHANGES) {
+    setPurchaseAdmission('testnet-tp1');
+    const c = await boundedCreateWorld(t), { tx: create } = await c.send(JOB_IDS[0], 1);
+    const outcome = await refusedAfterContext(c, rearm => c.world.capability.onStorageWriteResend(rearm), () => c.world.recover(create), () => change(c));
+    assert.equal(outcome.value?.disposition, 'pending');
+    assert.deepEqual(c.calls, { confirmTx: 2, broadcastTx: 1 }, `recovery resend after ${label}`);
+    assert.equal((await c.states(create)).at(-1), 'recovery-dispatch-withheld');
+    assert.equal((await c.records(create)).at(-1).cause.code, code);
+  }
+});
+
+test('a job pass is withheld when its current-authorization check refuses, is missing, answers false or answers asynchronously, and transmits once when it answers true', async t => {
+  const refused = Object.assign(new Error('TEST-settlement-credit-gone'), { code: 'TEST_credit_gone' });
+  for (const operationClass of ['job-create', 'payment-evidence', 'job-resume']) {
+    const w = world(t, { bound: await bindFixture() });
+    w.open({});
+    await w.lease();
+    const tx = w.signedTransfer(1), body = { method: 'execute', params: [{ extra: 'confirmTx', data: tx, operationClass: 'job-create', currentAuthorization: () => true }] };
+    for (const [check, code] of [[undefined, 'context_authorization_required'], [() => false, 'context_authorization_refused'], [async () => true, 'context_authorization_refused'], [() => { throw refused; }, 'TEST_credit_gone']]) {
+      await assert.rejects(inPass({ operationClass, currentAuthorization: check }, () => w.transport().rpc(body, w.authHeaders())), error => error.code === code && (code !== 'TEST_credit_gone' || error === refused), `${operationClass} with ${String(check)}`);
+      assert.equal(w.node.confirms, 0);
+      assert.equal((await w.records(tx)).at(-1).cause.code, code);
+    }
+    assert.equal((await inPass({ operationClass, currentAuthorization: () => true }, () => w.confirm(tx))).response.data.valid, true);
+    assert.equal(w.node.confirms, 1);
+  }
+});
+
+test('a check that starts refusing during the final context wait makes zero requests and keeps its cause', async t => {
+  const w = world(t, { bound: await bindFixture() });
+  w.open({});
+  await w.lease();
+  const tx = w.signedTransfer(1), refused = Object.assign(new Error('TEST-ownership-lost'), { code: 'TEST_ownership_lost' });
+  let owned = true;
+  const outcome = await refusedAfterContext(w, mutate => cutAppend(w, 'confirm-started', { mutate }),
+    () => inPass({ operationClass: 'job-create', currentAuthorization: () => { if (!owned) throw refused; return true; } }, () => w.confirm(tx)), () => { owned = false; });
+  assert.equal(outcome.error, refused);
+  assert.equal(w.node.confirms, 0);
+  assert.equal((await w.records(tx)).at(-1).state, 'confirm-withheld');
+});
+
+test("a pass that names an operation id gives the lease's records that id", async t => {
+  const w = world(t, { bound: await bindFixture() });
+  w.open({});
+  const binding = await w.bind(), lease = await inPass({ operationId: 'TEST-job-operation' }, () => w.signature(binding)), tx = w.signedTransfer(1);
+  const confirmation = await w.confirm(tx);
+  await w.prepareBroadcast(lease.leaseId, tx.hash);
+  await w.broadcast(confirmation);
+  assert.ok((await w.records(tx)).length > 0 && (await w.records(tx)).every(record => record.operationId === 'TEST-job-operation'));
+});
+
+test('a broadcast that is not the retained confirmation, byte for byte with its gas, is refused and sends nothing', async t => {
+  const w = world(t, { bound: await bindFixture() });
+  w.open({});
+  w.node.gas = { fees: { network_fee: '1000000000', rpc_fee: '1000000000', additional_fee: '0' } };
+  const lease = await w.lease(), tx = w.signedTransfer(1), confirmation = await w.confirm(tx);
+  await w.prepareBroadcast(lease.leaseId, tx.hash);
+  const cheaper = structuredClone(confirmation);
+  cheaper.response.data.gas_operation.fees.network_fee = '1';
+  await assert.rejects(w.broadcast(cheaper), { code: 'native_confirmation_required' });
+  assert.deepEqual(w.node.broadcasts, []);
+  assert.equal((await w.broadcast(confirmation)).result, 200);
+  assert.deepEqual(w.node.broadcasts, [tx.hash]);
 });

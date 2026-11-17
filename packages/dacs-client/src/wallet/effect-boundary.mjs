@@ -15,11 +15,11 @@ const OPERATION_KINDS = new Set(['native', 'confirm', 'create', 'wire', 'signatu
 const REPLAYABLE_KINDS = new Set(['create', 'wire']);
 // An effect stage has its own records: `<stage>-started`, `-withheld`, `-acknowledged` and
 // `-unknown`. `dispatch` is the one that sends the artifact; `confirm` asks the node to
-// check it first and never counts as a possible dispatch.
-const STAGES = ['dispatch', 'confirm'];
+// check it first and never counts as a possible dispatch. The recovery stages do the same
+// for an artifact that was already sent and is being recovered.
+const STAGES = ['dispatch', 'confirm', 'recovery-confirm', 'recovery-dispatch'];
 const STAGE_RECORDS = ['started', 'withheld', 'acknowledged', 'unknown'];
 const HISTORY_STATES = new Set(['signed', 'signed-held', 'observed', ...STAGES.flatMap((stage) => STAGE_RECORDS.map((record) => `${stage}-${record}`))]);
-const POSSIBLE_DISPATCH_STATES = new Set(['dispatch-unknown', 'dispatch-acknowledged', 'observed']);
 const STAGE_ANSWER_NOT_ACCEPTED = 'stage_answer_not_accepted';
 const OPERATION_FIELDS = ['operationId', 'lane', 'kind', 'paidWrite', 'debitOs', 'approvalRef', 'k1Rev', 'pinVersion'];
 const FIRST_PASS = 'p1';
@@ -29,8 +29,13 @@ const refusal = (code, cause, details) => new OperationError(code, `effect refus
 const isDecimal = (value) => typeof value === 'string' && UINT.test(value);
 const isThenable = (value) => typeof value?.then === 'function';
 const stageOf = (state) => STAGES.find((stage) => state.startsWith(`${stage}-`));
+// The stages whose records can mean the artifact reached the node. A recovery stage starts from an
+// artifact that was sent, so only recovery's own send counts there.
+const sendingStages = (stage) => (stage.startsWith('recovery-') ? ['recovery-dispatch'] : ['dispatch', 'recovery-dispatch']);
 const passKey = (state, passId) => `${stageOf(state)}:${passId}`;
 const failureCode = (cause) => ({ code: typeof cause?.code === 'string' ? cause.code : 'effect_failed' });
+// The operation as the fee check reads it: the debit of the confirmed gas replaces the declared one when the caller has it.
+const feeView = (operation, confirmedDebitOs) => (confirmedDebitOs === undefined ? operation : { ...operation, debitOs: confirmedDebitOs });
 const operationMetadata = (record) => Object.fromEntries(OPERATION_FIELDS.filter((field) => record[field] !== undefined).map((field) => [field, record[field]]));
 
 // A private copy of the operation as it is authorized and retained: later changes by the caller change nothing.
@@ -81,7 +86,7 @@ function createReadBudget(clock) {
 // never finished never blocks a new confirm pass or the dispatch.
 function operationState(records, operation, pinVersion, stage) {
   if (records.length === 0) return { state: 'none' };
-  const started = new Set(), withheld = new Set(), signedRecords = [];
+  const started = new Set(), withheld = new Set(), signedRecords = [], sending = sendingStages(stage);
   let held = false, possible = false;
   for (const record of records) {
     if (record.pinVersion !== pinVersion) throw refusal('pin_version_retired');
@@ -98,11 +103,11 @@ function operationState(records, operation, pinVersion, stage) {
       if (!started.has(passKey(record.state, record.passId))) throw refusal('eb_history_unavailable');
       withheld.add(passKey(record.state, record.passId));
     }
-    if (POSSIBLE_DISPATCH_STATES.has(record.state)) possible = true;
+    if (record.state === 'observed' || (sending.includes(stageOf(record.state)) && /-(unknown|acknowledged)$/.test(record.state))) possible = true;
   }
   const signed = signedRecords.at(-1);
   const open = records.every((record) => record === signed || record.passId !== signed.passId);
-  possible ||= [...started].some((key) => key.startsWith('dispatch:') && !withheld.has(key));
+  possible ||= [...started].some((key) => sending.some((sender) => key.startsWith(`${sender}:`)) && !withheld.has(key));
   return { state: possible ? 'possible' : held ? 'held' : 'signed', signed, passId: open ? signed.passId : `p${signedRecords.length + 1}`, fresh: !open };
 }
 
@@ -148,11 +153,20 @@ function createKeyedQueue() {
  *   bytes are durable; a refusal after that leaves `signed-held`. Calls for one operation
  *   and lane that run together are queued: a later one is refused as above once the
  *   earlier one has recorded its artifact, and signs if the earlier one failed.
- * - `dispatchPass(artifact, send, { explicit, stage, material })`: passes the retained bytes
- *   to `send(bytes)` once, after recording `<stage>-started`; a refusal then records
- *   `<stage>-withheld`. `stage` is `'dispatch'` (the default: the send itself) or `'confirm'`
- *   (the node's check of the bytes before the send, never a possible dispatch); any other
- *   stage is a `TypeError`. After `send` returns, `material(result)` (optional, called once)
+ * - `dispatchPass(artifact, send, { explicit, stage, material, confirmedDebitOs })`: passes the retained
+ *   bytes to `send(bytes, final)` once, after recording `<stage>-started`; a refusal then records
+ *   `<stage>-withheld`. `stage` is `'dispatch'` (the default: the send itself), `'confirm'`
+ *   (the node's check of the bytes before the send, never a possible dispatch), or the recovery
+ *   stages `'recovery-confirm'` and `'recovery-dispatch'` (the same two for an artifact that was
+ *   already sent: only a recovery send counts as a possible dispatch there); any other
+ *   stage is a `TypeError`. A send that has awaits of its own before the transport call finishes
+ *   them, then calls `final(check, effect)` and returns what it returns: `final` awaits the stop check,
+ *   runs the admission, fee, connection and revision checks and `check()` synchronously, and calls
+ *   `effect()` in that same run. A refusal there (nothing was transmitted) records `<stage>-withheld`
+ *   with its cause, where any other failure of `send` records `<stage>-unknown`.
+ *   `confirmedDebitOs` (decimal OS, or `null` for a debit that could not be read) replaces the
+ *   artifact's own `debitOs` in the fee check only, so `null` refuses `write-fee-cap`; the records
+ *   keep the artifact's own fields. After `send` returns, `material(result)` (optional, called once)
  *   gives the extra fields of `<stage>-acknowledged`, or `undefined` when the answer is not
  *   acceptable: the stage then records `<stage>-unknown` with cause
  *   `stage_answer_not_accepted` and resolves the answer all the same.
@@ -305,10 +319,11 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
   // Runs `effect` once authorized, for an effect whose record is already durable. A
   // refusal adds `heldState` with its cause and is what the caller sees, also when that
   // record cannot be written.
-  async function authorizeOrHold(frame, read, operation, passId, heldState, effect) {
+  // `checked` is the operation the fee check reads when it differs from the recorded one.
+  async function authorizeOrHold(frame, read, operation, passId, heldState, effect, checked = operation) {
     try {
-      await refresh(read, operation);
-      gate(frame, operation);
+      await refresh(read, checked);
+      gate(frame, checked);
     } catch (cause) {
       await persist({ ...operation, passId, state: heldState, cause: failureCode(cause) }).catch(() => {});
       throw cause;
@@ -345,7 +360,8 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
 
   // Hands the operation's retained bytes to `release(bytes, passId)` once the history
   // allows it and `<stage>-started` is durable.
-  async function dispatchRetained(frame, read, operation, { explicit, stage }, release) {
+  async function dispatchRetained(frame, read, operation, { explicit, stage, confirmedDebitOs }, release) {
+    const checked = feeView(operation, confirmedDebitOs);
     const records = await readOperation(operation);
     const { state, signed, passId, fresh } = operationState(records, operation, binding.profile?.pinVersion, stage);
     if (state === 'none') throw refusal('eb_history_unavailable');
@@ -353,20 +369,40 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     if (state === 'held' && explicit !== true) throw refusal('eb_explicit_resume_required');
     if (fresh) await persist({ ...signed, passId, state: 'signed' });
     await persist({ ...operation, passId, state: `${stage}-started` });
-    return authorizeOrHold(frame, read, operation, passId, `${stage}-withheld`, () => release(Buffer.from(signed.bytes, 'base64'), passId));
+    return authorizeOrHold(frame, read, operation, passId, `${stage}-withheld`, () => release(Buffer.from(signed.bytes, 'base64'), passId), checked);
   }
 
-  async function dispatchPass(input, send, { explicit = false, stage = 'dispatch', material } = {}) {
+  // The last check of a send that has awaits of its own before it reaches the transport. `final(check, effect)`
+  // awaits the stop check, then synchronously runs the admission, fee, connection and revision checks and
+  // `check()`, and calls `effect()` in that same run, so nothing is awaited between the checks and the call.
+  // What it refuses is noted in `refused`: nothing was transmitted, and the pass is recorded withheld.
+  function finalCheck(frame, read, checked, refused) {
+    return async (check, effect) => {
+      try {
+        await checkStop(read);
+        gate(frame, checked);
+        check();
+      } catch (cause) {
+        refused.cause = cause;
+        throw cause;
+      }
+      return effect();
+    };
+  }
+
+  async function dispatchPass(input, send, { explicit = false, stage = 'dispatch', material, confirmedDebitOs } = {}) {
     if (!STAGES.includes(stage)) throw new TypeError(`an effect stage is one of ${STAGES.join(', ')}`);
     const operation = snapshotOperation(input);
-    return runPass(operation, (frame, read) => dispatchRetained(frame, read, operation, { explicit, stage }, async (bytes, passId) => {
+    return runPass(operation, (frame, read) => dispatchRetained(frame, read, operation, { explicit, stage, confirmedDebitOs }, async (bytes, passId) => {
       // An unpaired dispatch-started stays a possible dispatch if the unknown record is lost too; the first cause is the one reported.
       const recordUnknown = (cause) => persist({ ...operation, passId, state: `${stage}-unknown`, cause: failureCode(cause) }).catch(() => {});
+      const refused = {};
       let result;
       try {
-        result = await send(bytes);
+        result = await send(bytes, finalCheck(frame, read, feeView(operation, confirmedDebitOs), refused));
       } catch (cause) {
-        await recordUnknown(cause);
+        if (refused.cause === undefined) await recordUnknown(cause);
+        else await persist({ ...operation, passId, state: `${stage}-withheld`, cause: failureCode(refused.cause) }).catch(() => {});
         throw cause;
       }
       const acknowledged = material ? material(result) : {};

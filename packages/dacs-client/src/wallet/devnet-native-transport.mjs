@@ -10,6 +10,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
+import { createEffectHistory } from './effect-history.mjs';
+import { assertCurrentAuthorization, currentPassContext } from './pass-context.mjs';
 import { createDemosChainReader, nonceFromNode, nodeProjectedNonce } from '../dacs/chain.mjs';
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
 import { observePayDemTransferCore } from '@kynesyslabs/dacs/seller';
@@ -101,9 +103,13 @@ export const transferRefusal = (error) => Object.hasOwn(TRANSFER_REFUSALS,error?
   ? [409,{ error:error.code,message:TRANSFER_REFUSALS[error.code],result:409,response:TRANSFER_REFUSALS[error.code],require_reply:false,extra:null }] : null;
 const clone = (v) => structuredClone(v);
 // What the transport calls on the optional effect boundary (`boundary` option of the transport constructors).
-const BOUNDARY_METHODS = ['holdFence', 'signPass', 'dispatchPass'];
+const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPass'];
 // The lease's expiry timer fires this long after the lease expires, so a timer that fires early still finds it expired.
 const LEASE_EXPIRY_MARGIN_MS = 1;
+// The fee members of a confirmation's gas operation, each a canonical decimal OS string.
+const FEE_MEMBERS = ['network_fee', 'rpc_fee', 'additional_fee'];
+// A transmission with no boundary: nothing is checked after the request's own awaits.
+const unchecked = (check, effect) => effect();
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const envelope = (response, result = 200) => ({ result, response, require_reply: false, extra: null });
 // A node's reply without any top-level `writeProof`. Only this transport may add
@@ -151,7 +157,16 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // lease to the broadcast, and each confirmation is retained as its own stage in the
 // dispatch history (the exact signed bytes, `confirm-started`, then
 // `confirm-acknowledged` or `confirm-unknown`) before and after the node sees it.
-// Without it the lease holds the owner's fence itself and confirmation keeps no history.
+// The broadcast then carries that retained confirmation, byte for byte with its gas, as the
+// boundary's dispatch stage: its debit is checked against the fee ceiling first, and a
+// refusal leaves `dispatch-withheld`. CREATE recovery holds the boundary's fence for the
+// artifact's own operation and runs its confirmation and sole resend as the
+// `recovery-confirm` and `recovery-dispatch` stages. Every effectful request is made by
+// `transmit`, which finishes all its awaits (the transport context included) first and then
+// calls the boundary's final check and `fetchImpl` in one synchronous run; the check includes
+// the pass's current-authorization check from the private context in `pass-context.mjs`,
+// which also names the job's operation id. Without a boundary the lease holds the owner's
+// fence itself and nothing is retained or checked after the request's own awaits.
 export function createDevnetNativeTransport(options) { return constructTransport(options,false); }
 export function createDevnetAgreementTransport(options) { return constructTransport(options,true); }
 // Separate opt-in composition. The Agreement-only constructor above remains
@@ -303,14 +318,25 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (c?.network !== pinned?.network || c?.endpoint !== pinned?.endpoint || c?.transportAuthority !== pinned?.transportAuthority) fail('transport_mismatch', 'actual egress differs from the supplied trusted binding');
     return c;
   };
+  const post = (body, headers, signal) => fetchBoundedJson(pinned.endpoint, { method:'POST', body, headers, fetchImpl,
+    timeoutMs, signal, maxBytes:SOURCE_READ_MAX_BYTES, expectedOrigin:new URL(pinned.endpoint).origin });
+  // A read: no effect boundary check, nothing it sends changes state.
   const raw = async (body, headers = {}, { signal } = {}) => {
     signal?.throwIfAborted();
     await context();
-    return fetchBoundedJson(pinned.endpoint, { method:'POST', body, headers, fetchImpl,
-      timeoutMs, signal, maxBytes:SOURCE_READ_MAX_BYTES, expectedOrigin:new URL(pinned.endpoint).origin });
+    return post(body, headers, signal);
+  };
+  // The one request of an effectful call (confirmation, broadcast, recovery's confirmation and resend).
+  // Every await, the transport context included, finishes first. Then `final` (the effect boundary's last
+  // check) runs its stop await, its synchronous checks and the pass's current-authorization check, and
+  // calls the request in the same synchronous run, so no await separates the checks from `fetchImpl`.
+  const transmit = async (body, headers, { final = unchecked, pass }) => {
+    await context();
+    return final(() => assertCurrentAuthorization(pass), () => post(body, headers));
   };
   // The node's reply as `rpc` hands it to a wallet: never with a node-supplied `writeProof`.
   const rawWithoutWriteProof = async (body, headers) => withoutNodeWriteProof(await raw(body, headers));
+  const transmitWithoutWriteProof = async (body, headers, send) => withoutNodeWriteProof(await transmit(body, headers, send));
   // The pinned observer reads transaction and block facts concurrently.
   // Serialize their actual connection fences; this creates no write permit.
   // The work runs under the journal lock and the connection fence. An abort rejects the caller
@@ -612,9 +638,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // owner's fence: admission, stop, fee and binding are checked before the wait and again once
   // it is held, and the lease's confirmation passes run inside the hold. Without a boundary it
   // is the owner's own fence.
-  const acquireLeaseFence = async (address, leaseId, transfer) => {
+  const acquireLeaseFence = async (address, operationId, transfer) => {
     if (!boundary) return transportOwner.acquireConnectionFence({ address });
-    const hold = await boundary.holdFence({ operationId:leaseId, lane:lane(address), kind:'native', paidWrite:true, debitOs:transfer?.amountOs ?? '0', pinVersion:pinned.pinVersion });
+    const hold = await boundary.holdFence({ operationId, lane:lane(address), kind:'native', paidWrite:true, debitOs:transfer?.amountOs ?? '0', pinVersion:pinned.pinVersion });
     try { return { hold, context:await context(), release:() => hold.release() }; }
     catch (error) { await hold.release().catch(() => {}); throw error; }
   };
@@ -685,15 +711,24 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       throw error;
     }
   };
-  // Runs `confirmOnce` as the boundary's confirm stage inside the lease's hold: the signed
+  // The boundary's operation for a lease's transaction: the lease's operation, on the sender's lane.
+  const operationOf = (lease, tx) => ({ operationId:lease.operationId, lane:lane(tx.content.from), kind:tx.content.type === 'native' ? 'native' : 'create', paidWrite:true,
+    debitOs:tx.content.type === 'native' ? transferOf(tx.content)?.amountOs : '0', pinVersion:pinned.pinVersion });
+  // Runs `confirmOnce(bytes, final)` as the boundary's confirm stage inside the lease's hold: the signed
   // bytes, `confirm-started` before the node sees them, then `confirm-acknowledged` with the
   // node's answer and gas when `accepted()`, or `confirm-unknown` with the cause.
-  const confirmAsStage = (lease, tx, confirmOnce, accepted) => {
-    const native = tx.content.type === 'native';
-    const operation = { operationId:lease.id, lane:lane(tx.content.from), kind:native ? 'native' : 'create', paidWrite:true,
-      debitOs:native ? transferOf(tx.content)?.amountOs : '0', pinVersion:pinned.pinVersion };
-    return lease.fence.hold.run(async () => boundary.dispatchPass(await retainSigned(operation, Buffer.from(JSON.stringify(tx))), confirmOnce, { explicit:true, stage:'confirm',
-      material:(answer) => accepted() ? { confirmation:answer, gasOperation:answer.response.data.gas_operation ?? null } : undefined }));
+  const confirmAsStage = (lease, tx, confirmOnce, accepted) => lease.fence.hold.run(async () => boundary.dispatchPass(await retainSigned(operationOf(lease, tx), Buffer.from(JSON.stringify(tx))), confirmOnce,
+    { explicit:true, stage:'confirm', material:(answer) => accepted() ? { confirmation:answer, gasOperation:answer.response.data.gas_operation ?? null } : undefined }));
+  // The artifact's records in the boundary's dispatch history, in commit order.
+  const historyOf = (artifact) => createEffectHistory({ journal }).read(artifact);
+  // The latest confirm-acknowledged record of an artifact, exactly as retained, or undefined.
+  const retainedConfirmation = async (artifact) => (await historyOf(artifact)).findLast((record) => record.state === 'confirm-acknowledged');
+  // The whole debit a confirmation commits the sender to, in OS: the declared amount plus the three fees. `undefined`
+  // when the node gave no fee view (the declared debit stands); `null` when any fee is not a canonical decimal OS string.
+  const confirmedDebitOs = (gasOperation, declaredOs) => {
+    if (gasOperation === null) return undefined;
+    const fees = FEE_MEMBERS.map((member) => gasOperation.fees?.[member]);
+    return canonicalDecimal(declaredOs) && fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), BigInt(declaredOs))) : null;
   };
   // Execution projection only: nonce/timestamp may be normalized
   // by RPC, post-fork root amount/fee OS strings may be returned as safe JSON
@@ -840,14 +875,21 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     const sellerEvidence=settlement && op?.metadata?.artifactKind==='SettlementEvidence' && op?.data?.phase==='pay-dem';
     if(tx?.content?.type!=='storageProgram' || (!operatorArtifact&&!sellerEvidence) || typeof signRpc!=='function'
       || !ADDRESS.test(address ?? '') || !HASH.test(hash ?? '')) fail('storage_recovery_only','only an original operator storage CREATE may be recovered');
-    return fenced(()=>journal.withWalletLock(lane(address),async()=>{
+    const pass=currentPassContext(), pending={disposition:'pending',hash,noResend:true};
+    // With a boundary, recovery is a pass of the artifact's own operation, read from its signed record: it holds
+    // the boundary's fence, and its confirmation and resend are boundary passes. An artifact the history does
+    // not hold is read back only.
+    const signed=boundary ? (await historyOf({ lane:lane(address),artifactHash:sha(JSON.stringify(tx)) }).catch(() => [])).find((record) => record.state === 'signed') : null;
+    if(boundary && !signed) return pending;
+    const underConnection=(work) => boundary ? boundary.withOperation(signed,work).catch((error) => { if(error?.code?.startsWith('journal')) throw error; return pending; }) : fenced(work);
+    return underConnection(()=>journal.withWalletLock(lane(address),async()=>{
       let r=await journal.get(intent(hash));
       const latest=await journal.get(lane(address));
       if(!r || JSON.stringify(r.signedTransaction)!==JSON.stringify(tx) || latest?.hash!==hash
         || JSON.stringify(latest.signedTransaction)!==JSON.stringify(tx) || r.nonce!==tx.content.nonce
         || r.stage!=='broadcast-accepted' || r.storageWriteSubmission!=='accepted'
         || r.storageWriteSubmissionProfile!==STORAGE_WRITE_SUBMISSION_PROFILE
-        || (r.storageWriteResends ?? 0)!==0 || !Object.hasOwn(r,'storageWriteGas')) return {disposition:'pending',hash,noResend:true};
+        || (r.storageWriteResends ?? 0)!==0 || !Object.hasOwn(r,'storageWriteGas')) return pending;
         let binding;
         const originalContext=await context();
         const readNonce=async()=>{
@@ -863,43 +905,48 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         };
         try {
           binding=await storageRecoveryBinder.recover(r.networkBinding);
-          if(!await absent()) return {disposition:'pending',hash,noResend:true};
+          if(!await absent()) return pending;
           const headers=async()=>{
             const identity=`ed25519:${address}`,timestamp=String(stamps.next(identity));
             return {identity,timestamp,signature:await signRpc(sha(`${identity}:${timestamp}`))};
           };
           const confirmBody={method:'execute',params:[{extra:'confirmTx',data:clone(tx)}]},auth=await headers();
           signedTransaction(confirmBody,auth);
-          const confirmation=await raw(confirmBody,auth);
-          if(!rpcEnvelope(confirmation,200,null) || !storageWriteConfirmationMatches(confirmation.response)
-            || confirmation.response.data.valid!==true
-            || !storageConfirmationShapeMatches(confirmation.response.data)
-            || JSON.stringify(confirmation.response.data.transaction)!==JSON.stringify(tx)
-            || canonicalize(confirmation.response.data.gas_operation ?? null)!==canonicalize(r.storageWriteGas)) return {disposition:'pending',hash,noResend:true};
+          const confirms=(answer) => rpcEnvelope(answer,200,null) && storageWriteConfirmationMatches(answer.response)
+            && answer.response.data.valid===true
+            && storageConfirmationShapeMatches(answer.response.data)
+            && JSON.stringify(answer.response.data.transaction)===JSON.stringify(tx)
+            && canonicalize(answer.response.data.gas_operation ?? null)===canonicalize(r.storageWriteGas);
+          const confirmation=boundary ? await boundary.dispatchPass(signed,(bytes,final) => transmit(confirmBody,auth,{ final,pass }),{ explicit:true,stage:'recovery-confirm',material:(answer) => confirms(answer) ? {} : undefined })
+            : await raw(confirmBody,auth);
+          if(!confirms(confirmation)) return pending;
           binding=await storageRecoveryBinder.beforeBroadcast(binding);
           const broadcastAuth=await headers();
-          if(!await absent() || !sameContext(originalContext,await context())) return {disposition:'pending',hash,noResend:true};
-          // Reserve the sole attempt before dispatch. A crash consumes it too;
-          // reopening the journal can never start another retransmission loop.
-          r={...r,storageWriteResends:1,networkBinding:binding};
-          await retain(intent(hash),r); await retain(lane(address),r);
-          if(await readNonce()!==storageWriteAccountNonce(r.nonce)-1
-            || !sameContext(originalContext,await context())) return {disposition:'pending',hash,noResend:true};
-          // Still under this lane's lock, just before the sole dispatch: report
-          // the resent bytes' own signed job. Telemetry only; it cannot stop or
-          // change the resend.
-          const notice={hash,writer:address,jobId:op?.metadata?.artifactBinding?.jobId ?? op?.data?.jobId ?? null,artifactKind:op?.metadata?.artifactKind ?? null};
-          // An async listener runs here too; its rejection is consumed, never left unhandled.
-          for(const listener of resendListeners) { try { const result=listener({...notice}); void Promise.resolve(result).catch(()=>{}); } catch { /* telemetry cannot authorize or interrupt a write */ } }
-          const answer=await raw({method:'execute',params:[{extra:'broadcastTx',data:confirmation}]},broadcastAuth);
+          if(!await absent() || !sameContext(originalContext,await context())) return pending;
+          const resendOnce=async(bytes,final)=>{
+            // Reserve the sole attempt before dispatch. A crash consumes it too;
+            // reopening the journal can never start another retransmission loop.
+            r={...r,storageWriteResends:1,networkBinding:binding};
+            await retain(intent(hash),r); await retain(lane(address),r);
+            if(await readNonce()!==storageWriteAccountNonce(r.nonce)-1
+              || !sameContext(originalContext,await context())) fail('recovery_not_resendable','the account nonce or the connection changed after the resend was reserved');
+            // Still under this lane's lock, just before the sole dispatch: report
+            // the resent bytes' own signed job. Telemetry only; it cannot stop or
+            // change the resend.
+            const notice={hash,writer:address,jobId:op?.metadata?.artifactBinding?.jobId ?? op?.data?.jobId ?? null,artifactKind:op?.metadata?.artifactKind ?? null};
+            // An async listener runs here too; its rejection is consumed, never left unhandled.
+            for(const listener of resendListeners) { try { const result=listener({...notice}); void Promise.resolve(result).catch(()=>{}); } catch { /* telemetry cannot authorize or interrupt a write */ } }
+            return transmit({method:'execute',params:[{extra:'broadcastTx',data:confirmation}]},broadcastAuth,{ final,pass });
+          };
+          const answer=boundary ? await boundary.dispatchPass(signed,resendOnce,{ explicit:true,stage:'recovery-dispatch' }) : await resendOnce();
           r={...r,storageWriteSubmission:classifyStorageWriteSubmission(answer,hash)};
           await retain(intent(hash),r); await retain(lane(address),r);
-          return {disposition:'pending',hash,noResend:true};
+          return pending;
         } catch(error) {
           // Journal failures must reach the caller; uncertain reads/dispatch
           // leave the original nonce lane fenced for authenticated readback.
           if(error?.code?.startsWith('journal')) throw error;
-          return {disposition:'pending',hash,noResend:true};
+          return pending;
         }
     }));
   }
@@ -927,7 +974,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         refuseUnfinished(previous,'the retained native transfer must be read back; it is never resent');
         const transfer=declaredTransfer(request.transfer);
         if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
-        const leaseId=randomBytes(16).toString('hex'), fence=await acquireLeaseFence(address,leaseId,transfer);
+        // A seller job's pass names the job's own operation id; any other lease is its own operation.
+        const leaseId=randomBytes(16).toString('hex'), operationId=currentPassContext().operationId ?? leaseId, fence=await acquireLeaseFence(address,operationId,transfer);
         let l;
         try {
           if (!fence || typeof fence.release !== 'function' || !sameContext(await context(),fence.context)) fail('invalid_transport_owner','actual signature connection fence is unavailable');
@@ -939,7 +987,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             const latest=await journal.get(lane(address));
             refuseUnfinished(latest,'an issued native transfer appeared while acquiring the connection fence');
             if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
-            const lease={ id:leaseId,address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:now(),busy:0,transfer:null };
+            const lease={ id:leaseId,operationId,address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:now(),busy:0,transfer:null };
             // Claimed durably before it is returned: a cancellation in any
             // process sees it (transferClaimed).
             if (transfer) await claimTransfer(lease,transfer);
@@ -982,6 +1030,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       const call=body?.params?.length === 1 ? body.params[0] : null;
       if(body?.method === 'nodeCall' && ['getNetworkInfo','getNetworkParameters','getAddressNonce'].includes(call?.message)) return rawWithoutWriteProof(body,headers);
       if(body?.method !== 'execute' || !['confirmTx','broadcastTx'].includes(call?.extra)) fail('native_only','this transport exposes only native sends and their preparation reads');
+      // The pass's private context, read once here: it alone says which job class and current-authorization check the transmission has.
+      const pass=currentPassContext();
       const tx=signedTransaction(body,headers), { l, release }=await claimLease(tx.content.from);
       try {
       if(call.extra === 'confirmTx') {
@@ -1005,8 +1055,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         step(tx,'sign','complete',l.signStarted);
         const started=now();
         let accepted=false;
-        const confirmOnce=async()=>{
-          const answer=await rawWithoutWriteProof(body,headers);
+        const confirmOnce=async(bytes,final)=>{
+          const answer=await transmitWithoutWriteProof(body,headers,{ final,pass });
           step(tx,'validate','complete',started);
           accepted=await acceptsConfirmation(answer,tx);
           return answer;
@@ -1016,6 +1066,10 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         return answer;
       }
       if(l.readyHash !== tx.hash || JSON.stringify(l.confirmed) !== JSON.stringify(tx)) fail('native_confirmation_required','the original signed transaction and fresh broadcast binding are required');
+      // With a boundary the broadcast carries the retained confirmation exactly, gas included, and its debit is checked against the ceiling.
+      const artifact=boundary ? { ...operationOf(l,tx),artifactHash:sha(JSON.stringify(tx)) } : null;
+      const retained=boundary ? await retainedConfirmation(artifact) : null;
+      if(boundary && JSON.stringify(call.data) !== JSON.stringify(retained?.confirmation)) fail('native_confirmation_required','the retained node confirmation, gas included, is required');
       let accepted;
       try {
         accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
@@ -1030,20 +1084,24 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           if(tx.content.type==='native' && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))>=tx.content.nonce) fail('nonce_consumed','the bound sender nonce was already consumed; no native intent was issued');
           const issued={ stage:'broadcast-started',hash:tx.hash,nonce:tx.content.nonce,signedTransaction:clone(tx),networkBinding:clone(binding) };
           if(tx.content.type==='storageProgram') issued.storageWriteGas=clone(call.data?.response?.data?.gas_operation ?? null);
-          await retain(lane(tx.content.from),issued);
-          await retain(intent(tx.hash),issued);
-          const started=now();
-          let answer;
-          try { answer=await rawWithoutWriteProof(body,headers); } // one call, never retry on unknown; the inclusion poll below is the only source of a writeProof
-          catch(error){step(tx,'broadcast','unknown',started);throw error;}
-          step(tx,'broadcast','complete',started);
-          const answered={ ...issued,stage:answer?.result === 200 ? 'broadcast-accepted' : 'broadcast-answered' };
-          if(tx.content.type==='storageProgram') {
-            answered.storageWriteSubmission=classifyStorageWriteSubmission(answer,tx.hash);
-            answered.storageWriteSubmissionProfile=STORAGE_WRITE_SUBMISSION_PROFILE;
-          }
-          await retain(intent(tx.hash),answered); await retain(lane(tx.content.from),answered);
-          return answer;
+          // The one transmission, with the lane's intent retained just before it.
+          const dispatch=async(bytes,final)=>{
+            await retain(lane(tx.content.from),issued);
+            await retain(intent(tx.hash),issued);
+            const started=now();
+            let answer;
+            try { answer=await transmitWithoutWriteProof(body,headers,{ final,pass }); } // one call, never retry on unknown; the inclusion poll below is the only source of a writeProof
+            catch(error){step(tx,'broadcast','unknown',started);throw error;}
+            step(tx,'broadcast','complete',started);
+            const answered={ ...issued,stage:answer?.result === 200 ? 'broadcast-accepted' : 'broadcast-answered' };
+            if(tx.content.type==='storageProgram') {
+              answered.storageWriteSubmission=classifyStorageWriteSubmission(answer,tx.hash);
+              answered.storageWriteSubmissionProfile=STORAGE_WRITE_SUBMISSION_PROFILE;
+            }
+            await retain(intent(tx.hash),answered); await retain(lane(tx.content.from),answered);
+            return answer;
+          };
+          return boundary ? l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs) })) : dispatch();
         });
         if (accepted?.result === 200) {
           const started=now(),deadline=started+inclusionWaitMs;

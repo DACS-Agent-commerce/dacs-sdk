@@ -100,9 +100,9 @@ test('an unpaired confirm-started and a confirm-unknown never block a new confir
   assert.equal(w.sent.length, 1);
 });
 
-test('a stage other than dispatch or confirm is a TypeError and records nothing', async t => {
+test('a stage the boundary does not know is a TypeError and records nothing', async t => {
   const w = await boundaryWorld(t);
   const signed = await w.sign();
-  await assert.rejects(w.boundary.dispatchPass(signed, () => 'TEST-answer', { stage: 'recovery-confirm' }), TypeError);
+  await assert.rejects(w.boundary.dispatchPass(signed, () => 'TEST-answer', { stage: 'broadcast' }), TypeError);
   assert.deepEqual(await states(w, signed), ['signed']);
 });
