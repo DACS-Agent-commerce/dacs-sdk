@@ -58,8 +58,12 @@ jobs:
     #   - the pull request does not carry the label ci-hosted (urgent work stays on hosted runners). The labels come
     #     from the event that started the run, and a re-run replays that event, so a label added later only takes
     #     effect on the next push (or a close and reopen).
-    # Pushes and merge-queue runs (which can contain other people's merged code), fork pull requests, everyone
-    # else's runs and every other job use ubuntu-latest.
+    # Pushes, merge-queue runs, fork pull requests, runs that involve an account not in the list, and every other
+    # job use ubuntu-latest.
+    # These filters check the event type, the head repository and the accounts that opened the pull request or
+    # started the run. They say who started the run, not who wrote the code in the checkout: the checkout of a
+    # same-repository pull request also contains other people's commits (the base branch it merges into, and any
+    # commits others pushed to the branch).
     # This expression is only a routing filter: a branch can edit its own copy of this file. The boundary is on the
     # runners, maintained outside this repository: they check every job against the same rules before any step
     # runs and stop the runner for anything else.
