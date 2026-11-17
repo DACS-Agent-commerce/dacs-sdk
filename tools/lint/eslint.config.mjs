@@ -62,6 +62,7 @@ export default [
   },
   {
     files: ["**/*.ts"],
+    plugins: { "@typescript-eslint": tseslint.plugin },
     languageOptions: {
       parser: tseslint.parser,
       ecmaVersion: "latest",
@@ -74,14 +75,16 @@ export default [
       "no-undef": "off",
       "no-redeclare": "off",
       "no-dupe-class-members": "off",
+      // tsconfig does not turn on noUnusedLocals or noUnusedParameters, so this
+      // rule reports unused variables, with the same defaults as the JavaScript rule.
       "no-unused-vars": "off",
+      "@typescript-eslint/no-unused-vars": "error",
     },
   },
   {
     // Checks that need type information: a missed `await` on money or wallet
     // calls is the mistake we most want caught.
     files: ["src/**/*.ts", "test/**/*.ts", "packages/*/src/**/*.ts", "packages/*/test/**/*.ts"],
-    plugins: { "@typescript-eslint": tseslint.plugin },
     languageOptions: {
       parserOptions: {
         projectService: true,

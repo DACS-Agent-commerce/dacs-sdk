@@ -12,6 +12,16 @@ npm ci --prefix tools/lint --ignore-scripts
 npm run lint --prefix tools/lint
 ```
 
+`eslint-config.test.mjs` checks which rules the config turns on for which files:
+
+```bash
+node --test tools/lint/eslint-config.test.mjs
+```
+
+## Unused variables
+
+`tsconfig.json` does not turn on `noUnusedLocals` or `noUnusedParameters`, so `@typescript-eslint/no-unused-vars` reports unused variables, parameters and caught errors in TypeScript, with the same defaults as the JavaScript rule. An underscore prefix does not silence it; delete the name or use it.
+
 ## Existing issues
 
 `eslint-suppressions.json` lists the issues that were already in the code when the linter was added, as a count per file and rule. They don't fail the run. A new issue fails it, unless a listed issue of the same rule in the same file was removed in the same change, because the list holds counts rather than exact lines.
