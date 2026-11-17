@@ -8,7 +8,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { leaseHolderState, leaseState, PROCESS_LEASE_ID, PROCESS_NAMESPACE, takeLease } from '../src/dacs/process-lease.mjs';
+import { leaseHolderState, leaseState, PROCESS_LEASE_ID, PROCESS_NAMESPACE, ProcessLeaseError, takeLease } from '../src/dacs/process-lease.mjs';
 import { acquireSellerStateLock, SELLER_STATE_LOCK_FILE, SELLER_STATE_LOCK_REFUSALS } from '../src/devnet-demo/seller-state-lock.mjs';
 
 const WORKER = new URL('./helpers/lease-worker.mjs', import.meta.url);
@@ -217,6 +217,14 @@ test('takeLease refuses an unsafe holders directory, an existing lease file or a
   for (let round = 0; round < 2; round++) assert.throws(() => takeLease(taken), { code: 'seller_state_lease_unavailable' });
   await writeFile(join(open, 'TEST-file'), '');
   assert.throws(() => takeLease(join(open, 'TEST-file')), { code: 'seller_state_directory_unsafe' });
+});
+
+test('takeLease on a missing directory throws the filesystem error, creates nothing and registers nothing', async t => {
+  const missing = join(await directory(t), 'TEST-missing');
+  assert.throws(() => takeLease(missing), error => error.code === 'ENOENT' && !(error instanceof ProcessLeaseError));
+  assert.equal(await exists(missing), false);
+  await mkdir(missing);
+  assert.equal(takeLease(missing), PROCESS_LEASE_ID);
 });
 
 test('a fault while taking a lease removes the file it created, and the next takeLease works', async t => {

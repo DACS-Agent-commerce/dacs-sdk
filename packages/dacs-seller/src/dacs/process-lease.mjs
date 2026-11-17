@@ -94,8 +94,11 @@ function discardFailedLease(file, created, lease, fd) {
  * exit. Nothing else in this process may open the file: closing any other
  * descriptor for it would drop the POSIX lock. So the file is always new, made
  * 0600 whatever the umask (opened read-only, SQLite would take only a shared
- * lock), and the descriptor that created it stays open. Returns the lease id;
- * throws ProcessLeaseError, and registers nothing, when the lease can't be taken;
+ * lock), and the descriptor that created it stays open. Returns the lease id.
+ * Throws ProcessLeaseError when the directory or lease file is unsafe or the
+ * lease is held or can't be locked. Any other failure (a missing directory, a
+ * permission error, a full disk, a SQLite error) is thrown as the original
+ * filesystem or SQLite error, unwrapped. Either way nothing is registered, and
  * a failed call removes the file it created, so a later call can try again.
  */
 export function takeLease(dir) {
