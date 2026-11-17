@@ -885,8 +885,9 @@ export async function loadDacsFixedPriceX402BuyerAgreementPublicationV1(
  */
 function localAnchorRefusal(error: unknown) {
   if (error instanceof DacsFixedPriceX402ProfileError) {
-    // The runtime caps reason codes at 80 characters after its own
-    // prefix, so pass the bare code: a longer phrase would cut it off.
+    // The runtime builds "prefix-stage-reason" and limits the whole string to
+    // 80 characters, so its prefix and stage use part of that space. Pass the
+    // bare code to leave as much of it as possible for the reason.
     return { disposition: "rejected" as const, reason: error.reasonCode };
   }
   return { disposition: "indeterminate" as const,
