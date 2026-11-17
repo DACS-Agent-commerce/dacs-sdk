@@ -1014,7 +1014,7 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `explicit_resume_invalid` (401; 500 when signing) | a resume header over the limit, not canonical, failing admission, with other than the proof's members, or with an `expiresAt` outside the lifetime bound |
 | `explicit_resume_signature_invalid` (401) | the resume proof's signature is malformed, under another domain, or not the request's buyer's or delegation's key |
 | `explicit_resume_mismatch` (409) | a resume proof whose buyer, seller, Listing pin, job, lane, Agreement hash, profile or request hash differs from the request carrying it |
-| `explicit_resume_expired` (408) | a resume proof whose `expiresAt` is not after the verifier's clock |
+| `explicit_resume_expired` (408) | a resume proof whose `expiresAt` is not after the verifier's clock, or not after the latest clock any caller has given the in-memory ledger |
 | `explicit_resume_used` (409) | the ledger already holds this proof |
 | `explicit_resume_ledger_full` (503) | the in-memory ledger holds 4,096 live claims; the verifier throws it unchanged |
 | `explicit_resume_ledger_failed` (503) | the host's ledger threw or rejected while recording the claim with an error that has no `explicit_resume_*` code; the ledger's error is the cause and the proof is refused |
