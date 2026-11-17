@@ -963,9 +963,9 @@ shapes: such an input is refused with `not an attestation bundle`, whether it
 is a whole early-shape bundle or a current bundle that carries one early-shape
 reference.
 
-Use the typed address helper exported by the relevant producer, such as
-`compositeVerificationAddress`, `fixedPriceAgreementLogicalAddress`, or
-`bundleAddress`.
+To compute the address of an artifact, use the typed address helper exported
+by the module that produces it, such as `compositeVerificationAddress`,
+`fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
 
 The public `attestationAddress`, `paymentEvidenceAddress`, `ratingAddress`, and
 `bundleAddress` builders validate a canonical JID-1 uppercase ULID before

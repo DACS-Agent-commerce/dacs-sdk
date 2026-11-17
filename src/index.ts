@@ -1116,7 +1116,7 @@ export {
   type PublishListingResult,
 } from "./agent/index.js";
 
-// Settlement rails (SR-4): x402 reference rail + the runSession `settle` bridge.
+// Settlement rails (SR-4): x402 reference rail + the settle bridges.
 export {
   PRIOR_PAYMENT_DISPOSITION_SEPARATOR,
   CONCRETE_PAYMENT_PHASES,
