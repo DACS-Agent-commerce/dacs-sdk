@@ -7,12 +7,11 @@ import { mkdir,mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname,join } from 'node:path';
 import { appendApprovalLedgerLine } from '../src/devnet-demo/approval-ledger-append.mjs';
-const fixture=async(t)=>{const dir=await mkdtemp(join(tmpdir(),'TEST-ledger-append-'));t.after(()=>rm(dir,{recursive:true,force:true}));return dir;};
+import { spyOnFsync } from './helpers/fsync-spy.mjs';const fixture=async(t)=>{const dir=await mkdtemp(join(tmpdir(),'TEST-ledger-append-'));t.after(()=>rm(dir,{recursive:true,force:true}));return dir;};
 const recordSyncs=(work)=>{
- const original=fs.fsyncSync,synced=[];
- try{fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();work();}
- finally{fs.fsyncSync=original;syncBuiltinESMExports();}
- return synced;
+ const spy=spyOnFsync();
+ try{work();}finally{spy.restore();}
+ return spy.synced;
 };
 
 test('ledger appends preserve an unterminated last record',async t=>{
@@ -35,11 +34,9 @@ test('a ledger two missing levels deep is refused before any directory is create
 });
 
 const syncInChildProcess=`
-import fs from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
-const [ledgerPath,moduleUrl]=process.argv.slice(1),synced=[],original=fs.fsyncSync;
-fs.fsyncSync=fd=>{synced.push(fs.realpathSync('/proc/self/fd/'+fd));return original(fd);};
-syncBuiltinESMExports();
+const [ledgerPath,moduleUrl,spyUrl]=process.argv.slice(1);
+const { spyOnFsync }=await import(spyUrl);
+const { synced }=spyOnFsync();
 const { syncApprovalLedger }=await import(moduleUrl);
 syncApprovalLedger(ledgerPath);
 console.log(JSON.stringify({pid:process.pid,synced}));
@@ -49,7 +46,8 @@ test('a retry in a fresh process syncs the leaf entry a crash left unsynced',asy
  const dir=await fixture(t),path=join(dir,'leaf','ledger');
  await mkdir(dirname(path),{mode:0o700});await writeFile(path,`${JSON.stringify({record:'first'})}\n`);
  const moduleUrl=new URL('../src/devnet-demo/approval-ledger-append.mjs',import.meta.url).href;
- const child=spawnSync(process.execPath,['--input-type=module','-e',syncInChildProcess,'--',path,moduleUrl],{encoding:'utf8'});
+ const spyUrl=new URL('./helpers/fsync-spy.mjs',import.meta.url).href;
+ const child=spawnSync(process.execPath,['--input-type=module','-e',syncInChildProcess,'--',path,moduleUrl,spyUrl],{encoding:'utf8'});
  assert.equal(child.status,0,child.stderr);
  const {pid,synced}=JSON.parse(child.stdout);
  assert.notEqual(pid,process.pid);

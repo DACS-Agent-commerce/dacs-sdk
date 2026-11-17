@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { composeSellerApproval,createExactOperatorApproval,parsePolicyLedger,heldPolicyBudget,serializedPolicy,SELLER_LEDGER_HEADER_FORMAT,SELLER_ISSUANCE_JOURNALS } from '../src/devnet-demo/operator-approval.mjs';
 import { sellerRecordsPurchaseResolver } from '../src/devnet-demo/seller-purchase-source.mjs';
 import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs';
+import { spyOnFsync } from './helpers/fsync-spy.mjs';
 import { address,seller,buyer,pin,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor,realPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
 const LOCK_FILE='seller-state.lock';
 const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,paymentTxRef:{...PAYMENT_TX_REF},prePaymentOpen:false});
@@ -164,11 +165,9 @@ for(const stage of ['decision','signing','completion'])test(`C-3 ${stage} append
 
 test('D-3 completion syncs its file before reporting success',async t=>{
  const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});assert.equal(await f.p.prepare(r),true);
- const original=fs.fsyncSync;let synced=false;
- try{
-  fs.fsyncSync=fd=>{if(fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath)synced=true;return original(fd);};syncBuiltinESMExports();
-  await f.p.settle(r,'spent');assert.equal(synced,true);
- }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
+ const spy=spyOnFsync();
+ try{await f.p.settle(r,'spent');}finally{spy.restore();}
+ assert(spy.synced.includes(f.evidencePath));
 });
 
 for(const stage of ['file','directory'])test(`C-5 ${stage} sync failure prevents signature approval`,async t=>{
@@ -180,11 +179,11 @@ for(const stage of ['file','directory'])test(`C-5 ${stage} sync failure prevents
 });
 
 test('C-5 manual approval publishes its newly created ledger directory before returning',async t=>{
- const f=await fixture(t),evidencePath=join(f.evidencePath+'-new','ledger'),original=fs.fsyncSync,synced=[];
+ const f=await fixture(t),evidencePath=join(f.evidencePath+'-new','ledger'),spy=spyOnFsync();
  try{
-  fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();
   const a=createExactOperatorApproval({...f.settings,evidencePath,authorize:()=>true});assert.equal(await a(requestFor()),true);
- }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
+ }finally{spy.restore();}
+ const {synced}=spy;
  assert(synced.includes(evidencePath));assert(synced.includes(f.evidencePath+'-new'));assert(synced.includes(join(f.evidencePath,'..')));
 });
 
@@ -469,15 +468,16 @@ test('a manual approval on another ledger writes no line for an attempt it does 
 });
 // A held attempt whose sign line was written but not synced, and whose cleanup append also failed.
 async function unsyncedSignLine(t){
- const f=await fixture(t),r=vetRequest(),{fsyncSync,openSync}=fs;let syncs=0,appends=0;
+ const f=await fixture(t),r=vetRequest();let syncs=0,appends=0;
  assert.equal((await f.p.decide(r)).outcome,'held');
+ const spy=spyOnFsync({onSync:path=>{if(path===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');}});
+ const {openSync}=fs;
  try{
-  fs.fsyncSync=fd=>{if(fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');return fsyncSync(fd);};
   fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&++appends===2)throw new Error('TEST append failed');return openSync(path,flags,...rest);};
   syncBuiltinESMExports();
   // Not 'unsigned': its sign line is still open on the ledger (cold F2).
   await assert.rejects(f.p.authorizeHeld(r,true),{message:'TEST sync failed'});
- }finally{fs.fsyncSync=fsyncSync;fs.openSync=openSync;syncBuiltinESMExports();}
+ }finally{fs.openSync=openSync;spy.restore();}
  assert.equal((await openSignRows(f)).length,1);
  return{f,r};
 }
@@ -575,9 +575,11 @@ test('policy mode without its purchase and source context is refused',async t=>{
 // failingAppends(t, n, skip): after `skip` more ledger append opens, the next n fail with EIO; returns the restore.
 function failingAppends(t,count,skip=0){
  const{openSync}=fs;let left=count;
- fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
+ const failing=(path,flags,...rest)=>{if(flags==='a'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
+ fs.openSync=failing;
  syncBuiltinESMExports();
- const restore=()=>{fs.openSync=openSync;syncBuiltinESMExports();};t.after(restore);return restore;
+ // Restoring twice, or after an fsync spy that was installed first has restored, must not bring back a stale function.
+ const restore=()=>{if(fs.openSync===failing)fs.openSync=openSync;syncBuiltinESMExports();};t.after(restore);return restore;
 }
 test('cold2 F1 a confirmation whose purchase reread failed is confirmed when retried',async t=>{
  let reads=0,failAt=null;const f=await fixture(t,async()=>{if(++reads===failAt)throw timeout();return null;});
@@ -594,16 +596,16 @@ test('rvc C-5 a confirmation without a node answer is false, writes nothing and 
 });
 // Fails the next sync of the ledger file once; returns the function that restores fsync.
 function failNextLedgerSync(t,f){
- const original=fs.fsyncSync;let armed=true;
- fs.fsyncSync=fd=>{if(armed&&fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath){armed=false;throw new Error('TEST sync failed');}return original(fd);};syncBuiltinESMExports();
- const restore=()=>{fs.fsyncSync=original;syncBuiltinESMExports();};t.after(restore);return restore;
+ let armed=true;
+ const {restore}=spyOnFsync({onSync:path=>{if(armed&&path===f.evidencePath){armed=false;throw new Error('TEST sync failed');}}});
+ t.after(restore);return restore;
 }
 const confirmationLines=async(f)=>(await ledgerLines(f)).filter(line=>line.confirmation);
 test('a confirmation whose line was written but not synced is synced and confirmed when retried',async t=>{
- const f=await fixture(t,purchase),r=payDem(),original=fs.fsyncSync,synced=[];assert.equal(await f.p.prepare(r),true);
+ const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
  const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
  assert.equal((await confirmationLines(f)).length,1);
- fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ const {synced,restore:restoreSpy}=spyOnFsync();t.after(restoreSpy);
  assert.equal(await f.p(r,confirmationFor(r)),true);
  assert(synced.includes(f.evidencePath));assert.equal((await confirmationLines(f)).length,1);
  assert.equal((await f.read()).rows.find(row=>row.signAuthorized).confirmed,'approved');
@@ -623,8 +625,8 @@ test('a retried confirmation carrying another write\'s node answer is false and 
 test('a retried confirmation carrying another transaction hash than the recorded one is false and syncs nothing',async t=>{
  const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
  const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
- const lines=(await ledgerLines(f)).length,other=confirmationFor(r),original=fs.fsyncSync,synced=[];other.response.data.transaction.hash='a'.repeat(64);
- fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ const lines=(await ledgerLines(f)).length,other=confirmationFor(r);other.response.data.transaction.hash='a'.repeat(64);
+ const {synced,restore:restoreSpy}=spyOnFsync();t.after(restoreSpy);
  assert.equal(await f.p(r,other),false);assert.equal(synced.includes(f.evidencePath),false);
  assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
  assert.equal(await f.p(r,confirmationFor(r)),true);
@@ -635,8 +637,7 @@ test('a retried confirmation whose node answer lists the same content in another
  const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
  const reordered=confirmationFor(r),tx=reordered.response.data.transaction;
  tx.content=reversedKeys({...tx.content,transaction_fee:reversedKeys(tx.content.transaction_fee),gcr_edits:tx.content.gcr_edits.map(reversedKeys)});
- const original=fs.fsyncSync,synced=[];
- fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ const {synced,restore:restoreSpy}=spyOnFsync();t.after(restoreSpy);
  assert.equal(await f.p(r,reordered),true);
  assert(synced.includes(f.evidencePath));assert.equal((await confirmationLines(f)).length,1);
 });
@@ -645,8 +646,8 @@ for(const [label,retryHash] of [['the same malformed hash','not-a-hash'],['anoth
  first.response.data.transaction.hash='not-a-hash';retry.response.data.transaction.hash=retryHash;
  assert.equal(await f.p.prepare(r),true);
  const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,first),{message:'TEST sync failed'});restore();
- const lines=(await ledgerLines(f)).length,original=fs.fsyncSync,synced=[];
- fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ const lines=(await ledgerLines(f)).length;
+ const {synced,restore:restoreSpy}=spyOnFsync();t.after(restoreSpy);
  assert.equal(await f.p(r,retry),false);assert.equal(synced.includes(f.evidencePath),false);
  assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
 });
@@ -655,8 +656,7 @@ test('a retried confirmation whose node answer has no hash is synced and confirm
  delete first.response.data.transaction.hash;delete retry.response.data.transaction.hash;
  assert.equal(await f.p.prepare(r),true);
  const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,first),{message:'TEST sync failed'});restore();
- const original=fs.fsyncSync,synced=[];
- fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ const {synced,restore:restoreSpy}=spyOnFsync();t.after(restoreSpy);
  assert.equal(await f.p(r,retry),true);
  assert(synced.includes(f.evidencePath));assert.equal((await confirmationLines(f)).length,1);
 });
@@ -665,16 +665,16 @@ test('a retried confirmation that adds a hash to a recorded hashless answer is f
  delete first.response.data.transaction.hash;
  assert.equal(await f.p.prepare(r),true);
  const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,first),{message:'TEST sync failed'});restore();
- const lines=(await ledgerLines(f)).length,original=fs.fsyncSync,synced=[];
- fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ const lines=(await ledgerLines(f)).length;
+ const {synced,restore:restoreSpy}=spyOnFsync();t.after(restoreSpy);
  assert.equal(await f.p(r,confirmationFor(r)),false);assert.equal(synced.includes(f.evidencePath),false);
  assert.equal((await ledgerLines(f)).length,lines);
 });
 test('a retried confirmation with a null node answer is false and syncs nothing',async t=>{
  const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
  const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
- const lines=(await ledgerLines(f)).length,original=fs.fsyncSync,synced=[];
- fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ const lines=(await ledgerLines(f)).length;
+ const {synced,restore:restoreSpy}=spyOnFsync();t.after(restoreSpy);
  assert.equal(await f.p(r,null),false);assert.equal(synced.includes(f.evidencePath),false);
  assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
  assert.equal(await f.p(r,confirmationFor(r)),true);
@@ -703,17 +703,17 @@ test('a held sign line that could not be appended, nor released, is pending unti
  assert.equal((await f.p.decide(r)).outcome,'held');
 });
 test('an automatic sign line written but not synced, whose release failed, is pending until settled as released',async t=>{
- const f=await fixture(t,purchase),r=payDem(),{fsyncSync}=fs;let syncs=0;
- fs.fsyncSync=fd=>{if(fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');return fsyncSync(fd);};
- t.after(()=>{fs.fsyncSync=fsyncSync;syncBuiltinESMExports();});
- const restore=failingAppends(t,1,1);await assert.rejects(f.p.prepare(r),{message:'TEST sync failed'});restore();fs.fsyncSync=fsyncSync;syncBuiltinESMExports();
+ const f=await fixture(t,purchase),r=payDem();let syncs=0;
+ const spy=spyOnFsync({onSync:path=>{if(path===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');}});
+ t.after(spy.restore);
+ const restore=failingAppends(t,1,1);await assert.rejects(f.p.prepare(r),{message:'TEST sync failed'});restore();spy.restore();
  assert.equal((await openSignRows(f)).length,1);await assert.rejects(f.p.prepare(r),{code:'seller_approval_pending'});
  await f.p.settle(r,'released');assert.equal((await openSignRows(f)).length,0);assert.equal(await f.p.prepare(r),true);
 });
 test('cold F2 a Vet whose sign line failed to sync, and whose release failed, is not refused: the composer releases it and rejects, and a retry is approved',async t=>{
- const f=await fixture(t,()=>null,{ledgerRetryMs:1}),r=vetRequest(),{fsyncSync}=fs;let armed=false,prompts=0,restore;
- fs.fsyncSync=fd=>{if(armed&&fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath){armed=false;throw new Error('TEST sync failed');}return fsyncSync(fd);};
- t.after(()=>{fs.fsyncSync=fsyncSync;syncBuiltinESMExports();});syncBuiltinESMExports();
+ const f=await fixture(t,()=>null,{ledgerRetryMs:1}),r=vetRequest();let armed=false,prompts=0,restore;
+ const spy=spyOnFsync({onSync:path=>{if(armed&&path===f.evidencePath){armed=false;throw new Error('TEST sync failed');}}});
+ t.after(spy.restore);
  // The first manual yes: its sign line is written but its sync fails, and the release of that line fails once.
  const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{if(++prompts===1){armed=true;restore=failingAppends(t,1,1);}return true;}});
  await assert.rejects(a(r),{message:'TEST sync failed'});restore();
