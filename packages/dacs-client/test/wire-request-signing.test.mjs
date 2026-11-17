@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
-import { world, request, code, encode, OLD_REQUEST, setPurchaseAdmission } from './helpers/wire-client-fixture.mjs';
+import { world, request, code, encode, OLD_REQUEST, setPurchaseAdmission, T0 } from './helpers/wire-client-fixture.mjs';
 const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
 const response = async (w, signed, { offset = 0, text = '{"ok":true}', expiresAt } = {}) => {
   const payload = {
@@ -225,4 +225,45 @@ test('a signature that finishes after the HTTP deadline is dropped and nothing i
   release();
   await turn();
   assert.equal(sends, 0);
+});
+const SLOW_AUTHORITY_READ_MS = 30000;
+// The first authority read of each attempt takes `ms`; the clock starts each attempt at T0.
+const slowAuthorityRead = (w, ms) => {
+  w.state.time = T0;
+  let slow = true;
+  w.state.gate = async () => {
+    if (slow) w.state.time += ms;
+    slow = false;
+  };
+};
+const assertNothingSent = async (w) => {
+  let sends = 0;
+  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async () => {
+      sends++;
+      throw Error('unexpected dispatch');
+    } });
+  await assert.rejects(client.agreementState({ jobId: w.payload.jobId }));
+  assert.equal(sends, 0);
+};
+test('a request whose authority read outlasts the 30 s request lifetime is refused peer_expired and nothing is sent', async (t) => {
+  const w = await world(t);
+  slowAuthorityRead(w, SLOW_AUTHORITY_READ_MS);
+  await assert.rejects(request(w), code('peer_expired'));
+  slowAuthorityRead(w, SLOW_AUTHORITY_READ_MS);
+  await assertNothingSent(w);
+});
+test('a request whose authority read passes the delegation expiry by 10 ms is refused peer_expired and nothing is sent', async (t) => {
+  const w = await world(t);
+  w.delegation.payload.expiresAt = T0 + 5;
+  w.delegation.signature = w.buyer.sign(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(w.payload))).toString('base64url');
+  slowAuthorityRead(w, 10);
+  await assert.rejects(request(w), code('peer_expired'));
+  slowAuthorityRead(w, 10);
+  await assertNothingSent(w);
+});
+test('a request whose authority read finishes before it expires is returned', async (t) => {
+  const w = await world(t);
+  slowAuthorityRead(w, SLOW_AUTHORITY_READ_MS - 1);
+  const signed = await request(w);
+  assert.equal(signed.payload.expiresAt, T0 + SLOW_AUTHORITY_READ_MS);
 });
