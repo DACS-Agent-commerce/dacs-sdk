@@ -5,15 +5,24 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { assemble } from './delta-assemble.mjs';
 const root=join(dirname(fileURLToPath(import.meta.url)),'../../..');
-function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));execFileSync('git',['clone','--quiet','--shared',root,dir]);t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;}
+// A `git commit` may start `git maintenance run --auto`, which can detach and keep writing into the clone's .git
+// after the commit returns; that races the cleanup below (ENOTEMPTY). A scratch clone never starts it.
+function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));execFileSync('git',['clone','--quiet','--shared',root,dir]);for(const [key,value] of [['maintenance.auto','false'],['gc.auto','0'],['gc.autoDetach','false']])execFileSync('git',['-C',dir,'config','--local',key,value]);t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;}
 function check(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-provenance.mjs'),'--local-only'],{encoding:'utf8'});return {status:result.status,text:result.stdout+result.stderr};}
 const moved='packages/dacs-client/src/dacs/buyer-chain-readback.mjs';
 test('committed delta history and generated per-file table agree',t=>{const r=check(scratch(t));assert.equal(r.status,0,r.text);});
+test('a commit in a scratch clone starts no background git maintenance that could outlive the test',t=>{
+ const dir=scratch(t);writeFileSync(join(dir,'maintenance-probe.txt'),'probe\n');execFileSync('git',['-C',dir,'add','-A']);
+ const commit=spawnSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false','commit','-qm','test: probe'],{encoding:'utf8',env:{...process.env,GIT_TRACE:'1'}});
+ assert.equal(commit.status,0,commit.stderr);
+ assert.doesNotMatch(commit.stderr,/git maintenance run|git gc --auto/,'git commit must not start automatic maintenance in a scratch clone');
+});
 function checkCallbackHistory(dir) {
   const pkg = join(dir, 'packages/dacs-client');
   const notes = readFileSync(join(pkg, 'DELTA-NOTES.md'), 'utf8');
-  const { changes } = JSON.parse(readFileSync(join(pkg, 'DELTA-LEDGER.json'), 'utf8'));
+  const { changes } = assemble(pkg).ledger;
   const replacement = 'fix(client): D11 enforce the write lease in SQLite instead of patching statements';
   const retired = [
     'fix(client): D11 refuse SQL callbacks under the statement guard',
@@ -149,12 +158,12 @@ for (const subject of ['delta(client): D11 TEST accepted source repair', 'fix(cl
  test(`D11 source history accepts ${subject.split(':')[0]} records`, t => {
   const dir=scratch(t),git=(...args)=>execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false',...args]);
   // Exercise this checkout's checker even before its test commit is published.
-  copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));
+  useThisChecker(dir);
   appendFileSync(join(dir,moved),'\n// TEST D11 source repair\n');git('add','--',moved);
   const node=(...args)=>execFileSync(process.execPath,args,{cwd:dir});
   node('packages/dacs-client/scripts/delta-map.mjs','--record','D11',subject);
   const files=[moved,'packages/dacs-client/DELTA-COMMITS.json','packages/dacs-client/DELTA-LEDGER.json','packages/dacs-client/DELTA-MAP.md'];
-  if(git('diff','--name-only','HEAD','--','packages/dacs-client/scripts/delta-map.mjs').length)files.push('packages/dacs-client/scripts/delta-map.mjs');files.sort();
+  files.push(...checkerFiles.filter(path=>git('diff','--name-only','HEAD','--',path).length));files.sort();
   const inventory=join(dir,'packages/dacs-client/DELTA-COMMITS.json'),rows=JSON.parse(readFileSync(inventory,'utf8'));
   rows.push({sha:null,subject,files});writeFileSync(inventory,JSON.stringify(rows,null,2)+'\n');
   node('packages/dacs-client/scripts/delta-map.mjs');git('add','--',...files);git('commit','-qm',subject);
@@ -228,11 +237,11 @@ test('a hashed inventory row must carry its commit subject, and one commit has o
 });
 test('a record that names its full commit hash needs no delta prefix in the subject, an unqualified one does',t=>{
  const dir=scratch(t),git=scratchGit(dir),subject='fix(client): TEST source repair without a delta prefix',bookkeeping='fix(client): D11 TEST record the unprefixed source repair';
- copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));
+ useThisChecker(dir);
  appendFileSync(join(dir,moved),'\n// TEST unprefixed source repair\n');git('add','--',moved);git('commit','-qm',subject);
  const sha=git('rev-parse','HEAD'),ledgerFile=join(dir,control[1]),inventoryFile=join(dir,control[0]),data=JSON.parse(readFileSync(ledgerFile,'utf8')),rows=JSON.parse(readFileSync(inventoryFile,'utf8'));
  data.changes.push({delta:'D11',subject,sha,files:[{path:moved,before:git('rev-parse',`${sha}^:${moved}`),after:git('rev-parse',`${sha}:${moved}`)}]});writeFileSync(ledgerFile,JSON.stringify(data,null,2)+'\n');
- const scripts='packages/dacs-client/scripts/delta-map.mjs',files=[...control,...(git('diff','--name-only','HEAD','--',scripts).length?[scripts]:[])].sort();
+ const scripts='packages/dacs-client/scripts/delta-map.mjs',files=[...control,...checkerFiles.filter(path=>git('diff','--name-only','HEAD','--',path).length)].sort();
  rows.push({sha,subject,files:[moved]},{sha:null,subject:bookkeeping,files});writeFileSync(inventoryFile,JSON.stringify(rows,null,2)+'\n');
  execFileSync(process.execPath,[scripts],{cwd:dir});git('add','--',...files);git('commit','-qm',bookkeeping);
  let r=check(dir);assert.equal(r.status,0,r.text);
@@ -241,7 +250,8 @@ test('a record that names its full commit hash needs no delta prefix in the subj
 });
 
 // W-finish client commits carry the WF id (DC-CW4). Each scratch clone uses this checkout's checker.
-function useThisChecker(dir){copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));}
+const checkerFiles=['delta-map.mjs','delta-assemble.mjs','delta-record.mjs'].map(name=>`packages/dacs-client/scripts/${name}`);
+function useThisChecker(dir){for(const path of checkerFiles)copyFileSync(join(root,path),join(dir,path));}
 test('a WF delta record is accepted and an unlisted delta id is still refused',t=>{
  const dir=scratch(t);useThisChecker(dir);
  recordedCommit(dir,'delta(client): WF TEST accepted record','TEST WF record','WF');

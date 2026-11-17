@@ -798,16 +798,6 @@ export {
   type ParserEvaluation,
   type Reputation,
   type ReputationExclusion,
-  // Injectable legacy buyer-session core. Its historical address
-  // grammar is public only under an explicit compatibility name; current
-  // producers export their own typed normative address functions.
-  runSessionCore,
-  legacyMvpSessionAnchorName,
-  type SessionDeps,
-  type SessionResult,
-  type SessionVetRequest,
-  type VetFinalityAuthenticationRequest,
-  type SessionTerms,
   type SettleRequest,
   type SettleResult,
   type SettlementRecoveryAttempt,
@@ -1126,7 +1116,7 @@ export {
   type PublishListingResult,
 } from "./agent/index.js";
 
-// Settlement rails (SR-4): x402 reference rail + the runSession `settle` bridge.
+// Settlement rails (SR-4): x402 reference rail + the settle bridges.
 export {
   PRIOR_PAYMENT_DISPOSITION_SEPARATOR,
   CONCRETE_PAYMENT_PHASES,
@@ -1451,6 +1441,7 @@ export {
   type PayD402Rail,
   type PayD402RailConfig,
   type PayD402SettleParams,
+  type PayD402SettleResult,
   type PayD402SettleCoreDeps,
   type D402ClientLike,
   type D402PaymentRequirement,

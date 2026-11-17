@@ -104,7 +104,7 @@ test('the seller-effect-routes module ships: the manifest lists every local runt
     console.log(JSON.stringify({ handler: typeof http.createSellerHttpHandler, rows: Object.keys(routes.SELLER_EFFECT_ROUTES).length }));`;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { cwd: realpathSync(preparedPath), env: { PATH: process.env.PATH }, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout.trim().split('\n').at(-1)), { handler: 'function', rows: 5 });
+  assert.deepEqual(JSON.parse(result.stdout.trim().split('\n').at(-1)), { handler: 'function', rows: 6 });
 });
 
 test('the packed seller ships the dacs-seller bin, the CLI modules and durable-file.mjs, and the installed bin prints usage', () => {

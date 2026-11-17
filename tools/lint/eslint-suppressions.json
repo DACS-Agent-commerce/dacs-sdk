@@ -460,11 +460,6 @@
       "count": 2
     }
   },
-  "src/agent/runSessionCore.ts": {
-    "no-useless-assignment": {
-      "count": 1
-    }
-  },
   "src/agent/sessionSettlement.ts": {
     "no-useless-assignment": {
       "count": 1
