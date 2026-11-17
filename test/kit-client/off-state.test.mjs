@@ -71,7 +71,8 @@ function spawnNode(args, env) {
 
 /**
  * Runs node on `nodeArgs` in a child that reports through the file named by KIT_CLIENT_PROBE_OUT, and returns what it reported with its exit status.
- * The child gets the caller's NODE_OPTIONS and the loader. Throws, naming the exit status and stderr, when the child ends without reporting.
+ * The child gets the caller's NODE_OPTIONS and the loader. Throws, naming the exit status, stdout and stderr, when the child ends without reporting.
+ * Node's test runner writes a failing test's error to stdout, so stdout carries the cause for a `--test` child.
  */
 async function runProbeChild(nodeArgs) {
   const directory = await mkdtemp(join(tmpdir(), 'TEST-kit-client-probe-'));
@@ -80,7 +81,7 @@ async function runProbeChild(nodeArgs) {
     const nodeOptions = [process.env.NODE_OPTIONS, LOADER_OPTION].filter(Boolean).join(' ');
     const child = spawnNode(nodeArgs, { NODE_OPTIONS: nodeOptions, KIT_CLIENT_PROBE_OUT: out });
     if (child.error || child.status === null || !existsSync(out)) {
-      throw new Error(`probe child ended without reporting (status ${child.status}, signal ${child.signal}, error ${child.error?.message}): ${child.stderr}`);
+      throw new Error(`probe child ended without reporting (status ${child.status}, signal ${child.signal}, error ${child.error?.message})\nstdout: ${child.stdout}\nstderr: ${child.stderr}`);
     }
     return { status: child.status, ...JSON.parse(readFileSync(out, 'utf8')) };
   } finally {
@@ -91,8 +92,11 @@ async function runProbeChild(nodeArgs) {
 /** Runs the teardown probe in a child process and returns what it reported (the host's URL and state directory) with its exit status. */
 const runTeardownProbe = () => runProbeChild(['--test', 'test/kit-client/teardown-probe.mjs']);
 
-test('a probe child that ends without reporting is named with its exit status and stderr', async () => {
-  await assert.rejects(runProbeChild(['-e', "console.error('TEST child stderr'); process.exit(3)"]), /status 3[\s\S]*TEST child stderr/u);
+test('a probe child that ends without reporting is named with its exit status, stdout and stderr', async () => {
+  await assert.rejects(
+    runProbeChild(['-e', "console.log('TEST child stdout'); console.error('TEST child stderr'); process.exit(3)"]),
+    /status 3[\s\S]*TEST child stdout[\s\S]*TEST child stderr/u,
+  );
 });
 
 test("a probe child keeps the caller's NODE_OPTIONS next to the loader", async () => {
