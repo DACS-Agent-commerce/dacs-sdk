@@ -37,6 +37,11 @@ const unwithdrawnStarts = (records, artifactHash) => records.filter((record) => 
 const confirmationEstablished = (records, artifactHash) => records.some((record) => record.artifactHash === artifactHash && (record.state === 'confirm-acknowledged'
   || (record.state === 'observed' && records.some((started) => started.seq === record.of && started.state === 'confirm-started' && started.artifactHash === artifactHash))));
 
+// Whether a stored `observed` record holds this result. A result that cannot be written never matches, so the append reports it.
+const sameResult = (record, result) => {
+  try { return canonicalize({ result: record.result }) === canonicalize({ result }); } catch { return false; }
+};
+
 // A pass's job class and private current-authorization check come only from jobPassContext, never from a request.
 const contexts = new WeakSet();
 const brand = (context) => { contexts.add(context); return Object.freeze(context); };
@@ -143,7 +148,9 @@ function assertStage(stage) {
  * - `pass(op, innerSign, innerSend, { stage, context })` is both under one fence; resolves `{ bytes, answer }`.
  * - `signerFor(held, inner)` is a wire signer that runs EB5r's final tail inside `sign`.
  * - `recordObserved(op, stage, result)` records a readback that found the stage's transmission; for 'confirm' it
- *   counts as the acknowledgement a broadcast requires.
+ *   counts as the acknowledgement a broadcast requires. It refuses an `op` stamped with another pin version, and
+ *   when the transmission already has an `observed` record with the same result it returns that record
+ *   (`created: false`) instead of adding another.
  * - `replaceConnection(replace, capability)` replaces the connection under the fence and bumps `connectionGeneration()`.
  */
 export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilingOs = null, history, clock }) {
@@ -353,12 +360,15 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     },
     async recordObserved(op, stage, result) {
       checkOperation(op);
+      checkOperationPin(op, binding.profile.pinVersion);
       assertStage(stage);
       return hold(op, PLAIN_CONTEXT, async () => {
         const records = await history.read(op.lane);
         const retained = retainedSigned(records, op);
         const started = retained === null ? undefined : unwithdrawnStarts(records, retained.artifactHash).findLast((record) => record.state === `${stage}-started`);
         if (started === undefined) throw refuse('eb_observation_unexpected', `no ${stage} transmission of ${op.operationId} to observe`);
+        const existing = records.find((record) => record.state === 'observed' && record.of === started.seq && sameResult(record, result));
+        if (existing !== undefined) return { record: existing, created: false };
         return history.append(op.lane, { state: 'observed', ...base(op, retained.artifactHash), of: started.seq, result });
       });
     },

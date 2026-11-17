@@ -441,6 +441,35 @@ test('a lane stamped with another pin version is readback-only: pin_version_reti
   assert.deepEqual(await states(restarted.history), ['signed'], 'readback still works');
 });
 
+// A lane whose dispatch answer was lost: `dispatch-unknown`, waiting for a readback.
+const laneWithLostDispatch = async (w) => {
+  const built = w.build();
+  const lost = failure('ECONNRESET');
+  await assert.rejects(built.boundary.pass(w.op(), w.sign(), () => { throw lost; }), (error) => error === lost);
+  return built;
+};
+
+test('recordObserved refuses an operation stamped with another pin version and appends nothing', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = await laneWithLostDispatch(w);
+  await assert.rejects(boundary.recordObserved(w.op({ pinVersion: 'dacs-demos-testnet-identity/2026-10-15' }), 'dispatch', { found: 1 }), { code: 'pin_version_retired' });
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown']);
+  await boundary.recordObserved(w.op(), 'dispatch', { found: 1 });
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown', 'observed']);
+});
+
+test('recordObserved called twice with the same result leaves one observed record, and a different result adds one', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = await laneWithLostDispatch(w);
+  const first = await boundary.recordObserved(w.op(), 'dispatch', { found: 1, at: ['a', 'b'] });
+  const again = await boundary.recordObserved(w.op(), 'dispatch', { at: ['a', 'b'], found: 1 });
+  assert.deepEqual([first.created, again.created, again.record.seq], [true, false, first.record.seq]);
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown', 'observed']);
+  const changed = await boundary.recordObserved(w.op(), 'dispatch', { found: 2 });
+  assert.equal(changed.created, true);
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown', 'observed', 'observed']);
+});
+
 test('the dispatch history is append-only: a held or withheld record never erases an earlier possible dispatch', async (t) => {
   const w = await ebWorld(t);
   const first = w.build();
