@@ -104,7 +104,7 @@ for (const [stall, where] of [['first', 'before the first Vet write'], ['between
         t.mock.timers.reset();
         assert.deepEqual([answer.status, answer.signed, answer.body.error], [503, true, 'operation_uncertain'], answer.text);
         provider.seen.late = true;
-        const stateAtAnswer = admissionState(f.dataDirectory);
+        assert.equal(admissionState(f.dataDirectory), 'running', 'the row stays open at the timeout answer');
 
         let closed = false;
         const closing = host.close().then(() => { closed = true; });
@@ -119,7 +119,7 @@ for (const [stall, where] of [['first', 'before the first Vet write'], ['between
         await flush();
         assert.equal(provider.seen.lateWrites, 0, 'no Vet write after the deadline');
         assert.deepEqual(unhandled, []);
-        assert.equal(admissionState(f.dataDirectory), stateAtAnswer, 'the settled work completed nothing');
+        assert.equal(admissionState(f.dataDirectory), 'compensating', 'the settled work completed nothing, and its row is ended for cleanup once the work has settled');
         await (await f.start()).close();
         assert.notEqual(admissionState(f.dataDirectory), null, 'the retained admission survives the restart');
       });
