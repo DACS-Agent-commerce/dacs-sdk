@@ -184,7 +184,16 @@ describe("pre-Agreement admission", { timeout: 60_000 }, () => {
     expect(wire.inspectWireOperation(j.handle, (await e.open()).payload)).toEqual({ state: "completed", binding: wire.wireOperationBinding((await e.open()).payload), outcome: OUTCOME });
     expect(j.files()).toEqual(files);
   });
-  it("K2 order: each refusal is the first failing step's code, and no refusal before step 15 writes anything", async () => {
+  it("K2 order: a body over 64 KiB is refused as bad_json before the TP-1 binding is checked", async () => {
+    const x = await world();
+    for (const route of ROUTES) {
+      const j = journal(), e = await exchange(x, route);
+      await expect(admit(e, j, { binding: null, rawBody: Buffer.alloc(65537, " ") }), route).rejects.toMatchObject(refusal("bad_json", 400));
+      await expect(admit(e, j, { binding: null, rawBody: Buffer.alloc(65536, " ") }), route).rejects.toMatchObject(refusal("tp1_binding_required", 500));
+      expect(j.files(), route).toEqual([]);
+    }
+  });
+  it("K2 order: each refusal is the first failing step's code, and no refusal writes anything", async () => {
     let withdrawn = false;
     const sentinel = new Error("prefix authority refused");
     const x = await world({ readAuthority: scope => {

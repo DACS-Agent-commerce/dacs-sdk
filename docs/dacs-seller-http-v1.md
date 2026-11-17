@@ -110,13 +110,29 @@ or `route: "context"`, with no Agreement and no deadline. Its fields are
 on either route. A host that has been stopped refuses before it calls this
 function (the seller host answers `seller_stopped`, 503).
 
-The admission order is binding; envelope opened under that binding; kept
-purchase tuple; current participant authority; lifetime override; declared
-route matching the request path; audience; request expiry; bounded body CF-5
-admission then method/path/raw-byte hash; Listing pin; exact retained members,
-job, scope hash and parties; required delegation; live delegation scope;
-context journal handle; readiness; return. Every refusal before return writes
-nothing. The header limit is 4,096 characters and the body limit is 64 KiB.
+The first failing step decides the refusal. The steps run in this order:
+
+1. The body is at most 64 KiB, or the request is refused `bad_json` (400)
+   before anything else is checked.
+2. The TP-1 binding.
+3. The envelope was opened under that binding.
+4. The purchase tuple kept for the job.
+5. Current participant authority.
+6. The lifetime override.
+7. The declared route matches the request path.
+8. Audience.
+9. Request expiry.
+10. CF-5 admission of the body, then the method, path and raw-byte hash.
+11. Listing pin.
+12. Exact retained members, job, scope hash and parties.
+13. Required delegation.
+14. Live delegation scope.
+15. Context journal handle.
+16. Readiness.
+17. Return.
+
+Every refusal before return writes nothing. The header limit is 4,096
+characters and the body limit is 64 KiB.
 
 The host supplies `retained.agreementHash` as `challengeScopeHash` on challenge,
 and `contextScopeHash` on context, computed over its retained scope. Both
