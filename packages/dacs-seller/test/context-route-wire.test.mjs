@@ -618,6 +618,18 @@ test('a held or malformed provider answer to a direct request is no final outcom
   }
 });
 
+test('a row that cannot be ended when the provider settles does not change the answer, and a later compensation still ends it', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext({ signOptions: { delegated: false } });
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  w.behaviour.answer = async () => { guard.setKitOperationGuardForTest('off'); return { disposition: 'absent', reason: 'TEST no context', code: 'context_absent' }; };
+  assert.deepEqual(summary(await w.post(request)), [503, 'operation_uncertain']);
+  await w.settleJob();
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  assert.deepEqual([w.rowOf().state, w.openHolds().length], ['running', 1], 'nothing ended the row while the guard was off');
+  await w.admission.compensate(WIRE_JOB, 'a');
+  assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w)], ['aborted', 0, 'released']);
+});
+
 test('a held provider answer whose Vet writes cannot be ruled out keeps the row compensating with its hold and slot', async (t) => {
   const w = await contextWireWorld(t), request = await w.startContext({ signOptions: { delegated: false } });
   w.behaviour.evidenceKind = 'signed';
