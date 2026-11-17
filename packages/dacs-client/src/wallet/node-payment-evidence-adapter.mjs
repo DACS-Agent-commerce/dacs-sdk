@@ -17,16 +17,22 @@
 // result cannot be read back.
 //
 // `broadcast` acts on the signed bytes the reservation holds, once per call and with no retry:
-//   authorization  the stored approval id is reopened. An id the ledger no longer holds open is replaced by the exact request's
-//                  open authorization or a new one, and the reservation stores the replacement's id before anything is sent.
+//   authorization  the stored approval id is reopened. An id the ledger no longer holds open may have been spent by an execution
+//                  whose reservation write did not commit, so the chain is read for the held bytes first, with the readback below:
+//                  an execution ends the reservation and is `transaction_already_executed`, and only a chain that answers it has not
+//                  seen the hash lets the id be replaced; any other answer refuses. The replacement is the exact request's open
+//                  authorization or a new one, and the reservation stores its id before anything is sent.
 //   confirmation   `confirmTx` with the exact projection. An answer that is not a valid confirmation of those bytes is unknown and
 //                  never advances; a valid refusal is `confirm_rejected`.
 //   policy         `approval.confirm` runs on every replay against the held authorization; `false` or a throw sends nothing.
 //   dispatch       one `broadcastTx`. Whatever goes wrong after it starts is `outcome_unknown`: the receiver may hold the bytes.
-// `readTransactionState` answers `applied` only when the chain executed exactly these bytes and settles the reservation's
-// authorization spent; every other outcome is `pending` with its cause kept. It never answers `absent`.
+// `readTransactionState` answers `applied` only when the chain executed exactly these bytes, lists the hash in its block and serves
+// the storage program the CREATE made; it then ends the reservation holding them and settles its authorization spent, or ends it
+// without a settlement when the ledger refuses the spend and no longer holds the authorization open. Every other outcome is
+// `pending` with its cause kept. It never answers `absent`.
 import { canonicalize, demosTransactionContentMatches, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { OperationError } from '../client-errors.mjs';
+import { creationProvenanceMatches } from '../dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../dacs/wallet-transactions.mjs';
 import { classifyStorageWriteSubmission, rpcEnvelope, storageWriteAccountNonce, storageWriteConfirmationMatches, storageWriteIdentityMatches } from '../devnet-demo/storage-write-recovery.mjs';
 import { AUTHORITY_READ_DEADLINE_MS } from '../public-admission.mjs';
@@ -39,6 +45,9 @@ import { hasKeys } from './payload-helpers.mjs';
 const OPERATION = 'payment-evidence';
 const UNCERTAIN = 'signer_reservation_uncertain';
 const RETAINED_INVALID = 'retained_transaction_invalid';
+const ALREADY_EXECUTED = 'transaction_already_executed';
+const NOT_EXECUTED = 'transaction_not_executed';
+const SETTLEMENT_FAILED = 'signer_settlement_failed';
 const APPROVAL_UNAVAILABLE = 'approval_reservation_unavailable';
 const NODE_REPLY_MAX_BYTES = 4 * 1024 * 1024;
 const MAX_BLOCK_TRANSACTIONS = 10_000;
@@ -138,12 +147,15 @@ function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem
  * `broadcast({signedTransaction, txHash}, {signal})` must also run in an effect pass. It resolves `{status: 'accepted', txHash}`
  * after one dispatch of the held bytes and signs nothing. It rejects `retained_transaction_invalid` (the reservation does not
  * hold exactly these bytes; nothing was sent), `approval_required` (the authorization could not be reopened, renewed or confirmed
- * by current policy; nothing was sent), `confirm_rejected` (the node refused the confirmation), `outcome_unknown` (the
- * confirmation or the dispatch has no valid answer; the cause is kept), `locked`, or an abort's reason before the dispatch starts.
+ * by current policy, or the chain could not show that the bytes never ran; nothing was sent), `transaction_already_executed` (the
+ * stored authorization is no longer open and the chain shows the execution, which ended the reservation; nothing was sent),
+ * `confirm_rejected` (the node refused the confirmation), `outcome_unknown` (the confirmation or the dispatch has no valid answer;
+ * the cause is kept), `locked`, or an abort's reason before the dispatch starts.
  * `readAccountNonce({signal})` resolves the account nonce, or rejects `node_reply_invalid` or `invalid_nonce`.
  * `readTransactionState({signedTransaction, txHash, nonce}, {signal})` resolves `{state: 'applied' | 'pending'}` and never rejects
- * for a failed read; a `pending` answer's cause is `internalCauseOf(answer)`. It starts no read after an abort. Given `{txHash}`
- * alone, it reads back the bytes and nonce of the reservation holding that hash, and is `pending` when none does.
+ * for a failed read; a `pending` answer's cause is `internalCauseOf(answer)`. It starts no read after an abort. The seller journal
+ * passes the bytes and nonce it keeps, which also reads a CREATE whose reservation has ended. Given `{txHash}` alone, it reads back
+ * the bytes and nonce of the reservation holding that hash, and is `pending` when none does.
  */
 export function createPaymentEvidenceCreateAdapter({ reservations, approval, demos, observer, journal, pins, clock, rpcUrl, isWalletLocked, owner, fetchImpl, stamps, recordCause }) {
   const signer = String(demos.getAddress()).toLowerCase(), inQueue = createQueue();
@@ -162,7 +174,9 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     return observeWithDeadline(({ signal: stop }) => settleOnAbort(demos.nodeCall('getAddressNonce', { address: signer }), stop),
       { timeoutMs: AUTHORITY_READ_DEADLINE_MS, signal });
   }
+  // The fee inputs are approved and signed over, so they are read only from a node whose chain is the pinned one.
   async function readDebitInputs(signal) {
+    await observer.observe({ signal });
     const info = await observer.readNodeInfo('getNetworkInfo', { signal }), parameters = await observer.readNodeInfo('getNetworkParameters', { signal });
     const postFork = info?.forks?.osDenomination?.activated;
     if (typeof postFork !== 'boolean' || !isWholeDem(parameters?.networkFee) || !isWholeDem(parameters?.rpcFee)) throw refuse('node_reply_invalid');
@@ -250,18 +264,31 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       return committed;
     }
   }
-  // Reopens the stored authorization by id. One the ledger no longer holds open is replaced, and the reservation stores the
-  // replacement's id before anything is sent. A manual authorization has no id and is asked for again.
+  // Reopens the stored authorization by id. One the ledger no longer holds open is replaced only after the chain shows the held bytes
+  // never ran (`assertNotExecuted`), and the reservation stores the replacement's id before anything is sent. A manual authorization
+  // has no id and is asked for again.
   async function replayApproval(held, signal) {
     const { approvalId, approvalIntent: requestText } = held.active;
     try {
       const reopened = approvalId === null ? null : await reopenApproval(approvalId, requestText, signal);
       if (reopened !== null) return reopened;
+      await assertNotExecuted(held.active.signed.txHash, signal);
       const binding = await replacementApproval(requestText, signal);
       if (binding?.requestText !== requestText) throw refuse('approval_mismatch');
       if (binding.ledgerId !== null && binding.ledgerId !== approvalId) await reservations.renewApproval(held, binding);
       return binding;
-    } catch (cause) { throw signal.aborted ? cause : refuse('approval_required', cause); }
+    } catch (cause) { throw signal.aborted || cause?.code === ALREADY_EXECUTED ? cause : refuse('approval_required', cause); }
+  }
+  // An authorization is settled spent only by a consume after a proven execution, so an execution whose reservation write did not
+  // commit leaves a record naming a spent id. The readback runs on the held hash before any replacement: a proven execution ends the
+  // reservation (the stored id is settled spent again, which the ledger treats as a repeat) and refuses. Only the chain's answer that
+  // it has not seen the hash lets a replacement through; any other answer cannot tell, and its cause is thrown.
+  async function assertNotExecuted(txHash, signal) {
+    try { await endIfExecuted({ txHash }, signal); } catch (cause) {
+      if (cause?.code === NOT_EXECUTED) return;
+      throw cause;
+    }
+    throw refuse(ALREADY_EXECUTED);
   }
   // The approved request must describe these very bytes.
   function assertApprovalCovers(requestText, content) {
@@ -271,14 +298,15 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     }
   }
 
-  async function post(body, headers, signal) {
+  // One bounded request to the pinned node, after the transport's current context is checked against the pins.
+  async function fetchPinned(url, options, signal) {
     signal.throwIfAborted();
     const context = await owner.getContext();
     if (context.network !== pins.network || context.endpoint !== pins.endpoint || context.transportAuthority !== pins.transportAuthority) throw refuse('transport_mismatch');
     signal.throwIfAborted();
-    return fetchBoundedJson(pins.endpoint, { method: 'POST', body, headers, fetchImpl, signal, timeoutMs: AUTHORITY_READ_DEADLINE_MS,
-      maxBytes: NODE_REPLY_MAX_BYTES, expectedOrigin: new URL(pins.endpoint).origin });
+    return fetchBoundedJson(url, { ...options, fetchImpl, signal, timeoutMs: AUTHORITY_READ_DEADLINE_MS, maxBytes: NODE_REPLY_MAX_BYTES, expectedOrigin: new URL(pins.endpoint).origin });
   }
+  const post = (body, headers, signal) => fetchPinned(pins.endpoint, { method: 'POST', body, headers }, signal);
   // A confirmTx or broadcastTx body with fresh authentication headers from the wallet's stamp source; the effect gate runs in `fetchImpl`.
   async function execute(stage, data, signal) {
     signal.throwIfAborted();
@@ -344,13 +372,29 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       && (blockNumber !== 1 || previousHash === pins.chainIdentity)
       && Array.isArray(hashes) && hashes.length <= MAX_BLOCK_TRANSACTIONS && hashes.every(hash => SHA256_HEX.test(hash)) && hashes.includes(txHash);
   }
+  // The node must serve the program this CREATE made: its address, its exact data and metadata, its program name, the signer as owner,
+  // and creation provenance that names this CREATE (both members, or neither).
+  async function verifyStorageProgram(tx, signal) {
+    const operation = tx.content.data[1];
+    if (tx.content.to !== deriveStorageAddress(signer, operation.programName, tx.content.nonce, '')) throw refuse('readback_unverified');
+    const program = await fetchPinned(`${pins.endpoint.replace(/\/$/, '')}/storage-program/${tx.content.to}`, {}, signal);
+    signal.throwIfAborted();
+    const programOwner = typeof program?.owner === 'string' ? program.owner.toLowerCase() : null;
+    const matches = program?.success === true && programOwner === signer && program.storageAddress === tx.content.to && program.programName === operation.programName
+      && isObject(program.data) && canonicalize(program.data) === canonicalize(operation.data) && isObject(program.metadata) && canonicalize(program.metadata) === canonicalize(operation.metadata)
+      && creationProvenanceMatches(program, tx.hash, true);
+    if (!matches) throw refuse('readback_unverified');
+  }
+  // Only the exact answer `{state: 'unknown'}` says the chain has not seen the hash (`transaction_not_executed`); it is still not applied.
   async function verifyExecution(tx, signal) {
     await observer.observe({ signal });
     const status = await nodeRead('getTransactionStatus', { hash: tx.hash }, signal);
+    if (hasKeys(status, ['state']) && status.state === 'unknown') throw refuse(NOT_EXECUTED);
     if (!hasKeys(status, ['state', 'blockNumber']) || status.state !== 'included' || !Number.isSafeInteger(status.blockNumber) || status.blockNumber < 0) throw refuse('readback_unverified');
     const executed = await nodeRead('getTxByHash', { hash: tx.hash }, signal);
     if (!executedMatches(executed, tx, status.blockNumber)) throw refuse('readback_unverified');
     if (!blockListsHash(await nodeRead('getBlockByNumber', { blockNumber: status.blockNumber }, signal), status.blockNumber, tx.hash)) throw refuse('readback_unverified');
+    await verifyStorageProgram(tx, signal);
   }
   // A caller that names only the hash gets the bytes and nonce of the reservation holding it; no reservation holds them otherwise.
   async function retainedFor({ txHash, signedTransaction, nonce }) {
@@ -359,15 +403,30 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     if (active?.operation !== OPERATION || active.signed?.txHash !== txHash) throw refuse(RETAINED_INVALID);
     return { txHash, signedTransaction: active.signed.projectionText, nonce: active.nonce };
   }
-  // `applied` after the chain proves the execution of exactly the retained bytes; the reservation holding them, if any, ends and its authorization is spent.
+  // Ends the reservation that holds the proven bytes. An authorization the operator released cannot be settled spent and would keep
+  // the signer reserved after the execution: when the ledger refuses the spend and no longer holds it open, the reservation ends
+  // without a settlement. A ledger that still holds it open, or cannot be read, keeps the reservation.
+  async function consumeExecuted(held, observation, signal) {
+    try { await reservations.consume(held, observation); } catch (cause) {
+      const { approvalId, approvalIntent } = held.active;
+      if (cause?.code !== SETTLEMENT_FAILED || approvalId === null || await reopenApproval(approvalId, approvalIntent, signal) !== null) throw cause;
+      await reservations.consume(held, observation, { approvalEnded: true });
+    }
+  }
+  // Returns once the chain proves the execution of exactly the retained bytes, after the reservation holding them, if any, ended;
+  // throws the cause otherwise.
+  async function endIfExecuted(asked, signal) {
+    signal.throwIfAborted();
+    const retained = await retainedFor(asked), tx = parseRetained(retained), held = await reservationHolding(retained);
+    if (retained.nonce !== tx.content.nonce) throw refuse(RETAINED_INVALID);
+    await verifyExecution(tx, signal);
+    signal.throwIfAborted();
+    if (held !== null) await consumeExecuted(held, { status: 'executed', authenticated: true, txHash: tx.hash, projectionText: retained.signedTransaction }, signal);
+  }
+  // `applied` after `endIfExecuted` returns; `pending` with the cause kept otherwise.
   async function transactionState(asked, signal) {
     try {
-      signal.throwIfAborted();
-      const retained = await retainedFor(asked), tx = parseRetained(retained), held = await reservationHolding(retained);
-      if (retained.nonce !== tx.content.nonce) throw refuse(RETAINED_INVALID);
-      await verifyExecution(tx, signal);
-      signal.throwIfAborted();
-      if (held !== null) await reservations.consume(held, { status: 'executed', authenticated: true, txHash: tx.hash, projectionText: retained.signedTransaction });
+      await endIfExecuted(asked, signal);
       return { state: 'applied' };
     } catch (cause) {
       const answer = { state: 'pending' };

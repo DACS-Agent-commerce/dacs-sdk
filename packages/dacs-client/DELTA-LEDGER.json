@@ -10580,6 +10580,42 @@
           "after": "8c4d0b377bec9c7635f30cdca3e75aee1f9088f2"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read the chain before a replay replaces an evidence CREATE's authorization and read back the storage program it made",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868",
+          "after": "079e163053cb315bfb1182819dab2ab0708503f2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "1917ff8c1b6e594bb6b181fc3b78f9f42f257797",
+          "after": "50c0191116a8699f2ffd58de6fdf14bb2e57c11e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "d47721b78cb250ef2dd929852268a54afa699a50",
+          "after": "e71d80b46f09ca9b5e5b4f6d630b0ccb84fb5d36"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "78ca854a5b322c34ff1b099ad13b0c3b5b75d5a1",
+          "after": "7797647b3bda845b75faa490eef6592949d87847"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "f3a42056739f497fd805935c801cb490cadddb82",
+          "after": "30cb7833dd4acb333b30b982a0cc6296b02992f0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "317ee818bdbf709601dc8452f3feb986b14066b2",
+          "after": "fd91549ae6153769b30c401c86d078189c414070"
+        }
+      ]
     }
   ]
 }

@@ -17,9 +17,10 @@
 // A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes and moves the floor past
 // the nonce; `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
 // settles the approval ledger's hold by id (`spent` or `released`), which is idempotent, so a crash between the settlement and the
-// put is finished by repeating the call. Signed bytes are never retired: only an execution frees them. While a retirement has
-// settled the approval `released` and its put has not committed, this instance refuses `bindSigned` for that reservation
-// (`signer_retirement_unfinished`), and the next `reserve` finishes the retirement before it claims.
+// put is finished by repeating the call. A consume whose approval the ledger no longer holds open ends without a settlement.
+// Signed bytes are never retired: only an execution frees them. While a retirement has settled the approval `released` and its
+// put has not committed, this instance refuses `bindSigned` for that reservation (`signer_retirement_unfinished`), and the next
+// `reserve` finishes the retirement before it claims.
 //
 // `recover` removes the lock rows of other, dead processes, which changes no record, then retires every reservation without signed
 // bytes, which no live caller can finish. It needs the host's ownership proof (the state lock is held and the journal lies inside
@@ -283,14 +284,16 @@ export function createSignerReservations({ journal, pins, openApproval = refused
    * Ends a reservation on an authenticated execution of its exact signed bytes: `observation` is
    * `{status: 'executed', authenticated: true, txHash, projectionText}` from the lane's reader. Settles the approval spent, then
    * in one write clears the claim and moves the floor past the nonce. Anything else (pending, failed, unauthenticated, other
-   * bytes) is `signer_execution_unproven` and changes nothing. The handle is stale afterwards. Returns the stored record.
+   * bytes) is `signer_execution_unproven` and changes nothing. With `approvalEnded: true` the caller has shown that the ledger
+   * refused the spend and no longer holds the approval open (an operator released it): nothing is settled and the reservation
+   * ends all the same. The handle is stale afterwards. Returns the stored record.
    */
-  async function consume(reservation, observation) {
+  async function consume(reservation, observation, { approvalEnded = false } = {}) {
     return update(reservation, async ({ active }) => {
       check(active.signed !== null, 'signed bytes required');
       const { txHash, projectionText } = active.signed;
       if (!(observation?.status === 'executed' && observation.authenticated === true && observation.txHash === txHash && observation.projectionText === projectionText)) fail('signer_execution_unproven');
-      await settle(active.approvalId, 'spent', 'executed');
+      if (!approvalEnded) await settle(active.approvalId, 'spent', 'executed');
       return SPENT;
     });
   }

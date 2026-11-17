@@ -61,7 +61,11 @@ function sourceBoundStorageComparison({ sourceCapability, expectedIdentity, auth
 // CREATE still supplies the hash, and the transaction plus containing block
 // are authenticated below. Rich public projections remain byte-for-byte
 // strict, while partial or present-invalid projections are never upgraded.
-function creationProvenanceMatches(native, txHash, allowPairedAbsence) {
+/**
+ * Whether a storage program's creation provenance names the CREATE `txHash`: `createdByTx` is that hash and `interactionTxs`
+ * lists it, both present. With neither member, returns `allowPairedAbsence`; one member alone is false.
+ */
+export function creationProvenanceMatches(native, txHash, allowPairedAbsence) {
   const hasCreatedByTx = Object.hasOwn(native, 'createdByTx');
   const hasInteractionTxs = Object.hasOwn(native, 'interactionTxs');
   if (!hasCreatedByTx && !hasInteractionTxs) return allowPairedAbsence;
