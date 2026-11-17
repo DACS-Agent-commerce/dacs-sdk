@@ -13,6 +13,7 @@ import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
 import { assertKitOperationAdmitted, kitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { createReservationAccounting } from './seller-reservation-accounting.mjs';
+import { dropEmptyObsoleteTables } from './seller-obsolete-store-tables.mjs';
 
 export const SELLER_TRANSPORT_HEADER = 'x-dacs-seller-peer';
 export const SELLER_TRANSPORT_MAX_RESPONSE = 512 * 1024;
@@ -238,19 +239,16 @@ const CHALLENGE_RATE_WINDOW_MS = 3600000;
 const CLOSURE_SOURCES = new Set(['cleanup', 'effect-path', 'session-observer']);
 const NOT_TERMINAL = Object.freeze({ terminal: false, state: null });
 const storeInternals = new WeakMap();
-const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserves definite nonce answers.
-// Only expired completed/no-effect nonces are reclaimable; unknown and pending effects stay fenced.
-const RECLAIMABLE_NONCES = `SELECT n.nonce FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
-  LEFT JOIN peer_effects e ON e.effect = n.effect WHERE r.expires_at <= ?
-  AND (e.state = 'complete' OR (e.state = 'retry' AND n.response IS NOT NULL) OR (e.effect IS NULL AND n.response IS NOT NULL))`;
+// The version `bind` writes into the store's binding.
+const STORE_VERSION = '1';
 /**
  * The one list of the records behind each reservation limit. The old reserve path and reservation accounting
  * count only these, so a record either path writes counts against both. Each source selects `job`, or a unit's
  * `buyer` and `at`; an owner source also selects the buyer, seller and Listing pin that hold the job.
- * Total records use the overlapping old nonce/retention counts plus the accounting rows that still count (see RETIRABLE_RESERVATION).
+ * Total records are the accounting rows that still count (see RETIRABLE_RESERVATION).
  */
 export const RESERVATION_LEDGER = Object.freeze({
-  buyerUnits: Object.freeze(['SELECT buyer, created_at AS at FROM peer_nonce_retention', 'SELECT buyer, at FROM kit_reservations']),
+  buyerUnits: Object.freeze(['SELECT buyer, at FROM kit_reservations']),
   jobs: Object.freeze(['SELECT job FROM peer_jobs', 'SELECT job FROM peer_context_admissions', 'SELECT jobId AS job FROM kit_job_holds', 'SELECT jobId AS job FROM kit_context_admissions']),
   contextRecords: Object.freeze(['SELECT job FROM peer_context_admissions', 'SELECT jobId AS job FROM kit_job_holds WHERE context = 1', 'SELECT jobId AS job FROM kit_context_admissions']),
   owners: Object.freeze([
@@ -305,10 +303,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE TABLE IF NOT EXISTS peer_jobs (job TEXT PRIMARY KEY, context TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS peer_effects (effect TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL, status INTEGER, response TEXT);
     CREATE TABLE IF NOT EXISTS peer_effect_jobs (effect TEXT PRIMARY KEY, job TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS peer_slots (slot TEXT PRIMARY KEY, effect TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS peer_transactions (tx TEXT PRIMARY KEY, job TEXT NOT NULL, effect TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS peer_nonces (nonce TEXT PRIMARY KEY, request_hash TEXT NOT NULL, effect TEXT NOT NULL, status INTEGER, response TEXT);
-    CREATE TABLE IF NOT EXISTS peer_nonce_retention (nonce TEXT PRIMARY KEY, buyer TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS kit_context_reservations (effect TEXT PRIMARY KEY, nonce TEXT NOT NULL UNIQUE, accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)));
     CREATE TABLE IF NOT EXISTS kit_purchase_profiles (job TEXT PRIMARY KEY, profile TEXT NOT NULL, kept_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS kit_slot_retirements (job TEXT PRIMARY KEY, job_retired INTEGER NOT NULL DEFAULT 0, context_retired INTEGER NOT NULL DEFAULT 0, owner TEXT);
@@ -325,9 +319,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE TABLE IF NOT EXISTS kit_payment_transactions (tx TEXT PRIMARY KEY, jobId TEXT NOT NULL, operationId TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS kit_terminal_closures (jobId TEXT PRIMARY KEY, state TEXT NOT NULL, observedAt INTEGER NOT NULL,
       source TEXT NOT NULL CHECK (source IN ('cleanup', 'effect-path', 'session-observer')));
-    CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);
-    CREATE INDEX IF NOT EXISTS peer_transactions_job ON peer_transactions(job);
-    CREATE INDEX IF NOT EXISTS peer_nonces_effect ON peer_nonces(effect);`);
+    CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);`);
+  try { dropEmptyObsoleteTables(db, STORE_VERSION); } catch (error) { db.close(); throw error; }
   // rollback: always roll back (a read-only run, such as contextHoldState). A result that is a Promise or thenable rolls back too.
   function immediate(fn, rollback = false) {
     db.exec('BEGIN IMMEDIATE');
@@ -453,14 +446,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     OR EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = kit_reservations.jobId AND r.job_retired = 1)
     OR EXISTS (SELECT 1 FROM kit_reservations w
     WHERE w.jobId = kit_reservations.jobId AND w.route = kit_reservations.route AND w.state IN ('new', 'recover', 'completed') AND w.key < kit_reservations.key))`;
-  // Legacy nonce rows did not carry expiry. Keep them for one full maximum
-  // request lifetime from upgrade before considering safe reclamation.
-  transaction(() => {
-    const time = now();
-    for (const { nonce } of db.prepare('SELECT nonce FROM peer_nonces WHERE nonce NOT IN (SELECT nonce FROM peer_nonce_retention)').all()) {
-      run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)', nonce, nonce.slice(0, nonce.lastIndexOf(':')), time, time + 60000);
-    }
-  });
   const admissions = () => Boolean(get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'peer_context_admissions'"));
   if (admissions()) db.exec(CONTEXT_EFFECT_INDEX);
   // RESERVATION_LEDGER's sources in this store: the context admission table exists only once a first admission commits.
@@ -485,11 +470,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   const retainedReservationCount = (time) => get(`SELECT COUNT(*) AS n FROM kit_reservations WHERE NOT (${RETIRABLE_RESERVATION})`, time - reservationRetentionMs).n;
   // Every read runs in the caller's transaction.
   const reservationLedger = Object.freeze({
-    recordCountWithin: (time) => Math.max(
-      get(`SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES})`, time).n,
-      get(`SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE expires_at > ? OR created_at > ?
-        OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES}))`, time, time - nonceWindowMs, time).n,
-    ) + retainedReservationCount(time),
+    recordCountWithin: (time) => retainedReservationCount(time),
     buyerUnitsWithin: (buyer, time) => get(`SELECT COUNT(*) AS n FROM (${ledgerSources('buyerUnits').join(' UNION ALL ')})
       WHERE buyer = ? AND at > ?`, buyer, time - nonceWindowMs).n,
     jobHeldWithin: (jobId) => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
@@ -531,16 +512,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // (a definite refusal is no effect); a `reserving` row left by a crash holds it too.
     accountedSlotWithin: (jobId, route) => !READ_ROUTES.has(route) &&
       Boolean(get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND route = ? AND state <> 'refused'", jobId, route)),
-    // The old path's slot for the request's job and route: the wire journal has no record of that effect, so it
-    // would run the effect a second time.
-    oldSlotWithin: (p) => !READ_ROUTES.has(p.path) && Boolean(get('SELECT 1 FROM peer_slots WHERE slot = ?', `${p.jobId}:${p.path}`)),
     // Only the first proposal, the first payment and a context start make a job; any other route needs its job row.
     unknownJobWithin: (p) => ![PROPOSAL, PAYMENT, CONTEXT].includes(p.path) && !get('SELECT 1 FROM peer_jobs WHERE job = ?', p.jobId),
   });
-  // Legacy slots identify mutating effects. Legacy reads have no job identity;
-  // any such unmapped effect conservatively prevents job-row reclamation.
+  // An effect with no job binding conservatively prevents job-row reclamation.
   transaction(() => {
-    run("INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, substr(slot, 1, instr(slot, ':') - 1) FROM peer_slots WHERE instr(slot, ':') > 0");
     if (admissions()) run('INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, job FROM peer_context_admissions');
   });
   // `skip` holds jobs another plan already frees, so one job never counts as leaving twice.
@@ -551,14 +527,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     const jobs = db.prepare(`SELECT j.job FROM peer_jobs j WHERE
       ${jobId === undefined ? '' : 'j.job = ? AND '}
       NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.job = j.job)
-      AND NOT EXISTS (SELECT 1 FROM peer_transactions t WHERE t.job = j.job)
       AND NOT EXISTS (${activeHold('j.job')})
       AND NOT EXISTS (${activeK1('j.job', 'job')})
-      AND NOT EXISTS (SELECT 1 FROM peer_slots s WHERE s.slot >= j.job || ':' AND s.slot < j.job || ';')
       ${hasAdmissions ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job)' : ''}
       LIMIT ?`).all(...(jobId === undefined ? [] : [jobId]), needed).map(row => row.job);
     if (time === undefined || jobs.length === needed) return jobs;
-    // Complete terminal jobs, admission-only ones included, retire only after every nonce and context retention window.
+    // Complete terminal jobs, admission-only ones included, retire only after the context retention window.
     // Active accounted holds and admission holders fence reclamation.
     for (const { job } of db.prepare(`SELECT job FROM (SELECT job FROM peer_jobs${hasAdmissions ? ' UNION SELECT job FROM peer_context_admissions' : ''}) j
       WHERE (EXISTS (SELECT 1 FROM peer_jobs p WHERE p.job = j.job)
@@ -566,11 +540,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       AND NOT EXISTS (${activeHold('j.job')})
       AND NOT EXISTS (${activeK1('j.job', 'job')}) AND NOT EXISTS (
       SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = j.job
-      AND (e.state IS NULL OR e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n
-        LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce WHERE n.effect = m.effect
-        AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))))
+      AND (e.state IS NULL OR e.state <> 'complete'))
       ${hasAdmissions ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job AND a.admitted_at > ?)' : ''}`)
-      .iterate(time, time - nonceWindowMs, ...(hasAdmissions ? [time - CHALLENGE_RATE_WINDOW_MS] : []))) {
+      .iterate(...(hasAdmissions ? [time - CHALLENGE_RATE_WINDOW_MS] : []))) {
       if (!jobs.includes(job) && !skip.has(job) && terminalForReclamation(job)) jobs.push(job);
       if (jobs.length === needed) break;
     }
@@ -589,9 +561,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       JOIN peer_effects e ON e.effect = a.effect WHERE a.admitted_at <= ? AND e.state = 'complete'
       AND NOT EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = a.job AND r.context_retired = 1)
       AND NOT EXISTS (${activeHold('a.job')})
-      AND NOT EXISTS (${activeK1('a.job', 'context')})
-      AND NOT EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
-        WHERE n.effect = a.effect AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))`).iterate(time - CHALLENGE_RATE_WINDOW_MS, time, time - nonceWindowMs)) {
+      AND NOT EXISTS (${activeK1('a.job', 'context')})`).iterate(time - CHALLENGE_RATE_WINDOW_MS)) {
       if (terminalForReclamation(row.job)) rows.push(row);
       if (rows.length === needed) break;
     }
@@ -612,7 +582,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
             } catch { return true; }
           }) ||
           get("SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = ? AND e.state IS NULL", job) ||
-          get("SELECT 1 FROM peer_effects e LEFT JOIN peer_effect_jobs m ON m.effect = e.effect WHERE m.effect IS NULL OR (m.job = ? AND (e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce WHERE n.effect = e.effect AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))))", job, time, time - nonceWindowMs) ||
+          get("SELECT 1 FROM peer_effects e LEFT JOIN peer_effect_jobs m ON m.effect = e.effect WHERE m.effect IS NULL OR (m.job = ? AND e.state <> 'complete')", job) ||
           (admissions() && get('SELECT 1 FROM peer_context_admissions WHERE job = ? AND admitted_at > ?', job, time - CHALLENGE_RATE_WINDOW_MS)) || !terminalForReclamation(job)) continue;
       run('INSERT INTO kit_slot_retirements(job, job_retired, context_retired) VALUES (?, 1, 1) ON CONFLICT(job) DO UPDATE SET job_retired = 1, context_retired = 1', job);
       run('UPDATE kit_job_owners SET closed = 1 WHERE job = ?', job);
@@ -646,7 +616,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     claimJobWithin(p);
   }
   function deleteEffect(effect) {
-    for (const table of ['peer_effects', 'kit_context_reservations', 'peer_slots', 'peer_transactions', 'peer_effect_jobs', ...(admissions() ? ['peer_context_admissions'] : [])]) run(`DELETE FROM ${table} WHERE effect = ?`, effect);
+    for (const table of ['peer_effects', 'kit_context_reservations', 'peer_effect_jobs', ...(admissions() ? ['peer_context_admissions'] : [])]) run(`DELETE FROM ${table} WHERE effect = ?`, effect);
   }
   const startsIn = (table, column, since, buyer) => get(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n;
   const starts = (since, buyer) => (admissions() ? startsIn('peer_context_admissions', 'admitted_at', since, buyer) : 0) + startsIn('kit_context_admissions', 'admittedAt', since, buyer);
@@ -694,19 +664,15 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     recoverLostContextReservations() {
       return transaction(() => {
         if (!admissions()) return;
-        for (const row of db.prepare(`SELECT e.effect, e.owner, v.accepted, v.nonce FROM peer_effects e JOIN peer_context_admissions a ON a.effect = e.effect
+        for (const row of db.prepare(`SELECT e.effect, e.owner, v.accepted FROM peer_effects e JOIN peer_context_admissions a ON a.effect = e.effect
           LEFT JOIN kit_context_reservations v ON v.effect = e.effect WHERE e.state = 'pending'`).all()) {
           if (row.accepted !== 0) run("UPDATE peer_effects SET state = 'uncertain' WHERE effect = ? AND owner = ? AND state = 'pending'", row.effect, row.owner);
-          else {
-            const cause = ledger.retained(row.nonce)?.failure?.code ?? 'validator_lost';
-            run('UPDATE peer_nonces SET status = 409, response = ?, effect = ? WHERE effect = ? AND response IS NULL', JSON.stringify({ error: 'context_challenge_failed', cause }), NO_EFFECT_KEY, row.effect);
-            deleteEffect(row.effect);
-          }
+          else deleteEffect(row.effect);
         }
       });
     },
     bind({ seller, listingPin }) {
-      const config = canonicalize({ storeVersion: '1', seller, listingPin });
+      const config = canonicalize({ storeVersion: STORE_VERSION, seller, listingPin });
       transaction(() => {
         const stored = get('SELECT value FROM peer_meta WHERE key = ?', 'config');
         if (stored && stored.value !== config) throw new Error('transport store belongs to another seller, Listing or schema');

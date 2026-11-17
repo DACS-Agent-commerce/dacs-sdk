@@ -16,7 +16,7 @@ test('context records, the context client and the transport auth refuse malforme
   const client=createSellerTransportClientAuth({buyerSigner:w.buyer,seller:w.seller.claim,resolveJob:()=>assert.fail('transport resolved malformed job')});
   await assert.rejects(client.request(SELLER_CONTEXT_PATH,body,JSON.stringify(body)),{code:'peer_job_invalid'});
   assert.throws(()=>client.verifyResponse(p,{}),{code:'peer_job_invalid'});
-  assert.deepEqual(withoutNonceTables(w.counts()),withoutNonceTables(before));
+  assert.deepEqual(w.counts(),before);
  }
 });
 
@@ -36,4 +36,3 @@ test('B31 the context client preserves a definite non-pass decision and attribut
  const answer=await client.resolveBuyer({scope,buyerIdentityBundle:bundle},{operation:{state:{protocol:{sellerContextRequest:{scope,buyerBundle:bundle}}}}});assert.equal(answer.disposition,'rejected');assert.equal(answer.code,'party_vet_non_pass');assert.equal(answer.errorClass,'counterparty');assert.match(answer.reason,/seller Vet decision: fail/);
 });
 
-const withoutNonceTables=counts=>Object.fromEntries(Object.entries(counts).filter(([key])=>!['peer_nonces','peer_nonce_retention'].includes(key)));

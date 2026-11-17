@@ -36,7 +36,6 @@ const errorOf = async promise => { try { await promise; } catch (error) { return
 const titles = {
   "T06": "a body-check refusal after the attempt records `failed`; no current-generation row is left `attempted`",
   "T12": "host start closes earlier-generation attempts before the listener opens",
-  "T20": "with `maxRecords` 1 and the clock advanced past the nonce window each time, three signed context requests naming an unknown, a consumed and a mismatched challenge each refuse with their K1 code while `peer_nonces` and `peer_nonce_retention` never exceed one row each (expired rows are reclaimed before any refusal is recorded; a dry-run `classify` writes nothing), also after reopening, and the ledger gains no row for the unknown nonce",
   "T15": "the existing route- and store-level challenge tests pass unchanged in name on the one ledger",
   "T18": "through the composed host, a `contextSessionState` answering a DACS-5 terminal state lets reclamation take eligible rows once; nonterminal, `null`, throwing, agent-stage and Promise-returning answers keep them. Round 3: a rejected Promise, a rejecting thenable, a thenable whose `then` throws and a Promise fulfilled with a terminal name each keep the rows; the host stays alive, an `unhandledRejection` listener sees nothing, and the late fulfilment reclaims nothing; a later synchronous terminal answer then reclaims the eligible rows once. The same after a restart and after a live change to terminal; a host without the option reclaims nothing"
 };

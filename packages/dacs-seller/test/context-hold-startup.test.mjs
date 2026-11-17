@@ -33,7 +33,7 @@ const nextHold = f => ({ ...f.hold, jobId: JOBS[1], effect: 'b'.repeat(64), hold
 function journal(path) {
   const db = new Database(path, { readonly: true });
   try {
-    return ['peer_effects', 'peer_context_admissions', 'peer_nonces', 'kit_challenges'].map(table => {
+    return ['peer_effects', 'peer_context_admissions', 'kit_challenges'].map(table => {
       const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table);
       return exists ? db.prepare(`SELECT * FROM ${table}`).all() : [];
     });

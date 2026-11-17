@@ -194,7 +194,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   const verified = (answer) => buyerWire.authentication(() => null).verifyResponse(answer.payload, { header: answer.header, status: answer.status, responseBytes: Buffer.from(answer.text) });
   const rows = () => {
     const db = new DatabaseSync(storePath, { readonly: true });
-    try { return Object.fromEntries(['peer_effects', 'peer_nonces', 'peer_jobs', 'peer_slots', 'kit_purchase_profiles'].map((name) => [name, db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n])); } finally { db.close(); }
+    try { return Object.fromEntries(['peer_effects', 'peer_jobs', 'kit_purchase_profiles'].map((name) => [name, db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n])); } finally { db.close(); }
   };
   const journalFiles = () => state.journals.flatMap((directoryPath) => readdirSync(directoryPath));
   const effects = (counter = agent.calls) => Object.values(counter).reduce((sum, n) => sum + n, 0);

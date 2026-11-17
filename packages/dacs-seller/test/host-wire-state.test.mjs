@@ -215,8 +215,7 @@ function storeFixture(t, options = {}) {
     listingPin: { listingId: 'wire-state', version: 1, contentHash: derive('pin') }, agreementHash: derive('agreement'), nonce: randomBytes(16).toString('base64url'),
     expiresAt: time + 30000, ...overrides });
   return { path, request, reopen, buyer, seller, query, get store() { return store; }, advance: (ms) => { time += ms; },
-    tuples: () => query('SELECT COUNT(*) AS n FROM kit_purchase_profiles'), jobs: () => query('SELECT COUNT(*) AS n FROM peer_jobs'),
-    nonces: () => query('SELECT COUNT(*) AS n FROM peer_nonces') };
+    tuples: () => query('SELECT COUNT(*) AS n FROM kit_purchase_profiles'), jobs: () => query('SELECT COUNT(*) AS n FROM peer_jobs') };
 }
 
 // ================================================================ host tests

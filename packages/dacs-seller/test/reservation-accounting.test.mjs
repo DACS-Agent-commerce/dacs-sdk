@@ -457,16 +457,15 @@ test('accounting preserves a timeout cause when recording its refusal also fails
 // One ledger for both paths: each limit counts every record either path writes.
 test('the reservation ledger lists the sources and writers the matrix below covers', () => {
   assert.deepEqual(Object.fromEntries(Object.entries(RESERVATION_LEDGER).map(([kind, sources]) => [kind, sources.length])),
-    { buyerUnits: 2, jobs: 4, contextRecords: 3, owners: 6 });
+    { buyerUnits: 1, jobs: 4, contextRecords: 3, owners: 6 });
   const source = ['seller-transport-auth.mjs', 'seller-reservation-accounting.mjs', 'seller-admission-transaction.mjs']
     .map(name => readFileSync(new URL(`../src/dacs/${name}`, import.meta.url), 'utf8')).join('\n');
   const writers = table => source.match(new RegExp(`INSERT (?:OR \\w+ )?INTO ${table}\\b`, 'g'))?.length ?? 0;
   assert.equal(writers('kit_slot_retirements'), 2, 'the store retirement writer keeps terminal flags and open ownership');
   assert.equal([...RESERVATION_LEDGER.jobs, ...RESERVATION_LEDGER.contextRecords].some(sql => /kit_purchase_profiles|kit_slot_retirements/.test(sql)), false, 'tuples and ownership proofs hold no slots');
-  // peer_nonce_retention: the upgrade of earlier rows (K1 refusals live in the challenge ledger);
   // peer_jobs: accounting's first purchase; K1 admissions retain their own intent before a tuple.
-  assert.deepEqual(Object.fromEntries(['peer_nonce_retention', 'peer_jobs', 'peer_context_admissions', 'kit_job_holds', 'kit_reservations', 'kit_context_admissions']
-    .map(table => [table, writers(table)])), { peer_nonce_retention: 1, peer_jobs: 1, peer_context_admissions: 0, kit_job_holds: 1, kit_reservations: 1, kit_context_admissions: 1 });
+  assert.deepEqual(Object.fromEntries(['peer_jobs', 'peer_context_admissions', 'kit_job_holds', 'kit_reservations', 'kit_context_admissions']
+    .map(table => [table, writers(table)])), { peer_jobs: 1, peer_context_admissions: 0, kit_job_holds: 1, kit_reservations: 1, kit_context_admissions: 1 });
 });
 
 const WRITERS = [

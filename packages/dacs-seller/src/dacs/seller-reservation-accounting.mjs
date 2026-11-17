@@ -61,11 +61,9 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     return Boolean(purchase);
   }
 
-  // The old reserve path's other refusals that read journal state, so a request is judged the same on either path:
-  // a read of an unknown job, a job and route whose effect the old path holds, and a fresh start for a terminal session.
+  // The refusals that read journal state: a read of an unknown job and a fresh start for a terminal session.
   function checkRouteWithin(payload, operationId) {
     if (ledger.unknownJobWithin(payload)) fail('peer_unknown_job', 404);
-    if (ledger.oldSlotWithin(payload)) fail('peer_operation_conflict', 409);
     if (ledger.terminalStartWithin(payload, operationId)) fail('context_session_terminal', 409);
   }
 

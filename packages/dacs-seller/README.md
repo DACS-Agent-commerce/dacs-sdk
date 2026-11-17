@@ -51,8 +51,7 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
-The host has two separate record limits. `maxRecords` (default 10,000) is the transport store's limit on live nonce records
-and retained accounting rows, and it also sets the store's challenge and context-record caps. `maxReservationUnits` is the purchase capacity's reservation budget; it defaults to `maxRecords`
+The host has two separate record limits. `maxRecords` (default 10,000) is the transport store's limit on retained accounting rows, and it also sets the store's challenge and context-record caps. `maxReservationUnits` is the purchase capacity's reservation budget; it defaults to `maxRecords`
 and is set on its own to give the budget a different size. A purchase allocation holds 17 units of that budget for each of the
 context, proposals, commitments and payments routes (68 units, or 85 when
 commitments/signature is enabled), and admission allots one only while the whole
@@ -110,7 +109,7 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
-  maxRecords: 10000,     // optional limit on the store's live nonce, challenge and context records and retained accounting rows
+  maxRecords: 10000,     // optional limit on the store's challenge and context records and retained accounting rows
   maxReservationUnits: 10000, // optional reservation budget, default maxRecords; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
@@ -156,7 +155,11 @@ lease. `kit-format.json` (`{"format":"dacs-kit-data/tp1-1"}`) is written first, 
 a directory that holds none of them. A directory that holds any of them without
 that marker, or with another one, is from an older kit format and is refused
 with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
-or `unreadable`); nothing is migrated. A new transport store over a
+or `unreadable`); nothing is migrated. A transport store that still has the
+tables an earlier version created and the kit no longer uses (`peer_slots`,
+`peer_transactions`, `peer_nonces`, `peer_nonce_retention`) drops them when they are all
+empty, and is refused with `kit_store_format_unsupported` and left unchanged when any holds a
+row. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
 

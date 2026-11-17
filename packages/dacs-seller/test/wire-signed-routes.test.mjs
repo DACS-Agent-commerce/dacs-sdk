@@ -247,7 +247,7 @@ test('P11a1-T13: a valid request for a job the seller holds nothing for gets a s
     }
   }
   assert.equal(w.effects(), 0, 'no refusal reached the agent');
-  assert.deepEqual(w.rows(), { peer_effects: 0, peer_nonces: 0, peer_jobs: 0, peer_slots: 0, kit_purchase_profiles: 0 }, 'nothing was reserved or kept');
+  assert.deepEqual(w.rows(), { peer_effects: 0, peer_jobs: 0, kit_purchase_profiles: 0 }, 'nothing was reserved or kept');
   const initial = await proposeJob(w, 't13-initial');
   assert.equal((await initial.post()).status, 200, 'an initial proposal is not an unknown job');
 });
@@ -266,7 +266,7 @@ test('P11a1-T13 (delegated variants): a delegated request for a job the seller h
     }
   }
   assert.equal(w.effects(), 0);
-  assert.deepEqual(w.rows(), { peer_effects: 0, peer_nonces: 0, peer_jobs: 0, peer_slots: 0, kit_purchase_profiles: 0 });
+  assert.deepEqual(w.rows(), { peer_effects: 0, peer_jobs: 0, kit_purchase_profiles: 0 });
 });
 
 test('P11a1-T17: a connection changed after binding makes response signing refuse with zero signer calls', async (t) => {
