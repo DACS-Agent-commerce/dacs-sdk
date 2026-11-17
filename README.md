@@ -553,8 +553,6 @@ action.
 `createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
 hook. A caller can omit it, but a purchase that must finish after a restart needs
 the journal it fills (see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
-Only the older session runner (`runSessionCore`) refuses a pay-dem bridge built
-over a rail without it.
 Without the hook the low-level rail provides only in-process hash-first
 observation. Across a
 process restart, at-most-once settlement requires `payDemSettle` with a
@@ -958,20 +956,16 @@ Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
 `{ rail, txHash, kind }` transaction refs are exposed only through the
 explicitly named `LegacyMvp*` read/resume compatibility types and validators.
 Normative producers, including `buildTwoSidedBundle`, reject those legacy
-shapes. The existing buyer-only `runSessionCore` producer remains explicitly
-quarantined on `LegacyMvp*` until its v0.3 migration in #81.
+shapes.
 
 `verifyBundle` and `verifyBundleCore` no longer read artifacts of those early
 shapes: such an input is refused with `not an attestation bundle`, whether it
 is a whole early-shape bundle or a current bundle that carries one early-shape
 reference.
 
-The `runSessionCore` producer's deterministic historical names are available as
-`legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit
-prefix is intentional: these strings must not be used as the current DACS
-address grammar. New code should use the typed address helper exported by the
-relevant producer, such as `compositeVerificationAddress`,
-`fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
+Use the typed address helper exported by the relevant producer, such as
+`compositeVerificationAddress`, `fixedPriceAgreementLogicalAddress`, or
+`bundleAddress`.
 
 The public `attestationAddress`, `paymentEvidenceAddress`, `ratingAddress`, and
 `bundleAddress` builders validate a canonical JID-1 uppercase ULID before

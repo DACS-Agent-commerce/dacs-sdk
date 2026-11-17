@@ -798,16 +798,6 @@ export {
   type ParserEvaluation,
   type Reputation,
   type ReputationExclusion,
-  // Injectable legacy buyer-session core. Its historical address
-  // grammar is public only under an explicit compatibility name; current
-  // producers export their own typed normative address functions.
-  runSessionCore,
-  legacyMvpSessionAnchorName,
-  type SessionDeps,
-  type SessionResult,
-  type SessionVetRequest,
-  type VetFinalityAuthenticationRequest,
-  type SessionTerms,
   type SettleRequest,
   type SettleResult,
   type SettlementRecoveryAttempt,
