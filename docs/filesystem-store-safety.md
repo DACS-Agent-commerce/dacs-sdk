@@ -54,11 +54,10 @@ root; do not grant another actor write access to any ancestor. A future native
 host adapter should bind every operation to directory descriptors on platforms
 that expose the required primitives.
 
-The legacy `createFsSessionStore` lock now publishes complete owner metadata,
-refuses to evict a live PID, and rechecks its unique token before release or
-dead-owner recovery. That token-check-to-pathname-unlink interval is not an
-atomic compare-and-delete operation. It is safe against other OS users under
-the required private-root policy, but it does not claim protection from a
-malicious process running as the same UID. Use the generation-fenced store for
-new money-path integrations; eliminating the residual same-UID race in either
-implementation requires a descriptor-relative native lock adapter.
+The generation-fenced session store's lock publishes complete owner metadata,
+refuses to evict a live PID, rechecks its unique token before release, and
+rechecks the observed owner before dead-owner recovery. That check-to-pathname
+interval is not an atomic compare-and-delete operation. It is safe against
+other OS users under the required private-root policy, but it does not claim
+protection from a malicious process running as the same UID. Eliminating the
+residual same-UID race requires a descriptor-relative native lock adapter.

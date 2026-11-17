@@ -798,20 +798,10 @@ export {
   type ParserEvaluation,
   type Reputation,
   type ReputationExclusion,
-  // Injectable legacy buyer-session core. Its historical address
-  // grammar is public only under an explicit compatibility name; current
-  // producers export their own typed normative address functions.
-  runSessionCore,
-  legacyMvpSessionAnchorName,
-  type SessionDeps,
-  type SessionResult,
-  type SessionVetRequest,
-  type VetFinalityAuthenticationRequest,
-  type SessionTerms,
   type SettleRequest,
   type SettleResult,
   type SettlementRecoveryAttempt,
-  // Legacy v1 session store API. Its public names and behaviour remain stable.
+  // Version 1 session store API: the in-memory store and its types. Its public names and behaviour remain stable.
   assertCheckpointPayloadShape,
   createInMemorySessionStore,
   SESSION_STORE_VERSION,
@@ -825,8 +815,6 @@ export {
   type SessionLoad,
   type TransitionInput,
   type TransitionResult,
-  createFsSessionStore,
-  type FsSessionStoreOptions,
   // Generation-fenced v2 is a separate, explicit API; no v1 value is upgraded.
   FENCED_SESSION_STORE_VERSION,
   assertFencedCheckpointPayloadShape,
@@ -1126,7 +1114,7 @@ export {
   type PublishListingResult,
 } from "./agent/index.js";
 
-// Settlement rails (SR-4): x402 reference rail + the runSession `settle` bridge.
+// Settlement rails (SR-4): x402 reference rail + the settle bridges.
 export {
   PRIOR_PAYMENT_DISPOSITION_SEPARATOR,
   CONCRETE_PAYMENT_PHASES,
@@ -1451,6 +1439,7 @@ export {
   type PayD402Rail,
   type PayD402RailConfig,
   type PayD402SettleParams,
+  type PayD402SettleResult,
   type PayD402SettleCoreDeps,
   type D402ClientLike,
   type D402PaymentRequirement,

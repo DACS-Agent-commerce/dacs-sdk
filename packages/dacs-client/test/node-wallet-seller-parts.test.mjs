@@ -6,6 +6,7 @@ import { api, agreementRequest, mnemonicBytes, setPurchaseAdmission, world } fro
 import { inPass, sellerPublications as publications } from './helpers/effect-gate-world.mjs';
 import { confirmThroughFacade, listingCreate, retainAcceptedCreate, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
 import { createWorld } from './helpers/native-create-world.mjs';
+import { recordingApproval } from './helpers/payment-evidence-approval-double.mjs';
 import { installNoEgress } from './helpers/no-egress.mjs';
 import * as nativeTransport from '../src/wallet/devnet-native-transport.mjs';
 
@@ -92,7 +93,7 @@ test("the facade's member inventory equals the separately documented complete in
 test('the node-wallet entry and every composition it returns expose no raw transport and no unwrapped effect method', async t => {
   const w = await seller(t, { held: true }), buyer = await world(t, { held: true });
   for (const name of Object.keys(api)) assert.doesNotMatch(name, /^(?:createDevnet|registerHeld)/);
-  assert.deepEqual(Object.keys(w.session).sort(), ['close', 'effectPass', 'internalCauseOf', 'observer', 'runInEffectPass', 'transport', 'wallet', 'walletFactory']);
+  assert.deepEqual(Object.keys(w.session).sort(), ['close', 'effectPass', 'internalCauseOf', 'observer', 'paymentEvidenceAdapter', 'runInEffectPass', 'transport', 'wallet', 'walletFactory']);
   assert.deepEqual(Object.keys(buyer.session).sort(), ['close', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'wallet', 'walletFactory']);
   for (const composition of [w.session, buyer.session]) {
     for (const wallet of [composition.wallet, composition.walletFactory({ anchorJournal: w.journal() })]) {
@@ -101,6 +102,7 @@ test('the node-wallet entry and every composition it returns expose no raw trans
     }
   }
   for (const name of ACTIVE) await assert.rejects(w.session.transport[name]({}), refused);
+  await assert.rejects(w.session.paymentEvidenceAdapter.signCreate({}), refused);
   assert.equal(w.node.calls.length + buyer.node.calls.length, 0);
 });
 
@@ -254,7 +256,7 @@ test('seller construction validates admission, runtime, publications and confirm
   const stateOwnership = { directory: dirname(w.path), held: () => true };
   for (const extra of [{ admission: undefined }, { publications: {} }, { key: new Uint8Array([255]) }]) {
     const key = extra.key ?? mnemonicBytes();
-    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), publications: publications(), approveConfirmedWrite: null, stateOwnership, ...extra, key }),
+    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), publications: publications(), approveConfirmedWrite: null, stateOwnership, paymentEvidenceApproval: recordingApproval(), ...extra, key }),
       error => error.code !== 'state_ownership_required');
     assert.ok(key.every(byte => byte === 0));
   }

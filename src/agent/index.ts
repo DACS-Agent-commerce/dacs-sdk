@@ -295,17 +295,6 @@ export {
   type ParserDecision,
   type PredicateResult,
 } from "./parserSpec.js";
-export {
-  runSessionCore,
-  // Explicitly legacy-named: these strings support old resume/read paths and
-  // are not the current normative DACS addressing contract.
-  legacyMvpSessionAnchorName,
-  type SessionDeps,
-  type SessionResult,
-  type SessionVetRequest,
-  type VetFinalityAuthenticationRequest,
-  type SessionTerms,
-} from "./runSessionCore.js";
 export type {
   SettleRequest,
   SettleResult,
@@ -326,10 +315,6 @@ export {
   type TransitionInput,
   type TransitionResult,
 } from "./sessionStore.js";
-export {
-  createFsSessionStore,
-  type FsSessionStoreOptions,
-} from "./sessionStoreFs.js";
 export {
   FENCED_SESSION_STORE_VERSION,
   assertCheckpointPayloadShape as assertFencedCheckpointPayloadShape,

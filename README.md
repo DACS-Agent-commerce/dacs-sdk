@@ -1,6 +1,8 @@
 # dacs-sdk
 
-TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents — the reusable runtime that takes an agent through the five-stage lifecycle: **Identify → Vet → Negotiate → Settle → Verify**.
+TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents — the reusable runtime that takes an agent through the five-stage lifecycle: **Identify → Vet → Negotiate → Settle → Verify**.
+
+DACS here means Demos Agent Commerce Standards. It is not related to other software or packages called DACS.
 
 > **Status: pre-alpha / in development.** This repo is being extracted from the `agent-commerce-demo` reference implementation into a reusable library. See **[IMPLEMENTATION.md](./IMPLEMENTATION.md)** for the v0.1 MVP build plan.
 
@@ -553,8 +555,6 @@ action.
 `createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
 hook. A caller can omit it, but a purchase that must finish after a restart needs
 the journal it fills (see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
-Only the older session runner (`runSessionCore`) refuses a pay-dem bridge built
-over a rail without it.
 Without the hook the low-level rail provides only in-process hash-first
 observation. Across a
 process restart, at-most-once settlement requires `payDemSettle` with a
@@ -733,7 +733,13 @@ const search = await queryListingCatalog(catalog, {
   rail: "x402:default",
   limit: 50,
 });
-if (search.status !== "ok") throw new Error(search.reason);
+if (search.status !== "ok") {
+  // reason explains every indeterminate result. An unsupported rate filter
+  // also returns code: "unsupported-filter" and filters: the requested names
+  // that the Directory does not advertise.
+  if (search.code === "unsupported-filter") console.log(search.filters);
+  throw new Error(search.reason);
+}
 
 const candidate = search.page.listings[0];
 if (!candidate) throw new Error("no matching listing");
@@ -754,6 +760,22 @@ redirect refusal, omitted ambient credentials, response-size limits, and finite
 timeouts are defaults. Plain HTTP requires explicit `allowInsecureHttp: true`
 for trusted development catalogs. `reachabilityHint` and `reputationHint` remain
 operational pre-filters, never validity or trust evidence.
+
+Queries setting `minCompletionRate` or `minRating` first read the Directory's
+`/.well-known/dacs-directory.json` on the catalog origin; set
+`directoryManifestUrl` to override that absolute HTTPS URL. Query arguments are
+validated before any network request. For manifest versions `"1"` and `"2"`,
+the advertised `catalog` URL must match `catalogUrl`, and every requested rate
+filter must appear in `filters`. Otherwise, missing advertised filters produce
+`{ status: "indeterminate", reason, code: "unsupported-filter", filters: [...] }`
+without a listings request. Filters are never silently removed.
+
+A manifest HTTP 404 preserves the original request as a compatibility fallback
+for an unadvertised catalog; it identifies no Directory version. Other unreadable,
+malformed, mismatched or unknown-version manifests return `indeterminate`.
+Queries without rate filters do not read the manifest. Negotiation and listings
+share one `timeoutMs` deadline and caller cancellation signal; `maxResponseBytes`
+bounds each decoded response, including the manifest.
 
 Handle enumeration results by status. A `page` may contain permanent candidate
 `diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
@@ -958,19 +980,15 @@ Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
 `{ rail, txHash, kind }` transaction refs are exposed only through the
 explicitly named `LegacyMvp*` read/resume compatibility types and validators.
 Normative producers, including `buildTwoSidedBundle`, reject those legacy
-shapes. The existing buyer-only `runSessionCore` producer remains explicitly
-quarantined on `LegacyMvp*` until its v0.3 migration in #81.
+shapes.
 
 `verifyBundle` and `verifyBundleCore` no longer read artifacts of those early
 shapes: such an input is refused with `not an attestation bundle`, whether it
 is a whole early-shape bundle or a current bundle that carries one early-shape
 reference.
 
-Its deterministic historical names are available as
-`legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit
-prefix is intentional: these strings must not be used as the current DACS
-address grammar. New code should use the typed address helper exported by the
-relevant producer, such as `compositeVerificationAddress`,
+To compute the address of an artifact, use the typed address helper exported
+by the module that produces it, such as `compositeVerificationAddress`,
 `fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
 
 The public `attestationAddress`, `paymentEvidenceAddress`, `ratingAddress`, and

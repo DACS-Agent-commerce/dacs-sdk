@@ -1121,9 +1121,9 @@ function missingAdapterCapability(name: string): never {
 
 /**
  * Build the Agent surface over an ALREADY-CONNECTED adapter. Split out from
- * {@link createAgent} so the full lifecycle (incl. the `runSession` dep wiring
- * that listing signature verification depends on) is exercisable in a NON-LIVE
- * test against an in-memory adapter. Not exported from the package barrel; internal test seam.
+ * {@link createAgent} so the full lifecycle (incl. listing signature
+ * verification) is exercisable in a NON-LIVE test against an in-memory
+ * adapter. Not exported from the package barrel; internal test seam.
  */
 export function buildAgent<TAdapter extends SubstrateAdapter>(
   adapter: TAdapter,
