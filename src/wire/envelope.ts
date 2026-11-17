@@ -581,8 +581,13 @@ export interface CheckedWireRequest {
  * is compared first, then the exchange, then the job and Agreement the host
  * retained. The received body bytes are admitted (CF-5) before their hash is
  * compared, and the admitted body is returned.
+ *
+ * `mode` is the admission entry the request came through: `agreement` for
+ * `checkWireRequest` and `authorizeWireRequest`, which refuse the pre-Agreement
+ * routes; `preAgreement` for `admitPreAgreementRequest`, which admits only those.
  */
-async function requestAdmissionPrefix(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck | PreAgreementCheck, preAgreement: boolean): Promise<RequestAdmissionPrefix> {
+async function requestAdmissionPrefix(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck | PreAgreementCheck, mode: AdmissionMode): Promise<RequestAdmissionPrefix> {
+  const preAgreement = mode === "preAgreement";
   const startedAt = performance.now();
   const c = ownedFields(check, preAgreement ? PRE_AGREEMENT_CHECK_FIELDS : CHECK_FIELDS) as unknown as RequestCheck & { route?: unknown };
   const listingPin = ownedConfig(c.listingPin, "wire_input_invalid") as ListingPin;
@@ -618,6 +623,9 @@ async function requestAdmissionPrefix(envelope: OpenedEnvelope<WireRequestPayloa
   return { c, request, delegation, listingPin, retained, artifacts, body, startedAt };
 }
 
+/** Which admission entry runs the shared prefix: a request with an Agreement, or one before any Agreement exists. */
+type AdmissionMode = "agreement" | "preAgreement";
+
 /** What the shared prefix hands to each admission entry once its checks pass. */
 interface RequestAdmissionPrefix {
   c: RequestCheck;
@@ -637,8 +645,17 @@ function readmittedDelegation(delegation: SellerSessionDelegation): unknown {
   return admitWireJson(Buffer.from(JSON.stringify(delegation)), DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "peer_delegation_invalid", 401);
 }
 
+/**
+ * The admission behind `checkWireRequest` and `authorizeWireRequest`: the shared
+ * prefix, then every host artifact bound to the signed job, Listing and parties,
+ * then the delegation if the request carries one. A live delegation or a direct
+ * request is admitted for effect with its reservation deferred; an expired one
+ * (or a request that outlives a live one) is admitted as readback on a read route.
+ * @throws the first failing step's refusal; `peer_delegation_expired` for an
+ * expired delegation on any route that is not a read route.
+ */
 async function admitWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): Promise<Omit<CheckedWireRequest, "reserve"> & Deferred> {
-  const { c, request, delegation, listingPin, retained, artifacts, body, startedAt } = await requestAdmissionPrefix(envelope, check, false);
+  const { c, request, delegation, listingPin, retained, artifacts, body, startedAt } = await requestAdmissionPrefix(envelope, check, "agreement");
   // Every host artifact given binds the signed job, Listing and both parties, on a direct request as on a delegated one.
   const retainedArtifacts = artifacts.filter((a) => a != null) as JsonRecord[];
   for (const artifact of retainedArtifacts) {
@@ -707,7 +724,7 @@ function admitPreAgreementReadiness(request: WireRequestPayload, c: RequestCheck
  * that is not the request's path); a verifier failure keeps its own code and cause.
  */
 export async function admitPreAgreementRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: PreAgreementCheck): Promise<AdmittedPreAgreementRequest> {
-  const prefix = await requestAdmissionPrefix(envelope, check, true);
+  const prefix = await requestAdmissionPrefix(envelope, check, "preAgreement");
   const { c, request, retained, body, startedAt } = prefix;
   const delegationExpiresAt = await admitPreAgreementDelegation(prefix);
   const store = request.path === DACS_SELLER_HTTP_PATHS.context ? journalStore(c.requestJournal) : null;
