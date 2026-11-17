@@ -6,7 +6,7 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -1064,4 +1064,43 @@ test('a request the wire authenticator has seen expired stays expired when the c
   await assert.rejects(auth.store.reserve(request, opened.body, opened.reserveOptions), { code: 'peer_expired', status: 408 }, 'and it still starts no effect');
   assert.equal(w.rows().peer_effects, rowsBefore.peer_effects, 'no effect was published');
   assert.equal(accountingRows(w)[0].code, 'peer_expired', 'the late refusal stays charged');
+});
+
+const OLD_DOMAIN = 'dacs-chatgpt-plugin:loopback-seller-peer:v1:';
+/** The header `wallet` would send for `payload` if it signed under the old transport domain. */
+const oldDomainHeader = (payload, wallet) => Buffer.from(canonicalize({ payload, signature: wallet.signBytes(Buffer.from(OLD_DOMAIN + canonicalize(payload))).toString('base64url') })).toString('base64url');
+
+test('an old-domain request on every route, challenge and context included, is refused unsigned with zero rows and agent calls', async (t) => {
+  const w = await continuingWorld(t);
+  const old = createSellerTransportClientAuth({ buyerSigner: BUYER, seller: seller.claim, now: w.clock,
+    resolveJob: () => ({ listingPin: w.agent.listingPin, agreementHash: w.agreementHash }) });
+  const statements = await statementsDuring(async () => {
+    for (const path of WIRE_ROUTE_PATHS) {
+      const text = JSON.stringify(w.bodyFor(path)), signed = await old.request(path, w.bodyFor(path), text);
+      const calls = { ...w.agent.calls };
+      const answer = await w.send(path, { text, ...signed });
+      assert.equal(answer.signed, false, path);
+      assert.ok(answer.status >= 400, path);
+      assert.deepEqual(w.agent.calls, calls, path);
+    }
+  });
+  assert.deepEqual(statements, [], 'no route touched the store');
+
+  const c = await contextWireWorld(t), context = await c.startContext({ signOptions: { delegated: false } });
+  const counters = () => { const { connection, ...agentCalls } = c.calls; return { rows: c.rows(), files: c.journalFiles(), reserved: c.reserved.calls, holds: c.counts.holds.length, validations: c.counts.validations, agentCalls }; };
+  const before = counters();
+  const challenge = await c.sign({ delegated: false });
+  for (const [name, request] of [['challenge', challenge], ['context', context]]) {
+    const answer = await c.post({ url: request.url, header: oldDomainHeader(request.payload, c.buyer), text: request.text });
+    assert.deepEqual({ status: answer.status, error: answer.body.error, signed: answer.signature !== undefined }, { status: 401, error: 'peer_signature_invalid', signed: false }, name);
+  }
+  assert.deepEqual(counters(), before);
+});
+
+test('no source module defines or imports the old server auth, and the package exports no function for it', async () => {
+  const sourceDirectory = fileURLToPath(new URL('../src/', import.meta.url));
+  const users = readdirSync(sourceDirectory, { recursive: true }).filter((file) => file.endsWith('.mjs')
+    && /createSellerTransportServerAuth|transportStoreOf/.test(readFileSync(join(sourceDirectory, file), 'utf8')));
+  assert.deepEqual(users, []);
+  assert.deepEqual(Object.keys(await import('../src/index.mjs')).filter((name) => /ServerAuth/.test(name)), []);
 });
