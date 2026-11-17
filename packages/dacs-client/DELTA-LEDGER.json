@@ -10634,6 +10634,18 @@
           "after": "bc36e9f0477613f54e57b1a94424971e42e5c6e1"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the transport blob merged from the base",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "90c4bd23a7af4405b8416b1906c9228a34aba8a5",
+          "after": "90c4bd23a7af4405b8416b1906c9228a34aba8a5"
+        }
+      ]
     }
   ]
 }
