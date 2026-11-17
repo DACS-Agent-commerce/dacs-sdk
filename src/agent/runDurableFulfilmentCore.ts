@@ -1596,6 +1596,16 @@ function nonDpaVerificationResult(value: unknown): unknown {
   return value;
 }
 
+/**
+ * The Vet provenance retained with a consumed permit is not valid in the configured Vet mode.
+ * It is permanent for that mode: repeating the call with the same mode fails the same way.
+ */
+class VetModeMismatchError extends Error {
+  constructor(violation: string) {
+    super(`vet_mode_mismatch: ${violation}`);
+  }
+}
+
 class DurableCoordinator {
   readonly #request: SellerFulfilmentRequest;
   readonly #deps: DurableSellerFulfilmentDeps;
@@ -1721,7 +1731,7 @@ class DurableCoordinator {
     // retained Vet provenance of the other mode from being continued.
     const vetModeViolation = sellerFulfilmentRetainedVetModeViolation(
       authority.handoff.auditSource, this.#deps.vetMode ?? SELLER_FULFILMENT_VET_MODES.counterparty);
-    if (vetModeViolation) throw new Error(`vet_mode_mismatch: ${vetModeViolation}`);
+    if (vetModeViolation) throw new VetModeMismatchError(vetModeViolation);
     if (this.#authority) {
       if (!exact(this.#authority.binding, authority.binding) ||
           this.#authority.handoffEncoded !== authority.handoffEncoded ||
@@ -5926,7 +5936,9 @@ async function runDurableFulfilmentInternal(
     await coordinator.release().catch(() => {});
     return {
       result: durableIndeterminate(
-        "durable-permit-inspection-failed",
+        error instanceof VetModeMismatchError
+          ? "durable-vet-mode-mismatch"
+          : "durable-permit-inspection-failed",
         String(error),
         coordinator.consumedPaymentAuthorization(),
       ),
