@@ -10716,6 +10716,54 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF add the pinned HTTPS connector for seller traffic",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "c2a23d02278639657358480a74e9e933492b0832",
+          "after": "7a75e86fe07501b58946cef29b61d2af5f619a16"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-https-connector.mjs",
+          "before": null,
+          "after": "ad2926ab214f03546facc9f089bbe151079b1a46"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "8f2d395270b07f99c1884c9dfae0d1032bc17c18"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "48056110819fef0a22ae0e8bff28e5781ed1bcb6",
+          "after": "cb45766caa937eac592966d1719e218c394eeaef"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/loopback-test-ca.mjs",
+          "before": "bfe8faf4eea14100728ce274f186af84be20450d",
+          "after": "8f77bf0f70a5e6cb4252e91865eb07e36d9cfcc6"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-https-connector.test.mjs",
+          "before": null,
+          "after": "f23d2e87435ff65e1de401dae91f14760099f6d8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged index.mjs blob after merging the base",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "79a38ade5963d24c148db6424e62ff12d5f6381d",
+          "after": "79a38ade5963d24c148db6424e62ff12d5f6381d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF remove the unused cold-cache test helpers and test the cache's injected clock",
       "files": [
         {

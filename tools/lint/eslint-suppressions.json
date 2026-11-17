@@ -515,11 +515,6 @@
       "count": 1
     }
   },
-  "test/agent/sessionStore.test.ts": {
-    "no-useless-assignment": {
-      "count": 1
-    }
-  },
   "test/canonical/jcs.test.ts": {
     "no-loss-of-precision": {
       "count": 1
