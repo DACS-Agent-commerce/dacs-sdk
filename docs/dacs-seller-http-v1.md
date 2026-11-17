@@ -103,8 +103,8 @@ answered as readback, under an expired delegation or otherwise
 or `route: "context"`, with no Agreement and no deadline. Its fields are
 `RequestCheck` minus `artifacts`, `commitment`, `agreement`,
 `readCommitmentReceipt` and `signedListing`, plus `route`. There is no readback
-on either route. Hosts refuse first with their admission guard and stop file
-(`seller_stopped`, 503).
+on either route. A host that has been stopped refuses before it calls this
+function (the seller host answers `seller_stopped`, 503).
 
 The admission order is binding; envelope opened under that binding; kept
 purchase tuple; current participant authority; lifetime override; declared
@@ -125,26 +125,39 @@ omitted, with `delegationExpiresAt: null`. Verifier errors retain their causes.
 No Agreement deadline is consulted and an expired delegation is refused.
 
 `ready` must be boolean. With `ready: false`, challenge always refuses
-`seller_not_ready` (503); context refuses unless host-owned `retained.accepted`
-is true. That flag is true only for the host's `admitted` or `running` K1 row
-whose original accepted presentation has this `contextScopeHash`. Neither flag
-comes from the request. Scope validation against the Listing is the host's duty.
+`seller_not_ready` (503); context refuses unless the host-set `retained.accepted`
+is true. Neither flag comes from the request. Scope validation against the
+Listing is the host's duty.
+
+The host keeps one admission record per job. Its state is `intent` (the host
+has asked for a capacity hold and has not accepted the presentation),
+`admitted`, `running`, `compensating` (the host is undoing the work),
+`settled` or `aborted`. The host sets `retained.accepted` to true only in
+these cases, and only when it retains the exact original accepted presentation
+whose scope hash is this request's `contextScopeHash`:
+
+- the record is `admitted` or `running`;
+- the record is `settled`, `inspectWireOperation` reports a completed context
+  outcome with the same immutable binding (`wireOperationBinding`), and the
+  host has verified that outcome at its source.
+
+In every other case the flag is false and gives no authority: the record is
+`intent`, `compensating` or `aborted`, or it is `settled` without a completed
+context outcome.
+
+A settled job is answered from inspection only. The host returns the outcome's
+exact bytes without calling `reserve()`, starting an attempt, taking a capacity
+hold, starting work or writing a party Vet (identity check) record. This works
+while the host is draining and at capacity. If revalidation at the source
+fails, the answer is `seller_source_unavailable` (503) and the outcome stays
+intact.
 
 The frozen result is `{route, body, delegationExpiresAt, reserve?}`. Use its
-admitted body. Only context has `reserve()`: the host calls it after its K1
-admission and K5 accounting. It rechecks current authority, request expiry,
-then delegation expiry if present, before any journal write. The challenge
-ignores `requestJournal`; context requires the SDK journal before readiness.
-
-For settled replay the host may set `retained.accepted` only when it retains
-the exact original accepted presentation and scope hash, and
-`inspectWireOperation` reports a completed context outcome with the same
-immutable binding (`wireOperationBinding`). The host verifies that outcome at
-its source and returns its exact bytes through inspection only: no `reserve()`,
-new attempt, hold, start or Vet write. This works during drain and at capacity.
-Source revalidation failure is `seller_source_unavailable` (503) and leaves
-the outcome intact. Settled compensation without a completed context outcome,
-and `aborted` or `compensating` admissions, do not gain authority from this flag.
+admitted body. Only context has `reserve()`: the host calls it after it has
+written its admission record and done its capacity and per-buyer accounting.
+It rechecks current authority, request expiry, then delegation expiry if
+present, before any journal write. The challenge ignores `requestJournal`;
+context requires the SDK journal before readiness.
 
 ## Limits (unchanged)
 
