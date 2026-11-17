@@ -9,6 +9,9 @@ export function finalizedCommitmentReader(reader,signer,{substrate='TEST-finalit
  const proof=receipt=>{const {evidence,...material}=receipt;return 'TEST-finalized-commitment:'+canonicalize(material);};
  const matches=(row,artifact,projection)=>row&&same(row.artifact,artifact)&&same(row.signedProjection,projection);
  return{
+  // The observations, for a reader in another process to restore.
+  retain:()=>[...observations],
+  restore(rows){for(const [address,row] of rows)observations.set(address,row);},
   record({logicalAddress,artifact,signedProjection,blockRef}){
    const material={receiptVersion:'1',substrate,finalityProfile:'TEST-scripted-finalized',logicalAddress,nativeAddress:signedProjection.content.to,
     contentHash:contentHash(artifact),writer:signer.claim,transactionRef:{kind:'demos',value:signedProjection.hash},state:'finalized',observationDisposition:'established',observedAt:blockRef.timestamp,blockRef};

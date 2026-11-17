@@ -68,19 +68,28 @@ let jobSequence = 0;
  * `faults.walletSignature`, `faults.walletBroadcast` and `faults.responseSignature` each fail that many next steps
  * (the wallet faults fail before the step, so nothing is signed or sent). `hold(point)` stops the seller after that step until `release()`.
  *
- * What the seller really did: `counts` (evidence, wallet, broadcast and response signatures), `evidenceCreates`, `deliverableWrites`,
+ * What the seller really did: `counts` (evidence, wallet, broadcast and response signatures, plus `resends` of an accepted CREATE the node
+ * does not show yet and the `rpcSignatures` that authenticated each resend), `evidenceCreates`, `deliverableWrites`,
  * `deliveryEvidenceWrites`, `work`, `wireState`, `steps` (each node read and wallet step in order, with the jobs whose durable lock
  * was held), `transferReads()`, `lockedJobs()`, `grantedReceipts()`, `leaseUntil()` and `snapshot(p)`, which holds what a repeated request must
  * leave as it was.
+ *
+ * A world for a real process kill takes `directories` (`{ data, wallet }`, real paths made by the caller, who removes them) and
+ * `onEvent(name, detail)`, which the world calls as the seller reaches each step: `workSaved` (the work is saved and the wallet is asked to
+ * sign), `walletSigned` (the wallet signed a CREATE, with the `bytesHash` of its exact bytes), `evidenceSigned` (the signed CREATE is kept and its
+ * broadcast starts) and `write` (the node applied a CREATE, with its `address` and, for a broadcast, the `bytesHash` of the exact bytes it
+ * received). A process that starts over directories an earlier process used passes `retained`, the `retain()` of that process: the node's
+ * records, the artifact anchor's journals, the finality and Vet records and the Agreements, which the new process rebuilds its sources from.
+ * `purchase({ resume: jobId })` returns the handle of a purchase that process made.
  */
-export async function nativePaymentWorld(t) {
+export async function nativePaymentWorld(t, { directories = null, retained = null, onEvent = () => {} } = {}) {
   const sellerKey = walletOf(17), buyerKey = walletOf(12);
   const sessionKey = walletOf(3);
   let wallClock = T0, advancedMs = 0;
   // The host's clock is wall time and never behind the node's latest block, which the node stamps two seconds apart.
   let node = null;
   const clock = () => Math.max(wallClock, node?.latestBlockMs() ?? 0);
-  node = scriptedDemosNode(clock);
+  node = scriptedDemosNode(clock, { onApply: (entry, bytes) => onEvent('write', { address: entry.logicalAddress, ...(bytes === null ? {} : { bytesHash: core.sha256Hex(bytes) }) }) });
   const advance = (milliseconds) => { wallClock = clock() + milliseconds; advancedMs += milliseconds; };
   // The wire times an admission with `performance.now`, which moves forward with the world's clock.
   const monotonicNow = performance.now.bind(performance);
@@ -97,7 +106,7 @@ export async function nativePaymentWorld(t) {
   draft.offering.deliverable.expectedSizeBytes = Buffer.byteLength(core.canonicalize(sample));
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft))), pin = seller.listingPin(listing);
 
-  const counts = { evidenceSignatures: 0, walletSignatures: 0, walletBroadcasts: 0, responseSignatures: 0 };
+  const counts = { evidenceSignatures: 0, walletSignatures: 0, walletBroadcasts: 0, responseSignatures: 0, resends: 0, rpcSignatures: 0 };
   const faults = { walletSignature: 0, walletBroadcast: 0, responseSignature: 0 };
   // `hold(point)` stops the next step at that point once the step has happened and counted, until the test calls `release()`. It returns
   // `reached`, which settles when the seller is stopped there. The points are `responseSignature`, `walletSignature` and `walletBroadcast`.
@@ -158,7 +167,14 @@ export async function nativePaymentWorld(t) {
   // The evidence and Deliverable CREATEs go through the shipped wallet journal below; the node applies its own copy of what the wallet signed.
   const finalized = finalizedCommitmentReader(node.reader, sellerKey, { substrate: 'demos' });
   const anchors = await anchorFixture({ writer: { claim: sellerKey.claim, sign: sellerKey.sign }, now: clock,
-    artifactKinds: ['FinalityCommitmentRecord', 'CompositeVerificationRecord', 'Deliverable', 'SettlementEvidence'] });
+    artifactKinds: ['FinalityCommitmentRecord', 'CompositeVerificationRecord', 'Deliverable', 'SettlementEvidence'],
+    signRpc: async () => { counts.rpcSignatures++; return 'TEST rpc authentication'; } });
+  // The one resend of an accepted CREATE the node does not show yet: the stored bytes go to the node again, which keeps them once per nonce.
+  anchors.source.recoverStorageWrite = async ({ signedTransaction, signRpc }) => {
+    await signRpc();
+    counts.resends++;
+    node.receive(JSON.stringify(signedTransaction));
+  };
   const readerFor = (kind) => (kind === 'FinalityCommitmentRecord' ? finalized : node.reader);
   anchors.controls.reader = { read: (address, options) => readerFor(options?.expectedArtifactKind).read(address, options),
     verifyReceipt: (input) => readerFor(input.artifactKind).verifyReceipt(input) };
@@ -177,29 +193,40 @@ export async function nativePaymentWorld(t) {
     }
     return { success: true, data: { hash: signed.hash, writeProof: { disposition: 'included' } } };
   };
+  const anchorJournals = [anchors.journal, anchors.sourceJournal];
+  if (retained !== null) {
+    node.restore(retained.node);
+    finalized.restore(retained.finalized);
+    admission.restore(retained.admission);
+    retained.journals.forEach((rows, index) => { for (const [key, value] of rows) anchorJournals[index].rows.set(key, value); });
+    for (const [name, records] of [['agreements', agreements], ['inputs', inputs], ['buyerBundles', buyerBundles]]) for (const [key, value] of retained[name]) records.set(key, value);
+  }
   let artifactAnchor = anchors.open();
 
   // What the seller did around the wallet and the node, in order, each with the jobs whose durable lock was held at that moment.
   const steps = [];
   node.script.onRead = ({ message, hash }) => steps.push({ step: message, hash, locks: lockedJobs() });
-  const walletDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-native-payment-wallet-')));
+  const walletDirectory = directories?.wallet ?? realpathSync(mkdtempSync(join(tmpdir(), 'TEST-native-payment-wallet-')));
   const openWallet = () => seller.createPaymentEvidenceWalletJournal({ path: join(walletDirectory, 'wallet-journal.sqlite'),
     signCreate: async ({ logicalAddress, artifact, artifactKind }) => {
+      onEvent('workSaved');
       // A wallet that fails before it signs: nothing is signed and nothing is sent.
       if (faults.walletSignature > 0) { faults.walletSignature--; throw new Error('TEST wallet failed before signing'); }
       counts.walletSignatures++;
-      const signed = node.create(sellerKey, { logicalAddress, artifact, artifactKind }, { land: false });
+      const signed = node.create(sellerKey, { logicalAddress, artifact, artifactKind }), signedTransaction = JSON.stringify(signed);
+      onEvent('walletSigned', { bytesHash: core.sha256Hex(signedTransaction) });
       await holdHere('walletSignature');
-      return { signedTransaction: JSON.stringify(signed), txHash: signed.hash, nonce: signed.content.nonce };
+      return { signedTransaction, txHash: signed.hash, nonce: signed.content.nonce };
     },
     readAccountNonce: async () => ({ nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() }),
     readTransactionState: async ({ txHash }) => { steps.push({ step: 'walletRead', locks: lockedJobs() }); return { state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }; },
     broadcast: async ({ signedTransaction, txHash }) => {
       steps.push({ step: 'walletBroadcast', locks: lockedJobs() });
       counts.walletBroadcasts++;
+      onEvent('evidenceSigned');
       // A broadcast that fails before the node receives anything: the signed CREATE stays in the wallet journal.
       if (faults.walletBroadcast > 0) { faults.walletBroadcast--; throw new Error('TEST wallet broadcast failed'); }
-      if (JSON.parse(signedTransaction).hash === txHash) node.rebroadcast(txHash);
+      if (JSON.parse(signedTransaction).hash === txHash) node.receive(signedTransaction);
       await holdHere('walletBroadcast');
     } });
   let wallet = openWallet();
@@ -214,7 +241,7 @@ export async function nativePaymentWorld(t) {
   const readCommitmentReceipt = Object.assign(async (commitment) => artifactAnchor.verifyReceipt({
     logicalAddress: commitment.anchorReceipt.logicalAddress, artifact: commitment.record, artifactKind: 'FinalityCommitmentRecord', receipt: commitment.anchorReceipt,
     signedProjection: await artifactAnchor.retainedSignedCreate({ logicalAddress: commitment.anchorReceipt.logicalAddress, artifactKind: 'FinalityCommitmentRecord' }) }), { chainIdentity: FIXTURE_PROFILE.chainIdentity });
-  const dataDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-native-payment-seller-')));
+  const dataDirectory = directories?.data ?? realpathSync(mkdtempSync(join(tmpdir(), 'TEST-native-payment-seller-')));
   // Reads one of the host's SQLite stores while it runs. A store that does not exist yet reads as `empty`.
   const readStore = (file, empty, read) => {
     const path = join(dataDirectory, file);
@@ -225,7 +252,12 @@ export async function nativePaymentWorld(t) {
   const lockedJobs = () => readStore(join('seller', 'seller-state.sqlite'), [], (db) => db.prepare('SELECT job FROM seller_locks ORDER BY job').all().map((row) => row.job));
   const rails = { authority: railSteward().railAuthority() };
   const hosts = [];
-  t.after(async () => { try { for (const running of hosts) await running.close(); } finally { wallet.close(); rmSync(dataDirectory, { recursive: true, force: true }); rmSync(walletDirectory, { recursive: true, force: true }); } });
+  t.after(async () => {
+    try { for (const running of hosts) await running.close(); } finally {
+      wallet.close();
+      if (directories === null) { rmSync(dataDirectory, { recursive: true, force: true }); rmSync(walletDirectory, { recursive: true, force: true }); }
+    }
+  });
   const capabilities = () => ({ readCommitmentReceipt, signer: sellerSigner, listing, buyerAccess: seller.createOperatorBuyerAccess({ buyerForJob: (jobId) => (buyerBundles.has(jobId) ? buyerKey.address : null), openBuyerAccess: true }),
     agreementAnchor, deliverableProducer: produce, deliveryEvidenceEnabled: true,
     nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: node.rpcUrl, fetchImpl: node.fetchImpl, anchorEvidence: wallet.anchorEvidence, now: clock }),
@@ -257,20 +289,22 @@ export async function nativePaymentWorld(t) {
       notBefore: T0 - SESSION_NOT_BEFORE_SKEW_MS, expiresAt: T0 + DELEGATION_MS, profile };
     return { payload, signature: buyerKey.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + core.canonicalize(payload))).toString('base64url') };
   };
-  const purchase = async () => {
-    const jobId = `01J8N4YV7YVYQ4DB7M8T${String(++jobSequence).padStart(6, '0')}`;
+  const purchase = async ({ resume = null } = {}) => {
+    const jobId = resume ?? `01J8N4YV7YVYQ4DB7M8T${String(++jobSequence).padStart(6, '0')}`;
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
-    const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
-    const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
-    const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
     const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, authentication: mixedAuthentication(
       { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash, seller.createSellerTransportClientAuth({
         buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock })) });
-    const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: await buyerBundleFor(jobId) });
-    assert.equal(answer.disposition, 'complete', `the seller signs the vetted Agreement: ${JSON.stringify(answer)}`);
-    const agreement = await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier);
-    agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
-    assert.equal((await client().commit(jobId)).status, 'committed');
+    if (resume === null) {
+      const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
+      const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
+      const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
+      const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: await buyerBundleFor(jobId) });
+      assert.equal(answer.disposition, 'complete', `the seller signs the vetted Agreement: ${JSON.stringify(answer)}`);
+      agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier));
+      assert.equal((await client().commit(jobId)).status, 'committed');
+    }
+    const agreement = agreements.get(core.fixedPriceAgreementLogicalAddress(jobId));
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
     // A signed payment request without the client library. By default the open attempt's lease ends first, as for a retry; `lapse: false` keeps
     // it live. `delegated` signs with a session key the buyer delegated for `DELEGATION_MS` from the start of the clock.
@@ -327,7 +361,9 @@ export async function nativePaymentWorld(t) {
       holds: db.prepare('SELECT count(*) AS n FROM kit_job_holds').get().n,
       releases: db.prepare('SELECT count(*) AS n FROM kit_slot_retirements WHERE job_retired = 1').get().n,
       allocations: db.prepare('SELECT allocationId, state, rev FROM kit_allocations WHERE jobId = ?').all(p.jobId) })) });
-  return { node, anchors, artifactAnchor, purchase, restart, faults, counts, dataDirectory, listing, sellerKey, buyerKey, advance, host: () => host,
+  const retain = () => ({ node: node.retain(), finalized: finalized.retain(), admission: admission.retain(), journals: anchorJournals.map(({ rows }) => [...rows]),
+    agreements: [...agreements], inputs: [...inputs], buyerBundles: [...buyerBundles] });
+  return { node, anchors, artifactAnchor, purchase, restart, retain, faults, counts, dataDirectory, listing, sellerKey, buyerKey, advance, host: () => host,
     hold, steps, lockedJobs, snapshot, leaseMs: JOURNAL_LEASE_MS, leaseUntil: openLeaseUntil, clock, grantedReceipts,
     /** For each payment request sent so far, the jobs whose durable lock was held at each read of the transfer the seller made for it. */
     transferReads: () => steps.reduce((requests, entry) => {
