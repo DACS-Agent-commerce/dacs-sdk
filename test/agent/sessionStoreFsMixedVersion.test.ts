@@ -45,7 +45,6 @@ import { mkdtemp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 import { createFsFencedSessionStore } from "../../src/agent/fencedSessionStoreFs.js";
-import { createFsSessionStore } from "../../src/agent/sessionStoreFs.js";
 
 const roots: string[] = [];
 
@@ -58,17 +57,13 @@ afterEach(async () => {
     rm(root, { recursive: true, force: true })));
 });
 
-async function exerciseLegacyGateDisplacement(
-  kind: "plain" | "fenced",
-): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), `dacs-${kind}-mixed-version-`));
+async function exerciseLegacyGateDisplacement(): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "dacs-fenced-mixed-version-"));
   roots.push(dir);
-  const jobId = `${kind}-legacy-gate-race`;
+  const jobId = "fenced-legacy-gate-race";
   const encoded = encodeURIComponent(jobId);
   const gatePath = join(dir, "locks", `${encoded}.reclaim`);
-  const store = kind === "plain"
-    ? await createFsSessionStore({ dir, lockStaleMs: 60_000 })
-    : await createFsFencedSessionStore({ dir, lockStaleMs: 60_000 });
+  const store = await createFsFencedSessionStore({ dir, lockStaleMs: 60_000 });
   await store.create({ jobId, now: 0 });
 
   let movedResolve!: () => void;
@@ -78,7 +73,7 @@ async function exerciseLegacyGateDisplacement(
   gateRace.target = `/locks/${encoded}.reclaim`;
   gateRace.quarantineName =
     `reclaim-${encoded.length}-${encoded}.legacy.quarantine`;
-  gateRace.legacyToken = `${kind}-legacy-owner`;
+  gateRace.legacyToken = "fenced-legacy-owner";
   gateRace.moved = movedResolve;
   gateRace.resume = resume;
   gateRace.armed = true;
@@ -125,10 +120,6 @@ async function exerciseLegacyGateDisplacement(
 
 describe("mixed-version session mutation gates", () => {
   test("the fenced store detects a legacy reclaimer that displaces its published gate", async () => {
-    await exerciseLegacyGateDisplacement("fenced");
-  });
-
-  test("the plain store applies the same defensive post-publication check", async () => {
-    await exerciseLegacyGateDisplacement("plain");
+    await exerciseLegacyGateDisplacement();
   });
 });

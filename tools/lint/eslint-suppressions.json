@@ -470,11 +470,6 @@
       "count": 1
     }
   },
-  "src/agent/sessionStoreFs.ts": {
-    "no-unsafe-finally": {
-      "count": 1
-    }
-  },
   "src/agent/vetCore.ts": {
     "no-useless-assignment": {
       "count": 2
