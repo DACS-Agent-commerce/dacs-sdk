@@ -691,7 +691,7 @@ async function admitWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, ch
 }
 
 /**
- * Step 13: a delegation the request carries must be live now, for this buyer,
+ * A delegation the request carries must be live now, for this buyer,
  * seller, Listing pin and job, and must outlast the request; no deadline is
  * needed, as no Agreement exists. A direct request carries none. Verifier
  * failures other than scope and time (binding, profile, authority) propagate
@@ -705,7 +705,7 @@ async function admitPreAgreementDelegation({ c, request, delegation, listingPin 
   return expiresAt;
 }
 
-/** Step 14: new work needs `ready`; on the context route the host's `accepted` also lets a retained admission continue while it is false. */
+/** New work needs `ready`; on the context route the host's `accepted` also lets a retained admission continue while it is false. */
 function admitPreAgreementReadiness(request: WireRequestPayload, c: RequestCheck, retained: JsonRecord): void {
   const context = request.path === DACS_SELLER_HTTP_PATHS.context;
   if (typeof c.ready !== "boolean") fail("seller_readiness_required", 500);

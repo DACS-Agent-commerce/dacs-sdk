@@ -9,10 +9,14 @@
 own endpoint: the route table, the signed request and response envelopes, the
 seller session delegation, the discovery document and endpoint proof, their
 exact signing bytes, and validators. It has no HTTP server or client. Its one
-store, and its only I/O, is the seller's request journal
-(`openWireRequestJournal`), a local directory: on an effect route the
+store is the seller's request journal
+(`openWireRequestJournal`), a local directory. Its I/O is that directory and
+the journal's restart probe. On an effect route the
 `reserve()` that `checkWireRequest` returns writes and syncs journal entries
-synchronously, so it blocks the calling thread for those writes. The seller host (`@kynesyslabs/dacs-seller`) and the
+synchronously, so it blocks the calling thread for those writes. Opening the
+journal runs the restart probe, which starts two Node child processes one
+after the other with `spawnSync` (each limited to 5 seconds), so opening
+blocks the calling thread until both exit. The seller host (`@kynesyslabs/dacs-seller`) and the
 buyer client (`@kynesyslabs/dacs-client`) are its intended consumers.
 
 It is the wire the buyer plugins run today, ported from the plugin
@@ -103,16 +107,36 @@ answered as readback, under an expired delegation or otherwise
 or `route: "context"`, with no Agreement and no deadline. Its fields are
 `RequestCheck` minus `artifacts`, `commitment`, `agreement`,
 `readCommitmentReceipt` and `signedListing`, plus `route`. There is no readback
-on either route. Hosts refuse first with their admission guard and stop file
-(`seller_stopped`, 503).
+on either route. A host that has been stopped refuses before it calls this
+function (the seller host answers `seller_stopped`, 503).
 
-The admission order is binding; envelope opened under that binding; kept
-purchase tuple; current participant authority; lifetime override; declared
-route matching the request path; audience; request expiry; bounded body CF-5
-admission then method/path/raw-byte hash; Listing pin; exact retained members,
-job, scope hash and parties; required delegation; live delegation scope;
-context journal handle; readiness; return. Every refusal before return writes
-nothing. The header limit is 4,096 characters and the body limit is 64 KiB.
+The host's own options (`listingPin`, `retained`, `artifacts`) must be plain
+data; one that is not is refused `wire_input_invalid` (500), or
+`seller_retained_agreement_required` (500) for `retained`, before any numbered
+step. After that the first failing step decides the refusal. The steps run in
+this order:
+
+1. The body is at most 64 KiB, or the request is refused `bad_json` (400)
+   before any check of the request.
+2. The TP-1 binding.
+3. The envelope was opened under that binding.
+4. The purchase tuple kept for the job.
+5. Current participant authority.
+6. The lifetime override.
+7. The declared route matches the request path.
+8. Audience.
+9. Request expiry.
+10. CF-5 admission of the body, then the method, path and raw-byte hash.
+11. Listing pin.
+12. Exact retained members, job, scope hash and parties.
+13. Required delegation.
+14. Live delegation scope.
+15. Context journal handle.
+16. Readiness.
+17. Return.
+
+Every refusal before return writes nothing. The header limit is 4,096
+characters and the body limit is 64 KiB.
 
 The host supplies `retained.agreementHash` as `challengeScopeHash` on challenge,
 and `contextScopeHash` on context, computed over its retained scope. Both
@@ -125,26 +149,46 @@ omitted, with `delegationExpiresAt: null`. Verifier errors retain their causes.
 No Agreement deadline is consulted and an expired delegation is refused.
 
 `ready` must be boolean. With `ready: false`, challenge always refuses
-`seller_not_ready` (503); context refuses unless host-owned `retained.accepted`
-is true. That flag is true only for the host's `admitted` or `running` K1 row
-whose original accepted presentation has this `contextScopeHash`. Neither flag
-comes from the request. Scope validation against the Listing is the host's duty.
+`seller_not_ready` (503); context refuses unless the host-set `retained.accepted`
+is true. Neither flag comes from the request. Scope validation against the
+Listing is the host's duty.
+
+The host keeps one admission record per job. Its state is `intent` (the host
+has asked for a capacity hold and has not accepted the presentation),
+`admitted`, `running`, `compensating` (the host is undoing the work),
+`settled` or `aborted`. A host may set `retained.accepted` to true only in
+these cases, and only when it retains the exact original accepted presentation
+whose scope hash is this request's `contextScopeHash`:
+
+- the record is `admitted` or `running`;
+- the record is `settled`, `inspectWireOperation` reports a completed context
+  outcome with the same immutable binding (`wireOperationBinding`), and the
+  host has verified that outcome at its source.
+
+In every other case the flag must be false and gives no authority: the record
+is `intent`, `compensating` or `aborted`, or it is `settled` without a
+completed context outcome.
+
+A host that holds a settled job's completed outcome may answer from inspection
+only: return the outcome's exact bytes without calling `reserve()`, starting an
+attempt, taking a capacity hold, starting work or writing a party Vet (identity
+check) record. That works while the host is draining and at capacity. If
+revalidation at the source fails, it answers `seller_source_unavailable` (503)
+and leaves the outcome intact.
+
+The seller host (`@kynesyslabs/dacs-seller`) does not answer settled jobs this
+way. It always passes `retained.accepted: false` on the context route, and an
+accepted presentation sent again gets `session_admission_unavailable` (503),
+or `seller_not_ready` (503) while the host is draining, for as long as the job
+keeps its purchase tuple. Once the settled job is retired and its tuple is
+removed, the answer is `context_job_closed` (409), draining or not.
 
 The frozen result is `{route, body, delegationExpiresAt, reserve?}`. Use its
-admitted body. Only context has `reserve()`: the host calls it after its K1
-admission and K5 accounting. It rechecks current authority, request expiry,
-then delegation expiry if present, before any journal write. The challenge
-ignores `requestJournal`; context requires the SDK journal before readiness.
-
-For settled replay the host may set `retained.accepted` only when it retains
-the exact original accepted presentation and scope hash, and
-`inspectWireOperation` reports a completed context outcome with the same
-immutable binding (`wireOperationBinding`). The host verifies that outcome at
-its source and returns its exact bytes through inspection only: no `reserve()`,
-new attempt, hold, start or Vet write. This works during drain and at capacity.
-Source revalidation failure is `seller_source_unavailable` (503) and leaves
-the outcome intact. Settled compensation without a completed context outcome,
-and `aborted` or `compensating` admissions, do not gain authority from this flag.
+admitted body. Only context has `reserve()`: the host calls it after it has
+written its admission record and done its capacity and per-buyer accounting.
+It rechecks current authority, request expiry, then delegation expiry if
+present, before any journal write. The challenge ignores `requestJournal`;
+context requires the SDK journal before readiness.
 
 ## Limits (unchanged)
 
@@ -405,7 +449,11 @@ below):
    those no attempt follows included, and refuses a corrupt or too large journal.
 
    While an attempt's lease (60 s by default) is live, another request for
-   the operation is `seller_effect_pending` (503: retry later). Once the
+   the operation is `seller_effect_pending` (503). The refused request's nonce
+   key is already recorded, so sending the same signed request again while it is
+   unexpired is `peer_request_replayed` (409); once it has expired it is
+   `peer_expired` (408). To try again, the buyer signs a new request
+   with a new nonce. Once the
    effect's own write is durable, the handler records its outcome with
    `completeWireEffect(journal, effect, { status, text })`. The outcome is
    kept once (a different one is `seller_effect_conflict`). The text must be
@@ -693,8 +741,11 @@ Listing, and every other proof check applies.
 A buyer's proof can still say `ready: true` for up to ten minutes after the
 seller drains, so the seller enforces its own current state: `checkWireRequest`
 requires `ready` (whether it accepts new purchases now) on the proposal,
-commitment, commitment-signature and context routes and refuses each while it
-is `false` (`seller_not_ready`, 503), except a retained stage (step 3). On the payment and delivery routes it
+commitment and commitment-signature routes and refuses each while it
+is `false` (`seller_not_ready`, 503), except a retained stage (step 3). The
+context route is not checked here: `checkWireRequest` refuses it with
+`wire_route_requires_preagreement`, and `admitPreAgreementRequest` checks
+`ready` for it (see Pre-Agreement admission). On the payment and delivery routes it
 requires the job's finalized commitment instead, checked the same way with
 the seller's own receipt reader. Read routes enforce retained request scope
 without repeating CA-7, bar `bundles/buyer-copy`, which needs the same commitment evidence; successful readback authentication does not attest an Agreement.
@@ -984,7 +1035,7 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `tp1_authority_required`, `tp1_connection_unverified`, `tp1_participant_profile_mismatch` | missing trusted reader, unauthenticated/changed active connection, or mismatched authenticated participant/session profile and module evidence |
 | `peer_request_unverified` | `checkWireRequest` given anything but an envelope `openWireEnvelope` verified under the same binding |
 | `wire_route_requires_preagreement` (500) | the challenge or the context route given to `checkWireRequest` |
-| `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype); a response opened without its `principal` |
+| `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype); a response opened without its `principal`; an `expiresAt` or `time` given to the explicit-resume ledger that is not an unsigned integer |
 | `discovery_*` | discovery document and endpoint proof |
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
 | `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `admitPreAgreementRequest` given `ready: false` for the challenge route, or for the context route without `retained.accepted: true`, or `checkWireRequest` given `ready: false` for a proposal, commitment or commitment-signature request that is neither `retained.allocated` nor bound to an existing operation; a supplied continuation capability lifts the proof's refusal |
