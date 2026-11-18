@@ -48,7 +48,7 @@ function jsonScanner() {
     for (const byte of bytes) {
       if (string) {
         if (continuation > 0) {
-          if (byte < 0x80 || byte > 0xbf) throw Object.assign(new Error("ELIMIT npm HTTP response JSON string is not valid UTF-8"), { code: "ELIMIT" });
+          if (byte < 0x80 || byte > 0xbf) throw Object.assign(new Error("EMALFORMED npm HTTP response JSON string is not valid UTF-8"), { code: "EMALFORMED" });
           continuation--;
         } else if (escaped) escaped = false;
         else if (byte === 92) escaped = true;

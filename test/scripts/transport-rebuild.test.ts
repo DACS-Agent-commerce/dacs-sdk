@@ -47,7 +47,7 @@ describe("raw-token admission", () => {
   const oneByteChunks = (bytes: Buffer) => [...bytes].map(byte => Buffer.from([byte]));
   it.each([[0xc2, '"'], [0xe2, 'x"'], [0xf0, "xy\\"], [0xf0, '\x80"']])("refuses a string where lead byte %i is followed by %j", async (lead, rest) => {
     const bytes = Buffer.concat([Buffer.from('["'), Buffer.from([lead]), Buffer.from(rest + "[".repeat(130) + '"]')]);
-    for (const chunks of [[bytes], oneByteChunks(bytes)]) await expect(readBoundedResponse(response(chunks), 1024)).rejects.toThrow("not valid UTF-8");
+    for (const chunks of [[bytes], oneByteChunks(bytes)]) await expect(readBoundedResponse(response(chunks), 1024)).rejects.toMatchObject({ code: "EMALFORMED", message: expect.stringContaining("not valid UTF-8") });
   });
   it("carries strings and escaped delimiters over one-byte chunks", async () => {
     const bytes = Buffer.from(JSON.stringify({ 'a"\\': ['[,{', '\\"', "é"] }) + "\n{}");
