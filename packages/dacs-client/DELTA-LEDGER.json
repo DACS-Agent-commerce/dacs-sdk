@@ -11069,6 +11069,68 @@
           "after": "b62856e040048e1a29229c023595e23fcf3410dd"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF bind the job check to the buyer wallet, export passContext and check job authority before the broadcast lane is written",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "0ab6ce78b9a3612579dbe20b941fcf5f0110976d",
+          "after": "b5b496e80fd324fb52afc7bee0ddd2dfa4c63261"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/authority-reader.mjs",
+          "before": "a716f91bd5546fd66aa328a7a772da2046175dbd",
+          "after": "22f06b0555f9b2036708d9f4712972bb7f1205e3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "918d704295d37afc8f6c14fe32676d618763e143",
+          "after": "275a41d0da72b44b0faa25556a48d4dc49d08e6c"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "434de30a7c87fc6d9f5fcf36e5b42291f05d6184",
+          "after": "942abfcd0a08947816576bac43cec3b95e76d0f5"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "3fe31b788278ebe67eefa8ba246e4ec07b1c38f5",
+          "after": "f9e5f62ad0009b4ebd8d77b8b597973f61bd90af"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/pass-context.mjs",
+          "before": "a597cf52137c96b22d5959c6c06911c9ac4ed45d",
+          "after": "023f1b576ae2e0273a8713abda20cf93de916ab1"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": "b62856e040048e1a29229c023595e23fcf3410dd",
+          "after": "d8f9af6629244ff756b147066bf734984e40aa79"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/pass-context-fixture.mjs",
+          "before": "a9255725078543aca75d57db18244e7b7b6fbe3c",
+          "after": "5594e5efcd0f392dbc3a2d7fbf0009c98820c18f"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "6d3eacf154eb619d9ec525d6a6857e60a493b5de",
+          "after": "c5fcfe71a3f799b74527658f61c42e69dead889a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "f545d35a67ae4465c4b9cb7bb102bad21df3e1d8",
+          "after": "340d83fcac140c0ac7cd2d5277c66674a7684186"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "ae9ce572e9076dc07dee3e35b4f307f79c37dcee",
+          "after": "acbe28242cd3d146e3076c05e164deed97ac2307"
+        }
+      ]
     }
   ]
 }

@@ -153,9 +153,11 @@ function createKeyedQueue() {
  *   bytes are durable; a refusal after that leaves `signed-held`. Calls for one operation
  *   and lane that run together are queued: a later one is refused as above once the
  *   earlier one has recorded its artifact, and signs if the earlier one failed.
- * - `dispatchPass(artifact, send, { explicit, stage, material, confirmedDebitOs })`: passes the retained
+ * - `dispatchPass(artifact, send, { explicit, stage, material, confirmedDebitOs, authorize })`: passes the retained
  *   bytes to `send(bytes, final)` once, after recording `<stage>-started`; a refusal then records
- *   `<stage>-withheld`. `stage` is `'dispatch'` (the default: the send itself), `'confirm'`
+ *   `<stage>-withheld`. `authorize()` (optional, synchronous) runs with the dispatch checks, before `send` is
+ *   called, so what `send` writes before its own last check is never written for a send that is already refused.
+ *   `stage` is `'dispatch'` (the default: the send itself), `'confirm'`
  *   (the node's check of the bytes before the send, never a possible dispatch), or the recovery
  *   stages `'recovery-confirm'` and `'recovery-dispatch'` (the same two for an artifact that was
  *   already sent: only a recovery send counts as a possible dispatch there); any other
@@ -319,11 +321,13 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
   // Runs `effect` once authorized, for an effect whose record is already durable. A
   // refusal adds `heldState` with its cause and is what the caller sees, also when that
   // record cannot be written.
-  // `checked` is the operation the fee check reads when it differs from the recorded one.
-  async function authorizeOrHold(frame, read, operation, passId, heldState, effect, checked = operation) {
+  // `checked` is the operation the fee check reads when it differs from the recorded one. `authorize`
+  // (optional, synchronous) throws when the caller's own authority for the send is gone.
+  async function authorizeOrHold(frame, read, operation, passId, heldState, effect, { checked = operation, authorize } = {}) {
     try {
       await refresh(read, checked);
       gate(frame, checked);
+      authorize?.();
     } catch (cause) {
       await persist({ ...operation, passId, state: heldState, cause: failureCode(cause) }).catch(() => {});
       throw cause;
@@ -360,7 +364,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
 
   // Hands the operation's retained bytes to `release(bytes, passId)` once the history
   // allows it and `<stage>-started` is durable.
-  async function dispatchRetained(frame, read, operation, { explicit, stage, confirmedDebitOs }, release) {
+  async function dispatchRetained(frame, read, operation, { explicit, stage, confirmedDebitOs, authorize }, release) {
     const checked = feeView(operation, confirmedDebitOs);
     const records = await readOperation(operation);
     const { state, signed, passId, fresh } = operationState(records, operation, binding.profile?.pinVersion, stage);
@@ -369,7 +373,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     if (state === 'held' && explicit !== true) throw refusal('eb_explicit_resume_required');
     if (fresh) await persist({ ...signed, passId, state: 'signed' });
     await persist({ ...operation, passId, state: `${stage}-started` });
-    return authorizeOrHold(frame, read, operation, passId, `${stage}-withheld`, () => release(Buffer.from(signed.bytes, 'base64'), passId), checked);
+    return authorizeOrHold(frame, read, operation, passId, `${stage}-withheld`, () => release(Buffer.from(signed.bytes, 'base64'), passId), { checked, authorize });
   }
 
   // The last check of a send that has awaits of its own before it reaches the transport. `final(check, effect)`
@@ -390,10 +394,10 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     };
   }
 
-  async function dispatchPass(input, send, { explicit = false, stage = 'dispatch', material, confirmedDebitOs } = {}) {
+  async function dispatchPass(input, send, { explicit = false, stage = 'dispatch', material, confirmedDebitOs, authorize } = {}) {
     if (!STAGES.includes(stage)) throw new TypeError(`an effect stage is one of ${STAGES.join(', ')}`);
     const operation = snapshotOperation(input);
-    return runPass(operation, (frame, read) => dispatchRetained(frame, read, operation, { explicit, stage, confirmedDebitOs }, async (bytes, passId) => {
+    return runPass(operation, (frame, read) => dispatchRetained(frame, read, operation, { explicit, stage, confirmedDebitOs, authorize }, async (bytes, passId) => {
       // An unpaired dispatch-started stays a possible dispatch if the unknown record is lost too; the first cause is the one reported.
       const recordUnknown = (cause) => persist({ ...operation, passId, state: `${stage}-unknown`, cause: failureCode(cause) }).catch(() => {});
       const refused = {};
