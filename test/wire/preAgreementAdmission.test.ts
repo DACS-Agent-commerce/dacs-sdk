@@ -203,10 +203,11 @@ describe("pre-Agreement admission", { timeout: 60_000 }, () => {
       [{ rawBody: Buffer.from("{"), listingPin: { ...PIN, version: 2 } }, "bad_json", 400],
       [{ method: "GET", listingPin: { ...PIN, version: 2 } }, "peer_request_mismatch", 401],
       [{ listingPin: { ...PIN, version: 2 }, retained: null }, "peer_listing_mismatch", 409],
+      [{ retained: { ...x.retained, accepted: "yes", jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4J" }, ready: false }, "seller_retained_agreement_required", 500],
       [{ retained: { ...x.retained, accepted: false, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4J" }, ready: false }, "peer_job_mismatch", 409],
       [{ retained: { ...x.retained, accepted: false, buyer: party(4).claim }, ready: false }, "peer_agreement_party_mismatch", 409],
       [{ requestJournal: undefined, ready: false }, "seller_replay_guard_required", 500],
-      [{ ready: "yes", retained: { ...x.retained, accepted: "yes" } }, "seller_readiness_required", 500],
+      [{ ready: "yes" }, "seller_readiness_required", 500],
       [{ ready: false }, "seller_not_ready", 503],
     ];
     for (const [overrides, code, status] of cases) {
@@ -218,8 +219,11 @@ describe("pre-Agreement admission", { timeout: 60_000 }, () => {
     await expect(wire.admitPreAgreementRequest(opened, checkWith(e, { maxLifetimeMs: 0 }))).rejects.toBe(sentinel);
     withdrawn = false;
     const direct = await exchange(x, "context", { direct: true, requireDelegation: true });
+    const malformedRetained = { ...x.retained, accepted: "yes" };
+    await expect(admit(direct, j, { retained: malformedRetained })).rejects.toMatchObject(refusal("seller_retained_agreement_required", 500));
     await expect(admit(direct, j, { requestJournal: undefined, ready: false })).rejects.toMatchObject(refusal("peer_delegation_required", 401));
     const expired = await exchange(x, "context", { delegation: { expiresAt: NOW - 1 } });
+    await expect(admit(expired, j, { retained: malformedRetained })).rejects.toMatchObject(refusal("seller_retained_agreement_required", 500));
     await expect(admit(expired, j, { requestJournal: undefined, ready: false })).rejects.toMatchObject(refusal("peer_delegation_expired", 408));
     expect(j.files()).toEqual([]);
   });

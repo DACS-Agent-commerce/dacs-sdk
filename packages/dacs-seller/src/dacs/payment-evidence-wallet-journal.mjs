@@ -42,7 +42,7 @@
 //    signatureChainId is set, over `demos-tx:v1:<signatureChainId>:<hash>`
 //    (transaction-signature.mjs). Its amount is 0,
 //    its ACL public and its storage on-chain; its node fee and execution edits
-//    are exactly those demosdk 4.0.16 sign writes (`transaction_fee`: network
+//    are exactly those demosdk 4.0.18 sign writes (`transaction_fee`: network
 //    and rpc fee, no additional fee or rpc address; `gcr_edits`: the storage fee
 //    burn, the storage program, the gas burn and the nonce increment by 1), as
 //    DEM numbers before the node's denomination fork and OS strings after it
@@ -116,7 +116,7 @@ import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet
 const MAX_SIGNED_TRANSACTION_BYTES = 1024 * 1024;
 const LOCK_POLL_MS = 5;
 const TX_HASH = /^[0-9a-f]{64}$/;
-// demosdk 4.0.16 (demosclass.js sign): Ed25519 is 0x and lower-case hex.
+// demosdk 4.0.18 (demosclass.js sign): Ed25519 is 0x and lower-case hex.
 const SIGNATURE = /^0x[0-9a-f]{128}$/;
 // The members the signer may leave on a storage CREATE: the SDK's own, and the source binding the SR-2 readback asks for.
 const CONTENT_MEMBERS = new Set(['type', 'from', 'from_ed25519_address', 'to', 'amount', 'data', 'nonce', 'timestamp', 'transaction_fee', 'gcr_edits', 'network', 'chainIdentity']);
@@ -127,7 +127,7 @@ const TABLE_NAME = /^[a-z]+_creates$/;
 const EVIDENCE_TABLE = 'evidence_creates';
 // Zero as the SDK signs it: a number before the node's denomination fork, the string "0" after it.
 const ZERO_AMOUNTS = [0, '0'];
-// demosdk 4.0.16 signs amounts as DEM numbers before the fork and as canonical OS strings (10^9 OS per DEM) after it.
+// demosdk 4.0.18 signs amounts as DEM numbers before the fork and as canonical OS strings (10^9 OS per DEM) after it.
 const OS_PER_DEM = 1_000_000_000n;
 const OS_AMOUNT = /^(0|[1-9][0-9]*)$/;
 // The ceiling as the effect boundary's write-fee-cap refusal names it.
@@ -196,7 +196,7 @@ function heldDebitOs(row) {
 // (demos-sr2-adapter.mjs authenticate) reads back as this evidence: kept
 // otherwise, they could never land, and while their nonce is not overtaken
 // they would never be superseded.
-// Why the node fee and execution edits are not exactly those demosdk 4.0.16 sign writes for this CREATE, or null: the
+// Why the node fee and execution edits are not exactly those demosdk 4.0.18 sign writes for this CREATE, or null: the
 // node's (or the SDK's own) network and rpc fee with no additional fee or rpc address, and the edits GCRGeneration makes,
 // which the node regenerates and compares: storage fee burn, storage program, gas burn, nonce increment by 1. The whole
 // debit (fee plus the storage and gas burns) is compared only with the per-write ceiling: a fee that cannot be summed

@@ -64,7 +64,6 @@ import {
 } from "../../src/agent/terminalBundleFinalization.js";
 import { createInMemoryFencedSessionStore, type FencedSessionStoreV2 } from "../../src/agent/fencedSessionStore.js";
 import { createFsFencedSessionStore } from "../../src/agent/fencedSessionStoreFs.js";
-import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import type {
   SellerFulfilmentHandoff,
   SellerFulfilmentReceiptStore,
@@ -6117,12 +6116,12 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     expect(writerGetterCalls).toBe(0);
   });
 
-  test("rejects a v1 SessionStore at the explicit v2 durability boundary", async () => {
+  test("rejects a store that reports apiVersion 1 at the explicit v2 durability boundary", async () => {
     const h = durableHarness();
-    const v1Store = createInMemorySessionStore();
+    const versionOneStore = { ...h.durability.store, apiVersion: 1 };
     const result = await runDurableFulfilmentCore(h.fixture.request, h.deps, {
       ...h.durability,
-      store: v1Store as unknown as FencedSessionStoreV2,
+      store: versionOneStore as unknown as FencedSessionStoreV2,
     });
     expect(result).toMatchObject({
       decision: "indeterminate",
@@ -6131,7 +6130,6 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
     });
     expect(h.fixture.store.consumed).toBe(false);
     expect(h.counts).toEqual({ payload: 0, delivery: 0, evidence: 0, final: 0 });
-    expect(await v1Store.list()).toEqual([]);
   });
 });
 
