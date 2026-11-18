@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -400,5 +400,286 @@ describe("registry step in a stubbed project", () => {
     const result = runScript(["internal-registry", "--run-dir", await stubRun()], { STUB_REGISTRY_FAILS: "1" });
     expect(result.stderr.trim()).toBe("registry read failed: socket closed");
     expect(result.status).toBe(1);
+  });
+});
+
+describe("record arguments", () => {
+  const ref = `stor-${"a".repeat(40)}`;
+  it("takes --run-dir and an optional Listing ref", () => {
+    expect(walkthrough.parseArguments(["record", "--run-dir", "/r"])).toMatchObject({ command: "record", runDir: "/r", listingRef: undefined });
+    expect(walkthrough.parseArguments(["record", "--run-dir", "/r", "--listing-ref", ref]).listingRef).toBe(ref);
+  });
+  it.each(["stor-abc", `stor-${"A".repeat(40)}`, "https://seller.example/listing"])("refuses a Listing ref that is not a storage reference: %s", (value) => {
+    expect(() => walkthrough.parseArguments(["record", "--run-dir", "/r", "--listing-ref", value])).toThrow(/storage reference/);
+  });
+  it.each([
+    [["record"], /--run-dir is required/],
+    [["record", "--run-dir", "/r", "--confirm"], /unknown option/],
+    [["record", "--run-dir", "/r", "--evm-rpc", "https://rpc.example"], /unknown option/],
+  ])("refuses bad options: %j", (argv, message) => {
+    expect(() => walkthrough.parseArguments(argv)).toThrow(message);
+  });
+});
+
+const doctorText = (exit: number, checks: string[]) => [
+  "dacs doctor", "phase: post-start", "scope: buy", `gate: ${exit === 0 ? "pass" : "blocked"}`, ...checks, `report: ${"c".repeat(64)}`, `exit: ${exit}`, "",
+].join("\n");
+const BLOCKED_CHECKS = [
+  "required local.secrets: pass",
+  "required demos.listing-existing: blocked (listing-not-found)",
+  "required x402.service-limit: blocked (authority-unreachable) [cause: econnrefused]",
+  "informational service.public-reachability: fail",
+];
+const PLAN_LINE = `${JSON.stringify({ execute: false, invocationMode: "new" })}\n`;
+
+describe("buy output", () => {
+  it("lists every check that did not pass, with its reason code", () => {
+    expect(walkthrough.parseBuyOutput(doctorText(5, BLOCKED_CHECKS), 5)).toEqual({
+      planned: false,
+      notPass: [
+        { id: "demos.listing-existing", status: "blocked", reasonCode: "listing-not-found" },
+        { id: "x402.service-limit", status: "blocked", reasonCode: "authority-unreachable" },
+        { id: "service.public-reachability", status: "fail" },
+      ],
+    });
+  });
+  it("reads a passing doctor followed by the plan line", () => {
+    expect(walkthrough.parseBuyOutput(`${doctorText(0, ["required local.secrets: pass"])}${PLAN_LINE}`, 0)).toEqual({ planned: true, notPass: [] });
+  });
+  it.each([
+    ["no doctor header", doctorText(5, BLOCKED_CHECKS).replace("dacs doctor\n", ""), 5],
+    ["an exit line that differs from the exit code", doctorText(5, BLOCKED_CHECKS), 1],
+    ["a passing doctor and no plan line", doctorText(0, ["required local.secrets: pass"]), 0],
+    ["a check line it cannot read", doctorText(5, ["required local.secrets: maybe"]), 5],
+    ["no output", "", 1],
+  ])("refuses %s", (_name, text, exitCode) => {
+    expect(() => walkthrough.parseBuyOutput(text, exitCode)).toThrow(/buy output/);
+  });
+});
+
+describe("readiness reading", () => {
+  const refused = () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); };
+  const read = (fetchImpl: unknown) => walkthrough.readReadiness("http://127.0.0.1:1/ready", fetchImpl);
+  it("records the status code and reason codes of a service that is not ready", async () => {
+    const body = { ready: false, checkedAt: 1, reasonCodes: ["readiness-latch-missing"] };
+    expect(await read(reply(body, { status: 503 }))).toEqual({ status: "blocked", code: 503, reasonCodes: ["readiness-latch-missing"] });
+  });
+  it("records a ready service", async () => {
+    expect(await read(reply({ ready: true, checkedAt: 1, reasonCodes: [] }))).toEqual({ status: "ran", code: 200, reasonCodes: [] });
+  });
+  it("reports a service that does not answer as unrun", async () => {
+    expect(await read(refused)).toEqual({ status: "unrun", reason: "the service did not answer (connection refused)" });
+  });
+  it.each(["not json", JSON.stringify({ reasonCodes: ["Not A Code"] }), JSON.stringify({ reasonCodes: "x" })])("reports an unreadable reply as unrun without quoting it: %s", async (body) => {
+    const result = await read(reply(body, { status: 503 }));
+    expect(result).toEqual({ status: "unrun", reason: "the reply of /ready could not be read" });
+  });
+});
+
+describe("record", () => {
+  const ref = `stor-${"b".repeat(40)}`;
+  const usdc = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+  const seller = `did:demos:agent:${"b".repeat(64)}`;
+  const mnemonic = "zebra yankee xray whiskey victor uniform tango sierra romeo quebec papa oscar";
+  const providerKey = "provider-key-1234";
+  const refused = () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); };
+  const notReady = () => Response.json({ ready: false, checkedAt: 1, reasonCodes: ["readiness-latch-missing"] }, { status: 503 });
+  const ready = () => Response.json({ ready: true, checkedAt: 1, reasonCodes: [] });
+
+  /** A run directory that init and registry would have left, with the secrets and provider key a record must not copy. */
+  function recordFixture(demosRpc = "https://node2.demos.sh") {
+    const run = freshDirectory();
+    const project = join(run, "project");
+    for (const directory of [project, join(run, "packs"), join(run, "logs"), join(run, "secrets")]) mkdirSync(directory);
+    const tarballs: Record<string, string> = {};
+    for (const name of ["create-dacs-agent", "kynesyslabs-dacs", "kynesyslabs-dacs-node"]) {
+      writeFileSync(join(run, "packs", `${name}-${version}.tgz`), name);
+      tarballs[`${name}-${version}.tgz`] = createHash("sha256").update(name).digest("hex");
+    }
+    writeFileSync(join(run, "secrets", "buyer-demos"), mnemonic);
+    writeFileSync(join(project, ".env.example"), "DACS_DEPLOYMENT=local\nDACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json\n");
+    writeFileSync(join(project, ".env"), [
+      "DACS_DEPLOYMENT=local", `DACS_DEMOS_RPC_URL=${demosRpc}`, `DACS_EVM_RPC_URL=https://rpc.example/v2/${providerKey}?token=1`,
+      "DACS_BUYER_SERVICE_URL=http://127.0.0.1:3101", "DACS_SELLER_SERVICE_URL=http://127.0.0.1:3102",
+      `DACS_BUYER_AUTHORITY=did:demos:agent:${"a".repeat(64)}`, `DACS_SELLER_AUTHORITY=${seller}`, `DACS_RAIL_STEWARD_AUTHORITY=${seller}`,
+      `DACS_SELLER_EVM_PAYEE=${PAYEE}`, `DACS_BUYER_DEMOS_SECRET_FILE=${join(run, "secrets", "buyer-demos")}`, "",
+    ].join("\n"));
+    writeFileSync(join(run, "state.json"), JSON.stringify({
+      init: { commit: "c".repeat(40), packageVersion: version, tarballs, acceptedAt: 1, usdc, sellerUrl: SELLER_URL },
+      registry: { chainIdentity: "chain-1", refs: { definition: "d".repeat(64), index: "e".repeat(64) } },
+    }));
+    return run;
+  }
+
+  /** Answers the chain-id read, and /ready on each role's port. */
+  const network = (chainId: string, answers: { "3101": () => Response; "3102": () => Response }) => (async (url: string) => {
+    if (url.startsWith("https://rpc.example")) return Response.json({ jsonrpc: "2.0", id: 1, result: chainId });
+    return answers[String(new URL(url).port) as "3101"]();
+  }) as unknown as typeof fetch;
+  const onBaseSepolia = network("0x14a34", { "3101": notReady, "3102": notReady });
+
+  /** Puts a stand-in `npm` first on PATH. It saves its arguments, the DACS_ variables it was given and its directory name. */
+  function standInNpm(exitCode: number, output: string) {
+    const bin = freshDirectory();
+    const seen = join(bin, "seen.txt");
+    writeFileSync(join(bin, "output.txt"), output);
+    writeFileSync(join(bin, "npm"), [
+      "#!/bin/sh", `printf '%s\\n' "$@" > ${JSON.stringify(seen)}`, `env | grep -c '^DACS_' >> ${JSON.stringify(seen)}`,
+      `basename "$PWD" >> ${JSON.stringify(seen)}`, `cat ${JSON.stringify(join(bin, "output.txt"))}`, `exit ${exitCode}`, "",
+    ].join("\n"), { mode: 0o755 });
+    vi.stubEnv("PATH", `${bin}:${process.env.PATH ?? ""}`);
+    vi.stubEnv("DACS_PURCHASE_CONFIRM", "1");
+    return { seen: () => (existsSync(seen) ? readFileSync(seen, "utf8").trim().split("\n") : undefined) };
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+  const quietly = () => vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+  it("runs the buy without a confirmation variable and records each check that did not pass", async () => {
+    const print = quietly();
+    const npm = standInNpm(5, doctorText(5, BLOCKED_CHECKS));
+    const run = recordFixture();
+    const record = await walkthrough.record({ runDir: run, listingRef: ref }, onBaseSepolia);
+    expect(npm.seen()).toEqual([
+      "run", "dacs:buy", "--silent", "--", "--listing-ref", ref, "--request-file", "./request.json",
+      "--max-service-amount", "0.000001", "--max-network-fee-eth", "0.001", "0", "project",
+    ]);
+    expect(record.steps).toEqual({
+      init: { status: "ran" }, registry: { status: "ran" },
+      readiness: { status: "blocked", reasonCodes: ["readiness-latch-missing"] },
+      setup: { status: "ran", evidence: "the Listing ref was given by the operator; record does not read it back" },
+      buy: {
+        status: "blocked", exitCode: 5,
+        notPass: [
+          { id: "demos.listing-existing", status: "blocked", reasonCode: "listing-not-found" },
+          { id: "x402.service-limit", status: "blocked", reasonCode: "authority-unreachable" },
+          { id: "service.public-reachability", status: "fail" },
+        ],
+      },
+      fundedPurchase: { status: "unrun", reason: expect.stringContaining("wallet-spend authority") },
+    });
+    expect(record.fundedRun).toMatch(/^Funded run: UNRUN — /);
+    expect(record).toMatchObject({ listingRef: ref, readiness: { buyer: { code: 503 }, seller: { code: 503 } } });
+    expect(print).toHaveBeenCalledWith(JSON.stringify(record));
+    expect(JSON.parse(readFileSync(join(run, "record.json"), "utf8"))).toEqual(record);
+    expect(statSync(join(run, "record.json")).mode & 0o777).toBe(0o600);
+  });
+
+  it("records a passing plan-only buy as ran", async () => {
+    quietly();
+    standInNpm(0, `${doctorText(0, ["required local.secrets: pass"])}${PLAN_LINE}`);
+    const record = await walkthrough.record({ runDir: recordFixture(), listingRef: ref }, network("0x14a34", { "3101": ready, "3102": ready }));
+    expect(record.steps).toMatchObject({ readiness: { status: "ran" }, buy: { status: "ran", planOnly: true } });
+  });
+
+  it("keeps no key, secret, absolute path or URL path", async () => {
+    quietly();
+    standInNpm(5, doctorText(5, BLOCKED_CHECKS));
+    const run = recordFixture("https://demos.example/node-key-5678");
+    await walkthrough.record({ runDir: run, listingRef: ref }, onBaseSepolia);
+    const text = readFileSync(join(run, "record.json"), "utf8");
+    for (const secret of [...mnemonic.split(" "), providerKey, "node-key-5678", "token=1", "/v2/", run, tmpdir(), "secrets"]) expect(text).not.toContain(secret);
+    expect(JSON.parse(text)).toMatchObject({
+      evmRpc: { host: "rpc.example" }, demosRpc: { host: "custom", chainIdentity: "chain-1" },
+      deployment: "local", rails: ["x402"], authorities: { seller, steward: seller }, payee: PAYEE,
+      registry: { definition: "d".repeat(64), index: "e".repeat(64) },
+    });
+  });
+
+  it("names the default Demos host and no chain identity", async () => {
+    quietly();
+    const record = await walkthrough.record({ runDir: recordFixture() }, onBaseSepolia);
+    expect(record.demosRpc).toEqual({ host: "node2.demos.sh" });
+  });
+
+  it("runs no buy without a Listing ref, and reports setup and buy as unrun with the reason", async () => {
+    quietly();
+    const npm = standInNpm(0, "");
+    const record = await walkthrough.record({ runDir: recordFixture() }, onBaseSepolia);
+    expect(npm.seen()).toBeUndefined();
+    expect(record.steps.setup).toEqual({ status: "unrun", reason: "no --listing-ref was given; dacs:setup prints the Listing ref when it completes" });
+    expect(record.steps.buy).toEqual({ status: "unrun", reason: "needs --listing-ref, the Listing ref that dacs:setup prints" });
+    expect(record.listingRef).toBeUndefined();
+  });
+
+  it("reports a role service that does not answer as unrun and still records the other role", async () => {
+    quietly();
+    const record = await walkthrough.record({ runDir: recordFixture() }, network("0x14a34", { "3101": notReady, "3102": refused }));
+    expect(record.readiness).toEqual({
+      buyer: { status: "blocked", code: 503, reasonCodes: ["readiness-latch-missing"] },
+      seller: { status: "unrun", reason: "the service did not answer (connection refused)" },
+    });
+    expect(record.steps.readiness).toEqual({ status: "unrun", reason: "a role service was not observed" });
+  });
+
+  it("reports a registry step that saved no refs as unrun", async () => {
+    quietly();
+    const run = recordFixture();
+    const state = walkthrough.readState(run);
+    delete state.registry;
+    walkthrough.writeState(run, state);
+    const record = await walkthrough.record({ runDir: run }, onBaseSepolia);
+    expect(record.steps.registry).toEqual({ status: "unrun", reason: "the registry step has not saved its refs; run registry first" });
+    expect(record.registry).toBeUndefined();
+  });
+
+  it("adds only record.json and the buy log, and writes no readiness record or doctor report", async () => {
+    quietly();
+    standInNpm(5, doctorText(5, BLOCKED_CHECKS));
+    const run = recordFixture();
+    await walkthrough.record({ runDir: run, listingRef: ref }, onBaseSepolia);
+    expect(readdirSync(run).sort()).toEqual(["logs", "packs", "project", "record.json", "secrets", "state.json"]);
+    expect(readdirSync(join(run, "logs"))).toEqual(["buy.log"]);
+    expect(readdirSync(join(run, "project")).sort()).toEqual([".env", ".env.example"]);
+  });
+
+  it("replaces record.json on a rerun", async () => {
+    quietly();
+    const run = recordFixture();
+    await walkthrough.record({ runDir: run }, onBaseSepolia);
+    const record = await walkthrough.record({ runDir: run }, network("0x14a34", { "3101": ready, "3102": ready }));
+    expect(JSON.parse(readFileSync(join(run, "record.json"), "utf8"))).toEqual(record);
+    expect(record.steps.readiness).toEqual({ status: "ran" });
+    expect(readdirSync(run)).not.toContain("record.json.tmp");
+  });
+
+  describe("refuses and writes no record", () => {
+    const refuses = async (run: string, message: RegExp, fetchImpl: typeof fetch = onBaseSepolia, listingRef?: string) => {
+      await expect(walkthrough.record({ runDir: run, listingRef }, fetchImpl)).rejects.toThrow(message);
+      expect(existsSync(join(run, "record.json"))).toBe(false);
+    };
+    it("before init", async () => {
+      const run = recordFixture();
+      rmSync(join(run, "state.json"));
+      await refuses(run, /run init first/);
+    });
+    it("when the EVM chain is not Base Sepolia", async () => {
+      await refuses(recordFixture(), /not 84532/, network("0x1", { "3101": notReady, "3102": notReady }));
+    });
+    it("when a tarball no longer matches the hash saved by init, before it runs the buy", async () => {
+      const npm = standInNpm(5, doctorText(5, BLOCKED_CHECKS));
+      const run = recordFixture();
+      writeFileSync(join(run, "packs", `kynesyslabs-dacs-${version}.tgz`), "changed");
+      await refuses(run, new RegExp(`tarball kynesyslabs-dacs-${version.replace(/\./g, "\\.")}\\.tgz no longer matches`), onBaseSepolia, ref);
+      expect(npm.seen()).toBeUndefined();
+    });
+    it("when the buy prints something other than a doctor report", async () => {
+      standInNpm(1, "listing reference is malformed\n");
+      await refuses(recordFixture(), /buy output/, onBaseSepolia, ref);
+    });
+    it("when the project's .env is missing", async () => {
+      const run = recordFixture();
+      rmSync(join(run, "project", ".env"));
+      await refuses(run, /project\/\.env is missing/);
+    });
+    it("when an authority in .env is not an authority", async () => {
+      const run = recordFixture();
+      const file = join(run, "project", ".env");
+      writeFileSync(file, readFileSync(file, "utf8").replace(`DACS_SELLER_AUTHORITY=${seller}`, "DACS_SELLER_AUTHORITY=seller"));
+      await refuses(run, /DACS_SELLER_AUTHORITY in project\/\.env is not an authority/);
+    });
   });
 });
