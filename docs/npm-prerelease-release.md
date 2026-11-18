@@ -42,10 +42,10 @@ it does on every other acceptance run, so baseline-only findings do not stop a
 prerelease. The baseline waives transitive findings only: an advisory that is
 high or critical on a direct dependency of the consumer fails the job even when
 the baseline lists it. The `verify` job, which has a 120-minute limit and no
-environment, OIDC token or secret, installs the same pinned npm client as the
-publish job, requires a clean build tree, builds core, the
-host and the generator, then runs conformance, types, the suites of all five
-packages and the release-gate regressions (`release:test`). The publish job needs
+environment, OIDC token or secret, requires a clean build tree, builds core, the
+host and the generator, then runs conformance, types and the suites of all five
+packages. It then installs the same pinned npm client as the publish job and
+runs the release-gate regressions (`release:test`) on it. The publish job needs
 the `verify` job, so none of those suites runs inside its 45-minute limit. The
 publish job installs a pinned release toolchain without a dependency cache,
 requires a clean build tree and builds again. It creates the release set twice
