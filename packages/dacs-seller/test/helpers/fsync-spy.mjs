@@ -6,10 +6,12 @@ import { resolve } from 'node:path';
  * absolute path its descriptor was opened with. The path comes from the `openSync` call, not from the
  * operating system, so it works wherever Node runs. Only descriptors opened by `openSync` with a string
  * path are named; a sync of any other descriptor passes through unreported.
- * `onSync(path)` runs before the real sync and may throw to make the sync fail.
+ * `onSync(path)` runs before the real sync and may throw to make the sync fail. `path` is `undefined`
+ * for a descriptor that was not named.
  * Returns `{ synced, restore }`: `synced` lists the reported paths in order, and `restore()` puts the
- * original functions back. `restore()` leaves alone any function a test has since replaced again, so
- * it can run twice and in any order next to another patch of the same functions. */
+ * original functions back. `restore()` can run twice, and leaves alone any function a later patch has
+ * replaced again. When two patches of the same functions are active, restore them in the reverse of the
+ * order they were installed: restoring the earlier one first leaves its wrapper in place. */
 export function spyOnFsync({ onSync } = {}) {
   const { openSync, closeSync, fsyncSync } = fs;
   const pathsByDescriptor = new Map();

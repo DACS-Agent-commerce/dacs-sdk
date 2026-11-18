@@ -578,7 +578,7 @@ function failingAppends(t,count,skip=0){
  const failing=(path,flags,...rest)=>{if(flags==='a'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
  fs.openSync=failing;
  syncBuiltinESMExports();
- // Restoring twice, or after an fsync spy that was installed first has restored, must not bring back a stale function.
+ // Restoring twice is harmless. Restore in the reverse of the install order when an fsync spy is also active.
  const restore=()=>{if(fs.openSync===failing)fs.openSync=openSync;syncBuiltinESMExports();};t.after(restore);return restore;
 }
 test('cold2 F1 a confirmation whose purchase reread failed is confirmed when retried',async t=>{
