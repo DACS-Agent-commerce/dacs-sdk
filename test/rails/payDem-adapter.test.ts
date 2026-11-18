@@ -1459,7 +1459,7 @@ describe("payDemSettle requires a prepared-transfer journal unless the caller al
     expect(refusal).toBeInstanceOf(DacsError);
     expect(refusal).toMatchObject({
       code: "settlement.unjournaled_rail",
-      message: expect.stringMatching(/journalPreparedTransfer.*allowUnjournaled/),
+      message: expect.stringMatching(/journalPreparedTransfer.*allowUnjournaled.*no recorded transaction hash to recover from/),
     });
     expect(claim).not.toHaveBeenCalled();
     expect(sdk.transfer).not.toHaveBeenCalled();
