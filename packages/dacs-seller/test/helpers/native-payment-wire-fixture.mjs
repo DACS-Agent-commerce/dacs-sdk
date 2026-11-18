@@ -232,6 +232,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   let wallet = openWallet();
   const demDeliveryContext = createDemDeliveryContext({ authority: AUTHORITY, vetMode: KIT_TP1_VET_MODE,
     resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
+    recoverBuyer: async () => null, resumableBuyer: async () => null, bindRetainedScope: () => ({ sellerBundlePresentedBy: sellerKey.claim }),
     resolveSeller: async ({ jobId }) => {
       const input = await vettedInput(jobId);
       const invocation = (party, claim, verifier) => ({ vetRecordRef: input[party].vetRecordRef, evaluatedParty: claim, requirement: clone(party === 'buyer' ? listing.buyerRequirement : SELLER_REQUIREMENT),
