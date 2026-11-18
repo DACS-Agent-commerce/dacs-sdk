@@ -13,6 +13,28 @@ vi.mock("../../src/rails/payDem.js", () => ({
   createPayDemRail: mocks.createPayDemRail,
   payDemSettle: mocks.payDemSettle,
 }));
+// The Demos SDK seen by the real pay-dem rail, for the tests that dispatch through it.
+const demosSdk = vi.hoisted(() => ({
+  getNetworkInfo: vi.fn(),
+  transfer: vi.fn(),
+}));
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+  Demos: class FakeDemos {
+    _doPost = vi.fn();
+    readonly tx = { confirm: vi.fn() };
+    readonly broadcast = vi.fn();
+    readonly connect = vi.fn(async () => undefined);
+    readonly connectWallet = vi.fn(async () => undefined);
+    readonly getNetworkInfo = demosSdk.getNetworkInfo;
+    readonly nodeCall = vi.fn();
+    readonly transfer = demosSdk.transfer;
+    readonly waitForNonce = vi.fn();
+
+    getAddress(): string {
+      return `0x${"ab".repeat(32)}`;
+    }
+  },
+}));
 vi.mock("../../src/rails/x402.js", () => ({
   createX402Rail: mocks.createX402Rail,
   x402Settle: mocks.x402Settle,
@@ -22,7 +44,10 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
   evmErc20Settle: mocks.evmErc20Settle,
 }));
 
+import { DacsError } from "../../src/errors.js";
 import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
   isSettlementBridge,
   declareSettlementBridge,
   settlementBridgeTraits,
@@ -1002,5 +1027,49 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       rail: DEM_RAIL_ID,
       phase: "pay-dem",
     }));
+  });
+});
+
+describe("pay-DEM registry dispatch requires a prepared-transfer journal unless allowed", () => {
+  const signingReached = new Error("the payment reached signing");
+
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof import("../../src/rails/payDem.js")>(
+      "../../src/rails/payDem.js",
+    );
+    mocks.createPayDemRail.mockReset().mockImplementation(actual.createPayDemRail);
+    mocks.payDemSettle.mockReset().mockImplementation(actual.payDemSettle);
+    demosSdk.getNetworkInfo.mockReset().mockResolvedValue({
+      forks: { osDenomination: { activated: true } },
+    });
+    demosSdk.transfer.mockReset().mockRejectedValue(signingReached);
+  });
+
+  const options = (payDem: Partial<NonNullable<RailDispatchOptions["payDem"]>> = {}) => ({
+    demosRpc: "https://demos.example",
+    demosSecret: "test-secret",
+    payment: { phaseIndex: 4 },
+    payDem: {
+      settlementStore: createIdempotencyStore(createInMemorySettlementLog()),
+      ...payDem,
+    },
+  });
+
+  test("settleFromRail refuses a pay-dem route without a prepared-transfer journal before signing", async () => {
+    const descriptor = await authenticatedDefinition();
+
+    const refused = settleFromRail(descriptor, options());
+    await expect(refused).rejects.toBeInstanceOf(DacsError);
+    await expect(refused).rejects.toMatchObject({ code: "settlement.unjournaled_rail" });
+    expect(demosSdk.transfer).not.toHaveBeenCalled();
+  });
+
+  test("settleFromRail runs a pay-dem route without a journal when payDem.allowUnjournaled is set", async () => {
+    const descriptor = await authenticatedDefinition();
+
+    const settle = await settleFromRail(descriptor, options({ allowUnjournaled: true }));
+    await expect(settle(request())).rejects.toThrow(signingReached.message);
+    expect(demosSdk.transfer).toHaveBeenCalledTimes(1);
+    expect(demosSdk.transfer).toHaveBeenCalledWith(`0x${"bb".repeat(32)}`, 1_000_000_000n);
   });
 });
