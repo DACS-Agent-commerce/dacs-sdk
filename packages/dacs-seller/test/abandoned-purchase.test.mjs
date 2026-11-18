@@ -1,6 +1,6 @@
 // The session state the host reads when the operator supplies none: a settled purchase reads as aborted by the seller once no payment can
-// still come for it (an hour after admission with no proposal or commitment, past its Agreement deadline with no commitment, an hour past
-// that deadline with a commitment). A purchase with a payment operation, and every other purchase, reads as unknown.
+// still come for it (an hour after admission with no proposal, and past its Agreement deadline with a proposal and no commitment). A
+// purchase with a commitment or a payment operation, and every other purchase, reads as unknown.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
@@ -60,21 +60,20 @@ test('a purchase with a proposal and no retained Agreement reads as aborted an h
   }
 });
 
-test('a committed purchase with no payment operation reads as aborted only an hour after its Agreement deadline', () => {
+test('a committed purchase with no payment operation reads as unknown at any age, since a payment made before the deadline may be claimed late', () => {
   for (const operation of ['pending', 'ended', 'completed']) {
     for (const started of [[COMMITMENTS], [PROPOSALS, COMMITMENTS]]) {
-      assert.equal(at(DEADLINE, { started, operation }), null, `${operation} ${started}: the deadline itself`);
-      assert.equal(at(DEADLINE + ABANDONED_PURCHASE_MS - 1, { started, operation }), null, `${operation} ${started}: a claim may still arrive`);
-      assert.equal(at(DEADLINE + ABANDONED_PURCHASE_MS, { started, operation }), 'aborted-by-self', `${operation} ${started}`);
+      for (const clock of [DEADLINE - 1, DEADLINE, DEADLINE + ABANDONED_PURCHASE_MS, DEADLINE + 100 * ABANDONED_PURCHASE_MS]) {
+        assert.equal(at(clock, { started, operation }), null, `${operation} ${started} at ${clock - DEADLINE}`);
+      }
+      for (const agreementDeadline of [() => null, () => 'later', () => { throw new Error('TEST the session read failed'); }]) {
+        assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, { started, operation, agreementDeadline }), null);
+      }
     }
   }
 });
 
-test('a committed purchase whose Agreement deadline cannot be read reads as unknown at any age', () => {
-  const unreadable = [() => null, () => 'later', () => { throw new Error('TEST the session read failed'); }];
-  for (const agreementDeadline of unreadable) {
-    assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, { started: [PROPOSALS, COMMITMENTS], agreementDeadline }), null);
-  }
+test('a deadline read that throws reads as unknown for a purchase with a proposal and no commitment', () => {
   const { state, reads } = reader({ started: [PROPOSALS], agreementDeadline: () => { throw new Error('TEST the session read failed'); } });
   assert.equal(state({ jobId: JOB }), null, 'a deadline read that throws is unknown with no commitment too');
   assert.ok(reads.some(([kind]) => kind === 'deadline'));

@@ -3577,17 +3577,17 @@ test('a default host gives back the units of a purchase that stopped after its p
   assert.deepEqual(allocationOf(w, p), ABANDONED);
 });
 
-test('a default host gives back the units of a committed, unpaid purchase only an hour after its Agreement deadline, once, across restarts', async (t) => {
+test('a default host keeps the units of a committed, unpaid purchase long past its Agreement deadline, and a payment made before the deadline is still accepted when claimed late', async (t) => {
   const w = await world(t, { contextSessionState: null });
   const p = await w.purchase({ commit: true });
-  w.advance(untilDeadline(p) + ABANDONED_PURCHASE_MS - MARGIN_MS);
+  w.advance(untilDeadline(p) - MARGIN_MS);
+  const tx = p.pay();
+  w.advance(MARGIN_MS + ABANDONED_PURCHASE_MS + MARGIN_MS);
   await w.restart();
   assert.deepEqual(allocationOf(w, p), LIVE, 'a payment included before the deadline may still be claimed');
-  w.advance(2 * MARGIN_MS);
-  await w.restart();
-  assert.deepEqual(allocationOf(w, p), ABANDONED);
-  await w.restart();
-  assert.deepEqual(allocationOf(w, p), ABANDONED, 'a second cleanup changes nothing');
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.deepEqual(allocationOf(w, p), { allocation: 'released', closure: null });
 });
 
 test('a default host never reads a purchase paid just before its Agreement deadline as abandoned, and the purchase completes', async (t) => {

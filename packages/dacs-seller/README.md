@@ -46,13 +46,13 @@ non-null non-string refuses issuance and new work with `session_admission_unavai
 and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host given no capability reads one state itself: a purchase that
-settled its context step and has no payment operation reads as `aborted-by-self`
+settled its context step and started no commitment or payment reads as `aborted-by-self`
 once no payment can still come for it, so its units are given back and its job id
 cannot continue (the buyer starts again with a new job id). That is an hour after
-its admission when it started no proposal or commitment; with a proposal and no
-commitment, also not before its Agreement's deadline when the seller retains the
-Agreement; and with a commitment, an hour after its Agreement's deadline, since a
-payment included after the deadline is refused. A host
+its admission when it started no proposal; with a proposal, also not before its
+Agreement's deadline when the seller retains the Agreement. A purchase with a
+commitment stays open, because a payment included before the deadline is accepted
+however late it is claimed. A host
 given the capability uses only that. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 
@@ -85,7 +85,7 @@ that already hold an allocation go on. Terminal allocation cleanup
 runs at startup and when a store reader observes a terminal session through
 `contextSessionState`, and the host's 60-second sweep repeats it while the host
 runs. With no `contextSessionState` the units a purchase keeps after its context
-step are given back once it reads as abandoned (above); with an operator's
+step are given back once it reads as abandoned (above; one with a commitment stays allocated); with an operator's
 `contextSessionState` they stay allocated until that reader names a terminal state.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,

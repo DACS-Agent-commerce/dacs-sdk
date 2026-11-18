@@ -2,10 +2,9 @@
 // seller once no payment can still come for it, which gives back the units the purchase still held:
 //   - one that started no proposal or commitment, an hour after its admission;
 //   - one with a proposal and no commitment, an hour after its admission and once its Agreement's deadline has passed, when an
-//     Agreement is retained: a commitment made after that deadline cannot be paid, and nothing is paid without a commitment;
-//   - one with a commitment, an hour after its Agreement's deadline: a payment included after the deadline is refused, and the hour
-//     lets the claim of a payment included just before it arrive.
-// A purchase with a payment operation, or with a commitment and no readable deadline, is never read as abandoned.
+//     Agreement is retained: a commitment made after that deadline cannot be paid, and nothing is paid without a commitment.
+// A purchase with a commitment or a payment operation is never read as abandoned: a payment included before the deadline is
+// accepted however late its claim arrives.
 import { DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
 
 /** How long a settled purchase may go without starting a later operation before it reads as abandoned, and how long past its deadline. */
@@ -27,11 +26,10 @@ export function createAbandonedPurchaseState({ admissionRecord, operationState, 
       if (row?.state !== 'settled' || !Number.isSafeInteger(row.admittedAt) || time - row.admittedAt < ABANDONED_PURCHASE_MS) return null;
       const started = (path) => operationState({ jobId, path }) !== 'none';
       if (started(DACS_SELLER_HTTP_PATHS.payments)) return null;
-      const committed = started(DACS_SELLER_HTTP_PATHS.commitments);
-      if (!committed && !started(DACS_SELLER_HTTP_PATHS.proposals)) return ABANDONED_STATE;
-      const read = agreementDeadline(jobId), deadline = Number.isSafeInteger(read) ? read : null;
-      if (!committed) return deadline === null || time >= deadline ? ABANDONED_STATE : null;
-      return deadline !== null && time - deadline >= ABANDONED_PURCHASE_MS ? ABANDONED_STATE : null;
+      if (started(DACS_SELLER_HTTP_PATHS.commitments)) return null;
+      if (!started(DACS_SELLER_HTTP_PATHS.proposals)) return ABANDONED_STATE;
+      const read = agreementDeadline(jobId);
+      return !Number.isSafeInteger(read) || time >= read ? ABANDONED_STATE : null;
     } catch { return null; }
   };
 }
