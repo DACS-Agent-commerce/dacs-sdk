@@ -1,0 +1,26 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record the kept README and native transport after the merge of the job-check change",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "66701d71bc6f2f2c75560de3e9ac3c7b6abf9276",
+      "after": "66701d71bc6f2f2c75560de3e9ac3c7b6abf9276"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "0798599b385f000f44cf9be9700fc4b6092245b7",
+      "after": "0798599b385f000f44cf9be9700fc4b6092245b7"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/DELTA-LEDGER.json",
+    "packages/dacs-client/DELTA-MAP.md",
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/WF-bbdb01c80947.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "The merge of the job-check change kept both sides' edits to these two files. Their blobs after the merge are the ones kept here."
+}
