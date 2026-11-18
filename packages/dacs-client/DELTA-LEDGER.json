@@ -11207,6 +11207,33 @@
           "after": "cc994051a5d7cba0c3251d9643cc4ebc5ddabb59"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the blobs chosen for the transport, wallet session, effect gate test and README after carrying base/main up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "d5da8fad8eb0fa7d2af26dbe5617e0392407c0c3",
+          "after": "d5da8fad8eb0fa7d2af26dbe5617e0392407c0c3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "7b3547fdb5f94a2664629d0aad4ae8ae87fbba6c",
+          "after": "7b3547fdb5f94a2664629d0aad4ae8ae87fbba6c"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "27ad986a31219cc84d6b475432cf1156d94ca1bf",
+          "after": "27ad986a31219cc84d6b475432cf1156d94ca1bf"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "ad49c47e224e203ea0c0ecb16c8feb5a1af48079",
+          "after": "ad49c47e224e203ea0c0ecb16c8feb5a1af48079"
+        }
+      ]
     }
   ]
 }
