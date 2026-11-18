@@ -7,7 +7,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { WireError, assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
-// Monotonic window for authority and stop reads, in milliseconds: one for EB1 to EB4, and one that starts when the fence is acquired and covers EB5r to EB8f, including the answers of a signer passed to signPass or pass and of the transport. The inner signer of signerFor is not cut off by it.
+// Monotonic window in milliseconds: one for the reads of EB1 to EB4, one that starts when the fence is acquired and covers the reads of EB5r to EB8f, and one that starts when each call to a signer passed to signPass or pass, or to the transport, is made. The inner signer of signerFor is not cut off by it.
 const EFFECT_READ_DEADLINE_MS = 10000;
 // Longest wait for the actor fence, in milliseconds.
 const EFFECT_FENCE_TIMEOUT_MS = 10000;
@@ -145,10 +145,11 @@ function assertStage(stage) {
  * `approvalRef` null or `{ revision() }` (null once the hold is gone); `k1Rev` null or `{ expected, current() }`.
  * Every method rejects (`signerFor` throws) with a WireError naming K0's refusal code, keeping its cause; a
  * callback's own error (a signer, a transport, `currentAuthorization`) is passed through unchanged. A signer
- * given to `signPass` or `pass`, or a transport, that has not answered when the pass window ends refuses
+ * given to `signPass` or `pass`, or a transport, that has not answered 10,000 ms after it was called refuses
  * `eb_sign_timeout` or `eb_send_timeout` and the fence is released; the inner signer of `signerFor` has no
  * time limit of its own and holds the fence until it answers. A send that timed out is recorded as the
- * stage's `-unknown` state, and until it settles every other signing or dispatch refuses `eb_send_in_flight`.
+ * stage's `-unknown` state, and until it settles every other signing (also through `signerFor`) or dispatch
+ * refuses `eb_send_in_flight`.
  * - `withFence(op, work, { context })` runs EB1 to EB5, then `work(held)` with `held.capability`, and releases.
  * - `signPass(op, innerSign, { context })` runs EB5r to EB7; resolves `{ bytes, artifactHash }`, signing only when nothing is retained.
  * - `dispatchPass(held, innerSend, { stage })` runs EB8 to EB9 for the bytes `signPass(held)` returned; resolves the send's answer.
@@ -193,7 +194,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     if (outcome.timedOut) throw refuse('tp1_authority_timeout', undefined, timeoutCause(EFFECT_READ_DEADLINE_MS));
   }
 
-  // The answer of a signer or transport call that is already running, which must arrive within the pass window. A late answer is ignored and never unhandled.
+  // The answer of a signer or transport call that is already running, which must arrive before `deadline`. A late answer is ignored and never unhandled.
   // The call's answer is taken once, so a thenable's `then` runs once. `onTimeout` receives the still-running answer.
   async function answerWithinWindow(deadline, started, code, onTimeout) {
     const answer = Promise.resolve(started);
@@ -314,7 +315,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     await checkNotStopped(deadline);
     recheckNow(pass, op);
     const produced = retained === null ? innerSign() : null;
-    const signed = retained?.bytes ?? await answerWithinWindow(deadline, produced, 'eb_sign_timeout');
+    const signed = retained?.bytes ?? await answerWithinWindow(newWindow(), produced, 'eb_sign_timeout');
     if (!(signed instanceof Uint8Array) || signed.length === 0 || signed.length > MAX_SIGNED_BYTES) throw refuse('eb_signed_bytes_invalid', `the signer must return 1 to ${MAX_SIGNED_BYTES} bytes`);
     // The pass keeps its own copy: the signer may still hold the array it returned, and the hash, the record and every transmission must use the same bytes.
     const bytes = Uint8Array.from(signed);
@@ -364,7 +365,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
       throw refusal;
     }
     let answer;
-    try { answer = await answerWithinWindow(pass.deadline, innerSend(Uint8Array.from(bytes)), 'eb_send_timeout', holdSendUntilSettled); } catch (error) {
+    try { answer = await answerWithinWindow(newWindow(), innerSend(Uint8Array.from(bytes)), 'eb_send_timeout', holdSendUntilSettled); } catch (error) {
       // A missing record leaves `-started`, which already means "possibly sent", so the send's own error is what the caller gets.
       await history.append(op.lane, { state: `${stage}-unknown`, ...base(op, artifactHash), of, cause: describeCause(error) }).catch(() => {});
       throw error;
@@ -385,6 +386,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
       return Object.freeze({
         claim: inner.claim,
         async sign(bytes) {
+          if (sendInFlight) throw refuse('eb_send_in_flight', 'an earlier send that timed out has not finished');
           await checkNotStopped(pass.deadline);
           ownedPass(op);
           recheckNow(pass, op);

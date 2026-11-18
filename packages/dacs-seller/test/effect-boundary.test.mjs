@@ -417,7 +417,6 @@ test('a signer that does not answer within the pass window refuses eb_sign_timeo
   assert.deepEqual(await states(history), [], 'a late signer answer records nothing');
 });
 
-// The timeout option only ends the test if the pass never settles; the clock decides the window.
 test('a signer and a transport that answer with a thenable have its then() called once', async (t) => {
   const w = await ebWorld(t);
   const { boundary } = w.build();
@@ -427,6 +426,7 @@ test('a signer and a transport that answer with a thenable have its then() calle
   assert.deepEqual(calls, { signer: 1, transport: 1 });
 });
 
+// The timeout option only ends the test if the pass never settles; the clock decides the window.
 test('a send that does not answer within the pass window is dispatch-unknown, refuses eb_send_timeout and releases the fence', { timeout: 15000 }, async (t) => {
   const w = await ebWorld(t);
   const { boundary, history } = w.build();
@@ -468,6 +468,41 @@ test('while a timed-out send is still running, another pass calls no signer and 
   await flush();
   await other();
   assert.deepEqual(await states(history, 'lane-2'), ['signed', 'dispatch-started', 'dispatch-acknowledged']);
+});
+
+test('a send gets its full window even when the signer used almost all of its own', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const inSigner = gate();
+  const inSend = gate();
+  const outcome = boundary.pass(w.op(), async () => { await inSigner.arrive(); return SIGNED_BYTES; }, async () => { await inSend.arrive(); return 'accepted'; }).then((value) => value, (error) => error);
+  await inSigner.reached;
+  await w.clock.advance(DEADLINE_MS - 1);
+  inSigner.release();
+  await inSend.reached;
+  await w.clock.advance(DEADLINE_MS - 1);
+  inSend.release();
+  const result = await outcome;
+  assert.equal(result.answer, 'accepted');
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-acknowledged']);
+});
+
+test('while a timed-out send is still running, signerFor signs nothing, and signs once the send has settled', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary } = w.build();
+  const inSend = gate();
+  const first = boundary.pass(w.op(), w.sign(), () => inSend.arrive()).then(() => 'resolved', (error) => error);
+  await inSend.reached;
+  await w.clock.advance(DEADLINE_MS);
+  assert.equal((await first).code, 'eb_send_timeout');
+  const other = w.op({ operationId: 'other', lane: 'lane-2' });
+  const signWith = () => boundary.withFence(other, (held) => boundary.signerFor(held, { claim: 'x', sign: w.sign() }).sign(SIGNED_BYTES));
+  await assert.rejects(signWith(), { code: 'eb_send_in_flight' });
+  assert.equal(w.counts.signer, 1, 'the inner signer was not called');
+  inSend.release();
+  await flush();
+  await signWith();
+  assert.equal(w.counts.signer, 2);
 });
 
 test('authority reads take no fence and call no signer', async (t) => {
