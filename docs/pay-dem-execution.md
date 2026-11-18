@@ -97,9 +97,14 @@ during audit.
 This recipe requires a prepared-transfer journal. Build the rail with
 `journalPreparedTransfer`. The SDK ships `createFsDemosWriteJournal` but no
 ready-made hook, so write the few lines that put each prepared transfer into
-your journal before it is broadcast. `payDemSettle` does not check the hook: a
-rail built without it, or with a hook that records nothing, leaves the recipe no
-hash to read.
+your journal before it is broadcast. `payDemSettle` and `settleFromRail` refuse
+a rail built without the hook unless the caller passes `allowUnjournaled: true`
+(under `payDem` for `settleFromRail`). They cannot check what the hook records:
+a hook that records nothing leaves the recipe no hash to read.
+
+The journal makes recovery possible; it does not stop a plain retry. If the
+settlement store is lost or not shared, a retry without `recoveryOnly` claims a
+fresh attempt and can pay again, even when the hook is set. Recover first.
 
 Settle a restarted purchase by calling the bridge with the request the purchase
 first sent and `recoveryOnly: true`. When the log holds no outcome and no

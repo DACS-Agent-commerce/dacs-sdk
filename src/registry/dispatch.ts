@@ -59,7 +59,8 @@ export interface RailDispatchOptions {
   /**
    * Native pay-DEM operator-safety and PC-7 recovery dependencies. Production
    * restart recovery uses `settlementStore`, `reconcile`, and
-   * `journalPreparedTransfer`. The settlement store is required.
+   * `journalPreparedTransfer`. The settlement store is required, and so is
+   * `journalPreparedTransfer` unless `allowUnjournaled` is `true`.
    */
   payDem?: {
     /** Maximum transfer amount plus confirmed Demos fees, in OS base units. */
@@ -68,6 +69,12 @@ export interface RailDispatchOptions {
     journalPreparedTransfer?: (
       transfer: Readonly<PayDemPreparedTransfer>,
     ) => Promise<void>;
+    /**
+     * Accept a route without `journalPreparedTransfer`. Without a journal a
+     * crash after the broadcast leaves no record of the transaction, so a retry
+     * after losing the settlement store can pay again.
+     */
+    allowUnjournaled?: boolean;
     /** Durable atomic settlement intent/outcome store. */
     settlementStore?: SettlementIdempotencyStore;
     /** Authoritative reconciliation for an unresolved retained intent. */
@@ -204,6 +211,7 @@ interface CapturedPayDemOptions {
   journalPreparedTransfer?: (
     transfer: Readonly<PayDemPreparedTransfer>,
   ) => Promise<void>;
+  allowUnjournaled?: boolean;
   settlementStore?: SettlementIdempotencyStore;
   reconcile?: PayDemSettlementReconcile;
   inclusionTimeoutMs?: number;
@@ -500,6 +508,11 @@ function captureDispatchOptions(
           payDem,
           "journalPreparedTransfer",
           "pay-dem prepared-transfer journal",
+        ),
+        allowUnjournaled: optionalDispatchValue<boolean>(
+          payDem,
+          "allowUnjournaled",
+          "pay-dem allowUnjournaled",
         ),
         settlementStore: captureSettlementStore(
           optionalDispatchValue<SettlementIdempotencyStore>(
@@ -805,6 +818,7 @@ export async function settleFromRail(
         throw new DacsError("pay-dem rail requires a caller-supplied durable settlement store");
       }
       const reconcile = payDem?.reconcile;
+      const allowUnjournaled = payDem?.allowUnjournaled;
       const inclusionTimeoutMs = payDem?.inclusionTimeoutMs;
       const inclusionPollIntervalMs = payDem?.inclusionPollIntervalMs;
       const statusRequestTimeoutMs = payDem?.statusRequestTimeoutMs;
@@ -857,6 +871,9 @@ export async function settleFromRail(
         ...(reconcile === undefined
           ? {}
           : { reconcile }),
+        ...(allowUnjournaled === undefined
+          ? {}
+          : { allowUnjournaled }),
       }));
     }
     default:

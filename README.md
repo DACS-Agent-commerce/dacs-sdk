@@ -553,15 +553,20 @@ exact resubmission; neither re-signing nor rebroadcasting is a permitted recover
 action.
 
 `createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
-hook. A caller can omit it, but a purchase that must finish after a restart needs
-the journal it fills (see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
+hook. `payDemSettle` and `settleFromRail` refuse a rail built without it, before
+any transfer, unless the caller passes `allowUnjournaled: true`. That opt-out
+accepts that a crash after the broadcast leaves no record of the transaction.
+A purchase that must finish after a restart needs the journal the hook fills
+(see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
 Without the hook the low-level rail provides only in-process hash-first
 observation. Across a
 process restart, at-most-once settlement requires `payDemSettle` with a
-caller-supplied durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
-additionally requires an application-owned durable journal or equivalent rail
-record. With neither durable mechanism, the SDK cannot prove that a lost
-response did not move value, so applications must not automatically retry.
+caller-supplied durable `SettlementIdempotencyStore`. The journal does not
+replace that store: if the store is lost or not shared, a plain retry can pay
+again even when the hook is set. The journal makes recovery possible; recover
+from it before any retry. With neither durable mechanism, the SDK cannot prove
+that a lost response did not move value, so applications must not
+automatically retry.
 The x402, direct ERC-20, and native DEM payment bridges require a caller-supplied
 settlement store when constructed. The SDK cannot check that the store is durable:
 production callers must supply one backed by durable, atomic storage, because an
@@ -573,6 +578,7 @@ import { createIdempotencyStore, evmErc20Settle, payDemSettle, x402Settle } from
 const settlementStore = createIdempotencyStore(durableSettlementLog);
 const x402SettlePayment = x402Settle(x402Rail, x402Paywall, { store: settlementStore });
 const evmSettle = evmErc20Settle(evmRail, evmConfig, { store: settlementStore });
+// demRail is built with journalPreparedTransfer; payDemSettle refuses one without it.
 const demSettle = payDemSettle(demRail, {}, { store: settlementStore, reconcile: demReconcile });
 ```
 
@@ -586,7 +592,8 @@ For registry dispatch, pass the same store as top-level `settlementStore` for
 x402 and ERC-20 or as `payDem.settlementStore` for native DEM.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
-`settlementStore`, and `reconcile`. The rail's timing bounds
+`settlementStore`, and `reconcile`. `journalPreparedTransfer` is required
+unless `payDem.allowUnjournaled` is `true`. The rail's timing bounds
 `inclusionTimeoutMs`, `inclusionPollIntervalMs`, `statusRequestTimeoutMs`,
 `nonceVisibilityTimeoutMs` and `transactionRecordTimeoutMs` are forwarded from
 `payDem` to `createPayDemRail` unchanged; see
