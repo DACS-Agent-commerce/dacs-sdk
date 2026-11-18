@@ -9,6 +9,7 @@ import { contentHash, finalityCommitmentAddress, FINALITY_COMMITMENT_SEPARATOR, 
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../../src/dacs/wallet-transactions.mjs';
 import { STORAGE_WRITE_SUBMISSION_PROFILE } from '../../src/devnet-demo/storage-write-recovery.mjs';
 import { createDevnetDemoTransport, DEVNET_DELIVERY_POLICY, DEVNET_DEMO_ARTIFACT_POLICY, DEVNET_DEMO_ARTIFACT_TYPES, DEVNET_SETTLEMENT_POLICY } from '../../src/wallet/devnet-native-transport.mjs';
+import { signerReservationKey } from '../../src/wallet/signer-reservation.mjs';
 
 export const NOW = 1_900_000_000_000;
 export const JOB_IDS = Object.freeze(['01ARZ3NDEKTSV4RRFFQ69G5FAV', '01ARZ3NDEKTSV4RRFFQ69G5FAW']);
@@ -99,6 +100,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     demoArtifactPublication: { policy: DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...DEVNET_DEMO_ARTIFACT_TYPES], authority: DEMO_AUTHORITY } });
   const { address } = wallet;
   const laneKey = `devnet/native-wallet/${JSON.stringify([PINS.network, PINS.chainIdentity, address])}`;
+  const reservationKey = signerReservationKey(PINS, address);
   let stamp = 0;
   const auth = () => {
     const identity = `ed25519:${address}`, timestamp = String(NOW + (stamp += 1));
@@ -126,7 +128,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
   }
 
   return {
-    capability, wallet, owner, sent, laneKey, makeCreate,
+    capability, wallet, owner, sent, laneKey, reservationKey, makeCreate,
     /** Seeds the lane and intent rows of an issued `tx` as a prior run left them; with `signed` the boundary's history also holds its signed bytes. */
     async retain(tx, stage, { signed = false } = {}) {
       const row = { hash: tx.hash, nonce: tx.content.nonce, stage, signedTransaction: structuredClone(tx), networkBinding: await binding(),

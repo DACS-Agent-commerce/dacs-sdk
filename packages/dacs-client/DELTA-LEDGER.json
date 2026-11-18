@@ -11259,6 +11259,33 @@
           "after": "364cc659896829029c9aa9e1b51b450b6cd2b30a"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF clear a dead holder's signer reservation lock when a native write is read back",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "de54603868ea1c6bee96cd95670ebd62ed3e34e7",
+          "after": "527bfdb9b1fc18983b1b41bfb5c40e160e9444ff"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "dd0fc3cfdb040fc10c00d848a4228ace9ab17dea",
+          "after": "b2b21710138f547df34db304f65ac5a77de27d75"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "3b833ced997efcb25db41f789c785d27f89ebf1d",
+          "after": "389096e902bd290ae6cd3b4bef2fd38994043547"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "364cc659896829029c9aa9e1b51b450b6cd2b30a",
+          "after": "0b016e6ac76f89baaf22e010bb37704a76a1bf12"
+        }
+      ]
     }
   ]
 }

@@ -47,13 +47,15 @@ test('a real child killed at broadcast-started, and separately after recovery re
     assert.equal(crashed.signal, 'SIGKILL');
     assert.deepEqual(crashed.reports, [{ event: 'at-broadcast', sentBefore: 0 }]);
     const left = journal.inspectLocks();
-    assert.deepEqual(left.map((lock) => [lock.key, lock.holder]), [[world.laneKey, 'exited']]);
+    assert.deepEqual(left.map((lock) => [lock.key, lock.holder]), [[world.laneKey, 'exited'], [world.reservationKey, 'exited']]);
     const lane = await journal.get(world.laneKey);
     assert.equal(lane.stage, 'broadcast-started');
     assert.equal(lane.hash, leased.hash);
 
     assert.deepEqual(await world.readback(leased.hash), { disposition: 'pending', hash: leased.hash, nonce: 2, noResend: true });
     assert.deepEqual(journal.inspectLocks(), [], 'the readback reclaimed the dead holder\'s lock');
+    assert.ok(!journal.inspectLocks().some((lock) => lock.key === world.reservationKey), 'the readback cleared the dead holder\'s reservation lock row');
+    assert.equal(await journal.get(world.reservationKey), undefined, 'the readback wrote no reservation record');
     await assert.rejects(world.lease(), { code: 'outcome_unknown' });
     assert.deepEqual(await journal.get(world.laneKey), lane, 'the lane record is untouched');
     assert.deepEqual(world.sent, { confirms: [], broadcasts: [] }, 'nothing was sent after the crash');

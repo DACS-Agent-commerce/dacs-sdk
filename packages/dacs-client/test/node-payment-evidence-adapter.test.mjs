@@ -426,6 +426,42 @@ test("a dead process's lock on the signer reservation key is taken over by the b
   assert.deepEqual(w.journal().inspectLocks(), [], 'the claim took the dead holder\'s lock over and released it');
 });
 
+const readbackOf = (w, hash) => w.session.transport.binding({ phase: 'readback', address: signerOf(w), hash });
+const lockRows = w => w.journal().inspectLocks().map(({ key, instance, fence, holder }) => ({ key, instance, fence, holder }));
+
+test("a native write's readback leaves a live holder's signer reservation lock and record untouched and still returns its answer", async t => {
+  const w = await adapterWorld(t), signer = signerOf(w), key = signerReservationKey(TP1_APPROVED_IDENTITY_RECORD, signer);
+  const sent = await inPass(w, () => w.send());
+  assert.equal(sent.success, true, JSON.stringify(sent));
+  await deadProcess(w).reserve({ signer, operation: 'native', operationKey: 'TEST-live-holder', readChainNonce: async () => w.node.nonce });
+  const holder = await spawnJournalChild(t, { path: w.path });
+  const held = holder.request('hold', { key });
+  await holder.event('locked');
+  const [locksBefore, recordBefore] = [lockRows(w), await recordOf(w)];
+  assert.deepEqual(locksBefore.map(lock => [lock.key, lock.holder]), [[key, 'live']]);
+  assert.equal((await readbackOf(w, w.node.broadcasts[0].hash)).disposition, 'included');
+  assert.deepEqual(lockRows(w), locksBefore, 'the live holder keeps its lock row');
+  assert.deepEqual(await recordOf(w), recordBefore, 'the reservation record is unchanged');
+  await holder.request('release', { key });
+  assert.deepEqual((await held).result, { released: key }, 'the holder released its own lock');
+});
+
+test("after a process died holding the signer's reservation lock, a native write's readback clears that lock and an evidence CREATE then claims the next nonce the chain gives", async t => {
+  const w = await adapterWorld(t), key = signerReservationKey(TP1_APPROVED_IDENTITY_RECORD, signerOf(w));
+  const sent = await inPass(w, () => w.send());
+  assert.equal(sent.success, true, JSON.stringify(sent));
+  const holder = await spawnJournalChild(t, { path: w.path });
+  holder.request('hold', { key });
+  await holder.event('locked');
+  holder.kill();
+  await holder.exited;
+  assert.deepEqual(w.journal().inspectLocks().map(lock => [lock.key, lock.holder]), [[key, 'exited']]);
+  assert.equal((await readbackOf(w, w.node.broadcasts[0].hash)).disposition, 'included');
+  assert.deepEqual(w.journal().inspectLocks(), [], 'the readback cleared the dead holder\'s lock');
+  assert.equal(await recordOf(w), null, 'the readback wrote no reservation record');
+  assert.equal((await signIn(w, evidenceInput(w))).nonce, w.node.nonce + 1, 'the evidence CREATE claims the nonce after the chain\'s');
+});
+
 test("signCreate refuses an input that is not this signer's evidence CREATE, a locked wallet and an aborted call before it reserves anything", async t => {
   const w = await adapterWorld(t), input = evidenceInput(w);
   for (const bad of [null, { ...input, writer: `did:demos:agent:${'3'.repeat(64)}` }, { ...input, logicalAddress: '' }, { ...input, artifact: [] }, { ...input, receiptContentHash: 'abc' }, { ...input, jobId: 7 },

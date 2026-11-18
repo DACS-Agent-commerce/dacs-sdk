@@ -401,6 +401,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     const reserved = (await journal.get(signerReservationKey(pinned, from)))?.active;
     if (reserved && reserved.signed?.txHash !== hash && nonceFromNode(await node('getAddressNonce', { address: from })) < reserved.nonce) fail('signer_lane_busy', 'a stored payment-evidence write holds this signer; nothing was sent');
   };
+  // A broadcast holds the signer's reservation lock inside the lane lock through its send, so a process killed there leaves both lock
+  // rows. Readback, holding the lane, takes and releases the reservation lock once: the journal takes a row over only when its holder
+  // is proven dead. A live holder, such as an evidence CREATE in progress, keeps the lock, and readback goes on without it. No
+  // reservation record is read or written.
+  const clearDeadReservationLock = (from) => journal.withWalletLock(signerReservationKey(pinned, from), () => {})
+    .catch((error) => { if (error?.code !== 'journal-busy') throw error; });
   // Cancelled native payments. The plugin cancels a payment handoff only
   // through cancelNativeTransfer, which keeps its transfer on the payer's lane
   // in this durable journal: its settlement terms (below), the digest of the
@@ -855,6 +861,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   async function readback(address, hash, writeProof, failedNonceFence, consumedByHash) {
     if (!ADDRESS.test(address ?? '') || !HASH.test(hash ?? '')) fail('invalid_params','a public native writer and hash are required');
     return fenced(() => journal.withWalletLock(lane(address), async () => {
+      await clearDeadReservationLock(address);
       const latest=await journal.get(lane(address));
       const r=await journal.get(intent(hash)) ?? (latest?.hash === hash ? latest : null);
       if (!r || r.hash !== hash || r.signedTransaction?.content?.from !== address) fail('not_issued','this hash is not the retained native transfer by this writer');
