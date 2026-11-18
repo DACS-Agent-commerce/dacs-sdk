@@ -24,7 +24,7 @@ node --test tools/lint/eslint-config.test.mjs
 
 ## Existing issues
 
-`eslint-suppressions.json` lists the issues that were already in the code when the linter was added, as a count per file and rule. They don't fail the run. A new issue fails it, unless a listed issue of the same rule in the same file was removed in the same change, because the list holds counts rather than exact lines.
+`eslint-suppressions.json` lists the issues that were already in the code when the linter, or a rule in it, was added, as a count per file and rule. They don't fail the run. A new issue fails it, unless a listed issue of the same rule in the same file was removed in the same change, because the list holds counts rather than exact lines.
 
 After fixing listed issues, shrink the list, or the run fails:
 
