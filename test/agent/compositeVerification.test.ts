@@ -9,7 +9,6 @@ import {
   identityBundleHash,
   isCompositeVerificationRecord,
   isCompositeBundleRequirement,
-  isLegacyCompositeVerificationRecord,
   isSupplementarySignal,
   isVerificationWarning,
   isVerifyResult,
@@ -18,7 +17,6 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
-  readCompositeVerificationRecord,
   sha256Hex,
   signComponentArtifact,
   signedBytes,
@@ -1736,9 +1734,9 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code: "verify-result-shape" });
   });
 
-  test("legacy reads are explicit and strict verification/finalisation refuses them", async () => {
+  test("strict verification refuses an earlier-shape record as record-shape", async () => {
     const f = await fixture();
-    const legacy = {
+    const earlier = {
       subject: PARTY,
       recipeId: "legacy-domain",
       recipeVersion: "0.1",
@@ -1752,14 +1750,10 @@ describe("strict DACS-2 composite verification closure", () => {
       decision: "pass",
       verifiedAt: "2026-01-01T00:00:00Z",
     };
-    expect(isLegacyCompositeVerificationRecord(legacy)).toBe(true);
-    expect(isCompositeVerificationRecord(legacy)).toBe(false);
-    expect(readCompositeVerificationRecord(legacy)).toMatchObject({
-      compatibility: "legacy",
-    });
+    expect(isCompositeVerificationRecord(earlier)).toBe(false);
     await expect(
-      verifyCompositeVerificationRecord(legacy, f.expected, f.deps),
-    ).resolves.toMatchObject({ status: "invalid", code: "legacy-record" });
+      verifyCompositeVerificationRecord(earlier, f.expected, f.deps),
+    ).resolves.toMatchObject({ status: "invalid", code: "record-shape" });
   });
 });
 
