@@ -301,21 +301,6 @@ export type {
   SettlementRecoveryAttempt,
 } from "../rails/settlementTypes.js";
 export {
-  assertCheckpointPayloadShape,
-  createInMemorySessionStore,
-  SESSION_STORE_VERSION,
-  type SessionStore,
-  type SessionRecord,
-  type SessionReceipt,
-  type SessionCheckpoint,
-  type CheckpointValue,
-  type SessionLease,
-  type SessionPhase,
-  type SessionLoad,
-  type TransitionInput,
-  type TransitionResult,
-} from "./sessionStore.js";
-export {
   FENCED_SESSION_STORE_VERSION,
   assertCheckpointPayloadShape as assertFencedCheckpointPayloadShape,
   assertSessionPaymentAuthorizationShape as assertFencedSessionPaymentAuthorizationShape,

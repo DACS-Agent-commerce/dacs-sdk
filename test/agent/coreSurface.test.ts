@@ -5,9 +5,7 @@ import { describe, expect, it } from "vitest";
 // itself the assertion.
 import {
   FENCED_SESSION_STORE_VERSION,
-  SESSION_STORE_VERSION,
   createInMemoryFencedSessionStore,
-  createInMemorySessionStore,
   runFulfilmentCore,
   runDurableFulfilmentCore,
   runDurableFulfilmentToDeliveryReady,
@@ -56,8 +54,6 @@ import {
   type FencedSessionRecordV2,
   type FencedSessionStoreV2,
   type SellerFulfilmentDurability,
-  type SessionRecord,
-  type SessionStore,
   type CompletedSellerSessionArtifacts,
   type SellerPaymentPhaseIndexResolution,
   type BuyerBundleFinalizationDurability,
@@ -165,20 +161,15 @@ describe("public core surface (#14)", () => {
     expect(sellerGetDeliveryFinalisationStatus).toBe(getDeliveryFinalisationStatus);
   });
 
-  it("#55: legacy v1 and generation-fenced v2 stores have distinct public APIs", () => {
-    const legacy: SessionStore = createInMemorySessionStore();
+  it("the generation-fenced store is the public session store API", () => {
     const fenced: FencedSessionStoreV2 = createInMemoryFencedSessionStore();
-    const legacyRecord: Partial<SessionRecord> = { storeVersion: SESSION_STORE_VERSION };
     const fencedRecord: Partial<FencedSessionRecordV2> = {
       storeVersion: FENCED_SESSION_STORE_VERSION,
       leaseGeneration: 0,
     };
 
-    expect(SESSION_STORE_VERSION).toBe(1);
     expect(FENCED_SESSION_STORE_VERSION).toBe(2);
-    expect("apiVersion" in legacy).toBe(false);
     expect(fenced.apiVersion).toBe(FENCED_SESSION_STORE_VERSION);
-    expect(legacyRecord.storeVersion).toBe(1);
     expect(fencedRecord.storeVersion).toBe(2);
     expect(sellerFencedSessionStoreVersion).toBe(FENCED_SESSION_STORE_VERSION);
     expect(sellerCreateInMemoryFencedSessionStore).toBe(

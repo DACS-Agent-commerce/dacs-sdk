@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,9 +14,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DACS_NODE_LIVE_PROFILE,
   createDacsLiveRoleRuntimeV1,
+  createDacsRoleServiceDoctorProbesV1,
+  runDacsLiveDoctorV1,
+  DacsHttpTransportError,
+  DacsTransportDiagnosticError,
   runDacsRoleTransportDiagnosticV1,
   type DacsDemosAdapterV1,
 } from "../src/index.js";
+import * as secretLoader from "../src/secrets.js";
 
 const SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const PEER_SEED = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
@@ -471,6 +476,83 @@ describe("complete role-owned live runtime", () => {
     await restarted.stop();
   });
 
+  it.each([
+    ["database-directory-owner-mismatch", "database-directory-owner-mismatch"],
+    [undefined, "unknown"],
+  ])("reports a database-open cause %s and destroys the loaded identity", async (reasonCode, expected) => {
+    const directory = root();
+    const destroy = vi.fn();
+    const loaded = vi.spyOn(secretLoader, "loadDacsSecretV1")
+      .mockResolvedValue({ destroy } as never);
+    const cause = Object.assign(new Error("fixture internal database detail"), { reasonCode });
+    const openDatabase = vi.fn(async () => { throw cause; });
+    const createDemosAdapter = vi.fn(async () => adapter());
+    try {
+      const failure = await createDacsLiveRoleRuntimeV1({
+        config: payDemConfig(directory),
+        role: "buyer",
+        authority: AUTHORITY,
+        peerAuthority: PEER_AUTHORITY,
+        peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+        workerId: "database-refusal-worker",
+        demosIdentityFilePath: join(directory, "unused-fixture"),
+        openDatabase,
+        createDemosAdapter,
+        createCommerceGraph: () => { throw new Error("must not create commerce"); },
+      }).catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        reasonCode: "role-database-open-failed",
+        message: "role-database-open-failed",
+        causeCode: expected,
+      });
+      expect((failure as Error).cause).toBe(cause);
+      expect(openDatabase).toHaveBeenCalledTimes(1);
+      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(createDemosAdapter).not.toHaveBeenCalled();
+    } finally {
+      loaded.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "reports the default opener's location refusal as the cause code",
+    async () => {
+      const directory = root();
+      const dataDirectory = join(directory, "data");
+      mkdirSync(dataDirectory, { mode: 0o700 });
+      chmodSync(dataDirectory, 0o777);
+      const destroy = vi.fn();
+      const loaded = vi.spyOn(secretLoader, "loadDacsSecretV1")
+        .mockResolvedValue({ destroy } as never);
+      const createDemosAdapter = vi.fn(async () => adapter());
+      try {
+        const failure = await createDacsLiveRoleRuntimeV1({
+          config: payDemConfig(dataDirectory),
+          role: "buyer",
+          authority: AUTHORITY,
+          peerAuthority: PEER_AUTHORITY,
+          peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+          workerId: "database-location-worker",
+          demosIdentityFilePath: join(directory, "unused-fixture"),
+          createDemosAdapter,
+          createCommerceGraph: () => { throw new Error("must not create commerce"); },
+        }).catch((error: unknown) => error);
+        expect(failure).toMatchObject({
+          reasonCode: "role-database-open-failed",
+          causeCode: "database-directory-permissions-unsafe",
+        });
+        expect((failure as Error).cause).toMatchObject({
+          name: "DacsNodeSqliteError",
+          reasonCode: "database-directory-permissions-unsafe",
+        });
+        expect(destroy).toHaveBeenCalledTimes(1);
+        expect(createDemosAdapter).not.toHaveBeenCalled();
+      } finally {
+        loaded.mockRestore();
+      }
+    },
+  );
+
   it("destroys loaded identity material and closes the database on adapter failure", async () => {
     const directory = root();
     const secretPath = join(directory, "demos.secret");
@@ -495,6 +577,65 @@ describe("complete role-owned live runtime", () => {
       handleMessage: () => Object.freeze({ disposition: "accepted" as const }),
     })).rejects.toMatchObject({ reasonCode: "role-demos-runtime-open-failed" });
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an outbox lease race through the final doctor report", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    const runtime = await createDacsLiveRoleRuntimeV1({
+      config: payDemConfig(directory), role: "buyer", authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "lease-race-worker", demosIdentityFilePath: secretPath,
+      createDemosAdapter: async () => ({
+        ...adapter(), getAddress: () => Buffer.from(PUBLIC_KEY).toString("hex"),
+      }),
+      createPayDemRail: async () => ({
+        address: Buffer.from(PUBLIC_KEY).toString("hex"), settle: vi.fn(),
+      }),
+      createPayDemOperations: () => Object.freeze({}),
+      validatePayload: () => Object.freeze({ status: "valid" as const }),
+      handleMessage: () => Object.freeze({ disposition: "accepted" as const }),
+    });
+    try {
+      const outbox = runtime.database.createHttpOutboxStore();
+      const staleLease = vi.fn(async () => false);
+      const fetcher = vi.fn();
+      const diagnostic = () => runDacsRoleTransportDiagnosticV1({
+        role: "buyer", demos: runtime.demos,
+        database: {
+          metadata: runtime.database.metadata,
+          createHttpOutboxStore: () => ({ ...outbox, isCurrent: staleLease }),
+        } as never,
+        peerAuthority: PEER_AUTHORITY,
+        peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+        workerId: "lease-race-doctor", fetch: fetcher,
+      });
+      const failure = await diagnostic().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(DacsTransportDiagnosticError);
+      expect(failure).toMatchObject({ reasonCode: "transport-diagnostic-unavailable",
+        causeCode: "outbox-lease-stale" });
+      expect((failure as Error).cause).toBeInstanceOf(DacsHttpTransportError);
+      const probes = createDacsRoleServiceDoctorProbesV1({
+        targets: [{ role: "buyer", endpoint: "http://127.0.0.1:3101" },
+          { role: "seller", endpoint: "http://127.0.0.1:3102" }],
+        sdkVersion: "sdk-v1", standardRevision: "standard-v1", profile: DACS_NODE_LIVE_PROFILE,
+        transportDiagnostic: diagnostic,
+      });
+      const report = await runDacsLiveDoctorV1({
+        phase: "post-start", scope: "start", sdkVersion: "sdk-v1",
+        standardRevision: "standard-v1", profile: DACS_NODE_LIVE_PROFILE,
+        probes: { "service.transport-roundtrip": probes["service.transport-roundtrip"]! },
+      });
+      expect(report.checks.find((check) => check.id === "service.transport-roundtrip"))
+        .toMatchObject({ status: "fail", reasonCode: "transport-diagnostic-unavailable",
+          facts: { causeCode: "outbox-lease-stale" } });
+      expect(staleLease).toHaveBeenCalled();
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      await runtime.stop();
+    }
   });
 
   it("proves both durable authenticated no-action transport directions", async () => {

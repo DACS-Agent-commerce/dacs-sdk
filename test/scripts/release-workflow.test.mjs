@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { parse } from "yaml";
 
@@ -111,4 +112,51 @@ test("every workflow job that pins npm checks the pinned version in the next ste
     });
   }
   assert.equal(checked, 3);
+});
+
+test("the engine-floor job runs the SQLite lease, transaction nesting and iterator tests", () => {
+  const floorTests = [
+    "sqlite-write-lease.test.mjs",
+    "sqlite-lease-result-options.test.mjs",
+    "purchase-tx-nesting.test.mjs",
+    "sqlite-floor-iterators.test.mjs",
+    "sqlite-iterator-own-methods.test.mjs",
+    "sqlite-iterator-own-next-refusal.test.mjs",
+  ];
+  const commands = ci.jobs["buyer-minimum-runtime"].steps.map(step => step.run ?? "").filter(run => run.startsWith("node --test"));
+  const listed = commands.flatMap(run => run.match(/packages\/dacs-client\/test\/\S+\.test\.mjs/g) ?? []);
+  for (const file of floorTests) assert.ok(listed.includes(`packages/dacs-client/test/${file}`), `${file} does not run in the floor job`);
+  for (const file of listed) assert.ok(existsSync(new URL(`../../${file}`, import.meta.url)), `${file} does not exist`);
+});
+
+test("every pinned action names its version in a trailing comment", () => {
+  const pinned = readdirSync(workflowsDirectory).filter(name => name.endsWith(".yml"))
+    .flatMap(name => readFileSync(new URL(name, workflowsDirectory), "utf8").split("\n")
+      .filter(line => /\buses: \S+@[0-9a-f]{40}/.test(line)).map(line => [name, line.trim()]));
+  assert.ok(pinned.length > 10);
+  for (const [name, line] of pinned) assert.match(line, /@[0-9a-f]{40} # v\d+$/, `${name}: ${line}`);
+});
+
+test("the buyer root smoke step and the floor job pack and install the candidate through one script", () => {
+  const script = "scripts/pack-buyer-install.sh";
+  const smoke = ci.jobs["build-test-main"].steps.find(step => step.name === "Package smoke (buyer root)");
+  const floor = ci.jobs["buyer-minimum-runtime"].steps.find(step => step.name === "Check both packed JavaScript entry points at the engine floor");
+  for (const { run } of [smoke, floor]) {
+    assert.match(run, new RegExp(`^bash ${script} "\\$[a-z_]+"$`, "m"));
+    assert.doesNotMatch(run, /npm pack|npm install/);
+  }
+  const path = new URL(`../../${script}`, import.meta.url);
+  const syntax = spawnSync("bash", ["-n", path.pathname], { encoding: "utf8" });
+  assert.equal(syntax.status, 0, syntax.stderr);
+});
+
+// A hung step must end the job instead of holding a runner for GitHub's default 360 minutes.
+const MAX_JOB_TIMEOUT_MINUTES = 60;
+test("every job of the CI, package-artifact and secret-scan workflows sets a timeout of at most an hour", () => {
+  for (const { name, jobs } of workflows.filter(({ name }) => ["ci.yml", "package-artifact.yml", "secret-scan.yml"].includes(name))) {
+    for (const [id, job] of Object.entries(jobs)) {
+      const minutes = job["timeout-minutes"];
+      assert.ok(Number.isInteger(minutes) && minutes > 0 && minutes <= MAX_JOB_TIMEOUT_MINUTES, `${name} ${id}: timeout-minutes is ${minutes}`);
+    }
+  }
 });
