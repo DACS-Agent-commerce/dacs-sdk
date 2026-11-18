@@ -1171,7 +1171,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             await retain(intent(tx.hash),answered); await retain(lane(tx.content.from),answered);
             return answer;
           };
-          return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs,tx.content.transaction_fee) }));
+          // The pass's authority is checked before the lane and intent are retained, so a job withdrawn by now leaves the lane free.
+          return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs,tx.content.transaction_fee),authorize:() => assertCurrentAuthorization(pass) }));
         });
         if (accepted?.result === 200) {
           const started=now(),deadline=started+inclusionWaitMs;
