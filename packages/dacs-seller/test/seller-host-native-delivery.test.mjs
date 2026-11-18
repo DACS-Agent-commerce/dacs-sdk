@@ -3551,3 +3551,44 @@ test('wire-payment-retained-work-before-finish', async (t) => {
     assert.equal(w.effects.deliverySubmit.length, delivered, 'no repeated delivery start');
   }
 });
+
+// A default host (no operator `contextSessionState`) reads a purchase that has paid nothing as abandoned an hour after its Agreement's deadline.
+const ABANDONED_PURCHASE_MS = 3_600_000;
+const allocationOf = (w, jobId) => {
+  const db = new DatabaseSync(join(w.dataDirectory, 'transport', 'transport.sqlite'), { readonly: true });
+  try { return db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
+};
+// Moves the host clock to `afterDeadlineMs` past the purchase's Agreement deadline and restarts, which releases the units of every ended purchase.
+const restartPastDeadline = async (w, p, afterDeadlineMs) => {
+  w.advance(p.agreement.terms.deadline - NOW + afterDeadlineMs);
+  await w.restart();
+};
+
+test('a default host frees the units of a purchase that stopped after its proposal once an hour has passed since the Agreement deadline', async (t) => {
+  const w = await world(t, { contextSessionState: null }), p = await w.purchase({ commit: false });
+  assert.equal(allocationOf(w, p.jobId), 'live');
+  await restartPastDeadline(w, p, ABANDONED_PURCHASE_MS / 2);
+  assert.equal(allocationOf(w, p.jobId), 'live', 'the buyer can still commit until the deadline');
+  w.advance(ABANDONED_PURCHASE_MS);
+  await w.restart();
+  assert.equal(allocationOf(w, p.jobId), 'released');
+});
+
+test('a default host frees the units of a committed purchase that was never paid once an hour has passed since the Agreement deadline', async (t) => {
+  const w = await world(t, { contextSessionState: null }), p = await w.purchase();
+  assert.equal(allocationOf(w, p.jobId), 'live');
+  await restartPastDeadline(w, p, ABANDONED_PURCHASE_MS / 2);
+  assert.equal(allocationOf(w, p.jobId), 'live', 'the buyer can still pay for a little longer than the deadline');
+  w.advance(ABANDONED_PURCHASE_MS);
+  await w.restart();
+  assert.equal(allocationOf(w, p.jobId), 'released');
+});
+
+test('a default host keeps the units of a purchase whose payment claim was cut short, long after its Agreement deadline, and the buyer\'s retry is delivered', async (t) => {
+  const w = await world(t, { contextSessionState: null }), p = await w.purchase(), tx = p.pay();
+  await w.crashMidClaim(p, tx);
+  await restartPastDeadline(w, p, 10 * ABANDONED_PURCHASE_MS);
+  assert.equal(allocationOf(w, p.jobId), 'live');
+  w.beforeRetry();
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+});

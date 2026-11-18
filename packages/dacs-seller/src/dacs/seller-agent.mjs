@@ -2361,6 +2361,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // Whether this seller recorded a payment for the job, finished or not. The host's restart cleanup leaves such a job's
     // session and allocation open until its payments operation has a completed answer. Synchronous and read only.
     holdsRecordedPayment: (jobId) => recordedPayment(jobId),
+    // The deadline, in milliseconds, of the Agreement this seller retains for the job (the committed Agreement, or the proposal's draft before
+    // the commitment), or null when it retains none. After it a payment made late is refused. Synchronous and read only; nothing is verified.
+    retainedAgreementDeadline: (jobId) => {
+      const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      return (session?.agreement ?? session?.proposal?.plan?.draft)?.terms?.deadline ?? null;
+    },
     /**
      * Reads the sources of a completed proposal, commitment or payment answer again, read only, before the stored answer is signed again.
      * A payment: the retained commitment and buyer access, then the original transfer (read again, never the replaying request's transaction), the

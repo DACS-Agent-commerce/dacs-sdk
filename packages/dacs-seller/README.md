@@ -46,9 +46,12 @@ non-null non-string refuses issuance and new work with `session_admission_unavai
 and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host given no capability reads one state itself: a purchase that
-settled its context step and has started no proposal, commitment or payment an
-hour after its admission reads as `aborted-by-self`, so its units are given back and
-its job id cannot continue (the buyer starts again with a new job id). A host
+settled its context step and has started no payment reads as `aborted-by-self` an
+hour after the later of its admission and its Agreement's deadline (a purchase with no
+proposal or commitment has no Agreement and no deadline to wait for). Its units are
+given back and its job id cannot continue (the buyer starts again with a new job id).
+A purchase with an open proposal or commitment attempt, or with an Agreement whose
+deadline the seller cannot read, reads as unknown. A host
 given the capability uses only that. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 

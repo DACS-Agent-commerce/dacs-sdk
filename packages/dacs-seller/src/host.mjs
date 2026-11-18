@@ -372,7 +372,7 @@ export async function startSellerHost(options) {
     const hostStopped = () => stopping || stopRequested();
     const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
       completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
-    abandonedPurchaseState = createAbandonedPurchaseState({ admissionRecord: admission.admissionRecord, now,
+    abandonedPurchaseState = createAbandonedPurchaseState({ admissionRecord: admission.admissionRecord, now, agreementDeadline: agent.retainedAgreementDeadline,
       operationState: ({ jobId, path }) => inspectWireOperation(journal, { jobId, seller: sellerClaim, path }).state });
     // Every effect route reserves through the coordinator and ends its attempt through the completion port.
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission });
