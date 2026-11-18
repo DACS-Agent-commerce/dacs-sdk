@@ -83,9 +83,14 @@ pending, so no later transaction or request passes it. A closure answers termina
 after a restart whatever the port then says; an unknown, nonterminal or
 asynchronous answer creates none. The coordinator refuses a request for a closed job
 `context_session_terminal` (409) after inspecting its operation and before any
-accounting, unless that operation already completed under the request's binding. After the
-terminal check, the coordinator runs the synchronous, read-only gates registered
-with `addPreAccountingGate` in registration order. Completed operations bypass both checks. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+accounting, with two exceptions. An operation that already completed under the
+request's binding is answered again. A payment retry under the request's binding
+goes on when the agent still holds a payment it recorded for the job and the
+operation has no stored answer yet, so that payment is finished once. Neither
+writes a closure. After the terminal check, the coordinator runs the synchronous,
+read-only gates registered with `addPreAccountingGate` in registration order.
+Completed operations skip the gates too; a payment retry that finishes a recorded
+payment does not. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
 is the one synchronous check for other callers, and the purchase capacity must be
 built on a store before any reader runs. These observation writes are counted apart
 from the challenge, admission and reservation writes, which a refusal still leaves
@@ -683,7 +688,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
-  `'applied'`, `'pending'`, or `'absent'`. Applied means successful execution;
+  `'applied'`, `'pending'`, or `'absent'`; the journal also passes the kept
+  `signedTransaction` and `nonce`. Applied means successful execution;
   inclusion alone does not establish execution. An ordinary miss or unknown
   answer keeps the original signed CREATE alive for rebroadcast. To release a
   CREATE whose nonce another transaction consumed, a qualified reader must

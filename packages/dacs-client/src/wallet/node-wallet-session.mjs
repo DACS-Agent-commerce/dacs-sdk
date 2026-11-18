@@ -573,7 +573,7 @@ async function buildNodeComposition(options, seller) {
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
     const reservations = seller ? createSignerReservations({ journal, pins: expected, openApproval: requestText => paymentEvidenceApproval.open(requestText),
-      settleApproval: (ledgerId, outcome, reason) => paymentEvidenceApproval.settle(ledgerId, outcome, reason) }) : null;
+      settleApproval: (ledgerId, outcome, reason, requestText) => paymentEvidenceApproval.settle({ ledgerId, requestText }, outcome, reason) }) : null;
     await reservations?.recover({ stateOwnership });
     const observer = seller ? createNodeObserver({ owner, clock }) : null;
     // The adapter signs with its own Demos instance over the same phrase, and refuses once the session is locked.
