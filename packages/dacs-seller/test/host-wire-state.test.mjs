@@ -328,7 +328,10 @@ test('host start releases the open slots of a finished session once, starts with
 
 // A host, started with `hostOptions` (the default limits when none are given), whose seller history holds `count` settled
 // accounting rows of an earlier purchase, written in the accounting's own shape while the host is stopped (one clean restart).
-// The rows are a day old; the purchase budget counts every row ever written.
+// The rows are a day old, so their requests have expired. They share one job, which is not retired, and one route, so only
+// the first of them (the lowest key) still counts toward the purchase budget and the store's record limit, as that route's
+// witness; the others stay in the table but no longer count. An expired refused row would not count either, a reserving row
+// always counts, and once the job is retired its witness stops counting too. `accountingRows` counts the table, not the budget.
 async function hostWithAccountingHistory(t, count, hostOptions = {}) {
   const f = await hostFixture(t);
   const first = await f.start(), listingPin = first.listingPin;
