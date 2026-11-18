@@ -196,7 +196,7 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     catch (error) { throw settled ? refuse('user_rejected', error) : refuse(UNCERTAIN, error); }
     if (!answer) throw refuse('user_rejected');
     if (!sameJson(asked, JSON.parse(requestText)) || answer.requestText !== requestText) {
-      if (isText(answer.ledgerId)) await approval.settle(answer.ledgerId, 'released', 'approval-mismatch');
+      if (isText(answer.ledgerId)) await approval.settle({ ledgerId: answer.ledgerId, requestText }, 'released', 'approval-mismatch');
       throw refuse('approval_mismatch');
     }
     return answer;
@@ -276,7 +276,7 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       const reopened = approvalId === null ? null : await reopenApproval(approvalId, requestText, signal);
       if (reopened !== null) return reopened;
       await assertNotExecuted(held.active.signed.txHash, signal);
-      if (approvalId !== null) await assertNotSpent(approvalId, signal);
+      if (approvalId !== null) await assertNotSpent({ ledgerId: approvalId, requestText }, signal);
       const binding = await replacementApproval(requestText, signal);
       if (binding?.requestText !== requestText) throw refuse('approval_mismatch');
       if (binding.ledgerId !== null && binding.ledgerId !== approvalId) await reservations.renewApproval(held, binding);
@@ -295,10 +295,11 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     throw refuse(ALREADY_EXECUTED);
   }
   // An id the ledger does not hold open is released or spent. A spent one belongs to an execution whose reservation write did not
-  // commit, so a status that has not seen the hash (it may be stale) never replaces it. Settling the id `released` again is a repeat
-  // for a released id and is refused for a spent one; it changes nothing either way. A ledger that cannot answer refuses too.
-  async function assertNotSpent(approvalId, signal) {
-    await settleOnAbort(approval.settle(approvalId, 'released', 'replacement-check'), signal);
+  // commit, so a status that has not seen the hash (it may be stale) never replaces it. Settling the binding `released` again is a
+  // repeat for a released authorization and is refused for a spent one; it changes nothing either way. A ledger that cannot answer
+  // refuses too.
+  async function assertNotSpent(binding, signal) {
+    await settleOnAbort(approval.settle(binding, 'released', 'replacement-check'), signal);
   }
   // The approved request must describe these very bytes.
   function assertApprovalCovers(requestText, content) {

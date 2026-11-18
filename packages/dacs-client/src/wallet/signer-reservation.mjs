@@ -97,8 +97,8 @@ function validateSigned(signed, signer, nonce) {
 /**
  * Creates the reservation steps over a durable journal that has `get`, `put` and `withWalletLock`. `pins` supplies the
  * network, chain identity and pin version every record carries. `openApproval(requestText)` resolves null or the one open
- * `{ledgerId, requestText}` for those exact bytes; `settleApproval(ledgerId, outcome, reason)` settles by id and is idempotent
- * for the same outcome. Both refuse until supplied. Returns `reserve`, `bindApprovalIntent`, `bindApproval`, `bindSigned`,
+ * `{ledgerId, requestText}` for those exact bytes; `settleApproval(ledgerId, outcome, reason, requestText)` settles by id and the exact
+ * request text and is idempotent for the same outcome. Both refuse until supplied. Returns `reserve`, `bindApprovalIntent`, `bindApproval`, `bindSigned`,
  * `renewApproval`, `retireUnsigned`, `consume`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
  * Throws `signer_reservation_invalid` for a malformed record or argument, `signer_reservation_stale` for a handle that is
  * not the stored record, `signer_reservation_uncertain` when a failed write cannot be read back, `signer_lane_busy`,
@@ -248,9 +248,9 @@ export function createSignerReservations({ journal, pins, openApproval = refused
     });
   }
 
-  async function settle(ledgerId, outcome, reason) {
+  async function settle(ledgerId, requestText, outcome, reason) {
     if (ledgerId === null) return;
-    try { await settleApproval(ledgerId, outcome, reason); } catch (cause) { fail('signer_settlement_failed', cause); }
+    try { await settleApproval(ledgerId, outcome, reason, requestText); } catch (cause) { fail('signer_settlement_failed', cause); }
   }
   // The ledger id to settle for a reservation, or null when it holds none. An unsigned reservation with an intent and no id may
   // hold an approval whose id a crash left unrecorded: it is looked up by the exact intent text, and an answer that is not one
@@ -278,7 +278,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
   // Settles the approval of an unsigned reservation released, then marks the reservation unfinished until its put commits.
   async function settleRetirement(record) {
     check(record.active.signed === null, 'signed bytes cannot be retired as unsigned');
-    await settle(await approvalOf(record), 'released', 'unsigned-retired');
+    await settle(await approvalOf(record), record.active.approvalIntent, 'released', 'unsigned-retired');
     unfinishedRetirements.set(record.signer, record.active.attemptId);
   }
   /**
@@ -294,7 +294,7 @@ export function createSignerReservations({ journal, pins, openApproval = refused
       check(active.signed !== null, 'signed bytes required');
       const { txHash, projectionText } = active.signed;
       if (!(observation?.status === 'executed' && observation.authenticated === true && observation.txHash === txHash && observation.projectionText === projectionText)) fail('signer_execution_unproven');
-      if (!approvalEnded) await settle(active.approvalId, 'spent', 'executed');
+      if (!approvalEnded) await settle(active.approvalId, active.approvalIntent, 'spent', 'executed');
       return SPENT;
     });
   }

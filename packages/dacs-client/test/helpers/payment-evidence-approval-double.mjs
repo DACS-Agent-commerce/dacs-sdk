@@ -3,7 +3,9 @@
  * `open` finds the open one by its exact text, `reopen` returns the open one by id and rejects
  * `approval_reservation_unavailable` for an unknown or settled id, `confirm` records each call and answers
  * `confirmResult` (a value, an Error to throw, or a function of the binding and the validity), and `settle` records
- * outcomes by id and is idempotent for the same outcome.
+ * outcomes and is idempotent for the same outcome. Like the seller ledger, `settle` takes the binding `{ledgerId, requestText}`
+ * and rejects a bare id (`invalid_params`) or a binding whose text is not its authorization's (`approval_reservation_unavailable`);
+ * `bindingOf(ledgerId)` builds the binding of an entry.
  * `script` holds one-shot behaviours for the next prepare calls: 'refuse' (resolves null), 'throw' (fails before
  * committing), 'commit-then-throw' (commits, then fails), 'mutate' (changes the request object it received),
  * 'other-text' (answers other text), or a function (request, entry) run after the commit. `lookupDown` makes `open`
@@ -41,7 +43,15 @@ export function recordingApproval() {
       if (result instanceof Error) throw result;
       return typeof result === 'function' ? result(binding, validity) : result;
     },
-    async settle(ledgerId, outcome, reason) {
+    bindingOf(ledgerId) {
+      const entry = entries.find(row => row.ledgerId === ledgerId);
+      if (!entry) throw new Error(`TEST-no-entry-${ledgerId}`);
+      return { ledgerId, requestText: entry.requestText };
+    },
+    async settle(binding, outcome, reason) {
+      if (typeof binding?.ledgerId !== 'string' || typeof binding.requestText !== 'string') throw Object.assign(new Error('TEST-a retained binding is {ledgerId, requestText}'), { code: 'invalid_params' });
+      const { ledgerId, requestText } = binding;
+      if (entries.find(row => row.ledgerId === ledgerId)?.requestText !== requestText) throw Object.assign(new Error('TEST-no-authorization-for-binding'), { code: 'approval_reservation_unavailable' });
       if (settled.has(ledgerId) && settled.get(ledgerId) !== outcome) throw new Error(`TEST-${ledgerId}-already-${settled.get(ledgerId)}`);
       settled.set(ledgerId, outcome);
       settlements.push({ ledgerId, outcome, reason });

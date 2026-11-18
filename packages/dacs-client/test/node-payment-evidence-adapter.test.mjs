@@ -46,7 +46,7 @@ const codes = error => causeChain(error).map(link => link.code);
 const settle = () => new Promise(resolve => setImmediate(resolve));
 // A reservation instance over the world's journal, standing for a process that wrote its records and then died.
 const deadProcess = w => createSignerReservations({ journal: w.journal(), pins: TP1_APPROVED_IDENTITY_RECORD,
-  openApproval: requestText => w.approval.open(requestText), settleApproval: (ledgerId, outcome, reason) => w.approval.settle(ledgerId, outcome, reason) });
+  openApproval: requestText => w.approval.open(requestText), settleApproval: (ledgerId, outcome, reason, requestText) => w.approval.settle({ ledgerId, requestText }, outcome, reason) });
 const signerOf = w => w.session.wallet.getPublicAccount().address;
 
 test("a plain signCreate in the default seller composition stores and returns one signed projection that passes the kit journal's projection rules", async t => {
@@ -764,13 +764,13 @@ test("after a restart, a replay reopens the original authorization by ledgerId a
   const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
   await w.restart(); await broadcastIn(w, signed); w.node.applied.delete(signed.txHash); // the chain has not executed the CREATE yet
   assert.equal(w.approval.prepared.length, 1, 'no second write'); assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1');
-  await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+  await w.approval.settle(w.approval.bindingOf('TEST-ledger-1'), 'released', 'TEST-operator-released');
   const linkedBeforeEgress = [];
   w.reply = async row => { if (messageOf(row) === 'confirmTx') linkedBeforeEgress.push((await recordOf(w)).active.approvalId); };
   await broadcastIn(w, signed); w.node.applied.delete(signed.txHash);
   assert.equal(w.approval.prepared.length, 2, 'a new authorization'); assert.deepEqual(linkedBeforeEgress, ['TEST-ledger-2'], 'linked before the first transmission');
   assert.equal(w.approval.confirmations.at(-1).binding.ledgerId, 'TEST-ledger-2');
-  await w.approval.settle('TEST-ledger-2', 'released', 'TEST-operator-released');
+  await w.approval.settle(w.approval.bindingOf('TEST-ledger-2'), 'released', 'TEST-operator-released');
   w.approval.entries.push({ ledgerId: 'TEST-ledger-open', requestText: w.approval.entries[0].requestText });
   await broadcastIn(w, signed);
   assert.equal(w.approval.prepared.length, 2, 'the exact request\'s open authorization is used'); assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-open');
@@ -780,7 +780,7 @@ test("after a restart, a replay reopens the original authorization by ledgerId a
 
 test("a replacement authorization prepared but not linked is found by its exact request after a restart and linked without a second preparation", async t => {
   const { faults, wrap } = failingJournal(), w = await replayWorld(t, { journalWrap: wrap }), signed = await signIn(w, evidenceInput(w));
-  await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+  await w.approval.settle(w.approval.bindingOf('TEST-ledger-1'), 'released', 'TEST-operator-released');
   faults.failPut = (key, value) => key.startsWith(RECORD_KEY_PREFIX) && value?.active?.approvalId === 'TEST-ledger-2';
   await assert.rejects(broadcastIn(w, signed), error => error.code === 'approval_required' && causeChain(error).some(link => /TEST-put-failed/.test(link.message)));
   assertNothingSent(w); assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1', 'the replacement is not linked');
@@ -940,7 +940,7 @@ for (const [name, change] of [
 ]) {
   test(`a replay whose released authorization meets ${name} cannot tell that the CREATE never ran, so it opens no second authorization and sends nothing`, async t => {
     const w = await replayWorld(t); w.signed = await signIn(w, evidenceInput(w));
-    await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+    await w.approval.settle(w.approval.bindingOf('TEST-ledger-1'), 'released', 'TEST-operator-released');
     change(w);
     await assert.rejects(broadcastIn(w, w.signed), { code: 'approval_required' });
     assertNothingSent(w); assert.equal(w.approval.prepared.length, 1, 'no second authorization was prepared');
@@ -974,7 +974,7 @@ test("a stale unknown status for bytes whose authorization was settled spent and
     if (messageOf(row) !== 'getTransactionStatus' || !stale) return undefined;
     stale = false; return responseOf(ok({ state: 'unknown' }));
   };
-  await assert.rejects(broadcastIn(w, signed), { code: 'approval_required' });
+  await assert.rejects(broadcastIn(w, signed), error => error.code === 'approval_required' && causeChain(error).some(link => /TEST-ledger-1-already-spent/.test(link.message)));
   assertNothingSent(w); assert.equal(w.approval.prepared.length, 1, 'no second authorization was prepared');
   assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1', 'no second authorization was bound');
   assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
@@ -985,7 +985,7 @@ test("a stale unknown status for bytes whose authorization was settled spent and
 
 test("an unknown status for a released authorization whose settled outcome the ledger cannot confirm refuses and binds no second authorization", async t => {
   const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
-  await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+  await w.approval.settle(w.approval.bindingOf('TEST-ledger-1'), 'released', 'TEST-operator-released');
   const { settle } = w.approval; w.approval.settle = async () => { throw new Error('TEST-ledger-down'); };
   await assert.rejects(broadcastIn(w, signed), error => error.code === 'approval_required' && causeChain(error).some(link => /TEST-ledger-down/.test(link.message)));
   assertNothingSent(w); assert.equal(w.approval.prepared.length, 1, 'no second authorization was prepared');
@@ -993,11 +993,21 @@ test("an unknown status for a released authorization whose settled outcome the l
   w.approval.settle = settle;
 });
 
+test("the approval ledger double settles only a binding of its own authorization, as the seller ledger does: a bare id and another request text are refused and a spent one is not released", async t => {
+  const w = await replayWorld(t); await signIn(w, evidenceInput(w));
+  const binding = w.approval.bindingOf('TEST-ledger-1');
+  await assert.rejects(w.approval.settle('TEST-ledger-1', 'released', 'TEST-bare-id'), { code: 'invalid_params' });
+  await assert.rejects(w.approval.settle({ ledgerId: 'TEST-ledger-1', requestText: 'TEST-other-text' }, 'released', 'TEST-other-text'), { code: 'approval_reservation_unavailable' });
+  assert.deepEqual(w.approval.settlements, [], 'a refused call settles nothing');
+  await w.approval.settle(binding, 'spent', 'TEST-spent');
+  await assert.rejects(w.approval.settle(binding, 'released', 'TEST-again'), /already-spent/);
+});
+
 test("an executed CREATE whose authorization the operator released ends its reservation without a spend, also after a restart, and the next evidence signs at the next nonce", async t => {
   for (const restart of [false, true]) {
     const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w, `released-${restart}`));
     applyWithoutBroadcast(w, signed);
-    await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+    await w.approval.settle(w.approval.bindingOf('TEST-ledger-1'), 'released', 'TEST-operator-released');
     if (restart) await w.restart();
     assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied', `restart ${restart}`);
     assert.equal((await recordOf(w)).active, null, 'the reservation ended'); assert.deepEqual(spentIds(w), [], 'the released authorization is never spent');
@@ -1010,7 +1020,7 @@ test("an executed CREATE whose authorization the operator released ends its rese
 test("a replay of executed bytes whose authorization the operator released ends the reservation without a spend, refuses already executed and opens no second authorization", async t => {
   const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
   applyWithoutBroadcast(w, signed);
-  await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+  await w.approval.settle(w.approval.bindingOf('TEST-ledger-1'), 'released', 'TEST-operator-released');
   await assert.rejects(broadcastIn(w, signed), { code: 'transaction_already_executed' });
   assertNothingSent(w); assert.equal(w.approval.prepared.length, 1, 'no second authorization was prepared');
   assert.equal((await recordOf(w)).active, null, 'the reservation ended'); assert.deepEqual(spentIds(w), []);

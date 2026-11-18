@@ -10637,6 +10637,37 @@
           "after": "233ece12f35da1fe1fc233dc283a766fd5f4ad1d"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF settle an evidence CREATE's authorization by its complete binding, and make the approval ledger double refuse a bare id",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "8f99410fd7b106fba2caa65d382554562fee5f7d",
+          "after": "9edd56ae98d80f159e7be8ab819c24ec5c821c12"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "192016f0d5c93cbdd715fa2b5058bb312bc1d683",
+          "after": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "5960c9caa5227851c0d57e9c21f49e36cf5686ce",
+          "after": "52bf2dee395974edcf132585ae1cf3237be0b6af"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "67912a3a4bc79b56a4f36e47fed8cb148b3c5da1",
+          "after": "7bdb85058bb12df06cb2c405afa45ac4005e1d81"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "233ece12f35da1fe1fc233dc283a766fd5f4ad1d",
+          "after": "2796f3e3ca7e20570d7ecad79e432b957fb7ea64"
+        }
+      ]
     }
   ]
 }
