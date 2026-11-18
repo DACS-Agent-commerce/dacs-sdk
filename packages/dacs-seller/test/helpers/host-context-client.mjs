@@ -54,7 +54,8 @@ export async function contextHostFixture(t) {
 
 /**
  * A buyer for `host`. `challenge(jobId)` posts the signed challenge request, `context(jobId, nonce)` the signed context request
- * over that challenge, and `requestContext(jobId)` both; each answers `{ status, text, body, signed }`.
+ * over that challenge, and `requestContext(jobId)` both; each answers `{ status, text, body, signed }`. Requests are delegated to a session
+ * key; `{ delegated: false }` signs the context request with the buyer's own key instead.
  */
 export async function hostBuyer(host, listing, { jobId: defaultJob }) {
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
@@ -67,21 +68,22 @@ export async function hostBuyer(host, listing, { jobId: defaultJob }) {
       listingPin: host.listingPin, jobId, notBefore: NOW - DELEGATION_LEAD_MS, expiresAt: NOW + DELEGATION_LIFETIME_MS, profile: binding.profile };
     return { payload, signature: buyer.signBytes(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(payload))).toString('base64url') };
   };
-  const send = async (path, jobId, body) => {
-    const signed = await wire.signRequest(path, body, { jobId, agreementHash: sha256Hex(canonicalize(body.scope)), delegation: delegationFor(jobId), signer: signerOf(session), text: JSON.stringify(body) });
+  const send = async (path, jobId, body, { delegated = true } = {}) => {
+    const signed = await wire.signRequest(path, body, { jobId, agreementHash: sha256Hex(canonicalize(body.scope)), delegation: delegated ? delegationFor(jobId) : null,
+      signer: signerOf(delegated ? session : buyer), text: JSON.stringify(body) });
     const response = await fetch(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.text });
     const text = await response.text();
     return { status: response.status, text, body: JSON.parse(text), signed: response.headers.has(SELLER_TRANSPORT_HEADER) };
   };
   const challenge = (jobId = defaultJob) => send(DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: scopeFor(jobId) });
-  const context = (jobId, nonce) => {
+  const context = (jobId, nonce, options) => {
     const bundle = presentationFor(buyer, nonce, NOW);
-    return send(SELLER_CONTEXT_PATH, jobId, { scope: { ...scopeFor(jobId), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle });
+    return send(SELLER_CONTEXT_PATH, jobId, { scope: { ...scopeFor(jobId), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle }, options);
   };
-  const requestContext = async (jobId = defaultJob) => {
+  const requestContext = async (jobId = defaultJob, options) => {
     const issued = await challenge(jobId);
     if (issued.status !== 200) throw new Error(`TEST the challenge was refused: ${issued.text}`);
-    return context(jobId, issued.body.sessionNonce);
+    return context(jobId, issued.body.sessionNonce, options);
   };
   return { challenge, context, requestContext };
 }
