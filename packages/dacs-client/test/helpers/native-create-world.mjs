@@ -8,6 +8,7 @@ import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto
 import { contentHash, finalityCommitmentAddress, FINALITY_COMMITMENT_SEPARATOR, logicalToStorageProgramName, signComponentArtifact } from '@kynesyslabs/dacs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../../src/dacs/wallet-transactions.mjs';
 import { STORAGE_WRITE_SUBMISSION_PROFILE } from '../../src/devnet-demo/storage-write-recovery.mjs';
+import { networkInfo } from './network-info.mjs';
 import { createDevnetDemoTransport, DEVNET_DELIVERY_POLICY, DEVNET_DEMO_ARTIFACT_POLICY, DEVNET_DEMO_ARTIFACT_TYPES, DEVNET_SETTLEMENT_POLICY } from '../../src/wallet/devnet-native-transport.mjs';
 
 export const NOW = 1_900_000_000_000;
@@ -75,6 +76,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     if (message === 'getBlockByNumber' && identityAnswer) return identityAnswer(PINS.chainIdentity);
     if (message === 'getBlockByNumber') return reply({ number: 0, status: 'confirmed', hash: PINS.chainIdentity }, '');
     if (message === 'getAddressNonce') return reply(0);
+    if (message === 'getNetworkInfo') return reply(networkInfo());
     if (message === 'getTransactionStatus') return reply({ state: 'unknown' }, '');
     if (message === 'getTxByHash') return { result: 400, response: 'error', require_reply: false, extra: null };
     if (message === 'confirmTx') {
