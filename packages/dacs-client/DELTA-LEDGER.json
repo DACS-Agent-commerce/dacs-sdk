@@ -11069,6 +11069,82 @@
           "after": "b62856e040048e1a29229c023595e23fcf3410dd"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF send a native broadcast that the final check withheld once, only by a new explicit request",
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "0ab6ce78b9a3612579dbe20b941fcf5f0110976d",
+          "after": "db5182b6f5fdd2dbd44f2337b45bc80bea90203e"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "93e7cf6fca4a20f29eeb1a8965ae8270dd081e24",
+          "after": "b48f293f1b111571e0e52fafbb65d35b2907a630"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f6492ec9771611dd72c96e94107384db860ca748",
+          "after": "7c26522b9fb47b42fc5163822abd37e92ebf7e88"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "c2a23d02278639657358480a74e9e933492b0832",
+          "after": "a15b414fa4f86973baac0f22683c79f60c5d049b"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "6ca61271e2daf5de7781479b88a971723597cc10",
+          "after": "cf8d60b3788fbce70a044bca4fb2bd4ff10df030"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "918d704295d37afc8f6c14fe32676d618763e143",
+          "after": "2b1a15e4774b88a6e0349bccf26a52a1a5e86fb7"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/native-dispatch-history.mjs",
+          "before": null,
+          "after": "1e243b8bfd2b0956b7f9db4621e4492ce5be34f6"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "3fe31b788278ebe67eefa8ba246e4ec07b1c38f5",
+          "after": "655b01af3225bc9273c9baf663dfbdcd6ff560c6"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/withheld-reopen-grants.mjs",
+          "before": null,
+          "after": "06f512682bf886e8e99711c74039b7f7f6f24d90"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-effect-world.mjs",
+          "before": "2f2b88f66e451763705f28cc3bc68f7b7fe5986d",
+          "after": "d451b0ff3a08fd60cfc681ee33a1faad8c1840fb"
+        },
+        {
+          "path": "packages/dacs-client/test/native-withheld-reopen-buyer.test.mjs",
+          "before": null,
+          "after": "a50399f9d0e4ec7d290785dd280c14289e347e74"
+        },
+        {
+          "path": "packages/dacs-client/test/native-withheld-reopen.test.mjs",
+          "before": null,
+          "after": "1c97ebafbac79d817a66655b55bafc903e542518"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "f545d35a67ae4465c4b9cb7bb102bad21df3e1d8",
+          "after": "ecf1f0d1bfe4e6c035d4d58419ab053de58eac77"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "f1d237749cd1cec37162e3b15f57927a50c07761",
+          "after": "cc994051a5d7cba0c3251d9643cc4ebc5ddabb59"
+        }
+      ]
     }
   ]
 }

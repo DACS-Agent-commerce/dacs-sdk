@@ -339,7 +339,7 @@ test("a sentinel error thrown inside qualify, refreshAuthority, finalStop or a s
 
 test("both compositions expose effectPass and runInEffectPass as functions; the seller adds only observer and paymentEvidenceAdapter", async t => {
   const seller = await qualifiedWorld(t), buyer = await gateWorld(t, { seller: false });
-  const buyerMembers = ['close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'transport', 'wallet', 'walletFactory'];
+  const buyerMembers = ['close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'transport', 'wallet', 'walletFactory', 'withheldReopen'];
   assert.deepEqual(Object.keys(buyer.session).sort(), buyerMembers);
   assert.deepEqual(Object.keys(seller.session).sort(), [...buyerMembers, 'observer', 'paymentEvidenceAdapter'].sort());
   for (const session of [seller.session, buyer.session]) for (const name of ['effectPass', 'runInEffectPass']) assert.equal(typeof session[name], 'function', name);
