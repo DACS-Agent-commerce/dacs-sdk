@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 // Run script for a testnet walkthrough of a generated live project (x402 rail, local deployment).
 //
-// Usage. The run directory holds packs/ (three tarballs from this checkout) and an installed project/:
-//   node scripts/fixed-price-x402-walkthrough.mjs init --run-dir <dir> --seller-url <https-url> --evm-rpc <https-url>
+// Usage. The run directory holds packs/ (three tarballs from this checkout) and an installed, built project/:
+//   node scripts/fixed-price-x402-walkthrough.mjs init --run-dir <dir> --seller-url <https-url-with-a-path> --evm-rpc <https-url>
 //   node scripts/fixed-price-x402-walkthrough.mjs registry --run-dir <dir> [--confirm]
-//
 // Testnet only. It never sets a confirmation variable and never runs the project's setup or buy commands.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -133,6 +132,7 @@ export function normalizeSellerUrl(value) {
   if (url.protocol !== "https:" || url.username || url.password || /[?#]/.test(value)) {
     throw new Error("seller URL must be plain HTTPS without userinfo, query or fragment");
   }
+  if (url.pathname === "/") throw new Error("seller URL needs a path, such as https://host.example/seller; the seller refuses a root path");
   return url.toString();
 }
 
@@ -207,8 +207,6 @@ export function registryAction(resolved, confirm) {
   return confirm ? "bootstrap" : "plan";
 }
 
-const connectionRefused = (error) => error?.cause?.code === "ECONNREFUSED";
-
 /** True when something answers at the URL; a refused connection is false; a timeout is an error. */
 export async function sellerServiceRunning(url, fetchImpl = fetch) {
   try {
@@ -216,14 +214,14 @@ export async function sellerServiceRunning(url, fetchImpl = fetch) {
     await response.body?.cancel();
     return true;
   } catch (error) {
-    if (connectionRefused(error)) return false;
+    if (error?.cause?.code === "ECONNREFUSED") return false;
     throw error;
   }
 }
 
-/** Copy of the environment without any confirmation variable. */
+/** Copy of the environment without any DACS_ variable, so only the project's .env sets them and no confirmation variable passes. */
 export function childEnvironment(env) {
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !/^DACS_\w*_CONFIRM$/.test(name)));
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("DACS_")));
 }
 
 /** Parse a child's stdout: exactly one JSON object on one line. */
@@ -277,9 +275,11 @@ async function init({ runDir, sellerUrl, evmRpc }) {
   assertSupportedNode();
   const run = checkRunDirectory(runDir);
   checkFreshInit(run);
-  const url = normalizeSellerUrl(sellerUrl);
   const project = join(run, "project");
-  if (git("status", "--porcelain", "--untracked-files=no") !== "") throw new Error("the checkout has tracked changes");
+  if (existsSync(join(project, ".env"))) throw new Error("project/.env already exists; generate a new project, or remove the file if nothing uses it");
+  if (!existsSync(join(project, "dist/src/config.js"))) throw new Error("project/ is not built; run npm run build inside project/, then init again");
+  const url = normalizeSellerUrl(sellerUrl);
+  buildEnvFile("", { DACS_SELLER_PUBLIC_BASE_URL: url, DACS_EVM_RPC_URL: evmRpc, DACS_BUYER_DEMOS_SECRET_FILE: join(run, "secrets") }); // values .env cannot hold fail before any key is written
   const { version } = JSON.parse(readFileSync(join(CHECKOUT, "package.json"), "utf8"));
   const tarballs = hashTarballs(run, version);
   const example = readFileSync(join(project, ".env.example"), "utf8");
@@ -288,6 +288,8 @@ async function init({ runDir, sellerUrl, evmRpc }) {
   if (!generated || !existsSync(join(project, "node_modules/@kynesyslabs/dacs-node"))) {
     throw new Error("project/ must be generated with --mode live-demos --rails x402 --deploy local and installed");
   }
+  for (const name of ["dacs", "dacs-node"]) if (JSON.parse(readFileSync(join(project, "node_modules/@kynesyslabs", name, "package.json"), "utf8")).version !== version) throw new Error(`installed @kynesyslabs/${name} is not version ${version}; install from packs/`);
+  if (git("status", "--porcelain", "--untracked-files=no") !== "") throw new Error("the checkout has tracked changes");
   await assertBaseSepolia(evmRpc);
   const searchFromBlock = await readRpcNumber(evmRpc, "eth_blockNumber");
   for (const name of ["secrets", "logs"]) mkdirSync(join(run, name), { mode: 0o700 });
@@ -361,14 +363,14 @@ async function registryInProject({ runDir, confirm }) {
     console.log(JSON.stringify({ rail: "plan", steward: authority, resourceBaseUrl: sellerUrl, asset: usdc, acceptedAt, addresses, maxFeeDemPerWrite }));
     return;
   }
-  const bootstrapped = action === "bootstrap"
-    ? await node.bootstrapDacsDemosX402RailRegistryV1({ runtime, resourceBaseUrl: sellerUrl, assetContract: usdc, acceptedAt }) : undefined;
+  if (action === "bootstrap") await node.bootstrapDacsDemosX402RailRegistryV1({ runtime, resourceBaseUrl: sellerUrl, assetContract: usdc, acceptedAt });
   const rail = await core.resolveRail(core.RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", provider);
   if (rail.network.resourceBaseUrl !== sellerUrl || rail.asset.contract.toLowerCase() !== usdc.toLowerCase()) {
     throw new Error("the registered rail does not match the values pinned at init");
   }
-  const refs = bootstrapped === undefined ? state.registry?.refs
-    : { definition: bootstrapped.definitionRef.contentHash, index: bootstrapped.indexRef.contentHash };
+  // Always read the refs back, so a rerun after a crash before the state save still records them.
+  const current = await provider.resolveCurrentIndex(core.RAIL_REGISTRY_INDEX_ADDRESS);
+  const refs = { definition: (await provider.readAnchoredJson(current.indexRef)).entries[0].contentHash, index: current.indexRef.contentHash };
   const chainIdentity = await runtime.chainIdentity();
   writeState(run, { ...state, registry: { chainIdentity, refs } });
   const draftPath = config.configuredListingDraftFile("x402");
@@ -391,7 +393,7 @@ if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === imp
     const args = parseArguments(process.argv.slice(2));
     await COMMANDS[args.command](args);
   } catch (error) {
-    console.error(error instanceof Error ? error.message : "unexpected failure");
+    console.error(error instanceof Error ? [error.message, error.cause?.message].filter(Boolean).join(": ") : "unexpected failure");
     process.exitCode = 1;
   }
 }
