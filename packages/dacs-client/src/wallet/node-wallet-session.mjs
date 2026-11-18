@@ -366,8 +366,9 @@ const executeStageOf = body => {
  * checks the hold, the connection, the lease, the pass's synchronous checks and (when given) the final content against the fee ceiling, and invokes
  * `inner()`. Any refusal throws before `inner`. With no pass the awaits are skipped, and `passRequired` refuses that case.
  * A pass may carry a `context` made by `passContext`: `runInEffectPass` runs its work in that context, which is where the native transport reads the
- * job class and the pass's current-authorization check, and the gate's synchronous run asks the same check last. A pass with no context runs as a plain
- * pass, and a context `passContext` did not make is refused `effect_pass_invalid`.
+ * job class and the pass's current-authorization check, and the gate's synchronous run asks the same check last. With `passRequired` (the seller's
+ * composition) a pass needs a job context; otherwise a pass with no context runs as a plain pass. Any other context, and one `passContext` did not make,
+ * is refused `effect_pass_invalid`.
  */
 function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired }) {
   const scope = new AsyncLocalStorage(), passes = new WeakMap();
@@ -379,7 +380,7 @@ function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired }
     const remainingMs = typeof deadline === 'number' ? deadline - clock.now() : NaN;
     if (!liveFence(fence) || ![refreshAuthority, finalStop, ...checks].every(step => typeof step === 'function')
       || !(remainingMs > 0 && remainingMs <= AUTHORITY_READ_DEADLINE_MS) || typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs)
-      || !isPassContext(context)) fail('effect_pass_invalid');
+      || !isPassContext(context) || (passRequired && context.operationClass === null)) fail('effect_pass_invalid');
     const handle = Object.freeze({});
     passes.set(handle, Object.freeze({ fence, deadline, refreshAuthority, finalStop, synchronousChecks: Object.freeze(checks), feeCeilingOs, context }));
     return handle;

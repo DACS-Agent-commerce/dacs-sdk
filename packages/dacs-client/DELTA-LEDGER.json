@@ -10959,6 +10959,28 @@
           "after": "f1ef6fcb454d242e21b2cc419227087a025a99de"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a seller pass without a job context before anything is signed or sent",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "04d09133fb089ed2bae83722775ac92e26fd1f3e",
+          "after": "5b68d30810f7a12b798d157795e7fdeb881ce3cc"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "d8f377c18f8ea81f4db0943d978ae46133e09bd2",
+          "after": "3fe31b788278ebe67eefa8ba246e4ec07b1c38f5"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "cf4563b3981110724b4d0e471b0b82653a7b4d50",
+          "after": "f4f4fc0fac410857724a2539cc9878bd34a0f7f5"
+        }
+      ]
     }
   ]
 }

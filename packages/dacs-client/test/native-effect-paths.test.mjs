@@ -708,17 +708,19 @@ test('a job pass transmits only while its current-authorization check answers tr
       }
     });
   }
-  await t.test('a seller composition takes a pass with no context, as a host outside the package makes it, and refuses a context passContext did not make', async t => {
+  await t.test('a seller composition takes only a job pass: a pass with no context, a plain context or a context passContext did not make is refused and signs, confirms and sends nothing', async t => {
     const w = await gateWorld(t);
     const lease = await w.currentOwner().acquireConnectionFence();
     const base = { fence: lease, deadline: w.clock.now() + 1000, refreshAuthority: async () => {}, finalStop: async () => {}, synchronousChecks: [], feeCeilingOs: '50000000000' };
-    for (const context of [{}, { operationClass: 'job-create', currentAuthorization: () => true }]) {
-      assert.throws(() => w.session.effectPass({ ...base, context }), { code: 'effect_pass_invalid' });
+    for (const context of [undefined, passContext(), {}, { operationClass: 'job-create', currentAuthorization: () => true }]) {
+      assert.throws(() => w.session.effectPass({ ...base, ...(context === undefined ? {} : { context }) }), { code: 'effect_pass_invalid' });
     }
-    for (const context of [undefined, passContext(), passContext({ operationClass: 'job-create', currentAuthorization: () => true })]) {
-      assert.equal(typeof w.session.effectPass({ ...base, ...(context === undefined ? {} : { context }) }), 'object');
-    }
-    lease.release();
+    assert.equal(typeof w.session.effectPass({ ...base, context: passContext({ operationClass: 'job-create', currentAuthorization: () => true }) }), 'object');
+    // A host's pass made without a context, then a send in it.
+    let outcome;
+    try { outcome = await w.session.runInEffectPass(w.session.effectPass(base), () => w.send()); } catch (error) { outcome = error; } finally { lease.release(); }
+    assert.equal(outcome?.code, 'effect_pass_invalid');
+    assert.deepEqual({ signs: w.innerSigns.length, confirms: w.node.confirms.length, broadcasts: w.node.broadcasts.length }, { signs: 0, confirms: 0, broadcasts: 0 });
   });
 });
 
