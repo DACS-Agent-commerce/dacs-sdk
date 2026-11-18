@@ -4,7 +4,12 @@
 // Usage. The run directory holds packs/ (three tarballs from this checkout) and an installed, built project/:
 //   node scripts/fixed-price-x402-walkthrough.mjs init --run-dir <dir> --seller-url <https-url-with-a-path> --evm-rpc <https-url>
 //   node scripts/fixed-price-x402-walkthrough.mjs registry --run-dir <dir> [--confirm]
-// Testnet only. It never sets a confirmation variable and never runs the project's setup or buy commands.
+//   node scripts/fixed-price-x402-walkthrough.mjs record --run-dir <dir> [--listing-ref <stor-ref>]
+// Testnet only. It never sets a confirmation variable and never runs the project's setup command.
+// record reads what it can observe now and marks every stage it cannot observe as unrun, with the reason.
+// It makes no Demos, EVM or payment write. With --listing-ref it runs the project's buy command without
+// confirmation, so the buy only checks and prints its plan; that buy's doctor can leave a transport
+// diagnostic in each role's outbox, and every dacs: script rebuilds the project's dist/.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -19,16 +24,24 @@ const CHAIN_ID = 84532;
 const USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 const FACILITATOR = "https://x402.org/facilitator";
 const PRICE = "0.000001";
+const MAX_NETWORK_FEE_ETH = "0.001";
+const DEFAULT_DEMOS_HOST = "node2.demos.sh";
 const REPLY_LIMIT_BYTES = 65_536;
 const REQUEST_TIMEOUT_MS = 10_000;
 const CHILD_TIMEOUT_MS = 600_000;
 const CHILD_OUTPUT_LIMIT_BYTES = 1_048_576;
 const AUTHORITY_RE = /^did:demos:agent:[0-9a-f]{64}$/;
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const LISTING_REF_RE = /^stor-[0-9a-f]{40}$/;
+const REASON_CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
+const CHECK_LINE_RE = /^(?:required|informational) ([a-z0-9][a-z0-9.-]*): (pass|fail|blocked)(?: \(([a-z0-9-]+)\))?(?: \[cause: [a-z0-9-]+\])?$/;
+const FUNDED_REASONS = "the repository has no runnable wallet-spend authority service, " +
+  "and the buyer reads the seller only over public HTTPS from a public address";
 
 const VALUED_OPTIONS = {
   init: ["--run-dir", "--seller-url", "--evm-rpc"],
   registry: ["--run-dir"],
+  record: ["--run-dir", "--listing-ref"],
   "internal-keys": ["--run-dir"],
   "internal-registry": ["--run-dir"],
 };
@@ -48,11 +61,13 @@ export function parseArguments(argv) {
     if (value === undefined || String(value).startsWith("--")) throw new Error(`${name} needs a value`);
     values.set(name, value);
   }
-  const missing = valued.find((name) => !values.has(name));
+  const missing = valued.find((name) => !values.has(name) && name !== "--listing-ref");
   if (missing !== undefined) throw new Error(`${missing} is required`);
   const evmRpc = values.get("--evm-rpc");
   if (evmRpc !== undefined && !/^https:\/\//.test(evmRpc)) throw new Error("--evm-rpc must be an HTTPS URL");
-  return { command, runDir: values.get("--run-dir"), sellerUrl: values.get("--seller-url"), evmRpc, confirm: values.get("--confirm") === true };
+  const listingRef = values.get("--listing-ref");
+  if (listingRef !== undefined && !LISTING_REF_RE.test(listingRef)) throw new Error("--listing-ref must be a storage reference: stor- and 40 lowercase hex digits");
+  return { command, runDir: values.get("--run-dir"), sellerUrl: values.get("--seller-url"), evmRpc, listingRef, confirm: values.get("--confirm") === true };
 }
 
 /** Return the real path of a run directory that is outside the checkout, owned by the user, mode 0700. */
@@ -74,11 +89,16 @@ export function readState(runDir) {
   return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
 }
 
-/** Replace state.json atomically: write a new file, then rename it over the old one. */
+/** Replace a JSON file atomically: write a new file with mode 0600, then rename it over the old one. */
+function writeJsonAtomic(path, value) {
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+/** Replace state.json atomically. */
 export function writeState(runDir, state) {
-  const temporary = join(runDir, `state.json.${process.pid}.tmp`);
-  writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  renameSync(temporary, join(runDir, "state.json"));
+  writeJsonAtomic(join(runDir, "state.json"), state);
 }
 
 /** Refuse init on a run directory that already has secrets or a saved init. */
@@ -232,6 +252,56 @@ export function parseChildSummary(text) {
   return value;
 }
 
+/** Read the output of the project's buy command: the doctor text, and after a passing doctor the plan line. */
+export function parseBuyOutput(text, exitCode) {
+  const lines = text.split("\n");
+  const first = lines.findIndex((line) => line.startsWith("gate: "));
+  const last = lines.findIndex((line) => line.startsWith("report: "));
+  if (!lines.includes("dacs doctor") || first < 0 || last < first || lines[last + 1] !== `exit: ${exitCode}`) {
+    throw new Error("buy output is not a doctor report that matches the exit code");
+  }
+  const notPass = lines.slice(first + 1, last).flatMap((line) => {
+    const match = CHECK_LINE_RE.exec(line);
+    if (match === null) throw new Error("buy output has a check line that cannot be read");
+    return match[2] === "pass" ? [] : [{ id: match[1], status: match[2], ...(match[3] === undefined ? {} : { reasonCode: match[3] }) }];
+  });
+  const planned = lines.slice(last + 2).some((line) => { try { return JSON.parse(line)?.execute === false; } catch { return false; } });
+  if (exitCode === 0 && !planned) throw new Error("buy output has no plan line after a passing doctor");
+  return { notPass, planned };
+}
+
+/** Read a role service's /ready reply. A service that cannot be read is unrun, with the reason; nothing is guessed. */
+export async function readReadiness(url, fetchImpl = fetch) {
+  try {
+    const response = await fetchImpl(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), redirect: "error" });
+    const { reasonCodes } = JSON.parse(await readBounded(response));
+    if (!Array.isArray(reasonCodes) || !reasonCodes.every((code) => typeof code === "string" && REASON_CODE_RE.test(code))) throw new Error("unreadable");
+    return { status: response.ok ? "ran" : "blocked", code: response.status, reasonCodes };
+  } catch (error) {
+    const connectionRefused = error?.cause?.code === "ECONNREFUSED";
+    return { status: "unrun", reason: connectionRefused ? "the service did not answer (connection refused)" : "the reply of /ready could not be read" };
+  }
+}
+
+const unrun = (reason) => ({ status: "unrun", reason });
+
+/** One status per step: ran, blocked (with its reason codes or exit code) or unrun (with the reason). */
+function recordSteps({ registry, listingRef, readiness, buy }) {
+  const roles = Object.values(readiness);
+  const codes = [...new Set(roles.flatMap((role) => role.reasonCodes ?? []))];
+  return {
+    init: { status: "ran" },
+    registry: registry === undefined ? unrun("the registry step has not saved its refs; run registry first") : { status: "ran" },
+    readiness: roles.some((role) => role.status === "unrun") ? unrun("a role service was not observed")
+      : roles.some((role) => role.status === "blocked") ? { status: "blocked", reasonCodes: codes } : { status: "ran" },
+    setup: listingRef === undefined ? unrun("no --listing-ref was given; dacs:setup prints the Listing ref when it completes")
+      : { status: "ran", evidence: "the Listing ref was given by the operator; record does not read it back" },
+    buy: buy === undefined ? unrun("needs --listing-ref, the Listing ref that dacs:setup prints")
+      : buy.exitCode === 0 ? { status: "ran", planOnly: true } : { status: "blocked", exitCode: buy.exitCode, notPass: buy.notPass },
+    fundedPurchase: unrun(FUNDED_REASONS),
+  };
+}
+
 function git(...args) {
   const result = spawnSync("git", ["-C", CHECKOUT, ...args], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`git ${args[0]} failed`);
@@ -259,14 +329,19 @@ const freeLoopbackPort = () => new Promise((resolvePort, reject) => {
   });
 });
 
-// Steps that need demosdk, viem or dacs-node run this file again inside the project, with the project's loader.
-// The child's raw output goes to logs/<step>.log; only its one-line summary of public values is used.
-function runChild(run, step, args) {
-  const argv = ["--import", "@kynesyslabs/dacs-node/demos-loader", SCRIPT, `internal-${step}`, "--run-dir", run, ...args];
-  const result = spawnSync(process.execPath, argv, {
+// Run a command inside the project without any DACS_ variable; its raw output goes to logs/<name>.log.
+function runLogged(run, name, command, args) {
+  const result = spawnSync(command, args, {
     cwd: join(run, "project"), env: childEnvironment(process.env), encoding: "utf8", maxBuffer: CHILD_OUTPUT_LIMIT_BYTES, timeout: CHILD_TIMEOUT_MS,
   });
-  writeFileSync(join(run, "logs", `${step}.log`), `${result.stdout ?? ""}${result.stderr ?? ""}`, { mode: 0o600 });
+  writeFileSync(join(run, "logs", `${name}.log`), `${result.stdout ?? ""}${result.stderr ?? ""}`, { mode: 0o600 });
+  return result;
+}
+
+// Steps that need demosdk, viem or dacs-node run this file again inside the project, with the project's loader.
+// Only the child's one-line summary of public values is used.
+function runChild(run, step, args) {
+  const result = runLogged(run, step, process.execPath, ["--import", "@kynesyslabs/dacs-node/demos-loader", SCRIPT, `internal-${step}`, "--run-dir", run, ...args]);
   if (result.status !== 0) throw new Error(`${step} failed (${result.status ?? result.error?.code ?? result.signal}); see logs/${step}.log`);
   return parseChildSummary(result.stdout);
 }
@@ -386,7 +461,72 @@ async function registryInProject({ runDir, confirm }) {
   console.log(JSON.stringify({ rail: action === "bootstrap" ? "bootstrapped" : "existing", draft, chainIdentity }));
 }
 
-const COMMANDS = { init, registry, "internal-keys": generateKeys, "internal-registry": registryInProject };
+/** Read the NAME=value lines of a project file; every other line is ignored. */
+function readEnvFile(run, name) {
+  const file = join(run, "project", name);
+  if (!existsSync(file)) throw new Error(`project/${name} is missing`);
+  const lines = readFileSync(file, "utf8").split("\n").map((line) => /^([A-Z0-9_]+)=(.*)$/.exec(line));
+  return Object.fromEntries(lines.filter((match) => match !== null).map(([, key, value]) => [key, value]));
+}
+
+// Observe the run as it is now and write record.json: public values and hostnames only, and every stage that
+// cannot be observed as unrun with the reason. It writes no readiness record and no doctor report.
+export async function record({ runDir, listingRef }, fetchImpl = fetch) {
+  const run = checkRunDirectory(runDir);
+  const { init, registry } = readState(run);
+  if (init === undefined) throw new Error("run init first");
+  const env = readEnvFile(run, ".env");
+  const example = readEnvFile(run, ".env.example");
+  const publicValue = (name, pattern, kind) => {
+    if (!pattern.test(env[name] ?? "")) throw new Error(`${name} in project/.env is not ${kind}`);
+    return env[name];
+  };
+  const hostname = (name) => {
+    try { return new URL(env[name]).hostname; } catch { throw new Error(`${name} in project/.env is not a URL`); }
+  };
+  const authorities = {
+    buyer: publicValue("DACS_BUYER_AUTHORITY", AUTHORITY_RE, "an authority"), seller: publicValue("DACS_SELLER_AUTHORITY", AUTHORITY_RE, "an authority"),
+    steward: publicValue("DACS_RAIL_STEWARD_AUTHORITY", AUTHORITY_RE, "an authority"),
+  };
+  const payee = publicValue("DACS_SELLER_EVM_PAYEE", EVM_ADDRESS_RE, "an address");
+  const [evmHost, demosHost] = [hostname("DACS_EVM_RPC_URL"), hostname("DACS_DEMOS_RPC_URL")];
+  const tarballs = hashTarballs(run, init.packageVersion);
+  for (const [name, hash] of Object.entries(init.tarballs)) {
+    if (tarballs[name] !== hash) throw new Error(`tarball ${name} no longer matches the hash saved by init`);
+  }
+  await assertBaseSepolia(env.DACS_EVM_RPC_URL, fetchImpl);
+  const readiness = {
+    buyer: await readReadiness(`${env.DACS_BUYER_SERVICE_URL}/ready`, fetchImpl),
+    seller: await readReadiness(`${env.DACS_SELLER_SERVICE_URL}/ready`, fetchImpl),
+  };
+  let buy;
+  if (listingRef !== undefined) {
+    const args = ["run", "dacs:buy", "--silent", "--", "--listing-ref", listingRef, "--request-file", "./request.json",
+      "--max-service-amount", PRICE, "--max-network-fee-eth", MAX_NETWORK_FEE_ETH];
+    const result = runLogged(run, "buy", "npm", args);
+    try {
+      if (result.status === null) throw new Error(`buy did not finish (${result.error?.code ?? result.signal})`);
+      buy = { exitCode: result.status, ...parseBuyOutput(result.stdout, result.status) };
+    } catch (error) {
+      throw new Error(`${error.message}; see logs/buy.log`);
+    }
+  }
+  const report = {
+    commit: init.commit, packageVersion: init.packageVersion, tarballs: init.tarballs,
+    deployment: example.DACS_DEPLOYMENT, rails: Object.hasOwn(example, "DACS_PAY_DEM_LISTING_DRAFT_FILE") ? ["x402", "pay-dem"] : ["x402"],
+    network: { chain: `eip155:${CHAIN_ID}`, asset: USDC, facilitator: new URL(FACILITATOR).hostname },
+    evmRpc: { host: evmHost },
+    demosRpc: demosHost === DEFAULT_DEMOS_HOST ? { host: demosHost } : { host: "custom", chainIdentity: registry?.chainIdentity },
+    authorities, payee, registry: registry?.refs, listingRef, readiness,
+    steps: recordSteps({ registry, listingRef, readiness, buy }),
+    fundedRun: `Funded run: UNRUN — ${FUNDED_REASONS}`,
+  };
+  writeJsonAtomic(join(run, "record.json"), report);
+  console.log(JSON.stringify(report));
+  return report;
+}
+
+const COMMANDS = { init, registry, record, "internal-keys": generateKeys, "internal-registry": registryInProject };
 
 if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try {
