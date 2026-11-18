@@ -175,12 +175,16 @@ export function verifyEd25519(message: Uint8Array, signature: Uint8Array, keyHex
   }
 }
 
-/** Transport and discovery signatures: 64 raw bytes, canonical base64url, or (0x)hex. */
-export function envelopeSignatureBytes(signature: unknown, code = "peer_signature_invalid"): Buffer {
+/**
+ * Transport and discovery signatures: 64 raw bytes, canonical base64url, or (0x)hex.
+ * Throws `code` with `status`: 401 for a signature received from a peer, 500 for
+ * one the local signer returned.
+ */
+export function envelopeSignatureBytes(signature: unknown, code = "peer_signature_invalid", status = 401): Buffer {
   if (types.isUint8Array(signature)) {
-    if (viewByteLength(signature) !== 64) return fail(code);
-    const bytes = ownedBytes(signature, code, 401);
-    return bytes.length === 64 ? bytes : fail(code);
+    if (viewByteLength(signature) !== 64) return fail(code, status);
+    const bytes = ownedBytes(signature, code, status);
+    return bytes.length === 64 ? bytes : fail(code, status);
   }
   if (typeof signature === "string" && BASE64URL_SIGNATURE.test(signature)) {
     const bytes = Buffer.from(signature, "base64url");
@@ -189,7 +193,7 @@ export function envelopeSignatureBytes(signature: unknown, code = "peer_signatur
   if (typeof signature === "string" && /^(?:0x)?[0-9a-fA-F]{128}$/.test(signature)) {
     return Buffer.from(signature.replace(/^0x/, ""), "hex");
   }
-  return fail(code);
+  return fail(code, status);
 }
 
 /**
