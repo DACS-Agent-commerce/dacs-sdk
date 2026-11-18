@@ -74,6 +74,13 @@ const sellerReservations = new WeakMap();
 
 const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
 
+/**
+ * Makes the context of a job pass for `effectPass({..., context})`; the seller composition takes no other pass. The host that owns the job
+ * gives its class (`'job-create'`, `'payment-evidence'` or `'job-resume'`), optionally the job's operation id, and `currentAuthorization`,
+ * a synchronous function that returns `true` while the job's authority is current and throws its cause otherwise. Throws `TypeError` for any other class.
+ */
+export { passContext } from './pass-context.mjs';
+
 /** Removes dead holders' lock rows from a client durable journal, given the host's state-ownership proof; see `signer-reservation.mjs`. */
 export { releaseAbandonedJournalLocks } from './signer-reservation.mjs';
 

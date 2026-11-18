@@ -8,6 +8,7 @@ import { assertTp1Authority, assertTp1Binding, bindTp1Profile, signSellerSession
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal } from '../src/dacs/demos-sr2-adapter.mjs';
 import { createDevnetAgreementTransport } from '../src/wallet/devnet-native-transport.mjs';
 import { createAuthorityReader } from '../src/wallet/authority-reader.mjs';
+import { addressForClaim } from '../src/signatures.mjs';
 import { createEffectFence } from '../src/wallet/effect-fence.mjs';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
 import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
@@ -86,7 +87,8 @@ const RPC_BLOCK = number => ({ method: 'nodeCall', params: [{ message: 'getBlock
 const mismatch = { code: 'tp1_participant_profile_mismatch' };
 const causesOf = error => { const causes = []; for (let next = error; next; next = next.cause) causes.push(next); return causes; };
 const enrollment = (claim, patch = {}) => ({ claim, profile: { ...OWN_PROFILE }, modules: { ...TESTNET_PROFILE_TP1.tuple }, evidence: 'TEST-enrollment-record', revoked: false, ...patch });
-const purchaseRow = (jobId, seller = SELLER) => ({ terms: { protocol: { jobId } }, state: { listing: { seller: { identity: { presentedBy: seller } } } } });
+// A saved purchase row as the purchase service writes it: the job id, the buyer's wallet address and the seller's claim sit in `terms`.
+const purchaseRow = (jobId, seller = SELLER, buyer = BUYER) => ({ terms: { protocol: { jobId }, buyer: { accountId: 'TEST-account', wallet: addressForClaim(buyer) }, seller: { claim: seller, payee: addressForClaim(seller) } } });
 const otherChainBlock = () => jsonResponse(JSON.stringify(ok({ number: 0, status: 'confirmed', hash: 'e'.repeat(64), content: {} })));
 const countingSigner = claim => { const signer = { claim, signs: 0, async sign() { signer.signs++; return Buffer.alloc(64, 7); } }; return signer; };
 const delegationPayload = (buyer, jobId) => ({ version: '1', kind: 'seller-session-delegation', buyer, sessionPublicKey: '9'.repeat(64), seller: SELLER,
@@ -166,6 +168,29 @@ test('the production reader serves discovery and job checks from registered List
   await assert.rejects(signSellerSessionDelegation(delegationPayload(BUYER, UNKNOWN_JOB), signer, binding, current), mismatch, 'a row saved for another job answers nothing');
   assert.equal(signer.signs, 0, 'no refused case reached the signer');
   for (const name of Object.keys(w.sources)) assert.throws(() => createAuthorityReader({ ...w.sources, [name]: undefined }), TypeError, name);
+});
+
+test('the reader finds the seller of a purchase row from the terms the purchase service saves, with no other field', async t => {
+  const w = readerWorld(t), binding = await w.bind(), current = w.owner.currentLocal();
+  assert.deepEqual(Object.keys(w.rows.get(JOB)), ['terms']);
+  await assertTp1Authority(binding, current, [BUYER, SELLER], JOB);
+  assert.equal((await w.reader({ sessionId: JOB, participants: [BUYER, SELLER] })).participants.length, 2);
+});
+
+test("the reader refuses a job whose saved purchase belongs to another buyer wallet or names no valid buyer, and no delegation is signed for it", async t => {
+  const w = readerWorld(t), signer = countingSigner(BUYER), binding = await w.bind(), current = w.owner.currentLocal();
+  const foreign = '01M5YKPJG0248H248H248H248M', noBuyer = '01M5YKPJG0248H248H248H248N', badBuyer = '01M5YKPJG0248H248H248H248P', noSeller = '01M5YKPJG0248H248H248H248Q';
+  w.rows.set(foreign, purchaseRow(foreign, SELLER, OTHER_BUYER));
+  w.rows.set(noBuyer, { terms: { ...purchaseRow(noBuyer).terms, buyer: undefined } });
+  w.rows.set(badBuyer, { terms: { ...purchaseRow(badBuyer).terms, buyer: { accountId: 'TEST-account', wallet: 'not-an-address' } } });
+  w.rows.set(noSeller, { terms: { ...purchaseRow(noSeller).terms, seller: undefined } });
+  for (const jobId of [foreign, noBuyer, badBuyer, noSeller]) {
+    await assert.rejects(assertTp1Authority(binding, current, [BUYER, SELLER], jobId), mismatch, jobId);
+    await assert.rejects(assertTp1Authority(binding, current, [BUYER], jobId), mismatch, `${jobId}: the wallet alone is not vouched for either`);
+    await assert.rejects(signSellerSessionDelegation(delegationPayload(BUYER, jobId), signer, binding, current), mismatch, jobId);
+  }
+  assert.equal(signer.signs, 0, 'no refused case reached the signer');
+  await assertTp1Authority(binding, current, [BUYER, SELLER], JOB);
 });
 
 test('while held, every action refuses profile_not_admitted before any read, and direct reader calls sign and send nothing', async t => {
@@ -357,11 +382,13 @@ test('the composed reader answers for the finalized wallet: its own claim is the
   const rows = new Map(), enrolled = new Map();
   const w = await compositionWorld(t, { input: { purchases: { findByJobId: jobId => rows.get(jobId) ?? null }, participantImplementations: { entriesFor: claim => enrolled.get(claim) ?? [] } } });
   const composition = await w.build(), address = composition.wallet.getPublicAccount().address, claim = 'did:demos:agent:' + address.slice(2);
-  rows.set(JOB, purchaseRow(JOB));
+  rows.set(JOB, purchaseRow(JOB, SELLER, claim));
+  rows.set(SECOND_JOB, purchaseRow(SECOND_JOB, SELLER, OTHER_BUYER));
   enrolled.set(SELLER, [enrollment(SELLER)]);
   const { binding } = composition;
   assert.equal(binding.profile.chainIdentity, CHAIN);
   await assertTp1Authority(binding, w.owner.currentLocal(), [claim, SELLER], JOB);
+  await assert.rejects(assertTp1Authority(binding, w.owner.currentLocal(), [claim, SELLER], SECOND_JOB), mismatch, "another wallet's job is not vouched for");
   enrolled.delete(SELLER);
   await assert.rejects(assertTp1Authority(binding, w.owner.currentLocal(), [claim, SELLER], JOB), mismatch);
 });
