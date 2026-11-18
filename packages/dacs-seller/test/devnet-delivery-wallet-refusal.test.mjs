@@ -153,7 +153,7 @@ test('the operator custody wallet keeps the error its authorize check threw as t
  }
 });
 
-// A wallet like the session's: whatever is assigned to `crypto` is wrapped, so the value read back is never the value assigned.
+// A stand-in wallet whose `crypto` setter wraps what it is given, so the value read back is never the value assigned.
 function walletWithWrappingCrypto(){
  const counts={keyLayers:0,keySignatures:0};
  const wrap=(inner)=>({sign:(...args)=>{counts.keyLayers++;return inner.sign(...args);}});

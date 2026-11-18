@@ -126,8 +126,9 @@ export function createOperatorApprovalAttempt(approve){
     // again before its key signs, so the check runs at entry and once more at the key's signature. For a write
     // that carries its own check (authorizeSigning), a refusal in that time signs nothing (the wallet answers a
     // throw here as an unsigned sdk_error); a write without one signs as before.
-    // A wallet may wrap whatever is assigned to its crypto, so the value read back is not the value assigned and
-    // cannot be restored by comparing. Each key is wrapped once and stays wrapped; the check runs only for a
+    // Each key is wrapped once and stays wrapped, so repeated signatures add no layers and a key set later is
+    // wrapped on its first use. A wallet class whose crypto setter returns a different object than it was given
+    // is also handled, because the wrapper is never compared against or restored. The check runs only for a
     // signature made inside sign(), so the key's other signatures (RPC authentication) pass unchecked.
     guardSigning(DemosCtor){
       const insideSign=new AsyncLocalStorage(),guardedKeys=new WeakMap();
