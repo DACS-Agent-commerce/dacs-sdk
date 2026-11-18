@@ -370,11 +370,6 @@
       "count": 1
     }
   },
-  "packages/dacs-seller/test/rail-session-admission.test.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "packages/dacs-seller/test/seller-agent-contracts.test.mjs": {
     "no-unused-vars": {
       "count": 2

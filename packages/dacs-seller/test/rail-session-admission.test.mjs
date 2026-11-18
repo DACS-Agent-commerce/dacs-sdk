@@ -44,7 +44,8 @@ test('proposal freshness refuses malformed clocks and unsafe admitted deadline a
 test('authenticated Listing validation uses the shared CF-3 presentation reader and intake projection', async () => {
   const steward = railSteward(103), config = railAuthorityConfig(steward.railAuthority()), value = listing();
   value.seller.identity.presentation.signatures[0].ref += '?region=GB';
-  const { signature, ...draft } = value;
+  const draft = { ...value };
+  delete draft.signature;
   const signed = await signComponentArtifact(draft, ARTIFACT_SEPARATORS.Listing, { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes });
   const result = await validateSellerListing(signed, { now: () => NOW, revocationSurfaces: active, readMarker: async () => null, railAuthority: config });
   assert.equal(result.disposition, 'verified');
@@ -83,7 +84,8 @@ function multiClaimPresentation(presentedAt) {
 test('fresh seller presentations accept valid additional claim signatures', async () => {
   const value = listing();
   value.seller.identity = multiClaimPresentation(NOW - 1000);
-  const { signature, ...draft } = value;
+  const draft = { ...value };
+  delete draft.signature;
   const signed = await signComponentArtifact(draft, ARTIFACT_SEPARATORS.Listing, { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes });
   const result = await validateSellerListing(signed, { now: () => NOW, revocationSurfaces: active, readMarker: async () => null, simulatedFixture: true });
   assert.equal(result.disposition, 'verified');
@@ -122,7 +124,8 @@ test('a correctly signed Vet record does not require the optional reference sign
 
 test('a Vet record evaluating a parameter variant of the party claim is refused unless the party is that exact string', async () => {
   const f = await vetFixture();
-  const { signature: _signature, ...unsigned } = f.record;
+  const unsigned = { ...f.record };
+  delete unsigned.signature;
   const record = await signComponentArtifact({ ...unsigned, evaluatedParty: `${buyer.claim}?alias=work` },
     ARTIFACT_SEPARATORS.CompositeVerificationRecord, { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes });
   const ref = { ...f.ref, contentHash: contentHash(record) };
