@@ -28,7 +28,7 @@ npx vitest run test/integration/funded-two-agent.e2e.test.ts
 ```
 
 If your shell's `nvm use` doesn't stick in a non-interactive context, invoke the
-matching Node binary explicitly (`"$(nvm which 20)" node_modules/.bin/vitest …`)
+matching Node binary explicitly (`"$(nvm which 22)" node_modules/.bin/vitest …`)
 rather than hard-coding an absolute path.
 
 ## 2. Funding (all public, no captcha)

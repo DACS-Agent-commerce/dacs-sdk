@@ -16,8 +16,8 @@ import { wireRequestHash, type WireRequestPayload } from "./envelope.js";
 import { assertPeerProfile, assertTp1Authority, assertTp1Binding, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from "./routes.js";
 import {
-  admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, isUint, NONCE, ownedArtifact, ownedConfig,
-  ownedFields, sameCanonical, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
+  admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, isRecord, isUint, NONCE, ownedArtifact, ownedConfig,
+  ownedFields, sameCanonical, verifyEd25519, WireError, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 /** Most unexpired proofs the in-memory ledger holds; past it a claim is refused rather than a live one forgotten. */
@@ -40,7 +40,12 @@ export interface ExplicitCreateResumePayload {
   agreementHash: string;
   /** `wireRequestHash` of the request that carries the header. */
   requestHash: string;
-  /** Names this proof in the ledger; a nonce is used once per buyer, seller and profile. */
+  /**
+   * Names this proof in the ledger. The ledger key is the buyer, seller, profile
+   * and nonce, without `expiresAt`, so a nonce is refused only while its claim is
+   * live, that is until the earlier proof's `expiresAt`; a ledger that forgets
+   * expired claims lets a new proof reuse the nonce after that.
+   */
   nonce: string;
   expiresAt: number;
   profile: Tp1WireProfile;
@@ -69,6 +74,8 @@ export function explicitCreateResumeSigningBytes(payload: ExplicitCreateResumePa
   return resumeBytes(ownedArtifact(payload, INVALID, 500), 500);
 }
 
+const isSigner = (signer: unknown): signer is WireSigner => isRecord(signer) && typeof signer.claim === "string" && typeof signer.sign === "function";
+
 /** What `signExplicitCreateResume` needs besides the payload. */
 export interface ExplicitResumeSigningContext {
   signer: WireSigner;
@@ -83,11 +90,15 @@ export interface ExplicitResumeSigningContext {
  * Signs one owned copy of the payload under the current TP-1 binding and returns
  * the `x-dacs-seller-resume` header for that copy.
  * Throws `explicit_resume_invalid` (500) for a payload that is not exactly the
- * proof's members, a signer other than the payload's buyer, or an `expiresAt`
- * outside the signer's lifetime; the TP-1 binding and authority errors of the
- * other signers; and `explicit_resume_signature_invalid` for a signature
- * the signer returned malformed. The longest payload the members allow gives a
- * header under `maxHeaderLength`, so no size check is needed here.
+ * proof's members, a signer that has no string `claim` or no `sign` function,
+ * a signer other than the payload's buyer, or an `expiresAt` outside the
+ * signer's lifetime; the TP-1 binding, profile and authority errors
+ * (`tp1_local_binding_changed`, `tp1_binding_required`,
+ * `tp1_participant_profile_mismatch` and the others of `assertTp1Binding`,
+ * `assertPeerProfile` and `assertTp1Authority`); and
+ * `explicit_resume_signature_invalid` (500) for a signature the signer returned
+ * malformed. The longest payload the members allow gives a header under
+ * `maxHeaderLength`, so no size check is needed here.
  */
 export async function signExplicitCreateResume(supplied: ExplicitCreateResumePayload, context: ExplicitResumeSigningContext): Promise<string> {
   const { signer, binding, local, now } = ownedFields(context, ["signer", "binding", "local", "now"]) as unknown as ExplicitResumeSigningContext;
@@ -95,11 +106,11 @@ export async function signExplicitCreateResume(supplied: ExplicitCreateResumePay
   await assertTp1Binding(binding, local);
   const bytes = resumeBytes(payload, 500);
   await assertPeerProfile(payload.profile, binding, 500);
-  if (signer.claim !== payload.buyer) fail(INVALID, 500, "SIGNER");
+  if (!isSigner(signer) || signer.claim !== payload.buyer) fail(INVALID, 500, "SIGNER");
   if (!isUint(now) || payload.expiresAt <= now || payload.expiresAt - now > DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs) fail(INVALID, 500, "LIFETIME");
   const participants = [payload.buyer, payload.seller];
   await assertTp1Authority(binding, local, participants, payload.jobId);
-  const signature = envelopeSignatureBytes(await signer.sign(bytes), SIGNATURE_INVALID).toString("base64url");
+  const signature = envelopeSignatureBytes(await signer.sign(bytes), SIGNATURE_INVALID, 500).toString("base64url");
   await assertTp1Authority(binding, local, participants, payload.jobId);
   return encodeHeader(payload, signature);
 }
@@ -109,7 +120,9 @@ export interface ExplicitResumeLedger {
   /**
    * Marks `key` used until `expiresAt` by the verifier's clock `time`. Resolves
    * to false if it was already used; throws or rejects if it cannot record the
-   * claim, and the proof is then refused.
+   * claim, and the proof is then refused. A `WireError` from this package whose
+   * code starts with `explicit_resume_` reaches the verifier's caller unchanged;
+   * any other error becomes `explicit_resume_ledger_failed`.
    */
   claim(key: string, expiresAt: number, time: number): boolean | Promise<boolean>;
 }
@@ -117,8 +130,10 @@ export interface ExplicitResumeLedger {
 /**
  * A ledger in process memory. It forgets a claim only once the proof has
  * expired by the latest `time` any caller has passed it, so a caller whose clock
- * is behind cannot use a proof another caller's clock has already released; it
- * returns false for a proof already expired by that clock. It throws
+ * is behind cannot use a proof another caller's clock has already released. It
+ * throws `explicit_resume_expired` (408) for a proof already expired by that
+ * clock, whether or not it was ever claimed, because expired claims are
+ * forgotten; it never reports such a proof as used. It throws
  * `wire_input_invalid` (500) for an `expiresAt` or `time` that is not an unsigned
  * integer, and refuses with `explicit_resume_ledger_full` (503) at `MAX_EXPLICIT_RESUME_CLAIMS`.
  */
@@ -130,7 +145,8 @@ export function createExplicitResumeLedger(): ExplicitResumeLedger {
       if (!isUint(expiresAt) || !isUint(time)) return fail("wire_input_invalid", 500);
       horizon = Math.max(horizon, time);
       for (const [held, until] of claims) if (until <= horizon) claims.delete(held);
-      if (expiresAt <= horizon || claims.has(key)) return false;
+      if (expiresAt <= horizon) return fail("explicit_resume_expired", 408);
+      if (claims.has(key)) return false;
       if (claims.size >= MAX_EXPLICIT_RESUME_CLAIMS) return fail("explicit_resume_ledger_full", 503);
       claims.set(key, expiresAt);
       return true;
@@ -176,10 +192,21 @@ function assertMatchesRequest(p: ExplicitCreateResumePayload, request: WireReque
   }
 }
 
-/** Uses the proof up. A ledger that throws or rejects refuses the proof as `explicit_resume_ledger_failed` (503), with the ledger's error as the cause. */
+/**
+ * Uses the proof up. A `WireError` whose code starts with `explicit_resume_`,
+ * such as the in-memory ledger's `explicit_resume_ledger_full`, is thrown
+ * unchanged. Any other throw or rejection, including a plain `Error` that carries
+ * such a code, refuses the proof as
+ * `explicit_resume_ledger_failed` (503), with the ledger's error as the cause.
+ */
 async function claimProof(ledger: ExplicitResumeLedger, key: string, expiresAt: number, time: number): Promise<void> {
   let claimed: boolean;
-  try { claimed = await ledger.claim(key, expiresAt, time); } catch (cause) { return fail("explicit_resume_ledger_failed", 503, undefined, cause); }
+  try {
+    claimed = await ledger.claim(key, expiresAt, time);
+  } catch (cause) {
+    if (cause instanceof WireError && cause.code.startsWith("explicit_resume_")) throw cause;
+    return fail("explicit_resume_ledger_failed", 503, undefined, cause);
+  }
   if (claimed !== true) fail("explicit_resume_used", 409);
 }
 
@@ -189,11 +216,14 @@ async function claimProof(ledger: ExplicitResumeLedger, key: string, expiresAt: 
  * used up. Order: scope, TP-1 binding, header size and encoding, admission,
  * profile, exact members, signature, participants' authority, request match,
  * expiry, one-use claim.
- * Throws `explicit_resume_invalid` (401) for a header past the limit, not
+ * Throws the TP-1 binding, profile and authority errors of `assertTp1Binding`,
+ * `assertPeerProfile` and `assertTp1Authority`;
+ * `explicit_resume_invalid` (401) for a header past the limit, not
  * canonical, or with other than the proof's members or lifetime;
  * `explicit_resume_signature_invalid` (401); `explicit_resume_mismatch` (409)
  * for any difference from the request; `explicit_resume_expired` (408);
- * `explicit_resume_used` (409); `explicit_resume_ledger_failed` (503) when the
+ * `explicit_resume_used` (409); `explicit_resume_ledger_full` (503) when the
+ * in-memory ledger is full; `explicit_resume_ledger_failed` (503) when another
  * ledger cannot record the claim; and `wire_input_invalid` (500) for an incomplete scope.
  */
 export async function verifyExplicitCreateResume(header: unknown, scope: ExplicitResumeScope): Promise<ExplicitCreateResumePayload> {
