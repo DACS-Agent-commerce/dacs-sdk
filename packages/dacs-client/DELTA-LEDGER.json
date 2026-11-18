@@ -10918,6 +10918,23 @@
           "after": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged demos-sr2-adapter.mjs and devnet-native-transport.mjs blobs after merging c8069a6c99d5",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "ba4f7ee79423380ef8056c8e4f6f672e235c2e48",
+          "after": "ba4f7ee79423380ef8056c8e4f6f672e235c2e48"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "d4ed72df62d5590841bd349736954a86371e8eb3",
+          "after": "d4ed72df62d5590841bd349736954a86371e8eb3"
+        }
+      ]
     }
   ]
 }
