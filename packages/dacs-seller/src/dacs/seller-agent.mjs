@@ -35,7 +35,8 @@ import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from
 import { readRetainedBounded, readFailureCode } from './bounded-reads.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
-import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
+import { createSellerDurableState } from './seller-durable-state.mjs';
+import { DEFAULT_SELLER_MAX_JOBS } from './seller-capacity-defaults.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
 import { sellerBundleProblem, sellerRecordVerifier } from './session-admission.mjs';

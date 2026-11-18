@@ -2,7 +2,11 @@ import { canonicalize, contentHash, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { MAX_STORAGE_ARTIFACT_BYTES } from '../dacs/wallet-transactions.mjs';
 import { isReportableTitle } from '../dacs/listing.mjs';
 
-const REPORT_TEXT_MAX_BYTES = 16_384;
+// A cheap bound on the text, checked before the report is canonicalized. It equals
+// the whole-report limit on purpose: the other report fields always take some bytes,
+// so the whole-report check in reportFitsOneCreate is the limit that decides how
+// large a text can be.
+const REPORT_TEXT_MAX_BYTES = MAX_STORAGE_ARTIFACT_BYTES;
 const reportTextValid = text => typeof text === 'string' && text.length > 0 && text.length <= REPORT_TEXT_MAX_BYTES &&
   Buffer.byteLength(text, 'utf8') <= REPORT_TEXT_MAX_BYTES && text.normalize('NFC') === text &&
   !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\ud800-\udfff]/u.test(text);
@@ -59,10 +63,10 @@ export function isDevnetPurchasedReport(value,{jobId,agreementHash,producer}={})
     && isCanonicalJobId(value.jobId) && typeof value.agreementHash==='string' && /^[0-9a-f]{64}$/.test(value.agreementHash)
     && value.listing!==null && typeof value.listing==='object' && !Array.isArray(value.listing)
     && Object.keys(value.listing).sort().join(',')==='contentHash,listingId,version'
-    && typeof value.listing.listingId==='string' && /^[A-Za-z0-9._~-]{1,128}$/.test(value.listing.listingId) && Number.isSafeInteger(value.listing.version) && value.listing.version>0 && /^[0-9a-f]{64}$/.test(value.listing.contentHash ?? '')
+    && typeof value.listing.listingId==='string' && /^[A-Za-z0-9._~-]{1,128}$/.test(value.listing.listingId) && Number.isSafeInteger(value.listing.version) && value.listing.version>0 && typeof value.listing.contentHash==='string' && /^[0-9a-f]{64}$/.test(value.listing.contentHash)
     && typeof value.settlementId==='string' && value.settlementId.length>0
     && isReportableTitle(value.title)
-    && /^did:demos:agent:[0-9a-f]{64}$/.test(value.producer ?? '')
+    && typeof value.producer==='string' && /^did:demos:agent:[0-9a-f]{64}$/.test(value.producer)
     && value.content?.mediaType==='text/plain; charset=utf-8' && Object.keys(value.content).sort().join(',')==='mediaType,text'
     && reportTextValid(value.content.text) && reportFitsOneCreate(value)
     && (jobId===undefined || value.jobId===jobId) && (agreementHash===undefined || value.agreementHash===agreementHash) && (producer===undefined || value.producer===producer);

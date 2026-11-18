@@ -10713,6 +10713,228 @@
           "after": "b0596c5f47da58f502486f59e1d0ebc2a383c2dc"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF add the pinned HTTPS connector for seller traffic",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "c2a23d02278639657358480a74e9e933492b0832",
+          "after": "7a75e86fe07501b58946cef29b61d2af5f619a16"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-https-connector.mjs",
+          "before": null,
+          "after": "ad2926ab214f03546facc9f089bbe151079b1a46"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "8f2d395270b07f99c1884c9dfae0d1032bc17c18"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "48056110819fef0a22ae0e8bff28e5781ed1bcb6",
+          "after": "cb45766caa937eac592966d1719e218c394eeaef"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/loopback-test-ca.mjs",
+          "before": "bfe8faf4eea14100728ce274f186af84be20450d",
+          "after": "8f77bf0f70a5e6cb4252e91865eb07e36d9cfcc6"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-https-connector.test.mjs",
+          "before": null,
+          "after": "f23d2e87435ff65e1de401dae91f14760099f6d8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged index.mjs blob after merging the base",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "79a38ade5963d24c148db6424e62ff12d5f6381d",
+          "after": "79a38ade5963d24c148db6424e62ff12d5f6381d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF remove the unused cold-cache test helpers and test the cache's injected clock",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk-purchase.mjs",
+          "before": "7b01073b114cfa4def9f44dbe1f6b795eab207dd",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk.mjs",
+          "before": "4dda0ebff0f1a5312c4337040ed7b5308461f8b8",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/immutable-readbacks.test.mjs",
+          "before": null,
+          "after": "a119fdedf8851971957636875c5be5eb7cdcad74"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read back a storage CREATE the node recorded as failed as a final failed result",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe",
+          "after": "f9fe0d9b800c9be68400556d20ea19bb667cd8be"
+        },
+        {
+          "path": "packages/dacs-client/test/failed-storage-write-readback.test.mjs",
+          "before": null,
+          "after": "4782e765d80be69e40384fdd1685745565903eeb"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "47fcf62e29a1560193069ee1ba7737eff82ae214",
+          "after": "8c4d0b377bec9c7635f30cdca3e75aee1f9088f2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read the chain before a replay replaces an evidence CREATE's authorization and read back the storage program it made",
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "9e5f99ccb04eca67e3f52c2894053b07f0fa8b90",
+          "after": "2c54e107e740a8b9efdf4aca8ae2b17b276a98e3"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868",
+          "after": "079e163053cb315bfb1182819dab2ab0708503f2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "1917ff8c1b6e594bb6b181fc3b78f9f42f257797",
+          "after": "50c0191116a8699f2ffd58de6fdf14bb2e57c11e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "d47721b78cb250ef2dd929852268a54afa699a50",
+          "after": "e71d80b46f09ca9b5e5b4f6d630b0ccb84fb5d36"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "78ca854a5b322c34ff1b099ad13b0c3b5b75d5a1",
+          "after": "7797647b3bda845b75faa490eef6592949d87847"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "f3a42056739f497fd805935c801cb490cadddb82",
+          "after": "30cb7833dd4acb333b30b982a0cc6296b02992f0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "317ee818bdbf709601dc8452f3feb986b14066b2",
+          "after": "fd91549ae6153769b30c401c86d078189c414070"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse to replace an evidence CREATE's spent authorization when a stale status has not seen its hash",
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "2c54e107e740a8b9efdf4aca8ae2b17b276a98e3",
+          "after": "a18b4ec1c2a975f0ff7c8559701d72347a295555"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "50c0191116a8699f2ffd58de6fdf14bb2e57c11e",
+          "after": "8f99410fd7b106fba2caa65d382554562fee5f7d"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "e71d80b46f09ca9b5e5b4f6d630b0ccb84fb5d36",
+          "after": "5960c9caa5227851c0d57e9c21f49e36cf5686ce"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "30cb7833dd4acb333b30b982a0cc6296b02992f0",
+          "after": "233ece12f35da1fe1fc233dc283a766fd5f4ad1d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF settle an evidence CREATE's authorization by its complete binding, and make the approval ledger double refuse a bare id",
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "a18b4ec1c2a975f0ff7c8559701d72347a295555",
+          "after": "60daf1347f4a57582b6cf5c9baf81e24bb4945a4"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "8f99410fd7b106fba2caa65d382554562fee5f7d",
+          "after": "9edd56ae98d80f159e7be8ab819c24ec5c821c12"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "192016f0d5c93cbdd715fa2b5058bb312bc1d683",
+          "after": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "5960c9caa5227851c0d57e9c21f49e36cf5686ce",
+          "after": "52bf2dee395974edcf132585ae1cf3237be0b6af"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "67912a3a4bc79b56a4f36e47fed8cb148b3c5da1",
+          "after": "7bdb85058bb12df06cb2c405afa45ac4005e1d81"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "233ece12f35da1fe1fc233dc283a766fd5f4ad1d",
+          "after": "2796f3e3ca7e20570d7ecad79e432b957fb7ea64"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged node-wallet-session.mjs blob after merging c8069a6c99d5",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1",
+          "after": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged demos-sr2-adapter.mjs and devnet-native-transport.mjs blobs after merging c8069a6c99d5",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "ba4f7ee79423380ef8056c8e4f6f672e235c2e48",
+          "after": "ba4f7ee79423380ef8056c8e4f6f672e235c2e48"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "d4ed72df62d5590841bd349736954a86371e8eb3",
+          "after": "d4ed72df62d5590841bd349736954a86371e8eb3"
+        }
+      ]
     }
   ]
 }

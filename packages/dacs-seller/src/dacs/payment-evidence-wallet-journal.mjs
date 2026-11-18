@@ -60,7 +60,9 @@
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
 //  - readAccountNonce() -> a non-negative safe integer, or an authenticated
 //    { nonce, blockHeight } snapshot from the qualified wallet reader;
-//  - readTransactionState({ txHash }) -> 'applied', 'pending', or 'absent'.
+//  - readTransactionState({ txHash, signedTransaction, nonce }) -> 'applied', 'pending', or 'absent'.
+//    The journal passes the signed bytes and nonce it keeps for that hash, so a
+//    reader can compare the chain with them after its own record of the write ended.
 //    An ordinary absent/unknown answer is indeterminate and cannot supersede.
 //    To prove non-execution, a qualified reader must return
 //    { state: 'absent', checkedThroughBlock } from a complete authenticated
@@ -130,7 +132,7 @@ const ZERO_AMOUNTS = [0, '0'];
 // demosdk 4.0.18 signs amounts as DEM numbers before the fork and as canonical OS strings (10^9 OS per DEM) after it.
 const OS_PER_DEM = 1_000_000_000n;
 const OS_AMOUNT = /^(0|[1-9][0-9]*)$/;
-// The ceiling as the effect boundary's write-fee-cap refusal names it.
+// The ceiling as this journal's refusals name it, in DEM.
 const FEE_CEILING = `the ${WRITE_FEE_CEILING_OS / OS_PER_DEM} DEM ceiling per write`;
 // Its storage CREATE burns 1 DEM of gas and 1 DEM of storage fee per started 10240 bytes of the program's JSON.
 const GAS_DEM = 1;
@@ -404,7 +406,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       const nonce = nonceOf(object(value) ? value.nonce : value, 0);
       return nonce === null ? null : { nonce, blockHeight: object(value) ? nonceOf(value.blockHeight, 0) : null };
     });
-    const state = await read(() => readTransactionState({ txHash: signed.txHash }), (value) => {
+    const state = await read(() => readTransactionState({ txHash: signed.txHash, signedTransaction: signed.signedTransaction, nonce: signed.nonce }), (value) => {
       if (TX_STATES.has(value)) return { state: value, checkedThroughBlock: null };
       return object(value) && TX_STATES.has(value.state) ? { state: value.state, checkedThroughBlock: nonceOf(value.checkedThroughBlock, 0) } : null;
     });
@@ -427,10 +429,10 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     if (!object(input) || typeof input.logicalAddress !== 'string') return undefined;
     let live;
     try {
-      live = db.prepare(`SELECT tx_hash, nonce FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress);
+      live = db.prepare(`SELECT tx_hash, nonce, signed_transaction FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress);
       if (live && rows(input.logicalAddress).some((row) => heldDebit(row) !== null)) return undefined;
     } catch (error) { if (error.code === 'SQLITE_BUSY') return undefined; throw error; }
-    return live ? { txHash: live.tx_hash, checked: await fate({ txHash: live.tx_hash, nonce: Number(live.nonce) }) } : undefined;
+    return live ? { txHash: live.tx_hash, checked: await fate({ txHash: live.tx_hash, signedTransaction: live.signed_transaction, nonce: Number(live.nonce) }) } : undefined;
   }
   // Runs `change(observed)` under the writer lock, after the node was read for it.
   async function lockedAfterObserving(input, change) {
@@ -613,7 +615,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     }
     const { logicalAddress, txHash } = request, before = heldRowToClear(request);
     if (before.outcome !== undefined) return { status: before.outcome, txHash };
-    const checked = await fate({ txHash, nonce: Number(before.row.nonce) });
+    const checked = await fate({ txHash, signedTransaction: before.row.signed_transaction, nonce: Number(before.row.nonce) });
     if (checked.alive && !checked.applied) throw Object.assign(new Error(`the held signed CREATE ${txHash} is not proven applied or unable to execute${checked.reason ? `: ${checked.reason}` : ''}; it stays held`), { code: 'held_write_still_live' });
     const outcome = checked.applied ? 'applied' : 'superseded';
     return locked(() => {

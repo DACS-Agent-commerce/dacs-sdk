@@ -31,6 +31,7 @@ import {
   type DacsDemosActorRuntimeV1,
   type DacsDemosAdapterV1,
 } from "./demosRuntime.js";
+import { diagnosticCauseCode } from "./diagnosticCause.js";
 import {
   createDacsX402BuyerEvmRuntimeV1,
   deriveDacsEvmRoleIdentityV1,
@@ -216,9 +217,13 @@ export interface DacsLiveRoleRuntimeV1 {
 
 export class DacsLiveRoleRuntimeError extends Error {
   override readonly name = "DacsLiveRoleRuntimeError";
+  readonly causeCode?: string;
 
   constructor(readonly reasonCode: string, options?: ErrorOptions) {
     super(reasonCode, options);
+    if (options !== undefined && Object.hasOwn(options, "cause")) {
+      this.causeCode = diagnosticCauseCode(options.cause);
+    }
   }
 }
 

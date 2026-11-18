@@ -21,6 +21,21 @@ test('ledger appends preserve an unterminated last record',async t=>{
  assert.deepEqual((await readFile(path,'utf8')).trimEnd().split('\n').map(JSON.parse),[{record:'first'},{record:'second'}]);
 });
 
+test('an append reads only the last byte of the ledger',async t=>{
+ const path=join(await fixture(t),'ledger'),first=`${JSON.stringify({record:'first'})}\n`.repeat(50),readSizes=[],originalReadFile=fs.readFileSync,originalRead=fs.readSync;
+ await writeFile(path,first);
+ try{
+  fs.readFileSync=()=>{throw new Error('TEST the whole ledger was read');};
+  fs.readSync=(descriptor,buffer,...rest)=>{readSizes.push(buffer.length);return originalRead(descriptor,buffer,...rest);};
+  syncBuiltinESMExports();
+  appendApprovalLedgerLine(path,{record:'second'});
+ }finally{fs.readFileSync=originalReadFile;fs.readSync=originalRead;syncBuiltinESMExports();}
+ assert.deepEqual(readSizes,[1]);
+ const lines=(await readFile(path,'utf8')).trimEnd().split('\n').map(JSON.parse);
+ assert.equal(lines.length,51);
+ assert.deepEqual(lines.at(-1),{record:'second'});
+});
+
 test('ledger publication creates one private leaf and syncs the file, the leaf and its entry in the parent',async t=>{
  const dir=await fixture(t),path=join(dir,'leaf','ledger');
  const synced=recordSyncs(()=>appendApprovalLedgerLine(path,{record:'first'}));
