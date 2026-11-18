@@ -242,8 +242,8 @@ const storeInternals = new WeakMap();
 // The version `bind` writes into the store's binding.
 const STORE_VERSION = '1';
 /**
- * The one list of the records behind each reservation limit. The old reserve path and reservation accounting
- * count only these, so a record either path writes counts against both. Each source selects `job`, or a unit's
+ * The one list of the records behind each reservation limit. Reservation accounting counts only these, so
+ * a record any of these tables holds counts against every limit. Each source selects `job`, or a unit's
  * `buyer` and `at`; an owner source also selects the buyer, seller and Listing pin that hold the job.
  * Total records are the accounting rows that still count (see RETIRABLE_RESERVATION).
  */
