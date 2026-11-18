@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bindTp1Profile } from '@kynesyslabs/dacs/wire';
-import { createDemosNetworkBinder } from '../src/dacs/network-binding.mjs';
-import { createSourceObserver } from '../src/wallet/devnet-native-transport.mjs';
-import { createHeldTransportFacade } from '../src/wallet/node-wallet-session.mjs';
 import { createAuthorityFixture } from './fixtures/tp1-authority-reader.mjs';
 import { shared, native, captured, envelope, record, local, ownLocal, hash, expected, fallback, NOW, stabilisedGenesis, stabilisedReplies, stabilisedShared } from './helpers/chain-identity-fixture.mjs';
+// Loaded after the admission hook, so the effect boundary under test sees the admission double.
+const { createDemosNetworkBinder } = await import('../src/dacs/network-binding.mjs');
+const { createSourceObserver } = await import('../src/wallet/devnet-native-transport.mjs');
+const { createHeldTransportFacade } = await import('../src/wallet/node-wallet-session.mjs');
 
 const OTHER = hash('TEST-other-chain');
 const reader = { getContext: () => ({ ...local }), getBlockByNumber: () => {}, getChainIdentity: () => {} };

@@ -11608,6 +11608,202 @@
           "after": "7de4008515b0d812079bd1a1177a3ab263fea6b1"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the blobs chosen when the base was carried up into the stabilised genesis part",
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "5aef1a518b6d4ff7535a6bfdf79b89d1f826b287",
+          "after": "7352426912fcfdf092b7d8ca057c83c22740c74f"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "b5b496e80fd324fb52afc7bee0ddd2dfa4c63261",
+          "after": "31a06c866bf96d33657bf4aad07e6ae390bd5f87"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "5379e0581620530a3c9aa45d89d11ce56c6515a3",
+          "after": "5379e0581620530a3c9aa45d89d11ce56c6515a3"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+          "before": "7e7181f3e64f5e1be2dccd7ee991d363f2292a63",
+          "after": "7e7181f3e64f5e1be2dccd7ee991d363f2292a63"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "2cb25a3a52ace45972663a1b8a15e7f6e83f616f",
+          "after": "2cb25a3a52ace45972663a1b8a15e7f6e83f616f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/authority-reader.mjs",
+          "before": "22f06b0555f9b2036708d9f4712972bb7f1205e3",
+          "after": "22f06b0555f9b2036708d9f4712972bb7f1205e3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0901e84e46e915d1264aebef22cbdd9b28dfe300",
+          "after": "0901e84e46e915d1264aebef22cbdd9b28dfe300"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "942abfcd0a08947816576bac43cec3b95e76d0f5",
+          "after": "942abfcd0a08947816576bac43cec3b95e76d0f5"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "f9e5f62ad0009b4ebd8d77b8b597973f61bd90af",
+          "after": "f9e5f62ad0009b4ebd8d77b8b597973f61bd90af"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/pass-context.mjs",
+          "before": "023f1b576ae2e0273a8713abda20cf93de916ab1",
+          "after": "023f1b576ae2e0273a8713abda20cf93de916ab1"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": "d8f9af6629244ff756b147066bf734984e40aa79",
+          "after": "d8f9af6629244ff756b147066bf734984e40aa79"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-stages.test.mjs",
+          "before": "c860a7fcd62e3e2dd5baf9177784328df3c39277",
+          "after": "c860a7fcd62e3e2dd5baf9177784328df3c39277"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+          "before": "f8e466b13700c0a454d050a95d4189e12d78a399",
+          "after": "f8e466b13700c0a454d050a95d4189e12d78a399"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "94739099b0f48472982cacb684bfca5159cc1dce",
+          "after": "94739099b0f48472982cacb684bfca5159cc1dce"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/finalized-node-child.mjs",
+          "before": "a0f89a008bcc257cbfa0486aa8f5a08f20f71eea",
+          "after": "a0f89a008bcc257cbfa0486aa8f5a08f20f71eea"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/finalized-node-world.mjs",
+          "before": "d07e2e16bd48863054a4b1894037279f91d9db00",
+          "after": "d07e2e16bd48863054a4b1894037279f91d9db00"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "20969f66f146e4a64dc69c3a0c71998d0b113f4b",
+          "after": "20969f66f146e4a64dc69c3a0c71998d0b113f4b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-effect-world.mjs",
+          "before": "2f2b88f66e451763705f28cc3bc68f7b7fe5986d",
+          "after": "2f2b88f66e451763705f28cc3bc68f7b7fe5986d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/pass-context-fixture.mjs",
+          "before": "5594e5efcd0f392dbc3a2d7fbf0009c98820c18f",
+          "after": "5594e5efcd0f392dbc3a2d7fbf0009c98820c18f"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "ffe6efb02574184364af130ee3b41286b657faa8",
+          "after": "ffe6efb02574184364af130ee3b41286b657faa8"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-answer-split-record-cuts.test.mjs",
+          "before": "c1a6c2a8feaf3f45f225e1a32725c13a4bef09e2",
+          "after": "c1a6c2a8feaf3f45f225e1a32725c13a4bef09e2"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-split-record-cuts.test.mjs",
+          "before": "7882fcc300bbc699caa917eb9241663cf8a7126f",
+          "after": "7882fcc300bbc699caa917eb9241663cf8a7126f"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmation-persistence-cuts.test.mjs",
+          "before": "ecdb0723a39419fb7c17f336a5faa26981e03448",
+          "after": "ecdb0723a39419fb7c17f336a5faa26981e03448"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmed-before-broadcast-cut.test.mjs",
+          "before": "54f90c1b1d92690153d3883c85b882a0d017af2a",
+          "after": "54f90c1b1d92690153d3883c85b882a0d017af2a"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "c5fcfe71a3f799b74527658f61c42e69dead889a",
+          "after": "c5fcfe71a3f799b74527658f61c42e69dead889a"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "3b833ced997efcb25db41f789c785d27f89ebf1d",
+          "after": "3b833ced997efcb25db41f789c785d27f89ebf1d"
+        },
+        {
+          "path": "packages/dacs-client/test/native-recovery-reservation-crash-cuts.test.mjs",
+          "before": "f3e5f3945d0629e243eccfea79d3953a4242027a",
+          "after": "f3e5f3945d0629e243eccfea79d3953a4242027a"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": "24ae3f7f1b1fe4b8413ccbbfb743c1bb68faa5f2",
+          "after": "24ae3f7f1b1fe4b8413ccbbfb743c1bb68faa5f2"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "1db58875862d394f1b771a20814eb9a80d9b14a8",
+          "after": "1db58875862d394f1b771a20814eb9a80d9b14a8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "340d83fcac140c0ac7cd2d5277c66674a7684186",
+          "after": "340d83fcac140c0ac7cd2d5277c66674a7684186"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-fresh-child.test.mjs",
+          "before": "83dfa643b37be6f41fce4e554f78dbdcf287a6d6",
+          "after": "83dfa643b37be6f41fce4e554f78dbdcf287a6d6"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-lanes.test.mjs",
+          "before": "48315ddd6ec8c91e244ef36d3c23dd7c6bb8344a",
+          "after": "48315ddd6ec8c91e244ef36d3c23dd7c6bb8344a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": "dd1514d4b4be7abff9676b4c0c01300820856711",
+          "after": "dd1514d4b4be7abff9676b4c0c01300820856711"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "f1d237749cd1cec37162e3b15f57927a50c07761",
+          "after": "f1d237749cd1cec37162e3b15f57927a50c07761"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
+          "before": "b90bd40e6ea744556bd0e1191130aaff3343aa7d",
+          "after": "b90bd40e6ea744556bd0e1191130aaff3343aa7d"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "26d2e7a6565227e7b53812340ff529efecb5a89e",
+          "after": "26d2e7a6565227e7b53812340ff529efecb5a89e"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "acbe28242cd3d146e3076c05e164deed97ac2307",
+          "after": "acbe28242cd3d146e3076c05e164deed97ac2307"
+        },
+        {
+          "path": "packages/dacs-client/test/stabilised-genesis-binding.test.mjs",
+          "before": "0f88b8b5cd19939a5d95dd0c9d4cbe2d5f05f19d",
+          "after": "e0d7a3d2ad0c98bd3400617c2d90b799ffd86665"
+        }
+      ]
     }
   ]
 }
