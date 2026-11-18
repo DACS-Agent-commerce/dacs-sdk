@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { assemble } from './delta-assemble.mjs';
+import { isAnchored, PACKAGE_PREFIX, readAnchor, selects } from './delta-record.mjs';
 const root=join(dirname(fileURLToPath(import.meta.url)),'../../..');
 // A `git commit` may start `git maintenance run --auto`, which can detach and keep writing into the clone's .git
 // after the commit returns; that races the cleanup below (ENOTEMPTY). A scratch clone never starts it.
@@ -287,11 +288,17 @@ const LEDGER_FAULTS=[
    data.changes.push({delta:'WF',subject:'delta(client): WF TEST empty record',files:[]});}},
  {name:'(b) a no-op checkpoint record is removed',message:/differs from generated Git table/,
   edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.length>0&&record.files.every(file=>file.before===file.after)),1);}},
+ // The gate leaves out of the chain a record of an anchored path whose commit the anchor contains, so (c) picks only records it checks.
  {name:'(c) a record\'s last recorded blob for a path is replaced by an earlier one',message:/current blob differs/,
-  edit:data=>{
+  edit:(data,dir)=>{
+   const anchor=readAnchor(join(dir,PACKAGE_PREFIX));
+   const afterAnchor=scratchGit(dir)('log','--no-merges','--format=%H%x09%s',`${anchor.commit}..HEAD`).split('\n').filter(Boolean).map(row=>{const at=row.indexOf('\t');return {sha:row.slice(0,at),subject:row.slice(at+1)};});
+   const inChain=(record,path)=>!isAnchored(path.slice(PACKAGE_PREFIX.length))||afterAnchor.some(commit=>selects(record,commit));
    const history=new Map();
-   for(const record of data.changes)for(const file of record.files){const entries=history.get(file.path)??[];entries.push({record,file});history.set(file.path,entries);}
-   const [,entries]=[...history].filter(([,all])=>all.length>1&&all.at(-2).file.after!==all.at(-1).file.after).at(-1);
+   for(const record of data.changes)for(const file of record.files)if(inChain(record,file.path)){const entries=history.get(file.path)??[];entries.push({record,file});history.set(file.path,entries);}
+   const target=[...history].filter(([,all])=>all.length>1&&all.at(-2).file.after!==all.at(-1).file.after).at(-1);
+   if(!target)throw new Error('fault (c) needs a path with two records the gate checks whose last two blobs differ, and the ledger has none');
+   const [,entries]=target;
    entries.at(-1).file.after=entries.at(-2).file.after;}},
 ];
 test('the ledger gate refuses each fault in a PR\'s own delta records, one table row per fault, each run in a scratch clone of the checked head, and the committed head passes with every WF record listing the files its PR changed at their committed blobs',t=>{
@@ -306,7 +313,7 @@ test('the ledger gate refuses each fault in a PR\'s own delta records, one table
  }
  for(const fault of LEDGER_FAULTS){
   const dir=scratch(t),file=join(dir,control[1]),data=JSON.parse(readFileSync(file,'utf8'));
-  fault.edit(data);writeFileSync(file,JSON.stringify(data));
+  fault.edit(data,dir);writeFileSync(file,JSON.stringify(data));
   const r=check(dir);assert.equal(r.status,1,`${fault.name}: ${r.text}`);assert.match(r.text,fault.message,fault.name);
   refusedByArchivePin(dir);
  }

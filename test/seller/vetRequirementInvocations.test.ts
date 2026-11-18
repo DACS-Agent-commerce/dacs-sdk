@@ -12,6 +12,7 @@ import {
   type SellerFulfilmentExpectedVerifyResult,
   type SellerFulfilmentVetRequirementInvocation,
 } from "../../src/seller/index.js";
+import { sellerFulfilmentVetBindingsOf } from "../../src/seller/fulfilmentAuditSource.js";
 
 // The seller-side pre-signature check runs the delivery runner's own
 // invocation predicate (isSellerFulfilmentVetInvocationMismatch), so an
@@ -535,6 +536,23 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     expect(sellerFulfilmentVetRequirementsViolation([invocation(sharedParty, buyerClaim)], {
       jobId, buyer: sharedParty, seller: sharedParty, buyerRequirement,
     })).toBeNull();
+  });
+
+  test("refuses one shared record whose buyer and seller claims differ only by a parameter", () => {
+    const buyerParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim), bundleHash: "b".repeat(64) };
+    const sellerParty = { ...buyerParty, primaryClaim: `${buyerClaim}?alias=work` };
+    expect(sellerFulfilmentVetRequirementsViolation([invocation(buyerParty, buyerClaim)], {
+      jobId, buyer: buyerParty, seller: sellerParty, buyerRequirement,
+    })).not.toBeNull();
+  });
+
+  test("does not share a roster's Vet record between claims that differ only by a parameter", () => {
+    const vetRecordRef = recordRef(buyerClaim, sellerClaim);
+    const bindings = sellerFulfilmentVetBindingsOf([
+      { role: "buyer", primaryClaim: buyerClaim, bundleHash: "b".repeat(64), vetRecordRef },
+      { role: "seller", primaryClaim: `${buyerClaim}?alias=work`, bundleHash: "b".repeat(64), vetRecordRef },
+    ] as never);
+    expect(bindings).toBeNull();
   });
 
   describe("TP-1 G3 orchestrator Vet mode", () => {
