@@ -36,6 +36,19 @@ test('C-2 real seller projection reaches manual approval and confirms an unpaid 
  await a.settle(r,'spent');assert.equal((await f.read()).rows.find(row=>row.signAuthorized).outcome,'spent');
 });
 
+test('a manual approval whose ledger is two missing directories deep is refused when it is created, before any prompt',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'TEST-approval-ledger-depth-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ let prompts=0;
+ assert.throws(()=>createExactOperatorApproval({maxTotalOs:'10000000000',evidencePath:join(dir,'missing','leaf','ledger'),authorize:()=>{prompts++;return true;}}),/approval ledger directory .*cannot be created/);
+ assert.equal(prompts,0);assert.equal(existsSync(join(dir,'missing')),false);
+});
+
+test('a manual approval whose ledger directory is missing but whose parent exists is created without creating the directory',async t=>{
+ const dir=await mkdtemp(join(tmpdir(),'TEST-approval-ledger-leaf-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ createExactOperatorApproval({maxTotalOs:'10000000000',evidencePath:join(dir,'leaf','ledger'),authorize:()=>true});
+ assert.equal(existsSync(join(dir,'leaf')),false);
+});
+
 test('D-1 a request changed during manual approval receives no sign authority',async t=>{
  const f=await fixture(t),r=requestFor({artifactKind:'CompositeVerificationRecord'});
  const manual=createExactOperatorApproval({...f.settings,authorize:()=>{r.content.exactCreate='{"changed":true}';return true;}});
@@ -473,7 +486,7 @@ async function unsyncedSignLine(t){
  assert.equal((await f.p.decide(r)).outcome,'held');
  try{
   fs.fsyncSync=fd=>{if(fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');return fsyncSync(fd);};
-  fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&++appends===2)throw new Error('TEST append failed');return openSync(path,flags,...rest);};
+  fs.openSync=(path,flags,...rest)=>{if(flags==='a+'&&++appends===2)throw new Error('TEST append failed');return openSync(path,flags,...rest);};
   syncBuiltinESMExports();
   // Not 'unsigned': its sign line is still open on the ledger (cold F2).
   await assert.rejects(f.p.authorizeHeld(r,true),{message:'TEST sync failed'});
@@ -575,7 +588,7 @@ test('policy mode without its purchase and source context is refused',async t=>{
 // failingAppends(t, n, skip): after `skip` more ledger append opens, the next n fail with EIO; returns the restore.
 function failingAppends(t,count,skip=0){
  const{openSync}=fs;let left=count;
- fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
+ fs.openSync=(path,flags,...rest)=>{if(flags==='a+'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a+'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
  syncBuiltinESMExports();
  const restore=()=>{fs.openSync=openSync;syncBuiltinESMExports();};t.after(restore);return restore;
 }
@@ -591,6 +604,93 @@ test('rvc C-5 a confirmation without a node answer is false, writes nothing and 
  assert.equal(await a(r),true);const lines=(await ledgerLines(f)).length;
  assert.equal(await a.confirm(undefined),false);assert.equal((await ledgerLines(f)).length,lines);
  assert.equal(await a.confirm(confirmationFor(r)),true);
+});
+// Fails the next sync of the ledger file once; returns the function that restores fsync.
+function failNextLedgerSync(t,f){
+ const original=fs.fsyncSync;let armed=true;
+ fs.fsyncSync=fd=>{if(armed&&fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath){armed=false;throw new Error('TEST sync failed');}return original(fd);};syncBuiltinESMExports();
+ const restore=()=>{fs.fsyncSync=original;syncBuiltinESMExports();};t.after(restore);return restore;
+}
+const confirmationLines=async(f)=>(await ledgerLines(f)).filter(line=>line.confirmation);
+test('a confirmation whose line was written but not synced is synced and confirmed when retried',async t=>{
+ const f=await fixture(t,purchase),r=payDem(),original=fs.fsyncSync,synced=[];assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
+ assert.equal((await confirmationLines(f)).length,1);
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,confirmationFor(r)),true);
+ assert(synced.includes(f.evidencePath));assert.equal((await confirmationLines(f)).length,1);
+ assert.equal((await f.read()).rows.find(row=>row.signAuthorized).confirmed,'approved');
+});
+test('a confirmation repeated after it was confirmed is true and appends no second line',async t=>{
+ const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
+ assert.equal(await f.p(r,confirmationFor(r)),true);const lines=(await ledgerLines(f)).length;
+ assert.equal(await f.p(r,confirmationFor(r)),true);assert.equal((await ledgerLines(f)).length,lines);
+});
+test('a retried confirmation carrying another write\'s node answer is false and writes nothing',async t=>{
+ const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
+ const lines=(await ledgerLines(f)).length;
+ assert.equal(await f.p(r,confirmationFor(vetRequest())),false);assert.equal((await ledgerLines(f)).length,lines);
+ assert.equal((await openSignRows(f)).length,1);
+});
+test('a retried confirmation carrying another transaction hash than the recorded one is false and syncs nothing',async t=>{
+ const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
+ const lines=(await ledgerLines(f)).length,other=confirmationFor(r),original=fs.fsyncSync,synced=[];other.response.data.transaction.hash='a'.repeat(64);
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,other),false);assert.equal(synced.includes(f.evidencePath),false);
+ assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
+ assert.equal(await f.p(r,confirmationFor(r)),true);
+});
+const reversedKeys=(value)=>Object.fromEntries(Object.entries(value).reverse());
+test('a retried confirmation whose node answer lists the same content in another key order is synced and confirmed',async t=>{
+ const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
+ const reordered=confirmationFor(r),tx=reordered.response.data.transaction;
+ tx.content=reversedKeys({...tx.content,transaction_fee:reversedKeys(tx.content.transaction_fee),gcr_edits:tx.content.gcr_edits.map(reversedKeys)});
+ const original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,reordered),true);
+ assert(synced.includes(f.evidencePath));assert.equal((await confirmationLines(f)).length,1);
+});
+for(const [label,retryHash] of [['the same malformed hash','not-a-hash'],['another malformed hash','also-not-a-hash']])test(`a retried confirmation whose recorded hash was malformed is false and syncs nothing, with ${label}`,async t=>{
+ const f=await fixture(t,purchase),r=payDem(),first=confirmationFor(r),retry=confirmationFor(r);
+ first.response.data.transaction.hash='not-a-hash';retry.response.data.transaction.hash=retryHash;
+ assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,first),{message:'TEST sync failed'});restore();
+ const lines=(await ledgerLines(f)).length,original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,retry),false);assert.equal(synced.includes(f.evidencePath),false);
+ assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
+});
+test('a retried confirmation whose node answer has no hash is synced and confirmed like its first confirmation',async t=>{
+ const f=await fixture(t,purchase),r=payDem(),first=confirmationFor(r),retry=confirmationFor(r);
+ delete first.response.data.transaction.hash;delete retry.response.data.transaction.hash;
+ assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,first),{message:'TEST sync failed'});restore();
+ const original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,retry),true);
+ assert(synced.includes(f.evidencePath));assert.equal((await confirmationLines(f)).length,1);
+});
+test('a retried confirmation that adds a hash to a recorded hashless answer is false and syncs nothing',async t=>{
+ const f=await fixture(t,purchase),r=payDem(),first=confirmationFor(r);
+ delete first.response.data.transaction.hash;
+ assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,first),{message:'TEST sync failed'});restore();
+ const lines=(await ledgerLines(f)).length,original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,confirmationFor(r)),false);assert.equal(synced.includes(f.evidencePath),false);
+ assert.equal((await ledgerLines(f)).length,lines);
+});
+test('a retried confirmation with a null node answer is false and syncs nothing',async t=>{
+ const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);
+ const restore=failNextLedgerSync(t,f);await assert.rejects(f.p(r,confirmationFor(r)),{message:'TEST sync failed'});restore();
+ const lines=(await ledgerLines(f)).length,original=fs.fsyncSync,synced=[];
+ fs.fsyncSync=fd=>{synced.push(fs.realpathSync(`/proc/self/fd/${fd}`));return original(fd);};syncBuiltinESMExports();t.after(()=>{fs.fsyncSync=original;syncBuiltinESMExports();});
+ assert.equal(await f.p(r,null),false);assert.equal(synced.includes(f.evidencePath),false);
+ assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
+ assert.equal(await f.p(r,confirmationFor(r)),true);
 });
 for(const [label,release,reason] of [['settled as released',(f,r)=>f.p.settle(r,'released'),'wallet-released'],['released',(f,r)=>f.p.releaseHeld(r,'operator-released'),'operator-released']])
  test(`cold2 F2 a decline whose release append failed is ended when later ${label}, and frees the budget`,async t=>{

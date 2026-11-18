@@ -3,7 +3,7 @@ import { types as nodeTypes } from 'node:util';
 import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
 import { isPublicEndpoint } from '@kynesyslabs/dacs/wire';
 import { buildListingDraft, normalizeDemAmount } from '../dacs/listing.mjs';
-import { DEFAULT_SELLER_MAX_JOBS } from '../dacs/seller-durable-state.mjs';
+import { DEFAULT_SELLER_MAX_JOBS } from '../dacs/seller-capacity-defaults.mjs';
 import { sellerApprovalSettings, SELLER_POLICY_DEFAULTS } from '../devnet-demo/operator-approval.mjs';
 
 // The size limit of seller.json, the format string it carries and the names of the two files in the data directory.
@@ -15,7 +15,8 @@ const NULL_IS_A_CHOICE_FIELD = 'directoryOrigin';
 const SERVICE_TEXT_MAX_BYTES = 16_384;
 const MAX_TAGS = 16, MAX_TAG_LENGTH = 32, MAX_SHORT_TEXT = 200, MAX_DESCRIPTION = 2000;
 const MAX_PRICE_SIGNIFICANT_DIGITS = 15, MAX_PORT = 65535;
-const LISTING_KEYS = ['listingId', 'displayName', 'title', 'description', 'category', 'tags', 'priceDem', 'deadlineSecAfterCommit'];
+const APPROVAL_MODES = ['manual', 'policy'];
+const LISTING_KEYS =['listingId', 'displayName', 'title', 'description', 'category', 'tags', 'priceDem', 'deadlineSecAfterCommit'];
 const CONFIG_KEYS = ['format', 'dataDirectory', 'keyPath', 'rpcUrl', 'publicOrigin', 'listener', 'directoryOrigin', 'listing', 'service', 'sellerApproval', 'maxRecords', 'maxJobs'];
 
 /**
@@ -43,7 +44,7 @@ function closed(value, keys, prefix, required = keys) {
   for (const key of required) requireValue(Object.hasOwn(value, key), pathOf(prefix, key));
 }
 function absolutePath(value, field) {
-  requireValue(typeof value === 'string' && isAbsolute(value) && normalize(value) === value && !value.includes('\0'), field);
+  requireValue(typeof value === 'string' && isAbsolute(value) && normalize(value) === value && !value.endsWith('/') && !value.includes('\0'), field);
 }
 function httpsUrl(value, field) {
   requireValue(typeof value === 'string' && /^https:\/\/[^/\\]/.test(value) && !/[\\\s?#]/.test(value), field);
@@ -60,16 +61,17 @@ function positiveInteger(value, field, maximum = Number.MAX_SAFE_INTEGER) {
   requireValue(Number.isSafeInteger(value) && value > 0 && value <= maximum, field);
 }
 function price(value) {
+  let result;
   try {
     if (typeof value === 'number') {
       value = String(value);
       const [coefficient, exponent] = value.split('e-');
       if (exponent !== undefined) value = '0.' + '0'.repeat(Number(exponent) - 1) + coefficient.replace('.', '');
     }
-    const result = normalizeDemAmount(value);
-    requireValue(BigInt(result.amountOs) <= BigInt(Number.MAX_SAFE_INTEGER), 'listing.priceDem');
-    return result.amount;
+    result = normalizeDemAmount(value);
   } catch (cause) { fail('listing.priceDem', cause); }
+  requireValue(BigInt(result.amountOs) <= BigInt(Number.MAX_SAFE_INTEGER), 'listing.priceDem');
+  return result.amount;
 }
 // Only inspect grammar already checked by raw admission, including when its
 // numeric profile refused. Keep exact price digits and attach numeric failures
@@ -134,8 +136,9 @@ function serviceConfig(value) {
 }
 function approvalConfig(value) {
   closed(value, value?.mode === 'manual' ? ['mode'] : ['mode', ...Object.keys(SELLER_POLICY_DEFAULTS)], 'sellerApproval', ['mode']);
+  requireValue(APPROVAL_MODES.includes(value.mode), 'sellerApproval.mode');
   let settings;
-  // The kit's settings check names the failing key in its message; that name becomes the refused field.
+  // The kit's settings check names the failing limit in its message; that name becomes the refused field.
   try { settings = sellerApprovalSettings(value); }
   catch (cause) { fail(cause.message.match(/sellerApproval(?:\.[A-Za-z]+)?/)?.[0] ?? 'sellerApproval', cause); }
   if (settings.mode === 'policy') requireValue(BigInt(settings.maxWriteTotalOs) <= BigInt(SELLER_POLICY_DEFAULTS.maxWriteTotalOs), 'sellerApproval.maxWriteTotalOs');
@@ -203,15 +206,17 @@ export function listingTermsFromConfig(config, seller) {
 
 /** Returns represented terms, ignoring version/times/signatures; throws listing_terms_unrecognized for non-produced Listing bytes. */
 export function listingTermsFromListing(listing) {
+  let terms, matchesRebuiltDraft;
   try {
-    const terms = { seller: listing.seller.identity.presentedBy, listingId: listing.listingId, publicEndpoint: listing.seller.publicEndpoint,
+    terms = { seller: listing.seller.identity.presentedBy, listingId: listing.listingId, publicEndpoint: listing.seller.publicEndpoint,
       displayName: listing.seller.displayName, title: listing.offering.title, description: listing.offering.description,
       category: listing.offering.category, tags: listing.offering.tags, priceDem: price(listing.pricing.price.amount),
       deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit };
     const rebuilt = buildListingDraft({ ...terms, identityBundle: listing.seller.identity, listingVersion: listing.listingVersion,
       notBefore: listing.validity.notBefore, notAfter: listing.validity.notAfter, expectedSizeBytes: listing.offering.deliverable.expectedSizeBytes });
     const unsigned = { ...listing }; delete unsigned.signature;
-    if (canonicalize(rebuilt) !== canonicalize(unsigned)) fail('$', undefined, 'listing_terms_unrecognized');
-    return terms;
+    matchesRebuiltDraft = canonicalize(rebuilt) === canonicalize(unsigned);
   } catch (cause) { fail('$', cause, 'listing_terms_unrecognized'); }
+  if (!matchesRebuiltDraft) fail('$', undefined, 'listing_terms_unrecognized');
+  return terms;
 }

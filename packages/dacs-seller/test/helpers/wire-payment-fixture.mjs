@@ -14,6 +14,7 @@ export const PAYMENT_LEASE_MS = 1000;
 export const PAYMENT_TX = derive('fixture-payment-transaction').toLowerCase();
 export const OTHER_TX = derive('fixture-payment-corrected-transaction').toLowerCase();
 const PRICE_OS = '2500000000';
+const PAYMENT_EVIDENCE_PREFIX = 'dacs4:payment:';
 const SELLER_ENDPOINT = 'https://seller.example.invalid';
 /** The text of the message the seller signs for any settlement evidence (the payment's and the delivery's), for `script.signFault`. */
 export const EVIDENCE_SIGNATURE = ARTIFACT_SEPARATORS.SettlementEvidence;
@@ -37,9 +38,15 @@ const wireCommitmentText = (text) => {
  * `pay({ id, txHash, ...settings })` (a signed payment request), `lapse()` (the open attempt's lease ends), `restart()` (the agent and the
  * wire reopen over the same directories), `script` (`observe(txHash)` answers the transfer reads when set; `signFault` makes the signer throw
  * once for a message that includes it) and the counters of what the agent really did.
+ *
+ * A world for a real process kill takes `directories` (`{ agent, wire }`, made by the caller, who removes them) and `onEvent(name, detail)`,
+ * which the world calls as the seller reaches each step: `receiptGranted` (the permit is granted and the work save is about to be signed),
+ * `workSaved` (the work is saved and evidence signing starts), `evidenceSigned` (the evidence is signed and its CREATE is about to be
+ * written) and `write` (an artifact was written, with its `address`). A process that starts over directories an earlier process used
+ * passes `retained`, the `retain()` of that process: the fixture anchor's rows, which the new process rebuilds its local source from.
  */
-export async function fixturePaymentWorld(t, { leaseMs = PAYMENT_LEASE_MS, ...worldOptions } = {}) {
-  const f = await agentFixture({ publicEndpoint: SELLER_ENDPOINT });
+export async function fixturePaymentWorld(t, { leaseMs = PAYMENT_LEASE_MS, directories = null, retained = null, onEvent = () => {}, ...worldOptions } = {}) {
+  const f = await agentFixture({ publicEndpoint: SELLER_ENDPOINT, directory: directories?.agent ?? null, anchorRows: retained?.anchorRows ?? null });
   t.after(() => f.close());
   const [jobId, otherJobId] = JOBS;
   const script = { observe: null, signFault: null };
@@ -52,15 +59,24 @@ export async function fixturePaymentWorld(t, { leaseMs = PAYMENT_LEASE_MS, ...wo
   f.config.signer = { ...f.config.signer, sign: (bytes) => {
     const text = Buffer.from(bytes).toString('utf8');
     counts.signed.push(text);
+    if (text.includes(WORK_SAVE_SIGNATURE)) onEvent('receiptGranted');
+    if (text.startsWith(EVIDENCE_SIGNATURE)) onEvent('workSaved');
     if (script.signFault !== null && text.includes(script.signFault)) { script.signFault = null; throw new Error('TEST evidence signer failure'); }
     return seller.signBytes(bytes);
   } };
+  const writeAnchor = f.anchors.write;
+  f.anchors.write = async (input) => {
+    if (input.logicalAddress.startsWith(PAYMENT_EVIDENCE_PREFIX)) onEvent('evidenceSigned');
+    const receipt = await writeAnchor(input);
+    onEvent('write', { address: input.logicalAddress });
+    return receipt;
+  };
   await f.reopen();
   const real = () => f.agent, admitted = new Set();
   const continuationEvidenceOf = (id) => { const texts = real().continuationEvidenceOf(id); return texts && { ...texts, commitmentText: wireCommitmentText(texts.commitmentText) }; };
   // The host holds a job from the proposal its wire route admitted, which is when the transport store keeps the job's tuple.
   const transportAgreementOf = (id) => (admitted.has(id) ? real().transportAgreementOf(id) : null);
-  const w = await world(t, { fixture: { listing: f.listing, agent: () => ({ transportAgreementOf, continuationEvidenceOf }) }, leaseMs, ...worldOptions });
+  const w = await world(t, { fixture: { listing: f.listing, agent: () => ({ transportAgreementOf, continuationEvidenceOf }) }, leaseMs, existingDirectory: directories?.wire ?? null, ...worldOptions });
   Object.assign(w.agent, {
     claim: seller.claim,
     transportAgreementOf,
@@ -80,6 +96,7 @@ export async function fixturePaymentWorld(t, { leaseMs = PAYMENT_LEASE_MS, ...wo
   for (const id of [jobId, otherJobId]) {
     const { body } = await fixtureProposal(f.listing, id);
     agreementHashes.set(id, body.transportIdentity.agreementHash);
+    if (retained !== null) { admitted.add(id); continue; }
     const answer = await w.post(PATHS.proposals, body, { jobId: id, agreementHash: agreementHashes.get(id) });
     assert.equal(answer.status, 200, `the proposal of ${id} is admitted on the wire: ${answer.text}`);
     admitted.add(id);
@@ -91,6 +108,8 @@ export async function fixturePaymentWorld(t, { leaseMs = PAYMENT_LEASE_MS, ...wo
   return { ...w, f, jobId, otherJobId, script, counts, pay, bodyOf, agreementHashes,
     lapse: () => { w.state.time += leaseMs; },
     restart: async () => { await f.reopen(); w.reopen(); },
+    /** What a process that starts over these directories needs besides them: the fixture anchor's rows, which are in memory. */
+    retain: () => ({ anchorRows: [...f.anchors.rows] }),
     evidenceCreates: (id = jobId) => writesAt(paymentEvidenceAddress(id, 'demos-native:DEM', 2)),
     deliverableWrites: (id = jobId) => writesAt(deliverableAddress(id)),
     deliveryEvidenceWrites: (id = jobId) => writesAt(deliveryEvidenceAddress(id)),

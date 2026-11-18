@@ -154,7 +154,7 @@ function demosNode(now = () => NOW) {
     const metadata = { logicalAddress, contentHash: (artifactKind === 'Deliverable' ? core.sha256Hex(core.canonicalize(artifact)) : core.contentHash(artifact)), envelopeHash: core.sha256Hex(core.canonicalize(artifact)), artifactKind, ...(deliveryBinding ? { deliveryBinding: clone(deliveryBinding) } : {}) };
     content.data[1].metadata = metadata;
     content.from_ed25519_address = owner;
-    // What demosdk 4.0.16 sign adds to a storage CREATE (checked against the SDK below): the node's fee, and the
+    // What demosdk 4.0.18 sign adds to a storage CREATE (checked against the SDK below): the node's fee, and the
     // execution edits its GCRGeneration writes before the hash exists: the storage fee burn (1 DEM per started
     // 10240 bytes of the program's JSON), the storage program, the gas burn and the nonce increment.
     content.transaction_fee = { network_fee: 2, rpc_fee: 3, additional_fee: 0, rpc_address: null };
