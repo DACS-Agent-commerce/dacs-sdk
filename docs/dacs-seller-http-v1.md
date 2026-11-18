@@ -110,7 +110,11 @@ or `route: "context"`, with no Agreement and no deadline. Its fields are
 on either route. A host that has been stopped refuses before it calls this
 function (the seller host answers `seller_stopped`, 503).
 
-The first failing step decides the refusal. The steps run in this order:
+The host's own options (`listingPin`, `retained`, `artifacts`) must be plain
+data; one that is not is refused `wire_input_invalid` (500), or
+`seller_retained_agreement_required` (500) for `retained`, before any numbered
+step. After that the first failing step decides the refusal. The steps run in
+this order:
 
 1. The body is at most 64 KiB, or the request is refused `bad_json` (400)
    before any check of the request.
