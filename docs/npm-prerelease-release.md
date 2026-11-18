@@ -25,6 +25,13 @@ Before approving the workflow:
 4. create the matching tag on that exact `main` commit; and
 5. enter the exact version in the workflow dispatch form.
 
+The `publish-environment` job checks the dispatch first, before the `verify`
+job starts: the entered version must equal the version in `package.json`, the
+ref must be the tag `v<version>` on a commit that is on `main`, the version must
+be a prerelease, and all five manifests must carry that version and the publish
+policy. A wrong dispatch stops there, so the `verify` and `publish` jobs do not
+start. The `publish` job needs that job, so a re-run of only the failed `publish` job keeps its result.
+
 The workflow first runs the registry-shaped Linux and Docker acceptance
 (`registry-container-acceptance.yml`) with advisory-ID drift enforced. The
 publish job needs that job, so an advisory ID outside the #191 audit baseline,
@@ -36,8 +43,9 @@ prerelease. The baseline waives transitive findings only: an advisory that is
 high or critical on a direct dependency of the consumer fails the job even when
 the baseline lists it. The `verify` job, which has a 120-minute limit and no
 environment, OIDC token or secret, requires a clean build tree, builds core, the
-host and the generator, then runs conformance, types, the suites of all five
-packages and the release-gate regressions (`release:test`). The publish job needs
+host and the generator, then runs conformance, types and the suites of all five
+packages. It then installs the same pinned npm client as the publish job and
+runs the release-gate regressions (`release:test`) on it. The publish job needs
 the `verify` job, so none of those suites runs inside its 45-minute limit. The
 publish job installs a pinned release toolchain without a dependency cache,
 requires a clean build tree and builds again. It creates the release set once

@@ -15,7 +15,15 @@
 //
 // A record is named `<delta>-<first 12 hex of sha>.json` when it carries a sha,
 // and `<delta>-<first 12 hex of sha256(subject)>.json` otherwise.
+//
+// records/ANCHOR.json is not a record. It holds the blob of each record-named
+// path outside src/ and test/ at one commit, and stands in for their history
+// before that commit:
+//
+//   {"schema": "dacs-client-anchor/v1", "commit": "<40 hex>", "files": {"<path>": "<blob>"}}
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export const RECORD_SCHEMA = 'dacs-client-delta-record/v1';
 export const PACKAGE_PREFIX = 'packages/dacs-client/';
@@ -30,19 +38,26 @@ const KEYS = ['schema', 'delta', 'subject', 'sha', 'kind', 'files', 'commitFiles
 export const CORE_FILES = Object.freeze([
   'HOLD.json', 'DELTA-LEDGER.json', 'DELTA-COMMITS.json', 'DELTA-MAP.md',
   'LICENSE', 'IMPORT-CUT-MAP.md', 'D15-SOURCES.json', 'PROVENANCE.json',
-  'records/.gitkeep',
-  'scripts/check-hold.mjs', 'scripts/delta-assemble.mjs', 'scripts/delta-record.mjs', 'scripts/delta-map.mjs',
+  'records/.gitkeep', 'records/ANCHOR.json',
+  'scripts/check-hold.mjs', 'scripts/delta-freeze.mjs', 'scripts/delta-assemble.mjs', 'scripts/delta-record.mjs', 'scripts/delta-map.mjs',
   'scripts/check-provenance.mjs', 'scripts/pin-delta.mjs', 'scripts/source-git.mjs', 'scripts/publication-text.mjs',
   'scripts/path-mapping.mjs', 'scripts/test.mjs', 'scripts/copy-verbatim.mjs', 'scripts/import-cut-map.mjs',
   'scripts/check-imports.mjs',
   'scripts/check-hold.test.mjs', 'scripts/delta-continuity.test.mjs', 'scripts/delta-frontier.test.mjs',
   'scripts/delta-provenance.test.mjs', 'scripts/check-provenance.test.mjs', 'scripts/test-layout.test.mjs',
   'scripts/delta-record.test.mjs', 'scripts/delta-assemble.test.mjs', 'scripts/core-imports.test.mjs',
+  'scripts/delta-freeze.test.mjs', 'scripts/delta-anchor.test.mjs',
   'test/delta-ledger-gate.test.mjs',
 ]);
 export const isCorePath = path => CORE_FILES.includes(path) || path.startsWith('evidence/');
 // Sources, tests, the README, the manifest, the notes and scripts outside the core.
 const RECORD_NAMED = /^(?:src\/|test\/|scripts\/|README\.md$|package\.json$|DELTA-NOTES\.md$)/;
+/** True when the package-relative `path` holds the blob its records name (core paths never do). */
+export const isRecordNamed = path => !isCorePath(path) && RECORD_NAMED.test(path);
+/** True for a record-named path outside src/ and test/: the anchor holds its blob before any record. */
+export const isAnchored = path => isRecordNamed(path) && !/^(?:src|test)\//.test(path);
+/** True for a package-relative path under records/ that is a record file, not a core pin. */
+export const isRecordFile = path => path.startsWith('records/') && !isCorePath(path);
 
 export const recordName = record => `${record.delta}-${(record.sha ?? createHash('sha256').update(record.subject).digest('hex')).slice(0, 12)}.json`;
 export const selects = (record, commit) => record.subject === commit.subject && (record.sha == null || record.sha === commit.sha);
@@ -117,4 +132,19 @@ export function validateRecord(name, record) {
     if (name !== recordName(record)) failures.push(`file name must be ${recordName(record)}`);
   }
   return failures.map(failure => `${at}: ${failure}`);
+}
+
+/**
+ * Reads records/ANCHOR.json of `packageDir`. Returns {commit, files}, where
+ * files maps full repository paths to blobs. Throws when the file is missing,
+ * not JSON, or names a path that is not anchored or a value that is not a blob.
+ */
+export function readAnchor(packageDir) {
+  const at = `${PACKAGE_PREFIX}records/ANCHOR.json`;
+  let anchor;
+  try { anchor = JSON.parse(readFileSync(join(packageDir, 'records/ANCHOR.json'), 'utf8')); } catch (error) { throw new Error(`${at}: ${error.message}`); }
+  const valid = anchor?.schema === 'dacs-client-anchor/v1' && BLOB.test(anchor.commit) && anchor.files !== null && typeof anchor.files === 'object'
+    && Object.entries(anchor.files).every(([path, blob]) => path.startsWith(PACKAGE_PREFIX) && isAnchored(path.slice(PACKAGE_PREFIX.length)) && BLOB.test(blob));
+  if (!valid) throw new Error(`${at}: not an anchor (schema, a commit and anchored paths with their blobs)`);
+  return { commit: anchor.commit, files: anchor.files };
 }

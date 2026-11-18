@@ -823,8 +823,10 @@ export interface PayDemRailConfig {
    * denomination and maximum debit have all been validated, and before the one
    * broadcast call. A rejection prevents broadcast. Funded operators use this
    * to persist the canonical hash and nonce needed for ambiguous-response
-   * recovery. Callers may omit it, but then cross-process hash/nonce recovery
-   * requires an equivalent application-owned durable rail record.
+   * recovery. `payDemSettle` refuses a rail built without it unless the caller
+   * passes `allowUnjournaled: true`. A caller of `rail.settle` may omit it, but
+   * then cross-process hash/nonce recovery requires an equivalent
+   * application-owned durable rail record.
    */
   journalPreparedTransfer?: (
     transfer: Readonly<PayDemPreparedTransfer>,
@@ -1884,9 +1886,10 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         ...(recovery === undefined ? {} : { recovery }),
       }) satisfies Readonly<PayDemPreparedTransfer>;
 
-      // This is the last operation before the only irreversible call. A funded
-      // runner's hook fsyncs hash + nonce and the already-validated immutable
-      // transfer facts. Any journal failure aborts before broadcast.
+      // This is the last operation before the only irreversible call. The
+      // caller's `journalPreparedTransfer` hook, when set, durably records hash
+      // + nonce and the already-validated immutable transfer facts. Any journal
+      // failure aborts before broadcast.
       const preparedJournal = invocationJournal ?? journalPreparedTransfer;
       if (preparedJournal) await preparedJournal(prepared);
       if (assertCurrentBeforeBroadcast) await assertCurrentBeforeBroadcast();
@@ -2351,9 +2354,13 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  *
  * This is a guard on the current §9.5.1-legacy `AgreementDocument` path — NOT
  * PB-1..PB-3 conformance, which apply to a `PayeeBoundAgreementDocument` whose
- * destination is selected from a signed `terms.payoutBindings`. The
- * payee-bound-artifact path is separate follow-up work; here `req.payee` is the
- * listing seller carried through the fixed-price agreement.
+ * destination is selected from a signed `terms.payoutBindings`. A payee-bound
+ * agreement is not paid through this bridge: the fixed-price pay-dem buyer
+ * payment in `@kynesyslabs/dacs-node` (`createDacsFixedPricePayDemBuyerPaymentV1`)
+ * selects its destination from `terms.payoutBindings`, and that package's
+ * pay-dem payment code, not this bridge, calls the rail's `settle`. Here
+ * `req.payee` is the listing seller carried
+ * through the fixed-price agreement.
  *
  * SAFE BY DEFAULT: settlement is submitted at most once per
  * `(railId, jobId, phaseIndex)`. The caller must supply a durable store; add a
@@ -2361,11 +2368,19 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * priorAttempts is a read-only audit: it never claims a submit generation,
  * even if the rail store lost its record.
  *
+ * The rail must be built with `journalPreparedTransfer`, so a crash after the
+ * broadcast leaves the signed hash to recover from. A rail without one is
+ * refused here, before any claim or transfer, with a `DacsError` coded
+ * `settlement.unjournaled_rail`, unless `opts.allowUnjournaled` is `true`.
+ * The journal makes recovery possible; it does not stop a plain retry from
+ * paying again after the settlement store is lost or not shared. Recover from
+ * the journal first (see {@link withRecoveredAttempts}).
+ *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
  * chain moves integer OS base units (1 DEM = 10^9 OS). This asserts the currency
  * is DEM and converts decimal → OS before handing off to the rail — WITHOUT this,
- * "5" DEM was submitted as 5 OS (a billionth of the agreed amount), settled silently.
+ * "5" DEM would be submitted as 5 OS (a billionth of the agreed amount).
  */
 export function payDemSettle(
   rail: PayDemRail,
@@ -2380,6 +2395,12 @@ export function payDemSettle(
   opts: {
     store: SettlementIdempotencyStore;
     reconcile?: PayDemSettlementReconcile;
+    /**
+     * Accept a rail built without `journalPreparedTransfer`. Without a journal a
+     * crash after the broadcast leaves no record of the transaction, so a retry
+     * after losing the settlement store can pay again.
+     */
+    allowUnjournaled?: boolean;
   },
 ): (req: SettleRequest) => Promise<SettleResult> {
   if (opts === undefined) {
@@ -2392,6 +2413,15 @@ export function payDemSettle(
   );
   if (!storeProperty.found || storeProperty.value === undefined) {
     throw new DacsError("pay-dem settlement requires a caller-supplied durable store");
+  }
+  // A rail the factory did not build is not in `railJournals`; the execution
+  // authority refuses it before any claim or transfer.
+  if (railJournals.get(rail) === false && opts.allowUnjournaled !== true) {
+    throw new DacsError(
+      "pay-dem settlement requires a rail built with journalPreparedTransfer; " +
+        "pass allowUnjournaled: true only to accept that a retry after losing the settlement store can pay again",
+      { code: "settlement.unjournaled_rail" },
+    );
   }
   const store = storeProperty.value as SettlementIdempotencyStore;
   const storeOnce = stableMethod<SettlementIdempotencyStore["once"]>(
