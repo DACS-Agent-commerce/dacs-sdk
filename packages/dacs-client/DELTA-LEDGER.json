@@ -10947,6 +10947,18 @@
           "after": "20e3bcdc295a57453ed66f585f75a8207b13bac2"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that after a restart a new lease never confirms or sends acknowledged bytes a second time",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/native-repeated-confirmation.test.mjs",
+          "before": "20e3bcdc295a57453ed66f585f75a8207b13bac2",
+          "after": "f1ef6fcb454d242e21b2cc419227087a025a99de"
+        }
+      ]
     }
   ]
 }

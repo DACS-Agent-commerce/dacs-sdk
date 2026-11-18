@@ -2,7 +2,8 @@
 // more than a refused or unanswered confirmation, the new lease continues the operation that
 // signed them: the node is asked again and one confirmation chain goes on to a single send.
 // After an acknowledged confirmation or a broadcast record the new lease keeps its own
-// operation, its signed record is refused and the node is not asked again.
+// operation, its signed record is refused and the node is not asked again. After a restart
+// the node is not asked again either, and the bytes are never sent a second time.
 // The real transport and durable journal run in this process against a scripted TEST node.
 // No network, chain or funds.
 import assert from 'node:assert/strict';
@@ -93,3 +94,48 @@ test('after a broadcast withheld right after dispatch-started, a new lease keeps
   assert.equal(w.node.confirms, 1);
   assert.deepEqual(w.node.broadcasts, []);
 });
+
+const settle = promise => promise.then(value => ({ value }), error => ({ error }));
+
+// What the first lease did with the acknowledged bytes before the process restarted (`leave`),
+// what lets a new lease open after the restart (`reopen`), and how the new lease's confirmation
+// of the same bytes is refused (`refused`).
+const BEFORE_RESTART = {
+  'an acknowledged confirmation': { leave: async () => {}, reopen: async () => {}, refused: historyConflict },
+  'an acknowledged confirmation broadcast once': {
+    leave: async (w, lease, tx, confirmation) => {
+      await w.prepareBroadcast(lease.leaseId, tx.hash);
+      await w.broadcast(confirmation);
+      assert.deepEqual(w.node.broadcasts, [tx.hash]);
+    },
+    // The broadcast lane row refuses a new lease until the transfer is read back as included.
+    reopen: async (w, tx) => {
+      await assert.rejects(w.lease(), { code: 'outcome_unknown' });
+      assert.equal((await w.transport().binding({ phase: 'readback', address: w.address, hash: tx.hash })).disposition, 'included');
+    },
+    // An issued hash is read back only, so the transport refuses it before any history record.
+    refused: error => error.code === 'outcome_unknown',
+  },
+};
+
+for (const [ending, { leave, reopen, refused }] of Object.entries(BEFORE_RESTART)) {
+  test(`after ${ending} and a restart, a new lease neither asks the node to confirm the bytes again nor sends them a second time`, async t => {
+    const w = world(t, { bound: await bindFixture() });
+    w.open({});
+    const earlier = await w.lease(), tx = w.signedTransfer(1), confirmation = await w.confirm(tx);
+    await leave(w, earlier, tx, confirmation);
+    const sent = w.node.broadcasts.length;
+    await w.restart({});
+    await reopen(w, tx);
+    const left = await w.records(tx);
+    const lease = await w.lease();
+    const again = await settle(w.confirm(tx));
+    // Every confirmation the test holds, the retained one and any new one, is tried for a broadcast through the new lease.
+    for (const held of [confirmation, again.value].filter(Boolean)) await settle(w.prepareBroadcast(lease.leaseId, tx.hash).then(() => w.broadcast(held)));
+    assert.equal(w.node.confirms, 1, 'the node is asked to confirm the bytes once');
+    assert.ok(w.node.broadcasts.filter(hash => hash === tx.hash).length <= 1, 'the bytes are sent at most once');
+    assert.ok(again.error && refused(again.error), 'the second confirmation is refused');
+    assert.equal(w.node.broadcasts.length, sent, 'nothing is sent after the restart');
+    assert.deepEqual(await w.records(tx), left);
+  });
+}
