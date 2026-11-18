@@ -22,6 +22,7 @@ const readWorkflow = (path: string) => parse(readFileSync(path, "utf8")) as Work
 const gated = readWorkflow(gatedPath);
 const publishSteps = gated.jobs.publish?.steps ?? [];
 const verifySteps = gated.jobs.verify?.steps ?? [];
+const ADMISSION_STEP = "Admit reviewed main-line prerelease tag";
 const SUITE_COMMANDS = [
   "npm test", "npm run host:test", "npm run generator:test", "npm test --workspace @kynesyslabs/dacs-client",
   "npm run seller:prepare -- \"$DACS_SELLER_SMOKE_DIR\"", "npm run seller:test", "npm run release:test",
@@ -95,7 +96,7 @@ function checkoutWithManifests(change: (name: string, manifest: Record<string, u
 }
 
 function runAdmission(checkout: string) {
-  const script = workflowStepScript("Admit reviewed main-line prerelease tag", gatedPath);
+  const script = workflowStepScript(ADMISSION_STEP, gatedPath);
   const PATH = stubBin(checkout, { git: "exit 0" });
   return runBash(["-e", "-c", script], { cwd: checkout, env: {
     PATH, CONFIRM_VERSION: VERSION, GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: `v${VERSION}`, GITHUB_SHA: "0".repeat(40) } });
@@ -121,6 +122,16 @@ describe("the gated publish workflow", () => {
     }
   });
 
+  it("the gated workflow admits the tag and confirmed version in a job that verify and publish both wait for, with the full history the main-line check needs", () => {
+    const admitting = Object.entries(gated.jobs).filter(([, job]) => job.steps?.some((step) => step.name === ADMISSION_STEP));
+    expect(admitting.map(([id]) => id)).toHaveLength(1);
+    const [admittingId, admittingJob] = admitting[0] ?? [];
+    expect(gated.jobs.verify?.needs).toContain(admittingId);
+    expect(gated.jobs.publish?.needs).toContain(admittingId);
+    const checkout = admittingJob?.steps?.find((step) => step.uses?.startsWith("actions/checkout@"));
+    expect(checkout?.with?.["fetch-depth"]).toBe(0);
+  });
+
   it("the gated workflow's verify job requires a clean build tree after npm ci, builds core, dacs-node and the generator, and runs all five packages' suites and then release:test", () => {
     expect(isInOrder(commandsOf(verifySteps), [
       "npm ci",
@@ -128,6 +139,17 @@ describe("the gated publish workflow", () => {
       "npm run build", "npm run host:build", "npm run generator:build",
       ...SUITE_COMMANDS,
     ])).toBe(true);
+  });
+
+  it("the gated workflow's verify job runs the package suites on the npm that ships with Node and installs and requires the publish job's pinned npm client only before release:test", () => {
+    const pin = commandsOf(publishSteps).find((command) => command.includes("npm install --global"));
+    expect(pin).toContain("npm@11.19.0");
+    const commands = commandsOf(verifySteps);
+    const pinAt = commands.indexOf(pin ?? "");
+    const lastPackageSuite = SUITE_COMMANDS.slice(0, -1).map((command) => commands.indexOf(command));
+    expect(pinAt).toBeGreaterThan(-1);
+    expect(lastPackageSuite.every((index) => index > -1 && index < pinAt)).toBe(true);
+    expect(isInOrder(commands, [pin ?? "", "test \"$(npm --version)\" = 11.19.0", "npm run release:test"])).toBe(true);
   });
 
   it("the gated workflow's publish job requires a clean build tree, builds, and builds the release set before it publishes", () => {
