@@ -450,6 +450,26 @@ test('a send that does not answer within the pass window is dispatch-unknown, re
   assert.equal(w.counts.transport, 1, 'the next send went out once the first had settled');
 });
 
+test('while a timed-out send is still running, another pass calls no signer and writes no record, and signs once the send has settled', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const inSend = gate();
+  const first = boundary.pass(w.op(), w.sign(), () => inSend.arrive()).then(() => 'resolved', (error) => error);
+  await inSend.reached;
+  await w.clock.advance(DEADLINE_MS);
+  assert.equal((await first).code, 'eb_send_timeout');
+  const signersBefore = w.counts.signer;
+  const other = () => boundary.pass(w.op({ operationId: 'other', lane: 'lane-2' }), w.sign(), w.send());
+  await assert.rejects(other(), { code: 'eb_send_in_flight' });
+  await assert.rejects(boundary.signPass(w.op({ operationId: 'other', lane: 'lane-2' }), w.sign()), { code: 'eb_send_in_flight' });
+  assert.equal(w.counts.signer, signersBefore, 'the signer was not called');
+  assert.deepEqual(await states(history, 'lane-2'), [], 'nothing was recorded for the other pass');
+  inSend.release();
+  await flush();
+  await other();
+  assert.deepEqual(await states(history, 'lane-2'), ['signed', 'dispatch-started', 'dispatch-acknowledged']);
+});
+
 test('authority reads take no fence and call no signer', async (t) => {
   const w = await ebWorld(t);
   const { boundary } = w.build();

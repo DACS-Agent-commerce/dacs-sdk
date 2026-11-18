@@ -7,7 +7,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { WireError, assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
-// Monotonic window for authority and stop reads, in milliseconds: one for EB1 to EB4, and one that starts when the fence is acquired and covers EB5r to EB8f, including the signer's and the transport's answers.
+// Monotonic window for authority and stop reads, in milliseconds: one for EB1 to EB4, and one that starts when the fence is acquired and covers EB5r to EB8f, including the answers of a signer passed to signPass or pass and of the transport. The inner signer of signerFor is not cut off by it.
 const EFFECT_READ_DEADLINE_MS = 10000;
 // Longest wait for the actor fence, in milliseconds.
 const EFFECT_FENCE_TIMEOUT_MS = 10000;
@@ -20,7 +20,7 @@ const JOB_OPERATION_CLASSES = ['job-create', 'payment-evidence', 'job-resume'];
 // Whether the retained bytes may be sent again after an earlier stage may have reached transport (K0 lane policy).
 const KINDS = { 'native-transaction': { mayResend: false }, 'seller-create': { mayResend: true }, 'wire-request': { mayResend: true } };
 const NOT_STOPPED_STATUS = 503;
-/** The wallet journals' per-write ceiling, in OS (10^9 OS per DEM): 50 DEM, as the write-fee-cap refusal says. A journal compares it with the whole debit of a write: its fees plus the storage and gas burns. The approval policy has its own limit (4 DEM by default) and the effect boundary takes its limit from its caller; neither shares this constant. */
+/** The wallet journals' per-write ceiling, in OS (10^9 OS per DEM): 50 DEM. A journal compares it with the whole debit of a write: its fees plus the storage and gas burns. The approval policy has its own limit (4 DEM by default) and the effect boundary takes its limit from its caller; neither shares this constant. */
 export const WRITE_FEE_CEILING_OS = 50_000_000_000n;
 
 const assertAdmitted = () => assertKitOperationAdmitted('effectBoundary');
@@ -145,9 +145,10 @@ function assertStage(stage) {
  * `approvalRef` null or `{ revision() }` (null once the hold is gone); `k1Rev` null or `{ expected, current() }`.
  * Every method rejects (`signerFor` throws) with a WireError naming K0's refusal code, keeping its cause; a
  * callback's own error (a signer, a transport, `currentAuthorization`) is passed through unchanged. A signer
- * or transport that has not answered when the pass window ends refuses `eb_sign_timeout` or `eb_send_timeout`
- * and the fence is released; a send that timed out is recorded as the stage's `-unknown` state, and until it
- * settles every other dispatch refuses `eb_send_in_flight`.
+ * given to `signPass` or `pass`, or a transport, that has not answered when the pass window ends refuses
+ * `eb_sign_timeout` or `eb_send_timeout` and the fence is released; the inner signer of `signerFor` has no
+ * time limit of its own and holds the fence until it answers. A send that timed out is recorded as the
+ * stage's `-unknown` state, and until it settles every other signing or dispatch refuses `eb_send_in_flight`.
  * - `withFence(op, work, { context })` runs EB1 to EB5, then `work(held)` with `held.capability`, and releases.
  * - `signPass(op, innerSign, { context })` runs EB5r to EB7; resolves `{ bytes, artifactHash }`, signing only when nothing is retained.
  * - `dispatchPass(held, innerSend, { stage })` runs EB8 to EB9 for the bytes `signPass(held)` returned; resolves the send's answer.
@@ -305,6 +306,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
   async function signUnderFence(op, innerSign) {
     const pass = ownedPass(op);
     const { deadline } = pass;
+    if (sendInFlight) throw refuse('eb_send_in_flight', 'an earlier send that timed out has not finished');
     const records = await history.read(op.lane);
     assertLanePin(records);
     const retained = retainedSigned(records, op);
