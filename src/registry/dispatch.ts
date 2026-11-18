@@ -72,8 +72,8 @@ export interface RailDispatchOptions {
     ) => Promise<void>;
     /**
      * Accept a route without `journalPreparedTransfer`. Without a journal, a
-     * crash before the broadcast is acknowledged leaves no recorded
-     * transaction hash to recover from.
+     * crash after the broadcast, before the settlement outcome is recorded,
+     * leaves no recorded transaction hash to recover from.
      */
     allowUnjournaled?: boolean;
     /** Durable atomic settlement intent/outcome store. */

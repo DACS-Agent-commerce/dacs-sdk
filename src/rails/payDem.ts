@@ -2348,7 +2348,7 @@ export function requireUnjournaledOptOut(allowUnjournaled: boolean | undefined):
   if (allowUnjournaled !== true) {
     throw new DacsError(
       "pay-dem settlement requires a rail built with journalPreparedTransfer; " +
-        "pass allowUnjournaled: true only to accept that a crash before the broadcast is acknowledged leaves no recorded transaction hash to recover from",
+        "pass allowUnjournaled: true only to accept that a crash after the broadcast, before the settlement outcome is recorded, leaves no recorded transaction hash to recover from",
       { code: "settlement.unjournaled_rail" },
     );
   }
@@ -2391,7 +2391,6 @@ export function requireUnjournaledOptOut(allowUnjournaled: boolean | undefined):
  * paying again after the settlement store is lost or not shared. Recover from
  * the journal first (see {@link withRecoveredAttempts}).
  *
- *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
  * chain moves integer OS base units (1 DEM = 10^9 OS). This asserts the currency
@@ -2413,8 +2412,8 @@ export function payDemSettle(
     reconcile?: PayDemSettlementReconcile;
     /**
      * Accept a rail built without `journalPreparedTransfer`. Without a journal,
-     * a crash before the broadcast is acknowledged leaves no recorded
-     * transaction hash to recover from.
+     * a crash after the broadcast, before the settlement outcome is recorded,
+     * leaves no recorded transaction hash to recover from.
      */
     allowUnjournaled?: boolean;
   },
