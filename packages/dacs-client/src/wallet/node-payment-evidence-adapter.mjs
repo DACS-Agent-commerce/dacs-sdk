@@ -20,8 +20,10 @@
 //   authorization  the stored approval id is reopened. An id the ledger no longer holds open may have been spent by an execution
 //                  whose reservation write did not commit, so the chain is read for the held bytes first, with the readback below:
 //                  an execution ends the reservation and is `transaction_already_executed`, and only a chain that answers it has not
-//                  seen the hash lets the id be replaced; any other answer refuses. The replacement is the exact request's open
-//                  authorization or a new one, and the reservation stores its id before anything is sent.
+//                  seen the hash lets the id be replaced; any other answer refuses. An id the ledger shows spent is never replaced,
+//                  whatever the chain answers. The replacement is the exact request's open authorization or a new one, and the
+//                  reservation stores its id before anything is sent. A manual authorization has no id and also reads the chain
+//                  before every broadcast.
 //   confirmation   `confirmTx` with the exact projection. An answer that is not a valid confirmation of those bytes is unknown and
 //                  never advances; a valid refusal is `confirm_rejected`.
 //   policy         `approval.confirm` runs on every replay against the held authorization; `false` or a throw sends nothing.
@@ -265,14 +267,16 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     }
   }
   // Reopens the stored authorization by id. One the ledger no longer holds open is replaced only after the chain shows the held bytes
-  // never ran (`assertNotExecuted`), and the reservation stores the replacement's id before anything is sent. A manual authorization
-  // has no id and is asked for again.
+  // never ran (`assertNotExecuted`) and the ledger shows the authorization was not spent (`assertNotSpent`), and the reservation
+  // stores the replacement's id before anything is sent. A manual authorization has no id and is asked for again; it also reads the
+  // chain for the held bytes before every broadcast.
   async function replayApproval(held, signal) {
     const { approvalId, approvalIntent: requestText } = held.active;
     try {
       const reopened = approvalId === null ? null : await reopenApproval(approvalId, requestText, signal);
       if (reopened !== null) return reopened;
       await assertNotExecuted(held.active.signed.txHash, signal);
+      if (approvalId !== null) await assertNotSpent(approvalId, signal);
       const binding = await replacementApproval(requestText, signal);
       if (binding?.requestText !== requestText) throw refuse('approval_mismatch');
       if (binding.ledgerId !== null && binding.ledgerId !== approvalId) await reservations.renewApproval(held, binding);
@@ -289,6 +293,12 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       throw cause;
     }
     throw refuse(ALREADY_EXECUTED);
+  }
+  // An id the ledger does not hold open is released or spent. A spent one belongs to an execution whose reservation write did not
+  // commit, so a status that has not seen the hash (it may be stale) never replaces it. Settling the id `released` again is a repeat
+  // for a released id and is refused for a spent one; it changes nothing either way. A ledger that cannot answer refuses too.
+  async function assertNotSpent(approvalId, signal) {
+    await settleOnAbort(approval.settle(approvalId, 'released', 'replacement-check'), signal);
   }
   // The approved request must describe these very bytes.
   function assertApprovalCovers(requestText, content) {

@@ -17,7 +17,8 @@
 // A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes and moves the floor past
 // the nonce; `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
 // settles the approval ledger's hold by id (`spent` or `released`), which is idempotent, so a crash between the settlement and the
-// put is finished by repeating the call. A consume whose approval the ledger no longer holds open ends without a settlement.
+// put is finished by repeating the call. `consume` never reads the ledger to decide: a caller that has shown the ledger no longer
+// holds the approval open passes `approvalEnded: true`, and only then does `consume` end the reservation without a settlement.
 // Signed bytes are never retired: only an execution frees them. While a retirement has settled the approval `released` and its
 // put has not committed, this instance refuses `bindSigned` for that reservation (`signer_retirement_unfinished`), and the next
 // `reserve` finishes the retirement before it claims.

@@ -799,7 +799,7 @@ test("the confirmed-write callback runs once on the validated confirmation again
   }
   w.approval.confirmResult = true; w.approval.lookupDown = true; w.approval.settled.set('TEST-ledger-1', 'released');
   await assert.rejects(broadcastIn(w, signed), { code: 'approval_required' });
-  assert.equal(w.node.broadcasts.length, 0); assert.deepEqual(w.approval.settlements, [], 'nothing was released');
+  assert.equal(w.node.broadcasts.length, 0); assert.deepEqual(w.approval.settlements.map(call => `${call.ledgerId}/${call.outcome}`), ['TEST-ledger-1/released'], 'only the already released id is settled again');
   assert.equal(w.approval.confirmations.length, 2, 'one callback per validated confirmation'); assert.deepEqual(w.approval.confirmations[0].binding, w.approval.entries[0]);
 });
 
@@ -961,6 +961,36 @@ test("after a spent settlement whose reservation write was lost and a restart, a
   assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
   assert.deepEqual(spentIds(w), ['TEST-ledger-1'], 'one authorization is spent for the CREATE');
   assert.deepEqual(w.approval.entries.filter(row => !w.approval.settled.has(row.ledgerId)), [], 'no authorization is left open');
+});
+
+test("a stale unknown status for bytes whose authorization was settled spent and whose reservation write was lost refuses, binds no second authorization, and a valid execution read later leaves exactly one authorization spent", async t => {
+  const { faults, wrap } = failingJournal(), w = await replayWorld(t, { journalWrap: wrap }), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed);
+  faults.failPut = (key, value) => key.startsWith(RECORD_KEY_PREFIX) && value?.active === null;
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'pending');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1'], 'the first authorization is spent while the record still names it');
+  let stale = true;
+  w.reply = row => {
+    if (messageOf(row) !== 'getTransactionStatus' || !stale) return undefined;
+    stale = false; return responseOf(ok({ state: 'unknown' }));
+  };
+  await assert.rejects(broadcastIn(w, signed), { code: 'approval_required' });
+  assertNothingSent(w); assert.equal(w.approval.prepared.length, 1, 'no second authorization was prepared');
+  assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1', 'no second authorization was bound');
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+  assert.deepEqual(spentIds(w), ['TEST-ledger-1'], 'exactly one authorization is spent for the CREATE');
+  assert.deepEqual(w.approval.entries.filter(row => !w.approval.settled.has(row.ledgerId)), [], 'no authorization is left open');
+  assert.equal((await recordOf(w)).active, null);
+});
+
+test("an unknown status for a released authorization whose settled outcome the ledger cannot confirm refuses and binds no second authorization", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  await w.approval.settle('TEST-ledger-1', 'released', 'TEST-operator-released');
+  const { settle } = w.approval; w.approval.settle = async () => { throw new Error('TEST-ledger-down'); };
+  await assert.rejects(broadcastIn(w, signed), error => error.code === 'approval_required' && causeChain(error).some(link => /TEST-ledger-down/.test(link.message)));
+  assertNothingSent(w); assert.equal(w.approval.prepared.length, 1, 'no second authorization was prepared');
+  assert.equal((await recordOf(w)).active.approvalId, 'TEST-ledger-1', 'no second authorization was bound');
+  w.approval.settle = settle;
 });
 
 test("an executed CREATE whose authorization the operator released ends its reservation without a spend, also after a restart, and the next evidence signs at the next nonce", async t => {

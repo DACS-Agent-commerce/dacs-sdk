@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "7e4e03cd33d8ba0aba62eecb2725439285b270ec"
+        "blob": "6bb33f91783c1d238f84e5201e178ca6b7dc331b"
       },
       "DELTA-LEDGER.json": {
-        "blob": "201207c76d308a1267902038bdb89740250d84ec"
+        "blob": "e06199e9b3574146c0d71be62bfc4f08e58b7061"
       },
       "DELTA-MAP.md": {
-        "blob": "95f8fd2ddbc33770c6b2fcd69a906725399e6d90"
+        "blob": "c44fdf1acea126301189d239ab1b8f78e86ece67"
       },
       "DELTA-NOTES.md": {
         "blob": "bd5f5a806e441849392a85525d73fcf2fc0d3792"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "2c54e107e740a8b9efdf4aca8ae2b17b276a98e3"
+        "blob": "a18b4ec1c2a975f0ff7c8559701d72347a295555"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1055,7 +1055,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "641d852b709188e8a7343850583ac32647199d7b"
+        "blob": "69d4c6fe095b50cb38027827049018929a6fa85f"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1373,7 +1373,7 @@
         "blob": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
       },
       "src/wallet/node-payment-evidence-adapter.mjs": {
-        "blob": "50c0191116a8699f2ffd58de6fdf14bb2e57c11e"
+        "blob": "8f99410fd7b106fba2caa65d382554562fee5f7d"
       },
       "src/wallet/node-wallet-session.mjs": {
         "blob": "192016f0d5c93cbdd715fa2b5058bb312bc1d683"
@@ -1382,7 +1382,7 @@
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
       },
       "src/wallet/signer-reservation.mjs": {
-        "blob": "e71d80b46f09ca9b5e5b4f6d630b0ccb84fb5d36"
+        "blob": "5960c9caa5227851c0d57e9c21f49e36cf5686ce"
       },
       "test/agreement-context-readback.test.mjs": {
         "blob": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
@@ -1925,7 +1925,7 @@
         "blob": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43"
       },
       "test/node-payment-evidence-adapter.test.mjs": {
-        "blob": "30cb7833dd4acb333b30b982a0cc6296b02992f0"
+        "blob": "233ece12f35da1fe1fc233dc283a766fd5f4ad1d"
       },
       "test/node-signer-reservation.test.mjs": {
         "blob": "fd91549ae6153769b30c401c86d078189c414070"
