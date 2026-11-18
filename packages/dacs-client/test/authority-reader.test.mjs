@@ -318,6 +318,41 @@ test('the client composition builds in stages with the production reader and the
   }
 });
 
+// The recorded TP-1 node replies: the four-field block-zero error, then blocks one and two; the string "0" read gets the recorded genesis.
+const OBSERVATIONS = new URL('../../../conformance/', import.meta.url);
+const recordedBody = file => JSON.parse(JSON.parse(readFileSync(new URL(file, OBSERVATIONS))).body);
+const RECORDED_BLOCKS = ['tp1-node-observations/block0-2026-10-20.json', 'tp1-node-observations/block1-2026-10-20.json',
+  'tp1-node-observations-2026-11-08/block2-2026-11-08.json'].map(recordedBody);
+const RECORDED_GENESIS = recordedBody('tp1-node-observations/genesis-string-zero-2026-10-20.json');
+// A node intercept that answers identity reads with the recorded replies, each first changed by `mutate(answer, height)`.
+const recordedNode = (mutate = () => {}) => row => {
+  const call = row.body.params[0];
+  if (call.message !== 'getBlockByNumber') return undefined;
+  const height = call.data.blockNumber, answer = structuredClone(height === '0' ? RECORDED_GENESIS : RECORDED_BLOCKS[height]);
+  mutate(answer, height);
+  return jsonResponse(JSON.stringify(answer));
+};
+
+test('the production reader and the composition bind the recorded TP-1 replies with their four-field block-zero error; a reply the reviewed policy refuses still refuses', async t => {
+  const w = readerWorld(t);
+  w.node.intercept = recordedNode();
+  assert.equal((await w.bind()).profile.chainIdentity, record.chainIdentity);
+  const c = await compositionWorld(t);
+  c.node.intercept = recordedNode();
+  assert.equal((await c.build()).binding.profile.chainIdentity, record.chainIdentity);
+  // Each change and the cause the binding is refused with.
+  const refused = {
+    'the two-field block-zero error': [(answer, height) => { if (height === 0) { delete answer.extra; delete answer.require_reply; } }, 'malformed_observation'],
+    'another block-zero error': [(answer, height) => { if (height === 0) answer.extra = 'Unknown block'; }, 'malformed_observation'],
+    'another block-two hash': [(answer, height) => { if (height === 2) answer.response.hash = 'f'.repeat(64); }, 'identity_mismatch'],
+  };
+  for (const [label, [mutate, cause]] of Object.entries(refused)) {
+    const r = readerWorld(t);
+    r.node.intercept = recordedNode(mutate);
+    await assert.rejects(r.bind(), error => error.code === 'unavailable' && causesOf(error).some(link => link.code === cause), label);
+  }
+});
+
 test('the composed reader answers for the finalized wallet: its own claim is the session wallet and a peer comes only from the registered purchase and enrollment', async t => {
   const rows = new Map(), enrolled = new Map();
   const w = await compositionWorld(t, { input: { purchases: { findByJobId: jobId => rows.get(jobId) ?? null }, participantImplementations: { entriesFor: claim => enrolled.get(claim) ?? [] } } });

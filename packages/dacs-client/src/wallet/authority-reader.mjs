@@ -6,7 +6,7 @@ import { canonicalize } from '@kynesyslabs/dacs';
 import { DACS_SELLER_DISCOVERY_FORMAT, TESTNET_PROFILE_TP1, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
 import { createDemosNetworkBinder, NetworkBindingError } from '../dacs/network-binding.mjs';
 import { AUTHORITY_READ_DEADLINE_MS } from '../public-admission.mjs';
-import { sourceBlockReader } from './devnet-native-transport.mjs';
+import { DEVNET_NODE2_BLOCK_LAYOUT, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, sourceBlockReader, TP1_REVIEWED_BLOCK_TWO_HASH } from './devnet-native-transport.mjs';
 
 const PROVENANCE_PREFIX = 'dacs-client-authority:';
 // A node that answers another chain, disagrees with itself or is not the reviewed endpoint cannot be authenticated.
@@ -39,7 +39,10 @@ async function observeChainIdentity(authority, record) {
   const now = () => Date.now();
   // The observation's own reads stop when it ends, so a read that outlives the observation's deadline is cancelled.
   const observation = new AbortController();
-  const reader = sourceBlockReader({ fallback, blockZeroErrorEnvelope: null, blockOneLayout: null, reviewedBlockTwoHash: null, strictEnvelope: false,
+  // The node's replies are read under the native transport's reviewed Node2 policy: its four-field block-zero error,
+  // its block-one layout and the reviewed block-two hash.
+  const reader = sourceBlockReader({ chainIdentity: record.chainIdentity, reviewedReads: {}, fallback, blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
+    blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH, strictEnvelope: false,
     signal: observation.signal, context: async () => authority.context(), post: (body, _headers, { signal }) => authority.authorityRpc(body, { signal }), now });
   try {
     return (await createDemosNetworkBinder({ expected, fallback, now, timeoutMs: AUTHORITY_READ_DEADLINE_MS, reader }).bind()).chainIdentity;

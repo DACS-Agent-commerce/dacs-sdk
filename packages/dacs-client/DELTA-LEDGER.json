@@ -11052,6 +11052,23 @@
           "after": "6d3eacf154eb619d9ec525d6a6857e60a493b5de"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read the authority connection under the reviewed Node2 reply policy",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/authority-reader.mjs",
+          "before": "ae87ec1f5c387c0b12d0e7f76767c11897aa74fc",
+          "after": "a716f91bd5546fd66aa328a7a772da2046175dbd"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": "a4acd347320779bcd318e29b784d7bed2216166f",
+          "after": "b62856e040048e1a29229c023595e23fcf3410dd"
+        }
+      ]
     }
   ]
 }
