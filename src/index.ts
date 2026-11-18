@@ -801,21 +801,7 @@ export {
   type SettleRequest,
   type SettleResult,
   type SettlementRecoveryAttempt,
-  // Version 1 session store API: the in-memory store and its types. Its public names and behaviour remain stable.
-  assertCheckpointPayloadShape,
-  createInMemorySessionStore,
-  SESSION_STORE_VERSION,
-  type SessionStore,
-  type SessionRecord,
-  type SessionReceipt,
-  type SessionCheckpoint,
-  type CheckpointValue,
-  type SessionLease,
-  type SessionPhase,
-  type SessionLoad,
-  type TransitionInput,
-  type TransitionResult,
-  // Generation-fenced v2 is a separate, explicit API; no v1 value is upgraded.
+  // Generation-fenced session store.
   FENCED_SESSION_STORE_VERSION,
   assertFencedCheckpointPayloadShape,
   assertFencedSessionPaymentAuthorizationShape,

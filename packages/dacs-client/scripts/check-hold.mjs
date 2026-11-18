@@ -4,7 +4,11 @@
 //   node packages/dacs-client/scripts/check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]
 //
 // HOLD.json pins the complete package file set and the Git blob of every
-// ordinary file, including the exact reviewed package.json bytes and explicit public exports.
+// ordinary file, including the exact reviewed package.json bytes; the gate
+// pins every package.json key except `files`.
+// Beside the pins, the gate runs the freeze rule derived from the delta
+// records (scripts/delta-freeze.mjs), after checking that the modules it loads
+// match their pins. That rule needs the Git history from the baseline to HEAD.
 // HOLD.json and this gate are the reviewed control pair: changing a pin or
 // lifting the hold requires changing both in the same reviewed commit. The
 // gate pins both the canonical record and its exact bytes, with only its
@@ -20,8 +24,8 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-// Keep the gate self-contained: do not execute a mutable package helper.
+import { fileURLToPath, pathToFileURL } from "node:url";
+// Keep the gate self-contained: execute no package helper before its bytes match their pin.
 const GIT_ENV = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 const sourceGit = (args, options = {}) => execFileSync("git", ["--no-replace-objects", ...args], { ...options, env: GIT_ENV });
 
@@ -29,10 +33,12 @@ const PACKAGE = "@kynesyslabs/dacs-client";
 const PACKAGE_PREFIX = "packages/dacs-client/";
 const USAGE = "usage: check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]";
 class UsageError extends Error {}
+// The derived freeze rule and every package module it loads.
+export const DERIVED_RULE_MODULES = Object.freeze(["scripts/delta-freeze.mjs", "scripts/delta-assemble.mjs", "scripts/delta-map.mjs", "scripts/delta-record.mjs", "scripts/publication-text.mjs", "scripts/source-git.mjs"]);
 
 export const PINNED = Object.freeze({
-  holdSha256: "3629ea74bc63509c87b7a2b6efaa35d50103c0fec81e11b0a0fbc44d3aa329bf",
-  holdBytesSha256: "32c1f7a9c32bf432ecf4dc51e816fdbb747f105f238350c388a5f29cb9080371",
+  holdSha256: "760e8f93d14b2052fa599f1ff7bab3e02a6e24d99b2aeceb348efc7ed885752b",
+  holdBytesSha256: "dfb8b5e21af57750341d57843ee6064f36466c1cad93a31caf36d10241f95e31",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -41,7 +47,23 @@ export const PINNED = Object.freeze({
   delta: "D15",
   sourceRepository: "DACS-Agent-commerce/frontend",
   sourceCommit: "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
-  exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs", "./node-wallet": "./src/wallet/node-wallet-session.mjs", "./substrate/demos": "./src/substrate/demos.mjs" }),
+  // package.json without `files`, which follows the delta records.
+  manifest: Object.freeze({
+    name: PACKAGE,
+    version: "0.1.0-alpha.0",
+    description: "Buyer purchase services, protocol readers and host integration seams for DACS clients.",
+    exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs", "./node-wallet": "./src/wallet/node-wallet-session.mjs", "./substrate/demos": "./src/substrate/demos.mjs" }),
+    scripts: Object.freeze({ test: "node scripts/check-hold.mjs && node scripts/test.mjs" }),
+    type: "module",
+    engines: Object.freeze({ node: "^22.22.2 || ^24.15.0" }),
+    license: "MIT",
+    repository: Object.freeze({ type: "git", url: "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git", directory: "packages/dacs-client" }),
+    homepage: "https://github.com/DACS-Agent-commerce/dacs-sdk/tree/main/packages/dacs-client#readme",
+    bugs: Object.freeze({ url: "https://github.com/DACS-Agent-commerce/dacs-sdk/issues" }),
+    dependencies: Object.freeze({ "@kynesyslabs/dacs-node": "0.1.0-alpha.0", "@kynesyslabs/demosdk": "^4.0.16", "@scure/bip39": "2.2.0" }),
+    peerDependencies: Object.freeze({ "@kynesyslabs/dacs": "0.1.0-alpha.0" }),
+    private: true,
+  }),
   files: Object.freeze([
     Object.freeze({ path: "packages/dacs-client/src/purchases.mjs", sourcePath: "http-mcp/src/purchases.mjs", heldBlob: "ee71c89fcfa2ef7fa44716084a810e546343452c", lines: Object.freeze(["666", "789", "811", "905", "927-934"]) }),
     Object.freeze({ path: "packages/dacs-client/src/dacs/wallet-transactions.mjs", sourcePath: "http-mcp/src/dacs/wallet-transactions.mjs", heldBlob: "948107e13dba08f162dd3f1b27968b2eae96d799", lines: Object.freeze(["114"]) }),
@@ -151,9 +173,19 @@ export function checkRecord(record) {
   return failures;
 }
 
+// Every package.json key except `files` against PINNED.manifest, key set included.
+function manifestFailures(pkg) {
+  if (pkg === null || typeof pkg !== "object" || Array.isArray(pkg)) return ["package.json is not a JSON object"];
+  const keys = { ...pkg };
+  delete keys.files;
+  return [...new Set([...Object.keys(keys), ...Object.keys(PINNED.manifest)])]
+    .filter((key) => JSON.stringify(keys[key]) !== JSON.stringify(PINNED.manifest[key]))
+    .map((key) => `package.json: key ${key} differs from the reviewed manifest`);
+}
+
 // Enumerate every package file, including ignored output and dot paths.
 // Directories are containers; empty directories carry no executable bytes.
-function packageFiles(dir, prefix = "", out = []) {
+export function packageFiles(dir, prefix = "", out = []) {
   for (const name of readdirSync(dir).sort()) {
     const path = join(dir, name);
     const rel = prefix + name;
@@ -167,7 +199,8 @@ function packageFiles(dir, prefix = "", out = []) {
 
 // Read object identities directly, rather than relying on diff's stat cache,
 // assume-unchanged or skip-worktree flags. The working files are hashed too.
-function checkGitStates(repoRoot, frozen, failures) {
+// Returns the package's HEAD and stage-0 index entries by repository path.
+export function checkGitStates(repoRoot, frozen, failures) {
   const run = (...args) => sourceGit(["-C", repoRoot, ...args], { encoding: "utf8", maxBuffer: 64 << 20 });
   const head = new Map();
   for (const entry of run("ls-tree", "-r", "--full-tree", "-z", "HEAD", "--", PACKAGE_PREFIX).split("\0").filter(Boolean)) {
@@ -210,9 +243,10 @@ function checkGitStates(repoRoot, frozen, failures) {
     const mode = stat.mode & 0o111 ? "100755" : "100644";
     if (!stat.isFile() || mode !== committed.mode || gitBlob(readFileSync(join(repoRoot, path))) !== committed.blob) failures.push(`${path}: working file differs from HEAD (bytes or mode)`);
   }
+  return { head, index };
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (relative(args.repoRoot, args.packageDir).split(sep).join("/") !== PACKAGE_PREFIX.slice(0, -1)) {
     throw new Error("package directory must be packages/dacs-client under the repository root");
@@ -226,6 +260,7 @@ function main() {
   const frozen = record.step1Freeze;
   if (frozen?.schema !== "dacs-client-freeze/v3" || !frozen.files) throw new Error("missing step-1 freeze record");
   const actual = new Set(packageFiles(args.packageDir));
+  const verified = new Set();
   for (const path of actual) if (!Object.hasOwn(frozen.files, path)) failures.push(`${PACKAGE_PREFIX}${path}: added file; package is frozen`);
   for (const [path, pin] of Object.entries(frozen.files)) {
     if (!actual.has(path)) { failures.push(`${PACKAGE_PREFIX}${path}: missing file; package is frozen`); continue; }
@@ -236,13 +271,22 @@ function main() {
       continue;
     }
     if (!/^[0-9a-f]{40}$/.test(pin.blob) || gitBlob(readFileSync(join(args.packageDir, path))) !== pin.blob) failures.push(`${PACKAGE_PREFIX}${path}: changed bytes; package is frozen`);
+    else verified.add(path);
   }
+  const unread = failures.length;
   const pkg = readJson(join(args.packageDir, "package.json"), "package.json", failures);
-  if (!pkg || JSON.stringify(pkg.exports) !== JSON.stringify(PINNED.exports) || Object.hasOwn(pkg, "main") || Object.hasOwn(pkg, "bin")) failures.push("package.json must retain the reviewed explicit exports and no main or bin");
+  if (failures.length === unread) failures.push(...manifestFailures(pkg));
 
   const top = sourceGit(["-C", args.repoRoot, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   if (realpathSync(top) !== args.repoRoot) throw new Error("repo-root is not the Git worktree root");
-  checkGitStates(args.repoRoot, frozen, failures);
+  const { head, index } = checkGitStates(args.repoRoot, frozen, failures);
+  // Load the derived rule only once its modules are the pinned ones.
+  const unverified = DERIVED_RULE_MODULES.filter((path) => !verified.has(path));
+  if (unverified.length) failures.push(`derived freeze rule not run: ${unverified.join(", ")} must match the freeze pins first`);
+  else {
+    const { checkDerivedFreeze } = await import(pathToFileURL(join(args.packageDir, "scripts/delta-freeze.mjs")).href);
+    failures.push(...checkDerivedFreeze({ repoRoot: args.repoRoot, packageDir: args.packageDir, pins: frozen.files, files: actual, head, index }));
+  }
   finish(failures, { files: actual.size });
 }
 
@@ -253,12 +297,12 @@ function finish(failures, summary) {
     process.exitCode = 1;
     return;
   }
-  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); reviewed public exports; package HEAD blobs verified against pins; package index and working files match HEAD; outside SDK files are unrestricted; no behavioural imports`);
+  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); reviewed package manifest; package HEAD blobs verified against pins; package index and working files match HEAD; every package file holds the blob its records, the anchor or the baseline name; outside SDK files are unrestricted; no behavioural imports`);
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { main(); } catch (error) {
+  main().catch((error) => {
     console.error(`[check-hold] ${error.message}`);
     process.exitCode = error instanceof UsageError ? 2 : 1;
-  }
+  });
 }

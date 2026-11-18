@@ -639,6 +639,76 @@ test('a held provider answer whose Vet writes cannot be ruled out keeps the row 
   assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w), w.counts.vetWrites], ['compensating', 1, 'live', 2]);
 });
 
+// A request answered while the kit guard is off: nothing ends its accepted row, as when the process stops before the row ends.
+// The guard is on again when this returns; the row is left `running`.
+async function answerWhileGuardOff(t, w, request, answer) {
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  w.behaviour.answer = async (input) => { guard.setKitOperationGuardForTest('off'); return answer(input); };
+  const reply = await w.post(request);
+  await w.settleJob();
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  return reply;
+}
+const NO_CONTEXT = () => ({ disposition: 'absent', reason: 'TEST no context', code: 'context_absent' });
+// Purchase capacity for exactly one job at a time: a job takes 69 units (its 68-unit allotment and one accounting row) and its accounting row
+// stays after release, so a second job is admitted only once the first job's allotment is returned.
+const ONE_JOB_UNITS = 70;
+
+for (const [kind, signOptions] of [['direct', { delegated: false }], ['delegated', {}]]) {
+  test(`a startup sweep ends a ${kind} request's running row left by a stopped process, frees its hold and slot, and a new job takes the slot`, async (t) => {
+    const w = await contextWireWorld(t, { storeOptions: { maxRecords: 100, capacityUnits: ONE_JOB_UNITS } }), request = await w.startContext({ signOptions });
+    assert.deepEqual(summary(await answerWhileGuardOff(t, w, request, NO_CONTEXT)), [503, 'operation_uncertain']);
+    assert.deepEqual([w.rowOf().state, w.openHolds().length, allocationState(w)], ['running', 1, 'live'], 'the row was left running');
+    assert.equal(w.capacity.capacityReport().ready, false, 'the left row holds the only slot');
+    const restarted = await w.restartHost();
+    await restarted.admission.sweep({ startup: true });
+    assert.deepEqual([restarted.rowOf().state, allocationState(restarted)], ['aborted', 'released']);
+    assert.deepEqual(restarted.counts.releases.map((release) => release.hold), [w.counts.holds[0].hold], 'the original hold was released once');
+    assert.equal(restarted.admission.cleanupPending(), false);
+    assert.equal((await restarted.post(await restarted.startContext({ jobId: WIRE_JOB2 }))).status, 200, 'the freed slot takes a new job');
+  });
+}
+
+test('a startup sweep settles a running row from the journal\'s outcome and does not run the provider again', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext({ signOptions: { delegated: false } });
+  w.behaviour.cutAfterPublish = true;
+  w.behaviour.afterPublish = () => guard.setKitOperationGuardForTest('off');
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  assert.deepEqual(summary(await w.post(request)), [503, 'operation_uncertain']);
+  await w.settleJob();
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  assert.deepEqual([w.operationOf(WIRE_JOB).state, w.rowOf().state], ['completed', 'running'], 'the outcome is published and the row is not settled');
+  const restarted = await w.restartHost();
+  await restarted.admission.sweep({ startup: true });
+  assert.deepEqual([restarted.rowOf().state, restarted.rowOf().contextOutcome], ['settled', 'success']);
+  assert.deepEqual(restarted.counts.releases.map((release) => release.hold), [w.counts.holds[0].hold]);
+  assert.deepEqual([w.counts.resolves, restarted.counts.resolves], [1, 0], 'the provider is not run again');
+});
+
+test('a compensating row keeps its hold and slot at startup', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext({ signOptions: { delegated: false } });
+  w.behaviour.evidenceKind = 'signed';
+  w.behaviour.answer = NO_CONTEXT;
+  assert.deepEqual(summary(await w.post(request)), [503, 'operation_uncertain']);
+  await w.settleJob();
+  assert.equal(w.rowOf().state, 'compensating');
+  const restarted = await w.restartHost();
+  restarted.behaviour.evidenceKind = 'signed';
+  await restarted.admission.sweep({ startup: true });
+  assert.deepEqual([restarted.rowOf().state, restarted.counts.releases.length, allocationState(restarted)], ['compensating', 0, 'live']);
+  assert.equal(restarted.admission.cleanupPending(), true);
+});
+
+test('a startup sweep fences a running row whose Vet writes cannot be ruled out and keeps its hold and slot', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext({ signOptions: { delegated: false } });
+  await answerWhileGuardOff(t, w, request, NO_CONTEXT);
+  assert.equal(w.rowOf().state, 'running');
+  const restarted = await w.restartHost();
+  restarted.behaviour.evidenceKind = 'signed';
+  await restarted.admission.sweep({ startup: true });
+  assert.deepEqual([restarted.rowOf().state, restarted.counts.releases.length, allocationState(restarted)], ['compensating', 0, 'live']);
+});
+
 test('a barrier in one job\'s policy hold call does not delay another job\'s admission', async (t) => {
   const w = await contextWireWorld(t), first = await w.startContext(), second = await w.startContext({ jobId: WIRE_JOB2 });
   const entered = deferred(), release = deferred();
