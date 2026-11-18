@@ -634,10 +634,11 @@ per-client limiter so one client cannot exhaust the shared request budget.
   refused, and so is a bare-hash signature for a transaction at or after an
   active fork's `activationHeight` (a kept CREATE the node already executed is
   not checked again against the present answer). A kept bare-hash CREATE that
-  the node has not executed, and whose absence the node proves through the
-  block before an active fork's `activationHeight`, can no longer be executed:
+  the node has not executed, absent or still pending in its queue, and which the
+  node proves not executed through an active fork's `activationHeight` itself,
+  can no longer be executed:
   the journal supersedes it, and the next signature may use the same nonce. One
-  whose absence is not proved that far stays refused as another evidence
+  not proved that far stays refused as another evidence
   (`wallet_journal_conflict`) and is not sent again. The journal reads the
   answer through `readNetworkInfo({ signal })` on every call (like the other
   wallet reads it is given `readTimeoutMs`, and its reader limits the size of
@@ -704,7 +705,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `{ state: 'absent', checkedThroughBlock }` from a complete authenticated
   transaction index, including failed transactions, on the same chain.
   `checkedThroughBlock` must be at least the nonce snapshot's `blockHeight`.
-  A bare nonce or an unfenced absence never authorizes supersession.
+  A bare nonce or an unfenced absence never authorizes supersession. A pending
+  CREATE may carry the same proof, `{ state: 'pending', checkedThroughBlock }`;
+  it does not release the CREATE, it only lets a bare-hash CREATE be replaced
+  once the signature-domain fork is active.
   The journal keeps the signed CREATE and its nonce in its SQLite file (a
   private 0600 file) before it broadcasts it, and keeps at most one live signed
   CREATE per address. Its `readSignedProjection({ logicalAddress })` answers

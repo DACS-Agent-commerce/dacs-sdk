@@ -242,19 +242,50 @@ test('a kept CREATE signed over the bare hash is refused, and not broadcast agai
   assert.equal(w.calls.sign, 1, 'nothing was signed again');
 });
 
-// The fork activates while a CREATE signed over the bare hash was never executed: it can no longer
-// land, so a retry must not be held on it for good. Each route that reads the kept CREATE is covered.
-for (const [route, run] of [
-  ['reconcile, then anchor', async (journal, w) => { assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned'); return journal.anchorEvidence(w.input()); }],
-  ['anchor', (journal, w) => journal.anchorEvidence(w.input())],
-  ['ensure', (journal, w) => journal.ensureEvidence({ ...w.input(), expectedJournalId: journal.journalId })],
-]) {
-  test(`a bare-hash CREATE that never landed is replaced, at its own nonce, once the fork activates: ${route}`, async (t) => {
+// A bare-hash CREATE is replaced only on a fenced proof that reaches the block the fork begins at
+// (activationHeight itself), for a CREATE the node dropped or still holds as pending, and only
+// while its nonce is free: one the account nonce reached is never given to a new signature.
+for (const held of ['absent', 'pending']) {
+  test(`a bare-hash CREATE the node ${held === 'absent' ? 'never had' : 'holds as pending'} is refused, and kept, unless a fenced proof reaches the fork's activation height`, async (t) => {
     const w = wallet(t), journal = w.open();
     t.after(() => journal.close());
     w.faults.broadcast.push('drop');
     const first = (await journal.anchorEvidence(w.input())).txHash;
-    w.network.answer = activeFork(7, 1);
+    if (held === 'pending') w.chain.pending.push(first);
+    const proof = (nonce, blockHeight, checkedThroughBlock) => w.open({ readAccountNonce: async () => ({ nonce, blockHeight }), readTransactionState: async () => ({ state: held, checkedThroughBlock }) });
+    const refused = async (label, handle) => {
+      t.after(() => handle.close());
+      for (const ask of [handle.reconcilePaymentEvidence, handle.anchorEvidence]) await assert.rejects(ask(w.input()), { code: 'wallet_journal_conflict' }, label);
+    };
+    w.network.answer = activeFork(7, 5);
+    await refused('the proof stops one block before the activation height', proof(0, 4, 4));
+    await refused('the proof stops short of the nonce snapshot', proof(0, 9, 5));
+    // A nonce the account reached is not free. An absent CREATE is then superseded as overtaken (not here);
+    // a pending one stays live, so its nonce is never given to a new signature.
+    if (held === 'pending') await refused('the nonce was reached', proof(1, 5, 5));
+    assert.equal(w.calls.sign, 1, 'nothing was signed again');
+    assert.equal(w.calls.broadcast.length, 1, 'the kept bytes were not sent again');
+    const reaching = proof(0, 5, 5);
+    t.after(() => reaching.close());
+    assert.equal((await reaching.reconcilePaymentEvidence(w.input())).status, 'unsigned', 'the proof reaches the activation height');
+  });
+}
+
+// The fork activates while a CREATE signed over the bare hash was never executed, whether the node
+// dropped it or still holds it as pending: it can no longer land, so a retry must not be held on it
+// for good. Each route that reads the kept CREATE is covered.
+for (const [route, run] of [
+  ['reconcile, then anchor', async (journal, w) => { assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned'); return journal.anchorEvidence(w.input()); }],
+  ['anchor', (journal, w) => journal.anchorEvidence(w.input())],
+  ['ensure', (journal, w) => journal.ensureEvidence({ ...w.input(), expectedJournalId: journal.journalId })],
+]) for (const held of ['absent', 'pending']) {
+  test(`a bare-hash CREATE the node ${held === 'absent' ? 'never had' : 'still holds as pending'} is replaced, at its own nonce, once the fork activates: ${route}`, async (t) => {
+    const w = wallet(t), journal = w.open();
+    t.after(() => journal.close());
+    w.faults.broadcast.push('drop');
+    const first = (await journal.anchorEvidence(w.input())).txHash;
+    if (held === 'pending') w.chain.pending.push(first);
+    w.network.answer = activeFork(7);
     w.faults.sign.push({ nonce: 1, signedOver: CHAIN_BOUND('7') });
     const { status, txHash } = await run(journal, w);
     assert.equal(status, 'submitted');
@@ -271,7 +302,7 @@ test('a replaced bare-hash CREATE keeps its record, and a failed or restarted re
   let journal = w.open();
   w.faults.broadcast.push('drop');
   const first = (await journal.anchorEvidence(w.input())).txHash;
-  w.network.answer = activeFork(7, 1);
+  w.network.answer = activeFork(7);
   const answer = await journal.reconcilePaymentEvidence(w.input());
   assert.deepEqual([answer.status, answer.txHash], ['unsigned', first]);
   assert.match(answer.reason, /signed over the bare hash/);
@@ -292,7 +323,7 @@ test('a replacement signed over the bare hash again is refused once the fork is 
   t.after(() => journal.close());
   w.faults.broadcast.push('drop');
   await journal.anchorEvidence(w.input());
-  w.network.answer = activeFork(7, 1);
+  w.network.answer = activeFork(7);
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned');
   w.faults.sign.push({ nonce: 1 });
   await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ });

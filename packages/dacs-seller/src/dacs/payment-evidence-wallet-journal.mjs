@@ -70,7 +70,11 @@
 //    { state: 'absent', checkedThroughBlock } from a complete authenticated
 //    transaction index (including failed transactions) on the same chain.
 //    Its coverage must reach the nonce snapshot's blockHeight. A bare nonce
-//    or an unfenced absence keeps the original signed CREATE alive.
+//    or an unfenced absence keeps the original signed CREATE alive. A CREATE the
+//    node still holds as pending may carry the same proof,
+//    { state: 'pending', checkedThroughBlock }: no block through that height
+//    includes it. It never supersedes a CREATE by itself; it only lets a
+//    bare-hash CREATE be replaced once the signature-domain fork is active (below).
 //  - readNetworkInfo({ signal }) -> the configured node's getNetworkInfo answer
 //    ({ forks: { osDenomination, signatureDomain?: { activated, activationHeight } }, chainId }).
 //    It is read on every call, before anything is signed, sent or decided, and
@@ -81,8 +85,9 @@
 //    signed under the other domain is refused as another evidence
 //    (wallet_journal_conflict) and not sent again. The exception is a bare-hash
 //    CREATE once the fork is active, which the node proves it did not execute
-//    through the block before the fork's activationHeight (an absence fenced by
-//    readTransactionState): it can no longer be executed, so it is superseded,
+//    through the fork's activationHeight itself, whether it is absent or still
+//    pending (a fenced answer of readTransactionState, whose nonce is not yet
+//    reached): it can no longer be executed, so it is superseded,
 //    its nonce is free, and the next signCreate may answer that same nonce. A CREATE
 //    the node already executed, or that was superseded, is not checked against the present domain.
 //    Left out, nothing is read and only a signature over the bare hash is
@@ -437,10 +442,11 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     if ('value' in state && state.value.state === 'applied') return { alive: true, applied: true };
     if (!('value' in account)) return { alive: true, reason: `the account nonce could not be read: ${account.cause}` };
     if (!('value' in state)) return { alive: true, reason: `the kept CREATE's state could not be read: ${state.cause}` };
-    if (state.value.state !== 'absent') return { alive: true };
     const fenced = account.value.blockHeight !== null && state.value.checkedThroughBlock !== null && state.value.checkedThroughBlock >= account.value.blockHeight;
-    // `absentThrough`: the CREATE is proven not executed through this block, though its nonce is still free.
+    // `absentThrough`: the CREATE, absent or still pending in the node's queue, is proven not executed through this
+    // block, though its nonce is still free.
     if (account.value.nonce < signed.nonce) return fenced ? { alive: true, absentThrough: state.value.checkedThroughBlock } : { alive: true };
+    if (state.value.state !== 'absent') return { alive: true };
     if (!fenced) return { alive: true, reason: 'the kept CREATE has no complete absence observation through the account nonce snapshot' };
     return { alive: false, reason: `the kept signed CREATE ${signed.txHash} (nonce ${signed.nonce}) is not executed through block ${state.value.checkedThroughBlock} and the account nonce is ${account.value.nonce}; it can no longer be executed` };
   }
@@ -486,10 +492,11 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     let nonceFree = false;
     const cleared = clearedOutcome(live.txHash) !== undefined;
     if (checked.alive && !checked.applied && signedCreateProblem(live, input, observed.signatureDomain, cleared)) {
-      // A bare-hash CREATE the node has not executed, through the block before an active fork begins, can never be
-      // executed: the node takes only the chain-bound message from that block on. Its nonce is free for a new signature.
+      // A bare-hash CREATE the node has not executed through the block the active fork begins at, whether it is absent
+      // or still pending in the node's queue, can never be executed: the node takes only the chain-bound message from
+      // that block on. Its nonce is free for a new signature.
       const { chainId, activationHeight } = observed.signatureDomain;
-      if (chainId === null || checked.absentThrough === undefined || checked.absentThrough + 1 < activationHeight
+      if (chainId === null || checked.absentThrough === undefined || checked.absentThrough < activationHeight
           || signedCreateProblem(live, input, BARE_HASH_DOMAIN, cleared)) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
       checked = { alive: false, reason: `the kept signed CREATE ${live.txHash} (nonce ${live.nonce}) is signed over the bare hash and is not executed through block ${checked.absentThrough}, and the node's signature-domain fork is active from block ${activationHeight}; it can no longer be executed` };
       nonceFree = true;
