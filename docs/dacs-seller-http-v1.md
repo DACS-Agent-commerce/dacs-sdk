@@ -179,7 +179,9 @@ and leaves the outcome intact.
 The seller host (`@kynesyslabs/dacs-seller`) does not answer settled jobs this
 way. It always passes `retained.accepted: false` on the context route, and an
 accepted presentation sent again gets `session_admission_unavailable` (503),
-or `seller_not_ready` (503) while the host is draining.
+or `seller_not_ready` (503) while the host is draining, for as long as the job
+keeps its purchase tuple. Once the settled job is retired and its tuple is
+removed, the answer is `context_job_closed` (409), draining or not.
 
 The frozen result is `{route, body, delegationExpiresAt, reserve?}`. Use its
 admitted body. Only context has `reserve()`: the host calls it after it has
@@ -448,8 +450,9 @@ below):
 
    While an attempt's lease (60 s by default) is live, another request for
    the operation is `seller_effect_pending` (503). The refused request's nonce
-   key is already recorded, so sending the same signed request again is
-   `peer_request_replayed` (409). To try again, the buyer signs a new request
+   key is already recorded, so sending the same signed request again while it is
+   unexpired is `peer_request_replayed` (409); once it has expired it is
+   `peer_expired` (408). To try again, the buyer signs a new request
    with a new nonce. Once the
    effect's own write is durable, the handler records its outcome with
    `completeWireEffect(journal, effect, { status, text })`. The outcome is
