@@ -24,6 +24,7 @@ export type FaultCategory = "transient" | "permanent" | "counterparty" | "substr
  */
 const codeCategory = {
   "schema.invalid_field": "permanent",
+  "settlement.unjournaled_rail": "permanent",
 } as const satisfies Record<string, FaultCategory>;
 
 /** A code from the catalog. */

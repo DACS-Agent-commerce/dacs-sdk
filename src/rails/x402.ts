@@ -909,9 +909,7 @@ export function x402Settle(
     // idempotency key dedupes on, or the on-chain single-use nonce and the
     // (railId, jobId, phaseIndex) key describe different phases. Source it from
     // `req` (falling back to the paywall override, then 0) and use the one value
-    // for BOTH. (The prior `paywall.phaseIndex`-only wiring made the production
-    // `requireSessionBinding` path throw whenever the paywall omitted it, even
-    // though the session carried a phase.)
+    // for BOTH.
     const phaseIndex = req.phaseIndex ?? configuredPhaseIndex ?? 0;
     const binding = Object.freeze({
       bindingVersion: "1",

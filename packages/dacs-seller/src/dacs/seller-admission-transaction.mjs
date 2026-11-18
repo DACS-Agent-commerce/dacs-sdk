@@ -114,7 +114,7 @@ function contextOutcomeClass(row, outcome) {
  * job mutex; it settles a completed context outcome, aborts only on proof of no effect, settles with context outcome `none` on proof that an effect happened, and otherwise keeps the row `compensating` with its cause.
  * It throws TypeError for a job that is not canonical or a trigger that is not one of those four strings; for an unknown job it writes nothing.
  * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`). A startup sweep also ends every row
- * still running, a direct request's included, as compensation trigger `a` does; a periodic sweep ends a running row only by trigger `c` or a direct request's age. It waits at most 10,000 ms for a
+ * still running, a direct request's included, as compensation trigger `a` does; a periodic sweep ends a delegated running row only by trigger `c`. It waits at most 10,000 ms for a
  * row's lease and 30,000 ms for its pass, records a row it could not finish on that row and goes on to the next; it rejects with an AggregateError
  * after visiting every row when it could not record one. A periodic sweep called while one runs answers that one; a startup sweep rejects with
  * TypeError while a begin is live or a sweep runs, and a periodic one leaves a live begin's intent alone. Direct admissions are fenced after
@@ -579,8 +579,8 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     });
   }
   // Fences a row that is still running with trigger (a), in one transaction with the read. A startup sweep runs before any begin, so a running
-  // row it finds belongs to a process that stopped, direct request or delegated. An `admitted` row is not ended at startup: such a leftover
-  // keeps its hold and slot.
+  // row it finds belongs to a process that stopped, direct request or delegated. An `admitted` row is not fenced here: a direct request's
+  // leftover keeps its hold and slot, and a delegated one is ended by trigger (c) once its expiry plus the grace has passed.
   function fenceRunningLeftover(jobId) {
     return transaction(() => {
       const row = read(jobId);

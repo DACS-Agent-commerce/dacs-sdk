@@ -130,8 +130,8 @@ export interface EnvelopeSigningContext extends SigningContext {
  * (expiry is not checked here: the receiver decides which routes an expired one serves).
  * The signature the signer returns is verified under the key the receiver will
  * use (the delegated session key, else the buyer's key for a request or the
- * seller's for a response); a signature that does not verify throws
- * `peer_signature_invalid` and no header is returned.
+ * seller's for a response); a signature that is malformed or does not verify
+ * throws `peer_signature_invalid` (500) and no header is returned.
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
   const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing, continuation } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing", "continuation"]) as EnvelopeSigningContext;
@@ -161,7 +161,7 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
     publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment, agreement, signedListing, continuation,
   });
   await assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
-  const signatureBytes = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes));
+  const signatureBytes = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes), "peer_signature_invalid", 500);
   // The receiver verifies under the delegated session key, or else the key of the actor the payload names.
   const verifyingKey = verifiedDelegation?.sessionPublicKey ?? claimKey((payload.kind === "request" ? payload.buyer : payload.seller) as string);
   if (!verifyEd25519(signingBytes, signatureBytes, verifyingKey)) fail("peer_signature_invalid", 500);
@@ -691,7 +691,7 @@ async function admitWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, ch
 }
 
 /**
- * Step 13: a delegation the request carries must be live now, for this buyer,
+ * A delegation the request carries must be live now, for this buyer,
  * seller, Listing pin and job, and must outlast the request; no deadline is
  * needed, as no Agreement exists. A direct request carries none. Verifier
  * failures other than scope and time (binding, profile, authority) propagate
@@ -705,7 +705,7 @@ async function admitPreAgreementDelegation({ c, request, delegation, listingPin 
   return expiresAt;
 }
 
-/** Step 14: new work needs `ready`; on the context route the host's `accepted` also lets a retained admission continue while it is false. */
+/** New work needs `ready`; on the context route the host's `accepted` also lets a retained admission continue while it is false. */
 function admitPreAgreementReadiness(request: WireRequestPayload, c: RequestCheck, retained: JsonRecord): void {
   const context = request.path === DACS_SELLER_HTTP_PATHS.context;
   if (typeof c.ready !== "boolean") fail("seller_readiness_required", 500);

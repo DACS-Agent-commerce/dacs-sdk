@@ -51,8 +51,12 @@ function namespaceIdentity() {
     return Object.freeze({ ns, boot, start, pids: nspid?.length === 1 && nspid[0] === String(process.pid) ? 'proc' : null });
   } catch { /* no /proc: as on macOS and the BSDs */ }
   try {
-    // Whole seconds only: they differ across reboots, and small adjustments
-    // to the microseconds can't make a holder of this boot look like another's.
+    // Whole seconds only, so that microsecond jitter in the reading does not
+    // change the identity. The value is not fixed for the life of the boot: on
+    // FreeBSD and macOS a wall-clock step moves kern.boottime by the same amount.
+    // After a step, a holder recorded before it names another boot, and the
+    // caller refuses ('other-boot') instead of treating it as exited. That fails
+    // closed: the operator removes the lock by hand once no holder runs.
     const boot = /\bsec = (\d{1,20}),/.exec(tool('sysctl', ['-n', 'kern.boottime']));
     const start = psStart(process.pid);
     return boot && start ? Object.freeze({ ns: '0', boot: `bt${boot[1]}`, start, pids: 'ps' }) : null;
@@ -94,9 +98,14 @@ function discardFailedLease(file, created, lease, fd) {
  * exit. Nothing else in this process may open the file: closing any other
  * descriptor for it would drop the POSIX lock. So the file is always new, made
  * 0600 whatever the umask (opened read-only, SQLite would take only a shared
- * lock), and the descriptor that created it stays open. Returns the lease id;
- * throws ProcessLeaseError, and registers nothing, when the lease can't be taken;
- * a failed call removes the file it created, so a later call can try again.
+ * lock), and the descriptor that created it stays open. Returns the lease id.
+ * Throws ProcessLeaseError when the directory or lease file is unsafe or the
+ * lease is held or can't be locked; any error while taking the lock, SQLite's
+ * included, becomes seller_state_lease_unavailable. A failure before that (a
+ * missing directory, a permission error, a full disk while creating the file or
+ * opening the database) is thrown as the original filesystem or SQLite error,
+ * unwrapped. Either way nothing is registered, and a failed call removes the
+ * file it created, so a later call can try again.
  */
 export function takeLease(dir) {
   const canonical = realpathSync(dir);
@@ -177,7 +186,10 @@ function holderRunsHere(holder, self, readStat) {
  * runs it or something whose start can't be read); 'no-identity' (it, or this
  * process, has no boot identity); 'other-boot' (no free lease here can prove
  * it gone); 'exited' (same boot, lease free, PID not running it); or
- * 'lease-unproven' (same boot, its lease can't be checked). `self` and
+ * 'lease-unproven' (same boot, its lease can't be checked). A holder recorded
+ * in another PID namespace on this boot is judged by its lease alone: free is
+ * 'exited', held is 'live'. Its PID means nothing here, so it never keeps the
+ * holder live, and the kernel lease is the proof. `self` and
  * `readStat` replace this process's identity and the /proc/<pid>/stat read.
  */
 export function leaseHolderState(dir, holder, { self = PROCESS_NAMESPACE, readStat = procStat } = {}) {
