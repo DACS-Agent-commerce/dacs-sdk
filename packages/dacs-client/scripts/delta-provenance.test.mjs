@@ -269,12 +269,20 @@ test(`a WF record selected by its full commit hash may carry the subject "${subj
  r=check(dir);assert.equal(r.status,1,r.text);assert.ok(r.text.includes(`invalid delta ${subject}`),r.text);
 });
 
+// The gate reports `unenumerated change` only for the client's src/ and test/ files, so fault (a) removes the
+// last record that changes one of them; a newer record that changes only README.md or a script does not count.
+const SOURCE_OR_TEST_PATH=/^packages\/dacs-client\/(src|test)\//;
+function lastSourceOrTestChangeIndex(data){
+ const index=data.changes.findLastIndex(record=>record.files.some(file=>SOURCE_OR_TEST_PATH.test(file.path)&&file.before!==file.after));
+ if(index<0)throw new Error('fault (a) needs a ledger record that changes a client src/ or test/ file, and the ledger has none');
+ return index;
+}
 // Each fault edits only the PR's own records, in a scratch clone of the checked head.
 const LEDGER_FAULTS=[
  {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,
-  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);}},
+  edit:data=>{data.changes.splice(lastSourceOrTestChangeIndex(data),1);}},
  {name:'(a) the same record is removed and an empty-files record is appended last',message:/unenumerated change/,
-  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);
+  edit:data=>{data.changes.splice(lastSourceOrTestChangeIndex(data),1);
    data.changes.push({delta:'WF',subject:'delta(client): WF TEST empty record',files:[]});}},
  {name:'(b) a no-op checkpoint record is removed',message:/differs from generated Git table/,
   edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.length>0&&record.files.every(file=>file.before===file.after)),1);}},
