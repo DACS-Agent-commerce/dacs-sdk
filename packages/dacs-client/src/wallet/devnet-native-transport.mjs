@@ -162,16 +162,16 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // malformed one is a TypeError. The signature lease holds the boundary's fence from the
 // lease to the broadcast, and each confirmation is retained as its own stage in the
 // dispatch history (the exact signed bytes, `confirm-started`, then
-// `confirm-acknowledged` or `confirm-unknown`) before and after the node sees it. An
-// acknowledged confirmation is final for its bytes: the node is not asked to confirm them again.
-// The seller policy, if any, is asked after the acknowledgement is retained; its refusal
-// leaves the acknowledgement and nothing is broadcast.
-// The broadcast then carries that retained confirmation, byte for byte with its gas, as the
-// boundary's dispatch stage: its whole debit (the amount plus every fee, from the node's fee
-// view or else from the confirmed transaction) is checked against the fee ceiling first, and a
-// refusal leaves `dispatch-withheld`. CREATE recovery holds the boundary's fence for the
-// artifact's own operation and runs its confirmation and sole resend as the
-// `recovery-confirm` and `recovery-dispatch` stages. Every effectful request is made by
+// `confirm-acknowledged` or `confirm-unknown`) before and after the node sees it. Once a confirmation is
+// acknowledged, no signature lease asks the node to confirm those bytes again. The seller policy, if any, is
+// asked after the acknowledgement is retained; its refusal leaves the acknowledgement and nothing is broadcast.
+// The broadcast then carries that retained confirmation, byte for byte with its gas, as the boundary's dispatch
+// stage: its whole debit (every signed balance removal, the gas charge and a CREATE's storage fee included, never
+// less than the amount, plus every fee) is checked against the fee ceiling first, and a refusal leaves
+// `dispatch-withheld`. CREATE recovery holds the boundary's fence for the artifact's own operation and runs its
+// confirmation and sole resend as the `recovery-confirm` and `recovery-dispatch` stages; each recovery attempt
+// that reaches `recovery-confirm` asks the node to confirm the retained bytes again, and still resends them at
+// most once. Every effectful request is made by
 // `transmit`, which finishes all its awaits (the transport context included) first and then
 // calls the boundary's final check and `fetchImpl` in one synchronous run; the check includes
 // the pass's current-authorization check from the private context in `pass-context.mjs`,
@@ -752,15 +752,15 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const historyOf = (artifact) => createEffectHistory({ journal }).read(artifact);
   // The latest confirm-acknowledged record of an artifact, exactly as retained, or undefined.
   const retainedConfirmation = async (artifact) => (await historyOf(artifact)).findLast((record) => record.state === 'confirm-acknowledged');
-  // The whole debit a confirmation commits the sender to, in OS: the declared amount plus the three fees. The fees are
-  // the node's fee view when it gave one (each a canonical decimal OS string), and otherwise the confirmed transaction's
-  // own `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). `null` when any fee
-  // cannot be read, which refuses the broadcast.
-  const confirmedDebitOs = (gasOperation, declaredOs, transactionFee) => {
-    const fees = FEE_MEMBERS.map((member) => gasOperation === null ? signedFeeOs(transactionFee?.[member]) : gasOperation.fees?.[member]);
-    return canonicalDecimal(declaredOs) && fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), BigInt(declaredOs))) : null;
+  // The whole debit a confirmed transaction commits the sender to, in OS, the total the wallet shows before it signs: every balance removal in
+  // the signed `gcr_edits` (a send's amount or a CREATE's storage fee, and the fixed gas charge), never less than the declared amount, plus the
+  // three fees, from the node's fee view when it gave one and otherwise from the signed `transaction_fee`. `null` when any part cannot be read, which refuses.
+  const confirmedDebitOs = (gasOperation, declaredOs, content) => {
+    const edits = content.gcr_edits ?? [], removals = Array.isArray(edits) ? edits.filter((edit) => edit?.type === 'balance' && edit.operation === 'remove').map((edit) => signedOs(edit.amount)) : [null];
+    const fees = FEE_MEMBERS.map((member) => gasOperation === null ? signedOs(content.transaction_fee?.[member]) : gasOperation.fees?.[member]), sum = (values) => values.reduce((total, os) => total + BigInt(os), 0n);
+    return [declaredOs, ...removals, ...fees].every(canonicalDecimal) ? String(sum(fees) + (sum(removals) > BigInt(declaredOs) ? sum(removals) : BigInt(declaredOs))) : null;
   };
-  const signedFeeOs = (fee) => (canonicalDecimal(fee) ? fee : Number.isSafeInteger(fee) && fee >= 0 ? String(BigInt(fee) * 1_000_000_000n) : null);
+  const signedOs = (value) => (canonicalDecimal(value) ? value : Number.isSafeInteger(value) && value >= 0 ? String(BigInt(value) * 1_000_000_000n) : null);
   // Execution projection only: nonce/timestamp may be normalized
   // by RPC, post-fork root amount/fee OS strings may be returned as safe JSON
   // numbers, and empty GCR txhash carriers may become the original hash. The
@@ -1140,7 +1140,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             await retain(intent(tx.hash),answered); await retain(lane(tx.content.from),answered);
             return answer;
           };
-          return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs,tx.content.transaction_fee) }));
+          return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs,tx.content) }));
         });
         if (accepted?.result === 200) {
           const started=now(),deadline=started+inclusionWaitMs;

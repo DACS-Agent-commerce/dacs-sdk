@@ -284,7 +284,7 @@ test("with the approval revision still current, a finalized debit that differs f
 });
 
 test("through the real native session finalContent, an approved price of 50 DEM plus 1 DEM fees signs once; full debit is 51 DEM and fee debit is 1 DEM", async t => {
-  const w = await qualifiedWorld(t), debits = captureDebits(t, w);
+  const w = await qualifiedWorld(t, undefined, { feeCeilingOs: '51000000000' }), debits = captureDebits(t, w);
   answerNetworkFee(w, 0);
   const result = await (await openPass(w)).run(() => sendNative(w, '50000000000'));
   assert.equal(result.success, true, JSON.stringify(result));
@@ -302,6 +302,27 @@ test("with a nonzero separately approved native price, approved fees exactly 50 
       assert.equal(result.success, true, JSON.stringify(result));
       assert.deepEqual(debits, [{ totalDebitOs: '52500000000', feeDebitOs: FEE_CEILING_OS }], 'the 2.5 DEM price is in the total, not in the compared fee');
     } else refusedBeforeEffect(w, result, 'write-fee-cap');
+  }
+});
+
+// The host ceiling is checked again at broadcast against the whole debit the signed transaction commits the sender to, the
+// total the session's own finalContent reports: a 2.5 DEM send also pays the 1 DEM gas charge and the node's 1 DEM network
+// fee, and an Agreement CREATE pays its storage fee, the gas charge and the network fee.
+test("the host fee ceiling caps the whole signed debit, gas charge and storage fee included: a 2.5 DEM send under a 3.5 DEM ceiling and an Agreement CREATE under a 1 DEM ceiling are refused before broadcast; a debit exactly at the ceiling is sent and one OS over is refused", async t => {
+  const underHostCeiling = async (send, feeCeilingOs) => {
+    const w = await gateWorld(t, { seller: false, sessionOptions: { feeCeilingOs } }), debits = captureDebits(t, w);
+    return { w, debits, result: await (await openPass(w)).run(() => send(w)) };
+  };
+  for (const [send, refusedCeilingOs] of [[sendNative, '3500000000'], [sendAnchor, '1000000000']]) {
+    const { debits: [{ totalDebitOs }] } = await underHostCeiling(send, FEE_CEILING_OS);
+    if (send === sendNative) assert.equal(totalDebitOs, '4500000000');
+    for (const [ceilingOs, sent] of [[totalDebitOs, true], [String(BigInt(totalDebitOs) - 1n), false], [refusedCeilingOs, false]]) {
+      const { w, debits, result } = await underHostCeiling(send, ceilingOs), label = `${send.name} under ${ceilingOs}: ${JSON.stringify(result)}`;
+      assert.deepEqual(debits.map(debit => debit.totalDebitOs), [totalDebitOs], label);
+      assert.equal(result.success, sent, label);
+      assert.equal(w.node.broadcasts.length, sent ? 1 : 0, label);
+      if (!sent) assert.ok(causesOf(w, result).some(error => error.code === 'write-fee-cap'), label);
+    }
   }
 });
 

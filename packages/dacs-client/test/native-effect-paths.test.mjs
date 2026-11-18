@@ -444,7 +444,9 @@ test('no host ceiling refuses fee_ceiling_required; a 50 DEM debit passes; 50 DE
   await assert.rejects(none.lease(), { code: 'fee_ceiling_required' });
   assert.equal(none.fence.released, none.fence.acquired);
 
+  // The signed transfer's edits also remove a 1 DEM gas charge, so the 50 DEM of amount and fees below is a 51 DEM whole debit.
   const w = world(t, { bound: await bindFixture() });
+  w.feeCeilingOs = '51000000000';
   w.open({});
   const fees = (network, rpc, additional) => ({ fees: { network_fee: network, rpc_fee: rpc, additional_fee: additional } });
   w.node.gas = fees('1000000000', '1000000000', '0');
@@ -455,6 +457,7 @@ test('no host ceiling refuses fee_ceiling_required; a 50 DEM debit passes; 50 DE
 
   for (const [gas, label] of [[fees('1000000000', '1000000000', '1'), 'one OS above'], [fees('1000000000', 1000000000, '0'), 'a fee that is not a decimal string'], [fees('1000000000', '1000000000', undefined), 'a missing fee']]) {
     const retry = world(t, { bound: await bindFixture() });
+    retry.feeCeilingOs = '51000000000';
     retry.open({});
     retry.node.gas = gas;
     const own = await retry.lease(), tx = retry.signedTransfer(1, '48000000000'), answer = await retry.confirm(tx);

@@ -11069,6 +11069,43 @@
           "after": "b62856e040048e1a29229c023595e23fcf3410dd"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF cap the whole signed debit at the host fee ceiling and correct the Node wallet docs",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "0ab6ce78b9a3612579dbe20b941fcf5f0110976d",
+          "after": "ffc26f5d93d846352463c7c5b5438ebf22fa1e08"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "918d704295d37afc8f6c14fe32676d618763e143",
+          "after": "a20b03e1b45fb1077364f9fadcfdd580b5a1b18c"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "3fe31b788278ebe67eefa8ba246e4ec07b1c38f5",
+          "after": "484ec689c1dc7422868998b34f00a6ae1cd80d08"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmed-debit.test.mjs",
+          "before": "aff81cbf4c5831d24441debf6244ade1a15b59a2",
+          "after": "1978b0ecb2a32374678eb6a2b32e6cb80e7bf33c"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "6d3eacf154eb619d9ec525d6a6857e60a493b5de",
+          "after": "b1df0f936eeba2e6bede421521321423c74abecb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "f545d35a67ae4465c4b9cb7bb102bad21df3e1d8",
+          "after": "3d01fa5294f23e43a0eff85039410f39b4b9937e"
+        }
+      ]
     }
   ]
 }

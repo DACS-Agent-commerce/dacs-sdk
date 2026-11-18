@@ -34,7 +34,8 @@ test('a confirmation without a fee view whose amount fits the ceiling but whose 
 });
 
 test('a confirmation without a fee view whose amount plus fees is within the ceiling is broadcast once', async t => {
-  const { w, tx, outcome } = await confirmedSend(t, WHOLE_DEBIT_OS);
+  // The ceiling also covers the 1 DEM gas charge the transfer's signed edits remove.
+  const { w, tx, outcome } = await confirmedSend(t, '5500000000');
   assert.equal(outcome.answer?.result, 200, JSON.stringify(outcome.error?.code));
   assert.deepEqual(w.node.broadcasts, [tx.hash]);
 });

@@ -588,6 +588,8 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
  * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed), and the optional `qualify({phase, signal})` the effect gate awaits
  * first. A confirmation by another sender, or of a Listing CREATE, is answered `true` without calling the policy; every other seller confirmation calls it once,
  * and `false` or a throw (kept as `cause`) refuses `approval_required`. Every signature and execute transmission needs a current effect pass (`effect_pass_required`).
+ * A seller pass needs a job context, which the package does not export: the seller kit provides it once it is wired to this composition. Until then
+ * `effectPass` refuses every seller pass `effect_pass_invalid`, so a host cannot drive seller effects, the adapter's included, through this composition.
  * Also requires `stateOwnership` `{directory, held()}`, the host's proof that it holds the state lock for the directory containing `journal`. Before it
  * returns, the composition removes the lock rows of dead holders from `journal` and retires every signer reservation that has no signed bytes. It also requires
  * `paymentEvidenceApproval` `{prepare, open, reopen, confirm, settle}`, the kit's approval ledger for payment-evidence CREATEs; `open` and `settle` serve the
@@ -604,7 +606,7 @@ const localDigestOf = local => createHash('sha256').update(canonicalize(local)).
 
 /**
  * Returns a Promise for the buyer's Node wallet composition: what `createNodeWalletSession` returns plus `binding` (the wire's
- * `Tp1Binding`) and `effectBoundary`. It is built in stages from an unopened `owner`: the authority capability, the production
+ * `Tp1Binding`). It is built in stages from an unopened `owner`: the authority capability, the production
  * authority reader (see `createAuthorityReader`), `await bindTp1Profile` (its first act is the reader's connection read), the effect
  * boundary over that binding, then the session itself. Nothing effect-capable exists before the last stage. Requires `identityRecord`,
  * `listings`, `purchases`, `participantImplementations`, `stopped`, `feeCeilingOs`, `journal`, `key` and the other options of
