@@ -132,7 +132,7 @@ const ZERO_AMOUNTS = [0, '0'];
 // demosdk 4.0.18 signs amounts as DEM numbers before the fork and as canonical OS strings (10^9 OS per DEM) after it.
 const OS_PER_DEM = 1_000_000_000n;
 const OS_AMOUNT = /^(0|[1-9][0-9]*)$/;
-// The ceiling as the effect boundary's write-fee-cap refusal names it.
+// The ceiling as this journal's refusals name it, in DEM.
 const FEE_CEILING = `the ${WRITE_FEE_CEILING_OS / OS_PER_DEM} DEM ceiling per write`;
 // Its storage CREATE burns 1 DEM of gas and 1 DEM of storage fee per started 10240 bytes of the program's JSON.
 const GAS_DEM = 1;
