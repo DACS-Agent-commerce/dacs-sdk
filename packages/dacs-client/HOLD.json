@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "23e3234780922dda1733b160e99e77f368077f1f"
+        "blob": "f67b1ef42e7f5d6fd6417c768751b3c9f4f564e9"
       },
       "DELTA-LEDGER.json": {
-        "blob": "5cf252d348c0effa41b5c118c8c56aaed5a0969a"
+        "blob": "2969e161b0e5edc6e15930ba5231b1f8f2230f57"
       },
       "DELTA-MAP.md": {
-        "blob": "025b7fb2bf70a93318235bf8d24763aa9ff9547c"
+        "blob": "38e56310fec514fca44c0182b975296bd00f89dc"
       },
       "DELTA-NOTES.md": {
         "blob": "2fd14b834ffa4e44e77d8af6b38f096f32d49d8b"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "5f229558051797471cfeb98692ee3c48b2c45642"
+        "blob": "3af9431536aa6a3c9bb093010fa7377dfe8185da"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1604,7 +1604,7 @@
         "blob": "89b2de8333c1d4f31e0e38b0db45aaa1f7a17c39"
       },
       "test/helpers/legacy-seller-client-auth.mjs": {
-        "blob": "5da731a690d6648591afd34a50ed0017d508b998"
+        "blob": "8d54b1b94d6f83f52629c11c40c10e4d3d1a8e9c"
       },
       "test/helpers/listener-guard.mjs": {
         "blob": "7915bac5268baf9bfafa259cbe710f1731caf917"
@@ -1656,6 +1656,9 @@
       },
       "test/helpers/offline-agreement-fixture.mjs": {
         "blob": "e9cd3822df6511d2b077366a694ef4157de9ff29"
+      },
+      "test/helpers/old-seller-transport.mjs": {
+        "blob": "25030c8ee7f346d406fcf75cb91342e891978de3"
       },
       "test/helpers/overnight-acceptance-flows.mjs": {
         "blob": "0398518f4eba9bd1fb331bf7961a59378a25cecd"
@@ -2045,7 +2048,7 @@
         "blob": "c3f5dac05fd2af76c65238f819d636869f7919fb"
       },
       "test/seller-transport-key-validation.test.mjs": {
-        "blob": "55dfd5c220077e110aa6d72115c236f5b8c68a79"
+        "blob": "3ebabac4aa38f0b3107adcafcf7768ba3654f78d"
       },
       "test/signatures-claim-ref.test.mjs": {
         "blob": "f0696e4cc8a8d54e4833adde9e465638d792a03c"

@@ -1616,6 +1616,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1`: b80ab3c87b3c65006005bb2a8b2b952106de6a3c | |
 | WF | delta(client): WF use recorded blocks for cancellation checks | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1`: f2337a42eebc81e26737556a54eccee74dc3cb3b | |
+| WF | delta(client): WF keep the old transport signing helpers in a client test module | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs:1` | 8d54b1b94d6f83f52629c11c40c10e4d3d1a8e9c |
+| | `packages/dacs-client/test/helpers/old-seller-transport.mjs:1` | 25030c8ee7f346d406fcf75cb91342e891978de3 |
+| | `packages/dacs-client/test/seller-transport-key-validation.test.mjs:1` | 3ebabac4aa38f0b3107adcafcf7768ba3654f78d |
 
 ## Complete commit and file inventory
 
@@ -4887,6 +4891,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | Order merged wallet records | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF record the merged devnet-native-transport.mjs and node-wallet-session.mjs blobs after merging eedd37b3e502 | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF record the merged node-wallet-session.mjs blob after merging a619ce44142c | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF keep the old transport signing helpers in a client test module | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-LEDGER.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs:1`<br>`packages/dacs-client/test/helpers/old-seller-transport.mjs:1`<br>`packages/dacs-client/test/seller-transport-key-validation.test.mjs:1` |
 
 ## Original moved files
 
