@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "f4e72ff620084ae3558de3ed388b707d5a4f9f79"
+        "blob": "ad1dc3adbbd8401d841ca3ec46a0366c82ff1e93"
       },
       "DELTA-LEDGER.json": {
-        "blob": "d84e215a079bf767f5e9c5a19833cfd7bd9c196d"
+        "blob": "592cdb825688f7dd39cd0b7af5cb34384f5d4ec1"
       },
       "DELTA-MAP.md": {
-        "blob": "b1c91618ed0cfea103b4a9804181b889cda93528"
+        "blob": "8ff87e1f068d777455626455e40f9fab33533204"
       },
       "DELTA-NOTES.md": {
         "blob": "74ec7eeab1bd2c1197b87f69eabc9a384d9dad7f"
@@ -1030,7 +1030,7 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "08d949faa51fbee956200125ed7c253786b66a85"
+        "blob": "23a4e1d74372dcc8fe45d5538b73dbb01a34dc65"
       },
       "records/.gitkeep": {
         "blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
@@ -1061,10 +1061,10 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "bd1d8f267e95bf53b0dd3018f4a8e6f065ec9f19"
+        "blob": "578dddc66ac4c929a2b2171579d530ce98173a93"
       },
       "scripts/check-hold.test.mjs": {
-        "blob": "5ffafe960fd73bb1ee673c4c671ce0dd822f3eff"
+        "blob": "fc00010c2576366010e89bf15b59d049724d1428"
       },
       "scripts/check-imports.mjs": {
         "blob": "011c3f9aa92a5d7f4ad0298599e78e689b46f6b1"
@@ -1190,7 +1190,7 @@
         "blob": "b190cb9f28255865882e670bbd9ef45bd9193bba"
       },
       "src/dacs/demos-sr2-adapter.mjs": {
-        "blob": "ba4f7ee79423380ef8056c8e4f6f672e235c2e48"
+        "blob": "e4a315c9760ecb4678e1dcd41ae9fa447c294fbf"
       },
       "src/dacs/demos-sr2-wallet-bridge.mjs": {
         "blob": "aae9cc8e17848ff796c10b1c2289b7da798eefa0"
@@ -1257,6 +1257,9 @@
       },
       "src/dacs/tp1-authority-label.mjs": {
         "blob": "a60b854660f4dbcb427d6ffe918c1974faaa1d0a"
+      },
+      "src/dacs/transaction-signature-domain.mjs": {
+        "blob": "7b2010451f6a80152d1571525f869229930ee48a"
       },
       "src/dacs/verification.mjs": {
         "blob": "de51f5bc8faf3b14b707783e03bc8e303fb44ca5"
@@ -1409,7 +1412,7 @@
         "blob": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
       },
       "test/authority-reader.test.mjs": {
-        "blob": "7b891fd0e31379edd00ee55c86fd12e916cf4236"
+        "blob": "2ec823f6a0f9718535e199bd2d8afbb162951694"
       },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
@@ -1925,7 +1928,7 @@
         "blob": "6841b7b79dece95e51c8b46abf549d0370fb4789"
       },
       "test/native-adapter-auth.test.mjs": {
-        "blob": "c235684fe53222ad6af5c1c77ce1c087738cefc2"
+        "blob": "bc83fa3ff6251c7a7fdef74c98aa52663d4c9ba3"
       },
       "test/native-broadcast-once.test.mjs": {
         "blob": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54"

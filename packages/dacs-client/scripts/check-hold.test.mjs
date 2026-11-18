@@ -20,6 +20,8 @@ const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const fail = (path, reason) => new RegExp(`^FAIL ${escape(P + path)}: ${reason}$`, 'm');
 // Where the derived rule takes the expected blob of a source file from.
 const DERIVED = '(?:its newest record|the baseline) \\((?:[0-9a-f]{40}|no file)\\)';
+// Where it takes the expected blob of package.json from: its newest record, else the anchor.
+const ANCHORED = '(?:its newest record|the anchor) \\([0-9a-f]{40}\\)';
 function put(file, text) { mkdirSync(dirname(file), {recursive:true}); writeFileSync(file, text); }
 // A clone of this checkout's HEAD, with the history the derived freeze rule reads.
 function scratch(t, ...options) {
@@ -70,7 +72,7 @@ for (const field of ['exports','main','bin','scripts']) test(`package manifest $
   const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file);
   p[field]=field==='exports'?{'.':'./src/purchases.mjs'}:field==='scripts'?{test:'true'}:'./src/purchases.mjs';
   writeFileSync(file, JSON.stringify(p));
-  refuses(s, fail('package.json', 'changed bytes; package is frozen'), new RegExp(`^FAIL package\\.json: key ${field} differs from the reviewed manifest$`, 'm'), fail('package.json', 'working file differs from the anchor .*'));
+  refuses(s, fail('package.json', 'changed bytes; package is frozen'), new RegExp(`^FAIL package\\.json: key ${field} differs from the reviewed manifest$`, 'm'), fail('package.json', `working file differs from ${ANCHORED}`));
 });
 for (const [change, key, edit] of [['an added key', 'sideEffects', p => { p.sideEffects = false; }], ['a changed version', 'version', p => { p.version = '0.1.0'; }]]) test(`package manifest ${change} is refused by the manifest pin`, t => {
   const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file); edit(p); writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
@@ -79,7 +81,7 @@ for (const [change, key, edit] of [['an added key', 'sideEffects', p => { p.side
 test('a package.json files edit is record-named, not pinned by the manifest', t => {
   const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file); p.files.push('scripts/check-hold.mjs'); writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
   const r=gate(s); assert.equal(r.status, 1, r.text);
-  assert.match(r.text, fail('package.json', 'working file differs from the anchor .*'));
+  assert.match(r.text, fail('package.json', `working file differs from ${ANCHORED}`));
   assert.doesNotMatch(r.text, /key files/);
 });
 test('package staged changes fail even with restored working bytes', t => {

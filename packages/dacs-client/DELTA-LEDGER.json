@@ -10935,6 +10935,38 @@
           "after": "d4ed72df62d5590841bd349736954a86371e8eb3"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF verify a storage CREATE's writer signature in the signature domain the node reports",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "08d949faa51fbee956200125ed7c253786b66a85",
+          "after": "23a4e1d74372dcc8fe45d5538b73dbb01a34dc65"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "ba4f7ee79423380ef8056c8e4f6f672e235c2e48",
+          "after": "e4a315c9760ecb4678e1dcd41ae9fa447c294fbf"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/transaction-signature-domain.mjs",
+          "before": null,
+          "after": "7b2010451f6a80152d1571525f869229930ee48a"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": "7b891fd0e31379edd00ee55c86fd12e916cf4236",
+          "after": "2ec823f6a0f9718535e199bd2d8afbb162951694"
+        },
+        {
+          "path": "packages/dacs-client/test/native-adapter-auth.test.mjs",
+          "before": "c235684fe53222ad6af5c1c77ce1c087738cefc2",
+          "after": "bc83fa3ff6251c7a7fdef74c98aa52663d4c9ba3"
+        }
+      ]
     }
   ]
 }
