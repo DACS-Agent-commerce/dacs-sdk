@@ -9432,6 +9432,27 @@
           "after": "653d3316d3b2ac2d9f77d30e1a3609ab581bef0e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF pass the lane owner on every reuse and refuse invalid lane options",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "222e5a4a849fc84abc994166f530215c2633d300",
+          "after": "5926180286aa8a6e8a7c86a9398dac6326c873ac"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": "ad0af32dad58fd5d1a0fdec120f6aa789e0d99c6",
+          "after": "80df231f40f9d88fe27604b6d1d8808299bb9d6f"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-owned-append.test.mjs",
+          "before": "8136201c3d57264ab3fe16d2ccacbef4035fdd49",
+          "after": "b5cbd84decd4917bf1fbde2d64a0c64f8f9d2781"
+        }
+      ]
     }
   ]
 }

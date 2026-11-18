@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "9641b369786754ecf9cbd1fb05ffa002f0ad48b6"
+        "blob": "0919f74df0ea05534d037167e7adc694486b5036"
       },
       "DELTA-LEDGER.json": {
-        "blob": "88fb1ff0ca0782e88d7a2fcd654d8ab77b985cda"
+        "blob": "3dc598e29ab5fef9b9c04bd23e0e4e86f954e0c5"
       },
       "DELTA-MAP.md": {
-        "blob": "ba8160522032648b644e0a9e49983430a7968b9c"
+        "blob": "7170d08c386c52229da6d30ecad8fea14eae5929"
       },
       "DELTA-NOTES.md": {
         "blob": "bfa112eedd3e45242903c9c9de44ddf7d26c1984"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "cdb10d94e50868a194eda640dc7c0173f16443ae"
+        "blob": "21973abbb61535a8963b261485b4a5c129c11f11"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "babbab3705de09153fcd7a35b9423ef4e239f567"
+        "blob": "acf4cf8a8f803730ceec520aa35fd4b284a1a8c3"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1316,13 +1316,13 @@
         "blob": "7e61b54257846f628b2984bc6bee811470401dc2"
       },
       "src/wallet/durable-journal.mjs": {
-        "blob": "222e5a4a849fc84abc994166f530215c2633d300"
+        "blob": "5926180286aa8a6e8a7c86a9398dac6326c873ac"
       },
       "src/wallet/effect-boundary.mjs": {
         "blob": "796433f8bc1bca0d06a152305289e52f05f03812"
       },
       "src/wallet/effect-fence.mjs": {
-        "blob": "ad0af32dad58fd5d1a0fdec120f6aa789e0d99c6"
+        "blob": "80df231f40f9d88fe27604b6d1d8808299bb9d6f"
       },
       "src/wallet/effect-history.mjs": {
         "blob": "bfab3132db6ef2ac403e424b54cb7680dd7910ed"
@@ -1397,7 +1397,7 @@
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
       },
       "test/durable-journal-owned-append.test.mjs": {
-        "blob": "8136201c3d57264ab3fe16d2ccacbef4035fdd49"
+        "blob": "b5cbd84decd4917bf1fbde2d64a0c64f8f9d2781"
       },
       "test/durable-journal-recovery.test.mjs": {
         "blob": "9e0eea8347fa209477848f388b17d7b4218d733a"

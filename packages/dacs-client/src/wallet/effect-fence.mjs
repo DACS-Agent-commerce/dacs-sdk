@@ -45,7 +45,9 @@ function acquireWithin(acquire, timeoutMs, setTimer, clearTimer, releaseFailed) 
  * releases; a capability this operation did not acquire, or one already
  * released, rejects `tp1_fence_not_owned`. Reuse also requires the acquiring
  * async scope; an operation ID alone grants nothing. A failed unused-acquisition cleanup leaves
- * later acquisitions rejecting `tp1_fence_release_failed` with its cause.
+ * later acquisitions rejecting `tp1_fence_release_failed` with its cause, even
+ * if the lock was in fact freed. This fails closed on purpose: the fence never
+ * re-enables itself, and only a new fence (a restart) recovers.
  * `capability` is `{ connectionGeneration, localDigest }` as recorded at acquisition.
  *
  * `replaceConnection(replace)` acquires the fence like an effect, awaits

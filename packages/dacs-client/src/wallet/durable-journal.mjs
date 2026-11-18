@@ -3,8 +3,9 @@
 // approvals and receipts; it never holds a key, mnemonic, password or vault.
 // Interface: async get(key), put(key, value), entries(), withWalletLock(key, work),
 // appendUnderLock(laneKey, key, value), withOwnedOrAcquiredLane(laneKey, work, { owner }).
-// withWalletLock passes an opaque lane owner to work. History keys under eb/
-// have their own maxRecords and maxTotalBytes budget, separate from native keys.
+// withWalletLock and withOwnedOrAcquiredLane pass an opaque lane owner to work.
+// History keys under eb/ have their own maxRecords and maxTotalBytes budget,
+// separate from native keys.
 //
 // Locks are rows in the same database, shared by every process that opens the
 // same file. A lock is released only by its own holder after its work settles.
@@ -80,6 +81,8 @@ function translate(error) {
 // `holders` directory beside the file and throws journal-lease-unavailable when
 // it cannot. `identity` replaces the OS readings that decide whether a lock
 // holder has exited (OS_IDENTITY); it is an internal seam for tests.
+// `maxRecords` and `maxTotalBytes` apply per namespace: the eb/ history keys and
+// the native keys each get that budget, so a journal can hold twice either.
 export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTimeoutMs = 2000, pollMs = 20, busyTimeoutMs = 1000,
   maxRecords = 4096, maxKeyBytes = 512, maxValueBytes = 256 * 1024, maxTotalBytes = 32 * 1024 * 1024, identity = OS_IDENTITY } = {}) {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || path.startsWith('file:')) fail('journal-invalid', 'an explicit absolute caller-owned database path is required');
@@ -138,6 +141,7 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
   const instance = formatHolderInstance(randomBytes(16).toString('hex'), { pid: process.pid, process: PROCESS_LEASE_ID, namespace: identity.self });
   const held = new AsyncLocalStorage();
   const laneOwners = new WeakMap();
+  const tokenOwners = new Map();
   let active = 0;
   const digest = (key, text) => sha256(`${DURABLE_WALLET_JOURNAL_FORMAT}\n${journalId}\n${key}\n${text}`);
   const checkKey = (key) => {
@@ -271,9 +275,11 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     active += 1;
     const owner = Object.freeze({});
     laneOwners.set(owner, { key, token });
+    tokenOwners.set(token, owner);
     let outcome;
     try { outcome = { value: await held.run(new Map(outer).set(key, token), () => work(owner)) }; } catch (error) { outcome = { error }; }
     laneOwners.delete(owner);
+    tokenOwners.delete(token);
     // Release happens only after this holder's work has settled. Failure to
     // release leaves the lane held (fail closed) and is reported to the caller.
     try {
@@ -289,16 +295,21 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
   // removed or taken lock, never runs `work`), else acquired once through
   // withWalletLock. An explicit owner reuses only its live lane, even outside
   // the acquiring async frame; a foreign, wrong-lane or released owner refuses
-  // journal-fenced. `work` must not take the same lane again.
-  async function withOwnedOrAcquiredLane(laneKey, work, { owner } = {}) {
+  // journal-fenced. `work(owner)` receives the lane's owner on every path, the
+  // reused lane's own owner or the newly acquired one. Options that are not an
+  // object refuse journal-invalid. `work` must not take the same lane again.
+  async function withOwnedOrAcquiredLane(laneKey, work, options = {}) {
     checkKey(laneKey);
     if (typeof work !== 'function') fail('journal-invalid', 'lock work must be a function');
+    if (typeof options !== 'object' || options === null) fail('journal-invalid', 'lane options must be an object');
+    const { owner } = options;
     const explicit = owner === undefined ? undefined : laneOwners.get(owner);
     if (owner !== undefined && explicit?.key !== laneKey) fail('journal-fenced', 'the supplied owner does not own this wallet lane; nothing was started');
     const mine = explicit?.token ?? held.getStore()?.get(laneKey);
     if (mine === undefined) return withWalletLock(laneKey, work);
-    if (tx('BEGIN', () => db.prepare('SELECT token FROM locks WHERE key = ?').get(laneKey)?.token) !== mine) fail('journal-fenced', 'this context no longer owns the wallet lane lock; nothing was started');
-    return held.run(new Map(held.getStore()).set(laneKey, mine), work);
+    const liveOwner = tokenOwners.get(mine);
+    if (liveOwner === undefined || tx('BEGIN', () => db.prepare('SELECT token FROM locks WHERE key = ?').get(laneKey)?.token) !== mine) fail('journal-fenced', 'this context no longer owns the wallet lane lock; nothing was started');
+    return held.run(new Map(held.getStore()).set(laneKey, mine), () => work(liveOwner));
   }
 
   // Each lock row with its holder class (holder-incarnation.mjs): only 'exited'
