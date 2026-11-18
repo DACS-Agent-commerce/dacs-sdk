@@ -10906,6 +10906,18 @@
           "after": "2796f3e3ca7e20570d7ecad79e432b957fb7ea64"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged node-wallet-session.mjs blob after merging c8069a6c99d5",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1",
+          "after": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1"
+        }
+      ]
     }
   ]
 }
