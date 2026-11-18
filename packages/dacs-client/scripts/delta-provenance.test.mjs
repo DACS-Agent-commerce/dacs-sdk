@@ -79,12 +79,18 @@ test('the publication inventory cannot omit an outside-only commit or name an ab
 });
 test('an unenumerated working-tree edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST edit\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
 test('a deletion needs a named delta',t=>{const dir=scratch(t);unlinkSync(join(dir,moved));const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
+// The gate reports `unenumerated change` only for the client's src/ and test/ files, so a fault that expects it
+// removes the last record that changes one of them; a newer record that changes only README.md or a script does not count.
+const SOURCE_OR_TEST_PATH=/^packages\/dacs-client\/(src|test)\//;
+function lastSourceOrTestChangeIndex(data){
+ const index=data.changes.findLastIndex(record=>record.files.some(file=>SOURCE_OR_TEST_PATH.test(file.path)&&file.before!==file.after));
+ if(index<0)throw new Error('the fault needs a ledger record that changes a client src/ or test/ file, and the ledger has none');
+ return index;
+}
 test('removing a delta record cannot hide its historical file changes', t => {
   const dir = scratch(t), file = join(dir, 'packages/dacs-client/DELTA-LEDGER.json');
   const data = JSON.parse(readFileSync(file, 'utf8'));
-  const index = data.changes.findLastIndex(record => record.files.some(file => file.before !== file.after));
-  assert.ok(index >= 0, 'the ledger must contain a historical source change');
-  data.changes.splice(index, 1);
+  data.changes.splice(lastSourceOrTestChangeIndex(data), 1);
   writeFileSync(file, JSON.stringify(data));
   const result = check(dir);
   assert.equal(result.status, 1, result.text);
@@ -272,9 +278,9 @@ test(`a WF record selected by its full commit hash may carry the subject "${subj
 // Each fault edits only the PR's own records, in a scratch clone of the checked head.
 const LEDGER_FAULTS=[
  {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,
-  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);}},
+  edit:data=>{data.changes.splice(lastSourceOrTestChangeIndex(data),1);}},
  {name:'(a) the same record is removed and an empty-files record is appended last',message:/unenumerated change/,
-  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);
+  edit:data=>{data.changes.splice(lastSourceOrTestChangeIndex(data),1);
    data.changes.push({delta:'WF',subject:'delta(client): WF TEST empty record',files:[]});}},
  {name:'(b) a no-op checkpoint record is removed',message:/differs from generated Git table/,
   edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.length>0&&record.files.every(file=>file.before===file.after)),1);}},

@@ -5341,6 +5341,8 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): allow the reviewed wallet provider import in the audit | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): allow the reviewed wallet provider import in the audit | `packages/dacs-client/scripts/check-imports.mjs:1` |
 | fix(client): allow the reviewed wallet provider import in the audit | `packages/dacs-client/scripts/check-imports.test.mjs:1` |
+| delta(client): WF make the ledger gate's fault (a) rows remove the last record that changes a source or test file | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): WF make the ledger gate's record-removal test remove the last record that changes a source or test file | `packages/dacs-client/DELTA-COMMITS.json:1`<br>`packages/dacs-client/DELTA-MAP.md:1`<br>`packages/dacs-client/HOLD.json:1`<br>`packages/dacs-client/scripts/check-hold.mjs:1`<br>`packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 | delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D76 pin the demosdk signing-content test to 4.0.17 | `packages/dacs-client/records/D76-a6c8894d46c4.json:1` |
