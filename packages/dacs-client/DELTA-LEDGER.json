@@ -10981,6 +10981,28 @@
           "after": "f4f4fc0fac410857724a2539cc9878bd34a0f7f5"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF check the whole debit against the fee ceiling when the node gives no fee view",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "e062b13ae1163666be9ff7777f387e17c992d063",
+          "after": "3fabb17421d3c15e95db4094b83010707e4c719a"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmed-debit.test.mjs",
+          "before": null,
+          "after": "aff81cbf4c5831d24441debf6244ade1a15b59a2"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "ee11e1ccca749f3dff754fa2a2ce1e11b35dd30e",
+          "after": "f545d35a67ae4465c4b9cb7bb102bad21df3e1d8"
+        }
+      ]
     }
   ]
 }

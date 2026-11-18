@@ -37,10 +37,10 @@ const refusedBeforeEffect = (w, result, code) => {
   assert.equal(w.node.confirms.length + w.node.broadcasts.length, 0, 'nothing transmitted');
 };
 // A seller whose qualify runs `onQualify(phase)` and then reports the connection it observed.
-async function qualifiedWorld(t, onQualify = () => {}) {
+async function qualifiedWorld(t, onQualify = () => {}, sessionOptions = {}) {
   let w;
   const qualify = async ({ phase }) => { await onQualify(phase); return w.currentOwner().local.connectionId; };
-  w = await gateWorld(t, { qualify });
+  w = await gateWorld(t, { qualify, sessionOptions });
   return w;
 }
 // Records the finalized debit the session's finalContent reports for each signature.
@@ -294,7 +294,8 @@ test("through the real native session finalContent, an approved price of 50 DEM 
 
 test("with a nonzero separately approved native price, approved fees exactly 50 DEM sign and approved fees 50 DEM plus one OS refuse before the inner signature", async t => {
   for (const [ceilingOs, signs] of [[FEE_CEILING_OS, 1], [String(BigInt(FEE_CEILING_OS) - 1n), 0]]) {
-    const w = await qualifiedWorld(t), debits = captureDebits(t, w);
+    // The host ceiling covers the whole 52.5 DEM debit, so the pass's fee ceiling alone decides.
+    const w = await qualifiedWorld(t, undefined, { feeCeilingOs: '52500000000' }), debits = captureDebits(t, w);
     answerNetworkFee(w, 49);
     const result = await (await openPass(w, { pass: { feeCeilingOs: ceilingOs } })).run(() => sendNative(w));
     if (signs) {

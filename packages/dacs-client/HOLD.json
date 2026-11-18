@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "7c265470b5264c894c38a17e731ca1887aea2c56"
+        "blob": "ecacdc50a7c65e6b7ecea09fcf21eb0709fa73ac"
       },
       "DELTA-LEDGER.json": {
-        "blob": "17468adc2ae956fef3fccdc6b3b1839a492ed505"
+        "blob": "4d8ef6d6cfe55312ef6b474e754d04adba7d7df1"
       },
       "DELTA-MAP.md": {
-        "blob": "e6d1dca9deb01b416e3316af1160f4ff41ccbe6f"
+        "blob": "93d370d8d62a009721b2406e33ca519efd64f85c"
       },
       "DELTA-NOTES.md": {
         "blob": "5aef1a518b6d4ff7535a6bfdf79b89d1f826b287"
@@ -1037,7 +1037,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "9af4abe520130254563fec60953cc8753012409b"
+        "blob": "13b56e369a800a983d1323b782317ee34dc39732"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1334,7 +1334,7 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "e062b13ae1163666be9ff7777f387e17c992d063"
+        "blob": "3fabb17421d3c15e95db4094b83010707e4c719a"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
@@ -1933,6 +1933,9 @@
       "test/native-confirmed-before-broadcast-cut.test.mjs": {
         "blob": "54f90c1b1d92690153d3883c85b882a0d017af2a"
       },
+      "test/native-confirmed-debit.test.mjs": {
+        "blob": "aff81cbf4c5831d24441debf6244ade1a15b59a2"
+      },
       "test/native-effect-paths.test.mjs": {
         "blob": "f4f4fc0fac410857724a2539cc9878bd34a0f7f5"
       },
@@ -1979,7 +1982,7 @@
         "blob": "667a5a229acef659479dfc36e8f72c01538a22a9"
       },
       "test/node-wallet-effect-gate.test.mjs": {
-        "blob": "ee11e1ccca749f3dff754fa2a2ce1e11b35dd30e"
+        "blob": "f545d35a67ae4465c4b9cb7bb102bad21df3e1d8"
       },
       "test/node-wallet-final-content.test.mjs": {
         "blob": "17e556eaaa8199a80b20fa91c1563ef50fbb85b9"

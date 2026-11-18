@@ -164,7 +164,8 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // dispatch history (the exact signed bytes, `confirm-started`, then
 // `confirm-acknowledged` or `confirm-unknown`) before and after the node sees it.
 // The broadcast then carries that retained confirmation, byte for byte with its gas, as the
-// boundary's dispatch stage: its debit is checked against the fee ceiling first, and a
+// boundary's dispatch stage: its whole debit (the amount plus every fee, from the node's fee
+// view or else from the confirmed transaction) is checked against the fee ceiling first, and a
 // refusal leaves `dispatch-withheld`. CREATE recovery holds the boundary's fence for the
 // artifact's own operation and runs its confirmation and sole resend as the
 // `recovery-confirm` and `recovery-dispatch` stages. Every effectful request is made by
@@ -745,13 +746,15 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const historyOf = (artifact) => createEffectHistory({ journal }).read(artifact);
   // The latest confirm-acknowledged record of an artifact, exactly as retained, or undefined.
   const retainedConfirmation = async (artifact) => (await historyOf(artifact)).findLast((record) => record.state === 'confirm-acknowledged');
-  // The whole debit a confirmation commits the sender to, in OS: the declared amount plus the three fees. `undefined`
-  // when the node gave no fee view (the declared debit stands); `null` when any fee is not a canonical decimal OS string.
-  const confirmedDebitOs = (gasOperation, declaredOs) => {
-    if (gasOperation === null) return undefined;
-    const fees = FEE_MEMBERS.map((member) => gasOperation.fees?.[member]);
+  // The whole debit a confirmation commits the sender to, in OS: the declared amount plus the three fees. The fees are
+  // the node's fee view when it gave one (each a canonical decimal OS string), and otherwise the confirmed transaction's
+  // own `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). `null` when any fee
+  // cannot be read, which refuses the broadcast.
+  const confirmedDebitOs = (gasOperation, declaredOs, transactionFee) => {
+    const fees = FEE_MEMBERS.map((member) => gasOperation === null ? signedFeeOs(transactionFee?.[member]) : gasOperation.fees?.[member]);
     return canonicalDecimal(declaredOs) && fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), BigInt(declaredOs))) : null;
   };
+  const signedFeeOs = (fee) => (canonicalDecimal(fee) ? fee : Number.isSafeInteger(fee) && fee >= 0 ? String(BigInt(fee) * 1_000_000_000n) : null);
   // Execution projection only: nonce/timestamp may be normalized
   // by RPC, post-fork root amount/fee OS strings may be returned as safe JSON
   // numbers, and empty GCR txhash carriers may become the original hash. The
@@ -1122,7 +1125,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             await retain(intent(tx.hash),answered); await retain(lane(tx.content.from),answered);
             return answer;
           };
-          return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs) }));
+          return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs,tx.content.transaction_fee) }));
         });
         if (accepted?.result === 200) {
           const started=now(),deadline=started+inclusionWaitMs;
