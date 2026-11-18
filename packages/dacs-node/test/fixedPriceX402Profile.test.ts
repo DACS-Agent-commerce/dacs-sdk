@@ -931,11 +931,21 @@ describe("fixed-price x402 generated profile policy", () => {
       context: routed(missing, found, { grant: false }),
       now: () => NOW,
     });
-    await expect(ungranted.anchor.anchorAgreement(signedDraft(ungranted), {} as never))
+    const ungrantedDraft = signedDraft(ungranted);
+    await expect(ungranted.anchor.anchorAgreement(ungrantedDraft, {} as never))
       .resolves.toEqual({
         disposition: "indeterminate",
         reason: "agreement publication failed before submission",
       });
+    // The retry reconciles the retained intent and reports the same local
+    // refusal, not a generic reconciliation failure.
+    await expect(ungranted.anchor.reconcileAgreementAnchor({
+      logicalAddress: ungrantedDraft.logicalAddress,
+      agreementHash: ungrantedDraft.agreementHash,
+    }, {} as never)).resolves.toEqual({
+      disposition: "indeterminate",
+      reason: "agreement publication failed before submission",
+    });
     expect(value.anchorWriteOnce).not.toHaveBeenCalled();
 
     const payDemContext = routed(missing, found);

@@ -98,6 +98,12 @@ test('report predicate enforces Listing id, positive version, 200-character titl
   }
 });
 
+test('report predicate refuses a one-element array for the producer and for the Listing content hash', async () => {
+  const f = await reportFixture();
+  assert.equal(isDevnetPurchasedReport({ ...f.report, producer: [f.report.producer] }), false);
+  assert.equal(isDevnetPurchasedReport({ ...f.report, listing: { ...f.report.listing, contentHash: [f.report.listing.contentHash] } }), false);
+});
+
 // A report is stored whole in one storage CREATE: the largest one admitted is exactly the builder's limit.
 test('a report is admitted up to one storage CREATE of complete canonical bytes and rejects malformed Agreement digests', async () => {
   const f = await reportFixture('x'), capacity = 16_384 - (Buffer.byteLength(canonicalize(f.report)) - 1);

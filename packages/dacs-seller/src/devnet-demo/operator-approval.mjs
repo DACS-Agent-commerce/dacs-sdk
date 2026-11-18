@@ -1,4 +1,4 @@
-import { appendApprovalLedgerLine, syncApprovalLedger as syncContextLedger } from './approval-ledger-append.mjs';
+import { appendApprovalLedgerLine, assertApprovalLedgerDirectoryCreatable, syncApprovalLedger as syncContextLedger } from './approval-ledger-append.mjs';
 import { dirname, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { truncateSync } from 'node:fs';
@@ -525,10 +525,13 @@ const closingError=()=>Object.assign(new Error('the operator is closing: this se
  * the policy lock once and reads the ledger afresh, cutting a torn context tail first; none releases an authorization
  * except settleById, and an unreadable ledger rejects with its own error. An unmarked sign line is a session write's,
  * from whichever process and however long ago: authorizeRetained refuses its wallet nonce as sign-authorization-open,
- * and the other operations treat its id as unavailable. */
+ * and the other operations treat its id as unavailable. It throws when created if the ledger's directory and that
+ * directory's parent are both missing, so such a path is refused before the operator is asked. Other unwritable
+ * paths, such as a parent that is a regular file, fail at the first write. */
 export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
   if(!OS.test(maxTotalOs??'')||BigInt(maxTotalOs)<=0n)throw new TypeError('maxTotalOs must be a positive canonical OS string');
   if(signal!==null&&!(signal instanceof AbortSignal)&&typeof signal!=='function')throw new TypeError('seller approval signal must be an AbortSignal or a function returning one');
+  assertApprovalLedgerDirectoryCreatable(evidencePath);
   const askSignal=()=>{const current=typeof signal==='function'?signal():signal;if(current!==null&&!(current instanceof AbortSignal))throw new TypeError('seller approval signal must be an AbortSignal');return current;};
   const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
   if(policyMode&&(!policy||typeof policy.resolvePurchase!=='function'||typeof policy.listingPin!=='function'||!policy.sourceBinding||!/^0x[0-9a-f]{64}$/.test(policy.address??'')||policy.seller!==`did:demos:agent:${policy.address.slice(2)}`))throw new TypeError('seller policy requires exact operator-owned purchase and source context');

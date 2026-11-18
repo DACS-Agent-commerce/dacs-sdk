@@ -1083,6 +1083,16 @@ function captureStore(source: FencedSessionStoreV2): FencedSessionStoreV2 {
   return Object.freeze(captured);
 }
 
+/** Most characters of a rejected Vet mode string that an error message repeats. */
+const UNSUPPORTED_VET_MODE_QUOTE_LIMIT = 64;
+
+/** The rejected Vet mode as error text: a string is cut and JSON-quoted, anything else is named by type. */
+function describeUnsupportedVetMode(value: unknown): string {
+  if (typeof value !== "string") return value === null ? "null" : `type ${typeof value}`;
+  const quoted = JSON.stringify(value.slice(0, UNSUPPORTED_VET_MODE_QUOTE_LIMIT));
+  return value.length > UNSUPPORTED_VET_MODE_QUOTE_LIMIT ? `${quoted}...` : quoted;
+}
+
 function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilmentDeps {
   const receiptStoreSource = source.receiptStore;
   const auditSourceProfile = source.auditSourceProfile;
@@ -1120,7 +1130,9 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
     throw new TypeError("receipt store, audit profile, or fulfilment signer is unavailable");
   }
   if (vetMode === null) {
-    throw new TypeError("the durable fulfilment Vet mode is unsupported");
+    throw new TypeError(
+      `the durable fulfilment Vet mode is unsupported: ${describeUnsupportedVetMode(source.vetMode)}`,
+    );
   }
   const claimSource = receiptStoreSource.claim;
   const inspectPermitSource = receiptStoreSource.inspectPermit;
@@ -1584,6 +1596,16 @@ function nonDpaVerificationResult(value: unknown): unknown {
   return value;
 }
 
+/**
+ * The Vet provenance retained with a consumed permit is not valid in the configured Vet mode.
+ * It is permanent for that mode: repeating the call with the same mode fails the same way.
+ */
+class VetModeMismatchError extends Error {
+  constructor(violation: string) {
+    super(`vet_mode_mismatch: ${violation}`);
+  }
+}
+
 class DurableCoordinator {
   readonly #request: SellerFulfilmentRequest;
   readonly #deps: DurableSellerFulfilmentDeps;
@@ -1709,7 +1731,7 @@ class DurableCoordinator {
     // retained Vet provenance of the other mode from being continued.
     const vetModeViolation = sellerFulfilmentRetainedVetModeViolation(
       authority.handoff.auditSource, this.#deps.vetMode ?? SELLER_FULFILMENT_VET_MODES.counterparty);
-    if (vetModeViolation) throw new Error(`vet_mode_mismatch: ${vetModeViolation}`);
+    if (vetModeViolation) throw new VetModeMismatchError(vetModeViolation);
     if (this.#authority) {
       if (!exact(this.#authority.binding, authority.binding) ||
           this.#authority.handoffEncoded !== authority.handoffEncoded ||
@@ -5914,7 +5936,9 @@ async function runDurableFulfilmentInternal(
     await coordinator.release().catch(() => {});
     return {
       result: durableIndeterminate(
-        "durable-permit-inspection-failed",
+        error instanceof VetModeMismatchError
+          ? "durable-vet-mode-mismatch"
+          : "durable-permit-inspection-failed",
         String(error),
         coordinator.consumedPaymentAuthorization(),
       ),

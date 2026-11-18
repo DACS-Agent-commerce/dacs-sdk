@@ -87,7 +87,8 @@ const PRE_AGREEMENT_PATHS: readonly string[] = Object.freeze([DACS_SELLER_HTTP_P
 
 /**
  * Whether a route is used before any Agreement exists. Its request issues or
- * consumes a seller nonce, so `checkWireRequest` refuses it and it is never
+ * consumes a seller nonce, so `checkWireRequest` and `authorizeWireRequest`
+ * refuse it (only `admitPreAgreementRequest` admits it) and it is never
  * answered as readback.
  */
 export const isPreAgreementRoute = (path: string): boolean => PRE_AGREEMENT_PATHS.includes(path);

@@ -28,10 +28,10 @@ commonName = supplied
   run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', '/CN=TEST-restart-ca', '-keyout', 'ca-key.pem', '-out', 'ca.pem']);
   const read = file => readFileSync(join(directory, file), 'utf8');
   const ca = read('ca.pem'); let serial = 0;
-  return { ca, issue(endMs) {
+  return { ca, issue(endMs, { san = 'IP:127.0.0.1', startMs = Date.now() - 3 * 3600000 } = {}) {
     const name = `leaf${++serial}`;
-    run(['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', `/CN=TEST-${name}`, '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', `${name}-key.pem`, '-out', `${name}.csr`]);
-    run(['ca', '-batch', '-config', 'ca.cnf', '-cert', 'ca.pem', '-keyfile', 'ca-key.pem', '-in', `${name}.csr`, '-startdate', stamp(Date.now() - 3 * 3600000), '-enddate', stamp(endMs), '-out', `${name}.pem`]);
+    run(['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', `/CN=TEST-${name}`, '-addext', `subjectAltName=${san}`, '-keyout', `${name}-key.pem`, '-out', `${name}.csr`]);
+    run(['ca', '-batch', '-config', 'ca.cnf', '-cert', 'ca.pem', '-keyfile', 'ca-key.pem', '-in', `${name}.csr`, '-startdate', stamp(startMs), '-enddate', stamp(endMs), '-out', `${name}.pem`]);
     return { key: read(`${name}-key.pem`), cert: read(`${name}.pem`).replace(/^[\s\S]*?(?=-----BEGIN CERTIFICATE-----)/, '') + ca };
   } };
 }

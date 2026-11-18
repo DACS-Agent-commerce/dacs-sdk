@@ -125,11 +125,6 @@
       "count": 3
     }
   },
-  "packages/dacs-client/test/helpers/commitment-node-junk.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "packages/dacs-client/test/helpers/devnet-live-composition-app.mjs": {
     "no-unused-vars": {
       "count": 1
@@ -528,11 +523,6 @@
       "count": 1
     }
   },
-  "packages/dacs-seller/test/rail-session-admission.test.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "packages/dacs-seller/test/seller-agent-contracts.test.mjs": {
     "no-unused-vars": {
       "count": 2
@@ -816,7 +806,7 @@
   },
   "test/agent/compositeVerification.test.ts": {
     "@typescript-eslint/no-unused-vars": {
-      "count": 1
+      "count": 3
     }
   },
   "test/agent/counterpartyBundleFinalization.test.ts": {
@@ -866,11 +856,6 @@
   },
   "test/agent/sessionSettlement.test.ts": {
     "@typescript-eslint/no-unused-vars": {
-      "count": 1
-    }
-  },
-  "test/agent/sessionStore.test.ts": {
-    "no-useless-assignment": {
       "count": 1
     }
   },
@@ -1019,6 +1004,11 @@
   },
   "test/rails/x402Paywall.test.ts": {
     "@typescript-eslint/no-misused-promises": {
+      "count": 2
+    }
+  },
+  "test/registry/payDemDispatch.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
       "count": 2
     }
   },
