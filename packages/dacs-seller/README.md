@@ -672,7 +672,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
-  `'applied'`, `'pending'`, or `'absent'`. Applied means successful execution;
+  `'applied'`, `'pending'`, or `'absent'`; the journal also passes the kept
+  `signedTransaction` and `nonce`. Applied means successful execution;
   inclusion alone does not establish execution. An ordinary miss or unknown
   answer keeps the original signed CREATE alive for rebroadcast. To release a
   CREATE whose nonce another transaction consumed, a qualified reader must
