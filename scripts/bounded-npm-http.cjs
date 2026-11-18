@@ -25,7 +25,9 @@ const JSON_BYTES_OUTSIDE_STRINGS = new Set(Buffer.from('\t\n\r []{},:"+-.0123456
 
 // Bytes npm's streaming parser takes without looking at them after a UTF-8 lead
 // byte inside a string, quote and backslash included. Other high bytes count as
-// ordinary string bytes.
+// ordinary string bytes. Valid UTF-8 holds only bytes 0x80 to 0xbf there; the
+// scanner refuses anything else, because npm's other parser would end the string
+// at such a quote.
 function continuationBytes(lead) {
   if (lead >= 0xf0 && lead <= 0xf4) return 3;
   if (lead >= 0xe0 && lead < 0xf0) return 2;
@@ -45,8 +47,10 @@ function jsonScanner() {
     if (notJson) return;
     for (const byte of bytes) {
       if (string) {
-        if (continuation > 0) continuation--;
-        else if (escaped) escaped = false;
+        if (continuation > 0) {
+          if (byte < 0x80 || byte > 0xbf) throw Object.assign(new Error("ELIMIT npm HTTP response JSON string is not valid UTF-8"), { code: "ELIMIT" });
+          continuation--;
+        } else if (escaped) escaped = false;
         else if (byte === 92) escaped = true;
         else if (byte === 34) string = false;
         else continuation = continuationBytes(byte);
@@ -118,9 +122,11 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   finally { signal?.removeEventListener("abort", abort); gunzip?.destroy(); }
 }
 
-/** Installs opt-in HTTP(S) admission. A request fails with ETIMEDOUT when NPM_HTTP_TIMEOUT_MS
- * passes after its socket opens, or after the last response chunk, without progress.
- * The byte budget bounds the total size. */
+/** Installs opt-in HTTP(S) admission. The wrapper fails a request with ETIMEDOUT when
+ * NPM_HTTP_TIMEOUT_MS passes after its socket opens, or after the last response chunk,
+ * without progress. The byte budget bounds the total size. The wrapper holds the response
+ * back until the whole body is admitted, so a fetch timeout set in npm itself still runs
+ * for the whole download. */
 function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeout, cancel = clearTimeout,
   now = () => performance.now() } = {}) {
   for (const transport of transports) {

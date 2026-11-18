@@ -45,13 +45,9 @@ describe("raw-token admission", () => {
     await expect(read('["<\\u0000\x01"]\n' + deep)).rejects.toMatchObject({ code: "ELIMIT" });
   });
   const oneByteChunks = (bytes: Buffer) => [...bytes].map(byte => Buffer.from([byte]));
-  it("ends a string after a lead byte takes the backslash that precedes a quote", async () => {
-    const bytes = Buffer.concat([Buffer.from('["'), Buffer.from([0xc2]), Buffer.from('\\"' + "[".repeat(130))]);
-    for (const chunks of [[bytes], oneByteChunks(bytes)]) await expect(readBoundedResponse(response(chunks), 1024)).rejects.toMatchObject({ code: "ELIMIT" });
-  });
-  it("keeps a quote taken by a lead byte inside the string", async () => {
-    const bytes = Buffer.concat([Buffer.from('["'), Buffer.from([0xc2]), Buffer.from('"' + "[".repeat(130) + '"]')]);
-    for (const chunks of [[bytes], oneByteChunks(bytes)]) expect(await readBoundedResponse(response(chunks), 1024)).toEqual(bytes);
+  it.each([[0xc2, '"'], [0xe2, 'x"'], [0xf0, "xy\\"], [0xf0, '\x80"']])("refuses a string where lead byte %i is followed by %j", async (lead, rest) => {
+    const bytes = Buffer.concat([Buffer.from('["'), Buffer.from([lead]), Buffer.from(rest + "[".repeat(130) + '"]')]);
+    for (const chunks of [[bytes], oneByteChunks(bytes)]) await expect(readBoundedResponse(response(chunks), 1024)).rejects.toThrow("not valid UTF-8");
   });
   it("carries strings and escaped delimiters over one-byte chunks", async () => {
     const bytes = Buffer.from(JSON.stringify({ 'a"\\': ['[,{', '\\"', "é"] }) + "\n{}");
