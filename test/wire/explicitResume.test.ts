@@ -181,7 +181,7 @@ it("a full in-memory ledger refuses one more verified proof as explicit_resume_l
   const f = await fixture();
   const signed = await signWith(f, f.payload);
   const ledger = wire.createExplicitResumeLedger();
-  for (let i = 0; i < wire.MAX_EXPLICIT_RESUME_CLAIMS; i++) ledger.claim(`live-${i}`, NOW + 30_000, NOW);
+  for (let i = 0; i < wire.MAX_EXPLICIT_RESUME_CLAIMS; i++) expect(ledger.claim(`live-${i}`, NOW + 30_000, NOW)).toBe(true);
   await expect(wire.verifyExplicitCreateResume(signed, { ...f.scope(), ledger })).rejects.toMatchObject({ code: "explicit_resume_ledger_full", status: 503 });
   expect(await wire.verifyExplicitCreateResume(signed, f.scope())).toEqual(f.payload);
 });
