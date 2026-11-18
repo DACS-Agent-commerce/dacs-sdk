@@ -11247,6 +11247,18 @@
           "after": "ca19616de38519c9ca54fc58b30378a71aec291e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that the broadcast claim holds the signer's reservation lock through the dispatch pass",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "2796f3e3ca7e20570d7ecad79e432b957fb7ea64",
+          "after": "364cc659896829029c9aa9e1b51b450b6cd2b30a"
+        }
+      ]
     }
   ]
 }

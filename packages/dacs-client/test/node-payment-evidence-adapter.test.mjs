@@ -14,6 +14,7 @@ import { installNoEgress } from './helpers/no-egress.mjs';
 import { rpcEnvelope, storageWriteConfirmationMatches } from '../src/devnet-demo/storage-write-recovery.mjs';
 import { nativeWalletLaneKey } from '../src/wallet/devnet-native-transport.mjs';
 import { createSignerReservations, signerReservationKey } from '../src/wallet/signer-reservation.mjs';
+import { spawnJournalChild } from './helpers/journal-child-process.mjs';
 
 // The kit journal refuses every send while the kit's operation guard is off. This test-only loader hook admits it in this process, so it is
 // registered before the journal module is loaded.
@@ -355,6 +356,74 @@ test("a native write and an evidence CREATE started together never take the same
   const sent = w.node.broadcasts[0].content.nonce, held = (await recordOf(w))?.active ?? null;
   if (outcome.error) { assert.ok(codes(outcome.error).includes('signer_lane_busy'), 'the evidence CREATE is refused'); assert.equal(held, null, 'and holds nothing'); }
   else { assert.notEqual(outcome.value.nonce, sent, 'the evidence CREATE took another nonce'); assert.equal(held.nonce, outcome.value.nonce); }
+});
+
+const nativeLaneOrIntentKeys = async w => (await w.journal().entries()).map(([key]) => key).filter(key => key.startsWith('devnet/native-wallet/') || key.startsWith('devnet/native-transfer/'));
+// The effect boundary's history records and the native lane and intent records.
+const sendRecords = async w => (await w.journal().entries()).filter(([key]) => key.startsWith('eb/') || key.startsWith('devnet/native-wallet/') || key.startsWith('devnet/native-transfer/'));
+
+test("a boundary refusal before the broadcast's dispatch leaves no native lane or intent record and frees the signer: an evidence CREATE right after it signs", async t => {
+  const w = await adapterWorld(t);
+  // The admission is withdrawn at the broadcast claim's nonce read, so the effect boundary refuses before its dispatch runs.
+  w.node.intercept = row => { if (row.body?.params[0].message === 'getAddressNonce' && w.node.confirms.length > 0) { w.node.intercept = null; setPurchaseAdmission('held'); } return undefined; };
+  const refused = await inPass(w, () => w.send());
+  setPurchaseAdmission('testnet-tp1');
+  assert.equal(refused.success, false, JSON.stringify(refused));
+  assert.ok(codes(w.session.internalCauseOf(refused)).includes('profile_not_admitted'), JSON.stringify(refused));
+  assert.equal(w.node.broadcasts.length, 0, 'nothing was sent');
+  assert.deepEqual(await nativeLaneOrIntentKeys(w), [], 'no lane or intent record');
+  assert.deepEqual(w.journal().inspectLocks(), [], 'no lock is left held');
+  assert.equal((await signIn(w, evidenceInput(w))).nonce, FIRST_NONCE, 'the evidence CREATE claims the signer at once');
+});
+
+test("an evidence CREATE started while a native broadcast is being sent is refused journal-busy or signer_lane_busy and takes no nonce; after the send the lane refuses it signer_lane_busy", async t => {
+  const w = await adapterWorld(t), pass = await openPass(w);
+  // The evidence CREATE is started from here, outside the native write's lock context, and settles before the node answers the broadcast.
+  let reached; const atBroadcast = new Promise(resolve => { reached = resolve; });
+  const evidence = atBroadcast.then(() => w.session.runInEffectPass(pass.handle, () => w.adapter.signCreate(evidenceInput(w)))).then(value => ({ value }), error => ({ error }));
+  w.node.intercept = async row => { if (row.body?.params[0].extra === 'broadcastTx') { w.node.intercept = null; reached(); await evidence; } return undefined; };
+  const native = await pass.run(() => w.send());
+  assert.equal(native.success, true, JSON.stringify(native)); assert.equal(w.node.broadcasts.length, 1);
+  const during = await evidence;
+  assert.equal(during.value, undefined, 'no nonce was claimed during the send');
+  assert.ok(codes(during.error).some(code => ['journal-busy', 'signer_lane_busy'].includes(code)), String(codes(during.error)));
+  assert.equal((await recordOf(w))?.active ?? null, null, 'no reservation is held');
+  await assert.rejects(signIn(w, evidenceInput(w, 'b')), { code: 'signer_lane_busy' });
+  assert.equal((await recordOf(w))?.active ?? null, null, 'still no reservation after the send');
+});
+
+test("a native write whose signer an evidence CREATE reserved after the wallet's broadcast request is refused signer_lane_busy before the dispatch pass, with no boundary record and nothing transmitted", async t => {
+  const w = await adapterWorld(t), wallet = await signingWallet(w), signer = wallet.address, tx = signedTransaction(wallet, w.request.params[0]);
+  await assert.rejects(inPass(w, async () => {
+    const { answer: confirmed, lease } = await confirmThroughFacade(w, wallet, tx);
+    try {
+      await w.session.transport.binding({ phase: 'broadcast', address: signer, leaseId: lease.leaseId, hash: tx.hash });
+      // Another process reserves the signer for an evidence CREATE at this transfer's nonce between the pre-broadcast request and the broadcast.
+      await deadProcess(w).reserve({ signer, operation: 'native', operationKey: 'TEST-evidence-after-request', readChainNonce: async () => 0 });
+      const before = await sendRecords(w);
+      const identity = `ed25519:${signer}`, timestamp = String(w.clock.now() + 2);
+      const headers = { identity, timestamp, signature: wallet.signBytes(Buffer.from(sha(`${identity}:${timestamp}`))).toString('hex') };
+      await w.session.transport.rpc({ method: 'execute', params: [{ extra: 'broadcastTx', data: confirmed }] }, headers).finally(async () => {
+        assert.deepEqual(await sendRecords(w), before, 'the refused broadcast wrote no boundary, lane or intent record');
+      });
+    } finally { await w.session.transport.binding({ phase: 'release', address: signer, leaseId: lease.leaseId }); }
+  }), { code: 'signer_lane_busy' });
+  assert.equal(w.node.broadcasts.length, 0, 'nothing was transmitted');
+  assert.deepEqual(await nativeLaneOrIntentKeys(w), []);
+});
+
+test("a dead process's lock on the signer reservation key is taken over by the broadcast claim, which sends once and leaves no lock", async t => {
+  const w = await adapterWorld(t), key = signerReservationKey(TP1_APPROVED_IDENTITY_RECORD, signerOf(w));
+  const holder = await spawnJournalChild(t, { path: w.path });
+  holder.request('hold', { key });
+  await holder.event('locked');
+  holder.kill();
+  await holder.exited;
+  assert.deepEqual(w.journal().inspectLocks().map(lock => [lock.key, lock.holder]), [[key, 'exited']]);
+  const sent = await inPass(w, () => w.send());
+  assert.equal(sent.success, true, JSON.stringify(sent));
+  assert.equal(w.node.broadcasts.length, 1, 'sent once');
+  assert.deepEqual(w.journal().inspectLocks(), [], 'the claim took the dead holder\'s lock over and released it');
 });
 
 test("signCreate refuses an input that is not this signer's evidence CREATE, a locked wallet and an aborted call before it reserves anything", async t => {
