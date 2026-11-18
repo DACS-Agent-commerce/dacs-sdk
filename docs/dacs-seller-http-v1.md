@@ -509,8 +509,9 @@ Listing pin, job, lane, Agreement hash, profile and request hash are the
 request's (and the delegation's, when there is one), that
 `time < expiresAt <= time + 60,000`, and then claims the proof in the ledger.
 A refused proof is never claimed, so a mismatched request does not use it up;
-a proof the ledger already holds is refused (`explicit_resume_used`), and a
-ledger that cannot record the claim refuses it (`explicit_resume_ledger_failed`).
+a proof the ledger already holds is refused (`explicit_resume_used`), a full
+in-memory ledger refuses it (`explicit_resume_ledger_full`), and a ledger that
+cannot record the claim for another reason refuses it (`explicit_resume_ledger_failed`).
 `signExplicitCreateResume` signs one owned copy of a payload for the buyer's own
 signer, under the signer's TP-1 binding and authority (checked before and after
 the signature, as `signWireEnvelope` does), with `expiresAt` after its clock and
@@ -768,8 +769,9 @@ exactly the profile of every message for that purchase (`assertPurchaseProfile`;
   `signWireEnvelope` directly must bound `expiresAt` itself. It also verifies
   the signature its signer returns under the key the receiver will use (the
   delegated session key, else the buyer's key for a request or the seller's for
-  a response), and throws `peer_signature_invalid` instead of returning a header
-  that would be refused.
+  a response), and throws `peer_signature_invalid` (status 500, the signer's own
+  fault) instead of returning a header that would be refused. A malformed
+  signature from the signer is refused the same way.
 
 With one revision defined, a message naming any other revision is unknown.
 When a later SDK defines another revision, a party that selected or kept
@@ -1010,13 +1012,13 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
 | `peer_agreement_party_mismatch` (409) | a request whose signed buyer or seller is not the party the host retained, or a direct request whose host-owned Agreement context names another job, Listing or party |
 | `peer_envelope_too_large`, `peer_response_too_large`, `body_too_large` (500) | a signer given a header, response body or request body over the limits: its own input, never the peer's fault; nothing is signed |
-| `explicit_resume_invalid` (401; 500 when signing) | a resume header over the limit, not canonical, failing admission, with other than the proof's members, or with an `expiresAt` outside the lifetime bound |
-| `explicit_resume_signature_invalid` (401) | the resume proof's signature is malformed, under another domain, or not the request's buyer's or delegation's key |
+| `explicit_resume_invalid` (401; 500 when signing) | a resume header over the limit, not canonical, failing admission, with other than the proof's members, or with an `expiresAt` outside the lifetime bound; when signing, a signer without a string `claim` and a `sign` function, or one that is not the buyer |
+| `explicit_resume_signature_invalid` (401; 500 when signing) | the resume proof's signature is malformed, under another domain, or not the request's buyer's or delegation's key; when signing, the signer returned a malformed signature |
 | `explicit_resume_mismatch` (409) | a resume proof whose buyer, seller, Listing pin, job, lane, Agreement hash, profile or request hash differs from the request carrying it |
-| `explicit_resume_expired` (408) | a resume proof whose `expiresAt` is not after the verifier's clock |
+| `explicit_resume_expired` (408) | a resume proof whose `expiresAt` is not after the verifier's clock, or not after the latest clock any caller has given the in-memory ledger |
 | `explicit_resume_used` (409) | the ledger already holds this proof |
-| `explicit_resume_ledger_full` (503) | the in-memory ledger holds 4,096 live claims |
-| `explicit_resume_ledger_failed` (503) | the host's ledger threw or rejected while recording the claim; the ledger's error is the cause and the proof is refused |
+| `explicit_resume_ledger_full` (503) | the in-memory ledger holds 4,096 live claims; the verifier throws it unchanged |
+| `explicit_resume_ledger_failed` (503) | the host's ledger threw or rejected while recording the claim with anything other than a `WireError` whose code starts with `explicit_resume_` (such an error is thrown unchanged); the ledger's error is the cause and the proof is refused |
 | `peer_signer_wrong` | a response signed by someone other than the expected seller, or a signer whose claim is not the answer's seller |
 
 The plugin capture does not contain the codes in the rows above from

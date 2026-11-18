@@ -51,7 +51,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/transaction-signature.mjs': { effect: {  }, pure: ['assertSignatureChainId', 'verifyTransactionSignature'] },
   'src/dacs/wallet-transactions.mjs': { effect: {  }, pure: ['assertStorageJsonDepth', 'buildStorageProgramCreatePayload', 'deriveStorageAddress'] },
   'src/devnet-demo/agreement-context.mjs': { effect: { createDevnetDemoAgreementContextProvider: ['createDevnetDemoAgreementContextProvider'] }, pure: [] },
-  'src/devnet-demo/approval-ledger-append.mjs': { effect: {  }, pure: ['appendApprovalLedgerLine', 'syncApprovalLedger'] },
+  'src/devnet-demo/approval-ledger-append.mjs': { effect: {  }, pure: ['appendApprovalLedgerLine', 'assertApprovalLedgerDirectoryCreatable', 'syncApprovalLedger'] },
   'src/devnet-demo/artifact-anchor.mjs': { effect: { createDevnetDemoArtifactAnchor: ['publish'] }, pure: [] },
   'src/devnet-demo/buyer-access.mjs': { effect: {  }, pure: ['createOperatorBuyerAccess', 'operatorBuyerAccessConfig'] },
   'src/devnet-demo/deliverable.mjs': { effect: {  }, pure: ['createDevnetPurchasedReportProducer', 'isDevnetPurchasedReport'] },

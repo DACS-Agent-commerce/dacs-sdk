@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "39991b26e492f5028df029462bbf0bd78ea4594d"
+        "blob": "8299cbfe1798d461591bf4ac8fb21a89391546dd"
       },
       "DELTA-LEDGER.json": {
-        "blob": "db1132ec9095c556e9e7487afffa02e057d59d14"
+        "blob": "341998e85e3f77309cb9ce66b0f6e8d1bbdac27f"
       },
       "DELTA-MAP.md": {
-        "blob": "853b3e858b87ce1aae56f899cc3d02f1098d76e0"
+        "blob": "031ac2a76aaeba42efc355085d69021fc73381e2"
       },
       "DELTA-NOTES.md": {
         "blob": "74ec7eeab1bd2c1197b87f69eabc9a384d9dad7f"
@@ -1050,18 +1050,24 @@
       "records/D77-de0f55395638.json": {
         "blob": "bc2062155d74fe8ce1899b9f6c1ae5158d38eb69"
       },
+      "records/D78-cd9b6e9aecae.json": {
+        "blob": "b44fd110e4d4fbf841f4eea08c1cb91033b09863"
+      },
       "records/WF-2fdae2f97472.json": {
         "blob": "6a64564558993581d125dab937c5a3ad185ad917"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "b00375b5a53d8c179dbac4b2205a499e5ed169b7"
+        "blob": "6c8fb7fe4d1fcfd08b89e700063bed66469f31b7"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
       },
       "scripts/check-imports.mjs": {
-        "blob": "c48030a9ee189aa510d524fa136536449e0234aa"
+        "blob": "011c3f9aa92a5d7f4ad0298599e78e689b46f6b1"
+      },
+      "scripts/check-imports.test.mjs": {
+        "blob": "8ab39a389c6714a7eebdc46204dada4415cff793"
       },
       "scripts/check-provenance.mjs": {
         "blob": "3f790b5ab100a5d8e8ba59017a87b5ace4cbab08"
@@ -1091,7 +1097,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "8cd38ebad7490f19b5ad8081eeb5d285979ec45a"
+        "blob": "89d3c77311c676d65232ebf85230f9edd2df6e82"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "3230b1381cb0432d0665a7074041e30e1a2a5afd"
@@ -1555,12 +1561,6 @@
       "test/helpers/collect-garbage.mjs": {
         "blob": "1d8aad9d5a61666d767c767388215560e5c48fcd"
       },
-      "test/helpers/commitment-node-junk-purchase.mjs": {
-        "blob": "7b01073b114cfa4def9f44dbe1f6b795eab207dd"
-      },
-      "test/helpers/commitment-node-junk.mjs": {
-        "blob": "4dda0ebff0f1a5312c4337040ed7b5308461f8b8"
-      },
       "test/helpers/current-broker-interactions.mjs": {
         "blob": "2926448f6d3377e2de395be177a6bd71aa9ba92e"
       },
@@ -1896,6 +1896,9 @@
       },
       "test/host-observations.test.mjs": {
         "blob": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d"
+      },
+      "test/immutable-readbacks.test.mjs": {
+        "blob": "a119fdedf8851971957636875c5be5eb7cdcad74"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "2bb9dd310f49253c35f2985fff4a653e0b22775e"

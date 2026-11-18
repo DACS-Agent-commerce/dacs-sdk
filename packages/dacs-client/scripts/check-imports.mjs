@@ -11,7 +11,11 @@ export function importAudit() {
   const sf=ts.createSourceFile(file,readFileSync(file,'utf8'),99,true,ts.ScriptKind.JS);
   const visit=n=>{if((ts.isImportDeclaration(n)||ts.isExportDeclaration(n))&&n.moduleSpecifier){
    const spec=n.moduleSpecifier.text,where=relative(pkg,file)+':'+(sf.getLineAndCharacterOfPosition(n.getStart(sf)).line+1);
-   if(spec.includes('node_modules')||spec.includes('/dist/')||/operations\.mjs|buyer-access\.mjs|wallet\/demos-signature|public\/portal\//.test(spec)) failures.push(`${where}: forbidden import ${spec}`);
+   // DELTA-LEDGER.json records this edge in the wallet session's initial blob:
+   // 5180e2239baa16c58382e324a2343331c9d8f11b. The payment evidence adapter
+   // imports the same module only for its refusal error class.
+   const reviewedPortalImport=['src/wallet/node-wallet-session.mjs','src/wallet/node-payment-evidence-adapter.mjs'].includes(relative(pkg,file))&&spec==='../public/portal/embedded-wallet/sdk-provider.mjs';
+   if(spec.includes('node_modules')||spec.includes('/dist/')||/operations\.mjs|buyer-access\.mjs|wallet\/demos-signature/.test(spec)||(/public\/portal\//.test(spec)&&!reviewedPortalImport)) failures.push(`${where}: forbidden import ${spec}`);
    if(spec.startsWith('.')) {
     const target=resolve(dirname(file),spec);
     if(!target.startsWith(resolve(pkg,'src')+'/')||!existsSync(target))failures.push(`${where}: missing/outside dependency ${spec}`);
