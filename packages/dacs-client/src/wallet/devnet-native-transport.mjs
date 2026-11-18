@@ -680,11 +680,11 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   };
   // Refuses unless the signature is the sender's over what the node's signature domain says it covers: the hash while the
   // fork is inactive, `demos-tx:v1:<chain id>:<hash>` once it is active. No other form is accepted.
-  const verifyTransactionSignature = async (tx) => {
-    const chainId = await readSignatureDomain();
+  const verifySignatureInDomain = (tx, chainId) => {
     const message = chainId === null ? tx.hash : `${SIGNATURE_DOMAIN_PREFIX}${chainId}:${tx.hash}`;
     if (!verifyDemosSignature({ address:tx.content.from, message, signature:tx.signature.data })) fail('native_only',ONLY_ORIGINAL_SENDS);
   };
+  const verifyTransactionSignature = async (tx) => verifySignatureInDomain(tx, await readSignatureDomain());
   function signedTransaction(body, headers) {
     const call=body.params?.[0], tx=call.extra === 'confirmTx' ? call.data : call.data?.response?.data?.transaction;
     const c=tx?.content;
@@ -781,6 +781,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const historyOf = (artifact) => createEffectHistory({ journal }).read(artifact);
   // The latest confirm-acknowledged record of an artifact, exactly as retained, or undefined.
   const retainedConfirmation = async (artifact) => (await historyOf(artifact)).findLast((record) => record.state === 'confirm-acknowledged');
+  // The reference block a node confirmation carries, or null when it carries none: never read from a height.
+  const referenceBlockOf = (confirmation) => {
+    const block = confirmation?.response?.data?.reference_block;
+    return Number.isSafeInteger(block) && block >= 0 ? block : null;
+  };
+  // A storage write's kept reference block for a caller, or nothing for a native transfer, which keeps none.
+  const keptReferenceBlock = (row) => row.signedTransaction.content.type === 'storageProgram' ? { referenceBlock:row.storageWriteReferenceBlock ?? null } : {};
   // The whole debit a confirmation commits the sender to, in OS: the declared amount plus the three fees. The fees are
   // the node's fee view when it gave one (each a canonical decimal OS string), and otherwise the confirmed transaction's
   // own `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). `null` when any fee
@@ -895,7 +902,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           return {disposition:'failed',hash,nonce:r.nonce,noResend:true,resolved:true,consumedByHash};
         }
         const status=await node('getTransactionStatus',{ hash });
-        if (status?.state !== 'included' || !Number.isSafeInteger(status.blockNumber)) return { disposition:'pending',hash,nonce:r.nonce,noResend:true };
+        if (status?.state !== 'included' || !Number.isSafeInteger(status.blockNumber)) return { disposition:'pending',hash,nonce:r.nonce,noResend:true,...keptReferenceBlock(r) };
         const proofStarted=now(),cached=writeProofs.get(hash);
         writeProofs.delete(hash);
         const reused=cached && writeProof && canonicalize(writeProof)===canonicalize({disposition:'included',receipt:cached.receipt,noResend:true}) && sameContext(cached.context,await context()) && cached.signed===JSON.stringify(r.signedTransaction) && cached.receipt.blockNumber===status.blockNumber;
@@ -964,6 +971,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             && storageWriteAccountNonce(r.nonce)>0;
         };
         try {
+          // Every node read is made here, before the confirmation; only local checks sit between it and the resend.
           binding=await storageRecoveryBinder.recover(r.networkBinding);
           if(!await absent()) return pending;
           const headers=async()=>{
@@ -980,16 +988,15 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             && canonicalize(answer.response.data.gas_operation ?? null)===canonicalize(r.storageWriteGas);
           const confirmation=await boundary.dispatchPass(signed,(bytes,final) => transmit(confirmBody,auth,{ final,pass }),{ explicit:true,stage:'recovery-confirm',material:(answer) => confirms(answer) ? {} : undefined });
           if(!confirms(confirmation)) return pending;
-          binding=await storageRecoveryBinder.beforeBroadcast(binding);
           const broadcastAuth=await headers();
-          if(!await absent() || !sameContext(originalContext,await context())) return pending;
+          if(!sameContext(originalContext,await context())) return pending;
           const resendOnce=async(bytes,final)=>{
             // Reserve the sole attempt before dispatch. A crash consumes it too;
             // reopening the journal can never start another retransmission loop.
-            r={...r,storageWriteResends:1,networkBinding:binding};
+            // The reservation also keeps the reference block of this exact-byte reconfirmation.
+            r={...r,storageWriteResends:1,networkBinding:binding,storageWriteReferenceBlock:referenceBlockOf(confirmation)};
             await retain(intent(hash),r); await retain(lane(address),r);
-            if(await readNonce()!==storageWriteAccountNonce(r.nonce)-1
-              || !sameContext(originalContext,await context())) fail('recovery_not_resendable','the account nonce or the connection changed after the resend was reserved');
+            if(!sameContext(originalContext,await context())) fail('recovery_not_resendable','the connection changed after the resend was reserved');
             // Still under this lane's lock, just before the sole dispatch: report
             // the resent bytes' own signed job. Telemetry only; it cannot stop or
             // change the resend.
@@ -1078,7 +1085,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           // broadcast claim below still decides, under the lane lock.
           const confirmed=await identityOf(l.confirmed.content);
           if(await cancelledTransfer(address,confirmed)) await refuseCancelled(address,confirmed,'pre-broadcast');
-          l.binding=await binder.beforeBroadcast(l.binding);
+          // A CREATE's chain read ran before its confirmation; nothing here reads the node for it.
+          if(l.confirmed.content.type !== 'storageProgram')l.binding=await binder.beforeBroadcast(l.binding);
           if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the connection changed before broadcast');
           l.readyHash=request.hash;
           return { binding:l.binding,leaseId:l.id };
@@ -1094,9 +1102,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       const pass=currentPassContext();
       const tx=signedTransaction(body,headers), { l, release }=await claimLease(tx.content.from);
       try {
-      await verifyTransactionSignature(tx);
+      // A storage CREATE's broadcast reads nothing from the node: its signature is checked in the domain its confirmation was.
+      const create=tx.content.type === 'storageProgram', afterConfirmation=create && call.extra === 'broadcastTx';
+      const signatureDomain=afterConfirmation ? l.signatureDomain : await readSignatureDomain();
+      if(signatureDomain === undefined) fail('native_confirmation_required','the confirmation that verified this signature is required');
+      verifySignatureInDomain(tx,signatureDomain);
       if(call.extra === 'confirmTx') {
-        l.confirmed=null;l.readyHash=null;
+        l.confirmed=null;l.readyHash=null;l.signatureDomain=signatureDomain;
         const issuedBefore=await journal.get(intent(tx.hash));
         if(issuedBefore){refuseRetiredPin(issuedBefore);fail('outcome_unknown','an issued native hash is readback-only, never reconfirmed or resent');}
         const transfer=await identityOf(tx.content);
@@ -1114,6 +1126,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           await claimTransfer(l,transfer,true);
         });
         step(tx,'sign','complete',l.signStarted);
+        // A CREATE's chain read happens here, so that only local checks sit between its confirmation and its broadcast.
+        if(create)l.binding=await binder.beforeBroadcast(l.binding);
         // An acknowledged confirmation is final for its bytes: in the operation that holds it, a repeated
         // confirmation is answered from the retained record and the node is not asked again.
         const retained=await retainedConfirmation({ lane:lane(tx.content.from),artifactHash:sha(JSON.stringify(tx)) });
@@ -1149,11 +1163,11 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           // Under the lock of the journal claim below: a cancelled transfer is never claimed.
           const claiming=await identityOf(tx.content);
           if(await cancelledTransfer(tx.content.from,claiming)) await refuseCancelled(tx.content.from,claiming,'broadcast');
-          const binding=await binder.beforeBroadcast(l.binding);
+          const binding=create ? l.binding : await binder.beforeBroadcast(l.binding);
           if(!sameContext(await context(),l.fence.context)) fail('connection_changed','the fenced connection changed');
           if(tx.content.type==='native' && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))>=tx.content.nonce) fail('nonce_consumed','the bound sender nonce was already consumed; no native intent was issued');
           const issued={ stage:'broadcast-started',hash:tx.hash,nonce:tx.content.nonce,signedTransaction:clone(tx),networkBinding:clone(binding) };
-          if(tx.content.type==='storageProgram') issued.storageWriteGas=clone(call.data?.response?.data?.gas_operation ?? null);
+          if(create) { issued.storageWriteGas=clone(call.data?.response?.data?.gas_operation ?? null); issued.storageWriteReferenceBlock=referenceBlockOf(call.data); }
           // The one transmission, with the lane's intent retained just before it.
           const dispatch=async(bytes,final)=>{
             await retain(lane(tx.content.from),issued);
@@ -1205,7 +1219,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           }
         }
       } finally { await stopLease(l,true); } // the lane journal holds whatever was sent
-      return accepted;
+      return create ? { ...accepted,referenceBlock:referenceBlockOf(retained.confirmation) } : accepted;
       } finally { await release(); }
     },
     // Binding requests from a wallet, through any HTTP relay. bind and

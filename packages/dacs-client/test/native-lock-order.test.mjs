@@ -52,7 +52,7 @@ test('a real child killed at broadcast-started, and separately after recovery re
     assert.equal(lane.stage, 'broadcast-started');
     assert.equal(lane.hash, leased.hash);
 
-    assert.deepEqual(await world.readback(leased.hash), { disposition: 'pending', hash: leased.hash, nonce: 2, noResend: true });
+    assert.deepEqual(await world.readback(leased.hash), { disposition: 'pending', hash: leased.hash, nonce: 2, noResend: true, referenceBlock: 0 });
     assert.deepEqual(journal.inspectLocks(), [], 'the readback reclaimed the dead holder\'s lock');
     await assert.rejects(world.lease(), { code: 'outcome_unknown' });
     assert.deepEqual(await journal.get(world.laneKey), lane, 'the lane record is untouched');
@@ -137,7 +137,7 @@ test('actual broadcast, confirmation and CREATE recovery with the real history a
   for (const arrival of ['confirmation', 'broadcast']) {
     const read = await boundedOverlap(t, { name: 'readback', arrival });
     assert.equal(read.leasedOutcome, 'accepted', `readback during ${arrival}`);
-    assert.deepEqual(read.other, { disposition: 'pending', hash: read.retained.hash, nonce: 1, noResend: true });
+    assert.deepEqual(read.other, { disposition: 'pending', hash: read.retained.hash, nonce: 1, noResend: true, referenceBlock: null });
     assert.deepEqual(read.lanes.reacquired, []);
     assert.deepEqual(read.c.calls, { confirmTx: 1, broadcastTx: 1 });
   }

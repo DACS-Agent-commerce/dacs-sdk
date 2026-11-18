@@ -11121,6 +11121,48 @@
           "after": "346883e5ba1de72af5d1eb35aa7f53a4007e5395"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read the node before a storage CREATE is confirmed and hand back its reference block",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "ece75765c7cf7ce389584fba6f801e0df5785b73",
+          "after": "9729df470abee8f52cdfe749df363d2729825f8c"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "c30124f90aff2677e1d117eaf03ea80095903cd3",
+          "after": "ceb720b72cc3c0f19f8d59d5d9934ba1358d7bd8"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-boundary.mjs",
+          "before": "439c667b1e6f716ecf7c430c8ef3b0024442d6e0",
+          "after": "159d73c79e7365ca71823a35d4ae3a692ac07231"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "ed252c868855c3534039438348e90741e9cd36f3",
+          "after": "b346d2409f57497abfc047e22c6bf795ca4b9f17"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+          "before": "20363fa9ad52212473f485ddbff7ecfdc6af3e2d",
+          "after": "0f187f71ec3ac034e048745f27fa8bf6a332047d"
+        },
+        {
+          "path": "packages/dacs-client/test/native-create-timing.test.mjs",
+          "before": null,
+          "after": "106bcf7eee3dac5f0448ec3925a5178077ff7f36"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "3b833ced997efcb25db41f789c785d27f89ebf1d",
+          "after": "2577c25e9dd8f10d1158bdf96b330d62b780eece"
+        }
+      ]
     }
   ]
 }
