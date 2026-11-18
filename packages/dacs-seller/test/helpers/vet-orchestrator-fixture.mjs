@@ -17,7 +17,9 @@ export const W = 'tp1-g3-orchestrator', OTHER = testWallet(4), copy = structured
 export const address = party => compositeVerificationAddress(JOB, party.claim);
 export const deferred = () => { let resolve; const promise = new Promise(done => resolve = done); return { promise, resolve }; };
 export async function signedRecord(record, signer = SELLER) { const unsigned = { ...record }; delete unsigned.signature; return signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.CompositeVerificationRecord, { signer: signer.claim, algorithm: 'ed25519', sign: signer.signBytes }); }
-export async function orchestratorFixture(t, { real = false, disk = false, vetMode = W, signRpc } = {}) {
+// sleep (with real): replaces the real anchor's wait between readbacks of a pending CREATE.
+// signRpc (with real): the real anchor's RPC signer, which its recovery send needs.
+export async function orchestratorFixture(t, { real = false, disk = false, vetMode = W, sleep, signRpc } = {}) {
     const listing = await k4Listing(), records = new Map(), controls = { signatures: [], creates: [], reads: [], counterpartyCalls: 0 };
     let base = createInMemoryPartyVetStore(), path;
     const handles = [];
@@ -55,7 +57,7 @@ export async function orchestratorFixture(t, { real = false, disk = false, vetMo
     };
     let native;
     if (real) {
-        native = await anchorFixture({ writer: { claim: SELLER.claim, sign: SELLER.signBytes }, vetMode, now: () => T0, signRpc });
+        native = await anchorFixture({ writer: { claim: SELLER.claim, sign: SELLER.signBytes }, vetMode, now: () => T0, sleep, signRpc });
         native.source.observeBinding = async () => ({});
         native.source.binding = async () => ({ disposition: 'included' });
         native.controls.reader.read = async (logicalAddress) => ({ ...await read({ logicalAddress }), demosEvidence: {} });

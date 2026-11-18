@@ -155,7 +155,7 @@ function demosNode(now = () => NOW) {
     const metadata = { logicalAddress, contentHash: (artifactKind === 'Deliverable' ? core.sha256Hex(core.canonicalize(artifact)) : core.contentHash(artifact)), envelopeHash: core.sha256Hex(core.canonicalize(artifact)), artifactKind, ...(deliveryBinding ? { deliveryBinding: clone(deliveryBinding) } : {}) };
     content.data[1].metadata = metadata;
     content.from_ed25519_address = owner;
-    // What demosdk 4.0.16 sign adds to a storage CREATE (checked against the SDK below): the node's fee, and the
+    // What demosdk 4.0.18 sign adds to a storage CREATE (checked against the SDK below): the node's fee, and the
     // execution edits its GCRGeneration writes before the hash exists: the storage fee burn (1 DEM per started
     // 10240 bytes of the program's JSON), the storage program, the gas burn and the nonce increment.
     content.transaction_fee = { network_fee: 2, rpc_fee: 3, additional_fee: 0, rpc_address: null };
@@ -267,7 +267,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
   const effects = { deliverySubmit: [], deliveryResends: [], published: [], publishCalls: [], retainedReads: [], retainedResends: [], signCreate: [], signed: [], broadcast: [], componentSigns: [], deliverySignCreate: [], deliverySigned: [], deliveryBroadcast: [] };
-  const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, readRetainedEvidenceHang: null, artifactApproval: null, evidenceReadAbsence: null, evidencePending: false, commitmentPending: false, beforeCommitmentResendCheck: null };
+  const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryProofReason: null, deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, readRetainedEvidenceHang: null, artifactApproval: null, evidenceReadAbsence: null, evidencePending: false, commitmentPending: false, beforeCommitmentResendCheck: null };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     if (lostBeforeCompletion && Buffer.from(bytes).toString('utf8').startsWith(DACS_SELLER_HTTP_DOMAINS.response)) throw new Error('TEST process lost before the response');
@@ -585,7 +585,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
         } else if (notYetReadable) throw notYetReadable;
       }
       if(read.status==='present'&&typeof faults.deliveryRead==='function')return faults.deliveryRead(clone(read));
-      return read.status === 'absent' && !signedCreates.has(input.logicalAddress) && !journalInUse ? provenUnsignedAbsence(read.reason) : read;
+      return read.status === 'absent' && !signedCreates.has(input.logicalAddress) && !journalInUse ? provenUnsignedAbsence(faults.deliveryProofReason ? faults.deliveryProofReason(read.reason) : read.reason) : read;
     },
     verifyReceipt: async ({ logicalAddress, report, receipt, receiptContentHash, deliveryBinding, signedProjection }) => node.reader.verifyReceipt({ receipt, logicalAddress, artifact: report,
       expectedWriter: sellerKey.claim, artifactKind: 'Deliverable', deliveryBinding, receiptContentHash, signedProjection: signedProjection ?? clone(signedCreates.get(logicalAddress)) }),
@@ -1595,6 +1595,22 @@ test('a Deliverable submission that fails before anything is signed does not str
     assert.equal(w.createsAt(deliverable), 1, 'exactly one CREATE');
     assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
     assert.equal(w.createsAt(deliverable), 1);
+  }
+});
+
+// `faults.deliveryProofReason` maps the reason a reader's proven unsigned absence carries.
+test('a proven absence with no reason or an empty reason does not strand the paid order: the next claim submits it once', async (t) => {
+  for (const [form, proofReason] of [['no reason', () => undefined], ['an empty reason', () => '']]) {
+    const w = await world(t);
+    w.faults.deliveryProofReason = proofReason;
+    const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+    w.faults.deliverySubmit.push('fail');
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable', `${form}: the first submission failed`);
+    assert.equal(w.createsAt(deliverable), 0, 'nothing was signed');
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivery-ready', `${form}: ${shown(answer)}`);
+    assert.deepEqual(w.effects.deliverySubmit, [deliverable, deliverable], `${form}: asked again after the proven absence`);
+    assert.equal(w.createsAt(deliverable), 1, 'exactly one CREATE');
   }
 });
 

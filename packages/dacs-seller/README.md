@@ -51,7 +51,9 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
-The host's optional `maxRecords` (default 10,000) is the reservation budget. A purchase allocation holds 17 units for each of the
+The host has two separate record limits. `maxRecords` (default 10,000) is the transport store's limit on live nonce records
+and retained accounting rows, and it also sets the store's challenge and context-record caps. `maxReservationUnits` is the purchase capacity's reservation budget; it defaults to `maxRecords`
+and is set on its own to give the budget a different size. A purchase allocation holds 17 units of that budget for each of the
 context, proposals, commitments and payments routes (68 units, or 85 when
 commitments/signature is enabled), and admission allots one only while the whole
 allotment is free. A successful context completion returns only the context
@@ -108,7 +110,8 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
-  maxRecords: 10000,     // optional reservation budget; a purchase allocation is 68 units
+  maxRecords: 10000,     // optional limit on the store's live nonce, challenge and context records and retained accounting rows
+  maxReservationUnits: 10000, // optional reservation budget, default maxRecords; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
@@ -156,17 +159,36 @@ with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
+A store that already exists is checked against the journal on every start,
+before the host listens: every nonce key must name an accounting row, a charge
+that a crash left reserving is marked with what the journal holds for it (its
+charge stays counted), and the slot of an operation that completed before the
+slot was returned is returned once. If the journal cannot be read whole, or a
+key names no row, the host starts not ready, changes nothing and records
+`kit_journal_accounting_mismatch` with its cause, and writes one line to stderr:
+`seller-state: not accepting new purchases: kit_journal_accounting_mismatch: <cause>`.
+The cause is a code and a detail, for example
+`seller_replay_guard_invalid: STORE-ENUMERATION-INCOMPLETE`. It says the journal
+and the store do not agree, or the journal cannot be read whole; it may name a
+key, an operation or a job, and names a file only for an operating-system read
+error. The operator restores `seller/`, `transport/` and
+`wire-journal/` to one consistent copy (the same backup, or the same running
+host), then restarts; each start checks again. Only when the cause is an
+operating-system read error that names a file does the operator repair that file
+instead.
 
 Signed effect routes reserve through one reservation coordinator, which commits
 accounting before the wire journal publishes their attempt. A final answer
 completes the operation and returns its route slot; a later request is answered
 from it, after the existing source checks. A `waiting` proposal that kept no work
 ends the attempt without an outcome, and the next request recovers at once, the
-agent reconciling first. Retained payment work keeps its attempt open instead: a
-`held` payment, or evidence whose delivery is not done, is not ended and not
-stored. A payment that kept nothing (`indeterminate` before the evidence
-checkpoint, or `rejected`) still ends without an outcome. An uncertain or open
-attempt stays open: a request inside its 300 s lease gets `seller_effect_pending`,
+agent reconciling first. A payment answer that says the payment is in progress,
+a `held` payment or evidence whose delivery is not done, ends its attempt the
+same way and is not stored: waiting for a transfer is not a crash, so it spends
+none of the 16 attempts below. A payment that kept nothing (`indeterminate`
+before the evidence checkpoint, or `rejected`) also ends without an outcome. An
+uncertain or open attempt stays open, as does any other answer or refusal while
+payment work is unfinished: a request inside its 300 s lease gets `seller_effect_pending`,
 and the first after it recovers, spending one of 16 attempts at each lapse; after
 16 lapsed attempts the operation answers `seller_effect_unresolved`. A final
 payment answer is stored only after its sources are read again, and returns the
@@ -281,7 +303,21 @@ the producer, retry the same payment claim; do not collect another payment.
 `artifactAnchor` publishes native artifacts for the seller named by `writer`.
 Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
-the signed transaction before sending it. `readRetained({ logicalAddress,
+the signed transaction before sending it. The party Vet provider also passes
+`awaitInclusion: true`: a CREATE that call sends and that still reads back as
+pending is read again every five seconds for a bounded time while `authorize()`
+still answers `true`. The additional polls never send the CREATE again; the
+first pending read can still run the existing one-time recovery send
+(`recoverStorageWrite`) of the retained CREATE, as without `awaitInclusion`. In
+the reference anchor the bound is six minutes after the wallet's answer, and the
+wallet answers only after the transport's own inclusion wait (120 seconds by
+default), so the bound ends about eight minutes after the broadcast. Meanwhile
+the seller's other writes wait behind the pending write, up to that bound,
+instead of failing at once with a retryable error. `readBackRecords({ jobId,
+buyer })` reads a job's two retained Vet records back without signing or
+sending anything; it answers `present` only when both records read back as
+included, and `indeterminate` when one is not written yet or does not read
+back. `readRetained({ logicalAddress,
 artifactKind })` must authenticate the exact retained artifact, receipt, native
 transaction reference and signed projection when returning `status: 'present'`;
 `verifyReceipt` independently checks those bindings. Retain one logical record
@@ -339,9 +375,12 @@ limits: 256 KiB, 32768 values, 80 levels deep and 16384 entries in a list. These
 cover any Deliverable the seller can send. A reply over a limit is answered as
 `indeterminate`, never as absent. A reconcile, read or verify that takes longer
 than 30 seconds is also answered as `indeterminate`; a missed deadline does not
-prove that nothing was written. A submit has no deadline. Except for the
-`provenUnsignedAbsence` and `deadRefusedCreate` objects, the caller gets a JSON
-copy of a reply, not the object the capability returned.
+prove that nothing was written. A submit has no deadline. The caller gets a
+checked JSON copy of a reply.
+For `provenUnsignedAbsence` and `deadRefusedCreate`, that copy retains the
+process-local proof. Missing reasons become empty text; errors and
+message-bearing objects use their name and message; function and symbol
+reasons become text. Other reason values must pass the JSON reply limits.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -366,6 +405,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   One live process owns a data directory (`seller-state.lock`): a second host,
   in this process or another, is refused; the lock of a process that is
   provably gone is taken over, and any doubt refuses until it is removed by hand.
+  On macOS and the BSDs the boot is identified by `kern.boottime`, which a
+  wall-clock step moves. After a step, the lock of a process that started before
+  it and did not exit cleanly names another boot and is not taken over: confirm
+  that no operator process runs, then remove `seller-state.lock` by hand.
   Holding that lock, the host recovers what a holder that is gone left before it
   serves: it releases every job lock row `releaseAbandonedLock` would release
   (never a live holder, nor one on this boot whose lease cannot be checked),
@@ -414,8 +457,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, keeps the attempt open: the first request after its 300 s lease
-  recovers and runs the agent's retained work again (reading back first), and a
+  done yet, ends the attempt with no outcome: the next request recovers at once
+  and runs the agent's retained work again (reading back first), and a
   different claim for the job is still
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
@@ -564,7 +607,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
   `signedTransaction` is the JSON of exactly the public signed projection
   `{ hash, content, signature: { type, data } }` of the Demos signed
-  transaction: of demosdk 4.0.16's `demosclass.js` `sign()` result, only those three members (its
+  transaction: of demosdk 4.0.18's `demosclass.js` `sign()` result, only those three members (its
   `status`, `blockNumber` and `ed25519_signature` are left out; node 61b8e75
   refuses a truthy `status`, which the signature does not cover). Before it is
   kept, the journal checks it is what the node executes and the SR-2 readback
@@ -602,7 +645,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   expected amount.
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent. A kept CREATE whose whole debit is above the ceiling is never
-  broadcast again: `anchorEvidence`, `reconcilePaymentEvidence`,
+  broadcast again, and until the operator clears it (below)
+  `anchorEvidence`, `reconcilePaymentEvidence`,
   `ensureEvidence` and the Deliverable journal's `resume` and
   `submitAuthorized` refuse its address with `write-fee-cap`, naming its hash
   and debit, before any wallet read or signature. `readSignedProjection` still
@@ -612,7 +656,30 @@ per-client limiter so one client cannot exhaust the shared request budget.
   (`code` and `message`) on the held answer of the seller agent. On the
   Deliverable path it is the `reason` of the held, pending or indeterminate
   delivery outcome, which starts with `write-fee-cap:`.
-  There is no operator command to clear a held write.
+  To clear a held write, call `clearHeldWrite({ logicalAddress, txHash })` on
+  the journal (the evidence journal or the Deliverable journal) with the
+  hash the `write-fee-cap` reason names and the address of the write,
+  `dacs4:evidence:<jobId>` on the payment evidence path and
+  `dacs4:deliverable:<jobId>` on the Deliverable path:
+  1. Check on the chain what became of the write. It must have been applied,
+     or another transaction of the writer must have used its nonce.
+  2. Call `clearHeldWrite`. It asks the journal's own `readAccountNonce` and
+     `readTransactionState` and clears the write only if they prove one of the
+     two. It answers `{ status: 'applied', txHash }` when the write was
+     applied: the journal keeps it and sends nothing, even when a later read
+     of the chain fails or answers `pending`. It answers
+     `{ status: 'superseded', txHash }` when the write can no longer execute
+     (the account nonce has passed it and a complete transaction index shows
+     it was not executed): the address is then signed anew by the next
+     `anchorEvidence` or `submitAuthorized`, with a nonce above the kept one.
+     The held write itself is never broadcast.
+  3. If the chain does not prove either, `clearHeldWrite` throws
+     `held_write_still_live` and the write stays held; try again once the
+     chain has moved on. A hash the journal never kept for the address throws
+     `held_write_unknown`, and a write that is not above the ceiling throws
+     `held_write_not_held`.
+  Clearing the same write again answers the same result without reading the
+  chain.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
@@ -976,7 +1043,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   again only after its sources are read again, read only: the retained
   contribution and Agreement, both Vet records with their receipts, and the
   buyer's current access. A completed commitment answer is signed again only
-  after the retained commitment's canonical address, record, transaction and
+  after the buyer's current job-scoped access passes and the retained commitment's
+  canonical address, record, transaction and
   finalized receipt are read again from its source in passive mode; an early
   commitment needs no buyer Agreement anchor for this. A source that fails answers `503
   seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,

@@ -224,6 +224,44 @@ for (const [label, nodeFee, debitOs] of [
   await assert.rejects(submit(journal, asked), held, 'submit');
   assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
 });
+// clearHeldWrite clears a held Deliverable CREATE only on proof from the chain: applied, or overtaken and absent.
+async function keepHeldDeliverable(w) {
+  const asked = w.input(), input = { ...asked, artifact: asked.report, artifactKind: 'Deliverable' };
+  const kept = await sdkSignedCreate(input, { nonce: 1, timestamp: 1, nodeFee: { networkFee: 20, rpcFee: 31 } });
+  keepUncheckedCreate(w.path, 'deliverable_creates', input, kept);
+  w.node.chain.signed[kept.hash] = kept.content.nonce;
+  return { asked, kept, ask: { logicalAddress: asked.logicalAddress, txHash: kept.hash } };
+}
+test('clearHeldWrite supersedes a held Deliverable CREATE the chain can no longer execute, and the address is signed anew', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const { asked, kept, ask } = await keepHeldDeliverable(w);
+  w.node.other();
+  const cleared = await journal.clearHeldWrite(ask);
+  assert.deepEqual([cleared.status, cleared.txHash], ['superseded', kept.hash]);
+  assert.equal((await resume(journal, asked)).status, 'unsigned');
+  const submitted = await submit(journal, asked);
+  assert.notEqual(submitted.reconciliationId, kept.hash);
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [1, 1], 'only the new CREATE is sent, never the held one');
+});
+test('clearHeldWrite keeps a held Deliverable CREATE the chain applied, and sends nothing', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const { asked, kept, ask } = await keepHeldDeliverable(w);
+  w.node.chain.applied.push(kept.hash); w.node.chain.accountNonce = 1;
+  assert.equal((await journal.clearHeldWrite(ask)).status, 'applied');
+  assert.deepEqual(await resume(journal, asked), { status: 'applied', txHash: kept.hash });
+  assert.deepEqual(await submit(journal, asked), { status: 'accepted', reconciliationId: kept.hash });
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
+test('clearHeldWrite refuses a held Deliverable CREATE whose nonce the chain has not overtaken', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const { asked, ask } = await keepHeldDeliverable(w);
+  await assert.rejects(journal.clearHeldWrite(ask), { code: 'held_write_still_live' });
+  await assert.rejects(resume(journal, asked), { code: 'write-fee-cap' });
+  assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
 test('a kept Deliverable CREATE without a data field is refused as a journal conflict', async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());

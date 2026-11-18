@@ -35,7 +35,8 @@ import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from
 import { readRetainedBounded, readFailureCode } from './bounded-reads.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
-import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
+import { createSellerDurableState } from './seller-durable-state.mjs';
+import { DEFAULT_SELLER_MAX_JOBS } from './seller-capacity-defaults.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
 import { sellerBundleProblem, sellerRecordVerifier } from './session-admission.mjs';
@@ -81,10 +82,11 @@ const sourceUnavailable = (cause) => new SellerTransportError('seller_source_una
 // What a completed commitment answer says, by route.
 const COMMITMENT_ANSWER_STATUS = Object.freeze({ '/dacs/v1/commitments': 'committed', '/dacs/v1/commitments/signature': 'commitment-held' });
 export const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
-const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
+/** Whether a payment answer says the payment is still in progress: held, or evidenced with its delivery not done. */
+export const isPendingPaymentAnswer = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
 /** Whether a payment answer is final: delivered, delivery-ready, or payment-evidenced with its delivery done. */
-export const isFinalPaymentAnswer = (answer) => ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
+export const isFinalPaymentAnswer = (answer) => ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !isPendingPaymentAnswer(answer));
 /** The one classification of an authenticated seller command's result
  * ({answer}, {error} or {held}), for its first run (HTTP finish) and for its
  * recovery (reconcileTransport). Only a refusal from the no-effect list keeps
@@ -102,7 +104,7 @@ export function transportOutcome(path, result = {}, { retained = true, recoverin
     ...(failed || cause !== undefined ? { cause, causeCode: readFailureCode(cause) } : {}) };
   const noEffect = rejected && !resumed && !retained;
   const final = isFinalPaymentAnswer(answer);
-  const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
+  const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : isPendingPaymentAnswer(answer) || (retained && !final))));
   if (recovering && !(readOnly ? !retry && !noEffect && !rejected : retry || noEffect ? proposal || payment || bundle : !rejected)) {
     return { disposition: 'indeterminate', reason: String(refusal ? error.code : answer?.reason ?? 'seller_transport_work_retained').slice(0, 240), status: 503, value: UNCERTAIN, settle: false, retry: false, noEffect: false };
   }
@@ -1344,6 +1346,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const retained = session?.commitment, logicalAddress = finalityCommitmentAddress(jobId);
     // An early commitment holds no ordinary commitment yet: its retained evidence is the CREATE at its address and the Agreement hash.
     if (!session?.agreementHash || !(retained || (path === '/dacs/v1/commitments/signature' && session.signatureCommitmentHeld))) throw sourceUnavailable('absent');
+    try { assertBuyer(session.buyerBundle.presentedBy, jobId); }
+    catch (error) { throw error?.code === 'buyer_access_closed' ? new SellerTransportError(error.code, error.status) : error; }
     let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
     if (stored?.status !== COMMITMENT_ANSWER_STATUS[path] || stored.address !== logicalAddress ||
         (retained && (retained.logicalAddress !== logicalAddress || retained.agreementHash !== session.agreementHash))) throw sourceUnavailable('changed');
@@ -1823,10 +1827,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!isDeliverableMiss(error)) return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.code ?? 'unknown').slice(0, 64)}: ${String(error?.message ?? error).slice(0, 180)}` };
           read = { status: 'absent' };
         }
-        if (mayPublishAgain(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved nothing signed for the Deliverable can still land' };
+        if (mayPublishAgain(read)) return { status: 'absent', reason: read.reason || 'the reader proved nothing signed for the Deliverable can still land' };
         if (read?.status === 'absent' && deliverableJournal) {
           const asked = await resumeDeliverableJournal(session, work, input.fulfilmentId);
-          return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason ?? 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
+          return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason || 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
         }
         if (read?.status !== 'present') return { status: 'indeterminate', reason: `a submitted Deliverable CREATE did not read back: ${read?.reason ?? read?.status ?? 'missing'}` };
         if (!reportMatches(read.artifact, session, work.intake.settlementId)) return { status: 'indeterminate', reason: 'canonical delivery bytes differ' };
@@ -2420,7 +2424,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
      * retained permit, the evidence, the Deliverable and the delivery evidence, against the stored answer; it never runs or claims the payment.
      * A proposal: the current buyer access, the retained contribution and Agreement, the stored answer against that contribution,
      * and both Vet records with their receipts. A commitment (or early commitment): the retained commitment, its canonical address,
-     * its record, transaction and finalized receipt, read from the commitment's source in passive mode, against the stored answer.
+     * its record, transaction and finalized receipt, read from the commitment's source in passive mode, against the stored answer,
+     * and the buyer's current job-scoped access.
      * Resolves with nothing when every one authenticates. Throws SellerTransportError `seller_source_unavailable`
      * (503) with a cause of `absent`, `changed`, `timeout`, `too_large` or `unavailable`, the closed-access refusal as its own
      * SellerTransportError, and a TypeError for a path that has no completed answer here. It writes nothing and signs nothing.

@@ -5,15 +5,27 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { assemble } from './delta-assemble.mjs';
+import { isAnchored, PACKAGE_PREFIX, readAnchor, selects } from './delta-record.mjs';
 const root=join(dirname(fileURLToPath(import.meta.url)),'../../..');
-function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));execFileSync('git',['clone','--quiet','--shared',root,dir]);t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;}
+// A `git commit` may start `git maintenance run --auto`, which can detach and keep writing into the clone's .git
+// after the commit returns; that races the cleanup below (ENOTEMPTY). A scratch clone never starts it.
+function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));execFileSync('git',['clone','--quiet','--shared',root,dir]);for(const [key,value] of [['maintenance.auto','false'],['gc.auto','0'],['gc.autoDetach','false']])execFileSync('git',['-C',dir,'config','--local',key,value]);t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;}
 function check(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-provenance.mjs'),'--local-only'],{encoding:'utf8'});return {status:result.status,text:result.stdout+result.stderr};}
+// The archive is a core pin: check-hold refuses any edit of the ledger.
+function refusedByArchivePin(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-hold.mjs')],{encoding:'utf8'});assert.equal(result.status,1,result.stdout+result.stderr);assert.match(result.stderr,/^FAIL packages\/dacs-client\/DELTA-LEDGER\.json: changed bytes; package is frozen$/m);}
 const moved='packages/dacs-client/src/dacs/buyer-chain-readback.mjs';
 test('committed delta history and generated per-file table agree',t=>{const r=check(scratch(t));assert.equal(r.status,0,r.text);});
+test('a commit in a scratch clone starts no background git maintenance that could outlive the test',t=>{
+ const dir=scratch(t);writeFileSync(join(dir,'maintenance-probe.txt'),'probe\n');execFileSync('git',['-C',dir,'add','-A']);
+ const commit=spawnSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false','commit','-qm','test: probe'],{encoding:'utf8',env:{...process.env,GIT_TRACE:'1'}});
+ assert.equal(commit.status,0,commit.stderr);
+ assert.doesNotMatch(commit.stderr,/git maintenance run|git gc --auto/,'git commit must not start automatic maintenance in a scratch clone');
+});
 function checkCallbackHistory(dir) {
   const pkg = join(dir, 'packages/dacs-client');
   const notes = readFileSync(join(pkg, 'DELTA-NOTES.md'), 'utf8');
-  const { changes } = JSON.parse(readFileSync(join(pkg, 'DELTA-LEDGER.json'), 'utf8'));
+  const { changes } = assemble(pkg).ledger;
   const replacement = 'fix(client): D11 enforce the write lease in SQLite instead of patching statements';
   const retired = [
     'fix(client): D11 refuse SQL callbacks under the statement guard',
@@ -70,12 +82,18 @@ test('the publication inventory cannot omit an outside-only commit or name an ab
 });
 test('an unenumerated working-tree edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST edit\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
 test('a deletion needs a named delta',t=>{const dir=scratch(t);unlinkSync(join(dir,moved));const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
+// The gate reports `unenumerated change` only for the client's src/ and test/ files, so a fault that expects it
+// removes the last record that changes one of them; a newer record that changes only README.md or a script does not count.
+const SOURCE_OR_TEST_PATH=/^packages\/dacs-client\/(src|test)\//;
+function lastSourceOrTestChangeIndex(data){
+ const index=data.changes.findLastIndex(record=>record.files.some(file=>SOURCE_OR_TEST_PATH.test(file.path)&&file.before!==file.after));
+ if(index<0)throw new Error('the fault needs a ledger record that changes a client src/ or test/ file, and the ledger has none');
+ return index;
+}
 test('removing a delta record cannot hide its historical file changes', t => {
   const dir = scratch(t), file = join(dir, 'packages/dacs-client/DELTA-LEDGER.json');
   const data = JSON.parse(readFileSync(file, 'utf8'));
-  const index = data.changes.findLastIndex(record => record.files.some(file => file.before !== file.after));
-  assert.ok(index >= 0, 'the ledger must contain a historical source change');
-  data.changes.splice(index, 1);
+  data.changes.splice(lastSourceOrTestChangeIndex(data), 1);
   writeFileSync(file, JSON.stringify(data));
   const result = check(dir);
   assert.equal(result.status, 1, result.text);
@@ -91,6 +109,7 @@ test('removing a bookkeeping checkpoint is also refused', t => {
   const result = check(dir);
   assert.equal(result.status, 1, result.text);
   assert.match(result.text, /differs from generated Git table/);
+  refusedByArchivePin(dir);
 });
 test('a later commit with an unlisted moved-file edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST later commit\n');execFileSync('git',['-C',dir,'add',moved]);execFileSync('git',['-C',dir,'-c','user.name=the SDK maintainer','-c','user.email=maintainer@example.invalid','commit','--quiet','-m','delta(client): D15 TEST unlisted change']);const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/unenumerated change/);});
 test('the per-file Markdown table is checked, not trusted',t=>{const dir=scratch(t);appendFileSync(join(dir,'packages/dacs-client/DELTA-MAP.md'),'TEST drift\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/differs from generated Git table/);});
@@ -141,12 +160,12 @@ for (const subject of ['delta(client): D11 TEST accepted source repair', 'fix(cl
  test(`D11 source history accepts ${subject.split(':')[0]} records`, t => {
   const dir=scratch(t),git=(...args)=>execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false',...args]);
   // Exercise this checkout's checker even before its test commit is published.
-  copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));
+  useThisChecker(dir);
   appendFileSync(join(dir,moved),'\n// TEST D11 source repair\n');git('add','--',moved);
   const node=(...args)=>execFileSync(process.execPath,args,{cwd:dir});
   node('packages/dacs-client/scripts/delta-map.mjs','--record','D11',subject);
   const files=[moved,'packages/dacs-client/DELTA-COMMITS.json','packages/dacs-client/DELTA-LEDGER.json','packages/dacs-client/DELTA-MAP.md'];
-  if(git('diff','--name-only','HEAD','--','packages/dacs-client/scripts/delta-map.mjs').length)files.push('packages/dacs-client/scripts/delta-map.mjs');files.sort();
+  files.push(...checkerFiles.filter(path=>git('diff','--name-only','HEAD','--',path).length));files.sort();
   const inventory=join(dir,'packages/dacs-client/DELTA-COMMITS.json'),rows=JSON.parse(readFileSync(inventory,'utf8'));
   rows.push({sha:null,subject,files});writeFileSync(inventory,JSON.stringify(rows,null,2)+'\n');
   node('packages/dacs-client/scripts/delta-map.mjs');git('add','--',...files);git('commit','-qm',subject);
@@ -220,11 +239,11 @@ test('a hashed inventory row must carry its commit subject, and one commit has o
 });
 test('a record that names its full commit hash needs no delta prefix in the subject, an unqualified one does',t=>{
  const dir=scratch(t),git=scratchGit(dir),subject='fix(client): TEST source repair without a delta prefix',bookkeeping='fix(client): D11 TEST record the unprefixed source repair';
- copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));
+ useThisChecker(dir);
  appendFileSync(join(dir,moved),'\n// TEST unprefixed source repair\n');git('add','--',moved);git('commit','-qm',subject);
  const sha=git('rev-parse','HEAD'),ledgerFile=join(dir,control[1]),inventoryFile=join(dir,control[0]),data=JSON.parse(readFileSync(ledgerFile,'utf8')),rows=JSON.parse(readFileSync(inventoryFile,'utf8'));
  data.changes.push({delta:'D11',subject,sha,files:[{path:moved,before:git('rev-parse',`${sha}^:${moved}`),after:git('rev-parse',`${sha}:${moved}`)}]});writeFileSync(ledgerFile,JSON.stringify(data,null,2)+'\n');
- const scripts='packages/dacs-client/scripts/delta-map.mjs',files=[...control,...(git('diff','--name-only','HEAD','--',scripts).length?[scripts]:[])].sort();
+ const scripts='packages/dacs-client/scripts/delta-map.mjs',files=[...control,...checkerFiles.filter(path=>git('diff','--name-only','HEAD','--',path).length)].sort();
  rows.push({sha,subject,files:[moved]},{sha:null,subject:bookkeeping,files});writeFileSync(inventoryFile,JSON.stringify(rows,null,2)+'\n');
  execFileSync(process.execPath,[scripts],{cwd:dir});git('add','--',...files);git('commit','-qm',bookkeeping);
  let r=check(dir);assert.equal(r.status,0,r.text);
@@ -233,7 +252,8 @@ test('a record that names its full commit hash needs no delta prefix in the subj
 });
 
 // W-finish client commits carry the WF id (DC-CW4). Each scratch clone uses this checkout's checker.
-function useThisChecker(dir){copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));}
+const checkerFiles=['delta-map.mjs','delta-assemble.mjs','delta-record.mjs'].map(name=>`packages/dacs-client/scripts/${name}`);
+function useThisChecker(dir){for(const path of checkerFiles)copyFileSync(join(root,path),join(dir,path));}
 test('a WF delta record is accepted and an unlisted delta id is still refused',t=>{
  const dir=scratch(t);useThisChecker(dir);
  recordedCommit(dir,'delta(client): WF TEST accepted record','TEST WF record','WF');
@@ -262,17 +282,23 @@ test(`a WF record selected by its full commit hash may carry the subject "${subj
 // Each fault edits only the PR's own records, in a scratch clone of the checked head.
 const LEDGER_FAULTS=[
  {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,
-  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);}},
+  edit:data=>{data.changes.splice(lastSourceOrTestChangeIndex(data),1);}},
  {name:'(a) the same record is removed and an empty-files record is appended last',message:/unenumerated change/,
-  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);
+  edit:data=>{data.changes.splice(lastSourceOrTestChangeIndex(data),1);
    data.changes.push({delta:'WF',subject:'delta(client): WF TEST empty record',files:[]});}},
  {name:'(b) a no-op checkpoint record is removed',message:/differs from generated Git table/,
   edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.length>0&&record.files.every(file=>file.before===file.after)),1);}},
+ // The gate leaves out of the chain a record of an anchored path whose commit the anchor contains, so (c) picks only records it checks.
  {name:'(c) a record\'s last recorded blob for a path is replaced by an earlier one',message:/current blob differs/,
-  edit:data=>{
+  edit:(data,dir)=>{
+   const anchor=readAnchor(join(dir,PACKAGE_PREFIX));
+   const afterAnchor=scratchGit(dir)('log','--no-merges','--format=%H%x09%s',`${anchor.commit}..HEAD`).split('\n').filter(Boolean).map(row=>{const at=row.indexOf('\t');return {sha:row.slice(0,at),subject:row.slice(at+1)};});
+   const inChain=(record,path)=>!isAnchored(path.slice(PACKAGE_PREFIX.length))||afterAnchor.some(commit=>selects(record,commit));
    const history=new Map();
-   for(const record of data.changes)for(const file of record.files){const entries=history.get(file.path)??[];entries.push({record,file});history.set(file.path,entries);}
-   const [,entries]=[...history].filter(([,all])=>all.length>1&&all.at(-2).file.after!==all.at(-1).file.after).at(-1);
+   for(const record of data.changes)for(const file of record.files)if(inChain(record,file.path)){const entries=history.get(file.path)??[];entries.push({record,file});history.set(file.path,entries);}
+   const target=[...history].filter(([,all])=>all.length>1&&all.at(-2).file.after!==all.at(-1).file.after).at(-1);
+   if(!target)throw new Error('fault (c) needs a path with two records the gate checks whose last two blobs differ, and the ledger has none');
+   const [,entries]=target;
    entries.at(-1).file.after=entries.at(-2).file.after;}},
 ];
 test('the ledger gate refuses each fault in a PR\'s own delta records, one table row per fault, each run in a scratch clone of the checked head, and the committed head passes with every WF record listing the files its PR changed at their committed blobs',t=>{
@@ -287,7 +313,8 @@ test('the ledger gate refuses each fault in a PR\'s own delta records, one table
  }
  for(const fault of LEDGER_FAULTS){
   const dir=scratch(t),file=join(dir,control[1]),data=JSON.parse(readFileSync(file,'utf8'));
-  fault.edit(data);writeFileSync(file,JSON.stringify(data));
+  fault.edit(data,dir);writeFileSync(file,JSON.stringify(data));
   const r=check(dir);assert.equal(r.status,1,`${fault.name}: ${r.text}`);assert.match(r.text,fault.message,fault.name);
+  refusedByArchivePin(dir);
  }
 });

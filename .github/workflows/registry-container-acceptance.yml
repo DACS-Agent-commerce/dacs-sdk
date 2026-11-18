@@ -71,7 +71,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dacs-acceptance-bootstrap-${{ github.sha }}
+          name: dacs-acceptance-bootstrap-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dacs-acceptance-npm-*/bootstrap.log
           if-no-files-found: warn
           retention-days: 30
@@ -80,7 +80,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dacs-registry-container-${{ github.sha }}
+          name: dacs-registry-container-${{ github.sha }}-${{ github.run_attempt }}
           path: registry-container-artifacts/
           if-no-files-found: warn
           retention-days: 30
@@ -95,7 +95,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dacs-registry-container-fixtures-${{ github.sha }}
+          name: dacs-registry-container-fixtures-${{ github.sha }}-${{ github.run_attempt }}
           path: registry-container-fixtures/
           if-no-files-found: warn
           retention-days: 30

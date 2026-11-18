@@ -7,7 +7,7 @@
 // from those three, never from a request body). The first attempt records the operation's binding (profile, buyer and Agreement hash); every later request must
 // carry the same one, or gets peer_operation_mismatch (409), never a second effect.
 //   no attempt         -> attempt 0 is published: "new" (run the effect)
-//   attempt n live     -> "pending" (seller_effect_pending, 503: retry later)
+//   attempt n live     -> "pending" (seller_effect_pending, 503: the same signed request is now refused as peer_request_replayed; sign a new one with a new nonce)
 //   attempt n ended    -> attempt n+1 is published: "recover" (an earlier attempt may have acted: reconcile first)
 //   outcome published  -> "completed" (re-sign the stored outcome; no effect)
 // Attempt n ends exactly once, by publishing its end entry: completeWireEffect publishes it with the attempt's outcome (or null), and a request that finds the

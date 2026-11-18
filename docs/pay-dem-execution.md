@@ -33,8 +33,11 @@ another hash, is read again every `inclusionPollIntervalMs` until
 `transactionRecordTimeoutMs` (default 30 seconds) ends, then it is
 indeterminate. Every not-ok result keeps the transaction hash. A bound failed
 record carries `errorClass: "permanent"` and a `failureProof` containing its
-hash, signed nonce, block, payer, payee and OS amount. Rail and session stores
-persist this terminal outcome and return it on resume without another debit.
+hash, signed nonce, block, payer, payee and OS amount. The rail itself keeps no log: the
+settlement store passed to the bridge records this terminal outcome and returns it
+when the same payment is settled again, without another debit. After a restart
+the bridge reconciles the stored intent with the node before it returns a stored
+outcome. The application writes its own session checkpoints.
 Unproven or conflicting results keep the intent held. Neither path broadcasts
 again; terminal failure does not authorize a replacement payment. This also
 applies after failure evidence was anchored, including when the anchor's
@@ -43,9 +46,10 @@ match the retained permanent proof. Configured network labels such as
 `demos:testnet` are bound by the rail's recovery context and durable outcome.
 
 When the rail authenticates the payer's total debit, a successful result may
-include `networkFeeOs`, a canonical non-negative integer OS string. Session
-checkpoints retain this fee across restart; the evidence's payment amount
-continues to describe the agreed transfer amount.
+include `networkFeeOs`, a canonical non-negative integer OS string. The rail's
+durable settlement log retains this fee across restart, and the application
+copies it into its own session checkpoints if it needs it there; the evidence's
+payment amount continues to describe the agreed transfer amount.
 
 The durable `payDemSettle` bridge reauthenticates a recorded native-payment
 success after every restart: it calls the `reconcile` function you built it with,
@@ -55,12 +59,7 @@ a recorded outcome that it has not itself authenticated. Keep the original
 signed-transfer journal. Absent, indeterminate or conflicting observations
 withhold success and never authorize a replacement debit.
 
-The bridge keeps no durable mark of that authentication. The older session runner
-(`runSessionCore`) does, in its own session store: a fresh native success and a
-successful audit mark the saved outcome execution-authenticated. A bound failed
-record may replace a saved successful checkpoint that lacks the mark with a
-permanent failure for the same transaction, but not one that has it. The saved fee
-metadata is retained after a successful audit.
+The bridge keeps no durable mark of that authentication.
 
 For a request carrying `priorAttempts`, `payDemSettle` performs only this audit;
 it never calls the submit-capable idempotency claim, even if the rail log has
@@ -98,10 +97,14 @@ during audit.
 This recipe requires a prepared-transfer journal. Build the rail with
 `journalPreparedTransfer`. The SDK ships `createFsDemosWriteJournal` but no
 ready-made hook, so write the few lines that put each prepared transfer into
-your journal before it is broadcast. `payDemSettle` does not check the hook: a
-rail built without it, or with a hook that records nothing, leaves the recipe no
-hash to read. Only the older session runner (`runSessionCore`) refuses a pay-dem
-bridge built over a rail without `journalPreparedTransfer`.
+your journal before it is broadcast. `payDemSettle` and `settleFromRail` refuse
+a rail built without the hook unless the caller passes `allowUnjournaled: true`
+(under `payDem` for `settleFromRail`). They cannot check what the hook records:
+a hook that records nothing leaves the recipe no hash to read.
+
+The journal makes recovery possible; it does not stop a plain retry. If the
+settlement store is lost or not shared, a retry without `recoveryOnly` claims a
+fresh attempt and can pay again, even when the hook is set. Recover first.
 
 Settle a restarted purchase by calling the bridge with the request the purchase
 first sent and `recoveryOnly: true`. When the log holds no outcome and no
@@ -249,9 +252,10 @@ The mapping was verified against kynesyslabs/node
 | Behaviour | Source |
 |---|---|
 | `getTransactionStatus` returns `pending`, `included` or `unknown`. It checks the mempool first (`pending`), then returns `included` for a stored transaction row not found there, failed rows included. `failed` is reserved and never produced. | `src/libs/blockchain/chainTypes.ts` (`TxStatus`), `src/libs/blockchain/chainTransactions.ts` (`getTransactionStatus`) |
+| A failure of the node's own status lookup is answered `{result: 500, response: {error: "INTERNAL_ERROR"}}`, and demosdk hands back only `response`. The Demos adapter's write wait reads exactly that answer as no information for that poll, like a transport failure, so it still reads the row in the same poll and keeps polling to its deadline. Other `error` answers, such as `Missing or invalid 'hash' field` or `Unknown message`, still stop the write as `demos-write-unresolved`. | `src/libs/network/routines/nodecalls/getTransactionStatus.ts` at e6af8f4 |
 | A transaction record's `status` is `confirmed`, `failed` or `pending`. | `src/utilities/constants.ts` (`TRANSACTION_STATUS`) |
 | `content.nonce` is a pg `bigint` column and is served as a decimal string. `content.amount` is served as a number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it; the rail accepts both. | `src/model/entities/Transactions.ts`, `src/libs/blockchain/transaction.ts` (`fromEntityToWireNumber`) |
-| `getTxByHash` for an unknown hash returns `{result: 400, response: "error"}` at 61b8e75 and `{result: 404, response: null}` at 52e2e569. The bounded record reader refuses either non-200 result as a failed read; the rail polls again. | node2 read; `src/libs/network/handlers/transactionHandlers.ts` at 52e2e569 |
+| `getTxByHash` for an unknown hash returns `{result: 400, response: "error"}` at 61b8e75 and `{result: 404, response: null}` at 52e2e569. The bounded record reader refuses either non-200 result as a failed read; the rail polls again. demosdk's `getTxByHash` hands back only `response`, so the Demos adapter's write wait sees `"error"` or `null`. It accepts only `null` as "no row yet": the 52e2e569 answer, and the one node2 gives in `test/substrate/fixtures/demos-node-replies/write-lifecycle/`. Against a build that answers `"error"`, as 61b8e75 did, it stops the write as `demos-write-unresolved` at its first poll, including a write that is still pending; it keeps the journal entry and resends nothing. | node2 read; `src/libs/network/handlers/transactionHandlers.ts` at 52e2e569 |
 | A transaction whose `content.gcr_edits` are absent or empty is applied as a successful no-op, and a successfully applied transaction is recorded `confirmed`. Mempool admission of a received native transaction re-derives its edits from the body and refuses a mismatch; apply repeats that check only for a non-empty edit list. | `src/libs/blockchain/gcr/handleGCR.ts` (`applyTransaction`), `src/libs/consensus/v2/PoRBFT.ts`, `src/libs/blockchain/mempool.ts` (`receive`) at 61b8e75 |
 
 The `testnet` snapshot at `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a` has no
@@ -284,17 +288,16 @@ shapes before treating another deployment as compatible.
   a count from an unmerged revision.
 - **Indeterminate result class.** PC-4 requires every not-ok outcome to carry
   an `errorClass`, and §9.5.9 maps node or RPC unavailability to `substrate`.
-  An indeterminate pay-dem result is `ok: false` with no `errorClass`. The
-  session saves it as unresolved recovery history, throws, and keeps the
-  intent held. It records no terminal failure and authorizes no replacement
-  payment.
+  An indeterminate pay-dem result is `ok: false` with no `errorClass`. It is
+  not terminal failure evidence and authorizes no replacement payment; the
+  result keeps the transaction hash for recovery.
 
 A bound terminal failed record maps to `permanent`, as §9.5.9's failure modes
 require for a transaction that reaches terminal `failed` on-chain. The SDK takes
 `failed` from the transaction record, because the status index never reports it,
-and preserves `permanent` through the rail result, durable outcome and session
-resume. The proof is an authenticated node observation under the rail's existing
-trust model; malformed or mismatched proof cannot close a session. Failure
+and preserves `permanent` through the rail result and the durable outcome. The
+proof is an authenticated node observation under the rail's existing trust
+model; the bridge refuses a malformed or mismatched proof. Failure
 evidence omits settlement finality. This does not release wallet reservations
 automatically: a failed transaction can have fee effects that require separate
 accounting.

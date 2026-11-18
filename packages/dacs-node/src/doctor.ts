@@ -98,6 +98,7 @@ export interface DacsLiveDoctorCheckV1 {
   summary: string;
   reasonCode?: string;
   facts?: Readonly<Record<string, PublicFact>>;
+  /** Elapsed milliseconds, rounded to three decimal places. */
   durationMs: number;
 }
 
@@ -364,7 +365,7 @@ async function runProbe(
       timeout,
     ]);
     const completedAt = now();
-    const durationMs = Math.max(0, completedAt - startedAt);
+    const durationMs = Number(Math.max(0, completedAt - startedAt).toFixed(3));
     const result: Readonly<DacsLiveDoctorProbeResultV1> = observed ?? Object.freeze({
       status: "blocked" as const,
       reasonCode: controller.signal.aborted ? "probe-timeout-or-abort" : "probe-result-invalid",
@@ -478,7 +479,11 @@ export function formatDacsLiveDoctorTextV1(
     `gate: ${report.gate.status}`,
     ...report.checks.map((item) =>
       `${item.required ? "required" : "informational"} ${item.id}: ${item.status}` +
-      `${item.reasonCode === undefined ? "" : ` (${item.reasonCode})`}`),
+      `${item.reasonCode === undefined ? "" : ` (${item.reasonCode})`}` +
+      `${typeof item.facts?.causeCode === "string" &&
+          item.facts.causeCode.trim() === item.facts.causeCode &&
+          REASON_CODE_RE.test(item.facts.causeCode)
+        ? ` [cause: ${item.facts.causeCode}]` : ""}`),
     `report: ${report.reportHash}`,
     `exit: ${report.exitCode}`,
   ];

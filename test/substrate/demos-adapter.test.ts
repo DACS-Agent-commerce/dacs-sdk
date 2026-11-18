@@ -601,15 +601,13 @@ describe("DemosAdapter", () => {
   });
 
   it("accepts network and address info shapes without an index signature (#339)", async () => {
-    // demosdk's own methods: `any` under the locked 4.0.16 (its declarations
-    // do not resolve with NodeNext), concrete under 4.0.18, which CI also
-    // typechecks against.
+    // demosdk's own methods: concrete under the locked 4.0.17 and under
+    // 4.0.18, which CI also typechecks against.
     const real: Pick<DemosRawClient, "getNetworkInfo" | "getAddressInfo"> =
       {} as Pick<Demos, "getNetworkInfo" | "getAddressInfo">;
     void real;
     // Subsets of 4.0.18's interfaces (AddressInfo omits assignedTxs and
-    // identities), with no index signature like the originals, so this
-    // assignment is checked even while the installed SDK types are `any`.
+    // identities), with no index signature like the originals.
     interface StubForkStatus {
       activationHeight: number | null;
       activated: boolean;
@@ -827,6 +825,7 @@ describe("DemosAdapter", () => {
     vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
     vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
       state: "included",
+      blockNumber: 42,
     } as never);
     vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
       status: "confirmed",
@@ -962,6 +961,7 @@ describe("DemosAdapter", () => {
       vi.spyOn(adapter.raw, "getAddressNonce").mockResolvedValue(1);
       vi.spyOn(adapter.raw, "nodeCall").mockResolvedValue({
         state: "included",
+        blockNumber: 42,
       } as never);
       vi.spyOn(adapter.raw, "getTxByHash").mockResolvedValue({
         status: "confirmed",

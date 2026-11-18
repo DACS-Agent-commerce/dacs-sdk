@@ -113,11 +113,12 @@ export function stubAgent() {
 }
 
 /** One seller: a transport store, a bound profile, the wire journal and the handler, with a buyer that signs for it. */
-export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow, readAuthority = authorityReader(), fixture = null, leaseMs = JOURNAL_LEASE_MS, commitOnSignature = true } = {}) {
+export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow, readAuthority = authorityReader(), fixture = null, leaseMs = JOURNAL_LEASE_MS, commitOnSignature = true, existingDirectory = null } = {}) {
   const pin = fixture ? listingPin(fixture.listing) : PIN;
-  const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-routes-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  mkdirSync(join(directory, 'transport'), { mode: 0o700 });
+  // A world over an existing directory reopens its store and journal; whoever made the directory removes it.
+  const directory = existingDirectory ?? await mkdtemp(join(tmpdir(), 'TEST-wire-routes-'));
+  if (existingDirectory === null) t.after(() => rm(directory, { recursive: true, force: true }));
+  mkdirSync(join(directory, 'transport'), { mode: 0o700, recursive: true });
   const storePath = join(directory, 'transport', 'transport.sqlite');
   const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [], session: null };
   // The wire measures the time an admission takes with `performance.now`: the test moves it forward by `elapsedMs`.
@@ -165,7 +166,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     const capacity = createPurchaseCapacity({ store, now: clock, maxRecords, commitOnSignature, sessionState: sellerStoreInternals(store).sessionState });
     // A restart reopens the same journal.
     const journalDirectory = join(directory, 'wire-journal');
-    if (state.journals.length === 0) { mkdirSync(journalDirectory, { mode: 0o700 }); state.journals.push(journalDirectory); }
+    if (state.journals.length === 0) { mkdirSync(journalDirectory, { mode: 0o700, recursive: true }); state.journals.push(journalDirectory); }
     const journal = openWireRequestJournal(journalDirectory, { leaseMs, clock });
     const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: pin, store, now: clock });
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });

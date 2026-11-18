@@ -58,6 +58,16 @@ it("verifies independent signing bytes and refuses a wrong signature or signing 
   }
 });
 
+it("refuses a delegation signed with a small-order buyer key", async () => {
+  const f = await fixture();
+  const buyer = `did:demos:agent:${"01" + "00".repeat(31)}`;
+  f.payload.buyer = buyer;
+  f.scope.buyer = buyer;
+  const document = { payload: f.payload, signature: Buffer.from("01" + "00".repeat(63), "hex").toString("base64url") };
+  await expect(Promise.resolve().then(() => wire.verifySellerSessionDelegation(bytes(document), f.scope)))
+    .rejects.toMatchObject({ code: "peer_delegation_signature_invalid" });
+});
+
 it.each(["buyer", "seller", "jobId", "listingPin"] as const)("binds the delegation's %s to its authenticated scope", async (field) => {
   const f = await fixture();
   const scope = { ...f.scope, [field]: field === "listingPin" ? { ...f.payload.listingPin, version: 2 } : field === "jobId" ? "01J8ME0SXKQ4T9V2RC5HJ6WX7F" : `did:demos:agent:${"f".repeat(64)}` };
