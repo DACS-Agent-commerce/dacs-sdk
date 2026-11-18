@@ -10930,6 +10930,23 @@
           "after": "dd1514d4b4be7abff9676b4c0c01300820856711"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF let a new lease continue a signed operation only after a refused or unanswered confirmation",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "1a98b79937aa56aa9437ebd2df3d2361ffd11cde",
+          "after": "e062b13ae1163666be9ff7777f387e17c992d063"
+        },
+        {
+          "path": "packages/dacs-client/test/native-repeated-confirmation.test.mjs",
+          "before": null,
+          "after": "20e3bcdc295a57453ed66f585f75a8207b13bac2"
+        }
+      ]
     }
   ]
 }

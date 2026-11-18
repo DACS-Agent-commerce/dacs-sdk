@@ -54,6 +54,14 @@ const ADDRESS = /^0x[0-9a-f]{64}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const CONTEXT = ['network', 'endpoint', 'transportAuthority', 'connectionId'];
 const sameContext = (a,b) => CONTEXT.every((k) => a?.[k] === b?.[k]);
+// The dispatch history records a confirmation leaves while the node has not acknowledged it: the signed bytes, then
+// confirm passes that were refused (withheld before the node saw them, or answered without a valid confirmation)
+// or never answered.
+const UNACKNOWLEDGED_CONFIRMATION_STATES = new Set(['signed', 'confirm-started', 'confirm-withheld', 'confirm-unknown']);
+// Whether a signed artifact's history ends in a refused or unanswered confirmation and never went further: no
+// acknowledged confirmation and no dispatch, recovery or held record. Only then may a new lease continue the
+// operation that signed these bytes.
+const endsInUnacknowledgedConfirmation = (records) => records.every((record) => UNACKNOWLEDGED_CONFIRMATION_STATES.has(record.state));
 // RPC auth headers are fresh and single-use. Wallets stamp them with their own
 // clock in ms and sign a new set for every request (the embedded wallet for
 // bind and signature, the SDK for confirmTx and broadcastTx), so a set more
@@ -717,12 +725,16 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     return lease.fence.hold.run(async () => boundary.dispatchPass(await retainSigned(operationOf(lease, tx), Buffer.from(JSON.stringify(tx))), confirmOnce,
       { explicit:true, stage:'confirm', material:(answer) => accepted() ? { confirmation:answer, gasOperation:answer.response.data.gas_operation ?? null } : undefined }));
   };
-  // Every record of one signed artifact names the same operation. When an earlier lease already signed these exact bytes (a refused or
-  // unanswered confirmation, then the same request again), the lease takes over that operation: its fence hold moves to the earlier
-  // operation id on the same connection, and the boundary's history then decides whether the bytes may be confirmed or sent again.
+  // Every record of one signed artifact names the same operation. When an earlier lease signed these exact bytes and their
+  // history ends in a refused or unanswered confirmation (then the same request again), the lease takes over that operation:
+  // its fence hold moves to the earlier operation id on the same connection, and the node is asked again. After an
+  // acknowledged confirmation or any dispatch record the lease keeps its own operation, so the history refuses its signed
+  // record (`eb_history_conflict`) and the node is not asked again. A transport holds one lease per address, so no other
+  // lease of this transport adds a record for these bytes between this read and the takeover.
   const continueSignedOperation = async (lease, tx) => {
-    const earlier=(await historyOf({ lane:lane(tx.content.from),artifactHash:sha(JSON.stringify(tx)) })).find((record) => record.state === 'signed');
-    if (!earlier || earlier.operationId === lease.operationId) return;
+    const records=await historyOf({ lane:lane(tx.content.from),artifactHash:sha(JSON.stringify(tx)) });
+    const earlier=records.find((record) => record.state === 'signed');
+    if (!earlier || earlier.operationId === lease.operationId || !endsInUnacknowledgedConfirmation(records)) return;
     const connection=lease.fence.context;
     await lease.fence.release();
     lease.operationId=earlier.operationId;
