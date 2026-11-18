@@ -162,7 +162,8 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // malformed one is a TypeError. The signature lease holds the boundary's fence from the
 // lease to the broadcast, and each confirmation is retained as its own stage in the
 // dispatch history (the exact signed bytes, `confirm-started`, then
-// `confirm-acknowledged` or `confirm-unknown`) before and after the node sees it.
+// `confirm-acknowledged` or `confirm-unknown`) before and after the node sees it. An
+// acknowledged confirmation is final for its bytes: the node is not asked to confirm them again.
 // The broadcast then carries that retained confirmation, byte for byte with its gas, as the
 // boundary's dispatch stage: its whole debit (the amount plus every fee, from the node's fee
 // view or else from the confirmed transaction) is checked against the fee ceiling first, and a
@@ -705,8 +706,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const acceptsConfirmation = async (answer, tx) => {
     if (answer?.result !== 200 || answer.response?.data?.valid !== true) return false;
     if (JSON.stringify(answer.response.data.transaction) !== JSON.stringify(tx)) fail('signed_bytes_changed','the new native transport requires byte-identical signed confirmation');
-    if (approveConfirmedWrite && (await approveConfirmedWrite(answer)) !== true) fail('approval_required','the seller policy refused the confirmed write');
+    await approveConfirmation(answer);
     return true;
+  };
+  // Throws `approval_required` unless the seller policy, if any, approves this confirmation.
+  const approveConfirmation = async (answer) => {
+    if (approveConfirmedWrite && (await approveConfirmedWrite(answer)) !== true) fail('approval_required','the seller policy refused the confirmed write');
   };
   // The exact signed bytes as the boundary's signed record. A repeated request for the same bytes reuses it.
   const retainSigned = async (operation, bytes) => {
@@ -1077,6 +1082,14 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           await claimTransfer(l,transfer,true);
         });
         step(tx,'sign','complete',l.signStarted);
+        // An acknowledged confirmation is final for its bytes: in the operation that holds it, a repeated
+        // confirmation is answered from the retained record and the node is not asked again.
+        const retained=await retainedConfirmation({ lane:lane(tx.content.from),artifactHash:sha(JSON.stringify(tx)) });
+        if(retained?.operationId === l.operationId) {
+          await approveConfirmation(retained.confirmation);
+          l.confirmed=clone(tx);
+          return retained.confirmation;
+        }
         const started=now();
         let accepted=false;
         const confirmOnce=async(bytes,final)=>{

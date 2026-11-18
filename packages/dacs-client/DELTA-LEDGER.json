@@ -11003,6 +11003,28 @@
           "after": "f545d35a67ae4465c4b9cb7bb102bad21df3e1d8"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF answer a repeated confirmation of acknowledged bytes from the retained record",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "3fabb17421d3c15e95db4094b83010707e4c719a",
+          "after": "5ecea5f2abf2db6e85434ec7f4be2caf61596a8a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/finalized-node-child.mjs",
+          "before": "c62d1150d929cc10a95e9e559a3ee547907ceff9",
+          "after": "a0f89a008bcc257cbfa0486aa8f5a08f20f71eea"
+        },
+        {
+          "path": "packages/dacs-client/test/native-acknowledged-confirmation.test.mjs",
+          "before": null,
+          "after": "3381d49bd007362280ef4421de87eb8a736df3d3"
+        }
+      ]
     }
   ]
 }

@@ -1,5 +1,6 @@
 // A real child process for the lock-recovery tests: it runs one send on a journal the parent prepared and stops at a chosen history record,
-// still holding the journal's lane lock, until the parent kills it. With the cut 'recover-race' it resumes the retained confirmation instead.
+// still holding the journal's lane lock, until the parent kills it. With the cut 'recover-race' it resumes the retained confirmation instead,
+// which the transport answers from the retained record, and stops at the first record it writes: the signed record of its broadcast pass.
 import { finalizedWorld, cutHistory } from './finalized-node-world.mjs';
 const { resumeRetainedConfirmation } = await import('./resume-retained-confirmation.mjs');
 const { OS_IDENTITY } = await import('../../src/wallet/holder-incarnation.mjs');
@@ -8,7 +9,7 @@ const [path, cut] = process.argv.slice(2);
 process.on('message', () => {});
 const world = await finalizedWorld({ after() {} }, { path, journalOptions: { lockTimeoutMs: 0 }, journalWrap: cutHistory(async record => {
   if (cut === 'signed-held' && record.state === 'signed') world.state.stopped = true;
-  if (record.state !== (cut === 'recover-race' ? 'confirm-acknowledged' : cut)) return;
+  if (record.state !== (cut === 'recover-race' ? 'signed' : cut)) return;
   await new Promise(resolve => process.send({ event: 'cut', record, namespace: OS_IDENTITY.self }, resolve));
   await new Promise(() => {}); // The parent kills us while the lane callback still owns the lock.
 }) });
