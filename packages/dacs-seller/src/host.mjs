@@ -378,9 +378,12 @@ export async function startSellerHost(options) {
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission });
     reservations.addPreAccountingGate(closedBootstrapGate);
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
+    // The readiness the discovery document publishes and the challenge and stage routes read: also false while a new purchase's whole
+    // allotment does not fit. The context route keeps `sellerReady`, so an accepted context request sent again is still answered.
+    const acceptsNewPurchase = () => sellerReady() && admission.fitsNewPurchase();
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.
-    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, stopped: hostStopped, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
+    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: acceptsNewPurchase, stopped: hostStopped, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
     const contextWork = createContextWorkRegistry();
     const buyerWalletAccess = operatorBuyerAccessConfig(buyerAccess);
     const assertBuyerAccess = (buyerClaim) => buyerWalletAccess.assertWallet(addressForClaim(buyerClaim));

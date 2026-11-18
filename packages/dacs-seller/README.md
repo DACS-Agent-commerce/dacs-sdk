@@ -46,12 +46,13 @@ non-null non-string refuses issuance and new work with `session_admission_unavai
 and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host given no capability reads one state itself: a purchase that
-settled its context step and has started no payment reads as `aborted-by-self` an
+settled its context step and has started no commitment or payment reads as `aborted-by-self` an
 hour after the later of its admission and its Agreement's deadline (a purchase with no
-proposal or commitment has no Agreement and no deadline to wait for). Its units are
+proposal has no Agreement and no deadline to wait for). Its units are
 given back and its job id cannot continue (the buyer starts again with a new job id).
-A purchase with an open proposal or commitment attempt, or with an Agreement whose
-deadline the seller cannot read, reads as unknown. A host
+A purchase with a commitment stays open, because a payment included before the deadline
+is accepted however late it is claimed. A purchase with an open proposal attempt, or
+with an Agreement whose deadline the seller cannot read, reads as unknown. A host
 given the capability uses only that. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 
@@ -78,11 +79,13 @@ reserves through the coordinator. The other effect routes spend a unit of their
 purchase's slot, while the context route charges one general capacity unit.
 Signed reads and the signed challenge reserve nothing. The context route's admission allots a new purchase its
 allocation and refuses `seller_not_ready` (503) while the whole allotment is not
-free; the host's readiness does not read the units. Terminal allocation cleanup
+free. While it is not, the host's readiness is false too: its discovery document says
+`ready: false` and new challenges are refused `seller_not_ready`, while purchases
+that already hold an allocation go on. Terminal allocation cleanup
 runs at startup and when a store reader observes a terminal session through
 `contextSessionState`, and the host's 60-second sweep repeats it while the host
 runs. With no `contextSessionState` the units a purchase keeps after its context
-step are given back once it reads as abandoned (above); with an operator's
+step are given back once it reads as abandoned (above; one with a commitment stays allocated); with an operator's
 `contextSessionState` they stay allocated until that reader names a terminal state.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,

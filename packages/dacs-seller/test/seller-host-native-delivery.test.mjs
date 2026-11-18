@@ -3574,13 +3574,14 @@ test('a default host frees the units of a purchase that stopped after its propos
   assert.equal(allocationOf(w, p.jobId), 'released');
 });
 
-test('a default host frees the units of a committed purchase that was never paid once an hour has passed since the Agreement deadline', async (t) => {
+test('a default host keeps the units of a committed, unpaid purchase long past its Agreement deadline, and a payment made before the deadline is still accepted when claimed late', async (t) => {
   const w = await world(t, { contextSessionState: null }), p = await w.purchase();
-  assert.equal(allocationOf(w, p.jobId), 'live');
-  await restartPastDeadline(w, p, ABANDONED_PURCHASE_MS / 2);
-  assert.equal(allocationOf(w, p.jobId), 'live', 'the buyer can still pay for a little longer than the deadline');
-  w.advance(ABANDONED_PURCHASE_MS);
-  await w.restart();
+  w.advance(p.agreement.terms.deadline - NOW - 5 * 60_000);
+  const tx = p.pay();
+  await restartPastDeadline(w, p, 2 * ABANDONED_PURCHASE_MS);
+  assert.equal(allocationOf(w, p.jobId), 'live', 'a payment included before the deadline may still be claimed');
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
   assert.equal(allocationOf(w, p.jobId), 'released');
 });
 

@@ -1,5 +1,5 @@
-// The session state the host reads when the operator supplies none: a purchase that has paid nothing reads as aborted by the seller an hour
-// after the later of its admission and its Agreement's deadline. Every other purchase reads as unknown.
+// The session state the host reads when the operator supplies none: a purchase that has made no commitment and paid nothing reads as aborted
+// by the seller an hour after the later of its admission and its Agreement's deadline. Every other purchase reads as unknown.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
@@ -47,16 +47,21 @@ test('a purchase with a completed proposal and no commitment reads as aborted an
   assert.equal(reader({ states, clock: AGREEMENT_DEADLINE + ABANDONED_PURCHASE_MS }).state({ jobId: JOB }), 'aborted-by-self');
 });
 
-test('a committed purchase with no payment reads as aborted an hour after the Agreement deadline, and unknown before', () => {
-  const states = { [proposals]: 'completed', [commitments]: 'completed' };
-  assert.equal(reader({ states, clock: AGREEMENT_DEADLINE }).state({ jobId: JOB }), null, 'the buyer can still pay at the deadline');
-  assert.equal(reader({ states, clock: AGREEMENT_DEADLINE + ABANDONED_PURCHASE_MS - 1 }).state({ jobId: JOB }), null);
-  assert.equal(reader({ states, clock: AGREEMENT_DEADLINE + ABANDONED_PURCHASE_MS }).state({ jobId: JOB }), 'aborted-by-self');
+test('a committed purchase with no payment reads as unknown at any age, since a payment made before the deadline may be claimed late', () => {
+  for (const state of ['pending', 'ended', 'completed']) {
+    for (const states of [{ [commitments]: state }, { [proposals]: 'completed', [commitments]: state }]) {
+      for (const clock of [AGREEMENT_DEADLINE - 1, AGREEMENT_DEADLINE, AGREEMENT_DEADLINE + ABANDONED_PURCHASE_MS, AGREEMENT_DEADLINE + 100 * ABANDONED_PURCHASE_MS]) {
+        assert.equal(reader({ states, clock }).state({ jobId: JOB }), null, `${state} ${Object.keys(states).length} at ${clock - AGREEMENT_DEADLINE}`);
+      }
+      for (const deadline of [null, NaN, ADMITTED_AT - 1]) {
+        assert.equal(reader({ states, deadline, clock: AGREEMENT_DEADLINE + 100 * ABANDONED_PURCHASE_MS }).state({ jobId: JOB }), null);
+      }
+    }
+  }
 });
 
-test('a purchase whose Agreement deadline is already behind its admission is aborted an hour after its admission', () => {
-  const states = { [proposals]: 'completed', [commitments]: 'completed' };
-  assert.equal(reader({ states, deadline: ADMITTED_AT - 1 }).state({ jobId: JOB }), 'aborted-by-self');
+test('a purchase with a proposal whose Agreement deadline is already behind its admission is aborted an hour after its admission', () => {
+  assert.equal(reader({ states: { [proposals]: 'completed' }, deadline: ADMITTED_AT - 1 }).state({ jobId: JOB }), 'aborted-by-self');
 });
 
 test('a purchase with proposal or commitment work still open reads as unknown at any age', () => {
@@ -81,7 +86,7 @@ test('a job with no admission row, or a row that has not settled, reads as unkno
 });
 
 test('a reader that cannot read the row, an operation or the deadline answers unknown rather than aborted', () => {
-  const failing = (changes) => createAbandonedPurchaseState({ admissionRecord: () => ({ state: 'settled', admittedAt: ADMITTED_AT }), operationState: ({ path }) => path === payments ? 'none' : 'completed', agreementDeadline: () => AGREEMENT_DEADLINE,
+  const failing = (changes) => createAbandonedPurchaseState({ admissionRecord: () => ({ state: 'settled', admittedAt: ADMITTED_AT }), operationState: ({ path }) => path === proposals ? 'completed' : 'none', agreementDeadline: () => AGREEMENT_DEADLINE,
     now: () => AGREEMENT_DEADLINE + 100 * ABANDONED_PURCHASE_MS, ...changes });
   const fails = () => { throw new Error('TEST the read failed'); };
   assert.equal(failing({ admissionRecord: fails })({ jobId: JOB }), null);
