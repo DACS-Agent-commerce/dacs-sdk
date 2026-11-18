@@ -302,11 +302,22 @@ test('a journal made with a caller-supplied signature chain id is refused', asyn
   }
 });
 
-test('a journal made without a network info reader is refused', async (t) => {
+test('a journal made with a network info reader that is not a function is refused', async (t) => {
   const w = wallet(t);
-  for (const readNetworkInfo of [undefined, null, 'node']) {
+  for (const readNetworkInfo of [null, 'node', {}]) {
     assert.throws(() => w.open({ readNetworkInfo }), { name: 'TypeError', message: /readNetworkInfo/ }, String(readNetworkInfo));
   }
+});
+
+test('a journal made without a network info reader keeps only a CREATE signed over the bare hash', async (t) => {
+  const w = wallet(t), journal = w.open({ readNetworkInfo: undefined });
+  t.after(() => journal.close());
+  w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ }, 'the chain-bound message');
+  assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
+  assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted', 'the bare hash');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
+  assert.equal(w.calls.networkInfo, 0, 'no network answer was asked for');
 });
 
 // The kept bytes must be a CREATE the node can execute and the SR-2 readback

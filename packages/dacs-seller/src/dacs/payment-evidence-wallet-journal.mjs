@@ -80,8 +80,10 @@
 //    and nothing is signed or sent; a kept CREATE that may still be sent and was
 //    signed under the other domain is refused as another evidence
 //    (wallet_journal_conflict) and not sent again. A CREATE the node already
-//    executed, or that was superseded, is not checked against the present domain. A
-//    `signatureChainId` option is refused (TypeError): no caller names the domain.
+//    executed, or that was superseded, is not checked against the present domain.
+//    Left out, nothing is read and only a signature over the bare hash is
+//    accepted, so a CREATE signed for an active fork is refused (wallet_sign_invalid).
+//    A `signatureChainId` option is refused (TypeError): no caller names the domain.
 //  Each read, signCreate and broadcast is given readTimeoutMs (default 10 s) to
 //  settle, and is passed { signal } to stop at the deadline. A signCreate that
 //  does not (wallet_sign_timeout) keeps nothing and frees the journal; a
@@ -120,7 +122,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { addressForClaim } from './demos-claims.mjs';
 import { WRITE_FEE_CEILING_OS } from './effect-boundary.mjs';
-import { assertNoCallerSignatureDomain, signatureDomainFromNetworkInfo } from './signature-domain.mjs';
+import { assertNoCallerSignatureDomain, BARE_HASH_DOMAIN, signatureDomainFromNetworkInfo } from './signature-domain.mjs';
 import { verifyTransactionSignature } from './transaction-signature.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
@@ -307,7 +309,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   if (typeof path !== 'string' || !isAbsolute(path)) throw new TypeError('the wallet journal path must be absolute');
   if (typeof signCreate !== 'function' || typeof broadcast !== 'function' || typeof now !== 'function') throw new TypeError('the wallet journal needs signCreate, broadcast and now functions');
   if (typeof readAccountNonce !== 'function' || typeof readTransactionState !== 'function') throw new TypeError('the wallet journal needs readAccountNonce and readTransactionState, to tell a kept CREATE that can no longer be executed');
-  if (typeof readNetworkInfo !== 'function') throw new TypeError('the wallet journal needs readNetworkInfo, the node\'s getNetworkInfo answer, to know which message a transaction signature covers');
+  if (readNetworkInfo !== undefined && typeof readNetworkInfo !== 'function') throw new TypeError('the wallet journal readNetworkInfo must be a function that answers the node\'s getNetworkInfo, or be left out');
   if (!Number.isSafeInteger(readTimeoutMs) || readTimeoutMs < 1) throw new TypeError('the wallet journal readTimeoutMs must be a positive integer');
   assertPrivateDirectory(dirname(path));
   try { closeSync(openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600)); }
@@ -452,7 +454,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   // The signature domain the node's getNetworkInfo answer selects, read on each call
   // (a fork can activate while a CREATE is kept). Anything but a readable answer
   // within the deadline refuses the call before it signs, sends or decides anything.
+  // With no reader, only the bare hash is accepted.
   async function readSignatureDomain() {
+    if (readNetworkInfo === undefined) return BARE_HASH_DOMAIN;
     try { return signatureDomainFromNetworkInfo(await withDeadline((signal) => readNetworkInfo({ signal }), () => new Error('timed out'))); }
     catch (cause) { throw Object.assign(new Error(`the node's signature domain could not be read: ${reason(cause)}`, { cause }), { code: 'wallet_signature_domain_unreadable' }); }
   }

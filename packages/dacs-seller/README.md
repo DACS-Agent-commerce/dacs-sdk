@@ -638,7 +638,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   wallet reads it is given `readTimeoutMs`, and its reader limits the size of
   the reply); a read that fails,
   times out or answers anything unreadable refuses the call
-  (`wallet_signature_domain_unreadable`) before anything is signed or sent. A
+  (`wallet_signature_domain_unreadable`) before anything is signed or sent.
+  Without `readNetworkInfo` nothing is read and only a signature over the bare
+  hash is accepted, so a CREATE signed for an active fork is refused. A
   `signatureChainId` option is refused with a `TypeError`. The SR-2 readback of
   `createNativePaymentEvidenceConsumer` reads the same answer from its own node
   on each authentication and answers `indeterminate` when it cannot be read.

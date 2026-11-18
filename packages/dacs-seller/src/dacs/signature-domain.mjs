@@ -3,13 +3,18 @@
 // fork is inactive, `demos-tx:v1:<chain id>:<hash>` for a transaction included at or
 // after the fork's `activationHeight`. A transaction in an earlier block, or one not
 // yet included, is judged by that block number alone. An answer that cannot be read
-// gives no domain, and no caller can name one.
+// gives no domain, and no caller can name a chain-bound one. A verifier given no node
+// answer at all uses BARE_HASH_DOMAIN.
 const TRANSACTION_HASH = /^[0-9a-f]{64}$/;
 const SIGNATURE_DOMAIN_PREFIX = 'demos-tx:v1';
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const safeCount = (value) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-// Only domains read from a node answer verify anything.
+// Only domains read from a node answer, and BARE_HASH_DOMAIN, verify anything.
 const readFromNode = new WeakSet();
+
+/** The domain that allows only the bare transaction hash, as an inactive signature-domain fork does. */
+export const BARE_HASH_DOMAIN = Object.freeze({ chainId: null, activationHeight: null });
+readFromNode.add(BARE_HASH_DOMAIN);
 
 function unreadable(message) {
   return Object.assign(new Error(`the node's getNetworkInfo answer ${message}`), { code: 'signature_domain_unreadable' });
