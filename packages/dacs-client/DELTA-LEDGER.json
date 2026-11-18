@@ -10761,6 +10761,27 @@
           "after": "79a38ade5963d24c148db6424e62ff12d5f6381d"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF remove the unused cold-cache test helpers and test the cache's injected clock",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk-purchase.mjs",
+          "before": "7b01073b114cfa4def9f44dbe1f6b795eab207dd",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk.mjs",
+          "before": "4dda0ebff0f1a5312c4337040ed7b5308461f8b8",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/immutable-readbacks.test.mjs",
+          "before": null,
+          "after": "a119fdedf8851971957636875c5be5eb7cdcad74"
+        }
+      ]
     }
   ]
 }

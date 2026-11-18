@@ -112,7 +112,8 @@ function contextOutcomeClass(row, outcome) {
  * `compensate(jobId, trigger)` fences the row for trigger `a`, `b`, `c` (only from the delegation's expiry plus 30,000 ms) or `d`, then runs C2-C4 under the
  * job mutex; it settles a completed context outcome, aborts only on proof of no effect, settles with context outcome `none` on proof that an effect happened, and otherwise keeps the row `compensating` with its cause.
  * It throws TypeError for a job that is not canonical or a trigger that is not one of those four strings; for an unknown job it writes nothing.
- * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`). It waits at most 10,000 ms for a
+ * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`). A startup sweep also ends every row
+ * still running, a direct request's included, as compensation trigger `a` does; a periodic sweep ends a running row only by trigger `c`. It waits at most 10,000 ms for a
  * row's lease and 30,000 ms for its pass, records a row it could not finish on that row and goes on to the next; it rejects with an AggregateError
  * after visiting every row when it could not record one. A periodic sweep called while one runs answers that one; a startup sweep rejects with
  * TypeError while a begin is live or a sweep runs, and a periodic one leaves a live begin's intent alone. `cleanupPending()` is true while a row is
@@ -565,6 +566,15 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
       if (row?.state === 'intent' && (startup || !ownedByLiveBegin(row))) fenceWithin(jobId, row.rev, new SellerTransportError(ORPHANED_INTENT_CODE, 409));
     });
   }
+  // Fences a row that is still running with trigger (a), in one transaction with the read. A startup sweep runs before any begin, so a running
+  // row it finds belongs to a process that stopped, direct request or delegated. An `admitted` row is not ended at startup: such a leftover
+  // keeps its hold and slot.
+  function fenceRunningLeftover(jobId) {
+    return transaction(() => {
+      const row = read(jobId);
+      return row?.state === 'running' && fenceWithin(jobId, row.rev, new SellerTransportError(TRIGGER_CODES.a, 409));
+    });
+  }
   // One row of the sweep, with its own lease wait and pass deadline: a row that hangs keeps its lease and its pass, is recorded with its
   // cause, and never holds up the rows after it. Throws only when that record itself cannot be written.
   async function sweepRow(jobId, startup) {
@@ -574,7 +584,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     const pass = boundedWork(async () => {
       fenceOrphanedIntent(jobId, startup);
       await reconcile(jobId);
-      if (fenceForTrigger(jobId, 'c')) await reconcile(jobId);
+      if (fenceForTrigger(jobId, 'c') || (startup && fenceRunningLeftover(jobId))) await reconcile(jobId);
     }, { timeoutMs: SWEEP_ROW_TIMEOUT_MS });
     void pass.settled.then(() => lease.release());
     try { await pass.result; } catch (cause) {

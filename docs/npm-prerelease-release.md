@@ -40,11 +40,13 @@ host and the generator, then runs conformance, types, the suites of all five
 packages and the release-gate regressions (`release:test`). The publish job needs
 the `verify` job, so none of those suites runs inside its 45-minute limit. The
 publish job installs a pinned release toolchain without a dependency cache,
-requires a clean build tree and builds again. It creates the release set twice
+requires a clean build tree and builds again. It creates the release set once
 with `--strict`, which refuses unless all five packages are releasable at the
 planned version and each package's internal dependencies come earlier in the
-order below. Before its publish step it uploads, as an artifact named for the
-commit and the run attempt (so a re-run of the job does not reuse a name), the
+order below. The strict run packs each package twice and compares the bytes; a
+package that does not pack to the same bytes both times fails the run. Before
+its publish step it uploads, as an artifact named for the commit and the run
+attempt (so a re-run of the job does not reuse a name), the
 five exact tarballs, SHA-256 receipts, combined source provenance (recording
 `strict-five` admission and the order) and one CycloneDX SBOM per package. A preparation run (CI on pull requests) reports
 a private or absent package as not ready, packs the others and records
@@ -97,7 +99,13 @@ prerelease or changing the stable `latest` tag.
 
 ## Rerunning an interrupted or timed-out publication
 
-Rerun the same workflow for the same tag. The publisher skips each version whose
+Rerun the same workflow for the same tag. Every error below is raised by the
+`publish` job, so "Re-run failed jobs" on the run is the usual choice: only the
+`publish` job runs again, with a new 45-minute clock, and the passed acceptance
+and `verify` results stay. "Re-run all jobs" and a new dispatch of the same tag
+also repeat the acceptance and `verify` jobs. Every artifact upload in the
+workflow, including the acceptance workflow's, carries the run attempt in its
+name, so both kinds of rerun can upload again. The publisher skips each version whose
 registry integrity equals the reviewed receipt and whose `next` is the release
 version, and publishes the rest. It never retries `npm publish` and never moves a
 tag. After a failed or timed-out publish it reads the registry back: an exact
@@ -106,22 +114,23 @@ and the run ends 40 minutes after it starts or 2 minutes before the job's
 45-minute limit; a publish starts only with 6 minutes left. Errors:
 
 - `publish_outcome_unknown`: the version is not visible after a failed publish;
-  the cause holds npm's message. Check npm, then rerun.
-- `dist_tag_conflict`: `next` points elsewhere. Fix it on npm by hand, rerun.
+  the cause holds npm's message. Check npm, then use "Re-run failed jobs".
+- `dist_tag_conflict`: `next` points elsewhere. Fix it on npm by hand, then use
+  "Re-run failed jobs".
 - `existing_release_conflict`, `published_integrity_conflict`: the registry holds
-  this version with other bytes. Stop and prepare a new version.
-- `publish_budget_exhausted`: too little job time was left. Use "Re-run failed jobs" (not "Re-run all jobs"):
-  only the `publish` job runs again, with a new 45-minute clock, and the
-  `verify` job's result stays.
-- `registry_*`: a read stopped; the cause says why. Rerun after a timeout or
-  `registry_unavailable`, investigate the others first.
+  this version with other bytes. Do not rerun: prepare a new version, tag it and
+  dispatch the workflow for the new tag.
+- `publish_budget_exhausted`: too little job time was left. Use "Re-run failed jobs"
+  (not "Re-run all jobs"), so the `verify` job's result stays.
+- `registry_*`: a read stopped; the cause says why. After a timeout or
+  `registry_unavailable`, use "Re-run failed jobs". Investigate the others first.
 
 Only `npm publish` gets credentials: the job's setup-node configuration with the
 first-release token or, later, trusted publishing. Every other release npm
 command runs without token, auth or password variables and with
 `npm_config_userconfig=/dev/null`. `ENEEDAUTH`, `E401` or `E403` in the cause of
 `publish_outcome_unknown` means npm could not authenticate: complete the
-credential steps below and rerun.
+credential steps below, then use "Re-run failed jobs".
 
 ## Moving publication credentials to the gated workflow
 
