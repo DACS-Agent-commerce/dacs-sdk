@@ -633,7 +633,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   earlier block is still checked against the bare hash. Any other message is
   refused, and so is a bare-hash signature for a transaction at or after an
   active fork's `activationHeight` (a kept CREATE the node already executed is
-  not checked again against the present answer). The journal reads the
+  not checked again against the present answer). A kept bare-hash CREATE that
+  the node has not executed, and whose absence the node proves through the
+  block before an active fork's `activationHeight`, can no longer be executed:
+  the journal supersedes it, and the next signature may use the same nonce. One
+  whose absence is not proved that far stays refused as another evidence
+  (`wallet_journal_conflict`) and is not sent again. The journal reads the
   answer through `readNetworkInfo({ signal })` on every call (like the other
   wallet reads it is given `readTimeoutMs`, and its reader limits the size of
   the reply); a read that fails,

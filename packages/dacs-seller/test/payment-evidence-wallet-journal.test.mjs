@@ -226,14 +226,78 @@ test('a CREATE signed over the bare hash is refused once the fork is active, and
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned', 'nothing was kept');
 });
 
-test('a kept CREATE signed over the bare hash is refused, and not broadcast again, once the fork activates', async (t) => {
+test('a kept CREATE signed over the bare hash is refused, and not broadcast again, while its absence is not proved through the fork activation', async (t) => {
   const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
   w.faults.broadcast.push('throw');
   await assert.rejects(journal.anchorEvidence(w.input()), /TEST node unreachable/);
-  w.network.answer = activeFork(7);
-  await assert.rejects(journal.reconcilePaymentEvidence(w.input()), { code: 'wallet_journal_conflict' });
+  w.network.answer = activeFork(7, 100);
+  await assert.rejects(journal.reconcilePaymentEvidence(w.input()), { code: 'wallet_journal_conflict' }, 'the index reaches block 0, the fork begins at block 100');
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_journal_conflict' });
+  const pending = w.open({ readTransactionState: async () => 'pending' });
+  t.after(() => pending.close());
+  w.network.answer = activeFork(7, 1);
+  await assert.rejects(pending.reconcilePaymentEvidence(w.input()), { code: 'wallet_journal_conflict' }, 'a CREATE the node still holds is not proved absent');
   assert.equal(w.calls.broadcast.length, 1, 'the kept bytes were not sent again');
+  assert.equal(w.calls.sign, 1, 'nothing was signed again');
+});
+
+// The fork activates while a CREATE signed over the bare hash was never executed: it can no longer
+// land, so a retry must not be held on it for good. Each route that reads the kept CREATE is covered.
+for (const [route, run] of [
+  ['reconcile, then anchor', async (journal, w) => { assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned'); return journal.anchorEvidence(w.input()); }],
+  ['anchor', (journal, w) => journal.anchorEvidence(w.input())],
+  ['ensure', (journal, w) => journal.ensureEvidence({ ...w.input(), expectedJournalId: journal.journalId })],
+]) {
+  test(`a bare-hash CREATE that never landed is replaced, at its own nonce, once the fork activates: ${route}`, async (t) => {
+    const w = wallet(t), journal = w.open();
+    t.after(() => journal.close());
+    w.faults.broadcast.push('drop');
+    const first = (await journal.anchorEvidence(w.input())).txHash;
+    w.network.answer = activeFork(7, 1);
+    w.faults.sign.push({ nonce: 1, signedOver: CHAIN_BOUND('7') });
+    const { status, txHash } = await run(journal, w);
+    assert.equal(status, 'submitted');
+    assert.notEqual(txHash, first, 'signed anew over the chain-bound message');
+    assert.deepEqual(w.calls.signedContents.map((content) => content.nonce), [1, 1], 'the freed nonce was taken');
+    assert.equal(w.calls.broadcast.length, 2, 'the bare-hash bytes were never sent again');
+    assert.deepEqual(await journal.reconcilePaymentEvidence(w.input()), { status: 'applied', txHash });
+    assert.equal((await journal.readSignedProjection(w.input())).hash, txHash);
+  });
+}
+
+test('a replaced bare-hash CREATE keeps its record, and a failed or restarted retry can still take its nonce', async (t) => {
+  const w = wallet(t);
+  let journal = w.open();
+  w.faults.broadcast.push('drop');
+  const first = (await journal.anchorEvidence(w.input())).txHash;
+  w.network.answer = activeFork(7, 1);
+  const answer = await journal.reconcilePaymentEvidence(w.input());
+  assert.deepEqual([answer.status, answer.txHash], ['unsigned', first]);
+  assert.match(answer.reason, /signed over the bare hash/);
+  w.faults.sign.push('throw');
+  await assert.rejects(journal.anchorEvidence(w.input()), /TEST wallet failed before signing/);
+  journal.close();
+  journal = w.open();
+  t.after(() => journal.close());
+  w.faults.sign.push({ nonce: 1, signedOver: CHAIN_BOUND('7') });
+  const { status, txHash } = await journal.anchorEvidence(w.input());
+  assert.equal(status, 'submitted');
+  assert.notEqual(txHash, first);
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
+});
+
+test('a replacement signed over the bare hash again is refused once the fork is active, and nothing is kept for it', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.broadcast.push('drop');
+  await journal.anchorEvidence(w.input());
+  w.network.answer = activeFork(7, 1);
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned');
+  w.faults.sign.push({ nonce: 1 });
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ });
+  assert.equal(await journal.readSignedProjection(w.input()), null, 'no live CREATE was kept');
+  assert.equal(w.calls.broadcast.length, 1);
 });
 
 test('a journal reads the node network answer for each call and keeps the cause of a failed read', async (t) => {
