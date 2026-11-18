@@ -96,17 +96,19 @@ function fileFailures(record) {
   return failures;
 }
 
-function commitFileFailures(record) {
+// DELTA-MAP.md was a core file while the package stored the rendered map; these commit-only records predate that change and name it.
+const MAP_COMMIT_ONLY_RECORDS = Object.freeze(['D77-5963710ebcba.json', 'WF-2fdae2f97472.json']);
+
+function commitFileFailures(name, record) {
   const list = record.commitFiles;
   if (!Array.isArray(list) || list.length === 0 || !list.every(path => typeof path === 'string' && path !== '')) return ['commitFiles must list the paths the commit changes'];
   const failures = isSortedUnique(list) ? [] : ['commitFiles must be sorted and unique'];
   for (const path of list) if (!isCanonicalPath(path)) failures.push(notCanonical(path));
-  // A commit-only record stands for a commit that changes only core or record
-  // files. DELTA-MAP.md was a core file while the package stored the rendered
-  // map, so an earlier commit-only record may name it.
+  // A commit-only record stands for a commit that changes only core or record files.
   if (record.kind === 'commit-only') for (const path of list) {
     const rel = path.startsWith(PACKAGE_PREFIX) ? path.slice(PACKAGE_PREFIX.length) : null;
-    if (rel !== null && !isCorePath(rel) && !rel.startsWith('records/') && rel !== 'DELTA-MAP.md') failures.push(`a commit-only record's commit changes ${path}`);
+    if (rel === 'DELTA-MAP.md' && MAP_COMMIT_ONLY_RECORDS.includes(name)) continue;
+    if (rel !== null && !isCorePath(rel) && !rel.startsWith('records/')) failures.push(`a commit-only record's commit changes ${path}`);
   }
   return failures;
 }
@@ -130,7 +132,7 @@ export function validateRecord(name, record) {
   const supersedes = record.supersedes;
   if (supersedes !== undefined && !(Array.isArray(supersedes) && supersedes.length > 0 && supersedes.every(other => RECORD_NAME.test(other) && other !== name) && new Set(supersedes).size === supersedes.length)) failures.push('supersedes must list other record file names once each');
   if (failures.length === 0) {
-    failures.push(...fileFailures(record), ...commitFileFailures(record));
+    failures.push(...fileFailures(record), ...commitFileFailures(name, record));
     if (name !== recordName(record)) failures.push(`file name must be ${recordName(record)}`);
   }
   return failures.map(failure => `${at}: ${failure}`);

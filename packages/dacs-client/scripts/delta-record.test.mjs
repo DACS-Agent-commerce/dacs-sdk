@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { recordName, validateRecord } from './delta-record.mjs';
 
@@ -70,6 +71,16 @@ test('a commit-only record has no files and stands for a commit that changes onl
   refuses({ ...commitOnly, files: change().files }, /a commit-only record has no files/);
   refuses({ ...commitOnly, commitFiles: [at + 'HOLD.json', at + 'src/purchases.mjs'] }, /commit changes packages\/dacs-client\/src\/purchases\.mjs/);
   refuses(change({ files: undefined }), /files must list at least one file/);
+});
+
+test('a new commit-only record may not name DELTA-MAP.md; the existing records that name it stay valid', () => {
+  const commitOnly = change({ kind: 'commit-only', files: undefined, commitFiles: [at + 'DELTA-MAP.md', at + 'HOLD.json', at + 'records/WF-000000000000.json'] });
+  refuses(commitOnly, /a commit-only record's commit changes packages\/dacs-client\/DELTA-MAP\.md/);
+  for (const name of ['D77-5963710ebcba.json', 'WF-2fdae2f97472.json']) {
+    const record = JSON.parse(readFileSync(new URL(`../records/${name}`, import.meta.url), 'utf8'));
+    assert.ok(record.kind === 'commit-only' && record.commitFiles.includes(at + 'DELTA-MAP.md'), name);
+    assert.deepEqual(validateRecord(name, record), [], name);
+  }
 });
 
 test('malformed records are refused field by field', () => {
