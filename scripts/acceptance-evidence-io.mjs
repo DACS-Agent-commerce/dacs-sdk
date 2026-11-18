@@ -20,7 +20,9 @@ function namingFile(path, error) {
 
 /** Reads a regular file of at most the evidence budget; `noFollow` refuses a link at its last
  * component (ELOOP). Returns its bytes and permission bits, or undefined only for a missing file.
- * A refused file throws an error that names `path` and carries the original error as its cause. */
+ * A file refused after opening (not regular, over the budget) throws an error that names `path` and
+ * carries the original error as its cause; an open error other than ENOENT is thrown as the system
+ * reported it. */
 export function readBoundedFile(path, { noFollow = false } = {}) {
   let descriptor;
   try { descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (noFollow ? constants.O_NOFOLLOW : 0)); }
