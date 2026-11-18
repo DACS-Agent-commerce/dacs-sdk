@@ -30,9 +30,10 @@ export const contextCapability = (overrides = {}) => createDemDeliveryContext({ 
 /**
  * The kit's commitment fixture composed through `startSellerHost` with a complete context capability. `start(changes)` starts a host on the one
  * data directory (`changes` replace host options); every host it started is closed, and the directory removed, when the test ends.
+ * A `publicEndpoint` is put in the Listing, so the host serves its discovery document there.
  */
-export async function contextHostFixture(t) {
-  const f = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE });
+export async function contextHostFixture(t, { publicEndpoint = null } = {}) {
+  const f = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE, publicEndpoint });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-host-context-'));
   // The agent options the host does not take: it owns its directory, Vet mode and challenge ledger and has no early commit.
   const { nativeArtifactAnchor, ...config } = f.config;

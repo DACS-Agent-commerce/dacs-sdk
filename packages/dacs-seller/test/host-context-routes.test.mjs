@@ -7,11 +7,13 @@ import { existsSync, readdirSync } from 'node:fs';
 import { Server } from 'node:http';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { DACS_SELLER_DISCOVERY_PATH } from '@kynesyslabs/dacs/wire';
 import { provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import * as guard from '../src/kit-operation-guard.mjs';
 import { HOST_CONTEXT_CALLBACKS } from './helpers/host-context-callbacks.mjs';
 import { contextCapability, contextHostFixture, hostBuyer, presentContextAnswer } from './helpers/host-context-client.mjs';
-import { JOB, NOW } from './helpers/protocol-fixture.mjs';
+import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
+import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 
 const OTHER_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0B';
 const THIRD_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0C';
@@ -346,7 +348,7 @@ test('the default host frees the units of a purchase that stopped after its cont
   const first = await (await buyerFor(JOB)).requestContext();
   assert.equal(first.status, 200, first.text);
   assert.equal(allocationState(f.dataDirectory), 'live', 'the context step keeps the rest of the purchase\'s units');
-  const refused = await (await buyerFor(OTHER_JOB)).requestContext();
+  const refused = await (await buyerFor(OTHER_JOB)).challenge();
   assert.deepEqual([refused.status, refused.body.error], [503, 'seller_not_ready']);
 
   clock.elapsed = ABANDONED_PURCHASE_MS - 1;
@@ -369,6 +371,25 @@ test('the default host frees the units of a purchase that was abandoned before i
   assert.equal(allocationState(f.dataDirectory), 'released');
 });
 
+test('the host publishes ready: false and refuses a new challenge while a new purchase\'s whole allotment does not fit, and ready again once the units are given back', async (t) => {
+  const f = await contextHostFixture(t, { publicEndpoint: FIXTURE_ENDPOINT }), { clock, sweep, buyerFor, host } = await hostOnMovingClock(t, f);
+  const signer = (wallet) => ({ claim: wallet.claim, sign: wallet.signBytes });
+  const published = async () => {
+    const response = await fetch(host.url + DACS_SELLER_DISCOVERY_PATH);
+    assert.equal(response.status, 200);
+    const wire = await wireBuyer({ buyer: signer(buyer), seller: signer(seller), listingPin: host.listingPin, clock: clock.now });
+    return (await wire.verifyDiscovery(Buffer.from(await response.arrayBuffer()))).ready;
+  };
+  assert.equal(await published(), true);
+  assert.equal((await (await buyerFor(JOB)).requestContext()).status, 200);
+  assert.equal(await published(), false, 'the first purchase\'s units leave too few for a second');
+  const refused = await (await buyerFor(OTHER_JOB)).challenge();
+  assert.deepEqual([refused.status, refused.body.error], [503, 'seller_not_ready']);
+  clock.elapsed = ABANDONED_PURCHASE_MS;
+  await sweepUntil(sweep, () => allocationState(f.dataDirectory) === 'released');
+  assert.equal(await published(), true);
+});
+
 test('a host given its own contextSessionState reads no purchase as abandoned', async (t) => {
   const f = await contextHostFixture(t), { clock, sweep, buyerFor } = await hostOnMovingClock(t, f, { contextSessionState: () => null });
   assert.equal((await (await buyerFor(JOB)).requestContext()).status, 200);
@@ -376,6 +397,6 @@ test('a host given its own contextSessionState reads no purchase as abandoned', 
   sweep.callback();
   await flush();
   assert.equal(allocationState(f.dataDirectory), 'live');
-  const refused = await (await buyerFor(OTHER_JOB)).requestContext();
+  const refused = await (await buyerFor(OTHER_JOB)).challenge();
   assert.deepEqual([refused.status, refused.body.error], [503, 'seller_not_ready']);
 });

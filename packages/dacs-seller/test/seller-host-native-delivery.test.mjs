@@ -39,6 +39,7 @@ import { testNetwork, FIXTURE_PROFILE } from './helpers/wire-authority-fixture.m
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 import { hostJobCapacityTests } from './helpers/host-job-capacity-cases.mjs';
+import { ABANDONED_PURCHASE_MS } from '../src/dacs/abandoned-purchase.mjs';
 
 // A paid order that has healed reaches delivery: the seller prepares and sends
 // its Deliverable exactly once, and every native refresh reads it back.
@@ -3550,4 +3551,55 @@ test('wire-payment-retained-work-before-finish', async (t) => {
     assert.equal((await p.claim(tx)).status, 'payment-evidenced');
     assert.equal(w.effects.deliverySubmit.length, delivered, 'no repeated delivery start');
   }
+});
+
+// A default host (no contextSessionState) reads abandoned purchases itself. These read the purchase's allocation and closure from the
+// host's own store, and move the clock against the Agreement's deadline (its generatedAt is the world clock when the purchase starts).
+const allocationOf = (w, p) => {
+  const db = new DatabaseSync(join(w.dataDirectory, 'transport', 'transport.sqlite'), { readonly: true });
+  try {
+    return { allocation: db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(p.jobId)?.state ?? null,
+      closure: db.prepare('SELECT state FROM kit_terminal_closures WHERE jobId = ?').get(p.jobId)?.state ?? null };
+  } finally { db.close(); }
+};
+const LIVE = { allocation: 'live', closure: null }, ABANDONED = { allocation: 'released', closure: 'aborted-by-self' };
+const MARGIN_MS = 5 * 60_000;
+const untilDeadline = (p) => p.agreement.terms.deadline - p.agreement.generatedAt;
+
+test('a default host gives back the units of a purchase that stopped after its proposal once its Agreement deadline has passed', async (t) => {
+  const w = await world(t, { contextSessionState: null });
+  const p = await w.purchase({ commit: false });
+  w.advance(untilDeadline(p) - MARGIN_MS);
+  await w.restart();
+  assert.deepEqual(allocationOf(w, p), LIVE, 'the buyer may still commit before the deadline');
+  w.advance(2 * MARGIN_MS);
+  await w.restart();
+  assert.deepEqual(allocationOf(w, p), ABANDONED);
+});
+
+test('a default host gives back the units of a committed, unpaid purchase only an hour after its Agreement deadline, once, across restarts', async (t) => {
+  const w = await world(t, { contextSessionState: null });
+  const p = await w.purchase({ commit: true });
+  w.advance(untilDeadline(p) + ABANDONED_PURCHASE_MS - MARGIN_MS);
+  await w.restart();
+  assert.deepEqual(allocationOf(w, p), LIVE, 'a payment included before the deadline may still be claimed');
+  w.advance(2 * MARGIN_MS);
+  await w.restart();
+  assert.deepEqual(allocationOf(w, p), ABANDONED);
+  await w.restart();
+  assert.deepEqual(allocationOf(w, p), ABANDONED, 'a second cleanup changes nothing');
+});
+
+test('a default host never reads a purchase paid just before its Agreement deadline as abandoned, and the purchase completes', async (t) => {
+  const w = await world(t, { contextSessionState: null });
+  const p = await w.purchase({ commit: true });
+  w.advance(untilDeadline(p) - MARGIN_MS);
+  const tx = p.pay(), answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assertDeliveryStage(answer, w);
+  assert.deepEqual(allocationOf(w, p), { allocation: 'released', closure: null }, 'the completed payment gave back the purchase\'s units itself');
+  w.advance(3 * ABANDONED_PURCHASE_MS);
+  await w.restart();
+  assert.deepEqual(allocationOf(w, p), { allocation: 'released', closure: null }, 'no abandonment closure is written for a paid purchase');
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
 });
