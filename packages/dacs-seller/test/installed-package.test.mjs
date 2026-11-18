@@ -24,7 +24,7 @@ const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/se
 const SELLER_BIN = 'bin/dacs-seller.mjs';
 const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
-  'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerContextClient', 'createSellerContextRoute', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
+  'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerContextRoute', 'createSellerHttpHandler',
   'createSellerTransportStore', 'createSellerWireClientAuth', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
 const INSTALLED_RUN_TIMEOUT_MS = 120000;
 const INSTALLED_TEST_TIMEOUT_MS = 600000;
@@ -46,7 +46,7 @@ function relativeImports(file, source = readFileSync(join(packageDirectory, file
 test('every executable seller test has one complete CLI and CI entry',()=>{
  const actual=readdirSync(join(packageDirectory,'test')).filter(name=>name.endsWith('.test.mjs')).sort();
  const listed=JSON.parse(execFileSync(process.execPath,['scripts/run-seller-tests.mjs','--list'],{cwd:root,encoding:'utf8'}));
- assert.deepEqual(listed,actual);assert.equal(new Set(listed).size,actual.length);assert.ok(listed.includes('seller-transport-auth.test.mjs'));
+ assert.deepEqual(listed,actual);assert.equal(new Set(listed).size,actual.length);assert.ok(listed.includes('seller-wire-client-auth.test.mjs'));
  const script=JSON.parse(readFileSync(join(root,'package.json'),'utf8')).scripts['seller:test'];assert.equal(script,'node scripts/run-seller-tests.mjs');
  const ci=readFileSync(join(root,'.github/workflows/ci.yml'),'utf8');assert.equal((ci.match(/run: npm run seller:test/g)??[]).length,1);assert.doesNotMatch(ci,/run: node[^\n]+packages\/dacs-seller\/test\/\*/);
  assert.equal(existsSync(join(root,'test/seller/standalone.test.ts')),false);

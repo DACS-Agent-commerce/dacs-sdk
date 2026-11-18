@@ -8,8 +8,8 @@ import { Server } from 'node:net';
 import Database from 'better-sqlite3';
 import { canonicalize, DacsError, generateCanonicalJobId, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
-import { sellerContextScopeHash, sellerContextChallengeScope, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH,
-  SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
+import { sellerContextScopeHash, sellerContextChallengeScope, SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerChallengeLedger } from '../src/dacs/seller-challenge-ledger.mjs';
 import { KIT_TP1_VET_MODE } from '../src/host.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
@@ -69,10 +69,10 @@ async function fixture(t, options = {}) {
     buyerBundleHash: sha256Hex('TEST placeholder'), seller: seller.claim, listingPin: pin,
     rail: { railId: 'demos-native:DEM', railVersion: 1 }, payee: support.payee, price: support.price, generatedAt: time });
   const challengeBody = (jobId = JOB) => ({ scope: sellerContextChallengeScope(scope(jobId)) });
-  const request = (body, path = SELLER_CONTEXT_PATH) => ({ version: '1', kind: 'request', buyer: buyer.claim, seller: seller.claim,
+  const request = (body, path = DACS_SELLER_HTTP_PATHS.context) => ({ version: '1', kind: 'request', buyer: buyer.claim, seller: seller.claim,
     jobId: body.scope.jobId, listingPin: pin, agreementHash: sellerContextScopeHash(body.scope), method: 'POST', path,
     bodyHash: sha256Hex(JSON.stringify(body)), nonce: Buffer.from(`TEST-${time}-${generation}`).toString('base64url'), issuedAt: time, expiresAt: time + 60000 });
-  const issue = async (jobId = JOB) => { const body = challengeBody(jobId); return store.challenges.issue(request(body, SELLER_CONTEXT_CHALLENGE_PATH), sellerContextScopeHash(body.scope)); };
+  const issue = async (jobId = JOB) => { const body = challengeBody(jobId); return store.challenges.issue(request(body, DACS_SELLER_HTTP_PATHS.contextChallenge), sellerContextScopeHash(body.scope)); };
   const input = async (jobId = JOB, amend = () => {}) => {
     const { sessionNonce } = await issue(jobId);
     const bundle = { bundleVersion: '1', presentedBy: buyer.claim, presentedAt: time, sessionNonce, claims: [{ ref: buyer.claim }] };

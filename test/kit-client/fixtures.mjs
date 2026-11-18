@@ -9,8 +9,9 @@ import { LOCAL } from '../../packages/dacs-client/test/fixtures/tp1-authority-re
 import { testWallet } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { fixtureListing } from '../../packages/dacs-seller/test/fixtures/listings.mjs';
 import { agreementInput } from '../../packages/dacs-seller/src/dacs/purchase-protocol.mjs';
-import { createSellerTransportStore, sellerContextScopeHash, sellerTransportSigningBytes } from '../../packages/dacs-seller/src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore, sellerContextScopeHash } from '../../packages/dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportClientAuth } from '../../packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs';
+import { sellerTransportSigningBytes } from '../../packages/dacs-client/test/helpers/old-seller-transport.mjs';
 
 export const T0 = Date.UTC(2026, 9, 27, 12);
 export const BUYER = testWallet(0x01);

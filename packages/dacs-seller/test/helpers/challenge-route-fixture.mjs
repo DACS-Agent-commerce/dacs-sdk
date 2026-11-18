@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { canonicalize, generateCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, admitWireArtifact, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, admitWireArtifact, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { fixtureListing } from '../fixtures/listings.mjs';
 import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { purchaseSupport } from '../../src/dacs/listing.mjs';
@@ -16,7 +16,6 @@ import { AGREEMENT_CONTEXT_SOURCE } from '../../src/dacs/agreement-context-consu
 import { createSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER } from '../../src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportStore } from './bound-transport-store.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { testWallet } from './protocol-fixture.mjs';
@@ -27,7 +26,7 @@ export const T0 = Date.UTC(2026, 9, 27, 12);
 export const JOB = generateCanonicalJobId({ timestamp: T0, entropy: new Uint8Array(10).fill(0x11) });
 export const JOB2 = generateCanonicalJobId({ timestamp: T0, entropy: new Uint8Array(10).fill(0x22) });
 export const CHALLENGE_PATH = DACS_SELLER_HTTP_PATHS.contextChallenge;
-export const CONTEXT_PATH = SELLER_CONTEXT_PATH;
+export const CONTEXT_PATH = DACS_SELLER_HTTP_PATHS.context;
 export const CHALLENGE_LIFETIME_MS = 600_000;
 const CLAIM_PREFIX = 'did:demos:agent:';
 const DELEGATION_LEAD_MS = 30_000;
@@ -111,7 +110,7 @@ export async function challengeWorld(t,{ store: storeOptions = {}, requireDelega
     signature: by.signBytes(Buffer.from(DACS_SELLER_HTTP_DOMAINS.request + canonicalize(payload))).toString('base64url'), ...(delegation ? { delegation } : {}) })).toString('base64url') });
   const post = async ({ url = CHALLENGE_PATH, header, text, headers, chunks }) => {
     const res = await exchange(handler, { url, header, text, headers, chunks });
-    return { status: res.status, text: res.text, body: JSON.parse(res.text), signature: res.headers?.[SELLER_TRANSPORT_HEADER] };
+    return { status: res.status, text: res.text, body: JSON.parse(res.text), signature: res.headers?.[DACS_SELLER_HTTP_HEADER] };
   };
   const rows = () => { const db = new Database(path, { readonly: true }); try { return db.prepare('SELECT * FROM kit_challenges').all(); } finally { db.close(); } };
   const journalFiles = () => readdirSync(journalDirectory).filter((name) => /^[ko]-/.test(name)).length;

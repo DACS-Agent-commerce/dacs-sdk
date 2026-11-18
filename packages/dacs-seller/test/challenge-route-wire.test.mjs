@@ -3,10 +3,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as guard from '../src/kit-operation-guard.mjs';
-import { SellerTransportError, createSellerTransportClientAuth, sellerContextScopeHash, SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
+import { DACS_SELLER_HTTP_HEADER } from '@kynesyslabs/dacs/wire';
+import { SellerTransportError, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
+import { createOldDomainRequestSigner } from './helpers/old-domain-request.mjs';
 import { CHALLENGE_LIFETIME_MS, CHALLENGE_PATH, CONTEXT_PATH, JOB, JOB2, T0, challengeWorld, gate, watchSql } from './helpers/challenge-route-fixture.mjs';
 
 const NONCE = /^[0-9a-f]{64}$/;
@@ -556,7 +558,7 @@ test('the challenge route is built from a Listing and buyer access alone, and re
 test('a handler composed with only the challenge route answers the context step as not found, unsigned', async (t) => {
   const w = await challengeWorld(t);
   const answer = await exchange(w.handler, { url: CONTEXT_PATH, text: '{}', header: 'TEST-header' });
-  assert.deepEqual([answer.status, JSON.parse(answer.text).error, answer.headers[SELLER_TRANSPORT_HEADER]], [404, 'not_found', undefined]);
+  assert.deepEqual([answer.status, JSON.parse(answer.text).error, answer.headers[DACS_SELLER_HTTP_HEADER]], [404, 'not_found', undefined]);
   assert.equal(w.rows().length, 0);
 });
 
@@ -564,7 +566,7 @@ test('an old-domain challenge request is refused at the wire, unsigned, with not
   const w = await challengeWorld(t);
   const buyerSigner = { claim: w.buyer.claim, sign: w.buyer.signBytes };
   const body = { scope: w.scopeFor(JOB) }, text = JSON.stringify(body);
-  const client = createSellerTransportClientAuth({ buyerSigner, seller: w.seller.claim, resolveJob: () => ({ listingPin: w.pin, agreementHash: sellerContextScopeHash(body.scope) }), now: () => w.state.time });
+  const client = createOldDomainRequestSigner({ buyerSigner, seller: w.seller.claim, resolveJob: () => ({ listingPin: w.pin, agreementHash: sellerContextScopeHash(body.scope) }), now: () => w.state.time });
   const { header } = await client.request(CHALLENGE_PATH, body, text);
   const answer = await w.post({ header, text });
   assert.deepEqual(summary(answer), [409, 'tp1_profile_missing']);

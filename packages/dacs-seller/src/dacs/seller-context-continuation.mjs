@@ -1,11 +1,11 @@
 // What the wire context route does with a presentation it already accepted: continue it without a first admission's checks,
 // and answer a stored outcome only after the retained records it was made from have been read back.
 import { identityBundleHash } from '@kynesyslabs/dacs';
-import { wireOperationBinding } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS as PATHS, wireOperationBinding } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { canonicalize } from './listing.mjs';
 import { createCompletedOutcomeReader } from './seller-http.mjs';
-import { SELLER_CONTEXT_PATH, SellerTransportError } from './seller-transport-auth.mjs';
+import { SellerTransportError } from './seller-transport-auth.mjs';
 import { sessionAdmissionProblem } from './session-admission.mjs';
 
 // How long the provider may take to read back the retained records of a stored outcome.
@@ -67,7 +67,7 @@ export function createAcceptedContinuation({ wire, seller, pin, checkPolicy, adm
     const row = admissionRecord(request.jobId);
     if (row === null || !['admitted', 'running', 'settled'].includes(row.state)) throw new SellerTransportError('context_admission_closed', 409);
     if (row.state !== 'settled') return null;
-    const outcome = await readCompletedOutcome({ path: SELLER_CONTEXT_PATH, jobId: request.jobId, binding: wireOperationBinding(request), revalidate: (stored) => revalidate({ jobId: request.jobId, outcome: stored }) });
+    const outcome = await readCompletedOutcome({ path: PATHS.context, jobId: request.jobId, binding: wireOperationBinding(request), revalidate: (stored) => revalidate({ jobId: request.jobId, outcome: stored }) });
     if (outcome === null) throw new SellerTransportError('context_admission_closed', 409);
     assertLive(request, delegationExpiresAt);
     return outcome;

@@ -373,7 +373,7 @@ test("every test/**/*.test.mjs and packages/*/test/**/*.test.mjs file is selecte
     ...testFilesUnder("test"),
     ...readdirSync(join(repoRoot, "packages")).flatMap((name) => testFilesUnder(`packages/${name}/test`)),
   ];
-  assert.ok(discovered.includes("packages/dacs-seller/test/seller-transport-auth.test.mjs"));
+  assert.ok(discovered.includes("packages/dacs-seller/test/seller-wire-client-auth.test.mjs"));
   assert.ok(discovered.includes("test/scripts/release-five-package.test.mjs"));
   const rows = discovered.flatMap((file) => [...commands].filter(([, files]) => files.includes(file)).map(([command]) => [file, command]));
   const unselected = discovered.filter((file) => !rows.some(([selected]) => selected === file));

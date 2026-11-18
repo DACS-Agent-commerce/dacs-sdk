@@ -231,11 +231,6 @@
       "count": 14
     }
   },
-  "packages/dacs-seller/src/dacs/seller-context-route.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "packages/dacs-seller/src/dacs/seller-durable-state.mjs": {
     "no-unsafe-finally": {
       "count": 1
@@ -246,7 +241,7 @@
   },
   "packages/dacs-seller/src/dacs/seller-transport-auth.mjs": {
     "no-unused-vars": {
-      "count": 5
+      "count": 1
     }
   },
   "packages/dacs-seller/src/dacs/session-admission.mjs": {

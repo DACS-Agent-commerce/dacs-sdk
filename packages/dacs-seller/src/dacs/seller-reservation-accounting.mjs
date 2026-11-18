@@ -3,7 +3,7 @@ import { DACS_SELLER_HTTP_PATHS as PATHS, isTp1WireProfile, wireOperationBinding
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
 import { assertAdmissionJobLease } from './seller-admission-transaction.mjs';
-import { SELLER_CONTEXT_PATH, SellerTransportError } from './seller-transport-auth.mjs';
+import { SellerTransportError } from './seller-transport-auth.mjs';
 
 // The wire journal's lease; accounting refuses a clock whose lease sum the journal could not take.
 const RESERVATION_LEASE_MS = 300000;
@@ -85,7 +85,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   // Steps 1 to 6 in one transaction: a refusal at any step, or a failed commit, leaves no hold, row, unit, claim or tuple.
   function chargeWithin(input, key, requestHash) {
     const { payload, route, operationId, paymentTx, keepProfile } = input;
-    const contextStart = route === SELLER_CONTEXT_PATH;
+    const contextStart = route === PATHS.context;
     const at = now();
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
     const replay = ledger.retiredReplayWithin(payload, operationId);

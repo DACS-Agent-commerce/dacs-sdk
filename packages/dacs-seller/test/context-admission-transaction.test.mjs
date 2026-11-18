@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalize, compositeVerificationAddress, generateCanonicalJobId, identityBundleHash } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, inspectWireOperation, openWireRequestJournal,
+import { DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, inspectWireOperation, openWireRequestJournal,
   completeWireEffect, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from '../src/dacs/session-admission.mjs';
@@ -43,11 +43,11 @@ const deferred = () => {
   return { promise, resolve };
 };
 const flush = () => new Promise(resolve => setImmediate(resolve));
-let createContextAdmissionTransaction, createPurchaseCapacity, admissionTransactionInternals, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
+let createContextAdmissionTransaction, createPurchaseCapacity, admissionTransactionInternals, sellerStoreInternals, createSellerTransportStore, importFailure;
 try {
   ({ createContextAdmissionTransaction, admissionTransactionInternals } = await import('../src/dacs/seller-admission-transaction.mjs'));
   ({ createPurchaseCapacity } = await import('../src/dacs/seller-purchase-capacity.mjs'));
-  ({ createSellerTransportStore, sellerStoreInternals, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs'));
+  ({ createSellerTransportStore, sellerStoreInternals } = await import('../src/dacs/seller-transport-auth.mjs'));
   if (typeof sellerStoreInternals !== 'function') throw new Error('sellerStoreInternals is not exported');
 } catch (error) { importFailure = error; }
 
@@ -490,9 +490,9 @@ test('admission-null-end-fence', async t => {
   const w = world(t, { completeWire: (effect, answer) => completeWireEffect(journal, effect, answer) });
   const directory = join(w.directory, 'journal'); mkdirSync(directory, { mode: 0o700 });
   journal = openWireRequestJournal(directory, { leaseMs: 1000, clock: () => w.control.clock });
-  const reserveReal = input => async () => reserveEffect(journalStore(journal), { key: hash('key' + ++requests), seller: SELLER, jobId: input.jobId, path: SELLER_CONTEXT_PATH,
+  const reserveReal = input => async () => reserveEffect(journalStore(journal), { key: hash('key' + ++requests), seller: SELLER, jobId: input.jobId, path: DACS_SELLER_HTTP_PATHS.context,
     binding: wireOperationBinding({ profile: PROFILE, buyer: input.buyer, agreementHash: input.contextScopeHash }), requestHash: hash('request' + requests) });
-  const view = input => inspectWireOperation(journal, { seller: SELLER, jobId: input.jobId, path: SELLER_CONTEXT_PATH });
+  const view = input => inspectWireOperation(journal, { seller: SELLER, jobId: input.jobId, path: DACS_SELLER_HTTP_PATHS.context });
   // (1) null wins before any check: the attempt is fenced, liabilities stay, and only a new D5 can continue.
   const first = w.prepare(0x11); await w.admission.begin(first.input); const a = await w.admission.reserveContext(first.input.jobId, reserveReal(first.input));
   const held = w.row(first.input.jobId); await a.complete(null);
@@ -577,7 +577,7 @@ test('admission-continuation-retains-envelope-parties', async t => {
   assert.deepEqual(saved.vetPresenters, { buyer: EQUIVALENT_BUYER, seller: SELLER });
   assert.deepEqual(saved.vetAddresses, { buyer: compositeVerificationAddress(p.input.jobId, EQUIVALENT_BUYER), seller: compositeVerificationAddress(p.input.jobId, SELLER) });
   assert.equal(saved.contextBinding, wireOperationBinding({ profile: PROFILE, buyer: BUYER, agreementHash: p.input.contextScopeHash }));
-  assert.deepEqual(w.control.reserved, [{ jobId: p.input.jobId, effect: wireOperationId({ seller: SELLER, jobId: p.input.jobId, path: SELLER_CONTEXT_PATH }), writes: 2, hold: saved.holdId }]);
+  assert.deepEqual(w.control.reserved, [{ jobId: p.input.jobId, effect: wireOperationId({ seller: SELLER, jobId: p.input.jobId, path: DACS_SELLER_HTTP_PATHS.context }), writes: 2, hold: saved.holdId }]);
   await reject(w.admission.begin({ ...p.input, buyer: EQUIVALENT_BUYER }), 'peer_job_conflict', 409);
   assert.equal(w.row(p.input.jobId).buyer, BUYER); assert.equal(w.calls.reserve, 1);
 });
@@ -1528,7 +1528,7 @@ for (const limit of ['jobs', 'context']) test(`D21 accounting counts K1 intent a
   const gate = deferred(); w.control.beforeReserve = () => gate.promise.then(() => null);
   const { input } = w.prepare(), pending = w.admission.begin(input);
   await flush();
-  const args = accountingInput(job(0x22), limit === 'jobs' ? '/dacs/v1/agreements/proposals' : SELLER_CONTEXT_PATH);
+  const args = accountingInput(job(0x22), limit === 'jobs' ? '/dacs/v1/agreements/proposals' : DACS_SELLER_HTTP_PATHS.context);
   const refusal = { code: limit === 'jobs' ? 'peer_job_capacity' : 'peer_context_capacity', status: 503 };
   try {
     assert.equal(w.row(input.jobId).state, 'intent');
@@ -1551,7 +1551,7 @@ test('D21 accounting keeps the K1 row owner before a purchase tuple exists', asy
 test('D21 accounting preserves the optional contextRecords override', async t => {
   const w = world(t, { maxContextRecords: 1, contextRecords: () => 1 });
   assert.equal(w.internals.admissionCounts().contextRecords, 0);
-  await assert.rejects(w.store.reservationAccounting.reserveAccounted(accountingInput(job(0x22), SELLER_CONTEXT_PATH)),
+  await assert.rejects(w.store.reservationAccounting.reserveAccounted(accountingInput(job(0x22), DACS_SELLER_HTTP_PATHS.context)),
     { code: 'peer_context_capacity', status: 503 });
   assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
 });
@@ -1563,7 +1563,7 @@ test('D21 integration retains r31 payment-route transaction binding before any c
     { ...valid, checked: { body: { txHash: tx }, reserve: valid.checked.reserve } },
     { ...valid, paymentTx: tx },
     { ...valid, paymentTx: tx, checked: { body: { txHash: hash('other claim') }, reserve: valid.checked.reserve } },
-    { ...accountingInput(job(0x22), SELLER_CONTEXT_PATH), paymentTx: tx },
+    { ...accountingInput(job(0x22), DACS_SELLER_HTTP_PATHS.context), paymentTx: tx },
   ];
   for (const input of invalid) {
     await assert.rejects(w.store.reservationAccounting.reserveAccounted(input), { code: 'wire_input_invalid', status: 500 });
@@ -1576,7 +1576,7 @@ test('D21 integration retains r31 payment-route transaction binding before any c
 test('D21 integration retains P11b1L1 terminal retry binding through the accounting ledger', async t => {
   let terminal = false, view = null;
   const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null, wireOperationView: () => view });
-  const first = accountingInput(job(0x22), SELLER_CONTEXT_PATH);
+  const first = accountingInput(job(0x22), DACS_SELLER_HTTP_PATHS.context);
   first.checked.reserve = async () => ({ state: 'new' });
   await w.store.reservationAccounting.reserveAccounted(first);
   terminal = true;

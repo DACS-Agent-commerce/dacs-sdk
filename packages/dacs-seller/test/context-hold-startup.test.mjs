@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { world, JOBS } from './helpers/d5-http-fixture.mjs';
-import { sellerTransportEffect } from '../src/dacs/seller-transport-auth.mjs';
+import { DACS_SELLER_HTTP_PATHS, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { createSellerContextAdmission, releaseSellerContextHolds, parsePolicyLedger, withContextHolds, heldPolicyBudget } from '../src/devnet-demo/operator-approval.mjs';
 import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs';
@@ -19,7 +19,8 @@ async function fixture(t) {
   const { request } = input, body = JSON.parse(input.text);
   const evidencePath = join(dirname(w.path), 'approval.jsonl');
   const config = { evidencePath, sellerApproval: { mode: 'policy', maxWriteTotalOs: '4', maxWritesPerHour: 2, maxTotalOsPerHour: '8' }, now: w.now };
-  const hold = { jobId: request.jobId, effect: sellerTransportEffect(request), writes: 2, hold: sellerTransportEffect(request) };
+  const effect = wireOperationId({ seller: request.seller, jobId: request.jobId, path: DACS_SELLER_HTTP_PATHS.context });
+  const hold = { jobId: request.jobId, effect, writes: 2, hold: effect };
   const policy = createSellerContextAdmission(config);
   const rows = async () => parsePolicyLedger(await readFile(evidencePath, 'utf8')).rows;
   const restart = (extra = {}) => {

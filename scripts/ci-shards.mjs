@@ -129,7 +129,6 @@ export const WEIGHTS = {
     "seller-settlement-profile.test.mjs": 54,
     "seller-state-stale-locks.test.mjs": 1,
     "seller-substrate-profile.test.mjs": 1,
-    "seller-transport-auth.test.mjs": 1,
     "seller-wire-client-auth.test.mjs": 2,
     "session-challenge-restore.test.mjs": 5,
     "settlement-collisions.test.mjs": 1,

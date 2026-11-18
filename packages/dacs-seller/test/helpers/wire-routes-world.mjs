@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, compositeVerificationAddress, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { fixtureIdentityBundle, fixtureListing } from '../fixtures/listings.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { proposalForInput } from './proposal-admission-fixture.mjs';
@@ -21,7 +21,7 @@ import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
 import { wireContinuationFixture, receiptReader } from './wire-continuation-fixture.mjs';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 
 export const PATHS = DACS_SELLER_HTTP_PATHS;
 export const CONTINUING = [PATHS.payments, PATHS.bundleRequest, PATHS.bundleCountersignature];
@@ -184,7 +184,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     handle.wireOverrides = overrides; reopen();
     try { return await work(); } finally { handle.wireOverrides = {}; reopen(); }
   };
-  const answerOf = (res, payload) => ({ status: res.status, text: res.text, body: JSON.parse(res.text), header: res.headers?.[SELLER_TRANSPORT_HEADER], signed: res.headers?.[SELLER_TRANSPORT_HEADER] !== undefined, payload });
+  const answerOf = (res, payload) => ({ status: res.status, text: res.text, body: JSON.parse(res.text), header: res.headers?.[DACS_SELLER_HTTP_HEADER], signed: res.headers?.[DACS_SELLER_HTTP_HEADER] !== undefined, payload });
   const send = async (path, { text, header, payload = null }) => answerOf(await exchange(handle.handler, { url: path, text, header }), payload);
   /** A request the buyer's `signWireRequest` signs, sent through the handler. */
   const post = async (path, body, { jobId, agreementHash, ...options } = {}) => {

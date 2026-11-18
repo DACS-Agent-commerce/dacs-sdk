@@ -223,22 +223,20 @@ parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
 `createSellerContextRoute`,
 `createWireSellerContextRoute` (the context step on the wire) and the buyer
-side `createSellerAgentClient`, `createSellerContextClient`,
-`createSellerTransportClientAuth` and `createSellerWireClientAuth`. The host
+side `createSellerAgentClient` and `createSellerWireClientAuth`. The host
 answers every route through the wire, under the wire domain with a TP-1
-profile in each request, and refuses a request signed by
-`createSellerTransportClientAuth` there (`tp1_profile_missing`). The buyer's `authentication` for
+profile in each request, and refuses a request signed under the transport's
+old domain. The buyer's `authentication` for
 `createSellerAgentClient` is `createSellerWireClientAuth({ signer, binding,
 connection, endpointProof, publicEndpoint, seller, resolveJob })`: it signs
 and verifies every route but the challenge and the context step through the
 wire, from the `binding` of `bindTp1Profile` and the `endpointProof` of
 `verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`, over the seller's
 signed discovery document), and `resolveJob(jobId)` gives the approved job's
-`{ listingPin, agreementHash }`. Pass a `createSellerTransportClientAuth` as its
-`fallback` to sign the challenge and the context step; without a `fallback` they
-are refused before anything is signed. Signing (the
-`resolveJob` and `evidenceFor` lookups, the buyer's authority read and a
-`fallback`) must finish within `signingTimeoutMs` (default 10,000 ms), or the
+`{ listingPin, agreementHash }`. The challenge and the context step are refused
+before anything is signed. Signing (the
+`resolveJob` and `evidenceFor` lookups and the buyer's authority read)
+must finish within `signingTimeoutMs` (default 10,000 ms), or the
 request ends as `wire_client_signing_timeout` before anything is sent. A host mounts the Vet and Agreement context
 route on the wire by passing `{ ...createSellerContextRoute({ ... }), ...createWireSellerContextRoute({ ... }) }`
 as the `context` option of `createSellerHttpHandler(agent, { wire, context })`;
@@ -258,8 +256,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createWireSellerContextRoute`,
-`createSellerContextClient`, `createSellerTransportStore`,
-`createSellerTransportClientAuth` and `createSellerWireClientAuth`. The kit's other modules are reachable by
+`createSellerTransportStore` and `createSellerWireClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -392,8 +389,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `commitments/signature` when enabled), payment and bundle routes, including the
   buyer-copy read) opens every request and signs every answer through the SDK's
   `./wire` (domain `dacs-seller-http:v1`, the host's bound TP-1 profile and the
-  tuple kept for the job); a request signed under the old domain is refused, so
-  `createSellerTransportClientAuth` does not reach these routes. The
+  tuple kept for the job); a request signed under the old domain is refused. The
   wire request journal is their journal; the two read routes reserve and store
   nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
   (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`

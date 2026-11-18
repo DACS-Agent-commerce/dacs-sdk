@@ -5,11 +5,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, bindTp1Profile } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, bindTp1Profile } from '@kynesyslabs/dacs/wire';
 import { AGREEMENT_CONTEXT_SOURCE } from '../../src/dacs/agreement-context-consumer.mjs';
 import { createDemDeliveryContext } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { purchaseSupport } from '../../src/dacs/listing.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER } from '../../src/dacs/seller-transport-auth.mjs';
 import { KIT_TP1_VET_MODE, startSellerHost } from '../../src/host.mjs';
 import { commitmentFixture } from './commitment-fixture.mjs';
 import { presentationFor } from './context-wire-world.mjs';
@@ -69,14 +68,14 @@ export async function hostBuyer(host, listing, { jobId: defaultJob }) {
   };
   const send = async (path, jobId, body) => {
     const signed = await wire.signRequest(path, body, { jobId, agreementHash: sha256Hex(canonicalize(body.scope)), delegation: delegationFor(jobId), signer: signerOf(session), text: JSON.stringify(body) });
-    const response = await fetch(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.text });
+    const response = await fetch(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.text });
     const text = await response.text();
-    return { status: response.status, text, body: JSON.parse(text), signed: response.headers.has(SELLER_TRANSPORT_HEADER) };
+    return { status: response.status, text, body: JSON.parse(text), signed: response.headers.has(DACS_SELLER_HTTP_HEADER) };
   };
   const challenge = (jobId = defaultJob) => send(DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: scopeFor(jobId) });
   const context = (jobId, nonce) => {
     const bundle = presentationFor(buyer, nonce, NOW);
-    return send(SELLER_CONTEXT_PATH, jobId, { scope: { ...scopeFor(jobId), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle });
+    return send(DACS_SELLER_HTTP_PATHS.context, jobId, { scope: { ...scopeFor(jobId), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle });
   };
   const requestContext = async (jobId = defaultJob) => {
     const issued = await challenge(jobId);

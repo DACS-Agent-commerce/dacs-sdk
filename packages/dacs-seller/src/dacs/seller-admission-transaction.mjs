@@ -4,11 +4,11 @@
 // P11d3 later extends the C3 evidence kinds beyond `no-intent` and `proven-unsigned`; until then every other kind stays undetermined.
 import { randomUUID } from 'node:crypto';
 import { canonicalize, compositeVerificationAddress, isAttestationRef, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
-import { isTp1WireProfile, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS as PATHS, isTp1WireProfile, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
-import { SELLER_CONTEXT_PATH, SellerTransportError, pinValid, sellerStoreInternals } from './seller-transport-auth.mjs';
+import { SellerTransportError, pinValid, sellerStoreInternals } from './seller-transport-auth.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 
 const ACQUIRE_TIMEOUT_MS = 10_000, POLICY_HOLD_WRITES = 2;
@@ -330,7 +330,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     let call = null;
     try {
       markHoldCall(input.jobId, intent.rev);
-      call = boundedWork(() => policy.reserve({ jobId: input.jobId, effect: wireOperationId({ seller: input.seller, jobId: input.jobId, path: SELLER_CONTEXT_PATH }),
+      call = boundedWork(() => policy.reserve({ jobId: input.jobId, effect: wireOperationId({ seller: input.seller, jobId: input.jobId, path: PATHS.context }),
         writes: POLICY_HOLD_WRITES, hold: intent.holdId }), { timeoutMs: deadlines.policyMs });
       await awaitHold(call);
       answer.resolve(acceptAdmission(input, intent.rev));
@@ -445,7 +445,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     const allocation = capacity.allocationWithin(row.jobId);
     if (allocation?.state !== 'live') return;
     const held = { allocationId: allocation.allocationId, allocationRev: allocation.rev };
-    if (cleanup === 'all') capacity.releaseAllWithin(held); else capacity.returnRouteSlotWithin({ ...held, route: SELLER_CONTEXT_PATH });
+    if (cleanup === 'all') capacity.releaseAllWithin(held); else capacity.returnRouteSlotWithin({ ...held, route: PATHS.context });
   }
   // A transition to a closed state, with the allocation's cleanup in the same transaction.
   function closeWithin(row, patch) {

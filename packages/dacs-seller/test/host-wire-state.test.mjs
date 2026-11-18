@@ -17,7 +17,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, generateCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, assertTp1Authority, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, assertTp1Authority, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
@@ -30,7 +30,7 @@ import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall, isBoundedCallTimeout } from '../src/dacs/bounded-call.mjs';
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportStore as createUnboundTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore as createUnboundTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 
 const HOST_URL = new URL('../src/host.mjs', import.meta.url);
@@ -115,10 +115,10 @@ const REQUIRED =`);
 
 /** One signed request posted to a running host over loopback HTTP: `{ status, header, bytes, payload }`. */
 const postSigned = (host, { payload, header, text, path = payload.path }) => new Promise((resolve, reject) => {
-  const sent = httpRequest(`${host.url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: header } }, (res) => {
+  const sent = httpRequest(`${host.url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: header } }, (res) => {
     const chunks = [];
     res.on('data', (chunk) => chunks.push(chunk));
-    res.on('end', () => resolve({ status: res.statusCode, header: res.headers[SELLER_TRANSPORT_HEADER], bytes: Buffer.concat(chunks), payload }));
+    res.on('end', () => resolve({ status: res.statusCode, header: res.headers[DACS_SELLER_HTTP_HEADER], bytes: Buffer.concat(chunks), payload }));
   });
   sent.on('error', reject);
   sent.end(text);

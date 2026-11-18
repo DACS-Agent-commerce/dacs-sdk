@@ -10,12 +10,12 @@
 // On the client, supplying an authentication adapter enables signed peer requests and independently signed seller responses.
 // Only an authenticated definite refusal becomes SellerRefusedError in that mode; unsigned, malformed, interrupted or
 // ambiguous answers are unavailable.
-import { completeWireEffect, DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_PATHS, inspectWireOperation, isReadRoute, WireError } from '@kynesyslabs/dacs/wire';
+import { completeWireEffect, DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, inspectWireOperation, isReadRoute, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome, UNCERTAIN } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { admitRawJson, isCanonicalJobId } from '@kynesyslabs/dacs';
-import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
+import { SellerTransportError } from './seller-transport-auth.mjs';
 import { signedDiscovery } from './seller-wire-discovery.mjs';
 import { wireAuthenticator } from './seller-wire-requests.mjs';
 import { createCompletionRecords } from './seller-completion-records.mjs';
@@ -228,7 +228,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   const effectRoutes = createSellerEffectRoutes({ commitOnSignature });
   if (wire.signer.claim !== agent.claim) throw new Error('seller transport identity must match the independently configured agent');
   if (wire.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
-  if (context !== null && (context?.path !== SELLER_CONTEXT_PATH || context?.challengePath !== SELLER_CONTEXT_CHALLENGE_PATH || typeof context.challengeOnWire !== 'function' || (context.handleContext !== undefined && typeof context.handleContext !== 'function'))) throw new TypeError('the seller context route needs its paths and its wire challenge (challengeOnWire), and its context step (handleContext) must be a function when given');
+  if (context !== null && (context?.path !== DACS_SELLER_HTTP_PATHS.context || context?.challengePath !== DACS_SELLER_HTTP_PATHS.contextChallenge || typeof context.challengeOnWire !== 'function' || (context.handleContext !== undefined && typeof context.handleContext !== 'function'))) throw new TypeError('the seller context route needs its paths and its wire challenge (challengeOnWire), and its context step (handleContext) must be a function when given');
   if (context !== null && typeof wire.stopped !== 'function') throw new TypeError('the wire challenge route needs the host\'s stop predicate (wire.stopped)');
   if (publicSignedCreates !== null && typeof publicSignedCreates !== 'function') throw new Error('publicSignedCreates must be the seller\'s signed CREATE pointer function');
   // DACS_BUYER_CHAIN_READBACK=on: a successful commit or payment answer (the
@@ -244,7 +244,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const answer = JSON.parse(text), decorated = await publicSignedCreates(jobId, answer);
       if (decorated === answer) return text;
       const pointedText = JSON.stringify(decorated);
-      return Buffer.byteLength(pointedText) > SELLER_TRANSPORT_MAX_RESPONSE ? text : pointedText;
+      return Buffer.byteLength(pointedText) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes ? text : pointedText;
     } catch { return text; }
   };
   let windowStart = Date.now();
@@ -253,10 +253,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   // The headers of one answer, signed over its exact text by the wire when there is an authenticated request.
   const signedHeaders = async (status, text, request, close = false) => {
     const headers = { 'content-type': 'application/json', 'cache-control': 'no-store', ...(close ? { connection: 'close' } : {}) };
-    if (Buffer.byteLength(text) > SELLER_TRANSPORT_MAX_RESPONSE) throw new SellerTransportError('seller_response_too_large', 503);
+    if (Buffer.byteLength(text) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) throw new SellerTransportError('seller_response_too_large', 503);
     if (request) {
       const signature = await auth.sign(request, status, text);
-      if (signature !== undefined) headers[SELLER_TRANSPORT_HEADER] = signature;
+      if (signature !== undefined) headers[DACS_SELLER_HTTP_HEADER] = signature;
     }
     return headers;
   };
@@ -328,8 +328,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (wire.publicEndpoint != null && req.url === DACS_SELLER_DISCOVERY_PATH) return await serveDiscovery(req, res);
       // Match the raw request target exactly: query strings, alternate paths
       // and encoded aliases cannot evade the path authenticated by the peer.
-      const contextChallenge = context !== null && req.url === SELLER_CONTEXT_CHALLENGE_PATH;
-      const contextStep = typeof context?.handleContext === 'function' && req.url === SELLER_CONTEXT_PATH;
+      const contextChallenge = context !== null && req.url === DACS_SELLER_HTTP_PATHS.contextChallenge;
+      const contextStep = typeof context?.handleContext === 'function' && req.url === DACS_SELLER_HTTP_PATHS.context;
       const route = routes[req.url];
       if (!route && !contextChallenge && !contextStep) return await send(res, 404, { error: 'not_found' }, null, { close: true });
       if (req.method !== 'POST') return await send(res, 405, { error: 'method_not_allowed' }, null, { close: true });
@@ -341,14 +341,14 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       // The context step answers unsigned text; it is signed here under the opened request, and a request that never opened is sent unsigned.
       if (contextStep) {
-        const answer = await context.handleContext({ rawBody, header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url });
+        const answer = await context.handleContext({ rawBody, header: req.headers[DACS_SELLER_HTTP_HEADER], method: req.method, path: req.url });
         return await send(res, answer.status, null, answer.request, { text: answer.text });
       }
       if (contextChallenge) {
-        const answer = await context.challengeOnWire(wire, { header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; } });
+        const answer = await context.challengeOnWire(wire, { header: req.headers[DACS_SELLER_HTTP_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; } });
         return await send(res, 200, answer, request, { text: auth.encode(JSON.stringify(answer)) });
       }
-      const opened = await auth.open({ header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; } });
+      const opened = await auth.open({ header: req.headers[DACS_SELLER_HTTP_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; } });
       body = opened.body;
       // A signed read reserves and completes nowhere: it answers from the agent's current state.
       if (opened.read) {
@@ -517,10 +517,10 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       signal = AbortSignal.timeout(timeoutMs);
       const deadline = Date.now() + timeoutMs;
       hasDispatched = true;
-      const response = await fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [SELLER_TRANSPORT_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal });
+      const response = await fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal });
       phase = 'response-auth';
       const declared = response.headers.get('content-length');
-      if (declared !== null && Number(declared) > SELLER_TRANSPORT_MAX_RESPONSE) { await response.body?.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
+      if (declared !== null && Number(declared) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) { await response.body?.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
       const chunks = [];
       let size = 0;
       if (response.body) {
@@ -529,7 +529,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
           const { done, value } = await reader.read();
           if (done) break;
           size += value.byteLength;
-          if (size > SELLER_TRANSPORT_MAX_RESPONSE) { await reader.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
+          if (size > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) { await reader.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
           chunks.push(value);
         }
       }
@@ -545,7 +545,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       // Unsigned 429/404/415/503 answers cannot authenticate their status.
       // Verify first: these failures stay response-auth, including signer fallback 503.
       // The verification is awaited, over the exact received bytes, within what is left of the client's deadline.
-      if (authentication) await verifiedWithin(() => authentication.verifyResponse(signed.payload, { header: response.headers.get(SELLER_TRANSPORT_HEADER), status: response.status, text: answerText, responseBytes }), deadline - Date.now());
+      if (authentication) await verifiedWithin(() => authentication.verifyResponse(signed.payload, { header: response.headers.get(DACS_SELLER_HTTP_HEADER), status: response.status, text: answerText, responseBytes }), deadline - Date.now());
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');
@@ -579,7 +579,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     countersign: (jobId, buyerSignature) => post('/dacs/v1/bundles/countersignature', { jobId, buyerSignature }),
     confirmBuyerCopy: (jobId) => post('/dacs/v1/bundles/buyer-copy', { jobId }),
     // Only a seller that mounts the context route answers this (seller-context-route.mjs).
-    agreementContext: (body) => post(SELLER_CONTEXT_PATH, body),
-    contextChallenge: (body) => post(SELLER_CONTEXT_CHALLENGE_PATH, body),
+    agreementContext: (body) => post(DACS_SELLER_HTTP_PATHS.context, body),
+    contextChallenge: (body) => post(DACS_SELLER_HTTP_PATHS.contextChallenge, body),
   };
 }

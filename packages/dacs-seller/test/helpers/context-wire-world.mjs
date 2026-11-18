@@ -4,19 +4,19 @@
 // issues a challenge over HTTP and builds the matching presentation.
 import { createHash } from 'node:crypto';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
-import { completeWireEffect, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, completeWireEffect, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { createDemDeliveryContext, demDeliveryContextHost } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { agreementInput } from '../../src/dacs/purchase-protocol.mjs';
 import { createWireSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
+import { sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { CHALLENGE_PATH, JOB, JOB2, T0, challengeWorld } from './challenge-route-fixture.mjs';
 import { admittedSession } from './challenge-api.mjs';
 
-export { JOB, JOB2, T0, SELLER_CONTEXT_PATH };
+export { JOB, JOB2, T0 };
 const POLICY_DEADLINE_MS = 10_000;
 const hash = (text) => createHash('sha256').update(String(text)).digest('hex');
 const vetRef = (tag) => ({ vetRecordRef: { anchor: { kind: 'storage-program', locator: `vet-${tag}` }, contentHash: hash(tag) } });
@@ -57,7 +57,7 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     reserve: async (request) => { counts.holds.push(request); return behaviour.policyReserve ? behaviour.policyReserve(request) : null; },
     release: async ({ jobId, hold }) => { counts.releases.push({ jobId, hold }); },
   };
-  const operationOf = (jobId) => inspectWireOperation(journal, { seller: seller.claim, jobId, path: SELLER_CONTEXT_PATH });
+  const operationOf = (jobId) => inspectWireOperation(journal, { seller: seller.claim, jobId, path: DACS_SELLER_HTTP_PATHS.context });
   const completeWire = (effect, outcome) => {
     completions.push({ effect, outcome });
     if (outcome === null && behaviour.nullEndFails) throw new Error('TEST the null end was not published');
@@ -152,11 +152,11 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const handlerOver = (overWire) => createSellerHttpHandler(agent, { context: { ...w.route, ...route }, wire: overWire });
   const handler = handlerOver(wire);
 
-  const post = async ({ url = SELLER_CONTEXT_PATH, header, text, chunks }) => {
+  const post = async ({ url = DACS_SELLER_HTTP_PATHS.context, header, text, chunks }) => {
     const res = await exchange(handler, { url, header, text, chunks });
     let body = null;
     try { body = JSON.parse(res.text); } catch { /* unsigned non-JSON answers */ }
-    return { status: res.status, text: res.text, body, signature: res.headers?.[SELLER_TRANSPORT_HEADER] };
+    return { status: res.status, text: res.text, body, signature: res.headers?.[DACS_SELLER_HTTP_HEADER] };
   };
   const issue = async ({ jobId = JOB, actor = buyer, delegation } = {}) => {
     const answer = await post({ url: CHALLENGE_PATH, ...(await w.sign({ jobId, actor, delegation })) });
@@ -184,8 +184,8 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     bundleTamper?.(bundle);
     const body = { scope, buyerIdentityBundle: bundle };
     bodyChange?.(body);
-    const signed = await w.sign({ jobId, actor, body, hash: sha256Hex(canonicalize(body.scope)), path: SELLER_CONTEXT_PATH, delegation, ...signOptions });
-    return { ...signed, url: SELLER_CONTEXT_PATH, body, scope, bundle, nonce: sessionNonce };
+    const signed = await w.sign({ jobId, actor, body, hash: sha256Hex(canonicalize(body.scope)), path: DACS_SELLER_HTTP_PATHS.context, delegation, ...signOptions });
+    return { ...signed, url: DACS_SELLER_HTTP_PATHS.context, body, scope, bundle, nonce: sessionNonce };
   };
   const rowOf = (jobId = JOB) => admission.admissionRecord(jobId);
   const challengeOf = (nonce) => w.store.challenges.retained(nonce);

@@ -1,7 +1,7 @@
 // The kit's buyer-side wire signer, `createSellerWireClientAuth`: it signs the routes the host answers through `./wire`
-// (a TP-1 profile in every request) and verifies their answers, where `createSellerTransportClientAuth` signs under the
-// old domain with no profile. The unit cases sign against the fixture binding (helpers/wire-buyer.mjs supplies the
-// binding and the verified endpoint proof only); the running-host cases go through `createSellerAgentClient`.
+// (a TP-1 profile in every request) and verifies their answers. The unit cases sign against the fixture binding
+// (helpers/wire-buyer.mjs supplies the binding and the verified endpoint proof only); the running-host cases go through
+// `createSellerAgentClient`.
 //
 // The running-host cases need a runner where `/` is root-owned (K5-J0).
 import test from 'node:test';
@@ -20,7 +20,6 @@ import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { startSellerHost } from '../src/host.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { createSellerAgentClient } from '../src/dacs/seller-http.mjs';
-import { SELLER_CONTEXT_PATH } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
 
 const PATHS = DACS_SELLER_HTTP_PATHS;
@@ -102,31 +101,20 @@ test('a session signer with the buyer\'s delegation signs as the buyer and embed
   assert.deepEqual((await openedAs(client, header, { requireDelegation: true })).payload, payload);
 });
 
-test('a route the wire does not carry goes to the fallback auth, and a wire route never does', async () => {
-  const calls = [];
-  const fallback = { request: async (path) => { calls.push(['request', path]); return { payload: { fallback: true }, header: 'fallback-header' }; }, verifyResponse: (request) => { calls.push(['verify', request.fallback === true]); return { fallback: true }; } };
-  const client = await wireClient({ fallback });
-  const challenge = await client.auth.request(SELLER_CONTEXT_PATH, { scope: { jobId: JOB } }, '{}');
-  assert.deepEqual(calls, [['request', SELLER_CONTEXT_PATH]]);
-  assert.deepEqual(await client.auth.verifyResponse(challenge.payload, { header: 'any', status: 200, text: '{}', responseBytes: Buffer.from('{}') }), { fallback: true });
-  assert.equal(calls.length, 2);
-  const wired = await client.auth.request(PATHS.state, bodyFor(PATHS.state), JSON.stringify(bodyFor(PATHS.state)));
-  assert.equal(calls.length, 2, 'the wire request reached no fallback');
-  await assert.rejects(client.auth.verifyResponse(wired.payload, { header: 'not-a-wire-header', status: 200, text: '{}', responseBytes: Buffer.from('{}') }));
-  assert.equal(calls.length, 2, 'a wire route\'s answer is verified by the wire only');
-});
-
-test('a route the wire does not carry, with no fallback, is refused before anything is signed', async () => {
+test('an answer is verified by the wire, and only for a request this signer signed', async () => {
   const client = await wireClient();
-  await assert.rejects(client.auth.request(SELLER_CONTEXT_PATH, { scope: { jobId: JOB } }, '{}'), { code: 'wire_client_route_unsupported' });
-  assert.equal(client.signs.calls, 0);
+  const wired = await client.auth.request(PATHS.state, bodyFor(PATHS.state), JSON.stringify(bodyFor(PATHS.state)));
+  await assert.rejects(client.auth.verifyResponse(wired.payload, { header: 'not-a-wire-header', status: 200, responseBytes: Buffer.from('{}') }));
+  assert.throws(() => client.auth.verifyResponse({ ...wired.payload }, { header: 'any', status: 200, responseBytes: Buffer.from('{}') }), { code: 'wire_client_route_unsupported' });
 });
 
-test('a request for a path outside the kit\'s routes is refused even with a fallback that would sign it', async () => {
-  const client = await wireClient({ fallback: { request: async () => assert.fail('the fallback signed it'), verifyResponse: () => assert.fail('the fallback verified it') } });
-  await assert.rejects(client.auth.request('/dacs/v1/unknown', { jobId: JOB }, '{}'), { code: 'wire_client_route_unsupported' });
-  assert.equal(client.signs.calls, 0);
-});
+for (const path of [DACS_SELLER_HTTP_PATHS.contextChallenge, DACS_SELLER_HTTP_PATHS.context, '/dacs/v1/unknown']) {
+  test(`the route ${path} has no signer and is refused before anything is signed`, async () => {
+    const client = await wireClient();
+    await assert.rejects(client.auth.request(path, { scope: { jobId: JOB } }, '{}'), { code: 'wire_client_route_unsupported' });
+    assert.equal(client.signs.calls, 0);
+  });
+}
 
 test('a configuration with a missing binding, endpoint proof, seller or job resolver is refused at construction', async () => {
   const { options } = await wireClient();
@@ -138,15 +126,13 @@ test('a configuration with a missing binding, endpoint proof, seller or job reso
 const STALLED = () => new Promise(() => {});
 const SIGNING_TIMEOUT_MS = 20;
 
-test('a stalled authority read, job lookup, evidence lookup or fallback signer ends as a signing timeout before anything is signed', async () => {
+test('a stalled authority read, job lookup or evidence lookup ends as a signing timeout before anything is signed', async () => {
   let authorityStalled = false;
   const readAuthority = (scope) => (authorityStalled ? STALLED() : authorityReader()(scope));
-  const fallback = { request: STALLED, verifyResponse: () => assert.fail('nothing was signed') };
   const cases = [
     ['authority reader', PATHS.state, { readAuthority }, () => { authorityStalled = true; }],
     ['resolveJob', PATHS.state, { resolveJob: STALLED }],
     ['evidenceFor', PATHS.state, { evidenceFor: STALLED }],
-    ['fallback', SELLER_CONTEXT_PATH, { fallback }],
   ];
   for (const [name, path, overrides, stall = () => {}] of cases) {
     const client = await wireClient({ ...overrides, signingTimeoutMs: SIGNING_TIMEOUT_MS });

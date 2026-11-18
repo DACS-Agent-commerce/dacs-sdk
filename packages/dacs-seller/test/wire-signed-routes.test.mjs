@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, TP1_CAPABILITIES } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, TP1_CAPABILITIES } from '@kynesyslabs/dacs/wire';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { contextWireWorld } from './helpers/context-wire-world.mjs';
 import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
@@ -21,7 +21,8 @@ import { TEST_CONNECTION, authorityReader } from './helpers/wire-authority-fixtu
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { WIRE_ROUTE_PATHS, createWireContext, wireAuthenticator } from '../src/dacs/seller-wire-requests.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { createOldDomainRequestSigner, oldDomainHeader } from './helpers/old-domain-request.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 
 import { PATHS, CONTINUING, answeredStatus, continuingWorld, BUYER, session, SESSION, PIN, stubAgent, CLAIM_PREFIX, MAX_RESPONSE_BYTES, MAX_BODY_BYTES, MAX_HEADER_CHARS, MAX_REQUEST_LIFETIME_MS, MAX_SIGNED_LIFETIME_MS, SKEW_MS, DAY_MS, JOURNAL_LEASE_MS, derive, jobFor, MUTATING, identityBody, statementsDuring, world, proposeJob } from './helpers/wire-routes-world.mjs';
@@ -322,12 +323,12 @@ test('both signed read routes reserve and complete nowhere, while returning thei
   const job = await proposeJob(w, 't19');
   assert.equal((await job.post()).status, 200);
   assert.equal(w.rows().peer_effects, 0, 'the proposal reserved in the wire journal, not in the old store');
-  const old = createSellerTransportClientAuth({ buyerSigner: BUYER, seller: seller.claim, resolveJob: () => ({ listingPin: PIN, agreementHash: job.agreementHash }), now: w.clock });
+  const old = createOldDomainRequestSigner({ buyerSigner: BUYER, seller: seller.claim, resolveJob: () => ({ listingPin: PIN, agreementHash: job.agreementHash }), now: w.clock });
   const paymentBody = { jobId: job.jobId, payerPayingKey: buyer.claim, txHash: derive('payment').slice(0, 64) };
   const { header } = await old.request(PATHS.payments, paymentBody, JSON.stringify(paymentBody));
   const payment = await exchange(w.handle.handler, { url: PATHS.payments, text: JSON.stringify(paymentBody), header });
   assert.ok(payment.status >= 400, 'payments refuse the old signing domain');
-  assert.equal(payment.headers[SELLER_TRANSPORT_HEADER], undefined);
+  assert.equal(payment.headers[DACS_SELLER_HTTP_HEADER], undefined);
   assert.equal(w.rows().peer_effects, 0, 'the refusal reserves nowhere');
   const journalBefore = w.journalFiles();
 
@@ -494,7 +495,7 @@ test('a context made for one agent never authorizes a request another agent serv
 test('P11a1-T20: the harness\'s old-domain proposal is refused; only the wire domain is accepted', async (t) => {
   const w = await world(t);
   const job = await proposeJob(w, 't20');
-  const old = createSellerTransportClientAuth({ buyerSigner: BUYER, seller: seller.claim, resolveJob: () => ({ listingPin: PIN, agreementHash: job.agreementHash }), now: w.clock });
+  const old = createOldDomainRequestSigner({ buyerSigner: BUYER, seller: seller.claim, resolveJob: () => ({ listingPin: PIN, agreementHash: job.agreementHash }), now: w.clock });
   const text = JSON.stringify(job.body);
   const { header } = await old.request(PATHS.proposals, job.body, text);
   const refused = await w.send(PATHS.proposals, { text, header });
@@ -542,8 +543,8 @@ test('P11a1-T23: through the exported kit client, with response verification pau
   t.after(() => process.off('unhandledRejection', onUnhandled));
   /** A fetch that answers through the handler, then lets `alter` change what the client receives. */
   const fetchThrough = (alter = (answer) => answer) => async (url, { headers, body }) => {
-    const answer = alter(await w.send(new URL(url).pathname, { text: body, header: headers[SELLER_TRANSPORT_HEADER] }));
-    return new Response(answer.text, { status: answer.status, headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: answer.header ?? '' } });
+    const answer = alter(await w.send(new URL(url).pathname, { text: body, header: headers[DACS_SELLER_HTTP_HEADER] }));
+    return new Response(answer.text, { status: answer.status, headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: answer.header ?? '' } });
   };
   const authentication = (verify) => ({ ...w.buyerWire.authentication(() => job.agreementHash), ...(verify ? { verifyResponse: verify } : {}) });
   const clientWith = ({ alter, verify, timeoutMs } = {}) => createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: fetchThrough(alter), authentication: authentication(verify), ...(timeoutMs ? { timeoutMs } : {}) });
@@ -771,7 +772,7 @@ test('every route the handler serves answers under the wire response domain: the
 
 test('an old-domain request on any wire route is refused unsigned with zero agent calls', async (t) => {
   const w = await continuingWorld(t);
-  const old = createSellerTransportClientAuth({ buyerSigner: BUYER, seller: seller.claim, now: w.clock,
+  const old = createOldDomainRequestSigner({ buyerSigner: BUYER, seller: seller.claim, now: w.clock,
     resolveJob: () => ({ listingPin: w.agent.listingPin, agreementHash: w.agreementHash }) });
   for (const path of [PATHS.proposals, PATHS.state, PATHS.commitments, PATHS.commitmentSignature, ...CONTINUING, PATHS.bundleBuyerCopy]) {
     const text = JSON.stringify(w.bodyFor(path)), signed = await old.request(path, w.bodyFor(path), text);
@@ -1069,13 +1070,9 @@ test('a request the wire authenticator has seen expired stays expired when the c
   assert.equal(accountingRows(w)[0].code, 'peer_expired', 'the late refusal stays charged');
 });
 
-const OLD_DOMAIN = 'dacs-chatgpt-plugin:loopback-seller-peer:v1:';
-/** The header `wallet` would send for `payload` if it signed under the old transport domain. */
-const oldDomainHeader = (payload, wallet) => Buffer.from(canonicalize({ payload, signature: wallet.signBytes(Buffer.from(OLD_DOMAIN + canonicalize(payload))).toString('base64url') })).toString('base64url');
-
 test('an old-domain request on every route, challenge and context included, is refused unsigned with zero rows and agent calls', async (t) => {
   const w = await continuingWorld(t);
-  const old = createSellerTransportClientAuth({ buyerSigner: BUYER, seller: seller.claim, now: w.clock,
+  const old = createOldDomainRequestSigner({ buyerSigner: BUYER, seller: seller.claim, now: w.clock,
     resolveJob: () => ({ listingPin: w.agent.listingPin, agreementHash: w.agreementHash }) });
   const statements = await statementsDuring(async () => {
     for (const path of WIRE_ROUTE_PATHS) {
@@ -1098,7 +1095,7 @@ test('an old-domain request on every route, challenge and context included, is r
   const before = counters();
   const challenge = await c.sign({ delegated: false });
   for (const [name, request] of [['challenge', challenge], ['context', context]]) {
-    const answer = await c.post({ url: request.url, header: oldDomainHeader(request.payload, c.buyer), text: request.text });
+    const answer = await c.post({ url: request.url, header: await oldDomainHeader(request.payload, c.buyer.signBytes), text: request.text });
     assert.deepEqual({ status: answer.status, error: answer.body.error, signed: answer.signature !== undefined }, { status: 401, error: 'peer_signature_invalid', signed: false }, name);
   }
   assert.deepEqual(counters(), before);
