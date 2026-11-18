@@ -11234,6 +11234,23 @@
           "after": "ad49c47e224e203ea0c0ecb16c8feb5a1af48079"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF keep an explicit resume's proof with the call that made it",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "7c26522b9fb47b42fc5163822abd37e92ebf7e88",
+          "after": "970085ff8eef9edc57b74c185a410a72f8e6f01c"
+        },
+        {
+          "path": "packages/dacs-client/test/native-withheld-reopen-buyer.test.mjs",
+          "before": "a50399f9d0e4ec7d290785dd280c14289e347e74",
+          "after": "3dad07541d8a033c50ad029417294043aae3ebb4"
+        }
+      ]
     }
   ]
 }

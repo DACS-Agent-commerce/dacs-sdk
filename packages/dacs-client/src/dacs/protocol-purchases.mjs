@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
@@ -501,10 +502,19 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   const listingPinFor = operation => Object.fromEntries(['listingId', 'version', 'contentHash'].map(key => [key, operation.terms.listing[key]]));
   const delegationScope = operation => ({ binding: admission.binding, local: admission.currentLocal(), buyer: buyerClaim(operation), seller: operation.terms.seller.claim,
     listingPin: listingPinFor(operation), jobId: operation.terms.protocol.jobId, time: now() });
-  // Per purchase, the route a buyer's explicit resume named. It is kept in memory only until that call's first request takes it (or the
-  // call ends), never saved: a restart, an automatic retry or another call finds none, so only the explicit action sends a proof.
-  const explicitResumes = new Map();
-  const takeExplicitResume = operationId => path => explicitResumes.get(operationId) === path && explicitResumes.delete(operationId);
+  // The route a buyer's explicit resume named belongs to that one call: the call runs in its own scope, so only the seller clients it
+  // builds can take it, once, on its first request for that route. It is never saved and never shared by purchase: another recheck of
+  // the same purchase, an automatic retry or a restart finds none, so only the explicit action sends a proof.
+  const explicitResumeScope = new AsyncLocalStorage();
+  function explicitResumeTaker() {
+    const resume = explicitResumeScope.getStore();
+    if (!resume) return null;
+    return path => {
+      if (resume.path !== path) return false;
+      resume.path = null;
+      return true;
+    };
+  }
   // holder: the calling flow's `{get(), set(next)}` over its own `current`, so the request records advance the flow's row.
   function sellerFor(holder) {
     const operation = holder.get();
@@ -521,7 +531,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
           deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
     }
     const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now });
-    const client = createSellerAgentClient({ url, fetchImpl, commitOnSignature, requestRecords, ...(declared ? { authentication, timeoutMs: sellerRequestTimeoutMs, explicitResume: takeExplicitResume(operation.id) } : {}) });
+    const client = createSellerAgentClient({ url, fetchImpl, commitOnSignature, requestRecords, ...(declared ? { authentication, timeoutMs: sellerRequestTimeoutMs, explicitResume: explicitResumeTaker() } : {}) });
     if (client.origin !== operation.terms.protocol.sellerAgent) throw new OperationError('seller_agent_changed', 'the seller agent endpoint changed since this purchase was prepared; nothing was signed or paid');
     return client;
   }
@@ -1358,10 +1368,11 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   // A suspended purchase continues only on an explicit request naming its suspension, after admission and buyer access are checked again.
-  async function recheck(operation, coords, options = {}) {
-    try { return await recheckOnce(operation, coords, options); } finally { explicitResumes.delete(operation.id); }
+  function recheck(operation, coords, options = {}) {
+    const resume = options.resumeSuspensionId ? { path: null } : null;
+    return explicitResumeScope.run(resume, () => recheckOnce(operation, coords, options, resume));
   }
-  async function recheckOnce(operation, coords, { resumeSuspensionId } = {}) {
+  async function recheckOnce(operation, coords, { resumeSuspensionId } = {}, resume = null) {
     assertPurchaseActionsAdmitted();
     try{assertBuyerAccess(operation.terms.buyer.wallet, operation);}
     catch(error){
@@ -1374,7 +1385,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (resumeSuspensionId) {
       const suspension = ops.get(operation.accountId, operation.id)?.state?.protocol?.sellerSuspension;
       createSellerRequestRecords({ db, ops, transaction, holder: { get: () => operation, set: (row) => { operation = row; } }, now }).resume(resumeSuspensionId);
-      if (suspension?.id === resumeSuspensionId && EFFECT_ROUTE_PATHS.has(suspension.path)) explicitResumes.set(operation.id, suspension.path);
+      if (suspension?.id === resumeSuspensionId && EFFECT_ROUTE_PATHS.has(suspension.path)) resume.path = suspension.path;
     } else {
       const stored = ops.get(operation.accountId, operation.id);
       if (stored?.state?.protocol?.sellerSuspension) return stored;

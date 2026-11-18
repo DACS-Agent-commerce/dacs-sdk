@@ -40,6 +40,45 @@ test('automatic retries omit the resume proof; the explicit public resume alone 
     await service.recheck(s.p.get(), coordinates);
     assert.equal(carriers().length, 1, 'a later ordinary recheck sends none');
   });
+  // Both calls wait inside the same verification step after the explicit one cleared the suspension, then finish one after the other.
+  // Their requests differ by transaction hash, so each fetch is attributed to its own call.
+  for (const order of ['ordinary call first', 'explicit call first']) {
+    await t.test(`an ordinary recheck racing the explicit one neither takes nor clears its proof (${order})`, async t => {
+      t.mock.method(Date, 'now', () => T0);
+      const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
+      const hashes = { explicit: 'a'.repeat(64), ordinary: 'b'.repeat(64) };
+      const coordinates = hash => ({ verifiedAt: 'TEST-verified', reportedTxHash: hash, observation: { observation: { blockNumber: 1 } } });
+      const parked = [];
+      const waiting = until => new Promise(resolve => { const poll = () => (until() ? resolve() : setImmediate(poll)); poll(); });
+      const { s, service } = await sellerFlow(t, 'payment', (world, state) => {
+        suspend(world, PATHS.payments);
+        state.payment.verifyAgreement = () => (parked.length < 2 ? new Promise(release => parked.push(release)) : Promise.resolve());
+      });
+      const held = s.p.get().state.protocol.sellerSuspension;
+      const explicit = service.recheck(s.p.get(), coordinates(hashes.explicit), { resumeSuspensionId: held.id });
+      await waiting(() => parked.length === 1);
+      const ordinary = service.recheck(s.p.get(), coordinates(hashes.ordinary));
+      await waiting(() => parked.length === 2);
+      const [first, second] = order === 'ordinary call first' ? [[1, ordinary], [0, explicit]] : [[0, explicit], [1, ordinary]];
+      for (const [index, call] of [first, second]) { parked[index](); await call; }
+      const carried = who => s.fetches.filter(init => init.body.includes(hashes[who]) && carriesProof(init)).length;
+      assert.equal(carried('ordinary'), 0, 'the ordinary call sends none');
+      // When the ordinary call finishes first it moves the purchase on, and the explicit call then sends nothing: its proof is not lent out.
+      assert.equal(carried('explicit'), order === 'explicit call first' ? 1 : 0, 'only the explicit call can send its proof');
+      assert.equal(s.fetches.filter(carriesProof).length, carried('explicit'), 'no other request carries a proof');
+      await service.recheck(s.p.get(), coordinates(hashes.ordinary));
+      assert.equal(s.fetches.filter(carriesProof).length, carried('explicit'), 'a later ordinary recheck finds no proof either');
+    });
+  }
+  await t.test('two explicit rechecks naming one suspension send one proof between them', async t => {
+    t.mock.method(Date, 'now', () => T0);
+    const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
+    const coordinates = { verifiedAt: 'TEST-verified', reportedTxHash: 'a'.repeat(64), observation: { observation: { blockNumber: 1 } } };
+    const { s, service } = await sellerFlow(t, 'payment', world => suspend(world, PATHS.payments));
+    const held = s.p.get().state.protocol.sellerSuspension, row = s.p.get();
+    await Promise.all([service.recheck(row, coordinates, { resumeSuspensionId: held.id }), service.recheck(row, coordinates, { resumeSuspensionId: held.id })]);
+    assert.equal(s.fetches.filter(carriesProof).length, 1, 'one proof is sent');
+  });
   await t.test('only the explicit call signs and sends a proof bound to its request; ordinary calls and automatic retries never carry one', async t => {
     const w = await buyerWorld(t), seen = [];
     const path = wire.DACS_SELLER_HTTP_PATHS.commitments, fetchImpl = async (_url, init) => { seen.push(init.headers); throw Error('TEST-response-lost'); };
