@@ -599,6 +599,20 @@ test("the inner signature and each confirm and broadcast transmission run throug
   assert.equal(w.signsInsideSign, 1, 'the one transaction signature');
 });
 
+test("a broadcast that never left the process because the gate refused it after the confirmation leaves the bytes and authorization as they were, and a restarted replay sends exactly those bytes once with no second signature", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  const pass = await openPass(w, { pass: { synchronousChecks: [({ phase }) => { if (phase === 'broadcastTx') throw new Error('TEST-gate-refused'); }] } });
+  await assert.rejects(pass.run(() => w.adapter.broadcast(signed)), error => causeChain(error).some(link => /TEST-gate-refused/.test(link.message)));
+  assert.equal(w.node.confirms.length, 1, 'the confirmation was sent'); assert.equal(w.node.broadcasts.length, 0, 'the broadcast was not');
+  const held = (await recordOf(w)).active;
+  await w.restart(); await broadcastIn(w, signed);
+  assert.equal(w.node.broadcasts.length, 1); assert.equal(JSON.stringify(w.node.broadcasts[0]), signed.signedTransaction, 'the retained bytes, unchanged');
+  const after = (await recordOf(w)).active;
+  assert.equal(after.signed.projectionText, held.signed.projectionText); assert.equal(after.approvalId, held.approvalId);
+  assert.equal(w.signsInsideSign, 1, 'no second signature'); assert.equal(w.approval.prepared.length, 1, 'no second authorization');
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied'); assert.deepEqual(spentIds(w), [held.approvalId]);
+});
+
 test("after a restart, a replay reopens the original authorization by ledgerId and creates no second budgeted write; an authorization the operator released is replaced only by the exact request's open or new authorization, linked before any egress", async t => {
   const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
   await w.restart(); await broadcastIn(w, signed); w.node.applied.delete(signed.txHash); // the chain has not executed the CREATE yet

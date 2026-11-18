@@ -1,64 +1,69 @@
-// A failure between the broadcast's records: the lane row, the intent row and the dispatch history
-// are written one after another before the one request. Any durable prefix keeps the hash and the
-// signed bytes and forbids a second ordinary broadcast; a record that never became durable sends
-// nothing. The real transport, effect boundary and durable journal run in this process against a
-// scripted TEST node; a TEST key signs the transactions. No network, chain or funds.
+// A broadcast that stops after only part of what it writes before the request: whatever
+// prefix remained keeps the transaction's hash and bytes, nothing was sent, and no second
+// ordinary broadcast of it is possible. The real transport and durable journal run in this
+// process against a scripted TEST node; a failing write or wait stands for the process ending
+// there. No network, chain or funds.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { cutAppend } from './helpers/effect-boundary-fixture.mjs';
-import { LANE_PREFIX, nativeWorld as world } from './helpers/native-effect-world.mjs';
+import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
+import { cutAppend, flush } from './helpers/effect-boundary-fixture.mjs';
+import { nativeWorld as world } from './helpers/native-effect-world.mjs';
 
-const INTENT_PREFIX = 'devnet/native-transfer/';
-const CUT = new Error('TEST-journal-cut');
+const sha = value => createHash('sha256').update(value).digest('hex');
+const startsBroadcast = prefix => (key, value) => key.startsWith(prefix) && value.stage === 'broadcast-started';
+const cut = error => error.message === 'TEST-journal-cut';
 
-// Fails the journal's write of the first record whose key starts with `prefix`.
-function failFirstPut(journal, prefix) {
-  const put = journal.put.bind(journal);
-  journal.put = async (key, value) => {
-    if (!key.startsWith(prefix)) return put(key, value);
-    journal.put = put;
-    throw CUT;
-  };
+// A confirmed transfer ready to broadcast on a transport whose journal fails the writes `fails` picks.
+async function confirmed(t, fails) {
+  const w = world(t, { bound: await bindFixture() });
+  w.open({}, fails ? { journal: w.faultyJournal(fails) } : {});
+  const lease = await w.lease(), tx = w.signedTransfer(1), confirmation = await w.confirm(tx);
+  await w.prepareBroadcast(lease.leaseId, tx.hash);
+  return { w, tx, confirmation };
 }
 
-async function confirmedPayment(t) {
-  const w = world(t);
-  return { w, ...(await w.confirmedPayment()) };
+async function assertRetainedBytes(w, tx) {
+  const [signed] = await w.records(tx);
+  assert.equal(signed.artifactHash, sha(JSON.stringify(tx)));
+  assert.equal(Buffer.from(signed.bytes, 'base64').toString(), JSON.stringify(tx), 'the exact signed bytes are retained');
 }
 
-test('a failed write of the lane row sends nothing and leaves dispatch-unknown', async (t) => {
-  const { w, signed, confirmed } = await confirmedPayment(t);
-  failFirstPut(w.journal(), LANE_PREFIX);
-  await assert.rejects(w.broadcast(confirmed), (error) => error === CUT);
-  assert.deepEqual([w.node.broadcasts, await w.lanes()], [[], []]);
-  assert.deepEqual((await w.historyStates()).slice(-2), ['p2/dispatch-started', 'p2/dispatch-unknown']);
-  assert.equal((await w.historyRecords()).at(-1).cause.code, 'effect_failed');
-  assert.ok(signed.hash);
-});
-
-test('a failed write of the intent row after the lane row keeps the hash on the lane and forbids a second broadcast, also after a restart', async (t) => {
-  const { w, signed, confirmed } = await confirmedPayment(t);
-  failFirstPut(w.journal(), INTENT_PREFIX);
-  await assert.rejects(w.broadcast(confirmed), (error) => error === CUT);
-  assert.deepEqual(w.node.broadcasts, [], 'the request was never made');
-  const [[laneKey, lane]] = await w.lanes();
-  assert.deepEqual([lane.stage, lane.hash, JSON.stringify(lane.signedTransaction)], ['broadcast-started', signed.hash, JSON.stringify(signed)]);
-  assert.equal((await w.historyStates()).at(-1), 'p2/dispatch-unknown');
-
-  for (const restart of [false, true]) {
-    if (restart) await w.restartGuarded();
-    await assert.rejects(w.lease(), { code:'outcome_unknown' }, restart ? 'after the restart' : 'before it');
-    const read = await w.transport().binding({ phase:'readback', address:w.address, hash:signed.hash });
-    assert.equal(read.hash ?? signed.hash, signed.hash);
-    assert.deepEqual((await w.journal().get(laneKey)).signedTransaction, signed, 'the original transaction is still found');
-  }
+test('a broadcast cut before its lane row is written sends nothing, and a new lease cannot confirm the retained bytes again', async t => {
+  const { w, tx, confirmation } = await confirmed(t, startsBroadcast('devnet/native-wallet/'));
+  await assert.rejects(w.broadcast(confirmation), cut);
+  await w.restart({});
+  await assertRetainedBytes(w, tx);
+  assert.deepEqual((await w.journalEntries()).filter(([key]) => key.startsWith('devnet/native-')), []);
+  await w.lease();
+  await assert.rejects(w.confirm(tx), error => error.code === 'eb_persist_failed' && error.cause?.code === 'eb_history_conflict');
+  assert.equal(w.node.confirms, 1);
   assert.deepEqual(w.node.broadcasts, []);
 });
 
-test('a failed write of the dispatch-started record leaves no lane row and sends nothing', async (t) => {
-  const { w, g, confirmed } = await confirmedPayment(t);
-  const crash = cutAppend({ history:g.history }, 'dispatch-started');
-  await assert.rejects(w.broadcast(confirmed), { code:'eb_persist_failed', cause:crash });
-  assert.deepEqual([w.node.broadcasts, await w.lanes()], [[], []]);
-  assert.equal((await w.historyStates()).at(-1), 'p2/signed');
+test('a broadcast cut after its lane row and before its intent sends nothing, and the lane row refuses a new lease', async t => {
+  const { w, tx, confirmation } = await confirmed(t, startsBroadcast('devnet/native-transfer/'));
+  await assert.rejects(w.broadcast(confirmation), cut);
+  await w.restart({});
+  await assertRetainedBytes(w, tx);
+  const lane = (await w.journalEntries()).filter(([key]) => key.startsWith('devnet/native-wallet/'));
+  assert.deepEqual(lane.map(([, row]) => [row.stage, row.hash]), [['broadcast-started', tx.hash]]);
+  await assert.rejects(w.lease(), { code: 'outcome_unknown' });
+  assert.deepEqual(w.node.broadcasts, []);
+});
+
+test('a broadcast cut after its lane row and intent and before its request sends nothing, and both rows refuse a new lease', async t => {
+  const { w, tx, confirmation } = await confirmed(t);
+  let held;
+  cutAppend(w, 'dispatch-started', { mutate: () => { held = w.gate.hold(); } });
+  const outcome = w.broadcast(confirmation).then(() => null, error => error);
+  for (let tries = 0; tries < 50 && !held?.reached; tries++) await flush();
+  held.fail(new Error('TEST-process-ended'));
+  assert.equal((await outcome).message, 'TEST-process-ended');
+  await w.restart({});
+  await assertRetainedBytes(w, tx);
+  const rows = (await w.journalEntries()).filter(([key]) => key.startsWith('devnet/native-'));
+  assert.deepEqual(rows.map(([, row]) => [row.stage, row.hash]), [['broadcast-started', tx.hash], ['broadcast-started', tx.hash]]);
+  await assert.rejects(w.lease(), { code: 'outcome_unknown' });
+  assert.deepEqual(w.node.broadcasts, []);
 });

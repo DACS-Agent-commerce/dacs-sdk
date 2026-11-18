@@ -8,6 +8,7 @@ import { assertTp1Authority, assertTp1Binding, bindTp1Profile, signSellerSession
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal } from '../src/dacs/demos-sr2-adapter.mjs';
 import { createDevnetAgreementTransport } from '../src/wallet/devnet-native-transport.mjs';
 import { createAuthorityReader } from '../src/wallet/authority-reader.mjs';
+import { addressForClaim } from '../src/signatures.mjs';
 import { createEffectFence } from '../src/wallet/effect-fence.mjs';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
 import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
@@ -16,6 +17,7 @@ import { createAuthorityFixture } from './fixtures/tp1-authority-reader.mjs';
 import { record, ownLocal, shared } from './helpers/chain-identity-fixture.mjs';
 import { queuedOwner } from './helpers/queued-owner.mjs';
 import { deferred, jsonResponse, MIB, ok, sizedReply } from './helpers/source-read-world.mjs';
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 
 // Reuse the retained, signed public CREATE unchanged. The counterparty's
 // endpoint is in its signed metadata; each reader owns a different endpoint.
@@ -26,7 +28,7 @@ function adapterAt(t, endpoint, pinChange = {}) {
   const tx = { ...structuredClone(f.valid), status: 'confirmed', blockNumber: 7 }, op = tx.content.data[1];
   const native = { success: true, storageAddress: op.storageAddress, owner: f.owner, programName: op.programName, data: op.data, metadata: op.metadata, createdByTx: tx.hash, interactionTxs: [tx.hash] };
   const block = { number: 7, status: 'confirmed', hash: 'a'.repeat(64), content: { timestamp: 1790000010, ordered_transactions: [tx.hash] }, validation_data: { TEST: 'single-node-observation', chainIdentity: pins.chainIdentity } };
-  const source = createDevnetAgreementTransport({ expected: pins, now: () => 1790000020000,
+  const source = createDevnetAgreementTransport({ boundary: readOnlyBoundary, expected: pins, now: () => 1790000020000,
     journal: { get: async () => null, put: async () => assert.fail('unexpected write'), entries: async () => [], withWalletLock: (_key, work) => work() },
     transportOwner: { getContext: () => ({ ...context }), acquireConnectionFence: () => ({ context: { ...context }, release() {} }) },
     fetchImpl: async (_url, options) => {
@@ -85,7 +87,8 @@ const RPC_BLOCK = number => ({ method: 'nodeCall', params: [{ message: 'getBlock
 const mismatch = { code: 'tp1_participant_profile_mismatch' };
 const causesOf = error => { const causes = []; for (let next = error; next; next = next.cause) causes.push(next); return causes; };
 const enrollment = (claim, patch = {}) => ({ claim, profile: { ...OWN_PROFILE }, modules: { ...TESTNET_PROFILE_TP1.tuple }, evidence: 'TEST-enrollment-record', revoked: false, ...patch });
-const purchaseRow = (jobId, seller = SELLER) => ({ terms: { protocol: { jobId } }, state: { listing: { seller: { identity: { presentedBy: seller } } } } });
+// A saved purchase row as the purchase service writes it: the job id, the buyer's wallet address and the seller's claim sit in `terms`.
+const purchaseRow = (jobId, seller = SELLER, buyer = BUYER) => ({ terms: { protocol: { jobId }, buyer: { accountId: 'TEST-account', wallet: addressForClaim(buyer) }, seller: { claim: seller, payee: addressForClaim(seller) } } });
 const otherChainBlock = () => jsonResponse(JSON.stringify(ok({ number: 0, status: 'confirmed', hash: 'e'.repeat(64), content: {} })));
 const countingSigner = claim => { const signer = { claim, signs: 0, async sign() { signer.signs++; return Buffer.alloc(64, 7); } }; return signer; };
 const delegationPayload = (buyer, jobId) => ({ version: '1', kind: 'seller-session-delegation', buyer, sessionPublicKey: '9'.repeat(64), seller: SELLER,
@@ -165,6 +168,29 @@ test('the production reader serves discovery and job checks from registered List
   await assert.rejects(signSellerSessionDelegation(delegationPayload(BUYER, UNKNOWN_JOB), signer, binding, current), mismatch, 'a row saved for another job answers nothing');
   assert.equal(signer.signs, 0, 'no refused case reached the signer');
   for (const name of Object.keys(w.sources)) assert.throws(() => createAuthorityReader({ ...w.sources, [name]: undefined }), TypeError, name);
+});
+
+test('the reader finds the seller of a purchase row from the terms the purchase service saves, with no other field', async t => {
+  const w = readerWorld(t), binding = await w.bind(), current = w.owner.currentLocal();
+  assert.deepEqual(Object.keys(w.rows.get(JOB)), ['terms']);
+  await assertTp1Authority(binding, current, [BUYER, SELLER], JOB);
+  assert.equal((await w.reader({ sessionId: JOB, participants: [BUYER, SELLER] })).participants.length, 2);
+});
+
+test("the reader refuses a job whose saved purchase belongs to another buyer wallet or names no valid buyer, and no delegation is signed for it", async t => {
+  const w = readerWorld(t), signer = countingSigner(BUYER), binding = await w.bind(), current = w.owner.currentLocal();
+  const foreign = '01M5YKPJG0248H248H248H248M', noBuyer = '01M5YKPJG0248H248H248H248N', badBuyer = '01M5YKPJG0248H248H248H248P', noSeller = '01M5YKPJG0248H248H248H248Q';
+  w.rows.set(foreign, purchaseRow(foreign, SELLER, OTHER_BUYER));
+  w.rows.set(noBuyer, { terms: { ...purchaseRow(noBuyer).terms, buyer: undefined } });
+  w.rows.set(badBuyer, { terms: { ...purchaseRow(badBuyer).terms, buyer: { accountId: 'TEST-account', wallet: 'not-an-address' } } });
+  w.rows.set(noSeller, { terms: { ...purchaseRow(noSeller).terms, seller: undefined } });
+  for (const jobId of [foreign, noBuyer, badBuyer, noSeller]) {
+    await assert.rejects(assertTp1Authority(binding, current, [BUYER, SELLER], jobId), mismatch, jobId);
+    await assert.rejects(assertTp1Authority(binding, current, [BUYER], jobId), mismatch, `${jobId}: the wallet alone is not vouched for either`);
+    await assert.rejects(signSellerSessionDelegation(delegationPayload(BUYER, jobId), signer, binding, current), mismatch, jobId);
+  }
+  assert.equal(signer.signs, 0, 'no refused case reached the signer');
+  await assertTp1Authority(binding, current, [BUYER, SELLER], JOB);
 });
 
 test('while held, every action refuses profile_not_admitted before any read, and direct reader calls sign and send nothing', async t => {
@@ -317,15 +343,52 @@ test('the client composition builds in stages with the production reader and the
   }
 });
 
+// The recorded TP-1 node replies: the four-field block-zero error, then blocks one and two; the string "0" read gets the recorded genesis.
+const OBSERVATIONS = new URL('../../../conformance/', import.meta.url);
+const recordedBody = file => JSON.parse(JSON.parse(readFileSync(new URL(file, OBSERVATIONS))).body);
+const RECORDED_BLOCKS = ['tp1-node-observations/block0-2026-10-20.json', 'tp1-node-observations/block1-2026-10-20.json',
+  'tp1-node-observations-2026-11-08/block2-2026-11-08.json'].map(recordedBody);
+const RECORDED_GENESIS = recordedBody('tp1-node-observations/genesis-string-zero-2026-10-20.json');
+// A node intercept that answers identity reads with the recorded replies, each first changed by `mutate(answer, height)`.
+const recordedNode = (mutate = () => {}) => row => {
+  const call = row.body.params[0];
+  if (call.message !== 'getBlockByNumber') return undefined;
+  const height = call.data.blockNumber, answer = structuredClone(height === '0' ? RECORDED_GENESIS : RECORDED_BLOCKS[height]);
+  mutate(answer, height);
+  return jsonResponse(JSON.stringify(answer));
+};
+
+test('the production reader and the composition bind the recorded TP-1 replies with their four-field block-zero error; a reply the reviewed policy refuses still refuses', async t => {
+  const w = readerWorld(t);
+  w.node.intercept = recordedNode();
+  assert.equal((await w.bind()).profile.chainIdentity, record.chainIdentity);
+  const c = await compositionWorld(t);
+  c.node.intercept = recordedNode();
+  assert.equal((await c.build()).binding.profile.chainIdentity, record.chainIdentity);
+  // Each change and the cause the binding is refused with.
+  const refused = {
+    'the two-field block-zero error': [(answer, height) => { if (height === 0) { delete answer.extra; delete answer.require_reply; } }, 'malformed_observation'],
+    'another block-zero error': [(answer, height) => { if (height === 0) answer.extra = 'Unknown block'; }, 'malformed_observation'],
+    'another block-two hash': [(answer, height) => { if (height === 2) answer.response.hash = 'f'.repeat(64); }, 'identity_mismatch'],
+  };
+  for (const [label, [mutate, cause]] of Object.entries(refused)) {
+    const r = readerWorld(t);
+    r.node.intercept = recordedNode(mutate);
+    await assert.rejects(r.bind(), error => error.code === 'unavailable' && causesOf(error).some(link => link.code === cause), label);
+  }
+});
+
 test('the composed reader answers for the finalized wallet: its own claim is the session wallet and a peer comes only from the registered purchase and enrollment', async t => {
   const rows = new Map(), enrolled = new Map();
   const w = await compositionWorld(t, { input: { purchases: { findByJobId: jobId => rows.get(jobId) ?? null }, participantImplementations: { entriesFor: claim => enrolled.get(claim) ?? [] } } });
   const composition = await w.build(), address = composition.wallet.getPublicAccount().address, claim = 'did:demos:agent:' + address.slice(2);
-  rows.set(JOB, purchaseRow(JOB));
+  rows.set(JOB, purchaseRow(JOB, SELLER, claim));
+  rows.set(SECOND_JOB, purchaseRow(SECOND_JOB, SELLER, OTHER_BUYER));
   enrolled.set(SELLER, [enrollment(SELLER)]);
   const { binding } = composition;
   assert.equal(binding.profile.chainIdentity, CHAIN);
   await assertTp1Authority(binding, w.owner.currentLocal(), [claim, SELLER], JOB);
+  await assert.rejects(assertTp1Authority(binding, w.owner.currentLocal(), [claim, SELLER], SECOND_JOB), mismatch, "another wallet's job is not vouched for");
   enrolled.delete(SELLER);
   await assert.rejects(assertTp1Authority(binding, w.owner.currentLocal(), [claim, SELLER], JOB), mismatch);
 });

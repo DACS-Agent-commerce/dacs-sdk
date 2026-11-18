@@ -1,9 +1,14 @@
+import { writingBoundary } from './transport-boundary.mjs'; // first: it installs the purchase-admission hook before any source module loads
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { TP1_APPROVED_IDENTITY_RECORD as record } from '@kynesyslabs/dacs/wire';
-import { createDemosNetworkBinder } from '../../src/dacs/network-binding.mjs';
-import { createDevnetSettlementTransport, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, DEVNET_NODE2_BLOCK_LAYOUT } from '../../src/wallet/devnet-native-transport.mjs';
+// The source modules load after the admission hook, so the effect boundary under test sees the admission double.
+const { createDemosNetworkBinder } = await import('../../src/dacs/network-binding.mjs');
+const { createDevnetSettlementTransport, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, DEVNET_NODE2_BLOCK_LAYOUT } = await import('../../src/wallet/devnet-native-transport.mjs');
+const { openDurableWalletJournal } = await import('../../src/wallet/durable-journal.mjs');
 
 export { record };
 export const NOW = 1_900_000_000_000;
@@ -59,9 +64,11 @@ export function stabilisedShared({ replies = stabilisedReplies(), policy = stabi
   return { binder, reads };
 }
 
-// Synthetic nine-field block two, chained to the unchanged dated block one.
+// Synthetic nine-field block two with the ten reviewed content fields, chained to the unchanged dated block one.
 // Its hash is a test pin, not captured evidence from a node.
-export const syntheticTwo = envelope({ id: 3, number: 2, hash: hash('TEST-synthetic-reviewed-block-two'), content: { previousHash: captured.one.response.hash }, status: 'confirmed', proposer: 'TEST-proposer', next_proposer: 'TEST-next', validation_data: {}, attrs: {} });
+const syntheticTwoContent = { ordered_transactions: [], encrypted_transactions_hashes: {}, per_address_transactions: {}, web2data: {}, previousHash: captured.one.response.hash,
+  timestamp: 1_792_496_207, peerlist: [], l2ps_partecipating_nodes: {}, l2ps_banned_nodes: {}, native_tables_hashes: {} };
+export const syntheticTwo = envelope({ id: 3, number: 2, hash: hash('TEST-synthetic-reviewed-block-two'), content: syntheticTwoContent, status: 'confirmed', proposer: 'TEST-proposer', next_proposer: 'TEST-next', validation_data: {}, attrs: {} });
 /** The native transport over scripted replies: the literal-error chain by default, the synthetic stabilised-genesis chain with `stabilised`. */
 export function native(t, { stabilised = false } = {}) {
   const replies = new Map(stabilised
@@ -69,12 +76,15 @@ export function native(t, { stabilised = false } = {}) {
     : [[0, structuredClone(captured.zero)], ['0', structuredClone(captured.genesis)], [1, structuredClone(captured.one)], [2, structuredClone(syntheticTwo)]]);
   const identityOptions = stabilised ? { stabilisedGenesis }
     : { fallback, blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: syntheticTwo.response.hash };
-  const heights = [], messages = [], rows = new Map();
+  const heights = [], messages = [];
   let effects = 0;
-  const journal = { get: async key => rows.get(key), put: async () => { effects++; throw Error('TEST-write-forbidden'); }, entries: async () => [], withWalletLock: (_key, work) => work() };
-  const transport = createDevnetSettlementTransport({ expected, ...identityOptions, journal, now: () => NOW,
+  const directory = mkdtempSync(join(tmpdir(), 'chain-identity-')), stored = openDurableWalletJournal({ path: join(directory, 'journal.sqlite'), mode: 'create' });
+  const journal = { ...stored, put: async () => { effects++; throw Error('TEST-write-forbidden'); } };
+  const transportOwner = { getContext: () => ({ ...local }), acquireConnectionFence: () => ({ context: { ...local }, release() {} }) };
+  const boundary = writingBoundary({ owner: transportOwner, journal: stored });
+  const transport = createDevnetSettlementTransport({ boundary, expected, ...identityOptions, journal, now: () => NOW,
     settlementPublication: { policy: 'dacs-native-settlement-publication/v1', artifactKind: 'SettlementEvidence', phase: 'pay-dem', phaseIndex: 2, railId: 'demos-native:DEM', authority: 'TEST-identity-read' },
-    transportOwner: { getContext: () => ({ ...local }), acquireConnectionFence: () => ({ context: { ...local }, release() {} }) },
+    transportOwner,
     fetchImpl: async (_url, options) => {
       const body = JSON.parse(options.body), call = body.params[0];
       assert.equal(body.method, 'nodeCall', 'identity tests must never execute');
@@ -87,12 +97,16 @@ export function native(t, { stabilised = false } = {}) {
       return new Response(typeof answer === 'string' ? answer : JSON.stringify(answer), { headers: { 'content-type': 'application/json' } });
     },
   });
-  t.after(() => transport.close());
+  t.after(async () => { await transport.close(); stored.close(); rmSync(directory, { recursive: true, force: true }); });
   const recover = async binding => {
     const tx = { hash: hash('TEST-retained-storage-create'), content: { type: 'storageProgram', from: `0x${hash('TEST-storage-writer')}`, nonce: 1, data: ['storageProgram', { metadata: { artifactKind: 'SettlementEvidence' }, data: { phase: 'pay-dem' } }] } };
     const retained = { hash: tx.hash, signedTransaction: tx, nonce: 1, stage: 'broadcast-accepted', storageWriteSubmission: 'accepted', storageWriteSubmissionProfile: 'hash-or-validator-relay/v3', storageWriteResends: 0, storageWriteGas: null, networkBinding: binding };
-    rows.set(`devnet/native-transfer/${tx.hash}`, retained);
-    rows.set(`devnet/native-wallet/${JSON.stringify([expected.network, expected.chainIdentity, tx.content.from])}`, retained);
+    const lane = `devnet/native-wallet/${JSON.stringify([expected.network, expected.chainIdentity, tx.content.from])}`;
+    await stored.put(`devnet/native-transfer/${tx.hash}`, retained);
+    await stored.put(lane, retained);
+    // Recovery resends only what the boundary's history holds as signed.
+    await boundary.signPass({ operationId: lane, lane, kind: 'create', paidWrite: true, debitOs: '0', pinVersion: expected.pinVersion }, async () => Buffer.from(JSON.stringify(tx)))
+      .catch((error) => { if (error.code !== 'eb_operation_signed') throw error; });
     messages.length = 0; heights.length = 0;
     const result = await transport.recoverStorageWrite({ signedTransaction: tx, signRpc: () => { effects++; throw Error('TEST-sign-forbidden'); } });
     assert.equal(result.noResend, true);

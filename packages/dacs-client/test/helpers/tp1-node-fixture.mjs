@@ -14,25 +14,20 @@ export const api = await import('../../src/wallet/node-wallet-session.mjs');
 const { openDurableWalletJournal } = await import('../../src/wallet/durable-journal.mjs');
 const { buildNativeTransferPayload } = await import('../../src/dacs/wallet-transactions.mjs');
 export const T0 = 1793102400000;
+/** The stop check and fee ceiling every session construction needs. */
+export const finalization = Object.freeze({ stopped: async () => false, feeCeilingOs: '50000000000' });
 export const mnemonicBytes = () => new TextEncoder().encode(entropyToMnemonic(new Uint8Array(32).fill(3), wordlist));
 export const ok = response => ({ result: 200, response, require_reply: false, extra: null });
 export function scriptedNode() {
   const node = { calls: [], broadcasts: [], confirms: [], applied: new Map(), mode: 'accept', nonce: 0, intercept: null };
   node.fetch = async (url, init) => {
-    const body = init.body === undefined ? null : JSON.parse(init.body), call = body?.params[0];
+    const body = JSON.parse(init.body), call = body.params[0];
     const row = { url: String(url), body, headers: { ...init.headers }, redirect: init.redirect };
     node.calls.push(row);
     const intercepted = await node.intercept?.(row);
     if (intercepted) return intercepted;
     let answer;
-    if (body === null) {
-      // The storage program read: the program an applied storage CREATE made, or a 404.
-      const address = new URL(url).pathname.split('/storage-program/')[1];
-      const created = [...node.applied.values()].find(tx => tx.content.to === address && tx.content.data?.[0] === 'storageProgram');
-      if (!created) return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
-      const operation = created.content.data[1];
-      answer = { success: true, data: operation.data, owner: created.content.from, programName: operation.programName, storageAddress: address, metadata: operation.metadata };
-    } else if (body.method === 'nodeCall') {
+    if (body.method === 'nodeCall') {
       const { message, data } = call;
       if (message === 'getBlockByNumber') answer = ok(data.blockNumber === 0
         ? { number: 0, status: 'confirmed', hash: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, content: {} }
@@ -80,20 +75,20 @@ export async function world(t, { held = false, journalWrap = x => x, ownerWrap =
     // A seller composition requires the host's proof that it owns the state directory and its payment-evidence approval ledger.
     const sellerInputs = createSession === api.createNodeSellerComposition
       ? { stateOwnership: { directory: dir, held: () => true }, paymentEvidenceApproval: recordingApproval() } : {};
-    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, stopped: async () => false, feeCeilingOs: '50000000000', ...sellerInputs, ...sessionOptions });
+    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...finalization, ...sellerInputs, ...sessionOptions });
     sessions.push(session);
     return { owner, admission };
   }
   const initial = await start();
   t.after(async () => { setPurchaseAdmission('held'); for (const s of sessions) await s.close(); for (const o of owners) await o.close(); journal.close(); rmSync(dir, { recursive: true, force: true }); });
   const address = session.wallet.getPublicAccount().address;
-  const requestAt = timestamp => ({ method: 'sendTransaction', params: [buildNativeTransferPayload({ from: address, to: '0x' + '2'.repeat(64), amountOs: '2500000000', nonce: 1, timestamp, encoding: 'os-string' })] });
-  const request = requestAt(T0);
-  return { ...initial, path, node, authority, key, clock, request, requestAt, get session() { return session; },
+  const request = { method: 'sendTransaction', params: [buildNativeTransferPayload({ from: address, to: '0x' + '2'.repeat(64), amountOs: '2500000000', nonce: 1, timestamp: T0, encoding: 'os-string' })] };
+  return { ...initial, path, node, authority, key, clock, request, get session() { return session; },
     send: () => session.wallet.request(request), journal: () => journal,
     lane: async () => (await journal.entries()).find(([k]) => k.startsWith('devnet/native-wallet/'))?.[1],
     restart: async () => { await session.close(); journal.close(); return start(); } };
 }
+// With `complete`, the Agreement also carries the members the bridge's own planning requires.
 export async function agreementRequest(w, { complete = false } = {}) {
   const { canonicalize, sha256Hex } = await import('@kynesyslabs/dacs');
   const { createPrivateKey, createPublicKey, sign } = await import('node:crypto');

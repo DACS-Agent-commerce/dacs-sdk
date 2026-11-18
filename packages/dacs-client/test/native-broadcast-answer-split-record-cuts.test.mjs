@@ -1,61 +1,53 @@
-// A failure after the broadcast request was made: its answer is written to the intent row, the
-// lane row and the dispatch history one after another. Whatever subset is durable, the lane keeps
-// the hash and the transaction is never broadcast again, also after a restart; it stays
-// readback-only. The real transport, effect boundary and durable journal run in this process
-// against a scripted TEST node; a TEST key signs the transactions. No network, chain or funds.
+// A broadcast whose request was sent and answered, stopping after only some of the records
+// of the answer: whichever of them committed, the lane stays readback-only after the restart,
+// the transaction is never sent again, and readback still finds it. The real transport and
+// durable journal run in this process against a scripted TEST node; a failing write stands for
+// the process ending there. No network, chain or funds.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { cutAppend } from './helpers/effect-boundary-fixture.mjs';
-import { LANE_PREFIX, nativeWorld as world } from './helpers/native-effect-world.mjs';
+import { nativeWorld as world } from './helpers/native-effect-world.mjs';
 
-const INTENT_PREFIX = 'devnet/native-transfer/';
-const CUT = new Error('TEST-journal-cut');
+const answered = prefix => (key, value) => key.startsWith(prefix) && value.stage === 'broadcast-accepted';
+const cut = error => error.message === 'TEST-journal-cut';
 
-// Lets the journal write the first record whose key starts with `prefix` and fails the second one.
-function failSecondPut(journal, prefix) {
-  const put = journal.put.bind(journal);
-  let writes = 0;
-  journal.put = async (key, value) => {
-    if (key.startsWith(prefix) && ++writes === 2) throw CUT;
-    return put(key, value);
-  };
+async function broadcastCutAfterAnswer(t, fails) {
+  const w = world(t, { bound: await bindFixture() });
+  w.open({}, fails ? { journal: w.faultyJournal(fails) } : {});
+  const lease = await w.lease(), tx = w.signedTransfer(1), confirmation = await w.confirm(tx);
+  await w.prepareBroadcast(lease.leaseId, tx.hash);
+  return { w, tx, confirmation };
 }
 
-async function confirmedPayment(t) {
-  const w = world(t);
-  return { w, ...(await w.confirmedPayment()) };
+// After the restart the lane refuses a new lease and a second send, and readback finds the transaction on the node.
+async function assertReadbackOnly(w, tx, stages) {
+  await w.restart({});
+  assert.deepEqual(w.node.broadcasts, [tx.hash], 'the request was sent once');
+  const rows = (await w.journalEntries()).filter(([key]) => key.startsWith('devnet/native-'));
+  assert.deepEqual(rows.map(([key, row]) => [key.startsWith('devnet/native-wallet/') ? 'lane' : 'intent', row.stage]).sort(), stages);
+  await assert.rejects(w.lease(), { code: 'outcome_unknown' });
+  const read = await w.transport().binding({ phase: 'readback', address: w.address, hash: tx.hash });
+  assert.equal(read.disposition, 'included');
+  assert.deepEqual(w.node.broadcasts, [tx.hash], 'neither the restart nor readback sends again');
 }
 
-async function assertReadbackOnlyAfterRestart(w, signed) {
-  await w.restartGuarded();
-  await assert.rejects(w.lease(), { code:'outcome_unknown' });
-  assert.equal((await w.transport().binding({ phase:'readback', address:w.address, hash:signed.hash })).disposition, 'included');
-  assert.deepEqual(w.node.broadcasts, [signed.hash], 'the restart sent nothing more');
-}
-
-test('a failed write of the answer to the intent row leaves the lane at broadcast-started and the transaction readback-only after a restart', async (t) => {
-  const { w, signed, confirmed } = await confirmedPayment(t);
-  failSecondPut(w.journal(), INTENT_PREFIX);
-  await assert.rejects(w.broadcast(confirmed), (error) => error === CUT);
-  assert.deepEqual(w.node.broadcasts, [signed.hash]);
-  assert.deepEqual([(await w.lanes())[0][1].stage, (await w.historyStates()).at(-1)], ['broadcast-started', 'p2/dispatch-unknown']);
-  await assertReadbackOnlyAfterRestart(w, signed);
+test('a broadcast cut after the answer and before its intent record leaves both rows started and readback-only', async t => {
+  const { w, tx, confirmation } = await broadcastCutAfterAnswer(t, answered('devnet/native-transfer/'));
+  await assert.rejects(w.broadcast(confirmation), cut);
+  await assertReadbackOnly(w, tx, [['intent', 'broadcast-started'], ['lane', 'broadcast-started']]);
 });
 
-test('only the intent row answered, with the lane row still at broadcast-started, stays readback-only after a restart', async (t) => {
-  const { w, signed, confirmed } = await confirmedPayment(t);
-  failSecondPut(w.journal(), LANE_PREFIX);
-  await assert.rejects(w.broadcast(confirmed), (error) => error === CUT);
-  assert.equal((await w.journal().get(`${INTENT_PREFIX}${signed.hash}`)).stage, 'broadcast-accepted');
-  assert.equal((await w.lanes())[0][1].stage, 'broadcast-started');
-  assert.equal((await w.historyStates()).at(-1), 'p2/dispatch-unknown');
-  await assertReadbackOnlyAfterRestart(w, signed);
+test('a broadcast cut after its intent record and before its lane record leaves the answered intent and a started lane readback-only', async t => {
+  const { w, tx, confirmation } = await broadcastCutAfterAnswer(t, answered('devnet/native-wallet/'));
+  await assert.rejects(w.broadcast(confirmation), cut);
+  await assertReadbackOnly(w, tx, [['intent', 'broadcast-accepted'], ['lane', 'broadcast-started']]);
 });
 
-test('a failed write of dispatch-acknowledged leaves both answered rows and dispatch-unknown, and the transaction readback-only after a restart', async (t) => {
-  const { w, g, signed, confirmed } = await confirmedPayment(t);
-  const crash = cutAppend({ history:g.history }, 'dispatch-acknowledged');
-  await assert.rejects(w.broadcast(confirmed), { code:'eb_persist_failed', cause:crash });
-  assert.deepEqual([w.node.broadcasts, (await w.lanes())[0][1].stage, (await w.historyStates()).at(-1)], [[signed.hash], 'broadcast-accepted', 'p2/dispatch-unknown']);
-  await assertReadbackOnlyAfterRestart(w, signed);
+test('a broadcast cut after both answer records and before its acknowledgement is recorded unknown and readback-only', async t => {
+  const { w, tx, confirmation } = await broadcastCutAfterAnswer(t);
+  cutAppend(w, 'dispatch-acknowledged');
+  await assert.rejects(w.broadcast(confirmation), { code: 'eb_ack_not_persisted' });
+  assert.equal((await w.records(tx)).at(-1).state, 'dispatch-unknown');
+  await assertReadbackOnly(w, tx, [['intent', 'broadcast-accepted'], ['lane', 'broadcast-accepted']]);
 });

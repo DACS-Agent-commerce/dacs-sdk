@@ -796,10 +796,22 @@ async function completedOperation(t, limit) {
   return w;
 }
 // One signed retry of the operation, admitted again for each reservation.
-const signedRetry = (w, change = {}) => {
+const signedRetry = (w, change = {}, options = {}) => {
   const p = w.f.payload(change);
-  return async () => w.reserve({ ...(await w.f.admit(p)), paymentTx: null, retainedWork: true });
+  return async () => w.reserve({ ...(await w.f.admit(p)), paymentTx: null, retainedWork: true, ...options });
 };
+
+test('a completed operation at capacity is answered from its stored outcome, twice, for a route that revalidates its sources, with no row, file or exhaustion record', async t => {
+  const w = await completedOperation(t, FOUR);
+  assert.equal(w.capacity.capacityReport().free, 0);
+  const rows = w.f.rows().length, files = w.f.files(), retry = signedRetry(w, {}, { answersCompletedAtCapacity: true });
+  for (let repeat = 0; repeat < 2; repeat++) {
+    const effect = await retry();
+    assert.deepEqual({ state: effect.state, outcome: effect.outcome }, { state: 'completed', outcome: { status: 200, text: '{"status":"delivered"}' } });
+  }
+  assert.equal(w.f.rows().length, rows); assert.deepEqual(w.f.files(), files); assert.deepEqual(w.capacity.capacityReport().exhausted, []);
+  await rejects(signedRetry(w, {}, { answersCompletedAtCapacity: 'yes' })(), 'wire_input_invalid', 500);
+});
 
 test('a completed operation at capacity refuses the same signed retry twice with no row, file or exhaustion record; with room the second is `peer_request_replayed`', async t => {
   await t.test('at capacity', async st => {

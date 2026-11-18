@@ -1,7 +1,7 @@
 // Bridge to the Node wallet session's explicit storage-anchor kind. The
-// session owns approval, SDK signing, confirmation and its one send; the
-// send and the recovery resend run through the session's effect boundary.
-// This module owns the retained logical plan and independent native/block
+// session owns approval, SDK signing, confirmation and dispatch, each through
+// its effect boundary, and its native transport runs recovery through the same
+// boundary. This module owns the retained logical plan and independent native/block
 // readback. Only an injected operator signer permits identical recovery of a
 // seller evidence CREATE; the user's wallet path remains readback-only.
 import {

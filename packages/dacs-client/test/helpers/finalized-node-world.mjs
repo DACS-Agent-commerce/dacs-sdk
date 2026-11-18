@@ -5,12 +5,9 @@ import { join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { api, mnemonicBytes, scriptedNode, setPurchaseAdmission, T0 } from './tp1-node-fixture.mjs';
 import { controlledClock } from './effect-boundary-fixture.mjs';
-import { passContext, runInPassContext } from '../../src/wallet/pass-context.mjs';
 const { queuedOwner } = await import('./queued-owner.mjs');
 const { openDurableWalletJournal } = await import('../../src/wallet/durable-journal.mjs');
 const { buildNativeTransferPayload } = await import('../../src/dacs/wallet-transactions.mjs');
-
-const SEND_OPERATION_ID = 'TEST-send-1';
 
 export async function finalizedWorld(t, { path, node = scriptedNode(), state = {}, input = {}, journalOptions = {}, journalWrap = j => j } = {}) {
   setPurchaseAdmission('testnet-tp1');
@@ -33,10 +30,9 @@ export async function finalizedWorld(t, { path, node = scriptedNode(), state = {
     records: async () => (await journal.entries()).filter(([key]) => key.startsWith('eb/')).map(([, value]) => value),
     effects: () => node.calls.filter(row => row.body.method === 'execute').map(row => row.body.params[0].extra),
     async restart(extra = {}) { await close(); const next = await finalizedWorld(t, { path: journalPath, node, state, ...extra }); await next.build(); return next; },
-    // A send runs under a fixed operation id, so a restarted run resumes the history of the send it repeats.
-    send: request => runInPassContext(passContext({ operationId: SEND_OPERATION_ID }), () => session.wallet.request(request ?? world.request())),
-    request: (timestamp = T0) => ({ method: 'sendTransaction', params: [buildNativeTransferPayload({ from: session.wallet.getPublicAccount().address,
-      to: '0x' + '2'.repeat(64), amountOs: '2500000000', nonce: 1, timestamp, encoding: 'os-string' })] }),
+    send: request => session.wallet.request(request ?? world.request()),
+    request: () => ({ method: 'sendTransaction', params: [buildNativeTransferPayload({ from: session.wallet.getPublicAccount().address,
+      to: '0x' + '2'.repeat(64), amountOs: '2500000000', nonce: 1, timestamp: T0, encoding: 'os-string' })] }),
   };
   return world;
 }

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { api, T0 } from './tp1-node-fixture.mjs';
 import { spiedWorld } from './node-wallet-signing-spy.mjs';
+import { passContext } from '../../src/wallet/pass-context.mjs';
 
 export const FEE_CEILING_OS = '50000000000';
 const PASS_WINDOW_MS = 10_000;
-let passCount = 0;
 
 /** Returns fixture TEST- publications for a seller composition. */
 export const sellerPublications = () => ({
@@ -30,6 +30,10 @@ export async function gateWorld(t, { seller = true, qualify, sessionOptions = {}
   return Object.assign(w, { clock, currentOwner: () => owner, replaceLocal: local => { replaced = local; } });
 }
 
+/** The context a host gives a pass: a current job pass on a seller composition, the plain context on a buyer's. */
+export const defaultContext = session => (session.transport
+  ? passContext({ operationClass: 'job-create', currentAuthorization: () => true }) : passContext());
+
 /**
  * Opens an effect pass the way its host does: it takes the owner's fence, registers the pass and releases the fence when
  * `run(work)` ends, whatever work does. `events` records every default step as `<step>:<phase>`; `pass` overrides any
@@ -38,13 +42,8 @@ export async function gateWorld(t, { seller = true, qualify, sessionOptions = {}
 export async function openPass(w, { pass = {}, events = [] } = {}) {
   const owner = w.currentOwner?.() ?? w.owner, lease = await owner.acquireConnectionFence();
   const step = name => ({ phase }) => { events.push(`${name}:${phase}`); };
-  // A seller pass names the job operation it belongs to, one operation per pass; a buyer pass is plain.
-  const job = w.session.transport ? { operationClass: 'job-create', operationId: `TEST-job-${++passCount}`, currentAuthorization: () => true } : {};
-  let handle;
-  try {
-    handle = w.session.effectPass({ fence: lease, deadline: w.clock.now() + PASS_WINDOW_MS, refreshAuthority: step('authority'),
-      finalStop: step('stop'), synchronousChecks: [step('sync')], feeCeilingOs: FEE_CEILING_OS, ...job, ...pass });
-  } catch (error) { lease.release(); throw error; }
+  const handle = w.session.effectPass({ fence: lease, deadline: w.clock.now() + PASS_WINDOW_MS, refreshAuthority: step('authority'),
+    finalStop: step('stop'), synchronousChecks: [step('sync')], feeCeilingOs: FEE_CEILING_OS, context: defaultContext(w.session), ...pass });
   const run = async work => {
     try { return await w.session.runInEffectPass(handle, work); } finally { lease.release(); }
   };

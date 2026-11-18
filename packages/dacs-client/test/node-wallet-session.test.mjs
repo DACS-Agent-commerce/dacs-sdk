@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { runFreshChild } from './helpers/fresh-node-child.mjs';
-import { api, world, mnemonicBytes, setPurchaseAdmission } from './helpers/tp1-node-fixture.mjs';
+import { api, finalization, world, mnemonicBytes, setPurchaseAdmission } from './helpers/tp1-node-fixture.mjs';
 const refusal = code => error => error.code === code || error.message === code;
 
 test("admitted through the test seam, a native send signs once, confirms once and broadcasts once on the scripted TP-1 node", async t => {
@@ -58,7 +58,7 @@ test("runtime floor refuses v22.22.1 and v24.14.0 before any file opens and admi
 const original = Object.getOwnPropertyDescriptor(process,'version'); t.after(()=>Object.defineProperty(process,'version',original));
 const w = await world(t); for (const version of ['v22.22.1','v24.14.0','v22.22.2','v24.15.0']) {
  Object.defineProperty(process,'version',{value:version,configurable:true}); const key=mnemonicBytes();
- const construction = api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),approve:async()=>true,stopped:async()=>false,feeCeilingOs:'50000000000',clock:w.clock,key});
+ const construction = api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),approve:async()=>true,clock:w.clock,key,...finalization});
  if(version==='v22.22.1'||version==='v24.14.0')await assert.rejects(construction,refusal('runtime_unsupported'));
  else { const session=await construction;assert.equal(session.wallet.isLocked(),false);await session.close(); }
  assert.ok(key.every(v=>v===0)); }
@@ -69,7 +69,7 @@ const w=await world(t); const { wallet }=w.session;
 const current=w.admission.currentLocal; w.admission.currentLocal=()=>{throw new Error('TEST-local');};
 // Use a fresh wallet wrapper so the constructor captures each hostile admission.
 for(const admission of [{binding:structuredClone(w.admission.binding),currentLocal:current},{binding:w.admission.binding,currentLocal:()=>({...current(),connectionId:'TEST-other'})},{binding:w.admission.binding,currentLocal:w.admission.currentLocal}]) {
- const s=await api.createNodeWalletSession({admission,owner:w.owner,journal:w.journal(),key:mnemonicBytes(),approve:async()=>true,stopped:async()=>false,feeCeilingOs:'50000000000',clock:w.clock});
+ const s=await api.createNodeWalletSession({admission,owner:w.owner,journal:w.journal(),key:mnemonicBytes(),approve:async()=>true,clock:w.clock,...finalization});
  await assert.rejects(s.wallet.request(w.request),refusal('profile_not_admitted')); s.wallet.lock(); }
 assert.equal(w.node.confirms.length,0); assert.equal(wallet.isLocked(),false);
 });
@@ -97,17 +97,17 @@ test("the key bytes are zero-filled after import and on every construction failu
 const w=await world(t), copies=[], keyLength=mnemonicBytes().length;
 const copy=Uint8Array.from;
 t.mock.method(Uint8Array,'from',function(value,...args){const result=Reflect.apply(copy,this,[value,...args]);if(value instanceof Uint8Array && value.length===keyLength)copies.push(result);return result;});
-const key=mnemonicBytes(); const s=await api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),key,approve:async()=>true,stopped:async()=>false,feeCeilingOs:'50000000000',clock:w.clock});
+const key=mnemonicBytes(); const s=await api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),key,approve:async()=>true,clock:w.clock,...finalization});
 assert.ok(key.every(v=>v===0)); s.wallet.lock(); t.after(()=>s.close());
-for(const options of [{},{admission:w.admission,owner:{}}]){const key=mnemonicBytes();await assert.rejects(api.createNodeWalletSession({...options,stopped:async()=>false,feeCeilingOs:'50000000000',key}));assert.ok(key.every(v=>v===0));}
+for(const options of [{},{admission:w.admission,owner:{}}]){const key=mnemonicBytes();await assert.rejects(api.createNodeWalletSession({...options,key}));assert.ok(key.every(v=>v===0));}
 const {Demos}=await (await import('../src/wallet/node-demos-loading.mjs')).loadNodeDemos();
 const failure=new Error('TEST-connect-import-failed');t.mock.method(Demos.prototype,'connectWallet',async()=>{throw failure;});
-const failedKey=mnemonicBytes();await assert.rejects(api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),key:failedKey,stopped:async()=>false,feeCeilingOs:'50000000000',clock:w.clock}),error=>error===failure);
+const failedKey=mnemonicBytes();await assert.rejects(api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),key:failedKey,clock:w.clock,...finalization}),error=>error===failure);
 assert.ok(failedKey.every(v=>v===0));assert.ok(copies.length>=3);for(const bytes of copies)assert.ok(bytes.every(v=>v===0));
 });
 
 test("an invalid mnemonic refuses invalid_mnemonic before connectWallet is called and every key byte copy is zero-filled", async t => {
-const w=await world(t);const {Demos}=await (await import('../src/wallet/node-demos-loading.mjs')).loadNodeDemos();let connects=0;t.mock.method(Demos.prototype,'connectWallet',async()=>{connects++;throw new Error('TEST-invalid-connect');}); for (const key of [new TextEncoder().encode('TEST invalid mnemonic'),Uint8Array.of(255)]) { await assert.rejects(api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),key,stopped:async()=>false,feeCeilingOs:'50000000000',clock:w.clock}),refusal('invalid_mnemonic')); assert.ok(key.every(v=>v===0)); assert.equal(w.node.calls.length,0);assert.equal(connects,0); }
+const w=await world(t);const {Demos}=await (await import('../src/wallet/node-demos-loading.mjs')).loadNodeDemos();let connects=0;t.mock.method(Demos.prototype,'connectWallet',async()=>{connects++;throw new Error('TEST-invalid-connect');}); for (const key of [new TextEncoder().encode('TEST invalid mnemonic'),Uint8Array.of(255)]) { await assert.rejects(api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),key,clock:w.clock,...finalization}),refusal('invalid_mnemonic')); assert.ok(key.every(v=>v===0)); assert.equal(w.node.calls.length,0);assert.equal(connects,0); }
 });
 
 test("an http endpoint, an endpoint with a path or credentials, or a non-canonical origin is refused by the owner", async () => {
@@ -140,7 +140,7 @@ test('a failed SDK load zeroes key before any wallet or journal is constructed',
   registerHooks({resolve(specifier,context,next){if(specifier==='@kynesyslabs/demosdk/websdk')throw failure;return next(specifier,context);}});
   const key=new Uint8Array(JSON.parse(process.argv[2]));let opens=0;
   const journal={get(){opens++;},put(){opens++;},withWalletLock(){opens++;},entries(){opens++;}};
-  try{await api.createNodeWalletSession({admission:{binding:{},currentLocal:()=>({})},journal,key,stopped:async()=>false,feeCeilingOs:'50000000000'});}
+  try{await api.createNodeWalletSession({admission:{binding:{},currentLocal:()=>({})},journal,key});}
   catch(error){writeFileSync('result.json',JSON.stringify({same:error===failure,zero:key.every(v=>v===0),opens}));}
  `,[JSON.stringify([...mnemonicBytes()])]);
  assert.equal(child.status,0,child.stderr);assert.equal(child.stdout,'');assert.equal(child.stderr,'');assert.deepEqual(child.result,{same:true,zero:true,opens:0});
@@ -148,7 +148,7 @@ test('a failed SDK load zeroes key before any wallet or journal is constructed',
 
 test('construction snapshots admission and the consumed key before its first await and for later wallet views', async t => {
  const w=await world(t),key=mnemonicBytes(),replacement=mnemonicBytes();
- const options={admission:w.admission,owner:w.owner,journal:w.journal(),key,approve:async()=>true,stopped:async()=>false,feeCeilingOs:'50000000000',clock:w.clock};
+ const options={admission:w.admission,owner:w.owner,journal:w.journal(),key,approve:async()=>true,clock:w.clock,...finalization};
  const pending=api.createNodeWalletSession(options);options.key=replacement;
  options.admission={binding:structuredClone(w.admission.binding),currentLocal:w.admission.currentLocal};
  const session=await pending;t.after(()=>session.close());assert.ok(key.every(value=>value===0));

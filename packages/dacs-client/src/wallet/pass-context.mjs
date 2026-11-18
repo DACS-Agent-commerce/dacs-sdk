@@ -1,52 +1,52 @@
-// The private context of one effect pass: the class of the pass and the check that its current
-// authorization still holds. Trusted composition code builds it with `passContext` and installs it
-// with `runInPassContext` around a wallet call; the native transport reads it once at the entry of
-// each effectful request and runs the check right before the request leaves. Nothing a request,
-// header or wallet method carries can stand in for it. Internal: not exported by the package.
+// The private context of one effect pass: the job class the pass belongs to and the
+// synchronous check that its authority is still current. The host that owns the job creates
+// one with `passContext` (exported by `./node-wallet`), and only the native transport reads it,
+// once at the start of each effectful call. A request field, a header, an operation field or
+// a wallet method never supplies a class or a check.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { OperationError } from '../client-errors.mjs';
 
-const JOB_OPERATION_CLASSES = ['job-create', 'payment-evidence', 'job-resume'];
+const JOB_CLASSES = ['job-create', 'payment-evidence', 'job-resume'];
 const contexts = new WeakSet();
-const installed = new AsyncLocalStorage();
-const PLAIN_CONTEXT = Object.freeze({ operationClass: null });
-contexts.add(PLAIN_CONTEXT);
-
-const refusal = (code, message) => new OperationError(code, message);
+const stored = new AsyncLocalStorage();
+const brand = (context) => { contexts.add(context); return Object.freeze(context); };
+const PLAIN_CONTEXT = brand({ operationClass: null });
 
 /**
- * Builds a pass context: `operationClass` is 'job-create', 'payment-evidence', 'job-resume' or null (a plain
- * pass); `operationId` is the id of the seller job the pass belongs to, used as its history's operation id;
- * `currentAuthorization()` is a synchronous check that returns true or throws its cause. A job pass
- * without a usable check is refused when it transmits. Throws TypeError for any other class.
+ * Creates the context of a pass. `operationClass` is `'job-create'`, `'payment-evidence'` or
+ * `'job-resume'` for a seller job pass, or `null` for a plain pass. `operationId` (optional) is
+ * the job's own operation id, used as the effect boundary's operation id. `currentAuthorization`
+ * is a synchronous function that returns `true` while the job's authority is current and throws
+ * its cause otherwise; a job pass needs one. Throws `TypeError` for any other class.
  */
 export function passContext({ operationClass = null, operationId, currentAuthorization } = {}) {
-  if (operationClass !== null && !JOB_OPERATION_CLASSES.includes(operationClass)) throw new TypeError(`operationClass must be null or one of ${JOB_OPERATION_CLASSES.join(', ')}`);
-  const context = Object.freeze({ operationClass, operationId, currentAuthorization });
-  contexts.add(context);
-  return context;
+  if (operationClass !== null && !JOB_CLASSES.includes(operationClass)) throw new TypeError(`operationClass is null or one of ${JOB_CLASSES.join(', ')}`);
+  return brand({ operationClass, operationId, currentAuthorization });
 }
 
-/** Runs `work` with `context` installed and returns its result. Throws TypeError for an object `passContext` did not build. */
+/** Returns true for a context `passContext` made, false for anything else. */
+export const isPassContext = (value) => contexts.has(value);
+
+/** Runs `work` with `context` as the current pass context; throws `TypeError` for an object `passContext` did not create. */
 export function runInPassContext(context, work) {
-  if (!contexts.has(context)) throw new TypeError('a pass context must come from passContext');
-  return installed.run(context, work);
+  if (!contexts.has(context)) throw new TypeError('a pass context made by passContext is required');
+  return stored.run(context, work);
 }
 
-/** The installed context, or the plain one (class null, no check) when none is installed. */
-export const currentPassContext = () => installed.getStore() ?? PLAIN_CONTEXT;
+/** The context of the running pass, or the plain context when none is running. */
+export const currentPassContext = () => stored.getStore() ?? PLAIN_CONTEXT;
 
 /**
- * Runs the context's check: returns when it answers true, throws `context_authorization_required` for a job
- * pass without a function, `context_authorization_refused` for any other answer (a thenable's rejection is
- * consumed), and the check's own error when it throws. A plain pass has no check.
+ * Throws unless the pass may still transmit: a plain pass always may; a job pass needs a check that
+ * returns `true`. A missing check refuses `context_authorization_required`, any other answer
+ * (`false`, a promise) `context_authorization_refused`; the check's own throw is kept as it is.
  */
 export function assertCurrentAuthorization({ operationClass, currentAuthorization }) {
   if (operationClass === null) return;
-  if (typeof currentAuthorization !== 'function') throw refusal('context_authorization_required', `a ${operationClass} pass has no current-authorization check`);
+  if (typeof currentAuthorization !== 'function') throw new OperationError('context_authorization_required', `a ${operationClass} pass has no current-authorization check`);
   const answer = currentAuthorization();
   if (answer === true) return;
   const asynchronous = typeof answer?.then === 'function';
   if (asynchronous) Promise.resolve(answer).catch(() => {});
-  throw refusal('context_authorization_refused', asynchronous ? 'the current-authorization check answered asynchronously' : 'the current-authorization check did not answer true');
+  throw new OperationError('context_authorization_refused', asynchronous ? 'the current-authorization check answered asynchronously' : 'the current-authorization check did not return true');
 }

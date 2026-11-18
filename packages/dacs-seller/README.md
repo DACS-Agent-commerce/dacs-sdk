@@ -51,7 +51,9 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
-The host's optional `maxRecords` (default 10,000) is the reservation budget. A purchase allocation holds 17 units for each of the
+The host has two separate record limits. `maxRecords` (default 10,000) is the transport store's limit on live nonce records
+and retained accounting rows, and it also sets the store's challenge and context-record caps. `maxReservationUnits` is the purchase capacity's reservation budget; it defaults to `maxRecords`
+and is set on its own to give the budget a different size. A purchase allocation holds 17 units of that budget for each of the
 context, proposals, commitments and payments routes (68 units, or 85 when
 commitments/signature is enabled), and admission allots one only while the whole
 allotment is free. A successful context completion returns only the context
@@ -108,7 +110,8 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
-  maxRecords: 10000,     // optional reservation budget; a purchase allocation is 68 units
+  maxRecords: 10000,     // optional limit on the store's live nonce, challenge and context records and retained accounting rows
+  maxReservationUnits: 10000, // optional reservation budget, default maxRecords; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
@@ -156,16 +159,41 @@ with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
+A store that already exists is checked against the journal on every start,
+before the host listens: every nonce key must name an accounting row, a charge
+that a crash left reserving is marked with what the journal holds for it (its
+charge stays counted), and the slot of an operation that completed before the
+slot was returned is returned once. If the journal cannot be read whole, or a
+key names no row, the host starts not ready, changes nothing and records
+`kit_journal_accounting_mismatch` with its cause, and writes one line to stderr:
+`seller-state: not accepting new purchases: kit_journal_accounting_mismatch: <cause>`.
+The cause is a code and a detail, for example
+`seller_replay_guard_invalid: STORE-ENUMERATION-INCOMPLETE`. It says the journal
+and the store do not agree, or the journal cannot be read whole; it may name a
+key, an operation or a job, and names a file only for an operating-system read
+error. The operator restores `seller/`, `transport/` and
+`wire-journal/` to one consistent copy (the same backup, or the same running
+host), then restarts; each start checks again. Only when the cause is an
+operating-system read error that names a file does the operator repair that file
+instead.
 
 Signed effect routes reserve through one reservation coordinator, which commits
 accounting before the wire journal publishes their attempt. A final answer
 completes the operation and returns its route slot; a later request is answered
-from it, after the existing source checks. An answer that is not final yet (a
-`waiting` proposal, a `held` payment) ends the attempt without an outcome, and
-the next request recovers at once, the agent reconciling first. An uncertain
-attempt stays open: a request inside its 300 s lease gets `seller_effect_pending`,
-and the first after it recovers; after 16 lapsed attempts the operation answers
-`seller_effect_unresolved`. Signed reads create no reservation rows or journal files.
+from it, after the existing source checks. A `waiting` proposal that kept no work
+ends the attempt without an outcome, and the next request recovers at once, the
+agent reconciling first. A payment answer that says the payment is in progress,
+a `held` payment or evidence whose delivery is not done, ends its attempt the
+same way and is not stored: waiting for a transfer is not a crash, so it spends
+none of the 16 attempts below. A payment that kept nothing (`indeterminate`
+before the evidence checkpoint, or `rejected`) also ends without an outcome. An
+uncertain or open attempt stays open, as does any other answer or refusal while
+payment work is unfinished: a request inside its 300 s lease gets `seller_effect_pending`,
+and the first after it recovers, spending one of 16 attempts at each lapse; after
+16 lapsed attempts the operation answers `seller_effect_unresolved`. A final
+payment answer is stored only after its sources are read again, and returns the
+purchase's remaining capacity once. Signed reads create no reservation rows or
+journal files.
 
 An operation is one job's request on one route. Its binding is the profile,
 buyer and Agreement hash it was first reserved under. Once the operation has
@@ -287,6 +315,13 @@ commitment that is not readback-only), with `authorizeResend` the same seller-st
 check that authorized signing; the capability asks it again right before the send
 and sends the original bytes only when it answers exactly `true`. A `resend` that
 is not a boolean, or `true` without an `authorizeResend` function, is refused.
+A passive read (the default) writes nothing before the source authenticates the
+transaction's inclusion: a seller intent that holds no hash keeps the hash and
+signed bytes it found in the journals as local values, and a pending or failed
+read leaves every journal row, including `demo/recovery`, as it was. Only an
+authenticated inclusion saves that checkpoint. An active read asks `authorizeResend`
+once, under the recovery lock and after the deployment check, so authority that
+closed during that check sends and records nothing.
 `read` takes the same options. The seller's restart of a submitted Deliverable
 passes them (with the same check) to the native delivery `read`, so a Deliverable
 CREATE kept before a crash that is still pending is sent again once; every other
@@ -319,6 +354,18 @@ uncertain.
 Keep both journals across restart; losing or rolling them back invalidates the
 proof. Without a valid proof after a failure before signing, the commitment
 remains held until the operator can reconcile it.
+
+The seller checks every reply of the `nativeDemDelivery` operations against fixed
+limits: 256 KiB, 32768 values, 80 levels deep and 16384 entries in a list. These
+cover any Deliverable the seller can send. A reply over a limit is answered as
+`indeterminate`, never as absent. A reconcile, read or verify that takes longer
+than 30 seconds is also answered as `indeterminate`; a missed deadline does not
+prove that nothing was written. A submit has no deadline. The caller gets a
+checked JSON copy of a reply.
+For `provenUnsignedAbsence` and `deadRefusedCreate`, that copy retains the
+process-local proof. Missing reasons become empty text; errors and
+message-bearing objects use their name and message; function and symbol
+reasons become text. Other reason values must pass the JSON reply limits.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -391,9 +438,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, ends the attempt without an outcome, and the buyer's next request
-  recovers at once and runs the agent's retained work again (reading back
-  first), and a different claim for the job is still
+  done yet, ends the attempt with no outcome: the next request recovers at once
+  and runs the agent's retained work again (reading back first), and a
+  different claim for the job is still
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
   node or name-index outage) is a `held` answer with its cause
@@ -408,15 +455,21 @@ per-client limiter so one client cannot exhaust the shared request budget.
   as on the ordinary path, so the buyer's corrected claim reaches payment
   intake. Until a gate that refuses the claim (a closed buyer access, an
   unusable rail) passes again, its claims answer `503 operation_uncertain` and
-  run again on the next one. Once the agent retains work for a claim, no
-  answer or refusal of it releases its slot: a different claim for the job is
-  refused until it is delivered. A transaction hash is read as core payment
+  run again on the next one. Once the agent retains payment work for a job, no
+  answer or refusal of any claim for it ends the attempt without an outcome: a
+  different claim for the job is refused until it is delivered. A transaction
+  hash is read as core payment
   intake reads it (lower case, with or without `0x`). Under a seller session
-  delegation that has expired, a held claim answers its last answer and an
-  uncertain one stays uncertain: neither runs again, since a run can sign and
-  send. A cached completed payment refresh also rechecks request and delegation
-  expiry inside the job fence and before authorizing a native CREATE; expiry
-  while waiting refuses the refresh without changing its cached claim.
+  delegation that has expired, the wire refuses the request before any route
+  runs: a held claim and an uncertain one do not run again, since a run can sign
+  and send. A completed payment is signed again only after its sources are read
+  again, read only: the original transaction, the permit, the evidence, the
+  Deliverable and the delivery evidence. A source that cannot confirm it answers
+  `503 seller_source_unavailable` with its cause (`absent`, `changed`,
+  `timeout`, `too_large` or `unavailable`) and the stored outcome stays. The same
+  check runs before a final answer is first stored. A completed payment answers
+  only its own claim: another transaction or payer is refused
+  (`payment_already_recorded`).
   The Deliverable is submitted again only on an absence that is
   authoritative (the agent never asked for it, or the delivery reader proved
   nothing was signed); a readback that misses or fails holds the delivery. A
@@ -562,7 +615,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   expected amount.
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent. A kept CREATE whose whole debit is above the ceiling is never
-  broadcast again: `anchorEvidence`, `reconcilePaymentEvidence`,
+  broadcast again, and until the operator clears it (below)
+  `anchorEvidence`, `reconcilePaymentEvidence`,
   `ensureEvidence` and the Deliverable journal's `resume` and
   `submitAuthorized` refuse its address with `write-fee-cap`, naming its hash
   and debit, before any wallet read or signature. `readSignedProjection` still
@@ -572,7 +626,30 @@ per-client limiter so one client cannot exhaust the shared request budget.
   (`code` and `message`) on the held answer of the seller agent. On the
   Deliverable path it is the `reason` of the held, pending or indeterminate
   delivery outcome, which starts with `write-fee-cap:`.
-  There is no operator command to clear a held write.
+  To clear a held write, call `clearHeldWrite({ logicalAddress, txHash })` on
+  the journal (the evidence journal or the Deliverable journal) with the
+  hash the `write-fee-cap` reason names and the address of the write,
+  `dacs4:evidence:<jobId>` on the payment evidence path and
+  `dacs4:deliverable:<jobId>` on the Deliverable path:
+  1. Check on the chain what became of the write. It must have been applied,
+     or another transaction of the writer must have used its nonce.
+  2. Call `clearHeldWrite`. It asks the journal's own `readAccountNonce` and
+     `readTransactionState` and clears the write only if they prove one of the
+     two. It answers `{ status: 'applied', txHash }` when the write was
+     applied: the journal keeps it and sends nothing, even when a later read
+     of the chain fails or answers `pending`. It answers
+     `{ status: 'superseded', txHash }` when the write can no longer execute
+     (the account nonce has passed it and a complete transaction index shows
+     it was not executed): the address is then signed anew by the next
+     `anchorEvidence` or `submitAuthorized`, with a nonce above the kept one.
+     The held write itself is never broadcast.
+  3. If the chain does not prove either, `clearHeldWrite` throws
+     `held_write_still_live` and the write stays held; try again once the
+     chain has moved on. A hash the journal never kept for the address throws
+     `held_write_unknown`, and a write that is not above the ceiling throws
+     `held_write_not_held`.
+  Clearing the same write again answers the same result without reading the
+  chain.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
@@ -916,6 +993,34 @@ per-client limiter so one client cannot exhaust the shared request budget.
   check): the ST-11 finalizer, which needs finalized and independently
   resolved Vet, commitment, settlement and bundle records, is not part of this
   package. The session ends at delivery.
+- The proposal and bundle routes each end an attempt by their own rule
+  (`src/dacs/seller-effect-routes.mjs`). A proposal answered `waiting`,
+  `indeterminate` or `rejected` ends with no outcome only when nothing of it was
+  signed or kept; once a signature intent is recorded the attempt stays open,
+  and the lease or the next recovery resumes the same responder. A bundle route
+  ends with no outcome only when, under the job's lock, no countersignature
+  work is retained; it then answers its named refusal again (`bundles/request`:
+  `not_delivered` 422 without a payment, `bundle_finalization_unavailable` 503
+  with one; `bundles/countersignature`: `bundle_finalization_unavailable` 503),
+  and it never records a completed bundle. A commitment route (`commitments`, and
+  `commitments/signature` when enabled) ends with no outcome only when the job
+  retains no commitment work at all: no CREATE time, publication request, early
+  attempt marker or commitment. Its recovery reads the CREATE back; it sends the
+  original request again only after a read in passive mode proves that nothing
+  was signed for the address (for an early commitment on a fixture anchor, that
+  no anchor row exists). An attempt marker alone is not that proof, and a signed
+  CREATE whose readback fails stays open with nothing sent or signed again. A
+  completed proposal answer is signed
+  again only after its sources are read again, read only: the retained
+  contribution and Agreement, both Vet records with their receipts, and the
+  buyer's current access. A completed commitment answer is signed again only
+  after the buyer's current job-scoped access passes and the retained commitment's
+  canonical address, record, transaction and
+  finalized receipt are read again from its source in passive mode; an early
+  commitment needs no buyer Agreement anchor for this. A source that fails answers `503
+  seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
+  `too_large` or `unavailable`), a closed buyer access keeps its own refusal,
+  and the stored outcome is never rewritten.
 - It does not mount the Vet and Agreement context route (`createSellerContextRoute`,
   see the root exports above) itself: the challenge
   a session needs is the one `host.issueSessionChallenge` issued, which the

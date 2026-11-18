@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readArchive } from '../scripts/delta-assemble.mjs';
+import { pkg } from '../scripts/delta-map.mjs';
 test("with this PR's delta records, `check-provenance.mjs --local-only` exits 0 on the PR head and on the head merged with current main; the last ledger entry names a source or test change; no copied path has two newest records or a recorded final blob other than head; any stale, parallel, conflicting or control-only-last record fails with the path named", () => {
  const env={...process.env};delete env.NODE_TEST_CONTEXT;
- const ledger=JSON.parse(readFileSync(new URL('../DELTA-LEDGER.json',import.meta.url),'utf8'));
+ const ledger=readArchive(pkg).ledger;
  assert.ok(ledger.changes.at(-1).files.some(file=>/packages\/dacs-client\/(src|test)\//.test(file.path)&&file.before!==file.after),'last ledger record names a source or test change');
  const last=ledger.changes.at(-1),cwd=fileURLToPath(new URL('../../..',import.meta.url));
  const selected=spawnSync('git',['log','--no-merges','--format=%H','--fixed-strings',`--grep=${last.subject}`],{cwd,encoding:'utf8'});
