@@ -27,6 +27,8 @@ function scratch(t, ...options) {
   const repo = mkdtempSync(join(tmpdir(), 'client-hold-'));
   t.after(() => rmSync(repo, {recursive:true, force:true}));
   execFileSync('git', ['clone', '--quiet', ...options, ...(options.length ? [`file://${SDK_ROOT}`] : ['--shared', SDK_ROOT]), repo], {env: gitEnv, stdio: 'pipe'});
+  // A checkout of a detached commit clones detached; give every scratch clone a named branch.
+  git(repo, 'switch', '-qc', 'TEST-main');
   return {repo, dir: join(repo, 'packages/dacs-client')};
 }
 function gate({repo, dir}) {

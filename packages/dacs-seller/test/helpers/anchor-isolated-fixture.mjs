@@ -5,7 +5,8 @@ import { createOperatorBuyerAccess } from '../../src/devnet-demo/buyer-access.mj
 import { DEVNET_DEMO_ARTIFACT_POLICY } from '../../src/dacs/devnet-source.mjs';
 const {assembleArtifactAnchor}=await privateModule(new URL('../../src/devnet-demo/artifact-anchor.mjs',import.meta.url),['assembleArtifactAnchor']);
 export function memoryJournal(){const rows=new Map(),tails=new Map();return {rows,get:async key=>structuredClone(rows.get(key)??null),put:async(key,value)=>rows.set(key,structuredClone(value)),entries:async()=>[...rows].map(([k,v])=>[k,structuredClone(v)]),withWalletLock:async(key,work)=>{const previous=tails.get(key)??Promise.resolve();let release;const gate=new Promise(r=>release=r);tails.set(key,gate);await previous;try{return await work();}finally{release();if(tails.get(key)===gate)tails.delete(key);}}};}
-export async function anchorFixture({writer,signRpc=null,artifactKinds=['FinalityCommitmentRecord','CompositeVerificationRecord'],now=()=>1800000000000,vetMode}={}){
+// sleep (optional): replaces the anchor's wait between readbacks of a pending CREATE.
+export async function anchorFixture({writer,signRpc=null,artifactKinds=['FinalityCommitmentRecord','CompositeVerificationRecord'],now=()=>1800000000000,vetMode,sleep}={}){
  writer??={claim:fixtureSeller.claim,sign:fixtureSeller.signBytes};
  const owner='0x'+writer.claim.slice(16),seller=writer.claim,journal=memoryJournal(),sourceJournal=memoryJournal(),captured=[];
  const controls={nonce:0,request:null,reader:{read:async()=>({status:'absent'}),verifyReceipt:async()=>'indeterminate'}};
@@ -15,7 +16,7 @@ export async function anchorFixture({writer,signRpc=null,artifactKinds=['Finalit
   // As the operator custody wallet: the operator's approval (controls.approval) is awaited, then the write's own check runs before anything is signed.
   request:async(request,{authorize}={})=>{captured.push(structuredClone(request.params[0]));await controls.approval?.(request.params[0]);
    if(authorize){let allowed;try{allowed=authorize();}catch(error){allowed=error;}if(allowed!==true)return {success:false,error:{code:'internal_error',message:'TEST withdrawn after approval'}};}
-   if(controls.request)return controls.request(request.params[0]);return {success:false,error:{code:'capture-without-signing'}};}}),network:'local-only',signer:writer,now,vetMode},{reader:controls.reader,signRpc});
+   if(controls.request)return controls.request(request.params[0]);return {success:false,error:{code:'capture-without-signing'}};}}),network:'local-only',signer:writer,now,vetMode},{reader:controls.reader,signRpc,...(sleep?{sleep}:{})});
  const artifact=jobId=>core.signComponentArtifact({finalityCommitmentVersion:'1',jobId,agreementHash:'a'.repeat(64),listingRef:{listingId:'TEST-publication',version:1,contentHash:'b'.repeat(64)},parties:[fixtureBuyer.claim,seller],pattern:'fixed-price',createdAt:now()},core.FINALITY_COMMITMENT_SEPARATOR,{signer:seller,algorithm:'ed25519',sign:writer.sign});
  const publish=async(anchor,jobId)=>anchor.publish({logicalAddress:core.finalityCommitmentAddress(jobId),artifact:await artifact(jobId),artifactKind:'FinalityCommitmentRecord'});
  return {owner,seller,journal,sourceJournal,captured,controls,source,open,publish,artifact};

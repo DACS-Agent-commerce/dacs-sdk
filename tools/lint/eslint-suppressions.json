@@ -120,11 +120,6 @@
       "count": 3
     }
   },
-  "packages/dacs-client/test/helpers/commitment-node-junk.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "packages/dacs-client/test/helpers/devnet-live-composition-app.mjs": {
     "no-unused-vars": {
       "count": 1
@@ -365,11 +360,6 @@
       "count": 1
     }
   },
-  "packages/dacs-seller/test/rail-session-admission.test.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "packages/dacs-seller/test/seller-agent-contracts.test.mjs": {
     "no-unused-vars": {
       "count": 2
@@ -460,18 +450,8 @@
       "count": 2
     }
   },
-  "src/agent/runSessionCore.ts": {
-    "no-useless-assignment": {
-      "count": 1
-    }
-  },
   "src/agent/sessionSettlement.ts": {
     "no-useless-assignment": {
-      "count": 1
-    }
-  },
-  "src/agent/sessionStoreFs.ts": {
-    "no-unsafe-finally": {
       "count": 1
     }
   },
@@ -521,11 +501,6 @@
     }
   },
   "test/agent/fencedSessionStore.test.ts": {
-    "no-useless-assignment": {
-      "count": 1
-    }
-  },
-  "test/agent/sessionStore.test.ts": {
     "no-useless-assignment": {
       "count": 1
     }

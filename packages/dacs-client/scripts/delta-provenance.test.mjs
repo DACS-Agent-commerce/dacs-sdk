@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { isCorePath, recordName } from './delta-record.mjs';
+import { isAnchored, isCorePath, PACKAGE_PREFIX, readAnchor, recordName, selects } from './delta-record.mjs';
 import { assemble } from './delta-assemble.mjs';
-import { commits, git, selects } from './delta-map.mjs';
+import { commits, git } from './delta-map.mjs';
 const root=join(dirname(fileURLToPath(import.meta.url)),'../../..');
 // A `git commit` may start `git maintenance run --auto`, which can detach and keep writing into the clone's .git
 // after the commit returns; that races the cleanup below (ENOTEMPTY). A scratch clone never starts it.
@@ -83,12 +83,18 @@ test('the publication inventory cannot omit an outside-only commit or name an ab
 });
 test('an unenumerated working-tree edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST edit\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
 test('a deletion needs a named delta',t=>{const dir=scratch(t);unlinkSync(join(dir,moved));const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
+// The gate reports `unenumerated change` only for the client's src/ and test/ files, so a fault that expects it
+// removes the last record that changes one of them; a newer record that changes only README.md, a script or a core file does not count.
+const SOURCE_OR_TEST_PATH=/^packages\/dacs-client\/(src|test)\//;
+function lastSourceOrTestChangeIndex(data){
+ const index=data.changes.findLastIndex(record=>record.files.some(file=>SOURCE_OR_TEST_PATH.test(file.path)&&!isCorePath(file.path.slice(PACKAGE_PREFIX.length))&&file.before!==file.after));
+ if(index<0)throw new Error('the fault needs a ledger record that changes a client src/ or test/ file, and the ledger has none');
+ return index;
+}
 test('removing a delta record cannot hide its historical file changes', t => {
   const dir = scratch(t), file = join(dir, 'packages/dacs-client/DELTA-LEDGER.json');
   const data = JSON.parse(readFileSync(file, 'utf8'));
-  const index = data.changes.findLastIndex(record => record.files.some(file => file.before !== file.after && !isCorePath(file.path.slice('packages/dacs-client/'.length))));
-  assert.ok(index >= 0, 'the ledger must contain a historical source change');
-  data.changes.splice(index, 1);
+  data.changes.splice(lastSourceOrTestChangeIndex(data), 1);
   writeFileSync(file, JSON.stringify(data));
   const result = check(dir);
   assert.equal(result.status, 1, result.text);
@@ -271,21 +277,26 @@ test(`a WF record selected by its full commit hash may carry the subject "${subj
 // Each fault edits archived records in a scratch clone of the checked head.
 const LEDGER_FAULTS=[
  {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,
-  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after&&!isCorePath(file.path.slice('packages/dacs-client/'.length)))),1);}},
+  edit:data=>{data.changes.splice(lastSourceOrTestChangeIndex(data),1);}},
  {name:'(a) the same record is removed and an empty-files record is appended last',message:/unenumerated change/,
-  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after&&!isCorePath(file.path.slice('packages/dacs-client/'.length)))),1);
+  edit:data=>{data.changes.splice(lastSourceOrTestChangeIndex(data),1);
    data.changes.push({delta:'WF',subject:'delta(client): WF TEST empty record',files:[]});}},
  {name:'(b) a no-op checkpoint record is removed',message:/DELTA-LEDGER\.json: archive differs from its core pin/,
   edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.length>0&&record.files.every(file=>file.before===file.after)),1);}},
+ // The gate leaves out of the chain a record of an anchored path whose commit the anchor contains, so (c) picks only records it checks.
  {name:'(c) a record\'s last recorded blob for a path is replaced by an earlier one',message:/current blob differs/,
-  edit:data=>{
+  edit:(data,dir)=>{
+   const anchor=readAnchor(join(dir,PACKAGE_PREFIX));
+   const afterAnchor=new Set(scratchGit(dir)('rev-list',`${anchor.commit}..HEAD`).split('\n').filter(Boolean));
+   const inChain=(commit,path)=>!isAnchored(path.slice(PACKAGE_PREFIX.length))||afterAnchor.has(commit.sha);
    const history=commits(), assembled=assemble(join(root,'packages/dacs-client')).ledger;
    const current=[...(assembled.supersededChanges??[]),...assembled.changes];
    const archived=[...(data.supersededChanges??[]),...data.changes];
    const paths=[...new Set(archived.flatMap(record=>record.files.map(file=>file.path)))].reverse();
    for(const path of paths){
     if(isCorePath(path.slice('packages/dacs-client/'.length)))continue;
-    const entries=current.filter(record=>record.files.some(file=>file.path===path)).map(record=>({commit:history.find(commit=>selects(record,commit)),file:record.files.find(file=>file.path===path)}));
+    const entries=current.filter(record=>record.files.some(file=>file.path===path)).map(record=>({commit:history.find(commit=>selects(record,commit)),file:record.files.find(file=>file.path===path)})).filter(entry=>inChain(entry.commit,path));
+    if(!entries.length)continue;
     const newest=git('merge-base','--independent',...new Set(entries.map(entry=>entry.commit.sha))).split('\n');
     if(newest.length!==1)continue;
     const latest=entries.findLast(entry=>entry.commit.sha===newest[0]);
@@ -300,7 +311,7 @@ test('the committed head passes and each archived record fault is refused',t=>{
  const head=check(scratch(t));assert.equal(head.status,0,head.text);
  for(const fault of LEDGER_FAULTS){
   const dir=scratch(t),file=join(dir,control[1]),data=JSON.parse(readFileSync(file,'utf8'));
-  fault.edit(data);writeFileSync(file,JSON.stringify(data));
+  fault.edit(data,dir);writeFileSync(file,JSON.stringify(data));
   const r=check(dir);assert.equal(r.status,1,`${fault.name}: ${r.text}`);assert.match(r.text,fault.message,fault.name);
   refusedByArchivePin(dir);
  }

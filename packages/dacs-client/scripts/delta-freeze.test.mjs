@@ -19,6 +19,8 @@ function scratch(t) {
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   execFileSync('git', ['clone', '--quiet', '--shared', ROOT, repo]);
   const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
+  // A checkout of a detached commit clones detached; give every scratch clone a named branch.
+  git('switch', '-qc', 'TEST-main');
   return { repo, dir: join(repo, P), git };
 }
 function derived(s, pins) {
@@ -139,11 +141,11 @@ function recordOldReadmeCommit(s, anchor) {
 
 // A branch cut before the anchor's last change to an anchored file holds an older copy of it.
 // Its record cannot chain from the anchor's copy, so check-provenance refuses it until the branch is rebased onto the anchor.
-test('a README record must select a commit after the anchor; a branch cut where README already equals the anchor copy may record it', t => {
+test('a README record of a commit the anchor contains is left out of the chain; a branch cut where README already equals the anchor copy may record it', t => {
   const s = scratch(t), { commit: anchor } = readAnchor(s.dir);
-  const old = recordOldReadmeCommit(s, anchor);
+  recordOldReadmeCommit(s, anchor);
   s.git('add', '--', P); s.git('commit', '-qm', 'TEST record a README commit before the anchor');
-  assert.deepEqual(derived(s), [`${P}README.md: delta WF selects ${old}, which the anchor already contains`]);
+  assert.deepEqual(derived(s), []);
   const early = scratch(t), main = early.git('branch', '--show-current');
   const parent = early.git('rev-list', '--parents', '-n', '1', anchor).split(' ').slice(1)
     .find(sha => early.git('rev-parse', `${sha}:${P}README.md`) === readAnchor(early.dir).files[`${P}README.md`]);

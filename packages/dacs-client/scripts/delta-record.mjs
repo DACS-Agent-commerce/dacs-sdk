@@ -101,10 +101,12 @@ function commitFileFailures(record) {
   if (!Array.isArray(list) || list.length === 0 || !list.every(path => typeof path === 'string' && path !== '')) return ['commitFiles must list the paths the commit changes'];
   const failures = isSortedUnique(list) ? [] : ['commitFiles must be sorted and unique'];
   for (const path of list) if (!isCanonicalPath(path)) failures.push(notCanonical(path));
-  // A commit-only record stands for a commit that changes only core or record files.
+  // A commit-only record stands for a commit that changes only core or record
+  // files. DELTA-MAP.md was a core file while the package stored the rendered
+  // map, so an earlier commit-only record may name it.
   if (record.kind === 'commit-only') for (const path of list) {
     const rel = path.startsWith(PACKAGE_PREFIX) ? path.slice(PACKAGE_PREFIX.length) : null;
-    if (rel !== null && !isCorePath(rel) && !rel.startsWith('records/')) failures.push(`a commit-only record's commit changes ${path}`);
+    if (rel !== null && !isCorePath(rel) && !rel.startsWith('records/') && rel !== 'DELTA-MAP.md') failures.push(`a commit-only record's commit changes ${path}`);
   }
   return failures;
 }

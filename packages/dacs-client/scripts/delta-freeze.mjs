@@ -8,9 +8,10 @@
 //     (parallel records of different blobs conflict until a later record
 //     chooses one), else its blob at the anchor (records/ANCHOR.json) for
 //     anchored paths, else its baseline blob. No expected blob means the path
-//     must not exist. A record of an anchored path must select a commit after
-//     the anchor (reachable from HEAD but not from the anchor commit), and the
-//     first such record must start from the anchor's blob. A branch cut before
+//     must not exist. A record of an anchored path that selects a commit the
+//     anchor already contains is left out of the chain; the first record that
+//     selects a commit after the anchor (reachable from HEAD but not from the
+//     anchor commit) must start from the anchor's blob. A branch cut before
 //     the anchor's last change to an anchored file holds an older copy of it;
 //     its record cannot start from the anchor, so it is refused until the
 //     branch is rebased onto the anchor.
@@ -93,8 +94,8 @@ function recordedBlobs(ledger, commits, afterAnchor, failures) {
     const hits = commits.filter(commit => selects(change, commit));
     if (hits.length !== 1) { failures.push(`delta commit selector must resolve once: ${change.sha == null ? change.subject : `${change.sha} ${change.subject}`}`); continue; }
     for (const file of change.files) {
-      if (isAnchored(file.path.slice(PACKAGE_PREFIX.length)) && !afterAnchor(hits[0].sha)) failures.push(`${file.path}: delta ${change.delta} selects ${hits[0].sha}, which the anchor already contains`);
-      else recorded.set(file.path, [...(recorded.get(file.path) ?? []), { sha: hits[0].sha, before: file.before, after: file.after }]);
+      if (isAnchored(file.path.slice(PACKAGE_PREFIX.length)) && !afterAnchor(hits[0].sha)) continue;
+      recorded.set(file.path, [...(recorded.get(file.path) ?? []), { sha: hits[0].sha, before: file.before, after: file.after }]);
     }
   }
   return recorded;

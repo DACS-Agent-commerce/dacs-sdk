@@ -44,12 +44,13 @@ import { isAbsolute, join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
+import { createAccountingReconciler } from './dacs/accounting-reconciliation.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
 import { demDeliveryContextVetMode } from './dacs/dem-delivery-context-consumer.mjs';
 import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
-import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
+import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-capacity-defaults.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
@@ -67,7 +68,7 @@ import { isPrivateDirectory } from './private-directory.mjs';
 export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network', 'readCommitmentReceipt']);
-const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'host', 'port', 'now', 'contextSessionState']);
+const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'maxReservationUnits', 'host', 'port', 'now', 'contextSessionState']);
 const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 // The startup binding read is bounded; a later answer grants nothing.
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
@@ -234,7 +235,11 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
 // before the state lock and any file; `kit_store_format_unsupported` for a data
 // directory from an older kit format; `kit_journal_accounting_mismatch` for a
 // new kit store over a journal that already holds reservations; and the
-// journal's own `seller_replay_guard_invalid` with its detail.
+// journal's own `seller_replay_guard_invalid` with its detail. A store that already
+// exists is reconciled with the journal before the host listens: a journal that cannot be
+// read whole, or a nonce key that names no accounting row, starts the host not ready
+// with the same `kit_journal_accounting_mismatch`, and a store that cannot commit its
+// reconciliation refuses startup.
 export async function startSellerHost(options) {
   assertKitOperationAdmitted('startSellerHost');
   if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('seller host options must be an object');
@@ -244,13 +249,15 @@ export async function startSellerHost(options) {
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
-    host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
+    maxReservationUnits = maxRecords, host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
   if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
+  if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) throw new TypeError('maxRecords must be a positive integer');
+  if (!Number.isSafeInteger(maxReservationUnits) || maxReservationUnits < 1) throw new TypeError('maxReservationUnits must be a positive integer');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
   if (!isPrivateDirectory(dataDirectory)) throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
   if ((observeDemosTransfer !== undefined && typeof observeDemosTransfer !== 'function') || typeof now !== 'function') throw new TypeError('now and any supplied observeDemosTransfer must be functions');
@@ -291,7 +298,7 @@ export async function startSellerHost(options) {
       wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
     // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
-    const capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
+    const capacity = createPurchaseCapacity({ store, now, maxRecords: maxReservationUnits, sessionState: sellerStoreInternals(store).sessionState });
     // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();
@@ -311,11 +318,18 @@ export async function startSellerHost(options) {
     try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
+    // Before anything is served the store and the journal are reconciled: every nonce key names its accounting row, a charge that
+    // never saw its result is told what the journal holds, and a completed operation returns its slot once. A mismatch keeps the host not ready.
+    const reconciliation = await createAccountingReconciler({ store, capacity, journal, inspectOperation: target => inspectWireOperation(journal, target) }).reconcileStartup();
+    // The cause is otherwise only a row in the store, so the one start that refuses purchases for it says why.
+    if (!reconciliation.ready) process.stderr.write(`seller-state: not accepting new purchases: ${reconciliation.code}: ${String(reconciliation.cause?.message ?? '').replace(/\s+/g, ' ').trim()}\n`);
     let stopping = false;
-    // The seller takes new purchases until it stops. No route allocates purchase capacity yet, so readiness does not read it.
-    const sellerReady = () => !stopping;
-    // Every effect route reserves through the coordinator and ends its attempt through the completion port.
-    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
+    // The seller takes new purchases until it stops or the reconciliation found a mismatch. No route allocates purchase capacity yet, so readiness does not read it.
+    const sellerReady = () => !stopping && reconciliation.ready;
+    // Every effect route reserves through the coordinator and ends its attempt through the completion port. The agent's own record
+    // of unfinished work lets a payment retry finish a payment the agent recorded, even after the job's session ended.
+    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target),
+      retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.

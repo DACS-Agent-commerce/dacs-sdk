@@ -144,6 +144,7 @@ function main() {
     failures.push(...checkRecord(hold));
     for (const name of ['DELTA-LEDGER.json', 'DELTA-COMMITS.json']) if (blob(readFileSync(join(args.packageDir, name))) !== hold.step1Freeze.files[name]?.blob) failures.push(`${name}: archive differs from its core pin`);
   }
+  for (const line of deltaResult?.skipped ?? []) console.log(`[check-provenance] ${line}`);
   const listed = new Set();
   if (manifest.package !== PACKAGE) failures.push(`manifest package ${JSON.stringify(manifest.package)} is not ${PACKAGE}`);
   if (manifest.sourceRepository !== SOURCE_REPOSITORY) failures.push(`manifest sourceRepository ${JSON.stringify(manifest.sourceRepository)} is not ${SOURCE_REPOSITORY}`);

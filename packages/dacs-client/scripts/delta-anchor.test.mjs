@@ -42,7 +42,7 @@ test('the first record of an anchored script starts from the anchor blob', t => 
   assert.equal(result.status, 0, result.text);
 });
 
-test('unrecorded and staged changes to anchored files, a record that does not start from the anchor and a record of a commit the anchor contains are refused', t => {
+test('unrecorded and staged changes to anchored files and a record that does not start from the anchor are refused', t => {
   const s = scratch(t);
   appendFileSync(join(s.repo, README), '\nTEST unrecorded line\n');
   s.git('add', '--', README); s.git('commit', '-qm', 'docs(client): TEST unrecorded README change');
@@ -50,11 +50,6 @@ test('unrecorded and staged changes to anchored files, a record that does not st
   const recorded = recordAnchoredFile(s, 'delta(client): WF TEST README record after an unrecorded change', README, s.git('rev-parse', `HEAD:${README}`));
   const bytes = readFileSync(join(s.repo, README));
   appendFileSync(join(s.repo, README), '\nTEST staged line\n'); s.git('add', '--', README); writeFileSync(join(s.repo, README), bytes);
-  // A record of a README commit the anchor already contains.
-  const old = s.git('log', '--no-merges', '--format=%H', '-n', '1', readAnchor(join(s.repo, P)).commit, '--', README);
-  const early = { schema: 'dacs-client-delta-record/v1', delta: 'WF', subject: s.git('log', '-1', '--format=%s', old), sha: old, kind: 'change',
-    files: [{ path: README, before: s.git('rev-parse', `${old}^:${README}`), after: s.git('rev-parse', `${old}:${README}`) }], commitFiles: [README] };
-  writeFileSync(join(s.repo, P, 'records', recordName(early)), JSON.stringify(early, null, 2) + '\n');
   // An anchored script that no record names.
   appendFileSync(join(s.repo, P, 'scripts/generate-payload-helpers.mjs'), '\n// TEST unrecorded edit\n');
   const result = s.check();
@@ -64,7 +59,59 @@ test('unrecorded and staged changes to anchored files, a record that does not st
     `${README}: delta parent is discontinuous at ${recorded}`,
     `${README}: index differs from HEAD for a record-named file`,
     `${README}: current blob differs from enumerated deltas`,
-    `${README}: delta WF selects ${old}, which the anchor already contains`,
     `${P}scripts/generate-payload-helpers.mjs: current blob differs from enumerated deltas`,
   ]) assert.ok(result.failures.includes(failure), `${failure}\n${result.text}`);
+});
+
+// The records of commits the anchor contains that name this script are in the tree.
+const BATCH = `${P}scripts/delta-batch-git.test.mjs`;
+const CONTAINED = 'records/D77-6137803ee945.json';
+const readRecord = s => JSON.parse(readFileSync(join(s.repo, P, CONTAINED), 'utf8'));
+const writeRecord = (s, record, name = CONTAINED) => writeFileSync(join(s.repo, P, name), JSON.stringify(record, null, 2) + '\n');
+
+test('a record of a commit the anchor contains is skipped and the next record starts from the anchor blob', t => {
+  const s = scratch(t);
+  const before = s.check();
+  assert.equal(before.status, 0, before.text);
+  assert.ok(before.text.split('\n').some(line => line.includes(`${BATCH}: delta D77 `) && line.endsWith('is contained in the anchor; skipped')), before.text);
+  recordAnchoredFile(s, 'delta(client): WF TEST first recorded batch test change', BATCH, readAnchor(join(s.repo, P)).files[BATCH]);
+  const after = s.check();
+  assert.equal(after.status, 0, after.text);
+});
+
+test('a record that starts from the blob of a skipped record is refused', t => {
+  const s = scratch(t);
+  const commit = recordAnchoredFile(s, 'delta(client): WF TEST batch test change from a skipped blob', BATCH, readRecord(s).files[0].after);
+  const result = s.check();
+  assert.equal(result.status, 1, result.text);
+  assert.ok(result.failures.includes(`${BATCH}: delta parent is discontinuous at ${commit}`), result.text);
+});
+
+test('a record of a commit the anchor contains is refused when its before or after blob is wrong', t => {
+  for (const [side, at] of [['before', /\^$/], ['after', /[0-9a-f]{40}$/]]) {
+    const s = scratch(t), record = readRecord(s);
+    record.files[0][side] = '1'.repeat(40);
+    writeRecord(s, record);
+    const result = s.check();
+    assert.equal(result.status, 1, result.text);
+    assert.ok(result.failures.some(failure => failure.startsWith(`${BATCH}: delta D77 blob differs at `) && at.test(failure)), `${side}\n${result.text}`);
+  }
+});
+
+test('a record that selects an unknown commit is refused', t => {
+  const s = scratch(t), record = { ...readRecord(s), subject: 'delta(client): D77 TEST unknown commit', sha: '1'.repeat(40), commitFiles: [BATCH] };
+  writeRecord(s, record, `records/${recordName(record)}`);
+  const result = s.check();
+  assert.equal(result.status, 1, result.text);
+  assert.ok(result.failures.includes(`delta commit selector must resolve once: ${record.sha} ${record.subject}`), result.text);
+});
+
+test('an anchor blob that differs from the file at the anchor commit is refused', t => {
+  const s = scratch(t), file = join(s.repo, P, 'records/ANCHOR.json'), anchor = JSON.parse(readFileSync(file, 'utf8'));
+  anchor.files[README] = '2'.repeat(40);
+  anchor.files[`${P}scripts/TEST-absent.mjs`] = '3'.repeat(40);
+  writeFileSync(file, JSON.stringify(anchor, null, 2) + '\n');
+  const result = s.check();
+  assert.equal(result.status, 1, result.text);
+  for (const path of [README, `${P}scripts/TEST-absent.mjs`]) assert.ok(result.failures.includes(`${path}: the anchor blob differs from the file at the anchor commit`), result.text);
 });
