@@ -114,6 +114,26 @@ describe("evidence read boundaries", () => {
     expect(() => readEvidence(file(Buffer.from([0x61, 0xff, 0xfe, 0x62])))).toThrow("evidence is not valid UTF-8");
     expect(readEvidence(file("é\n"))).toBe("é\n");
   });
+  it("names the file in a read error and keeps the original error as its cause", () => {
+    const readError = (path: string) => { try { readEvidence(path); } catch (caught) { return caught as Error; } throw new Error("read did not throw"); };
+    const directory = scratchRoot("dacs-read-");
+    const invalid = file(Buffer.from([0x61, 0xff]));
+    const oversized = file(""); truncateSync(oversized, EVIDENCE_MAX_BYTES + 1);
+    const cases: Array<[string, string]> = [[directory, "evidence must be a regular file"],
+      [invalid, "evidence is not valid UTF-8"], [oversized, "evidence byte limit exceeded"]];
+    for (const [path, reason] of cases) {
+      const error = readError(path);
+      expect(error.message).toBe(`${reason}: ${path}`);
+      expect(error.cause).toBeDefined();
+    }
+  });
+  it("names the file whose log exceeds the line limit when reading policy findings", () => {
+    const root = scratchRoot("dacs-lines-"), output = join(root, "output.json");
+    writeFileSync(join(root, "engine-strict.log"), "\n".repeat(EVIDENCE_MAX_LINES + 1));
+    const result = cli("--policy-findings", root, output);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("evidence line limit exceeded: engine-strict.log");
+  });
   it("names the missing path of required evidence", () => {
     const missing = join(scratchRoot("dacs-read-"), "missing.json");
     let error: unknown;
@@ -158,6 +178,19 @@ describe("atomic JSON writes", () => {
     mkdirSync(path); writeFileSync(join(path, "occupied"), "");
     expect(() => atomicWriteJson(path, { ok: true })).toThrow();
     expect(temporaryFiles(root)).toEqual([]);
+  });
+  it("keeps the existing file when the serialised value exceeds the evidence byte limit", () => {
+    const root = scratchRoot("dacs-write-"), path = join(root, "result.json");
+    writeFileSync(path, "old");
+    expect(() => atomicWriteJson(path, { text: "x".repeat(EVIDENCE_MAX_BYTES) })).toThrow(`evidence byte limit exceeded: ${path}`);
+    expect(readFileSync(path, "utf8")).toBe("old");
+    expect(readdirSync(root)).toEqual(["result.json"]);
+  });
+  it("writes a value whose serialisation is exactly the evidence byte limit", () => {
+    const root = scratchRoot("dacs-write-"), path = join(root, "result.json");
+    const overhead = Buffer.byteLength(JSON.stringify({ text: "" }, null, 2) + "\n");
+    atomicWriteJson(path, { text: "x".repeat(EVIDENCE_MAX_BYTES - overhead) });
+    expect(readEvidence(path)).toHaveLength(EVIDENCE_MAX_BYTES);
   });
   it("writes nothing when the value cannot be serialised", () => {
     const root = scratchRoot("dacs-write-"), path = join(root, "result.json");
