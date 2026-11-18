@@ -7,6 +7,8 @@ import { existsSync, readdirSync } from 'node:fs';
 import { Server } from 'node:http';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
+import * as guard from '../src/kit-operation-guard.mjs';
 import { HOST_CONTEXT_CALLBACKS } from './helpers/host-context-callbacks.mjs';
 import { contextCapability, contextHostFixture, hostBuyer, presentContextAnswer } from './helpers/host-context-client.mjs';
 import { JOB, NOW } from './helpers/protocol-fixture.mjs';
@@ -37,6 +39,21 @@ const admissionState = (directory, jobId = JOB) => {
   const db = new Database(join(directory, 'transport', 'transport.sqlite'), { readonly: true });
   try { return db.prepare('SELECT state FROM kit_context_admissions WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
 };
+// A context row's state and hold release, and the state of the purchase allocation that holds its slot.
+const contextRowOf = (directory, jobId = JOB) => {
+  const db = new Database(join(directory, 'transport', 'transport.sqlite'), { readonly: true });
+  try {
+    const row = db.prepare('SELECT state, record FROM kit_context_admissions WHERE jobId = ?').get(jobId);
+    const { releasePending, cause } = JSON.parse(row.record).cleanup;
+    return { state: row.state, releasePending, cause, allocation: db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(jobId)?.state ?? null };
+  } finally { db.close(); }
+};
+const NO_CONTEXT = () => ({ disposition: 'absent', reason: 'TEST no context', code: 'context_absent' });
+// The fixture's artifact anchor with the devnet anchor's no-intent proof: an address with no retained CREATE is proven unsigned.
+const provingNoIntent = (anchor) => ({ ...anchor, readRetained: async (query, options) => {
+  const read = await anchor.readRetained(query, options);
+  return query.proofOfNoIntent === true && read.status === 'absent' ? provenUnsignedAbsence('TEST no CREATE intent') : read;
+} });
 
 const allocationState = (directory, jobId = JOB) => {
   const db = new Database(join(directory, 'transport', 'transport.sqlite'), { readonly: true });
@@ -244,6 +261,25 @@ test('a context row whose cleanup is unfinished keeps its own job refused and do
   const other = await buyer.challenge(OTHER_JOB);
   assert.equal(other.status, 200, other.text);
   assert.equal((await buyer.challenge(JOB)).status === 200, false, 'the unfinished job itself is not served again');
+});
+
+test('a fresh host on a stopped host\'s store ends the direct request\'s running context row before it listens, so its hold and slot take a new job', async (t) => {
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  const f = await contextHostFixture(t), options = { maxReservationUnits: SMALL_BUDGET, artifactAnchor: provingNoIntent(f.native) };
+  // The provider answers while the kit guard is off, so nothing ends the accepted row, as when the process stops before the row ends.
+  const stopped = await f.start({ ...options, demDeliveryContext: contextCapability({ resolveBuyer: async () => { guard.setKitOperationGuardForTest('off'); return NO_CONTEXT(); } }) });
+  const answer = await (await f.buyerFor(stopped)).requestContext(JOB, { delegated: false });
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  await stopped.close();
+  assert.equal(answer.status >= 500, true, answer.text);
+  assert.deepEqual(contextRowOf(f.dataDirectory), { state: 'running', releasePending: false, cause: null, allocation: 'live' }, 'the row was left running with its slot');
+
+  const atListen = [], listen = Server.prototype.listen;
+  t.mock.method(Server.prototype, 'listen', function (...args) { atListen.push(contextRowOf(f.dataDirectory)); return listen.apply(this, args); });
+  const restarted = await f.start(options);
+  assert.deepEqual(atListen, [{ state: 'aborted', releasePending: false, cause: null, allocation: 'released' }], 'the row is ended, its hold released and its slot free before the host listens');
+  const next = await (await f.buyerFor(restarted)).requestContext(OTHER_JOB, { delegated: false });
+  assert.deepEqual([next.status, next.body.disposition], [200, 'present'], `the freed slot takes a new job: ${next.text}`);
 });
 
 test('a sweep that cannot take the lease of a running context step records its cause there and does not make the host refuse another buyer', async (t) => {

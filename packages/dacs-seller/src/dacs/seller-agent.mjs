@@ -35,7 +35,8 @@ import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from
 import { readRetainedBounded, readFailureCode } from './bounded-reads.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
-import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
+import { createSellerDurableState } from './seller-durable-state.mjs';
+import { DEFAULT_SELLER_MAX_JOBS } from './seller-capacity-defaults.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
 import { sellerBundleProblem, sellerRecordVerifier } from './session-admission.mjs';
@@ -81,10 +82,11 @@ const sourceUnavailable = (cause) => new SellerTransportError('seller_source_una
 // What a completed commitment answer says, by route.
 const COMMITMENT_ANSWER_STATUS = Object.freeze({ '/dacs/v1/commitments': 'committed', '/dacs/v1/commitments/signature': 'commitment-held' });
 export const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
-const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
+/** Whether a payment answer says the payment is still in progress: held, or evidenced with its delivery not done. */
+export const isPendingPaymentAnswer = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
 /** Whether a payment answer is final: delivered, delivery-ready, or payment-evidenced with its delivery done. */
-export const isFinalPaymentAnswer = (answer) => ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
+export const isFinalPaymentAnswer = (answer) => ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !isPendingPaymentAnswer(answer));
 /** The one classification of an authenticated seller command's result
  * ({answer}, {error} or {held}), for its first run (HTTP finish) and for its
  * recovery (reconcileTransport). Only a refusal from the no-effect list keeps
@@ -102,7 +104,7 @@ export function transportOutcome(path, result = {}, { retained = true, recoverin
     ...(failed || cause !== undefined ? { cause, causeCode: readFailureCode(cause) } : {}) };
   const noEffect = rejected && !resumed && !retained;
   const final = isFinalPaymentAnswer(answer);
-  const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
+  const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : isPendingPaymentAnswer(answer) || (retained && !final))));
   if (recovering && !(readOnly ? !retry && !noEffect && !rejected : retry || noEffect ? proposal || payment || bundle : !rejected)) {
     return { disposition: 'indeterminate', reason: String(refusal ? error.code : answer?.reason ?? 'seller_transport_work_retained').slice(0, 240), status: 503, value: UNCERTAIN, settle: false, retry: false, noEffect: false };
   }

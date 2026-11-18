@@ -25,8 +25,11 @@ export async function fixtureProposal(listing,jobId,claims=[]){
 // memory: an agent with no durable directory (no job fence, no store), kept open; it cannot be reopened.
 // The fixture Listing, signed again over `publicEndpoint` when one is given (the wire discovery document needs an origin).
 const listingAt=async publicEndpoint=>{const listing=fixtureListing(sellerKey,{now:NOW});if(publicEndpoint===null)return listing;const draft={...listing};delete draft.signature;draft.seller={...draft.seller,publicEndpoint};return core.signComponentArtifact(draft,core.ARTIFACT_SEPARATORS.Listing,{signer:sellerKey.claim,algorithm:"ed25519",sign:sellerKey.signBytes});};
-export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false,memory=false,publicEndpoint=null}={}){
- const seller={...sellerKey,sign:sellerKey.signBytes},buyer={...buyerKey,sign:buyerKey.signBytes},dir=mkdtempSync(join(tmpdir(),'TEST-fixture-payment-')),listing=await listingAt(publicEndpoint),pin=listingPin(listing),anchors=localAnchor({now:()=>NOW+2000}),agreements=new Map(),controls={observation:null};
+// reopened: `directory` is a durable directory an earlier process used (its owner removes it) and `anchorRows` the `[address, row]` pairs its
+// anchor held. The agent opens over them and negotiates nothing.
+export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false,memory=false,publicEndpoint=null,directory=null,anchorRows=null}={}){
+ const seller={...sellerKey,sign:sellerKey.signBytes},buyer={...buyerKey,sign:buyerKey.signBytes},dir=directory??mkdtempSync(join(tmpdir(),'TEST-fixture-payment-')),listing=await listingAt(publicEndpoint),pin=listingPin(listing),anchors=localAnchor({now:()=>NOW+2000}),agreements=new Map(),controls={observation:null};
+ for(const [address,row] of anchorRows??[])anchors.rows.set(address,row);
  const config={signer:seller,listing,anchors,...(memory?{}:{durableDirectory:dir}),commitOnSignature:early,now:()=>NOW+2000,simulatedFixture:true,observeDemosTransfer:async hash=>controls.observation??await observeConfirmedNativeTransfer({txHash:hash,payer:buyer.address,payee:seller.address,amountOs:'2500000000',blockNumber:8,includedAt:NOW+3000})};
  let agent,store;const create=()=>createSellerAgent(config);
  const openStore=()=>createSellerDurableState({dir,signer:seller,listingPin:pin});
@@ -38,10 +41,10 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
   const programName=core.logicalToStorageProgramName(address),storageAddress=deriveStorageAddress(buyer.address,programName,1,''),signedProjection=buildStorageProgramCreatePayload({from:buyer.address,storageAddress,programName,logicalAddress:address,signedListing:agreement,nonce:1,timestamp:NOW});signedProjection.content.from_ed25519_address=buyer.address;Object.assign(signedProjection.content.data[1].metadata,{artifactKind:'Agreement',contentHash:core.contentHash(agreement),envelopeHash:core.sha256Hex(core.canonicalize(agreement))});signedProjection.hash=core.sha256Hex(JSON.stringify(signedProjection.content));signedProjection.signature={type:'ed25519',data:'0x'+buyer.sign(Buffer.from(signedProjection.hash)).toString('hex')};
   return{jobId,agreement,signedProjection};
  };
- agent=await create();for(const jobId of JOBS)await negotiate(jobId);
+ agent=await create();if(anchorRows===null)for(const jobId of JOBS)await negotiate(jobId);
  if(memory)return{config,agent,negotiate,seller,buyer,pin,listing,anchors,agreements,controls,close:()=>{agent.close();rmSync(dir,{recursive:true,force:true});}};
  agent.close();store=await openStore();
  if(paid){for(const jobId of JOBS)await store.withJob(jobId,session=>{session.payment={settlementId:'demos:one',txHash:'a'.repeat(64),deliveredAt:NOW};session.stage='delivered';store.saveSession(session);});await store.withJob(JOBS[0],()=>store.bindSettlement('demos:one',JOBS[0],{jobId:JOBS[0],phaseIndex:2}));if(collision)await store.withJob(JOBS[1],()=>store.bindSettlement('demos:one',JOBS[1],{jobId:JOBS[1],phaseIndex:2}));}
  store.close();agent=await create();store=await openStore();
- return{config,get agent(){return agent;},createAgent:create,buildReport,get store(){return store;},negotiate,seller,buyer,pin,listing,anchors,agreements,controls,protocol,reopen:async()=>{agent.close();store.close();agent=await create();store=await openStore();return agent;},close:()=>{agent.close();store.close();rmSync(dir,{recursive:true,force:true});}};
+ return{config,get agent(){return agent;},createAgent:create,buildReport,get store(){return store;},negotiate,seller,buyer,pin,listing,anchors,agreements,controls,protocol,dir,reopen:async()=>{agent.close();store.close();agent=await create();store=await openStore();return agent;},close:()=>{agent.close();store.close();if(directory===null)rmSync(dir,{recursive:true,force:true});}};
 }

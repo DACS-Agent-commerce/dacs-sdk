@@ -20,7 +20,6 @@ src/agent/ratingPhase.ts exactKeys
 src/agent/runDurableFulfilmentCore.ts hasExactKeys
 src/agent/runDurableFulfilmentCore.ts isRecord
 src/agent/runFulfilmentCore.ts isRecord
-src/agent/runSessionCore.ts hasExactKeys
 src/agent/sessionSettlement.ts exactKeys
 src/agent/sessionSettlement.ts isRecord
 src/agent/settlementIdentity.ts exactKeys

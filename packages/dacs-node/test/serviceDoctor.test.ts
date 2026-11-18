@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createDacsRoleServiceDoctorProbesV1,
+  DacsTransportDiagnosticError,
+  formatDacsLiveDoctorTextV1,
   readDacsRoleServiceStatusesV1,
   runDacsLiveDoctorV1,
 } from "../src/index.js";
@@ -19,6 +21,83 @@ function response(value: unknown, status = 200): Response {
 }
 
 describe("role service doctor probes", () => {
+  it.each(["buyer", "seller"] as const)("keeps %s diagnostic causes in the final JSON and text reports", async (failedRole) => {
+    const cause = Object.assign(new Error("fixture internal transport detail"), {
+      reasonCode: "outbox-lease-stale",
+    });
+    const diagnostic = vi.fn(async (role: "buyer" | "seller") => {
+      if (role === failedRole) {
+        throw new DacsTransportDiagnosticError("transport-diagnostic-unavailable", { cause });
+      }
+      return { authenticated: true, durable: true, acknowledged: true, noAction: true };
+    });
+    const report = await runDacsLiveDoctorV1({
+      phase: "post-start", scope: "start", sdkVersion: "sdk-v1",
+      standardRevision: "standard-v1", profile: "profile-v1",
+      probes: createDacsRoleServiceDoctorProbesV1({
+        targets: TARGETS, sdkVersion: "sdk-v1", standardRevision: "standard-v1",
+        profile: "profile-v1", fetch: vi.fn(async () => response({})),
+        transportDiagnostic: diagnostic,
+      }),
+    });
+    expect(diagnostic).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(JSON.stringify(report)).checks.find((check: { id: string }) =>
+      check.id === "service.transport-roundtrip")).toMatchObject({
+      status: "fail", reasonCode: "transport-diagnostic-unavailable",
+      facts: { causeCode: "outbox-lease-stale" },
+    });
+    expect(formatDacsLiveDoctorTextV1(report)).toContain("cause: outbox-lease-stale");
+    expect(JSON.stringify(report)).not.toContain(cause.message);
+    expect(report.gate.failed).toBeGreaterThan(0);
+  });
+
+  it.each([
+    [new Error("fixture internal detail"), "unknown"],
+    ["outbox-lease-stale", "unknown"],
+    [null, "unknown"],
+    [{ reasonCode: "x".repeat(81) }, "unknown"],
+    [{ reasonCode: "database-path/fixture" }, "unknown"],
+    [{ reasonCode: " padded " }, "unknown"],
+    [{ reasonCode: "bad\ncode" }, "unknown"],
+    [{ reasonCode: "code\n" }, "unknown"],
+    [{ reasonCode: 1 }, "unknown"],
+    [Object.create({ reasonCode: "inherited-code" }), "unknown"],
+    [new DacsTransportDiagnosticError("transport-diagnostic-not-retained"), "transport-diagnostic-not-retained"],
+    [{ reasonCode: "a" }, "a"],
+    [{ reasonCode: "a".repeat(80) }, "a".repeat(80)],
+  ])("bounds a diagnostic cause %#", async (error, expected) => {
+    const probes = createDacsRoleServiceDoctorProbesV1({
+      targets: TARGETS, sdkVersion: "sdk-v1", standardRevision: "standard-v1", profile: "profile-v1",
+      transportDiagnostic: () => { throw error; },
+    });
+    const report = await runDacsLiveDoctorV1({
+      phase: "post-start", scope: "start", sdkVersion: "sdk-v1",
+      standardRevision: "standard-v1", profile: "profile-v1",
+      probes: { "service.transport-roundtrip": probes["service.transport-roundtrip"]! },
+    });
+    expect(report.checks.find((check) => check.id === "service.transport-roundtrip"))
+      .toMatchObject({ status: "fail", reasonCode: "transport-diagnostic-unavailable",
+        facts: { causeCode: expected } });
+  });
+
+  it("does not invoke diagnostic code accessors or leak inspection failures", async () => {
+    const getter = vi.fn(() => { throw new Error("fixture accessor detail"); });
+    const descriptorTrap = vi.fn(() => { throw new Error("fixture descriptor detail"); });
+    const accessor = Object.defineProperty({}, "reasonCode", { get: getter });
+    const proxy = new Proxy({}, { getOwnPropertyDescriptor: descriptorTrap });
+    for (const error of [accessor, proxy]) {
+      const probes = createDacsRoleServiceDoctorProbesV1({
+        targets: TARGETS, sdkVersion: "sdk-v1", standardRevision: "standard-v1", profile: "profile-v1",
+        transportDiagnostic: () => { throw error; },
+      });
+      await expect(probes["service.transport-roundtrip"]!({ signal: new AbortController().signal } as never))
+        .resolves.toEqual({ status: "fail", reasonCode: "transport-diagnostic-unavailable",
+          facts: { causeCode: "unknown" } });
+    }
+    expect(getter).not.toHaveBeenCalled();
+    expect(descriptorTrap).toHaveBeenCalledTimes(1);
+  });
+
   it("verifies health, readiness, versions, and both no-effect transport directions", async () => {
     const fetcher = vi.fn(async (input: string | URL) => {
       const url = new URL(input);

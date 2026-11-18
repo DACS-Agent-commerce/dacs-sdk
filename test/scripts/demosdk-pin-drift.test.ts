@@ -12,7 +12,7 @@ const compatPath = join(repoRoot, ".github/workflows/demosdk-compat.yml");
 const driftScript = join(repoRoot, "scripts/demosdk-pin-drift.mjs");
 const PIN_STEP = "Typecheck and test against demosdk 4.0.18";
 const PINNED = "4.0.18";
-const RANGE = "^4.0.16";
+const RANGE = "^4.0.17";
 const TIMEOUT_OVERRIDE_MS = "200";
 
 type Step = { name?: string; run?: string; if?: string };
