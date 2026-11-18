@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "9968f61249ec21245f8ca37e487a27d4b4c99bf1"
+        "blob": "411613af60c6d28a451780f081f0942fd6b76f36"
       },
       "DELTA-LEDGER.json": {
-        "blob": "69087dd1706d97e2dfe48417fa215af8374ab605"
+        "blob": "797f03e8fa7de9451c52da060d39fdbec6c9397b"
       },
       "DELTA-MAP.md": {
-        "blob": "d554f6caa044f1ec64ed4a73a23cdd7866722b3e"
+        "blob": "394d99288145daad0278ffd53173a509c57b07e0"
       },
       "DELTA-NOTES.md": {
         "blob": "7352426912fcfdf092b7d8ca057c83c22740c74f"
@@ -1037,7 +1037,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "4b949ad89549b609a533f83d181d325428a731da"
+        "blob": "4b467f562b49bf79ca8fa514a983542aa14a4cd5"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1337,7 +1337,7 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "0901e84e46e915d1264aebef22cbdd9b28dfe300"
+        "blob": "ddf219648d04f14d649e0687e7f5b8e320762c51"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
@@ -1892,7 +1892,7 @@
         "blob": "b59171dbbc86f4612ba57ae203e0fc3822ac7a1c"
       },
       "test/helpers/tp1-node-fixture.mjs": {
-        "blob": "ffe6efb02574184364af130ee3b41286b657faa8"
+        "blob": "b2e9a7a0a9683e6bd0e9d4b03d5fe95da65f315d"
       },
       "test/helpers/transport-boundary.mjs": {
         "blob": "3a1214dbdbbb441e0f23afac075ca42fe87a98ff"

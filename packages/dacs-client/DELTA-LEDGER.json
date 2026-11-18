@@ -11804,6 +11804,22 @@
           "after": "e0d7a3d2ad0c98bd3400617c2d90b799ffd86665"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF keep the payment-evidence signer's nonce hold in the native transport and the storage program read in the scripted node after carrying the base up",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0901e84e46e915d1264aebef22cbdd9b28dfe300",
+          "after": "ddf219648d04f14d649e0687e7f5b8e320762c51"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "ffe6efb02574184364af130ee3b41286b657faa8",
+          "after": "b2e9a7a0a9683e6bd0e9d4b03d5fe95da65f315d"
+        }
+      ]
     }
   ]
 }

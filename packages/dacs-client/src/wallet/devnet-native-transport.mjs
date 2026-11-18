@@ -11,6 +11,7 @@ import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
 import { chainIdentityRead } from './chain-identity-read.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
+import { signerReservationKey } from './signer-reservation.mjs';
 import { createEffectHistory } from './effect-history.mjs';
 import { assertCurrentAuthorization, currentPassContext } from './pass-context.mjs';
 import { createDemosChainReader, nonceFromNode, nodeProjectedNonce } from '../dacs/chain.mjs';
@@ -1116,6 +1117,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       let accepted;
       try {
         accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
+          // A stored evidence CREATE owns the signer's next nonce until the chain has used it: a write sent before could take it and leave that CREATE unexecutable.
+          const reserved=(await journal.get(signerReservationKey(pinned,tx.content.from)))?.active;
+          if(reserved && nonceFromNode(await node('getAddressNonce',{address:tx.content.from}))<reserved.nonce) fail('signer_lane_busy','a stored payment-evidence write holds this signer; nothing was sent');
           const previous=await journal.get(lane(tx.content.from));
           const issuedBefore=await journal.get(intent(tx.hash));
           if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || issuedBefore) { refuseRetiredPin(previous); refuseRetiredPin(issuedBefore); fail('outcome_unknown','issued native transfers cannot be resent'); }
