@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { world } from './helpers/tp1-node-fixture.mjs';
 import { TP1_APPROVED_IDENTITY_RECORD as record } from '@kynesyslabs/dacs/wire';
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 import { createDevnetAgreementTransport, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
   DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from '../src/wallet/devnet-native-transport.mjs';
 
@@ -63,7 +64,7 @@ test('buyer session accepts the recorded four-field block-zero error and block-o
 test('reviewed transport binds the recorded block-one number 1 id 2', async t => {
   const w = await world(t), counts = recorded(w);
   const { profile, local } = w.admission.binding;
-  const transport = createDevnetAgreementTransport({
+  const transport = createDevnetAgreementTransport({ boundary: readOnlyBoundary,
     expected: { network: record.network, chainIdentity: profile.chainIdentity, pinVersion: profile.pinVersion,
       endpoint: local.endpoint, transportAuthority: local.transportAuthority },
     transportOwner: w.owner, journal: w.journal(), now: w.clock.now, fetchImpl: w.owner.fetchImpl,

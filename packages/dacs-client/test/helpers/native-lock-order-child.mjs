@@ -3,8 +3,9 @@
 // to broadcast, with the wallet lane lock still held. No network, no funds.
 //   DACS_LOCK_ORDER_JOURNAL  absolute path of an existing journal
 //   DACS_LOCK_ORDER_SCENARIO 'leased-broadcast' (nonce 2) or 'recovery' (nonce 1)
-import { openDurableWalletJournal } from '../../src/wallet/durable-journal.mjs';
-import { createWorld, JOB_IDS } from './native-create-world.mjs';
+import './transport-boundary.mjs'; // first: it installs the purchase-admission hook before the source modules load
+const { openDurableWalletJournal } = await import('../../src/wallet/durable-journal.mjs');
+const { createWorld, JOB_IDS } = await import('./native-create-world.mjs');
 
 const journal = openDurableWalletJournal({ path: process.env.DACS_LOCK_ORDER_JOURNAL, mode: 'open' });
 const world = createWorld({ journal, onNode: async (message) => {

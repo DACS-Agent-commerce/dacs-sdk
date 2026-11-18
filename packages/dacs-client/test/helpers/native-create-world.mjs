@@ -2,6 +2,7 @@
 // over a scripted TEST node. The wallet is deterministic so a parent test and a
 // killed child agree on the address and on every signed byte. The connection
 // fence queues, as a real shared connection would. No network, chain or funds.
+import { BOUND_PIN_VERSION, writingBoundary } from './transport-boundary.mjs'; // first: it installs the purchase-admission hook before any source module loads
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import { contentHash, finalityCommitmentAddress, FINALITY_COMMITMENT_SEPARATOR, logicalToStorageProgramName, signComponentArtifact } from '@kynesyslabs/dacs';
@@ -11,7 +12,7 @@ import { createDevnetDemoTransport, DEVNET_DELIVERY_POLICY, DEVNET_DEMO_ARTIFACT
 
 export const NOW = 1_900_000_000_000;
 export const JOB_IDS = Object.freeze(['01ARZ3NDEKTSV4RRFFQ69G5FAV', '01ARZ3NDEKTSV4RRFFQ69G5FAW']);
-const PINS = { network: 'testnet', chainIdentity: 'c'.repeat(64), pinVersion: 'TEST-lock-order-pins', endpoint: 'https://rpc.invalid/', transportAuthority: 'TEST-lock-order-owner' };
+const PINS = { network: 'testnet', chainIdentity: 'c'.repeat(64), pinVersion: BOUND_PIN_VERSION, endpoint: 'https://rpc.invalid/', transportAuthority: 'TEST-lock-order-owner' };
 const CONTEXT = { network: PINS.network, endpoint: PINS.endpoint, transportAuthority: PINS.transportAuthority, connectionId: 'TEST-connection' };
 const DEMO_AUTHORITY = 'TEST-RUN-lock-order-0001';
 const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
@@ -58,23 +59,15 @@ export function queuingFenceOwner(events = []) {
   };
 }
 
-/** The journal with every wallet lane acquisition logged as { op, kind: 'lane', key }. */
-export function countingJournal(journal, events) {
-  return {
-    get: (key) => journal.get(key),
-    put: (key, value) => journal.put(key, value),
-    entries: () => journal.entries(),
-    withWalletLock(key, work) { events.push({ op: operation.getStore(), kind: 'lane', key }); return journal.withWalletLock(key, work); },
-  };
-}
-
 /**
  * The transport and its test wallet over `journal`. `onNode(message, call)` runs
  * before the scripted node answers any call and may pause or kill the process.
  * `identityAnswer(chainIdentity)` replaces the node's answer to every block read. `stamps` is the transport's RPC stamp source.
  * `answer(message, call)` replaces the node's whole answer to a call when it returns one. `timeoutMs` is the transport's read deadline.
+ * `boundary` is the transport's effect boundary (by default a real one over `journal` and `owner`), `pinVersion` its pin version and `gas` the
+ * `gas_operation` the node confirms with.
  */
-export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, answer = () => undefined, stamps, timeoutMs }) {
+export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, answer = () => undefined, stamps, timeoutMs, boundary = writingBoundary({ owner, journal }), pinVersion = PINS.pinVersion, gas = null }) {
   const wallet = deterministicWallet();
   const sent = { confirms: [], broadcasts: [] };
   const answerNode = async (init) => {
@@ -89,7 +82,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     if (message === 'getTxByHash') return { result: 400, response: 'error', require_reply: false, extra: null };
     if (message === 'confirmTx') {
       sent.confirms.push(call.data.hash);
-      return reply({ data: { valid: true, reference_block: 0, message: 'TEST validated\n', gas_operation: null, transaction: call.data },
+      return reply({ data: { valid: true, reference_block: 0, message: 'TEST validated\n', gas_operation: gas, transaction: call.data },
         signature: { type: 'ed25519', data: `0x${'11'.repeat(64)}` }, rpc_public_key: { type: 'ed25519', data: `0x${'22'.repeat(32)}` } });
     }
     if (message === 'broadcastTx') {
@@ -100,7 +93,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     throw new Error(`unexpected TEST node call ${message}`);
   };
   const fetchImpl = async (url, init) => new Response(JSON.stringify(await answerNode(init)), { headers: { 'content-type': 'application/json' } });
-  const capability = createDevnetDemoTransport({ expected: PINS, transportOwner: owner, journal, fetchImpl, now: () => NOW, stamps, timeoutMs, inclusionWaitMs: 0,
+  const capability = createDevnetDemoTransport({ expected: { ...PINS, pinVersion }, transportOwner: owner, boundary, journal, fetchImpl, now: () => NOW, stamps, timeoutMs, inclusionWaitMs: 0,
     settlementPublication: { artifactKind: 'SettlementEvidence', authority: 'TEST-lock-order-settlement', phase: 'pay-dem', phaseIndex: 2, policy: DEVNET_SETTLEMENT_POLICY, railId: 'demos-native:DEM' },
     deliveryPublication: { artifactKind: 'Deliverable', authority: 'TEST-lock-order-delivery', phase: 'deliver-storage-program', phaseIndex: 3, policy: DEVNET_DELIVERY_POLICY },
     demoArtifactPublication: { policy: DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...DEVNET_DEMO_ARTIFACT_TYPES], authority: DEMO_AUTHORITY } });
@@ -134,12 +127,14 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
 
   return {
     capability, wallet, owner, sent, laneKey, makeCreate,
-    /** Seeds the lane and intent rows of an issued `tx` as a prior run left them. */
-    async retain(tx, stage) {
+    /** Seeds the lane and intent rows of an issued `tx` as a prior run left them; with `signed` the boundary's history also holds its signed bytes. */
+    async retain(tx, stage, { signed = false } = {}) {
       const row = { hash: tx.hash, nonce: tx.content.nonce, stage, signedTransaction: structuredClone(tx), networkBinding: await binding(),
         storageWriteSubmission: 'accepted', storageWriteSubmissionProfile: STORAGE_WRITE_SUBMISSION_PROFILE, storageWriteGas: null };
       await journal.put(laneKey, row);
       await journal.put(`devnet/native-transfer/${tx.hash}`, row);
+      // Recovery resends only what the boundary's history holds as signed; without `signed` it reads back only.
+      if (signed) await boundary.signPass({ operationId: laneKey, lane: laneKey, kind: 'create', paidWrite: true, debitOs: '0', pinVersion }, async () => Buffer.from(JSON.stringify(tx)));
     },
     /** Takes the signature lease; it holds the connection fence until released. */
     async lease() { return capability.binding({ phase: 'signature', address, binding: await binding() }); },

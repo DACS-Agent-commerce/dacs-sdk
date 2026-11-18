@@ -13,8 +13,14 @@ import { AUTHORITY_READ_DEADLINE_MS } from '../public-admission.mjs';
 const UINT = /^(0|[1-9][0-9]*)$/;
 const OPERATION_KINDS = new Set(['native', 'confirm', 'create', 'wire', 'signature']);
 const REPLAYABLE_KINDS = new Set(['create', 'wire']);
-const HISTORY_STATES = new Set(['signed', 'signed-held', 'dispatch-started', 'dispatch-withheld', 'dispatch-acknowledged', 'dispatch-unknown', 'observed']);
-const POSSIBLE_DISPATCH_STATES = new Set(['dispatch-unknown', 'dispatch-acknowledged', 'observed']);
+// An effect stage has its own records: `<stage>-started`, `-withheld`, `-acknowledged` and
+// `-unknown`. `dispatch` is the one that sends the artifact; `confirm` asks the node to
+// check it first and never counts as a possible dispatch. The recovery stages do the same
+// for an artifact that was already sent and is being recovered.
+const STAGES = ['dispatch', 'confirm', 'recovery-confirm', 'recovery-dispatch'];
+const STAGE_RECORDS = ['started', 'withheld', 'acknowledged', 'unknown'];
+const HISTORY_STATES = new Set(['signed', 'signed-held', 'observed', ...STAGES.flatMap((stage) => STAGE_RECORDS.map((record) => `${stage}-${record}`))]);
+const STAGE_ANSWER_NOT_ACCEPTED = 'stage_answer_not_accepted';
 const OPERATION_FIELDS = ['operationId', 'lane', 'kind', 'paidWrite', 'debitOs', 'approvalRef', 'k1Rev', 'pinVersion'];
 const FIRST_PASS = 'p1';
 const systemClock = { now: () => performance.now(), setTimer: setTimeout, clearTimer: clearTimeout };
@@ -22,7 +28,14 @@ const systemClock = { now: () => performance.now(), setTimer: setTimeout, clearT
 const refusal = (code, cause, details) => new OperationError(code, `effect refused: ${code}`, details, cause === undefined ? undefined : { cause });
 const isDecimal = (value) => typeof value === 'string' && UINT.test(value);
 const isThenable = (value) => typeof value?.then === 'function';
+const stageOf = (state) => STAGES.find((stage) => state.startsWith(`${stage}-`));
+// The stages whose records can mean the artifact reached the node. A recovery stage starts from an
+// artifact that was sent, so only recovery's own send counts there.
+const sendingStages = (stage) => (stage.startsWith('recovery-') ? ['recovery-dispatch'] : ['dispatch', 'recovery-dispatch']);
+const passKey = (state, passId) => `${stageOf(state)}:${passId}`;
 const failureCode = (cause) => ({ code: typeof cause?.code === 'string' ? cause.code : 'effect_failed' });
+// The operation as the fee check reads it: the debit of the confirmed gas replaces the declared one when the caller has it.
+const feeView = (operation, confirmedDebitOs) => (confirmedDebitOs === undefined ? operation : { ...operation, debitOs: confirmedDebitOs });
 const operationMetadata = (record) => Object.fromEntries(OPERATION_FIELDS.filter((field) => record[field] !== undefined).map((field) => [field, record[field]]));
 
 // A private copy of the operation as it is authorized and retained: later changes by the caller change nothing.
@@ -71,10 +84,12 @@ function createReadBudget(clock) {
 // unknown or inconsistent is never evidence that nothing was sent. A dispatch reuses the
 // latest signed pass while no other record names it, and otherwise starts pass p<n>
 // with a fresh signed record, so two passes that read the same records collide on one
-// key and only one of them proceeds.
-function operationState(records, operation, pinVersion) {
+// key and only one of them proceeds. A stage's own withheld records hold that stage; a
+// possible dispatch is only the dispatch stage's, so a confirm stage that is unknown or
+// never finished never blocks a new confirm pass or the dispatch.
+function operationState(records, operation, pinVersion, stage) {
   if (records.length === 0) return { state: 'none' };
-  const started = new Set(), withheld = new Set(), signedRecords = [];
+  const started = new Set(), withheld = new Set(), signedRecords = [], sending = sendingStages(stage);
   let held = false, possible = false;
   for (const record of records) {
     if (record.pinVersion !== pinVersion) throw refusal('pin_version_retired');
@@ -85,17 +100,17 @@ function operationState(records, operation, pinVersion) {
       if (!bytes || bytes.toString('base64') !== record.bytes || sha256Hex(bytes) !== record.artifactHash) throw refusal('eb_history_unavailable');
       signedRecords.push(record);
     } else if (signedRecords.length === 0) throw refusal('eb_history_unavailable');
-    if (record.state === 'signed-held' || record.state === 'dispatch-withheld') held = true;
-    if (record.state === 'dispatch-started') started.add(record.passId);
-    if (record.state === 'dispatch-withheld') {
-      if (!started.has(record.passId)) throw refusal('eb_history_unavailable');
-      withheld.add(record.passId);
+    if (record.state === 'signed-held' || record.state === `${stage}-withheld`) held = true;
+    if (record.state.endsWith('-started')) started.add(passKey(record.state, record.passId));
+    if (record.state.endsWith('-withheld')) {
+      if (!started.has(passKey(record.state, record.passId))) throw refusal('eb_history_unavailable');
+      withheld.add(passKey(record.state, record.passId));
     }
-    if (POSSIBLE_DISPATCH_STATES.has(record.state)) possible = true;
+    if (record.state === 'observed' || (sending.includes(stageOf(record.state)) && /-(unknown|acknowledged)$/.test(record.state))) possible = true;
   }
   const signed = signedRecords.at(-1);
   const open = records.every((record) => record === signed || record.passId !== signed.passId);
-  possible ||= [...started].some((passId) => !withheld.has(passId));
+  possible ||= [...started].some((key) => sending.some((sender) => key.startsWith(`${sender}:`)) && !withheld.has(key));
   return { state: possible ? 'possible' : held ? 'held' : 'signed', signed, passId: open ? signed.passId : `p${signedRecords.length + 1}`, fresh: !open };
 }
 
@@ -144,8 +159,23 @@ function createKeyedQueue() {
  *   bytes are durable; a refusal after that leaves `signed-held`. Calls for one operation
  *   and lane that run together are queued: a later one is refused as above once the
  *   earlier one has recorded its artifact, and signs if the earlier one failed.
- * - `dispatchPass(artifact, send, { explicit })`: passes the retained bytes to `send(bytes)`
- *   once, after recording `dispatch-started`; a refusal then records `dispatch-withheld`.
+ * - `dispatchPass(artifact, send, { explicit, stage, material, confirmedDebitOs })`: passes the retained
+ *   bytes to `send(bytes, final)` once, after recording `<stage>-started`; a refusal then records
+ *   `<stage>-withheld`. `stage` is `'dispatch'` (the default: the send itself), `'confirm'`
+ *   (the node's check of the bytes before the send, never a possible dispatch), or the recovery
+ *   stages `'recovery-confirm'` and `'recovery-dispatch'` (the same two for an artifact that was
+ *   already sent: only a recovery send counts as a possible dispatch there); any other
+ *   stage is a `TypeError`. A send that has awaits of its own before the transport call finishes
+ *   them, then calls `final(check, effect)` and returns what it returns: `final` awaits the stop check,
+ *   runs the admission, fee, connection and revision checks and `check()` synchronously, and calls
+ *   `effect()` in that same run. A refusal there (nothing was transmitted) records `<stage>-withheld`
+ *   with its cause, where any other failure of `send` records `<stage>-unknown`.
+ *   `confirmedDebitOs` (decimal OS, or `null` for a debit that could not be read) replaces the
+ *   artifact's own `debitOs` in the fee check only, so `null` refuses `write-fee-cap`; the records
+ *   keep the artifact's own fields. After `send` returns, `material(result)` (optional, called once)
+ *   gives the extra fields of `<stage>-acknowledged`, or `undefined` when the answer is not
+ *   acceptable: the stage then records `<stage>-unknown` with cause
+ *   `stage_answer_not_accepted` and resolves the answer all the same.
  *   A non-callable `send` rejects TypeError before reading or writing history.
  *   A held or withheld artifact needs `explicit: true`, which a composition sets only for
  *   a fresh request of its own; a possible dispatch refuses `eb_readback_required`; an
@@ -153,6 +183,13 @@ function createKeyedQueue() {
  *   When `send` returned but the acknowledgement record could not be written, it rejects
  *   `eb_ack_not_persisted`: the artifact was sent, the send's return value is
  *   `error.details.result`, and the write failure is `error.cause`.
+ * - `holdFence(operation)`: runs the checks before a pass, acquires the fence once, runs
+ *   them again under it and resolves `{ run(work), release() }`. The fence stays held until
+ *   `release()`, which resolves once it is let go (and rejects with the release failure).
+ *   Passes made inside `run(work)` for the same operation id reuse the fence; another id is
+ *   refused `tp1_fence_not_owned`. A refusal or a fence timeout rejects with its own code and
+ *   holds nothing. Callers whose steps do not share one async context (the wallet's
+ *   separate requests) hold the fence this way.
  * - `withOperation(operation, work)`: holds the fence across `work`; passes made inside
  *   for the same operation reuse it, another operation is refused `tp1_fence_not_owned`.
  *   Do not await `replaceConnection` inside it.
@@ -254,6 +291,33 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     }
   }
 
+  // Holds the operation's fence across several later calls, none of which share an async
+  // context. The checks that precede a pass run before the fence is waited for and again
+  // once it is held, so a refusal never leaves the fence held. The fence stays held until
+  // release().
+  async function holdFence(input) {
+    const operation = snapshotOperation(input);
+    const read = createReadBudget(clock);
+    await precheck(read, operation);
+    let release;
+    const ended = new Promise((resolve) => { release = resolve; });
+    let holding;
+    const frame = await new Promise((resolve, reject) => {
+      holding = fence.withFence(operation.operationId, async (capability) => {
+        const held = { operationId: operation.operationId, capability };
+        await refresh(read, operation);
+        gate(held, operation);
+        resolve(held);
+        await ended;
+      });
+      holding.catch(reject);
+    });
+    return {
+      run: (work) => operations.run(frame, work),
+      release: () => { release(); return holding; },
+    };
+  }
+
   async function persist(record) {
     let result;
     try { result = await history.append(record); } catch (cause) {
@@ -265,10 +329,11 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
   // Runs `effect` once authorized, for an effect whose record is already durable. A
   // refusal adds `heldState` with its cause and is what the caller sees, also when that
   // record cannot be written.
-  async function authorizeOrHold(frame, read, operation, passId, heldState, effect) {
+  // `checked` is the operation the fee check reads when it differs from the recorded one.
+  async function authorizeOrHold(frame, read, operation, passId, heldState, effect, checked = operation) {
     try {
-      await refresh(read, operation);
-      gate(frame, operation);
+      await refresh(read, checked);
+      gate(frame, checked);
     } catch (cause) {
       await persist({ ...operation, passId, state: heldState, cause: failureCode(cause) }).catch(() => {});
       throw cause;
@@ -305,35 +370,62 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
   }
 
   // Hands the operation's retained bytes to `release(bytes, passId)` once the history
-  // allows it and `dispatch-started` is durable.
-  async function dispatchRetained(frame, read, operation, explicit, release) {
+  // allows it and `<stage>-started` is durable.
+  async function dispatchRetained(frame, read, operation, { explicit, stage, confirmedDebitOs }, release) {
+    const checked = feeView(operation, confirmedDebitOs);
     const records = await readOperation(operation);
-    const { state, signed, passId, fresh } = operationState(records, operation, binding.profile?.pinVersion);
+    const { state, signed, passId, fresh } = operationState(records, operation, binding.profile?.pinVersion, stage);
     if (state === 'none') throw refusal('eb_history_unavailable');
     if (state === 'possible' && (!REPLAYABLE_KINDS.has(operation.kind) || replayPolicy?.(operation, records) !== true)) throw refusal('eb_readback_required');
     if (state === 'held' && explicit !== true) throw refusal('eb_explicit_resume_required');
     assertPurchaseActionsAdmitted();
     if (fresh) await persist({ ...signed, passId, state: 'signed' });
     assertPurchaseActionsAdmitted();
-    await persist({ ...operation, passId, state: 'dispatch-started' });
-    return authorizeOrHold(frame, read, operation, passId, 'dispatch-withheld', () => release(Buffer.from(signed.bytes, 'base64'), passId));
+    await persist({ ...operation, passId, state: `${stage}-started` });
+    return authorizeOrHold(frame, read, operation, passId, `${stage}-withheld`, () => release(Buffer.from(signed.bytes, 'base64'), passId), checked);
   }
 
-  async function dispatchPass(input, send, { explicit = false } = {}) {
-    if (typeof send !== 'function') throw new TypeError('the effect boundary needs a callable send');
-    const operation = snapshotOperation(input);
-    return runPass(operation, (frame, read) => dispatchRetained(frame, read, operation, explicit, async (bytes, passId) => {
-      // An unpaired dispatch-started stays a possible dispatch if the unknown record is lost too; the first cause is the one reported.
-      const recordUnknown = (cause) => persist({ ...operation, passId, state: 'dispatch-unknown', cause: failureCode(cause) }).catch(() => {});
-      let result;
+  // The last check of a send that has awaits of its own before it reaches the transport. `final(check, effect)`
+  // awaits the stop check, then synchronously runs the admission, fee, connection and revision checks and
+  // `check()`, and calls `effect()` in that same run, so nothing is awaited between the checks and the call.
+  // What it refuses is noted in `refused`: nothing was transmitted, and the pass is recorded withheld.
+  function finalCheck(frame, read, checked, refused) {
+    return async (check, effect) => {
       try {
-        result = await send(bytes);
+        await checkStop(read);
+        gate(frame, checked);
+        check();
       } catch (cause) {
-        await recordUnknown(cause);
+        refused.cause = cause;
         throw cause;
       }
+      return effect();
+    };
+  }
+
+  async function dispatchPass(input, send, { explicit = false, stage = 'dispatch', material, confirmedDebitOs } = {}) {
+    if (typeof send !== 'function') throw new TypeError('the effect boundary needs a callable send');
+    if (!STAGES.includes(stage)) throw new TypeError(`an effect stage is one of ${STAGES.join(', ')}`);
+    const operation = snapshotOperation(input);
+    return runPass(operation, (frame, read) => dispatchRetained(frame, read, operation, { explicit, stage, confirmedDebitOs }, async (bytes, passId) => {
+      // An unpaired dispatch-started stays a possible dispatch if the unknown record is lost too; the first cause is the one reported.
+      const recordUnknown = (cause) => persist({ ...operation, passId, state: `${stage}-unknown`, cause: failureCode(cause) }).catch(() => {});
+      const refused = {};
+      let result;
       try {
-        await persist({ ...operation, passId, state: 'dispatch-acknowledged' });
+        result = await send(bytes, finalCheck(frame, read, feeView(operation, confirmedDebitOs), refused));
+      } catch (cause) {
+        if (refused.cause === undefined) await recordUnknown(cause);
+        else await persist({ ...operation, passId, state: `${stage}-withheld`, cause: failureCode(refused.cause) }).catch(() => {});
+        throw cause;
+      }
+      const acknowledged = material ? material(result) : {};
+      if (acknowledged === undefined) {
+        await recordUnknown({ code: STAGE_ANSWER_NOT_ACCEPTED });
+        return result;
+      }
+      try {
+        await persist({ ...operation, ...acknowledged, passId, state: `${stage}-acknowledged` });
       } catch (cause) {
         await recordUnknown(cause);
         throw new OperationError('eb_ack_not_persisted', 'the artifact was sent but its acknowledgement record was not persisted', { result }, { cause });
@@ -345,6 +437,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
   return {
     signPass,
     dispatchPass,
+    holdFence,
     withOperation: async (input, work) => runPass(snapshotOperation(input), () => work()),
     signerFor(input, signer) {
       const operation = snapshotOperation(input);
@@ -356,7 +449,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
             signature = await signer.sign(bytes, { signal });
             return typeof signature === 'string' ? Buffer.from(signature) : signature;
           });
-          return runPass(artifact, (frame, read) => dispatchRetained(frame, read, artifact, false, () => signature));
+          return runPass(artifact, (frame, read) => dispatchRetained(frame, read, artifact, { explicit: false, stage: 'dispatch' }, () => signature));
         }),
       };
     },
