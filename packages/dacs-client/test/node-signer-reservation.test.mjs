@@ -511,6 +511,16 @@ test('a settlement that throws keeps the reservation, the original cause and a w
   assert.equal(ledger.settled.length, 1);
 });
 
+test('a consume whose approval the ledger refuses to spend ends the reservation only when the caller shows the approval ended', async t => {
+  const ledger = ledgerDouble({ settle: async () => { throw new Error('TEST-already-released'); } }), w = world(t, { ledger }), bytes = signed();
+  const held = await w.reservations.bindSigned(await approved(w.reservations), bytes);
+  await rejectCode(w.reservations.consume(held, executed(bytes)), 'signer_settlement_failed');
+  const ended = await w.reservations.consume(held, executed(bytes), { approvalEnded: true });
+  assert.equal(ended.active, null); assert.equal(ended.floor, 2);
+  assert.equal(ledger.settled.length, 0, 'nothing was settled spent');
+  await rejectCode(w.reservations.consume(held, executed(bytes), { approvalEnded: true }), 'signer_reservation_stale');
+});
+
 test('recover retires every reservation without signed bytes and keeps signed ones; a second recover changes nothing', async t => {
   const ledger = ledgerDouble(), w = world(t, { ledger }), bytes = signed({ address: otherSigner });
   await approved(w.reservations);

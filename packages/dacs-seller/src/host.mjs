@@ -369,8 +369,10 @@ export async function startSellerHost(options) {
     const hostStopped = () => stopping || stopRequested();
     const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
       completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
-    // Every effect route reserves through the coordinator and ends its attempt through the completion port.
-    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission });
+    // Every effect route reserves through the coordinator and ends its attempt through the completion port. The agent's own record
+    // of unfinished work lets a payment retry finish a payment the agent recorded, even after the job's session ended.
+    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission,
+      retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.

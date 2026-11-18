@@ -593,11 +593,12 @@ function paused(input, outcome = () => input.checked.reserve()) {
   return { reached, open, input: { ...input, checked: { reserve: async () => { reach(); await opened; return outcome(); } } } };
 }
 
-// The coordinator over a world's accounting, capacity and admission transaction; `control.operation` answers the next inspection.
+// The coordinator over a world's accounting, capacity and admission transaction; `control.operation` answers the next inspection and
+// `control.unfinished` the agent's unfinished-work read.
 function withCoordinator(w) {
-  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none; w.control.payloads = new Map();
+  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none; w.control.unfinished = () => false; w.control.payloads = new Map();
   w.coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity: w.capacity, admissionTransaction: w.admission,
-    inspectOperation: target => { w.inspections++; return w.control.operation(target); } });
+    inspectOperation: target => { w.inspections++; return w.control.operation(target); }, retainsUnfinishedWork: target => w.control.unfinished(target) });
   w.contextInput = (p, path = PATHS.context) => {
     const payload = { version: '1', kind: 'request', method: 'POST', path, bodyHash: hash('{}'), jobId: p.jobId, buyer: p.input.buyer, seller: SELLER, listingPin: PIN,
       agreementHash: hash('agreement'), nonce: hash(`nonce-${++w.nonces}`).slice(0, 32), expiresAt: w.control.clock + 30000, profile: PROFILE };
@@ -1156,6 +1157,46 @@ test('terminal checks and registered gates run before accounting under the opera
   const outcomes = await Promise.allSettled([PATHS.proposals, PATHS.proposals, PATHS.commitments, PATHS.payments].map(route => attemptRoute(crowd.w, crowd.p, route)));
   assert.deepEqual(outcomes.map(outcome => outcome.reason?.code), Array(4).fill('context_session_terminal'));
   assert.equal(durableClosures(crowd.w).length, 1); assert.equal(crowd.w.report().used, 0);
+});
+
+// A payment request for `p` whose admitted body claims PAYMENT_TX, as the payment route hands it to the coordinator.
+const PAYMENT_TX = hash('payment transaction');
+const paymentInput = (w, p) => {
+  const input = w.contextInput(p, PATHS.payments);
+  return { ...input, paymentTx: PAYMENT_TX, checked: { ...input.checked, body: { txHash: PAYMENT_TX } } };
+};
+
+test('a terminal session lets only a payment retry that must finish its recorded payment reach accounting', async t => {
+  const { w, p } = await coordinated(t), asked = [], charged = () => w.report().used;
+  const underThisBinding = state => target => ({ ...(state === 'pending' ? view.pending(w.control.clock + 300000) : view.ended), binding: wireOperationBinding(target) });
+  w.control.state = onlyJob(p.jobId, () => 'settle-failed');
+  w.control.unfinished = target => { asked.push(target); return true; };
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'context_session_terminal', 409);
+  assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'settle-failed', 'effect-path'), 'a new payment operation is refused and closes the job');
+  w.control.operation = () => view.ended;
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'context_session_terminal', 409);
+  w.control.operation = underThisBinding('ended');
+  await rejects(attemptRoute(w, p, PATHS.commitments), 'context_session_terminal', 409);
+  assert.deepEqual(asked, [], 'a new operation, another binding and another route never ask for the payment work');
+
+  w.control.unfinished = target => { asked.push(target); return false; };
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'context_session_terminal', 409);
+  assert.deepEqual(asked, [{ jobId: p.jobId, path: PATHS.payments }], 'a job with no recorded payment work is refused');
+  const cut = new Error('TEST unfinished-work read failed');
+  w.control.unfinished = () => { throw cut; };
+  await assert.rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), error => error === cut);
+  assert.equal(charged(), 0, 'nothing is charged for a refused request');
+
+  w.control.unfinished = () => true;
+  for (const state of ['ended', 'pending']) {
+    w.control.operation = underThisBinding(state);
+    assert.equal((await attemptRoute(w, p, PATHS.payments, paymentInput(w, p))).state, 'new', `an ${state} payment with its recorded work reaches the reservation`);
+  }
+  assert.equal(charged(), 2, 'each retry is charged as any retry');
+  assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'settle-failed', 'effect-path'), 'the closure stays as it was');
+  w.coordinator.addPreAccountingGate(() => ({ code: 'TEST_gate_refused', status: 422 }));
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'TEST_gate_refused', 422);
+  assert.equal(charged(), 2, 'a gate still refuses it before accounting');
 });
 
 test('terminal-gate-shape-and-thenable-refusals', async t => {

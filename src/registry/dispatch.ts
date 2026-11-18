@@ -9,6 +9,7 @@ import { createEvmErc20Rail, evmErc20Settle } from "../rails/evmErc20.js";
 import {
   createPayDemRail,
   payDemSettle,
+  requireUnjournaledOptOut,
   type PayDemPreparedTransfer,
   type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
@@ -70,9 +71,9 @@ export interface RailDispatchOptions {
       transfer: Readonly<PayDemPreparedTransfer>,
     ) => Promise<void>;
     /**
-     * Accept a route without `journalPreparedTransfer`. Without a journal a
-     * crash after the broadcast leaves no record of the transaction, so a retry
-     * after losing the settlement store can pay again.
+     * Accept a route without `journalPreparedTransfer`. Without a journal, a
+     * crash after the broadcast, before the settlement outcome is recorded,
+     * leaves no recorded transaction hash to recover from.
      */
     allowUnjournaled?: boolean;
     /** Durable atomic settlement intent/outcome store. */
@@ -819,6 +820,11 @@ export async function settleFromRail(
       }
       const reconcile = payDem?.reconcile;
       const allowUnjournaled = payDem?.allowUnjournaled;
+      // Refuse before the RPC connect and wallet load; `payDemSettle` repeats
+      // the check for direct callers.
+      if (journalPreparedTransfer === undefined) {
+        requireUnjournaledOptOut(allowUnjournaled);
+      }
       const inclusionTimeoutMs = payDem?.inclusionTimeoutMs;
       const inclusionPollIntervalMs = payDem?.inclusionPollIntervalMs;
       const statusRequestTimeoutMs = payDem?.statusRequestTimeoutMs;
