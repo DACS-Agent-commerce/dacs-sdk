@@ -2354,8 +2354,9 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * PB-1..PB-3 conformance, which apply to a `PayeeBoundAgreementDocument` whose
  * destination is selected from a signed `terms.payoutBindings`. A payee-bound
  * agreement is not paid through this bridge: the fixed-price pay-dem buyer
- * payment selects its destination from `terms.payoutBindings` and calls the
- * rail's `settle` itself. Here `req.payee` is the listing seller carried
+ * payment in `@kynesyslabs/dacs-node` (`createDacsFixedPricePayDemBuyerPaymentV1`)
+ * selects its destination from `terms.payoutBindings` and calls the rail's
+ * `settle` itself. Here `req.payee` is the listing seller carried
  * through the fixed-price agreement.
  *
  * SAFE BY DEFAULT: settlement is submitted at most once per

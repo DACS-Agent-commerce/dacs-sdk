@@ -823,8 +823,9 @@ export interface Agent {
    * Anyone: resolve a subject's full cross-context identity (DACS-1) — its
    * primary claim plus all eight production Demos CCI contexts bound to it in
    * the GCR, not just the wallet key. Accepts a DID / `0x…` / bare-hex
-   * primary key; other canonical claim refs are passed through (use
-   * `findByClaim` to go from a linked claim to its subject). Lookup
+   * primary key; other canonical claim refs are passed through. To go from a
+   * linked Web2 handle or cross-chain address to its subject, use
+   * `findByClaim` (domain claims have no reverse lookup). Lookup
    * conveniences are never retained: the returned `primaryClaim` is a
    * canonical parameter-free CF-3 identity.
    */
