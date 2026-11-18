@@ -92,16 +92,24 @@ export interface ListingCatalogPage {
 
 export type ListingCatalogQueryResult =
   | { status: "ok"; page: ListingCatalogPage }
-  | { status: "indeterminate"; reason: string };
+  | {
+      status: "indeterminate";
+      reason: string;
+      code?: "unsupported-filter";
+      /** Requested rate filters absent from the Directory manifest. */
+      filters?: ("minCompletionRate" | "minRating")[];
+    };
 
 export interface ListingCatalogClientConfig {
   /** Absolute URL of the DACS-1 §6.3.6 `GET /api/dacs/listings` endpoint. */
   catalogUrl: string;
+  /** Defaults to /.well-known/dacs-directory.json on the catalog origin. */
+  directoryManifestUrl?: string;
   fetchImpl?: typeof fetch;
   /** Required to use plain HTTP, for example against an explicitly trusted local test catalog. */
   allowInsecureHttp?: boolean;
   timeoutMs?: number;
-  /** Maximum decoded response bytes accepted from one catalog page. */
+  /** Maximum decoded bytes per response, including the Directory manifest. */
   maxResponseBytes?: number;
 }
 
@@ -122,6 +130,7 @@ export interface CatalogBindingIndexConfig extends ListingCatalogClientConfig {
 
 interface NormalizedClientConfig {
   catalogUrl: URL;
+  directoryManifestUrl: URL;
   fetchImpl: typeof fetch;
   timeoutMs: number;
   maxResponseBytes: number;
@@ -311,41 +320,59 @@ function positiveConfigInt(
   return value;
 }
 
+function normalizeEndpointUrl(
+  value: string,
+  label: string,
+  allowInsecureHttp: boolean | undefined,
+): URL {
+  if (typeof value !== "string") {
+    throw new TypeError(`${label} must be an absolute URL string`);
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new TypeError(`${label} must be an absolute URL`);
+  }
+  if (url.username || url.password) {
+    throw new TypeError(`${label} must not contain credentials`);
+  }
+  if (url.search || url.hash) {
+    throw new TypeError(`${label} must not contain a query or fragment`);
+  }
+  if (
+    url.protocol !== "https:" &&
+    !(allowInsecureHttp === true && url.protocol === "http:")
+  ) {
+    throw new TypeError(
+      `${label} must use HTTPS unless allowInsecureHttp is explicitly enabled`,
+    );
+  }
+  return url;
+}
+
 function normalizeClientConfig(
   config: ListingCatalogClientConfig,
 ): NormalizedClientConfig {
   if (!config || typeof config !== "object") {
     throw new TypeError("catalog client configuration is required");
   }
-  if (typeof config.catalogUrl !== "string") {
-    throw new TypeError("catalogUrl must be an absolute URL string");
-  }
-  let catalogUrl: URL;
-  try {
-    catalogUrl = new URL(config.catalogUrl);
-  } catch {
-    throw new TypeError("catalogUrl must be an absolute URL");
-  }
-  if (catalogUrl.username || catalogUrl.password) {
-    throw new TypeError("catalogUrl must not contain credentials");
-  }
-  if (catalogUrl.search || catalogUrl.hash) {
-    throw new TypeError("catalogUrl must not contain a query or fragment");
-  }
-  if (
-    catalogUrl.protocol !== "https:" &&
-    !(config.allowInsecureHttp === true && catalogUrl.protocol === "http:")
-  ) {
-    throw new TypeError(
-      "catalogUrl must use HTTPS unless allowInsecureHttp is explicitly enabled",
-    );
-  }
+  const catalogUrl = normalizeEndpointUrl(
+    config.catalogUrl, "catalogUrl", config.allowInsecureHttp,
+  );
+  const directoryManifestUrl = normalizeEndpointUrl(
+    config.directoryManifestUrl ??
+      new URL("/.well-known/dacs-directory.json", catalogUrl.origin).href,
+    "directoryManifestUrl",
+    config.allowInsecureHttp,
+  );
   const fetchImpl = config.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     throw new TypeError("catalog client requires a fetch implementation");
   }
   return {
     catalogUrl,
+    directoryManifestUrl,
     fetchImpl,
     timeoutMs: positiveConfigInt(
       config.timeoutMs,
@@ -598,6 +625,10 @@ async function queryCatalogPage(
   options: ListingCatalogRequestOptions,
 ): Promise<ListingCatalogQueryResult> {
   const url = buildCatalogUrl(config.catalogUrl, query);
+  // Inspect the validated URL so the capabilities check and request use the
+  // same snapshot, including explicitly requested zero-valued filters.
+  const rateFilters = (["minCompletionRate", "minRating"] as const)
+    .filter(filter => url.searchParams.has(filter));
 
   const controller = new AbortController();
   let timedOut = false;
@@ -611,9 +642,10 @@ async function queryCatalogPage(
   else externalSignal?.addEventListener("abort", onAbort, { once: true });
 
   let response: Response | undefined;
-  try {
+  const request = async (requestUrl: URL): Promise<Response> => {
+    controller.signal.throwIfAborted();
     response = await awaitAbortable(
-      config.fetchImpl(url, {
+      config.fetchImpl(requestUrl, {
         method: "GET",
         headers: { Accept: "application/json" },
         credentials: "omit",
@@ -627,6 +659,53 @@ async function queryCatalogPage(
         "catalog response arrived after cancellation",
       ),
     );
+    return response;
+  };
+  try {
+    if (rateFilters.length > 0) {
+      response = await request(config.directoryManifestUrl);
+      if (response.status === 404) {
+        // Compatibility fallback for an unadvertised catalog; no version is
+        // inferred and the original requested filters are retained.
+        cancelResponseBody(response, "Directory manifest not found");
+      } else {
+        if (!response.ok) {
+          throw new Error(`Directory manifest returned HTTP ${response.status}`);
+        }
+        const manifest = await readBoundedJson(
+          response, config.maxResponseBytes, controller.signal,
+        );
+        if (
+          !isRecord(manifest) ||
+          (manifest.dacsDirectoryVersion !== "1" && manifest.dacsDirectoryVersion !== "2") ||
+          typeof manifest.catalog !== "string" ||
+          !Array.isArray(manifest.filters) ||
+          !manifest.filters.every(filter => isCanonicalString(filter))
+        ) {
+          throw new Error("Directory manifest is malformed or has an unsupported version");
+        }
+        let advertisedCatalog: URL;
+        try {
+          advertisedCatalog = new URL(manifest.catalog);
+        } catch {
+          throw new Error("Directory manifest catalog must be an absolute URL");
+        }
+        if (advertisedCatalog.href !== config.catalogUrl.href) {
+          throw new Error("Directory manifest catalog does not match catalogUrl");
+        }
+        const advertisedFilters = manifest.filters;
+        const filters = rateFilters.filter(filter => !advertisedFilters.includes(filter));
+        if (filters.length > 0) {
+          return {
+            status: "indeterminate",
+            reason: `Directory does not advertise requested filters: ${filters.join(", ")}`,
+            code: "unsupported-filter",
+            filters,
+          };
+        }
+      }
+    }
+    response = await request(url);
     if (!response.ok) {
       cancelResponseBody(response, `catalog returned HTTP ${response.status}`);
       return {

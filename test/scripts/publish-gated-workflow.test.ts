@@ -194,6 +194,17 @@ describe("the gated publish workflow", () => {
     expect(gated.jobs.publish?.steps?.some((step) => step.uses?.startsWith("actions/upload-artifact@"))).toBe(true);
   });
 
+  it("every artifact upload in the acceptance workflow the gated workflow calls carries the run attempt in its name, so \"Re-run all jobs\" does not upload an existing name", () => {
+    const acceptance = readWorkflow(join(workflowsDirectory, "registry-container-acceptance.yml"));
+    expect(gated.jobs["registry-container-acceptance"]?.uses).toBe("./.github/workflows/registry-container-acceptance.yml");
+    const uploads = Object.values(acceptance.jobs).flatMap((job) => job.steps ?? [])
+      .filter((step) => step.uses?.startsWith("actions/upload-artifact@"));
+    expect(uploads.length).toBe(3);
+    for (const upload of uploads) {
+      expect(String(upload.with?.name), upload.name).toContain("${{ github.run_attempt }}");
+    }
+  });
+
   it("the gated workflow keeps one publication at a time", () => {
     expect(gated.concurrency).toEqual({ group: "dacs-npm-prerelease", "cancel-in-progress": false });
   });
