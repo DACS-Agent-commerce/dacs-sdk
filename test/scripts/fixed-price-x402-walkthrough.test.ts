@@ -480,7 +480,7 @@ describe("record", () => {
   const ref = `stor-${"b".repeat(40)}`;
   const usdc = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
   const seller = `did:demos:agent:${"b".repeat(64)}`;
-  const mnemonic = "zebra yankee xray whiskey victor uniform tango sierra romeo quebec papa oscar";
+  const walletWords = "zebra yankee xray whiskey victor uniform tango sierra romeo quebec papa oscar";
   const providerKey = "provider-key-1234";
   const refused = () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); };
   const notReady = () => Response.json({ ready: false, checkedAt: 1, reasonCodes: ["readiness-latch-missing"] }, { status: 503 });
@@ -496,7 +496,7 @@ describe("record", () => {
       writeFileSync(join(run, "packs", `${name}-${version}.tgz`), name);
       tarballs[`${name}-${version}.tgz`] = createHash("sha256").update(name).digest("hex");
     }
-    writeFileSync(join(run, "secrets", "buyer-demos"), mnemonic);
+    writeFileSync(join(run, "secrets", "buyer-demos"), walletWords);
     writeFileSync(join(project, ".env.example"), "DACS_DEPLOYMENT=local\nDACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json\n");
     writeFileSync(join(project, ".env"), [
       "DACS_DEPLOYMENT=local", `DACS_DEMOS_RPC_URL=${demosRpc}`, `DACS_EVM_RPC_URL=https://rpc.example/v2/${providerKey}?token=1`,
@@ -581,7 +581,7 @@ describe("record", () => {
     const run = recordFixture("https://demos.example/node-key-5678");
     await walkthrough.record({ runDir: run, listingRef: ref }, onBaseSepolia);
     const text = readFileSync(join(run, "record.json"), "utf8");
-    for (const secret of [...mnemonic.split(" "), providerKey, "node-key-5678", "token=1", "/v2/", run, tmpdir(), "secrets"]) expect(text).not.toContain(secret);
+    for (const secret of [...walletWords.split(" "), providerKey, "node-key-5678", "token=1", "/v2/", run, tmpdir(), "secrets"]) expect(text).not.toContain(secret);
     expect(JSON.parse(text)).toMatchObject({
       evmRpc: { host: "rpc.example" }, demosRpc: { host: "custom", chainIdentity: "chain-1" },
       deployment: "local", rails: ["x402"], authorities: { seller, steward: seller }, payee: PAYEE,
