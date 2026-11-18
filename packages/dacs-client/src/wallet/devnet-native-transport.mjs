@@ -164,6 +164,8 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // dispatch history (the exact signed bytes, `confirm-started`, then
 // `confirm-acknowledged` or `confirm-unknown`) before and after the node sees it. An
 // acknowledged confirmation is final for its bytes: the node is not asked to confirm them again.
+// The seller policy, if any, is asked after the acknowledgement is retained; its refusal
+// leaves the acknowledgement and nothing is broadcast.
 // The broadcast then carries that retained confirmation, byte for byte with its gas, as the
 // boundary's dispatch stage: its whole debit (the amount plus every fee, from the node's fee
 // view or else from the confirmed transaction) is checked against the fee ceiling first, and a
@@ -701,12 +703,11 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     senderAuth(c.from, headers);
     return tx;
   }
-  // Whether the node's answer is a valid confirmation of these exact bytes that the seller
-  // policy, if any, approved. Any other answer is not one; a changed byte or a refusal throws.
-  const acceptsConfirmation = async (answer, tx) => {
+  // Whether the node's answer is a valid confirmation of these exact bytes. Any other answer
+  // is not one; a changed byte throws. The seller policy is asked after the answer is retained.
+  const acceptsConfirmation = (answer, tx) => {
     if (answer?.result !== 200 || answer.response?.data?.valid !== true) return false;
     if (JSON.stringify(answer.response.data.transaction) !== JSON.stringify(tx)) fail('signed_bytes_changed','the new native transport requires byte-identical signed confirmation');
-    await approveConfirmation(answer);
     return true;
   };
   // Throws `approval_required` unless the seller policy, if any, approves this confirmation.
@@ -1095,11 +1096,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         const confirmOnce=async(bytes,final)=>{
           const answer=await transmitWithoutWriteProof(body,headers,{ final,pass });
           step(tx,'validate','complete',started);
-          accepted=await acceptsConfirmation(answer,tx);
+          accepted=acceptsConfirmation(answer,tx);
           return answer;
         };
         const answer=await confirmAsStage(l,tx,confirmOnce,() => accepted);
-        if(accepted) l.confirmed=clone(tx);
+        // The node's acknowledgement is retained first, so a refusal here never sends the bytes to the node again.
+        if(accepted) { await approveConfirmation(answer); l.confirmed=clone(tx); }
         return answer;
       }
       if(l.readyHash !== tx.hash || JSON.stringify(l.confirmed) !== JSON.stringify(tx)) fail('native_confirmation_required','the original signed transaction and fresh broadcast binding are required');

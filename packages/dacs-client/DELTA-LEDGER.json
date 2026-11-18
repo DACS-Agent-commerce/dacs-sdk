@@ -11025,6 +11025,33 @@
           "after": "3381d49bd007362280ef4421de87eb8a736df3d3"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the node acknowledgement before the seller policy is asked",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "5b68d30810f7a12b798d157795e7fdeb881ce3cc",
+          "after": "0ab6ce78b9a3612579dbe20b941fcf5f0110976d"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "5ecea5f2abf2db6e85434ec7f4be2caf61596a8a",
+          "after": "918d704295d37afc8f6c14fe32676d618763e143"
+        },
+        {
+          "path": "packages/dacs-client/test/native-acknowledged-confirmation.test.mjs",
+          "before": "3381d49bd007362280ef4421de87eb8a736df3d3",
+          "after": "b4acfab270c77b0ac7cf2644848d747cf09732e6"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "f4f4fc0fac410857724a2539cc9878bd34a0f7f5",
+          "after": "6d3eacf154eb619d9ec525d6a6857e60a493b5de"
+        }
+      ]
     }
   ]
 }

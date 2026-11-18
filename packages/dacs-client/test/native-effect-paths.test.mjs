@@ -328,14 +328,13 @@ test('a confirmation answered with a changed transaction is refused, recorded un
   assert.deepEqual(w.node.broadcasts, []);
 });
 
-test('a confirmation the seller policy refuses is refused, recorded unknown and never broadcast', async t => {
+test('a confirmation the seller policy refuses is refused after the node acknowledgement is recorded, and never broadcast', async t => {
   const w = world(t, { bound: await bindFixture() });
   w.open({}, { approveConfirmedWrite: async () => false });
   const lease = await w.lease(), tx = w.signedTransfer(1);
   await assert.rejects(w.confirm(tx), { code: 'approval_required' });
   const records = await w.records(tx);
-  assert.deepEqual(states(records), ['signed', 'confirm-started', 'confirm-unknown']);
-  assert.equal(records[2].cause.code, 'approval_required');
+  assert.deepEqual(states(records), ['signed', 'confirm-started', 'confirm-acknowledged']);
   await assert.rejects(w.prepareBroadcast(lease.leaseId, tx.hash), { code: 'native_confirmation_required' });
   assert.deepEqual(w.node.broadcasts, []);
 });
