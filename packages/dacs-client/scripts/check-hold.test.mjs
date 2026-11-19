@@ -21,6 +21,8 @@ const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const fail = (path, reason) => new RegExp(`^FAIL ${escape(P + path)}: ${reason}$`, 'm');
 // Where the derived rule takes the expected blob of a source file from.
 const DERIVED = '(?:its newest record|the baseline) \\((?:[0-9a-f]{40}|no file)\\)';
+// Where it takes the expected blob of package.json from: its newest record, else the anchor.
+const ANCHORED = '(?:its newest record|the anchor) \\([0-9a-f]{40}\\)';
 function put(file, text) { mkdirSync(dirname(file), {recursive:true}); writeFileSync(file, text); }
 // A clone of this checkout's HEAD, with the history the derived freeze rule reads.
 function scratch(t, ...options) {
@@ -94,6 +96,14 @@ test('a package.json files edit is record-named, not pinned by the manifest', t 
   const r=gate(s); assert.equal(r.status, 1, r.text);
   assert.match(r.text, fail('package.json', 'working file differs from HEAD \\(bytes or mode\\)'));
   assert.doesNotMatch(r.text, /key files/);
+});
+// Uncommitted, with no record for the new bytes: the derived rule refuses the working file.
+for (const field of ['exports','main','bin','scripts','files']) test(`an uncommitted package.json ${field} edit differs from the blob its records name`, t => {
+  const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file);
+  if (field==='files') p.files.push('scripts/check-hold.mjs');
+  else p[field]=field==='exports'?{'.':'./src/purchases.mjs'}:field==='scripts'?{test:'true'}:'./src/purchases.mjs';
+  writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
+  refuses(s, fail('package.json', `working file differs from ${ANCHORED}`), ...(field==='files' ? [] : [new RegExp(`^FAIL package\\.json: key ${field} differs from the reviewed manifest$`, 'm')]));
 });
 test('package staged changes fail even with restored working bytes', t => {
   const s=scratch(t), file=join(s.dir,'src/purchases.mjs'), bytes=readFileSync(file);
