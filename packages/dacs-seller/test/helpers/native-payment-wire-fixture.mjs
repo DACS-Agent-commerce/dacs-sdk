@@ -21,7 +21,8 @@ import { createSessionAdmissionFixture } from './session-admission-fixture.mjs';
 import { presentContextAnswer } from './host-context-callbacks.mjs';
 import { hostBuyer } from './host-context-client.mjs';
 import { mixedAuthentication, wireBuyer } from './wire-buyer.mjs';
-import { SELLER_TRANSPORT_HEADER } from '../../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER, createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
+import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { finalizedCommitmentReader } from './finalized-commitment-reader.mjs';
 import { createNativeRetrySeam } from './native-retry-seam.mjs';
 import { railSteward } from './rail-authority-fixture.mjs';
@@ -78,8 +79,12 @@ let jobSequence = 0;
  * received). A process that starts over directories an earlier process used passes `retained`, the `retain()` of that process: the node's
  * records, the artifact anchor's journals, the finality and Vet records and the Agreements, which the new process rebuilds its sources from.
  * `purchase({ resume: jobId })` returns the handle of a purchase that process made.
+ *
+ * `contextSessionState`, when given, is the host's session-state capability (by default the host has none). `closeJob(p, state)` stops the
+ * host, has the transport store observe `state` for the job through its own reader, which writes the job's terminal closure, and starts
+ * the host again; it returns the store's answer. `closure(p)` is the closure the store keeps for the job, or `null`.
  */
-export async function nativePaymentWorld(t, { directories = null, retained = null, onEvent = () => {} } = {}) {
+export async function nativePaymentWorld(t, { directories = null, retained = null, onEvent = () => {}, contextSessionState = null } = {}) {
   const sellerKey = walletOf(17), buyerKey = walletOf(12);
   const sessionKey = walletOf(3);
   let wallClock = T0, advancedMs = 0;
@@ -256,7 +261,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
       if (directories === null) { rmSync(dataDirectory, { recursive: true, force: true }); rmSync(walletDirectory, { recursive: true, force: true }); }
     }
   });
-  const capabilities = () => ({ readCommitmentReceipt, signer: sellerSigner, listing, buyerAccess: seller.createOperatorBuyerAccess({ buyerForJob: (jobId) => (buyerBundles.has(jobId) ? buyerKey.address : null), openBuyerAccess: true }),
+  const capabilities = () => ({ ...(contextSessionState === null ? {} : { contextSessionState }), readCommitmentReceipt, signer: sellerSigner, listing, buyerAccess: seller.createOperatorBuyerAccess({ buyerForJob: (jobId) => (buyerBundles.has(jobId) ? buyerKey.address : null), openBuyerAccess: true }),
     agreementAnchor, deliverableProducer: produce, deliveryEvidenceEnabled: true,
     nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: node.rpcUrl, fetchImpl: node.fetchImpl, anchorEvidence: wallet.anchorEvidence, now: clock }),
     reconcilePaymentEvidence: wallet.reconcilePaymentEvidence, demDeliveryContext,
@@ -342,6 +347,18 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     const state = await createSellerDurableState({ dir: join(dataDirectory, 'seller'), signer: sellerSigner, listingPin: pin });
     try { return await work(state); } finally { state.close(); host = await start(); }
   };
+  const transportFile = join('transport', 'transport.sqlite');
+  // The job's terminal closure, written as a process that saw `state` writes it, with the host stopped; then the host starts again.
+  const closeJob = async (p, state) => {
+    await host.close();
+    hosts.splice(hosts.indexOf(host), 1);
+    const store = createSellerTransportStore({ path: join(dataDirectory, transportFile), now: clock, contextSessionState: () => state });
+    try {
+      createPurchaseCapacity({ store, now: clock, sessionState: sellerStoreInternals(store).sessionState });
+      return sellerStoreInternals(store).terminalSession(p.jobId);
+    } finally { store.close(); host = await start(); }
+  };
+  const closure = (p) => readStore(transportFile, null, (db) => db.prepare('SELECT state FROM kit_terminal_closures WHERE jobId = ?').get(p.jobId)?.state ?? null);
   const createsAt = (logicalAddress) => node.applied.filter((entry) => entry.logicalAddress === logicalAddress).length;
   const receiptsFile = join(dataDirectory, 'seller', 'sdk-receipts', 'seller-receipts.json');
   const grantedReceipts = () => (existsSync(receiptsFile) ? Object.keys(JSON.parse(readFileSync(receiptsFile, 'utf8')).records).length : 0);
@@ -361,7 +378,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
       allocations: db.prepare('SELECT allocationId, state, rev FROM kit_allocations WHERE jobId = ?').all(p.jobId) })) });
   const retain = () => ({ node: node.retain(), finalized: finalized.retain(), admission: admission.retain(), journals: anchorJournals.map(({ rows }) => [...rows]),
     agreements: [...agreements], inputs: [...inputs], buyerBundles: [...buyerBundles] });
-  return { node, anchors, artifactAnchor, purchase, restart, retain, faults, counts, dataDirectory, listing, sellerKey, buyerKey, advance, host: () => host,
+  return { node, anchors, artifactAnchor, purchase, restart, closeJob, closure, retain, faults, counts, dataDirectory, listing, sellerKey, buyerKey, advance, host: () => host,
     hold, steps, lockedJobs, snapshot, leaseMs: JOURNAL_LEASE_MS, leaseUntil: openLeaseUntil, clock, grantedReceipts,
     /** For each payment request sent so far, the jobs whose durable lock was held at each read of the transfer the seller made for it. */
     transferReads: () => steps.reduce((requests, entry) => {
