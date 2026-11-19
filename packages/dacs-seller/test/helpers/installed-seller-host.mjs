@@ -149,7 +149,8 @@ const vetContextCalls = [];
 // answers both the evidence anchor and the host's journal question.
 const journalDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-wallet-')));
 const journal = seller.createPaymentEvidenceWalletJournal({ path: join(journalDirectory, 'wallet-journal.sqlite'), signCreate: refuse('wallet.signCreate'), broadcast: refuse('wallet.broadcast'),
-  readAccountNonce: refuse('wallet.readAccountNonce'), readTransactionState: refuse('wallet.readTransactionState') });
+  readAccountNonce: refuse('wallet.readAccountNonce'), readTransactionState: refuse('wallet.readTransactionState'),
+  readNetworkInfo: refuse('wallet.readNetworkInfo') });
 // The wire's test-only authority semantics, inlined: this file runs alone in the consumer application,
 // where the repository's fixture helper is not available. It confirms the approved chain for the
 // connection and participants it is asked about.
@@ -202,7 +203,8 @@ const { sessionAdmission: _unadmitted, ...withoutAdmission } = capabilities();
 const { reconcilePaymentEvidence: _unreconciled, ...withoutJournal } = capabilities();
 // The packed Deliverable journal: its resume goes only with a capability made from its guarded submit.
 const deliveryJournal = seller.createDeliverableWalletJournal({ path: join(journalDirectory, 'delivery-wallet-journal.sqlite'), signCreate: refuse('deliveryWallet.signCreate'),
-  broadcast: refuse('deliveryWallet.broadcast'), readAccountNonce: refuse('deliveryWallet.readAccountNonce'), readTransactionState: refuse('deliveryWallet.readTransactionState') });
+  broadcast: refuse('deliveryWallet.broadcast'), readAccountNonce: refuse('deliveryWallet.readAccountNonce'), readTransactionState: refuse('deliveryWallet.readTransactionState'),
+  readNetworkInfo: refuse('deliveryWallet.readNetworkInfo') });
 const journalDelivery = (operations) => createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', reconcile: refuse('nativeDemDelivery.reconcile'),
   read: refuse('nativeDemDelivery.read'), verifyReceipt: refuse('nativeDemDelivery.verifyReceipt'), ...operations });
 out.deliverableJournal = {

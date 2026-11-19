@@ -540,7 +540,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
   `createDeliverableWalletJournal({ path, signCreate, broadcast,
-  readAccountNonce, readTransactionState })` is that journal, built as
+  readAccountNonce, readTransactionState, readNetworkInfo })` is that journal, built as
   `createPaymentEvidenceWalletJournal` is (the same primitives, checks and
   nonce rule, in its own file with its own `journalId`; a file made for the
   other kind is refused). Both its operations, `submitAuthorized(input,
@@ -607,7 +607,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
     the cause).
 
   `createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
-  readAccountNonce, readTransactionState })` gives both functions from the
+  readAccountNonce, readTransactionState, readNetworkInfo })` gives both functions from the
   operator's wallet primitives. `signCreate(input)` signs, and does not send,
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
   `signedTransaction` is the JSON of exactly the public signed projection
@@ -624,13 +624,32 @@ per-client limiter so one client cannot exhaust the shared request budget.
   evidence) at this logical address, with `to` and the operation's
   `storageAddress` the address the writer, the program name and the nonce
   derive, from the writer's address (`from` and `from_ed25519_address`), with
-  the writer's Ed25519 signature as `0x` and lower-case hex, over the hash or,
-  when the journal is given `signatureChainId`, over
-  `demos-tx:v1:<signatureChainId>:<hash>`. `signatureChainId` is the node's
-  chain id as a decimal string, taken from the seller's own network
-  configuration; without it only the bare hash is accepted, and any other
-  message is refused. `createNativePaymentEvidenceConsumer` takes the same
-  option for the readback.
+  the writer's Ed25519 signature as `0x` and lower-case hex, over the message
+  the node's `getNetworkInfo` answer selects: the bare hash while the node's
+  `signatureDomain` fork is inactive (or absent), and
+  `demos-tx:v1:<chainId>:<hash>` once it is active, where `chainId` is the
+  answer's safe nonnegative integer `chainId`; an active fork must also carry a
+  safe nonnegative integer `activationHeight`, and a transaction included in an
+  earlier block is still checked against the bare hash. Any other message is
+  refused, and so is a bare-hash signature for a transaction at or after an
+  active fork's `activationHeight` (a kept CREATE the node already executed is
+  not checked again against the present answer). A kept bare-hash CREATE that
+  the node has not executed, absent or still pending in its queue, and which the
+  node proves not executed through an active fork's `activationHeight` itself,
+  can no longer be executed:
+  the journal supersedes it, and the next signature may use the same nonce. One
+  not proved that far stays refused as another evidence
+  (`wallet_journal_conflict`) and is not sent again. The journal reads the
+  answer through `readNetworkInfo({ signal })` on every call (like the other
+  wallet reads it is given `readTimeoutMs`, and its reader limits the size of
+  the reply); a read that fails,
+  times out or answers anything unreadable refuses the call
+  (`wallet_signature_domain_unreadable`) before anything is signed or sent.
+  Without `readNetworkInfo` nothing is read and only a signature over the bare
+  hash is accepted, so a CREATE signed for an active fork is refused. A
+  `signatureChainId` option is refused with a `TypeError`. The SR-2 readback of
+  `createNativePaymentEvidenceConsumer` reads the same answer from its own node
+  on each authentication and answers `indeterminate` when it cannot be read.
   Its fee is the node's to set, up to a ceiling of 50 DEM for the whole debit
   of the write: the network, rpc and additional fee plus the storage and gas
   burns, summed in OS (whole DEM numbers before the node's denomination fork,
@@ -686,7 +705,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `{ state: 'absent', checkedThroughBlock }` from a complete authenticated
   transaction index, including failed transactions, on the same chain.
   `checkedThroughBlock` must be at least the nonce snapshot's `blockHeight`.
-  A bare nonce or an unfenced absence never authorizes supersession.
+  A bare nonce or an unfenced absence never authorizes supersession. A pending
+  CREATE may carry the same proof, `{ state: 'pending', checkedThroughBlock }`;
+  it does not release the CREATE, it only lets a bare-hash CREATE be replaced
+  once the signature-domain fork is active.
   The journal keeps the signed CREATE and its nonce in its SQLite file (a
   private 0600 file) before it broadcasts it, and keeps at most one live signed
   CREATE per address. Its `readSignedProjection({ logicalAddress })` answers

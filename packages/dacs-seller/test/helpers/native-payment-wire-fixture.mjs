@@ -17,6 +17,7 @@ import { T0 } from './reservation-accounting-fixture.mjs';
 import { sellerApi as seller } from './seller-internal-api.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
 import { scriptedDemosNode } from './native-payment-node.mjs';
+import { readInactiveForkNetworkInfo } from './network-info.mjs';
 import { createSessionAdmissionFixture } from './session-admission-fixture.mjs';
 import { mixedAuthentication, wireBuyer } from './wire-buyer.mjs';
 import { SELLER_TRANSPORT_HEADER, createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
@@ -233,7 +234,8 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
       if (faults.walletBroadcast > 0) { faults.walletBroadcast--; throw new Error('TEST wallet broadcast failed'); }
       if (JSON.parse(signedTransaction).hash === txHash) node.receive(signedTransaction);
       await holdHere('walletBroadcast');
-    } });
+    },
+    readNetworkInfo: readInactiveForkNetworkInfo });
   let wallet = openWallet();
   const demDeliveryContext = createDemDeliveryContext({ authority: AUTHORITY, vetMode: KIT_TP1_VET_MODE,
     resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
