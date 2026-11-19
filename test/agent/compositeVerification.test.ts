@@ -47,6 +47,12 @@ const NOW = 1780000000000;
 const RESULT_LOCATOR = "stor:verify-result-1";
 const AUTHORITY_LOCATOR = "https://authority.example/evidence-1";
 
+function withoutSignature(record: CompositeVerificationRecord): Omit<CompositeVerificationRecord, "signature"> {
+  const copy: Partial<CompositeVerificationRecord> = { ...record };
+  delete copy.signature;
+  return copy as Omit<CompositeVerificationRecord, "signature">;
+}
+
 const requirement: CompositeBundleRequirement = {
   requirementVersion: "1",
   required: [
@@ -586,7 +592,7 @@ describe("strict DACS-2 composite verification closure", () => {
 
   test("accepts a record signer written as a parameter variant of the verifier", async () => {
     const f = await fixture();
-    const { signature: _signature, ...unsigned } = f.record;
+    const unsigned = withoutSignature(f.record);
     const record = (await signComponentArtifact(unsigned, "dacs-composite:v1:", {
       algorithm: "ed25519",
       signer: `${VERIFIER}?alias=work`,
@@ -603,7 +609,7 @@ describe("strict DACS-2 composite verification closure", () => {
 
   test("rejects a record signed by a different identity that shares the verifier's parameters", async () => {
     const f = await fixture();
-    const { signature: _signature, ...unsigned } = f.record;
+    const unsigned = withoutSignature(f.record);
     const record = (await signComponentArtifact(unsigned, "dacs-composite:v1:", {
       algorithm: "ed25519",
       signer: `${AUTHORITY}?alias=work`,
@@ -619,7 +625,7 @@ describe("strict DACS-2 composite verification closure", () => {
 
   test("rejects missing/malformed/currently unsupported signatures and shapes", async () => {
     const f = await fixture();
-    const { signature: _signature, ...unsigned } = f.record;
+    const unsigned = withoutSignature(f.record);
     await expect(
       verifyCompositeVerificationRecord(unsigned, f.expected, f.deps),
     ).resolves.toMatchObject({ status: "invalid", code: "record-shape" });
