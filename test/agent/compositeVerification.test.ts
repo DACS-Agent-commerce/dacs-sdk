@@ -9,7 +9,6 @@ import {
   identityBundleHash,
   isCompositeVerificationRecord,
   isCompositeBundleRequirement,
-  isLegacyCompositeVerificationRecord,
   isSupplementarySignal,
   isVerificationWarning,
   isVerifyResult,
@@ -48,6 +47,12 @@ const BUNDLE_HASH = "a".repeat(64);
 const NOW = 1780000000000;
 const RESULT_LOCATOR = "stor:verify-result-1";
 const AUTHORITY_LOCATOR = "https://authority.example/evidence-1";
+
+function withoutSignature(record: CompositeVerificationRecord): Omit<CompositeVerificationRecord, "signature"> {
+  const copy: Partial<CompositeVerificationRecord> = { ...record };
+  delete copy.signature;
+  return copy as Omit<CompositeVerificationRecord, "signature">;
+}
 
 const requirement: CompositeBundleRequirement = {
   requirementVersion: "1",
@@ -492,6 +497,10 @@ describe("strict DACS-2 composite verification closure", () => {
     expect(isCompositeVerificationRecord(f.record)).toBe(true);
     expect(isVerifyResult({ ...f.result, resultVersion: "2" })).toBe(false);
     expect(isCompositeVerificationRecord({ ...f.record, recordVersion: "2" })).toBe(false);
+    expect(readCompositeVerificationRecord(f.record)).toEqual({
+      compatibility: "current",
+      record: f.record,
+    });
   });
 
   test("exact wire guards reject inherited fields, accessors, and nested overlays", async () => {
@@ -571,9 +580,57 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code });
   });
 
+  test("rejects an evaluated party that differs from the expected party by a parameter", async () => {
+    const f = await fixture();
+    const keyParty = `key:${"ab".repeat(32)}`;
+    const record = await withRecord(f.record, {
+      evaluatedParty: `${keyParty}?alias=work`,
+    });
+    await expect(
+      verifyCompositeVerificationRecord(
+        record,
+        { ...f.expected, evaluatedParty: keyParty },
+        f.deps,
+      ),
+    ).resolves.toMatchObject({ status: "invalid", code: "evaluated-party-mismatch" });
+  });
+
+  test("accepts a record signer written as a parameter variant of the verifier", async () => {
+    const f = await fixture();
+    const unsigned = withoutSignature(f.record);
+    const record = (await signComponentArtifact(unsigned, "dacs-composite:v1:", {
+      algorithm: "ed25519",
+      signer: `${VERIFIER}?alias=work`,
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+    })) as CompositeVerificationRecord;
+    await expect(
+      verifyCompositeVerificationRecord(record, f.expected, {
+        ...f.deps,
+        resolvePublicKey: async (signature) =>
+          signature.signer.startsWith(VERIFIER) ? VERIFIER_KEY : null,
+      }),
+    ).resolves.toMatchObject({ status: "valid" });
+  });
+
+  test("rejects a record signed by a different identity that shares the verifier's parameters", async () => {
+    const f = await fixture();
+    const unsigned = withoutSignature(f.record);
+    const record = (await signComponentArtifact(unsigned, "dacs-composite:v1:", {
+      algorithm: "ed25519",
+      signer: `${AUTHORITY}?alias=work`,
+      sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+    })) as CompositeVerificationRecord;
+    await expect(
+      verifyCompositeVerificationRecord(record, f.expected, {
+        ...f.deps,
+        resolvePublicKey: async () => VERIFIER_KEY,
+      }),
+    ).resolves.toMatchObject({ status: "invalid", code: "record-signature" });
+  });
+
   test("rejects missing/malformed/currently unsupported signatures and shapes", async () => {
     const f = await fixture();
-    const { signature: _signature, ...unsigned } = f.record;
+    const unsigned = withoutSignature(f.record);
     await expect(
       verifyCompositeVerificationRecord(unsigned, f.expected, f.deps),
     ).resolves.toMatchObject({ status: "invalid", code: "record-shape" });
@@ -1688,9 +1745,9 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code: "verify-result-shape" });
   });
 
-  test("legacy reads are explicit and strict verification/finalisation refuses them", async () => {
+  test("an earlier-shape record is unreadable and refused as record-shape", async () => {
     const f = await fixture();
-    const legacy = {
+    const earlier = {
       subject: PARTY,
       recipeId: "legacy-domain",
       recipeVersion: "0.1",
@@ -1704,14 +1761,11 @@ describe("strict DACS-2 composite verification closure", () => {
       decision: "pass",
       verifiedAt: "2026-01-01T00:00:00Z",
     };
-    expect(isLegacyCompositeVerificationRecord(legacy)).toBe(true);
-    expect(isCompositeVerificationRecord(legacy)).toBe(false);
-    expect(readCompositeVerificationRecord(legacy)).toMatchObject({
-      compatibility: "legacy",
-    });
+    expect(isCompositeVerificationRecord(earlier)).toBe(false);
+    expect(readCompositeVerificationRecord(earlier)).toBeNull();
     await expect(
-      verifyCompositeVerificationRecord(legacy, f.expected, f.deps),
-    ).resolves.toMatchObject({ status: "invalid", code: "legacy-record" });
+      verifyCompositeVerificationRecord(earlier, f.expected, f.deps),
+    ).resolves.toMatchObject({ status: "invalid", code: "record-shape" });
   });
 });
 

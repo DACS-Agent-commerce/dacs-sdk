@@ -6,6 +6,7 @@ import {
   DacsError,
   faultCategory,
   isDacsErrorCode,
+  NotImplementedError,
   SubstrateError,
   TransientError,
   UnsupportedCapabilityError,
@@ -38,6 +39,14 @@ describe("fault classification (T9)", () => {
     expect(faultCategory("oops")).toBe("transient");
   });
 
+  test("NotImplementedError names only the unavailable feature", () => {
+    const error = new NotImplementedError("anchor batching");
+    expect(error.message).toBe("Not implemented: anchor batching");
+    expect(error.category).toBe("permanent");
+    // @ts-expect-error the constructor takes the feature name only
+    expect(new NotImplementedError("anchor batching", "extra").message).toBe("Not implemented: anchor batching");
+  });
+
   test("subclasses remain instanceof DacsError", () => {
     expect(new SubstrateError("x") instanceof DacsError).toBe(true);
     expect(new UnsupportedCapabilityError("x") instanceof DacsError).toBe(true);
@@ -66,19 +75,26 @@ describe("error codes", () => {
     expect(error.message).toBe("x");
   });
 
-  test("a catalog code on a category class keeps the class category", () => {
-    const options = { code: "schema.invalid_field" } as const;
-    expect(new TransientError("x", options).category).toBe("transient");
-    expect(new CounterpartyError("x", options).category).toBe("counterparty");
-    expect(new SubstrateError("x", options).category).toBe("substrate");
-    expect(new SubstrateError("x", options).code).toBe("schema.invalid_field");
+  test("a category class refuses a catalog code from another category at compile time", () => {
+    // `npm run typecheck` is the check: an unused `@ts-expect-error` fails it.
+    // The catalog holds only a permanent code, so no category class accepts a code yet.
+    const construct = () => [
+      // @ts-expect-error schema.invalid_field is permanent, not transient
+      new TransientError("x", { code: "schema.invalid_field" }),
+      // @ts-expect-error schema.invalid_field is permanent, not counterparty
+      new CounterpartyError("x", { code: "schema.invalid_field" }),
+      // @ts-expect-error schema.invalid_field is permanent, not substrate
+      new SubstrateError("x", { code: "schema.invalid_field" }),
+    ];
+    expect(construct).toBeTypeOf("function");
   });
 
-  test("a code and a cause are both kept", () => {
+  test("a category class keeps its cause", () => {
     const cause = new Error("underlying");
-    const error = new SubstrateError("x", { code: "schema.invalid_field", cause });
+    const error = new SubstrateError("x", { cause });
     expect(error.cause).toBe(cause);
-    expect(error.code).toBe("schema.invalid_field");
+    expect(error.category).toBe("substrate");
+    expect(error.code).toBeUndefined();
   });
 
   test("an uncoded error keeps its cause and its explicit category", () => {

@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D32",
+  "registration": "D32: existing client delta lane",
+  "subject": "delta(client): D32 reserve each purchase job id with a unique column and a bounded retry"
+}

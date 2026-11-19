@@ -15,7 +15,6 @@ import {
   isAttestationRef,
   isCompositeVerificationRecord,
   isIdentityBundle,
-  isLegacyCompositeVerificationRecord,
   isExactJsonRecord,
   isVerifyResult,
   isVerifyResultRef,
@@ -79,7 +78,7 @@ export interface CompositeVerificationExpectations {
   bundleHash: string;
   /** The hash is recomputed from this complete requirement object. */
   requirement: CompositeBundleRequirement;
-  /** Exact verifier identity required on the composite signature. */
+  /** Verifier identity required on the composite signature; the signer may add parameters. */
   verifier: string;
   freshness: ExpectedVerifyResult[];
   dealSpecific: ExpectedVerifyResult[];
@@ -175,7 +174,6 @@ export interface VerifyCompositeVerificationDeps<TKey> {
 }
 
 export type CompositeVerificationInvalidCode =
-  | "legacy-record"
   | "record-shape"
   | "expectation-shape"
   | "job-mismatch"
@@ -1552,9 +1550,8 @@ export async function verifyCompositeVerificationRecord<TKey>(
   deps: VerifyCompositeVerificationDeps<TKey>,
 ): Promise<StrictCompositeVerification> {
   // Validate the caller-owned object before structuredClone. In particular, a
-  // getter-backed legacy/current hybrid or custom prototype must not be
+  // getter-backed hybrid of two record shapes or a custom prototype must not be
   // normalised into a valid-looking current record by the snapshot operation.
-  if (isLegacyCompositeVerificationRecord(value)) return invalid("legacy-record");
   if (!isCompositeVerificationRecord(value)) return invalid("record-shape");
   let valueSnapshot: unknown;
   try {
@@ -1662,7 +1659,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
     "dacs-composite:v1:",
     {
       isSignerAuthorized: (_artifact, signature) =>
-        signature.signer === expectedSnapshot.verifier,
+        sameCanonicalClaimIdentity(signature.signer, expectedSnapshot.verifier),
       resolvePublicKey: capturedDeps.resolvePublicKey,
       verify: capturedDeps.verify,
     },

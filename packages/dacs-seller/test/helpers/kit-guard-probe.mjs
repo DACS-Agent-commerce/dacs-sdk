@@ -135,7 +135,6 @@ async function effectEntries() {
   await attempt('startSellerHost', () => startSellerHost({}));
   await attempt('createSellerAgent', () => createSellerAgent({}));
   await attempt('issue', () => ledger.issue());
-  await attempt('issueForOperator', () => ledger.issueForOperator());
   ledgerDb.close();
   const { createContextAdmissionTransaction } = await import('../../src/dacs/seller-admission-transaction.mjs');
   const { createSellerTransportStore: createAdmissionStore, sellerStoreInternals } = await import('../../src/dacs/seller-transport-auth.mjs');
@@ -194,7 +193,7 @@ async function effectEntries() {
   refusedWithoutInput.anchor = await refusalOf(() => store.withJob(SECOND_JOB, () => store.anchor()));
   store.close?.();
 
-  const journalOptions = (name) => ({ path: join(directory, name), signCreate: async () => { effects.signs++; }, broadcast: async () => { effects.sends++; }, readAccountNonce: async () => { effects.sends++; }, readTransactionState: async () => { effects.sends++; } });
+  const journalOptions = (name) => ({ path: join(directory, name), signCreate: async () => { effects.signs++; }, broadcast: async () => { effects.sends++; }, readAccountNonce: async () => { effects.sends++; }, readTransactionState: async () => { effects.sends++; }, readNetworkInfo: async () => { effects.sends++; } });
   const evidence = createPaymentEvidenceWalletJournal(journalOptions('evidence.sqlite'));
   await attempt('anchorEvidence', () => evidence.anchorEvidence({}));
   await attempt('reconcilePaymentEvidence', () => evidence.reconcilePaymentEvidence({}));
