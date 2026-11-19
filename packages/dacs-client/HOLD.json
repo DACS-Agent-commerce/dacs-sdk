@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "ec2ed08eafb3bd101b3115ce7cac3dbde9af4c5c"
+        "blob": "02408cf4b3aebe83930c7633af6d104c62c2b820"
       },
       "DELTA-LEDGER.json": {
-        "blob": "6cfa7ecdd8f483b019a100d08095cb80dd06156f"
+        "blob": "50c9722dd3bbf4d16b147d542744d8d08ffd9f03"
       },
       "DELTA-MAP.md": {
-        "blob": "9978844fb36b08a0c442541c610b17a0afbdd019"
+        "blob": "f0baedcd8e5281276d17fa6f89da6a688a987618"
       },
       "DELTA-NOTES.md": {
         "blob": "74ec7eeab1bd2c1197b87f69eabc9a384d9dad7f"
@@ -1061,7 +1061,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "016401587473bca4a06b8e0045ba7c428da7a039"
+        "blob": "517e4fb379d7be299a5162717e3159e0c4584e7b"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "5ffafe960fd73bb1ee673c4c671ce0dd822f3eff"
@@ -1397,7 +1397,7 @@
         "blob": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
       },
       "src/wallet/node-payment-evidence-adapter.mjs": {
-        "blob": "9edd56ae98d80f159e7be8ab819c24ec5c821c12"
+        "blob": "79bec398fc626399619f9c40ee0a83a57544d910"
       },
       "src/wallet/node-wallet-session.mjs": {
         "blob": "4df1614c68f92c8d472ebd6e25f233f7a3ea7a66"
@@ -1409,7 +1409,7 @@
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
       },
       "src/wallet/signer-reservation.mjs": {
-        "blob": "52bf2dee395974edcf132585ae1cf3237be0b6af"
+        "blob": "8771cd8e264904c182fa56c8e7566911183ea3b6"
       },
       "test/agreement-context-readback.test.mjs": {
         "blob": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
@@ -2018,7 +2018,7 @@
         "blob": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43"
       },
       "test/node-payment-evidence-adapter.test.mjs": {
-        "blob": "0b016e6ac76f89baaf22e010bb37704a76a1bf12"
+        "blob": "4b085583830a67d1c8a3c8ad2b3f33f0c840bba0"
       },
       "test/node-signer-reservation.test.mjs": {
         "blob": "fd91549ae6153769b30c401c86d078189c414070"

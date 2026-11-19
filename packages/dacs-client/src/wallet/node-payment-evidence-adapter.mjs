@@ -24,10 +24,11 @@
 //                  whatever the chain answers. The replacement is the exact request's open authorization or a new one, and the
 //                  reservation stores its id before anything is sent. A manual authorization has no id and also reads the chain
 //                  before every broadcast.
-//   confirmation   `confirmTx` with the exact projection. An answer that is not a valid confirmation of those bytes is unknown and
-//                  never advances; a valid refusal is `confirm_rejected`.
+//   confirmation   the node's chain identity is checked first, then `confirmTx` with the exact projection. An answer that is not a
+//                  valid confirmation of those bytes is unknown and never advances; a valid refusal is `confirm_rejected`.
 //   policy         `approval.confirm` runs on every replay against the held authorization; `false` or a throw sends nothing.
-//   dispatch       one `broadcastTx`. Whatever goes wrong after it starts is `outcome_unknown`: the receiver may hold the bytes.
+//   dispatch       under the signer's reservation lock, the reservation must still hold these bytes; then one `broadcastTx`, still
+//                  under the lock. Whatever goes wrong after it starts is `outcome_unknown`: the receiver may hold the bytes.
 // `readTransactionState` answers `applied` only when the chain executed exactly these bytes, lists the hash in its block and serves
 // the storage program the CREATE made; it then ends the reservation holding them and settles its authorization spent, or ends it
 // without a settlement when the ledger refuses the spend and no longer holds the authorization open. Every other outcome is
@@ -43,6 +44,7 @@ import { verifyDemosSignature } from '../signatures.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { nativeWalletLaneKey } from './devnet-native-transport.mjs';
 import { hasKeys } from './payload-helpers.mjs';
+import { signerReservationKey } from './signer-reservation.mjs';
 
 const OPERATION = 'payment-evidence';
 const UNCERTAIN = 'signer_reservation_uncertain';
@@ -148,7 +150,9 @@ function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem
  * reservation is kept (see above).
  * `broadcast({signedTransaction, txHash}, {signal})` must also run in an effect pass. It resolves `{status: 'accepted', txHash}`
  * after one dispatch of the held bytes and signs nothing. It rejects `retained_transaction_invalid` (the reservation does not
- * hold exactly these bytes; nothing was sent), `approval_required` (the authorization could not be reopened, renewed or confirmed
+ * hold exactly these bytes, at the start or at the send; nothing was sent), the observer's refusal (the node does not serve the
+ * pinned chain; nothing was sent), a journal error such as `journal-busy` (the signer's lock was not free; nothing was sent),
+ * `approval_required` (the authorization could not be reopened, renewed or confirmed
  * by current policy, or the chain could not show that the bytes never ran; nothing was sent), `transaction_already_executed` (the
  * stored authorization is no longer open and the chain shows the execution, which ended the reservation; nothing was sent),
  * `confirm_rejected` (the node refused the confirmation), `outcome_unknown` (the confirmation or the dispatch has no valid answer;
@@ -354,17 +358,29 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     if (held === null) throw refuse(RETAINED_INVALID);
     const binding = await replayApproval(held, signal);
     assertApprovalCovers(binding.requestText, tx.content);
+    // The confirmation reaches the approval, so it is asked only of a node whose chain is the pinned one.
+    await observer.observe({ signal });
     const validity = await confirmRetained(tx, retained, signal);
     try {
       if (await settleOnAbort(approval.confirm(binding, validity), signal) !== true) throw new Error('the approval ledger did not confirm the write');
       if (!paymentEvidenceConfirmationMatches(validity, retained.signedTransaction)) throw new Error('the confirmation changed during the policy check');
     } catch (cause) { throw signal.aborted ? cause : refuse('approval_required', cause); }
     signal.throwIfAborted();
-    try {
-      const answer = await execute('broadcastTx', validity, signal);
-      if (classifyStorageWriteSubmission(answer, retained.txHash) !== 'accepted') throw refuse('node_reply_invalid');
-      return { status: 'accepted', txHash: retained.txHash };
-    } catch (cause) { throw refuse('outcome_unknown', cause); }
+    return dispatchHeld(retained, validity, signal);
+  }
+  // The send runs under the signer's reservation lock: a native write holds it from its reservation check through its send, and a
+  // readback holds it to end the reservation. So the reservation is read again under it and must still hold exactly these bytes.
+  // Only this lock is taken, never a lane lock, so the native transport's order (lane lock, then this one) is never reversed.
+  function dispatchHeld(retained, validity, signal) {
+    return journal.withWalletLock(signerReservationKey(pins, signer), async () => {
+      if (await reservationHolding(retained) === null) throw refuse(RETAINED_INVALID);
+      signal.throwIfAborted();
+      try {
+        const answer = await execute('broadcastTx', validity, signal);
+        if (classifyStorageWriteSubmission(answer, retained.txHash) !== 'accepted') throw refuse('node_reply_invalid');
+        return { status: 'accepted', txHash: retained.txHash };
+      } catch (cause) { throw refuse('outcome_unknown', cause); }
+    });
   }
 
   // The executed form of the original: successful, in the status's block, with the same signature and complete content. The node

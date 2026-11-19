@@ -11357,6 +11357,28 @@
           "after": "635c8a69eea05cdffe14766828c14fdecb71f9f0"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF check the chain before an evidence broadcast's confirmation and send its held bytes under the signer lock",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "9edd56ae98d80f159e7be8ab819c24ec5c821c12",
+          "after": "79bec398fc626399619f9c40ee0a83a57544d910"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "52bf2dee395974edcf132585ae1cf3237be0b6af",
+          "after": "8771cd8e264904c182fa56c8e7566911183ea3b6"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "0b016e6ac76f89baaf22e010bb37704a76a1bf12",
+          "after": "4b085583830a67d1c8a3c8ad2b3f33f0c840bba0"
+        }
+      ]
     }
   ]
 }
