@@ -103,15 +103,18 @@ export const rpcAuthRefusal = (error) => Object.hasOwn(AUTH_REFUSALS,error?.code
 // A transfer with a cancelled payment's terms is refused before the node sees
 // it (the signature lease, confirmTx, the wallet's pre-broadcast request or the
 // broadcast claim), and so are a transfer other than the one its lease named
-// and one whose settlement terms the source cannot read (confirmTx): this
-// attempt was not sent, so relays say so with 409, never the 500 that reads as
-// an unknown outcome. The cancelled payment may be another purchase's with the
-// same terms, so the refusal names the terms, not the purchase.
+// and one whose settlement terms the source cannot read (confirmTx); the
+// broadcast of a confirmation whose node fee view is not the signed fees is
+// refused before it is sent. Each such attempt was not sent, so relays say so
+// with 409, never the 500 that reads as an unknown outcome. The cancelled
+// payment may be another purchase's with the same terms, so the refusal names
+// the terms, not the purchase.
 const PAYMENT_CANCELLED = 'this transfer has the terms of a cancelled payment; the operator\'s source refuses it, so this attempt was not sent (an earlier attempt may have been; readback shows it)';
 const TRANSFER_REFUSALS = Object.freeze({
   payment_cancelled: PAYMENT_CANCELLED,
   transfer_mismatch: 'this transaction is not the transfer its signature lease named; the operator\'s source refuses it, so this attempt was not sent',
   transfer_unreadable: 'the operator\'s source cannot read one payer, payee and amount in this transfer, paid by its signer; it refuses it, so this attempt was not sent',
+  fee_view_mismatch: 'the node confirmed this transaction with fees other than the fees it was signed with; the operator\'s source refuses it, so this attempt was not sent',
 });
 export const transferRefusal = (error) => Object.hasOwn(TRANSFER_REFUSALS,error?.code ?? '')
   ? [409,{ error:error.code,message:TRANSFER_REFUSALS[error.code],result:409,response:TRANSFER_REFUSALS[error.code],require_reply:false,extra:null }] : null;
@@ -775,15 +778,19 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const historyOf = (artifact) => createEffectHistory({ journal }).read(artifact);
   // The latest confirm-acknowledged record of an artifact, exactly as retained, or undefined.
   const retainedConfirmation = async (artifact) => (await historyOf(artifact)).findLast((record) => record.state === 'confirm-acknowledged');
-  // The whole debit a confirmation commits the sender to, in OS: the declared amount plus the three fees. The fees are
-  // the node's fee view when it gave one (each a canonical decimal OS string), and otherwise the confirmed transaction's
-  // own `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). `null` when any fee
-  // cannot be read, which refuses the broadcast.
-  const confirmedDebitOs = (gasOperation, declaredOs, transactionFee) => {
-    const fees = FEE_MEMBERS.map((member) => gasOperation === null ? signedFeeOs(transactionFee?.[member]) : gasOperation.fees?.[member]);
+  // The whole debit a signed transaction commits the sender to, in OS: the declared amount plus the three fees of its
+  // own signed `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). The node's fee
+  // view never enters it. `null` when any fee cannot be read, which refuses the broadcast.
+  const signedDebitOs = (declaredOs, transactionFee) => {
+    const fees = FEE_MEMBERS.map((member) => signedFeeOs(transactionFee?.[member]));
     return canonicalDecimal(declaredOs) && fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), BigInt(declaredOs))) : null;
   };
   const signedFeeOs = (fee) => (canonicalDecimal(fee) ? fee : Number.isSafeInteger(fee) && fee >= 0 ? String(BigInt(fee) * 1_000_000_000n) : null);
+  // Whether a confirmation's fee view is absent (`null`), or names each signed fee exactly as a canonical decimal OS string.
+  const feeViewIsSigned = (gasOperation, transactionFee) => gasOperation === null || FEE_MEMBERS.every((member) => {
+    const fee = gasOperation?.fees?.[member];
+    return canonicalDecimal(fee) && fee === signedFeeOs(transactionFee?.[member]);
+  });
   // Execution projection only: nonce/timestamp may be normalized
   // by RPC, post-fork root amount/fee OS strings may be returned as safe JSON
   // numbers, and empty GCR txhash carriers may become the original hash. The
@@ -1161,12 +1168,14 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         return answer;
       }
       if(l.readyHash !== tx.hash || JSON.stringify(l.confirmed) !== JSON.stringify(tx)) fail('native_confirmation_required','the original signed transaction and fresh broadcast binding are required');
-      // The broadcast carries the retained confirmation exactly, gas included, and its debit is checked against the ceiling.
+      // The broadcast carries the retained confirmation exactly, gas included, and its signed debit is checked against the ceiling.
       const artifact={ ...operationOf(l,tx),artifactHash:sha(JSON.stringify(tx)) };
       const retained=await retainedConfirmation(artifact);
       if(JSON.stringify(call.data) !== JSON.stringify(retained?.confirmation)) fail('native_confirmation_required','the retained node confirmation, gas included, is required');
       let accepted;
       try {
+        // A node fee view other than the signed fees is refused before any lane or dispatch record; the lease ends.
+        if(!feeViewIsSigned(retained.gasOperation,tx.content.transaction_fee)) fail('fee_view_mismatch',TRANSFER_REFUSALS.fee_view_mismatch);
         accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
           // The signer's reservation lock is the one lock an evidence CREATE takes to claim the signer, and each side checks the other's
           // record inside it. It is held from the reservation check through the dispatch pass, which writes this lane record, so a stored
@@ -1214,7 +1223,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
               return answer;
             };
             // The wallet's broadcast is a fresh request of its own: a dispatch an earlier lease withheld before its send goes on.
-            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs,tx.content.transaction_fee) }));
+            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:signedDebitOs(artifact.debitOs,tx.content.transaction_fee) }));
           });
         });
         if (accepted?.result === 200) {

@@ -437,7 +437,7 @@ test('the connection changing at fence acquisition, the final authority read and
   assert.equal(w.node.confirms, 1);
 });
 
-test('no host ceiling refuses fee_ceiling_required; a 50 DEM debit passes; 50 DEM plus 1 OS refuses before signing; a confirmed debit above the ceiling refuses before broadcast', async t => {
+test('no host ceiling refuses fee_ceiling_required; a 50 DEM debit passes; 50 DEM plus 1 OS refuses before signing; a signed debit above the ceiling, or a node fee view other than the signed fees, refuses before broadcast', async t => {
   const none = world(t, { bound: await bindFixture() });
   none.feeCeilingOs = undefined;
   none.open({});
@@ -453,15 +453,18 @@ test('no host ceiling refuses fee_ceiling_required; a 50 DEM debit passes; 50 DE
   await w.prepareBroadcast(lease.leaseId, edge.hash);
   assert.equal((await w.broadcast(confirmation)).result, 200, 'a confirmed debit of exactly 50 DEM passes');
 
-  for (const [gas, label] of [[fees('1000000000', '1000000000', '1'), 'one OS above'], [fees('1000000000', 1000000000, '0'), 'a fee that is not a decimal string'], [fees('1000000000', '1000000000', undefined), 'a missing fee']]) {
+  for (const [amountOs, gas, code, label] of [['48000000001', fees('1000000000', '1000000000', '0'), 'write-fee-cap', 'a signed debit one OS above'],
+    ['48000000000', fees('1000000000', '1000000000', '1'), 'fee_view_mismatch', 'a fee view one OS above the signed fees'], ['48000000000', fees('1000000000', 1000000000, '0'), 'fee_view_mismatch', 'a fee that is not a decimal string'],
+    ['48000000000', fees('1000000000', '1000000000', undefined), 'fee_view_mismatch', 'a missing fee']]) {
     const retry = world(t, { bound: await bindFixture() });
     retry.open({});
     retry.node.gas = gas;
-    const own = await retry.lease(), tx = retry.signedTransfer(1, '48000000000'), answer = await retry.confirm(tx);
+    const own = await retry.lease(), tx = retry.signedTransfer(1, amountOs), answer = await retry.confirm(tx);
     await retry.prepareBroadcast(own.leaseId, tx.hash);
-    await assert.rejects(retry.broadcast(answer), { code: 'write-fee-cap' }, label);
+    await assert.rejects(retry.broadcast(answer), { code }, label);
     assert.deepEqual(retry.node.broadcasts, [], label);
-    assert.deepEqual(states(await retry.records(tx)).slice(-2), ['dispatch-started', 'dispatch-withheld'], label);
+    // The ceiling withholds the dispatch it started; a fee view other than the signed fees is refused before one starts.
+    assert.deepEqual(states(await retry.records(tx)).slice(-2), code === 'write-fee-cap' ? ['dispatch-started', 'dispatch-withheld'] : ['confirm-started', 'confirm-acknowledged'], label);
     assert.equal((await retry.journalEntries()).some(([key]) => key.startsWith(LANE_PREFIX)), false, `${label}: no lane row is written`);
   }
 });
