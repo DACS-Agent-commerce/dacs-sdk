@@ -46,13 +46,14 @@ non-null non-string refuses issuance and new work with `session_admission_unavai
 and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host given no capability reads one state itself: a purchase that
-settled its context step and has started no commitment or payment reads as `aborted-by-self` an
+settled its context step, retains no commitment work and holds no payment reads as `aborted-by-self` an
 hour after the later of its admission and its Agreement's deadline (a purchase with no
 proposal has no Agreement and no deadline to wait for). Its units are
 given back and its job id cannot continue (the buyer starts again with a new job id).
-A purchase with a commitment stays open, because a payment included before the deadline
-is accepted however late it is claimed. A purchase with an open proposal attempt, or
-with an Agreement whose deadline the seller cannot read, reads as unknown. A host
+A purchase that retains commitment work, holds a payment or has a proposal, commitment or
+payment attempt still running stays open, because a payment included before the deadline
+is accepted however late it is claimed. A purchase with an Agreement whose deadline the
+seller cannot read reads as unknown. A host
 given the capability uses only that. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 
@@ -85,7 +86,7 @@ that already hold an allocation go on. Terminal allocation cleanup
 runs at startup and when a store reader observes a terminal session through
 `contextSessionState`, and the host's 60-second sweep repeats it while the host
 runs. With no `contextSessionState` the units a purchase keeps after its context
-step are given back once it reads as abandoned (above; one with a commitment stays allocated); with an operator's
+step are given back once it reads as abandoned (above; one that retains commitment work or holds a payment stays allocated); with an operator's
 `contextSessionState` they stay allocated until that reader names a terminal state.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
