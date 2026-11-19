@@ -11286,6 +11286,18 @@
           "after": "0b016e6ac76f89baaf22e010bb37704a76a1bf12"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF document the Node wallet session's required options, its whole-debit fee ceiling and the seller pass refusal",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "dc4946ab4363eb346c6359897530ce1afa6ade02",
+          "after": "5d4dc09f971278868d64b81c5874cdb00d8ac2a8"
+        }
+      ]
     }
   ]
 }
