@@ -11201,6 +11201,33 @@
           "after": "f1ef6fcb454d242e21b2cc419227087a025a99de"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF keep an active signature domain over a late inactive answer and check the domain again before a CREATE recovery resend",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0798599b385f000f44cf9be9700fc4b6092245b7",
+          "after": "d5da2b712d7b2368f793861823b0d64dc233f7fd"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-boundary.mjs",
+          "before": "439c667b1e6f716ecf7c430c8ef3b0024442d6e0",
+          "after": "ba71ccdd0c79ed65ba414de200558d5a8b5a38c3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "ed252c868855c3534039438348e90741e9cd36f3",
+          "after": "1bc7ca65bcad93973d3128e49f1c65ac26524b18"
+        },
+        {
+          "path": "packages/dacs-client/test/native-signature-domain-recheck.test.mjs",
+          "before": null,
+          "after": "a122b46a4c1891de04bd568010fc3f2ea309396c"
+        }
+      ]
     }
   ]
 }

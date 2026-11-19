@@ -661,8 +661,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (JSON.stringify(await journal.get(key)) !== JSON.stringify(record)) fail('journal_error','the public issued transfer was not retained exactly');
   }
   // The node's signature domain for the connection a request runs on: null while the signatureDomain fork is inactive,
-  // else its chain id. The answer is evidence for that connection only. An active one is kept, an inactive one is reused
-  // for a minute, and a read that fails or is malformed is never kept. Called only under a lease, so a request refused
+  // else its chain id. The answer is evidence for that connection only. An active one is kept and never replaced by an
+  // inactive one, an inactive one is reused for a minute, and a read that fails or is malformed is never kept. Called only under a lease, so a request refused
   // before it holds one reads nothing.
   let signatureDomainEvidence = null;
   const readSignatureDomain = async () => {
@@ -675,6 +675,10 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     const active = info?.forks?.signatureDomain?.activated, chainId = info?.chainId;
     if (typeof active !== 'boolean' || (active && !(Number.isSafeInteger(chainId) && chainId >= 0))) fail('signature_domain_malformed','the node\'s getNetworkInfo does not say whether the signature domain is active, or gives no chain id for it');
     if (!sameContext(await context(), connection)) fail('connection_changed','the connection changed while the signature domain was read');
+    // Another request may have kept an active answer for this connection while this read was in flight. The fork does
+    // not deactivate, so a late inactive answer never replaces it: the kept active domain is the one that applies.
+    const current = signatureDomainEvidence;
+    if (!active && current && current.chainId !== null && sameContext(current.connection, connection)) return current.chainId;
     signatureDomainEvidence = { connection, readAt:now(), chainId:active ? chainId : null };
     return signatureDomainEvidence.chainId;
   };
@@ -983,6 +987,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           binding=await storageRecoveryBinder.beforeBroadcast(binding);
           const broadcastAuth=await headers();
           if(!await absent() || !sameContext(originalContext,await context())) return pending;
+          // The domain may have changed since the confirmation: the signature is checked again, on a fresh read once the
+          // kept answer is past its lifetime, before the resend is reserved. A refusal sends nothing.
+          await verifyTransactionSignature(tx);
           const resendOnce=async(bytes,final)=>{
             // Reserve the sole attempt before dispatch. A crash consumes it too;
             // reopening the journal can never start another retransmission loop.

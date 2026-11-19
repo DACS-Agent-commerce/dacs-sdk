@@ -65,9 +65,10 @@ export function queuingFenceOwner(events = []) {
  * before the scripted node answers any call and may pause or kill the process.
  * `identityAnswer(chainIdentity)` replaces the node's answer to every block read. `stamps` is the transport's RPC stamp source.
  * `boundary` is the transport's effect boundary (by default a real one over `journal` and `owner`), `pinVersion` its pin version and `gas` the
- * `gas_operation` the node confirms with.
+ * `gas_operation` the node confirms with. `now` is the transport's clock and `networkInfoAnswer()` what getNetworkInfo answers.
  */
-export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, stamps, boundary = writingBoundary({ owner, journal }), pinVersion = PINS.pinVersion, gas = null }) {
+export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, stamps, boundary = writingBoundary({ owner, journal }), pinVersion = PINS.pinVersion, gas = null,
+  now = () => NOW, networkInfoAnswer = () => networkInfo() }) {
   const wallet = deterministicWallet();
   const sent = { confirms: [], broadcasts: [] };
   const answerNode = async (init) => {
@@ -76,7 +77,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     if (message === 'getBlockByNumber' && identityAnswer) return identityAnswer(PINS.chainIdentity);
     if (message === 'getBlockByNumber') return reply({ number: 0, status: 'confirmed', hash: PINS.chainIdentity }, '');
     if (message === 'getAddressNonce') return reply(0);
-    if (message === 'getNetworkInfo') return reply(networkInfo());
+    if (message === 'getNetworkInfo') return reply(networkInfoAnswer());
     if (message === 'getTransactionStatus') return reply({ state: 'unknown' }, '');
     if (message === 'getTxByHash') return { result: 400, response: 'error', require_reply: false, extra: null };
     if (message === 'confirmTx') {
@@ -92,7 +93,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     throw new Error(`unexpected TEST node call ${message}`);
   };
   const fetchImpl = async (url, init) => new Response(JSON.stringify(await answerNode(init)), { headers: { 'content-type': 'application/json' } });
-  const capability = createDevnetDemoTransport({ expected: { ...PINS, pinVersion }, transportOwner: owner, boundary, journal, fetchImpl, now: () => NOW, stamps, inclusionWaitMs: 0,
+  const capability = createDevnetDemoTransport({ expected: { ...PINS, pinVersion }, transportOwner: owner, boundary, journal, fetchImpl, now, stamps, inclusionWaitMs: 0,
     settlementPublication: { artifactKind: 'SettlementEvidence', authority: 'TEST-lock-order-settlement', phase: 'pay-dem', phaseIndex: 2, policy: DEVNET_SETTLEMENT_POLICY, railId: 'demos-native:DEM' },
     deliveryPublication: { artifactKind: 'Deliverable', authority: 'TEST-lock-order-delivery', phase: 'deliver-storage-program', phaseIndex: 3, policy: DEVNET_DELIVERY_POLICY },
     demoArtifactPublication: { policy: DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...DEVNET_DEMO_ARTIFACT_TYPES], authority: DEMO_AUTHORITY } });
