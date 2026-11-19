@@ -8188,5 +8188,30 @@
       "packages/dacs-client/test/native-create-timing.test.mjs",
       "packages/dacs-client/test/native-lock-order.test.mjs"
     ]
+  },
+  {
+    "sha": "b35bceabb8fbe0cfedaf43e5405cbd0b466fdec9",
+    "subject": "delta(client): WF record the kept README and native transport after the merge of the job-check change",
+    "compact": true,
+    "files": [
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/records/WF-bbdb01c80947.json",
+      "packages/dacs-client/scripts/check-hold.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): WF keep the kept-blob record of the merged README and native transport in the delta ledger",
+    "compact": true,
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/records/WF-bbdb01c80947.json",
+      "packages/dacs-client/scripts/check-hold.mjs"
+    ]
   }
 ]

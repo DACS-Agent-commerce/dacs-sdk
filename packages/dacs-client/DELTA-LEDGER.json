@@ -10950,18 +10950,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF test that after a restart a new lease never confirms or sends acknowledged bytes a second time",
-      "compact": true,
-      "files": [
-        {
-          "path": "packages/dacs-client/test/native-repeated-confirmation.test.mjs",
-          "before": "20e3bcdc295a57453ed66f585f75a8207b13bac2",
-          "after": "f1ef6fcb454d242e21b2cc419227087a025a99de"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF refuse a seller pass without a job context before anything is signed or sent",
       "compact": true,
       "files": [
@@ -11139,13 +11127,13 @@
       "files": [
         {
           "path": "packages/dacs-client/README.md",
-          "before": "b5b496e80fd324fb52afc7bee0ddd2dfa4c63261",
-          "after": "66701d71bc6f2f2c75560de3e9ac3c7b6abf9276"
+          "before": "0ab6ce78b9a3612579dbe20b941fcf5f0110976d",
+          "after": "ece75765c7cf7ce389584fba6f801e0df5785b73"
         },
         {
           "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "275a41d0da72b44b0faa25556a48d4dc49d08e6c",
-          "after": "0798599b385f000f44cf9be9700fc4b6092245b7"
+          "before": "918d704295d37afc8f6c14fe32676d618763e143",
+          "after": "c30124f90aff2677e1d117eaf03ea80095903cd3"
         },
         {
           "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
@@ -11191,13 +11179,13 @@
       "files": [
         {
           "path": "packages/dacs-client/README.md",
-          "before": "66701d71bc6f2f2c75560de3e9ac3c7b6abf9276",
-          "after": "5c66abbc9b1b117cebd467a8080682d5af2e3936"
+          "before": "ece75765c7cf7ce389584fba6f801e0df5785b73",
+          "after": "9729df470abee8f52cdfe749df363d2729825f8c"
         },
         {
           "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
-          "before": "0798599b385f000f44cf9be9700fc4b6092245b7",
-          "after": "0abb9146e1d38e2266e87b71c942f341724ccae5"
+          "before": "c30124f90aff2677e1d117eaf03ea80095903cd3",
+          "after": "ceb720b72cc3c0f19f8d59d5d9934ba1358d7bd8"
         },
         {
           "path": "packages/dacs-client/test/helpers/native-create-boundary.mjs",
@@ -11223,6 +11211,36 @@
           "path": "packages/dacs-client/test/native-lock-order.test.mjs",
           "before": "3b833ced997efcb25db41f789c785d27f89ebf1d",
           "after": "2577c25e9dd8f10d1158bdf96b330d62b780eece"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the kept README and native transport after the merge of the job-check change",
+      "sha": "b35bceabb8fbe0cfedaf43e5405cbd0b466fdec9",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "66701d71bc6f2f2c75560de3e9ac3c7b6abf9276",
+          "after": "66701d71bc6f2f2c75560de3e9ac3c7b6abf9276"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0798599b385f000f44cf9be9700fc4b6092245b7",
+          "after": "0798599b385f000f44cf9be9700fc4b6092245b7"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that after a restart a new lease never confirms or sends acknowledged bytes a second time",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/native-repeated-confirmation.test.mjs",
+          "before": "20e3bcdc295a57453ed66f585f75a8207b13bac2",
+          "after": "f1ef6fcb454d242e21b2cc419227087a025a99de"
         }
       ]
     }
