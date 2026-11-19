@@ -600,7 +600,6 @@ type LegacyMvpFaultAttestationBundle
 type LegacyMvpPhaseSummaryEntry
 type LegacyMvpSettlementEvidence
 type LegacyMvpTxRef
-type LegacySealedAgreementCommitResult
 type Listing
 type ListingCatalogClientConfig
 type ListingCatalogPage
@@ -890,7 +889,6 @@ type ScanSeen
 type ScannedAnchor
 type SealedAgreementCommitResult
 type SealedAgreementCommitValidation
-type SealedAgreementContext
 type SealedAgreementParty
 type SealedAgreementRoleAssignment
 type SealedAgreementRoleValidation
@@ -1442,7 +1440,6 @@ value buildComponentSignature
 value buildEvidenceBoundTwoSidedBundle
 value buildPriorPaymentDisposition
 value buildRevealMessage
-value buildSealedAgreement
 value buildSignedArtifact
 value buildTwoSidedBundle
 value bundleAddress
