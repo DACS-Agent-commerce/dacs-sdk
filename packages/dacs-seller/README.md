@@ -145,8 +145,11 @@ const host = await startSellerHost({
                          // bindRetainedScope }): the Vet context the Agreement derives from; the host runs in
                          // that one mode (see the Vet paragraph) and refuses at startup, before the lock and any
                          // file, a capability built without the three callbacks. recoverBuyer and resumableBuyer
-                         // take (input, { writable, signal }) like resolveBuyer and are reserved for resuming an
-                         // interrupted context step (the host does not call them yet); bindRetainedScope(reader)
+                         // take (input, { writable, signal }) like resolveBuyer. recoverBuyer must be a real,
+                         // authenticated Vet readback: the host calls it (read-only) when it answers a completed
+                         // context request sent again, and a placeholder makes that retry answer
+                         // session_admission_unavailable (503). resumableBuyer is reserved for resuming an
+                         // interrupted context step (the host does not call it yet); bindRetainedScope(reader)
                          // is called once at startup with the reader of completed context scopes and returns
                          // { sellerBundlePresentedBy }, the Listing's seller presenter
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
