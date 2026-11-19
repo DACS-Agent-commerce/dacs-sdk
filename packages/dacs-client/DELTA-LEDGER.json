@@ -10950,18 +10950,6 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF test that after a restart a new lease never confirms or sends acknowledged bytes a second time",
-      "compact": true,
-      "files": [
-        {
-          "path": "packages/dacs-client/test/native-repeated-confirmation.test.mjs",
-          "before": "20e3bcdc295a57453ed66f585f75a8207b13bac2",
-          "after": "f1ef6fcb454d242e21b2cc419227087a025a99de"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF refuse a seller pass without a job context before anything is signed or sent",
       "compact": true,
       "files": [
@@ -11181,6 +11169,36 @@
           "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
           "before": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d",
           "after": "346883e5ba1de72af5d1eb35aa7f53a4007e5395"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the kept README and native transport after the merge of the job-check change",
+      "sha": "b35bceabb8fbe0cfedaf43e5405cbd0b466fdec9",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "66701d71bc6f2f2c75560de3e9ac3c7b6abf9276",
+          "after": "66701d71bc6f2f2c75560de3e9ac3c7b6abf9276"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0798599b385f000f44cf9be9700fc4b6092245b7",
+          "after": "0798599b385f000f44cf9be9700fc4b6092245b7"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that after a restart a new lease never confirms or sends acknowledged bytes a second time",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/native-repeated-confirmation.test.mjs",
+          "before": "20e3bcdc295a57453ed66f585f75a8207b13bac2",
+          "after": "f1ef6fcb454d242e21b2cc419227087a025a99de"
         }
       ]
     }
