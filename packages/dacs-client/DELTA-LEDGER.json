@@ -11357,6 +11357,18 @@
           "after": "25cbd22d1a8f1fcad57398a59cb93c5d731fe90e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test CREATE recovery started during a leased broadcast",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "389096e902bd290ae6cd3b4bef2fd38994043547",
+          "after": "d7bf0812efbfb4d709fb075e328b1a27cb4d9b9e"
+        }
+      ]
     }
   ]
 }
