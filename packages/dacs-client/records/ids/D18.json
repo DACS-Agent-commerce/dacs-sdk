@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D18",
+  "registration": "D18: existing client delta lane",
+  "subject": "delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks"
+}

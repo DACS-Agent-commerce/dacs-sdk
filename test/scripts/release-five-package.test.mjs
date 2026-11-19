@@ -335,6 +335,8 @@ test("the existing checks refuse an integrated phase-0 fixture with a missing or
   assert.ok((await preparationErrors(clientRoot)).includes(`${CLIENT}: release identity or publish policy is invalid`));
   const hold = JSON.parse(readFileSync(join(repoRoot, "packages/dacs-client/HOLD.json"), "utf8"));
   assert.deepEqual(checkRecord(hold), []);
+  assert.ok(Object.hasOwn(hold.step1Freeze.files, 'DELTA-LEDGER.json'));
+  assert.equal(Object.hasOwn(hold.step1Freeze.files, 'DELTA-MAP.md'), false);
   hold.holds[0].files[0].heldBlob = "0".repeat(40);
   assert.match(checkRecord(hold).join("\n"), /heldBlob/);
 });

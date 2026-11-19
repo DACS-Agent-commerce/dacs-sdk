@@ -8,7 +8,7 @@ import {
   sameCanonicalClaimIdentity,
 } from "../identity/claimReference.js";
 import type { BundleRole } from "./bundleConsistency.js";
-import type { Verifier } from "./signedArtifact.js";
+import type { Verifier } from "../crypto/byteSignerTypes.js";
 import type { EvidenceBoundBundleVerification } from "./evidenceBoundBundle.js";
 import {
   isAbsoluteFaultBundle,

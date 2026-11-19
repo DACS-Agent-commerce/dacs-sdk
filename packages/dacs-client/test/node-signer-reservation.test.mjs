@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { installNoEgress } from './helpers/no-egress.mjs';
-import { args, open, options, otherSigner, recordKey, signed, signer } from './helpers/signer-reservation-world.mjs';
+import { args, open, options, otherSigner, pins, recordKey, signed, signer } from './helpers/signer-reservation-world.mjs';
 
 const trap = installNoEgress();
 test.after(() => { trap.restore(); assert.deepEqual(trap.attempts, []); });
@@ -45,6 +45,27 @@ function child(t, path, mode, operationKey = 'TEST-child') {
 }
 const rejectCode = (promise, code) => assert.rejects(promise, { code });
 const noChainRead = () => { throw new Error('TEST-unexpected-chain-read'); };
+
+test('signerReservationKey is the journal key the reservation record is stored under', async t => {
+  const w = world(t);
+  await w.reservations.reserve(args());
+  assert.equal(module.signerReservationKey(pins, signer), recordKey());
+  assert.ok(await w.journal.get(module.signerReservationKey(pins, signer)), 'the record is stored under the exported key');
+  assert.equal(await w.journal.get(module.signerReservationKey(pins, otherSigner)), undefined, 'another signer has another key');
+});
+
+test('reserve runs beforeClaim under the signer lock before any read or write, and a refusal from it claims nothing', async t => {
+  const w = world(t), refusal = Object.assign(new Error('TEST-refused'), { code: 'TEST-refused' });
+  let underLock = false;
+  const beforeClaim = async () => {
+    await assert.rejects(w.journal.withWalletLock(recordKey(), async () => {}), { code: 'journal-reentrant' }); underLock = true;
+    assert.equal(await w.journal.get(recordKey()), undefined, 'nothing is stored yet'); throw refusal;
+  };
+  await rejectCode(w.reservations.reserve({ ...args(), readChainNonce: noChainRead, beforeClaim }), 'TEST-refused');
+  assert.equal(underLock, true); assert.equal(await w.journal.get(recordKey()), undefined, 'the refusal claimed nothing');
+  await w.reservations.reserve(args());
+  assert.ok(await w.journal.get(recordKey()), 'the next claim goes through');
+});
 
 test('two different evidence addresses: the second reserve refuses signer_lane_busy and the two never receive the same nonce', async t => {
   const w = world(t), reservation = await w.reservations.bindSigned(await approved(w.reservations), signed());
@@ -358,6 +379,22 @@ test('a manual grant is retired without a lookup or a settlement', async t => {
   assert.deepEqual(ledger.settled, []);
 });
 
+test('renewApproval replaces the approval id of signed bytes in one write, so the execution settles the new id spent; an unsigned or stale handle, another request text and a null id are refused', async t => {
+  const ledger = ledgerDouble(), w = world(t, { ledger }), bytes = signed(), renewed = { ledgerId: 'TEST-ledger-renewed', requestText: REQUEST };
+  const unsigned = await approved(w.reservations);
+  await rejectCode(w.reservations.renewApproval(unsigned, renewed), 'signer_reservation_invalid');
+  const reservation = await w.reservations.bindSigned(unsigned, bytes);
+  for (const bad of [{ ledgerId: null, requestText: REQUEST }, { ledgerId: 'TEST-ledger-renewed', requestText: 'TEST-other-request' }, undefined]) {
+    await rejectCode(w.reservations.renewApproval(reservation, bad), 'signer_reservation_invalid');
+  }
+  const next = await w.reservations.renewApproval(reservation, renewed);
+  assert.equal(next.active.approvalId, 'TEST-ledger-renewed'); assert.equal(next.revision, reservation.revision + 1);
+  assert.deepEqual((await w.reservations.renewApproval(next, renewed)), next, 'the same id again writes nothing');
+  await rejectCode(w.reservations.renewApproval(reservation, renewed), 'signer_reservation_stale');
+  await w.reservations.consume(next, executed(bytes));
+  assert.deepEqual(ledger.settled, [['TEST-ledger-renewed', 'spent', 'executed']]);
+});
+
 test('consume ends the reservation only on an authenticated execution of the exact bytes: pending, failed, unauthenticated and other bytes change nothing; the real one settles spent and moves the floor', async t => {
   const ledger = ledgerDouble(), w = world(t, { ledger }), bytes = signed();
   const reservation = await w.reservations.bindSigned(await approved(w.reservations), bytes);
@@ -403,6 +440,66 @@ test('a put that fails after the settlement leaves the reservation whole, and re
   }
 });
 
+// A retirement whose settlement committed and whose put failed: the approval is released but the reservation is still stored.
+async function settledButUncommitted(t, { unreadable = false } = {}) {
+  const ledger = ledgerDouble(), refuse = failOnce();
+  let failed = false;
+  const w = world(t, { ledger, wrap: journal => narrow(journal,
+    async (key, value) => { if (value.active === null) { failed = true; refuse(); } return journal.put(key, value); },
+    async key => { if (failed && unreadable) throw new Error('TEST-read-back'); return journal.get(key); }) });
+  const held = await approved(w.reservations);
+  await assert.rejects(w.reservations.retireUnsigned(held), error => error.code === 'signer_reservation_uncertain' || error.message === 'TEST-put-refused');
+  failed = false;
+  assert.deepEqual(ledger.settled, [[LEDGER.ledgerId, 'released', 'unsigned-retired']]);
+  return { w, ledger, held };
+}
+
+test('bindSigned refuses a reservation whose retirement settled the approval but did not commit, and stores no signed bytes', async t => {
+  const { w, held } = await settledButUncommitted(t);
+  await rejectCode(w.reservations.bindSigned(held, signed()), 'signer_retirement_unfinished');
+  assert.deepEqual(await w.reservations.current(signer), held);
+});
+
+test('bindSigned refuses after a retirement whose failed put cannot be read back', async t => {
+  const { w, held } = await settledButUncommitted(t, { unreadable: true });
+  await rejectCode(w.reservations.bindSigned(held, signed()), 'signer_retirement_unfinished');
+  assert.deepEqual(await w.reservations.current(signer), held);
+});
+
+test('reserve finishes an unfinished retirement first: the same or another operation gets a fresh claim at the same nonce and the old handle is stale', async t => {
+  for (const operationKey of ['TEST-evidence-a', 'TEST-evidence-b']) {
+    const { w, ledger, held } = await settledButUncommitted(t);
+    const next = await w.reservations.reserve(args(operationKey));
+    assert.equal(next.nonce, 1);
+    assert.equal(next.reservation.floor, 0);
+    assert.equal(next.reservation.active.approvalId, null);
+    assert.notEqual(next.reservation.active.attemptId, held.active.attemptId);
+    assert.ok(ledger.settled.every(([id, outcome]) => id === LEDGER.ledgerId && outcome === 'released'));
+    await rejectCode(w.reservations.bindSigned(held, signed()), 'signer_reservation_stale');
+    const bound = await w.reservations.bindApproval(await w.reservations.bindApprovalIntent(next.reservation, REQUEST), LEDGER);
+    assert.ok((await w.reservations.bindSigned(bound, signed())).active.signed);
+  }
+});
+
+test('an unfinished retirement stays refused after a bound approval id changes the record revision', async t => {
+  const looked = [], ledger = ledgerDouble({ open: async text => { looked.push(text); return { ...LEDGER }; } }), refuse = failOnce();
+  const w = world(t, { ledger, wrap: journal => narrow(journal, async (key, value) => { if (value.active === null) refuse(); return journal.put(key, value); }) });
+  const { reservation } = await w.reservations.reserve(args());
+  const intent = await w.reservations.bindApprovalIntent(reservation, REQUEST);
+  await assert.rejects(w.reservations.retireUnsigned(intent), { message: 'TEST-put-refused' });
+  const rebound = await w.reservations.bindApproval(intent, LEDGER);
+  assert.ok(rebound.revision > intent.revision);
+  await rejectCode(w.reservations.bindSigned(rebound, signed()), 'signer_retirement_unfinished');
+});
+
+test('a retirement that commits on repeat lifts the refusal for the next claim', async t => {
+  const { w, held } = await settledButUncommitted(t);
+  assert.equal((await w.reservations.retireUnsigned(held)).active, null);
+  const next = await w.reservations.reserve(args());
+  const bound = await w.reservations.bindApproval(await w.reservations.bindApprovalIntent(next.reservation, REQUEST), LEDGER);
+  assert.ok((await w.reservations.bindSigned(bound, signed())).active.signed);
+});
+
 test('a settlement that throws keeps the reservation, the original cause and a way to repeat', async t => {
   let down = true;
   const ledger = ledgerDouble({ settle: async () => { if (down) throw new Error('TEST-ledger-down'); } }), w = world(t, { ledger }), bytes = signed();
@@ -412,6 +509,16 @@ test('a settlement that throws keeps the reservation, the original cause and a w
   down = false;
   assert.equal((await w.reservations.consume(reservation, executed(bytes))).active, null);
   assert.equal(ledger.settled.length, 1);
+});
+
+test('a consume whose approval the ledger refuses to spend ends the reservation only when the caller shows the approval ended', async t => {
+  const ledger = ledgerDouble({ settle: async () => { throw new Error('TEST-already-released'); } }), w = world(t, { ledger }), bytes = signed();
+  const held = await w.reservations.bindSigned(await approved(w.reservations), bytes);
+  await rejectCode(w.reservations.consume(held, executed(bytes)), 'signer_settlement_failed');
+  const ended = await w.reservations.consume(held, executed(bytes), { approvalEnded: true });
+  assert.equal(ended.active, null); assert.equal(ended.floor, 2);
+  assert.equal(ledger.settled.length, 0, 'nothing was settled spent');
+  await rejectCode(w.reservations.consume(held, executed(bytes), { approvalEnded: true }), 'signer_reservation_stale');
 });
 
 test('recover retires every reservation without signed bytes and keeps signed ones; a second recover changes nothing', async t => {

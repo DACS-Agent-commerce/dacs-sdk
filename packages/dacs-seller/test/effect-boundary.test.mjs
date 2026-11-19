@@ -132,6 +132,16 @@ test('a transport that throws after the receiver recorded the bytes is dispatch-
   assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown', 'observed']);
 });
 
+test('a send that rejects with a value that has no string form is still dispatch-unknown and its own rejection reaches the caller', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const rejection = Object.create(null);
+  await assert.rejects(boundary.pass(w.op(), w.sign(), async () => { throw rejection; }), (error) => error === rejection);
+  const unknown = await lastRecord(history);
+  assert.deepEqual([unknown.state, unknown.cause.code, typeof unknown.cause.message], ['dispatch-unknown', 'Error', 'string']);
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), { code: 'lane_readback_only' });
+});
+
 test('an acknowledged confirmation then a crash broadcasts once on restart; a lost confirmation answer is confirm-unknown and never advances', async (t) => {
   const w = await ebWorld(t);
   const first = w.build();
@@ -379,15 +389,120 @@ test('two overlapping passes on one actor never interleave sign-to-dispatch, and
   assert.ok(w.trace.indexOf('append:dispatch-acknowledged') < w.trace.lastIndexOf('sign'), 'b signed only after a was acknowledged');
   assert.equal(w.counts.signer, 2);
   const parked = gate();
-  const holder = boundary.pass(w.op({ operationId: 'd', lane: 'lane-d' }), w.sign(), async () => { await parked.arrive(); });
+  const holder = boundary.withFence(w.op({ operationId: 'd', lane: 'lane-d' }), async () => { await parked.arrive(); });
   await parked.reached;
   const waiter = assert.rejects(boundary.pass(w.op({ operationId: 'e', lane: 'lane-e' }), w.sign(), w.send()), { code: 'tp1_fence_timeout' });
   await flush();
   await w.clock.advance(DEADLINE_MS + 1);
   await waiter;
-  assert.equal(w.counts.signer, 3, 'the timed-out waiter signed nothing');
+  assert.equal(w.counts.signer, 2, 'the timed-out waiter signed nothing');
   parked.release();
   await holder;
+});
+
+test('a signer that does not answer within the pass window refuses eb_sign_timeout, records nothing and releases the fence', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const inSigner = gate();
+  const outcome = boundary.pass(w.op(), async () => { await inSigner.arrive(); throw failure('signer_late'); }, w.send()).then(() => 'resolved', (error) => error);
+  await inSigner.reached;
+  await w.clock.advance(DEADLINE_MS);
+  assert.equal(await stillPending(outcome), false, 'the pass settled when its window ended');
+  assert.equal((await outcome).code, 'eb_sign_timeout');
+  assert.deepEqual(await states(history), []);
+  await boundary.pass(w.op({ operationId: 'next', lane: 'lane-2' }), w.sign(), w.send());
+  assert.deepEqual([w.counts.signer, w.counts.transport], [1, 1], 'the next pass took the fence');
+  inSigner.release();
+  await flush();
+  assert.deepEqual(await states(history), [], 'a late signer answer records nothing');
+});
+
+test('a signer and a transport that answer with a thenable have its then() called once', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary } = w.build();
+  const calls = { signer: 0, transport: 0 };
+  const thenable = (name, value) => ({ then(resolve) { calls[name] += 1; resolve(value); } });
+  await boundary.pass(w.op(), () => thenable('signer', SIGNED_BYTES), () => thenable('transport', 'accepted'));
+  assert.deepEqual(calls, { signer: 1, transport: 1 });
+});
+
+// The timeout option only ends the test if the pass never settles; the clock decides the window.
+test('a send that does not answer within the pass window is dispatch-unknown, refuses eb_send_timeout and releases the fence', { timeout: 15000 }, async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const inSend = gate();
+  const outcome = boundary.pass(w.op(), w.sign(), () => inSend.arrive()).then(() => 'resolved', (error) => error);
+  await inSend.reached;
+  await w.clock.advance(DEADLINE_MS);
+  const refusal = await outcome;
+  assert.deepEqual([refusal.code, refusal.cause.name], ['eb_send_timeout', 'TimeoutError']);
+  const unknown = await lastRecord(history);
+  assert.deepEqual([unknown.state, unknown.cause.code], ['dispatch-unknown', 'eb_send_timeout']);
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), { code: 'eb_send_in_flight' });
+  const next =() => boundary.pass(w.op({ operationId: 'next', lane: 'lane-2' }), w.sign(), w.send());
+  await assert.rejects(next(), { code: 'eb_send_in_flight' });
+  assert.equal(w.counts.transport, 0, 'no other send starts while the timed-out send is still running');
+  inSend.release();
+  await flush();
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown'], 'a late answer adds no acknowledgement');
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), { code: 'lane_readback_only' });
+  await next();
+  assert.equal(w.counts.transport, 1, 'the next send went out once the first had settled');
+});
+
+test('while a timed-out send is still running, another pass calls no signer and writes no record, and signs once the send has settled', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const inSend = gate();
+  const first = boundary.pass(w.op(), w.sign(), () => inSend.arrive()).then(() => 'resolved', (error) => error);
+  await inSend.reached;
+  await w.clock.advance(DEADLINE_MS);
+  assert.equal((await first).code, 'eb_send_timeout');
+  const signersBefore = w.counts.signer;
+  const other = () => boundary.pass(w.op({ operationId: 'other', lane: 'lane-2' }), w.sign(), w.send());
+  await assert.rejects(other(), { code: 'eb_send_in_flight' });
+  await assert.rejects(boundary.signPass(w.op({ operationId: 'other', lane: 'lane-2' }), w.sign()), { code: 'eb_send_in_flight' });
+  assert.equal(w.counts.signer, signersBefore, 'the signer was not called');
+  assert.deepEqual(await states(history, 'lane-2'), [], 'nothing was recorded for the other pass');
+  inSend.release();
+  await flush();
+  await other();
+  assert.deepEqual(await states(history, 'lane-2'), ['signed', 'dispatch-started', 'dispatch-acknowledged']);
+});
+
+test('a send gets its full window even when the signer used almost all of its own', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const inSigner = gate();
+  const inSend = gate();
+  const outcome = boundary.pass(w.op(), async () => { await inSigner.arrive(); return SIGNED_BYTES; }, async () => { await inSend.arrive(); return 'accepted'; }).then((value) => value, (error) => error);
+  await inSigner.reached;
+  await w.clock.advance(DEADLINE_MS - 1);
+  inSigner.release();
+  await inSend.reached;
+  await w.clock.advance(DEADLINE_MS - 1);
+  inSend.release();
+  const result = await outcome;
+  assert.equal(result.answer, 'accepted');
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-acknowledged']);
+});
+
+test('while a timed-out send is still running, signerFor signs nothing, and signs once the send has settled', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary } = w.build();
+  const inSend = gate();
+  const first = boundary.pass(w.op(), w.sign(), () => inSend.arrive()).then(() => 'resolved', (error) => error);
+  await inSend.reached;
+  await w.clock.advance(DEADLINE_MS);
+  assert.equal((await first).code, 'eb_send_timeout');
+  const other = w.op({ operationId: 'other', lane: 'lane-2' });
+  const signWith = () => boundary.withFence(other, (held) => boundary.signerFor(held, { claim: 'x', sign: w.sign() }).sign(SIGNED_BYTES));
+  await assert.rejects(signWith(), { code: 'eb_send_in_flight' });
+  assert.equal(w.counts.signer, 1, 'the inner signer was not called');
+  inSend.release();
+  await flush();
+  await signWith();
+  assert.equal(w.counts.signer, 2);
 });
 
 test('authority reads take no fence and call no signer', async (t) => {
@@ -422,6 +537,13 @@ test('EB3 admits a debit equal to 50 DEM and refuses 50 DEM plus 1 OS before any
   assert.equal(w.counts.signer, 2, 'only the in-ceiling paid write and the unpaid write signed');
 });
 
+test('the write-fee-cap refusal names the configured ceiling in OS', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary } = w.build({ feeCeilingOs: '5000' });
+  await assert.rejects(boundary.pass(w.op({ debitOs: '5001' }), w.sign(), w.send()), (error) => error.code === 'write-fee-cap' && /above the 5000 OS ceiling per write/.test(error.message) && !/50 DEM/.test(error.message));
+  assert.equal(w.counts.signer, 0);
+});
+
 test('a lane stamped with another pin version is readback-only: pin_version_retired', async (t) => {
   const w = await ebWorld(t);
   const first = w.build();
@@ -432,6 +554,47 @@ test('a lane stamped with another pin version is readback-only: pin_version_reti
   await assert.rejects(restarted.boundary.pass(w.op({ operationId: 'stamped', lane: 'lane-2', pinVersion: 'dacs-demos-testnet-identity/2026-10-15' }), w.sign(), w.send()), { code: 'pin_version_retired' });
   assert.deepEqual([w.counts.signer, w.counts.transport], [0, 0]);
   assert.deepEqual(await states(restarted.history), ['signed'], 'readback still works');
+});
+
+// A lane whose dispatch answer was lost: `dispatch-unknown`, waiting for a readback.
+const laneWithLostDispatch = async (w) => {
+  const built = w.build();
+  const lost = failure('ECONNRESET');
+  await assert.rejects(built.boundary.pass(w.op(), w.sign(), () => { throw lost; }), (error) => error === lost);
+  return built;
+};
+
+test('recordObserved refuses an operation stamped with another pin version and appends nothing', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = await laneWithLostDispatch(w);
+  await assert.rejects(boundary.recordObserved(w.op({ pinVersion: 'dacs-demos-testnet-identity/2026-10-15' }), 'dispatch', { found: 1 }), { code: 'pin_version_retired' });
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown']);
+  await boundary.recordObserved(w.op(), 'dispatch', { found: 1 });
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown', 'observed']);
+});
+
+test('recordObserved called twice with the same result leaves one observed record, and a different result adds one', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = await laneWithLostDispatch(w);
+  const first = await boundary.recordObserved(w.op(), 'dispatch', { found: 1, at: ['a', 'b'] });
+  const again = await boundary.recordObserved(w.op(), 'dispatch', { at: ['a', 'b'], found: 1 });
+  assert.deepEqual([first.created, again.created, again.record.seq], [true, false, first.record.seq]);
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown', 'observed']);
+  const changed = await boundary.recordObserved(w.op(), 'dispatch', { found: 2 });
+  assert.equal(changed.created, true);
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-unknown', 'observed', 'observed']);
+});
+
+test('recordObserved does not return another operation\'s observation of identical signed bytes', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = await laneWithLostDispatch(w);
+  const first = await boundary.recordObserved(w.op(), 'dispatch', { found: 1 });
+  const other = w.op({ operationId: 'op-2' });
+  await boundary.signPass(other, w.sign());
+  const second = await boundary.recordObserved(other, 'dispatch', { found: 1 });
+  assert.deepEqual([second.created, second.record.operationId], [true, 'op-2']);
+  assert.notEqual(second.record.seq, first.record.seq);
+  assert.equal((await states(history)).filter((state) => state === 'observed').length, 2);
 });
 
 test('the dispatch history is append-only: a held or withheld record never erases an earlier possible dispatch', async (t) => {
@@ -502,6 +665,15 @@ test('the boundary refuses to be built without a stop check, a binding, a histor
   assert.equal(w.counts.signer, 0);
 });
 
+test('a currentLocal that throws at the binding check refuses tp1_local_binding_changed with its cause and signs nothing', async (t) => {
+  const w = await ebWorld(t);
+  const { history } = w.build();
+  const unreadable = failure('connection_unreadable');
+  const boundary = createEffectBoundary({ stopped: () => false, binding: w.binding, currentLocal: () => { throw unreadable; }, feeCeilingOs: FEE_CEILING_OS, history, clock: w.clock });
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), (error) => error.code === 'tp1_local_binding_changed' && error.cause === unreadable);
+  assert.deepEqual([w.counts.signer, w.counts.transport], [0, 0]);
+});
+
 test('a signer that changes its returned array while the record is written cannot change what is sent', async (t) => {
   const w = await ebWorld(t);
   const { boundary, history } = w.build();
@@ -525,20 +697,25 @@ test('a transport that changes the bytes it was handed cannot change what a late
   assert.deepEqual(w.sent, [Uint8Array.from([1, 2, 3, 4])]);
 });
 
-test('a confirmation whose reply was lost and is then found by readback lets a restarted pass broadcast, and a dispatch readback does not', async (t) => {
+test('a confirmation whose reply was lost and is then found by readback lets a restarted pass broadcast', async (t) => {
   const w = await ebWorld(t);
   const first = w.build();
   const timeout = failure('ETIMEDOUT');
   await assert.rejects(first.boundary.pass(w.op(), w.sign(), () => { throw timeout; }, { stage: 'confirm' }), (error) => error === timeout);
   const restarted = w.build();
-  await assert.rejects(restarted.boundary.pass(w.op(), w.sign(), w.send(), { stage: 'broadcast' }), { code: 'confirm_not_acknowledged' });
+  await assert.rejects(restarted.boundary.pass(w.op(), w.sign(), w.send(), { stage: 'broadcast' }), (error) => error.code === 'confirm_not_acknowledged' && /acknowledged/.test(error.message) && /readback/.test(error.message));
   await restarted.boundary.recordObserved(w.op(), 'confirm', { found: 1 });
   await restarted.boundary.pass(w.op(), w.sign(), w.send('broadcast'), { stage: 'broadcast' });
   assert.deepEqual([w.counts.signer, w.counts.transport], [1, 1]);
   assert.deepEqual(await states(restarted.history), ['signed', 'confirm-started', 'confirm-unknown', 'observed', 'broadcast-started', 'broadcast-acknowledged']);
-  const other = w.op({ operationId: 'op-2', lane: 'lane-2' });
-  await assert.rejects(restarted.boundary.pass(other, w.sign(), () => { throw timeout; }, { stage: 'dispatch' }), (error) => error === timeout);
-  await restarted.boundary.recordObserved(other, 'dispatch', { found: 1 });
-  await assert.rejects(restarted.boundary.pass(other, w.sign(), w.send(), { stage: 'broadcast' }), { code: 'confirm_not_acknowledged' });
-  assert.equal(w.counts.transport, 1);
+});
+
+test('a dispatch readback does not let a pass broadcast', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary } = w.build();
+  const timeout = failure('ETIMEDOUT');
+  await assert.rejects(boundary.pass(w.op(), w.sign(), () => { throw timeout; }, { stage: 'dispatch' }), (error) => error === timeout);
+  await boundary.recordObserved(w.op(), 'dispatch', { found: 1 });
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send(), { stage: 'broadcast' }), { code: 'confirm_not_acknowledged' });
+  assert.equal(w.counts.transport, 0);
 });

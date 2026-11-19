@@ -25,6 +25,13 @@ if [ ! -d "$(dirname "$output_dir")" ]; then
   exit 2
 fi
 
+# Docker resolves a relative config directory against the working directory, which
+# changes below. Fix it to an absolute path once so every Docker call sees the same one.
+case "${DOCKER_CONFIG-}" in
+  ""|/*) ;;
+  *) DOCKER_CONFIG="$PWD/$DOCKER_CONFIG"; export DOCKER_CONFIG ;;
+esac
+
 # The stage names the step a failure stopped in; the failure summary written on
 # exit classifies it as network, policy or functional from that stage's evidence.
 stage=preflight
@@ -307,8 +314,12 @@ for name in buyer-demos seller-demos buyer-evm seller-evm wallet-token listing-x
   chmod 0600 "$compose_inputs/$name"
 done
 
+# The cleared environment moves HOME, so the caller's Docker config directory
+# (which holds per-user plugins such as compose) is passed in explicitly. With
+# neither DOCKER_CONFIG nor HOME set, the value is empty and Docker uses its own default.
 env \
   -i PATH="$PATH" HOME="$compose_inputs" \
+  DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME:+$HOME/.docker}}" \
   DACS_WALLET_AUTHORITY_URL=http://127.0.0.1:1 \
   DACS_WALLET_AUTHORITY_ID=acceptance-placeholder \
   DACS_WALLET_AUTHORITY_EPOCH=acceptance-placeholder \

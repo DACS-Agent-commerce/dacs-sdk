@@ -38,6 +38,7 @@ let runGeneratedDoctor: (
     maximumTotalDebitDem: string;
   }>,
 ) => Promise<unknown>;
+let runX402GeneratedDoctor: (phase: "pre-start", scope: "start") => Promise<unknown>;
 
 beforeAll(async () => {
   projectDirectory = await mkdtemp(join(tmpdir(), "create-dacs-agent-doctor-"));
@@ -95,7 +96,12 @@ beforeAll(async () => {
       capturedProbes = input.probes;
       return { checks: [] };
     },
-    validateDacsAgentConfig: (config: unknown) => config,
+    validateDacsAgentConfig: (config: { rail: { requestedNetwork: string } }) => {
+      if (!["eip155:84532", "demos"].includes(config.rail.requestedNetwork)) {
+        throw new TypeError("live configuration is malformed or profile-incompatible");
+      }
+      return config;
+    },
   }));
   vi.doMock("@kynesyslabs/dacs-node/sqlite", () => ({
     DACS_NODE_SQLITE_SCHEMA_VERSION: 1,
@@ -105,6 +111,23 @@ beforeAll(async () => {
 
   const doctorModule = await import(join(projectDirectory, "agent", "src", "doctor.ts"));
   runGeneratedDoctor = doctorModule.runGeneratedDoctor;
+
+  await createDacsAgentProject({
+    targetDirectory: join(projectDirectory, "x402-agent"),
+    mode: "live-demos",
+    profile: "dacs-sdk:fixed-price-x402:v1",
+    role: "buyer",
+    deployment: "docker",
+    rails: "x402",
+    install: false,
+  });
+  await symlink(
+    fileURLToPath(new URL("../../../node_modules", import.meta.url)),
+    join(projectDirectory, "x402-agent", "node_modules"),
+    "dir",
+  );
+  const x402DoctorModule = await import(join(projectDirectory, "x402-agent", "src", "doctor.ts"));
+  runX402GeneratedDoctor = x402DoctorModule.runGeneratedDoctor;
 });
 
 afterEach(() => {
@@ -202,4 +225,31 @@ describe("generated Doctor total-debit fee ceiling", () => {
       });
     });
   }
+});
+
+describe("generated Doctor refused x402 network", () => {
+  const NETWORK_CHECK = "x402.testnet-policy";
+
+  test("reports the mainnet reason for a refused network value", async () => {
+    vi.stubEnv("DACS_X402_NETWORK", "eip155:8453");
+    await runX402GeneratedDoctor("pre-start", "start");
+    const probe = capturedProbes[NETWORK_CHECK];
+    if (probe === undefined) throw new Error("network probe was not built");
+    expect(await probe()).toEqual({
+      status: "fail",
+      reasonCode: "x402-mainnet-or-unsupported-network",
+    });
+  });
+
+  test("leaves the network check unset when the network value is accepted", async () => {
+    vi.stubEnv("DACS_X402_NETWORK", "eip155:84532");
+    vi.stubEnv("DACS_DEMOS_CHAIN_ID", "chain-without-genesis-hash");
+    capturedProbes = {};
+    await runX402GeneratedDoctor("pre-start", "start");
+    expect(capturedProbes[NETWORK_CHECK]).toBeUndefined();
+    expect(await capturedProbes["local.configuration"]?.()).toMatchObject({
+      status: "fail",
+      reasonCode: "configuration-invalid",
+    });
+  });
 });

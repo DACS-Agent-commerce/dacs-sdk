@@ -132,10 +132,10 @@ for(const answer of ['waiting','indeterminate'])test(`pending proposal recovers 
 });
 // Parity with the original path: a thrown definite refusal keeps its own status and body.
 test('pending unauthenticated presentation is refused with its own status and releases its slot for a corrected proposal',async t=>{
- const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);body.buyerIdentityBundle.sessionNonce='f'.repeat(64);
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),corrected=structuredClone(body);body.buyerIdentityBundle.sessionNonce='f'.repeat(64);
  const w=await transport(t,agent,f.dir,body);w.store.reserve(w.request,body);
  await assert.rejects(w.peer.propose(body),{name:'SellerRefusedError',code:'buyer_bundle_unauthenticated',status:422});assert.equal(agent.durableSessionOf(JOB),null);
- const corrected=await f.proposal(agent);w.setHash(corrected.proposal.plan.agreementHash);assert.equal((await w.peer.propose(corrected)).disposition,'complete');
+ w.setHash(corrected.proposal.plan.agreementHash);assert.equal((await w.peer.propose(corrected)).disposition,'complete');
 });
 // cold F1 (1f4795b/5c363cc/292fb46): a temporary 5xx gate is never a signed final rejection.
 test('a recovered proposal refused by a temporary rail gate answers 503 and runs once the rail is live',async t=>{

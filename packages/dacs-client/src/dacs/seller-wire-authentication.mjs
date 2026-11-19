@@ -48,8 +48,11 @@ export function createSellerWireAuthentication({ admission, sessionSigner, deleg
         signal?.throwIfAborted(); checkDeadline();
         return signature;
       } };
-      return signWireRequest({ binding, local, signer, delegation: retainedDelegation, endpointProof, publicEndpoint, path, jobId, text, seller, ...evidenceMembers(kept),
+      const signed = await signWireRequest({ binding, local, signer, delegation: retainedDelegation, endpointProof, publicEndpoint, path, jobId, text, seller, ...evidenceMembers(kept),
         job: { listingPin: job.listingPin, agreementHash: job.agreementHash, profile: job.profile, ...(job.deadline === undefined ? {} : { deadline: job.deadline }) }, now: now() });
+      // The wire builds the expiry from the clock read above, before its awaited authority reads; a slow read can leave the request already expired.
+      if (signed.payload.expiresAt <= now()) throw new WireError('peer_expired', 500);
+      return signed;
     },
     async verifyResponse(payload, { header, status, body }) {
       return verifyWireResponse(payload, { binding, local: currentLocal(), header, status, body, now: now() });

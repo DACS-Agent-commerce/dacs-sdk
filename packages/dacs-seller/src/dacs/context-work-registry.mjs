@@ -1,5 +1,5 @@
-// The host's registry of context provider work. The provider keeps working after its HTTP answer has been sent (at the attempt's
-// deadline, or when the host stops), so the host waits for it here before it closes the stores and releases the seller state lock.
+// The host's registry of context provider work. The provider keeps working after its HTTP answer has been sent at the attempt's
+// deadline, so the host waits for it here before it closes the stores and releases the seller state lock.
 import { SellerTransportError } from './seller-transport-auth.mjs';
 
 /**

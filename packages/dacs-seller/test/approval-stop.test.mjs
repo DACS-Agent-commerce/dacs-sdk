@@ -26,7 +26,7 @@ const attemptReasons=async(f)=>[...(await f.read()).attempts.values()].map(attem
 // After `skip` more ledger append opens, the next `count` fail with EIO; the returned function restores them.
 function failingAppends(t,count,skip=0){
  const{openSync}=fs;let left=count;
- fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
+ fs.openSync=(path,flags,...rest)=>{if(flags==='a+'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a+'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
  syncBuiltinESMExports();
  const restore=()=>{fs.openSync=openSync;syncBuiltinESMExports();};t.after(restore);return restore;
 }
