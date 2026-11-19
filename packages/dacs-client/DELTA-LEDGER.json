@@ -11234,6 +11234,23 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the README and native transport kept after the merge of the signature domain fixes",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "5c66abbc9b1b117cebd467a8080682d5af2e3936",
+          "after": "5c66abbc9b1b117cebd467a8080682d5af2e3936"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "0abb9146e1d38e2266e87b71c942f341724ccae5",
+          "after": "0abb9146e1d38e2266e87b71c942f341724ccae5"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF test that after a restart a new lease never confirms or sends acknowledged bytes a second time",
       "compact": true,
       "files": [

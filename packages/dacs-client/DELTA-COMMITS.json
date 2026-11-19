@@ -8213,5 +8213,17 @@
       "packages/dacs-client/records/WF-bbdb01c80947.json",
       "packages/dacs-client/scripts/check-hold.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): WF record the README and native transport kept after the merge of the signature domain fixes",
+    "compact": true,
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs"
+    ]
   }
 ]
