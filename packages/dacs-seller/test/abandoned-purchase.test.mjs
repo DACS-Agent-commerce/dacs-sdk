@@ -1,6 +1,6 @@
 // The session state the host reads when the operator supplies none: a settled purchase reads as aborted by the seller once no payment can
-// still come for it (an hour after admission with no proposal, and past its Agreement deadline with a proposal and no commitment). A
-// purchase with a commitment or a payment operation, and every other purchase, reads as unknown.
+// still come for it (an hour after admission with no proposal, and past its Agreement deadline with a proposal). A purchase that retains
+// commitment work, holds a payment or has a commitment or payment attempt pending, and every other purchase, reads as unknown.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
@@ -13,13 +13,16 @@ const { proposals: PROPOSALS, commitments: COMMITMENTS, payments: PAYMENTS } = D
 
 /**
  * A reader over a settled row admitted at `ADMITTED_AT` whose Agreement's deadline is `DEADLINE`; `started` names the later routes with an
- * operation (in `operation`'s state), `row`, `clock`, `operationState` and `agreementDeadline` replace the defaults.
+ * operation (in `operation`'s state), `row`, `clock`, `operationState`, `retainsCommitmentWork`, `holdsPayment` and `agreementDeadline`
+ * replace the defaults (no retained commitment work, no payment held).
  */
-function reader({ started = [], operation = 'completed', row = {}, clock = ADMITTED_AT + ABANDONED_PURCHASE_MS, operationState, agreementDeadline = () => DEADLINE } = {}) {
+function reader({ started = [], operation = 'completed', row = {}, clock = ADMITTED_AT + ABANDONED_PURCHASE_MS, operationState, retainsCommitmentWork = false, holdsPayment = false, agreementDeadline = () => DEADLINE } = {}) {
   const reads = [];
   const state = createAbandonedPurchaseState({
     admissionRecord: (jobId) => { reads.push(['row', jobId]); return { jobId, state: 'settled', admittedAt: ADMITTED_AT, ...row }; },
     operationState: operationState ?? (({ path }) => { reads.push(['operation', path]); return started.includes(path) ? operation : 'none'; }),
+    retainsCommitmentWork: (jobId) => (typeof retainsCommitmentWork === 'function' ? retainsCommitmentWork(jobId) : retainsCommitmentWork),
+    holdsPayment: (jobId) => (typeof holdsPayment === 'function' ? holdsPayment(jobId) : holdsPayment),
     agreementDeadline: (jobId) => { reads.push(['deadline', jobId]); return agreementDeadline(jobId); },
     now: () => clock,
   });
@@ -37,11 +40,23 @@ test('a settled purchase younger than an hour reads as unknown', () => {
   assert.deepEqual(reads.filter(([kind]) => kind === 'operation'), [], 'no operation is inspected while the purchase is young');
 });
 
-test('a purchase with a payment operation in any state reads as unknown at any age', () => {
+test('a purchase whose payment attempt is pending reads as unknown at any age', () => {
+  for (const started of [[PAYMENTS], [PROPOSALS, PAYMENTS], [PROPOSALS, COMMITMENTS, PAYMENTS]]) {
+    assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, { started, operation: 'pending' }), null, `${started}`);
+  }
+});
+
+test('a purchase that holds a recorded or retained payment reads as unknown at any age, whatever state its operations are in', () => {
   for (const operation of ['pending', 'ended', 'completed']) {
-    for (const started of [[PAYMENTS], [PROPOSALS, PAYMENTS], [PROPOSALS, COMMITMENTS, PAYMENTS]]) {
-      assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, { started, operation }), null, `${operation} ${started}`);
+    for (const started of [[], [PAYMENTS], [PROPOSALS, PAYMENTS], [PROPOSALS, COMMITMENTS, PAYMENTS]]) {
+      assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, { started, operation, holdsPayment: true }), null, `${operation} ${started}`);
     }
+  }
+});
+
+test('a payment refused with no effect on a purchase with no commitment work reads as aborted like one with no payment', () => {
+  for (const operation of ['ended', 'completed']) {
+    assert.equal(at(DEADLINE, { started: [PROPOSALS, PAYMENTS], operation }), 'aborted-by-self', operation);
   }
 });
 
@@ -60,16 +75,36 @@ test('a purchase with a proposal and no retained Agreement reads as aborted an h
   }
 });
 
-test('a committed purchase with no payment operation reads as unknown at any age, since a payment made before the deadline may be claimed late', () => {
+test('a commitment attempt that ended or completed with a refusal and left no commitment work reads as aborted past the deadline', () => {
+  for (const operation of ['ended', 'completed']) {
+    const options = { started: [PROPOSALS, COMMITMENTS], operation };
+    assert.equal(at(DEADLINE - 1, options), null, `${operation}: a commitment may still come before the deadline`);
+    assert.equal(at(DEADLINE, options), 'aborted-by-self', operation);
+    assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, options), 'aborted-by-self', operation);
+  }
+});
+
+test('a purchase that retains commitment work reads as unknown at any age, since a payment made before the deadline may be claimed late', () => {
   for (const operation of ['pending', 'ended', 'completed']) {
-    for (const started of [[COMMITMENTS], [PROPOSALS, COMMITMENTS]]) {
+    for (const started of [[COMMITMENTS], [PROPOSALS, COMMITMENTS], [PROPOSALS]]) {
       for (const clock of [DEADLINE - 1, DEADLINE, DEADLINE + ABANDONED_PURCHASE_MS, DEADLINE + 100 * ABANDONED_PURCHASE_MS]) {
-        assert.equal(at(clock, { started, operation }), null, `${operation} ${started} at ${clock - DEADLINE}`);
-      }
-      for (const agreementDeadline of [() => null, () => 'later', () => { throw new Error('TEST the session read failed'); }]) {
-        assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, { started, operation, agreementDeadline }), null);
+        assert.equal(at(clock, { started, operation, retainsCommitmentWork: true }), null, `${operation} ${started} at ${clock - DEADLINE}`);
       }
     }
+  }
+});
+
+test('a pending commitment attempt reads as unknown at any age even when no commitment work is retained yet', () => {
+  for (const started of [[COMMITMENTS], [PROPOSALS, COMMITMENTS]]) {
+    assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, { started, operation: 'pending' }), null, `${started}`);
+  }
+});
+
+test('a commitment-work or payment read that throws reads as unknown', () => {
+  const fails = () => { throw new Error('TEST the session read failed'); };
+  for (const options of [{ retainsCommitmentWork: fails }, { holdsPayment: fails }]) {
+    assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, { started: [PROPOSALS], ...options }), null);
+    assert.equal(at(DEADLINE + 100 * ABANDONED_PURCHASE_MS, options), null);
   }
 });
 

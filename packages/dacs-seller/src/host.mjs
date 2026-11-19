@@ -374,6 +374,8 @@ export async function startSellerHost(options) {
       completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
     abandonedPurchaseState = createAbandonedPurchaseState({ admissionRecord: admission.admissionRecord, now,
       operationState: ({ jobId, path }) => inspectWireOperation(journal, { jobId, seller: sellerClaim, path }).state,
+      retainsCommitmentWork: (jobId) => agent.retainsCommitmentWork(jobId),
+      holdsPayment: (jobId) => agent.retainsPaymentWork(jobId) || agent.holdsRecordedPayment(jobId),
       agreementDeadline: (jobId) => agent.transportAgreementOf(jobId)?.terms?.deadline });
     // Every effect route reserves through the coordinator and ends its attempt through the completion port.
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission });
