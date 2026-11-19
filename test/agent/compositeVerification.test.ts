@@ -17,6 +17,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  readCompositeVerificationRecord,
   sha256Hex,
   signComponentArtifact,
   signedBytes,
@@ -46,6 +47,12 @@ const BUNDLE_HASH = "a".repeat(64);
 const NOW = 1780000000000;
 const RESULT_LOCATOR = "stor:verify-result-1";
 const AUTHORITY_LOCATOR = "https://authority.example/evidence-1";
+
+function withoutSignature(record: CompositeVerificationRecord): Omit<CompositeVerificationRecord, "signature"> {
+  const copy: Partial<CompositeVerificationRecord> = { ...record };
+  delete copy.signature;
+  return copy as Omit<CompositeVerificationRecord, "signature">;
+}
 
 const requirement: CompositeBundleRequirement = {
   requirementVersion: "1",
@@ -490,6 +497,10 @@ describe("strict DACS-2 composite verification closure", () => {
     expect(isCompositeVerificationRecord(f.record)).toBe(true);
     expect(isVerifyResult({ ...f.result, resultVersion: "2" })).toBe(false);
     expect(isCompositeVerificationRecord({ ...f.record, recordVersion: "2" })).toBe(false);
+    expect(readCompositeVerificationRecord(f.record)).toEqual({
+      compatibility: "current",
+      record: f.record,
+    });
   });
 
   test("exact wire guards reject inherited fields, accessors, and nested overlays", async () => {
@@ -586,7 +597,7 @@ describe("strict DACS-2 composite verification closure", () => {
 
   test("accepts a record signer written as a parameter variant of the verifier", async () => {
     const f = await fixture();
-    const { signature: _signature, ...unsigned } = f.record;
+    const unsigned = withoutSignature(f.record);
     const record = (await signComponentArtifact(unsigned, "dacs-composite:v1:", {
       algorithm: "ed25519",
       signer: `${VERIFIER}?alias=work`,
@@ -603,7 +614,7 @@ describe("strict DACS-2 composite verification closure", () => {
 
   test("rejects a record signed by a different identity that shares the verifier's parameters", async () => {
     const f = await fixture();
-    const { signature: _signature, ...unsigned } = f.record;
+    const unsigned = withoutSignature(f.record);
     const record = (await signComponentArtifact(unsigned, "dacs-composite:v1:", {
       algorithm: "ed25519",
       signer: `${AUTHORITY}?alias=work`,
@@ -619,7 +630,7 @@ describe("strict DACS-2 composite verification closure", () => {
 
   test("rejects missing/malformed/currently unsupported signatures and shapes", async () => {
     const f = await fixture();
-    const { signature: _signature, ...unsigned } = f.record;
+    const unsigned = withoutSignature(f.record);
     await expect(
       verifyCompositeVerificationRecord(unsigned, f.expected, f.deps),
     ).resolves.toMatchObject({ status: "invalid", code: "record-shape" });
@@ -1734,7 +1745,7 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code: "verify-result-shape" });
   });
 
-  test("strict verification refuses an earlier-shape record as record-shape", async () => {
+  test("an earlier-shape record is unreadable and refused as record-shape", async () => {
     const f = await fixture();
     const earlier = {
       subject: PARTY,
@@ -1751,6 +1762,7 @@ describe("strict DACS-2 composite verification closure", () => {
       verifiedAt: "2026-01-01T00:00:00Z",
     };
     expect(isCompositeVerificationRecord(earlier)).toBe(false);
+    expect(readCompositeVerificationRecord(earlier)).toBeNull();
     await expect(
       verifyCompositeVerificationRecord(earlier, f.expected, f.deps),
     ).resolves.toMatchObject({ status: "invalid", code: "record-shape" });

@@ -37,7 +37,8 @@ function adapterAt(t, endpoint, pinChange = {}) {
     fetchImpl: async (_url, options) => {
       const body = options.body ? JSON.parse(options.body) : null, call = body?.params[0];
       const responses = { getBlockByNumber: call?.data.blockNumber === 0 ? { number: 0, status: 'confirmed', hash: pins.chainIdentity } : block,
-        searchStoragePrograms: [{ storageAddress: op.storageAddress, programName: op.programName }], getTxByHash: tx };
+        searchStoragePrograms: [{ storageAddress: op.storageAddress, programName: op.programName }], getTxByHash: tx,
+        getNetworkInfo: { forks: { osDenomination: { activated: true }, signatureDomain: { activated: false } } } };
       if (body) assert.ok(Object.hasOwn(responses, call.message), 'only bounded source reads are allowed');
       return new Response(JSON.stringify(body ? { result: 200, response: responses[call.message] } : native), { headers: { 'content-type': 'application/json' } });
     },

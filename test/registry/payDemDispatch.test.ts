@@ -19,8 +19,8 @@ vi.mock("../../src/rails/payDem.js", async (importOriginal) => {
 });
 // The Demos SDK seen by the real pay-dem rail, for the tests that dispatch through it.
 const demosSdk = vi.hoisted(() => ({
-  connect: vi.fn(async (_rpcUrl: string): Promise<undefined> => undefined),
-  connectWallet: vi.fn(async (_walletSecret: string): Promise<undefined> => undefined),
+  connect: vi.fn(async (): Promise<undefined> => undefined),
+  connectWallet: vi.fn(async (): Promise<undefined> => undefined),
   getNetworkInfo: vi.fn(),
   transfer: vi.fn(),
 }));

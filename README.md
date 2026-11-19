@@ -285,10 +285,7 @@ const buyer = await createAgent({
 // buyer — resolve the stable logical address and authenticate its binding tuple,
 // signed content, seller, service, version, and Listing-domain signature.
 const resolved = await buyer.readListing(published.logicalAddress);
-if (
-  resolved.status !== "verified" ||
-  resolved.compatibility !== "normative"
-) {
+if (resolved.status !== "verified") {
   throw new Error(`listing could not pass ordered admission: ${resolved.status}`);
 }
 
