@@ -73,11 +73,10 @@ allocation cleanup runs at startup and when a store reader observes a terminal
 session, and the periodic terminal cleanup comes with the routes that use the units.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
-the old store's checks, startup cleanup and the coordinator) is kept as a durable,
-insert-only terminal closure for the job, together with the release of its open
-slots. It commits with the work that saw it or, when that work is refused, fails or
-is rolled back (the `classify` dry run included), in a transaction of its own before
-the answer leaves. A failed write keeps its error and the observation stays
+the store's reservation accounting, startup cleanup and the coordinator) is kept as
+a durable, insert-only terminal closure for the job, together with the release of
+its open slots. It commits with the work that saw it or, when that work is refused,
+fails or is rolled back, in a transaction of its own before the answer leaves. A failed write keeps its error and the observation stays
 pending, so no later transaction or request passes it. A closure answers terminal
 after a restart whatever the port then says; an unknown, nonterminal or
 asynchronous answer creates none. The coordinator refuses a request for a closed job
@@ -420,10 +419,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   Holding that lock, the host recovers what a holder that is gone left before it
   serves: it releases every job lock row `releaseAbandonedLock` would release
   (never a live holder, nor one on this boot whose lease cannot be checked),
-  logging one `seller-state: released the lock on job ...` line per row, and
-  marks each context step still pending in the transport journal as uncertain,
-  so the route's own reconciliation decides whether it runs again. Saved
-  sessions, effects and settlements are not changed. A lock row the host
+  logging one `seller-state: released the lock on job ...` line per row, closes
+  the challenge validations it left as lost, and ends every context admission it
+  left running: a row whose outcome the wire journal holds is settled from it,
+  and any other is compensated, which releases its hold and slot unless a Vet
+  write cannot be ruled out. Saved sessions, effects and settlements are not
+  changed. A lock row the host
   cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
   and body, for this seller and Listing; unsigned or mismatched requests are
