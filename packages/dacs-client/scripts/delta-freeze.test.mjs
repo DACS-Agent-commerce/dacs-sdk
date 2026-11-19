@@ -54,12 +54,12 @@ test('the checked-out head passes, and a README change with a record that names 
   assert.deepEqual(derived(s), []);
 });
 
-test('an unrecorded README change after the anchor is refused on each side', t => {
-  const s = scratch(t), anchorBlob = readAnchor(s.dir).files[`${P}README.md`];
+test('an unrecorded README change after its latest record is refused on each side', t => {
+  const s = scratch(t), recordedBlob = s.git('rev-parse', `HEAD:${P}README.md`);
   appendFileSync(join(s.dir, 'README.md'), '\nTEST unrecorded line\n');
-  assert.deepEqual(derived(s), [`${P}README.md: working file differs from the anchor (${anchorBlob})`]);
+  assert.deepEqual(derived(s), [`${P}README.md: working file differs from its newest record (${recordedBlob})`]);
   s.git('add', '--', P); s.git('commit', '-qm', 'docs(client): TEST unrecorded README change');
-  assert.deepEqual(derived(s), [`${P}README.md: HEAD, index, working file differ from the anchor (${anchorBlob})`]);
+  assert.deepEqual(derived(s), [`${P}README.md: HEAD, index, working file differ from its newest record (${recordedBlob})`]);
 });
 
 test('a file the anchor does not name, a file outside every class and a core path without a pin are refused', t => {
@@ -153,6 +153,7 @@ test('a README record of a commit the anchor contains is left out of the chain; 
   early.git('switch', '-qc', 'TEST-early', parent);
   recordedCommit(early, 'delta(client): WF TEST README change from before the anchor', { 'README.md': `${readme(early)}\nTEST early line\n` });
   early.git('switch', '-q', main); early.git('merge', '-q', '--no-ff', '-m', 'TEST merge an early branch', 'TEST-early');
+  recordedCommit(early, 'delta(client): WF choose the README after a parallel change', { 'README.md': undefined }, 'resolution');
   assert.deepEqual(derived(early), []);
 });
 
@@ -164,6 +165,7 @@ test('a README record from a branch cut before the anchor\'s last README change 
   const early = recordedCommit(s, 'delta(client): WF TEST README change from an old copy', { 'README.md': `${readme(s)}\nTEST early line\n` });
   s.git('switch', '-q', main); s.git('merge', '-q', '--no-ff', '--no-commit', '-s', 'ours', 'TEST-early');
   s.git('checkout', 'TEST-early', '--', `${P}README.md`, P + early.record); s.git('commit', '-qm', 'TEST merge an old branch');
+  recordedCommit(s, 'delta(client): WF choose the README after merging an old copy', { 'README.md': undefined }, 'resolution');
   assert.deepEqual(derived(s), [`${P}README.md: delta parent is discontinuous at ${early.sha}`]);
 });
 

@@ -40,7 +40,8 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkDeltas, pkg as DELTA_PACKAGE, BASELINE } from "./delta-map.mjs";
+import { checkRecord } from "./check-hold.mjs";
+import { blob, checkDeltas, pkg as DELTA_PACKAGE, BASELINE } from "./delta-map.mjs";
 import { CLIENT_PACKAGE_DIR, mapSourcePath } from "./path-mapping.mjs";
 import { sourceGit as git } from "./source-git.mjs";
 
@@ -137,7 +138,12 @@ function main() {
   const prefix = `${CLIENT_PACKAGE_DIR}/`;
   const deltaMode = args.packageDir === DELTA_PACKAGE && existsSync(join(args.packageDir, 'DELTA-LEDGER.json'));
   const deltaResult = deltaMode ? checkDeltas(args.packageDir) : null;
-  if (deltaResult) failures.push(...deltaResult.failures);
+  if (deltaResult) {
+    failures.push(...deltaResult.failures);
+    const hold = JSON.parse(readFileSync(join(args.packageDir, 'HOLD.json'), 'utf8'));
+    failures.push(...checkRecord(hold));
+    for (const name of ['DELTA-LEDGER.json', 'DELTA-COMMITS.json']) if (blob(readFileSync(join(args.packageDir, name))) !== hold.step1Freeze.files[name]?.blob) failures.push(`${name}: archive differs from its core pin`);
+  }
   for (const line of deltaResult?.skipped ?? []) console.log(`[check-provenance] ${line}`);
   const listed = new Set();
   if (manifest.package !== PACKAGE) failures.push(`manifest package ${JSON.stringify(manifest.package)} is not ${PACKAGE}`);
