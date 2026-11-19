@@ -15,7 +15,6 @@ import {
   isAttestationRef,
   isCompositeVerificationRecord,
   isIdentityBundle,
-  isLegacyCompositeVerificationRecord,
   isExactJsonRecord,
   isVerifyResult,
   isVerifyResultRef,
@@ -175,7 +174,6 @@ export interface VerifyCompositeVerificationDeps<TKey> {
 }
 
 export type CompositeVerificationInvalidCode =
-  | "legacy-record"
   | "record-shape"
   | "expectation-shape"
   | "job-mismatch"
@@ -1552,9 +1550,8 @@ export async function verifyCompositeVerificationRecord<TKey>(
   deps: VerifyCompositeVerificationDeps<TKey>,
 ): Promise<StrictCompositeVerification> {
   // Validate the caller-owned object before structuredClone. In particular, a
-  // getter-backed legacy/current hybrid or custom prototype must not be
+  // getter-backed hybrid of two record shapes or a custom prototype must not be
   // normalised into a valid-looking current record by the snapshot operation.
-  if (isLegacyCompositeVerificationRecord(value)) return invalid("legacy-record");
   if (!isCompositeVerificationRecord(value)) return invalid("record-shape");
   let valueSnapshot: unknown;
   try {

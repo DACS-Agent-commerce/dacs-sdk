@@ -705,9 +705,8 @@ anchor finality, active-listing eligibility, or complete DACS conformance.
 `readListing(logicalAddress)` and `enumerateListings(sellerId)` need only
 `AgentConfig.bindings.index`; the Agent wallet and publisher are optional for a
 read-only consumer. A normative `verified` result has passed the SDK-owned
-ordered DACS-1 reader through step 9 and carries its exact `listingPin`; an
-`authenticated` result is restricted to the explicit historical legacy-read
-arm. Both have passed exact binding-tuple, hash, Listing-context, and authorship
+ordered DACS-1 reader through step 9 and carries its exact `listingPin`. It has
+also passed exact binding-tuple, hash, Listing-context, and authorship
 checks. The binding owner is an
 index assertion; direct lookup does not by itself prove that the seller deployed
 the native anchor. Keep physical provenance separate from signed-content and
