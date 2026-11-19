@@ -31,9 +31,6 @@ DPA-1 applicability is intentionally keyed to the signed pipeline containing
 `deliver-attested-payload`, exactly as DACS-4 §9.6.3 states. An
 `attested-payload` DeliverableSpec paired with another delivery phase is not a
 DPA-1 pass: the selected delivery handler must apply its own §9.6 type check.
-The explicit `LegacyMvpListing` branch has no normative signed DeliverableSpec
-or verification method and therefore never claims a DPA-1 disposition; it is a
-compatibility path, not a normative supplier Listing producer or verifier.
 
 ## Tracker disposition
 

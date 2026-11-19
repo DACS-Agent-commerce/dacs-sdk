@@ -2149,8 +2149,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     async discover(
       listingRefs: string[],
     ): Promise<DiscoveredListing[]> {
-      // DACS-1 §6.3.4: verify the structured signer through seller.identity;
-      // historical string signatures remain in the explicit legacy read arm.
+      // DACS-1 §6.3.4: verify the structured signer through seller.identity.
       return discoverListings(listingRefs, (r) => publicReads.readAnchor(r), {
         verify: ed25519RawVerify,
         resolvePublicKey: resolveCanonicalSigningKeyForRead,

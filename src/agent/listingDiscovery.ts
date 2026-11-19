@@ -527,7 +527,7 @@ export async function readListingByLogicalAddress(
       binding.nativeAddress,
     );
   }
-  if (!readableListingClaimReferencesAreCanonical(readable)) {
+  if (!readableListingClaimReferencesAreCanonical(readable.listing)) {
     return rejected(
       logicalAddress,
       "shape",
