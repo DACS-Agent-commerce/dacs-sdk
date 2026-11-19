@@ -1,5 +1,5 @@
 // Unshipped fixture: a buyer that reaches a started seller host over loopback HTTP, and a context provider capability with every callback
-// the host needs. The buyer signs the challenge and the context request through the wire, delegated to a session key.
+// the host needs. The buyer signs the challenge and the context request through the wire, delegated to a session key, or itself with `direct`.
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,16 +44,16 @@ export async function contextHostFixture(t, { publicEndpoint = null } = {}) {
     return host;
   };
   t.after(async () => { for (const host of hosts) await host.close().catch(() => {}); await rm(dataDirectory, { recursive: true, force: true }); });
-  return { ...f, config, start, dataDirectory, buyerFor: (host) => hostBuyer(host, f.config.listing, { jobId: JOB }) };
+  return { ...f, config, start, dataDirectory, buyerFor: (host, options = {}) => hostBuyer(host, f.config.listing, { jobId: JOB, ...options }) };
 }
 
 /**
  * A buyer for `host`. `challenge(jobId)` posts the signed challenge request, `context(jobId, nonce)` the signed context request
  * over that challenge, and `requestContext(jobId)` both; each answers `{ status, text, body, signed }`. Requests are delegated to a session
  * key; `{ delegated: false }` signs the context request with the buyer's own key instead. `scopeFor(jobId)` is the challenge scope the
- * buyer sends, and `admit(jobId)` the first admission a proposal needs.
+ * buyer sends, and `admit(jobId)` the first admission a proposal needs. With `direct` the buyer signs each request itself, with no session delegation.
  */
-export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyerKey = buyer, seller: sellerKey = seller, clock = () => NOW }) {
+export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyerKey = buyer, seller: sellerKey = seller, clock = () => NOW, direct = false }) {
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
   const session = testWallet(99), support = purchaseSupport(listing);
   const wire = await wireBuyer({ buyer: signerOf(buyerKey), seller: signerOf(sellerKey), listingPin: host.listingPin, clock });
@@ -64,7 +64,7 @@ export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyer
       listingPin: host.listingPin, jobId, notBefore: clock() - DELEGATION_LEAD_MS, expiresAt: clock() + DELEGATION_LIFETIME_MS, profile: binding.profile };
     return { payload, signature: buyerKey.signBytes(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(payload))).toString('base64url') };
   };
-  const send = async (path, jobId, body, { delegated = true } = {}) => {
+  const send = async (path, jobId, body, { delegated = !direct } = {}) => {
     const signed = await wire.signRequest(path, body, { jobId, agreementHash: sha256Hex(canonicalize(body.scope)), delegation: delegated ? delegationFor(jobId) : null,
       signer: signerOf(delegated ? session : buyerKey), text: JSON.stringify(body) });
     const response = await fetch(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.text });
