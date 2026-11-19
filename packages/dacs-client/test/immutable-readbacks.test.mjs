@@ -6,7 +6,7 @@ const input = { purchaseId: 'purchase-1', locator: 'tx-1', contentHash: 'hash-1'
 
 function readbacksOnClock(start) {
   const clock = { at: start };
-  return { clock, readbacks: createImmutableReadbacks({ now: () => clock.at }) };
+  return { clock, readbacks: createImmutableReadbacks({ monotonicNow: () => clock.at }) };
 }
 
 test('a cached readback is returned until the injected clock reaches the TTL, then it is dropped', () => {
