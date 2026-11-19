@@ -804,11 +804,6 @@
       "count": 1
     }
   },
-  "test/agent/compositeVerification.test.ts": {
-    "@typescript-eslint/no-unused-vars": {
-      "count": 3
-    }
-  },
   "test/agent/counterpartyBundleFinalization.test.ts": {
     "@typescript-eslint/no-unused-vars": {
       "count": 2
@@ -1004,11 +999,6 @@
   },
   "test/rails/x402Paywall.test.ts": {
     "@typescript-eslint/no-misused-promises": {
-      "count": 2
-    }
-  },
-  "test/registry/payDemDispatch.test.ts": {
-    "@typescript-eslint/no-unused-vars": {
       "count": 2
     }
   },
