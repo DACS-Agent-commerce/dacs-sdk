@@ -346,23 +346,14 @@ function assertContiguousHistory(
     }
 
     const stored = readListingArtifact(anchor.value);
-    if (!stored) {
+    if (stored?.compatibility !== "normative") {
       throw new DacsError(
         `listing history anchor ${anchor.address} is not a readable signed Listing`,
       );
     }
-    // DACS-1 §6.3.4 prior versions remain readable. Historical reduced MVP
-    // versions participate only through this explicit read compatibility arm;
-    // the new version written below must still be normative.
-    const storedPublisher =
-      stored.compatibility === "normative"
-        ? stored.listing.seller.identity.presentedBy
-        : stored.listing.agentId;
-    const storedId =
-      stored.compatibility === "normative"
-        ? stored.listing.listingId
-        : stored.listing.serviceId;
-    const storedVersion = stored.listing.listingVersion ?? 1;
+    const storedPublisher = stored.listing.seller.identity.presentedBy;
+    const storedId = stored.listing.listingId;
+    const storedVersion = stored.listing.listingVersion;
     if (
       storedPublisher !== listing.seller.identity.presentedBy ||
       storedId !== listing.listingId ||
@@ -411,11 +402,9 @@ export async function publishListingCore(
     );
   }
   // DACS-1 §6.3.4 LP-2 and CORE §11.1.2: new writes are normative only.
-  // Historical MVP artifacts are accepted solely by readListingArtifact().
   if (!isListingDraft(listing)) {
     throw new DacsError(
-      "publishListing requires a normative unsigned DACS-1 §6.3.4 Listing; " +
-        "legacy MVP shapes are read-only",
+      "publishListing requires a normative unsigned DACS-1 §6.3.4 Listing",
     );
   }
   const payloadCapability = await resolveListingPayloadVerificationCapability(

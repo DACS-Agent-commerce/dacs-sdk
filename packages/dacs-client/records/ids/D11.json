@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D11",
+  "registration": "D11: existing client delta lane",
+  "subject": "fix(client): D11 refuse engine-floor iterators with an unwrappable own next and test the floor layout"
+}

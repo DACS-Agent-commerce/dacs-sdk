@@ -3,7 +3,7 @@
 // record files the result is the archive as stored.
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isCorePath, RECORD_NAME, PACKAGE_PREFIX, validateRecord } from './delta-record.mjs';
+import { isCorePath, RECORD_NAME, PACKAGE_PREFIX, readDeclarations, validateRecord } from './delta-record.mjs';
 
 /** Reads the archive files of `packageDir` as stored. Returns {ledger, commits}. */
 export function readArchive(packageDir) {
@@ -18,7 +18,7 @@ function readRecords(packageDir, failures) {
   const records = [];
   for (const name of readdirSync(dir).sort()) {
     const at = `${PACKAGE_PREFIX}records/${name}`;
-    if (isCorePath(`records/${name}`)) continue;
+    if (isCorePath(`records/${name}`) || name === 'ids') continue;
     if (!lstatSync(join(dir, name)).isFile()) { failures.push(`${at}: not a regular file`); continue; }
     if (!RECORD_NAME.test(name)) { failures.push(`${at}: not a record file name (<delta>-<12 hex>.json)`); continue; }
     let record;
@@ -39,6 +39,12 @@ function readRecords(packageDir, failures) {
 export function assemble(packageDir) {
   const archive = readArchive(packageDir), failures = [];
   const records = readRecords(packageDir, failures);
+  const declarations = readDeclarations(packageDir, failures);
+  const historical = join(packageDir, 'evidence/publication-history.json');
+  const originals = existsSync(historical) ? JSON.parse(readFileSync(historical, 'utf8')).deltas.changes : [];
+  const changes = [...originals, ...(archive.ledger.supersededChanges ?? []), ...archive.ledger.changes, ...records.map(entry => entry.record)];
+  for (const change of changes) if (!declarations.has(change.delta)) failures.push(`invalid delta ${change.subject}: undeclared id ${change.delta}`);
+  for (const [id, declaration] of declarations) if (!changes.some(change => change.delta === id && change.subject === declaration.subject)) failures.push(`${PACKAGE_PREFIX}records/ids/${id}.json: declaration subject ${declaration.subject} does not select a record`);
   if (records.length === 0) return { ...archive, failures };
   const names = new Set(records.map(entry => entry.name)), superseded = new Set();
   for (const { name, record } of records) for (const other of record.supersedes ?? []) {
@@ -46,7 +52,7 @@ export function assemble(packageDir) {
     else failures.push(`${PACKAGE_PREFIX}records/${name}: supersedes ${other}, which is not a valid record file`);
   }
   const change = ({ record }) => ({ delta: record.delta, subject: record.subject, ...(record.sha ? { sha: record.sha } : {}), files: record.files });
-  const row = ({ record }) => ({ sha: record.sha ?? null, subject: record.subject, files: record.commitFiles });
+  const row = ({ record }) => ({ sha: record.sha ?? null, subject: record.subject, files: record.commitFiles, ...(record.note ? { note: record.note } : {}) });
   const current = records.filter(entry => !superseded.has(entry.name)), replaced = records.filter(entry => superseded.has(entry.name));
   const withFiles = entry => entry.record.files !== undefined;
   const ledger = { ...archive.ledger, changes: [...archive.ledger.changes, ...current.filter(withFiles).map(change)] };

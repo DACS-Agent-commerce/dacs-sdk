@@ -1,16 +1,10 @@
-import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
-import type {
-  LegacyMvpListing,
-  Listing,
-  ListingPin,
-} from "../artifacts/types.js";
+import type { Listing, ListingPin } from "../artifacts/types.js";
 import { readListingArtifact } from "../artifacts/validators.js";
 import {
   contentHash,
   decodeAddressSegment,
   listingAddress,
 } from "../canonical/index.js";
-import { signedBytes } from "../crypto/index.js";
 import type {
   AnchorBinding,
   BindingIndex,
@@ -30,18 +24,15 @@ import {
   type VerifiedListingAdmission,
 } from "./listingValidation.js";
 import { readableListingClaimReferencesAreCanonical } from "./listingClaimReferences.js";
-import { type Verifier } from "./signedArtifact.js";
 
 const CANONICAL_DEMOS_AGENT_IDENTIFIER = /^demos:agent:([0-9a-f]{64})$/;
 const DEMOS_OWNER = /^(?:0x)?[0-9a-f]{64}$/i;
 const LOWER_HEX_HASH = /^[0-9a-f]{64}$/;
-const LOWER_HEX_ED25519_SIGNATURE = /^[0-9a-f]{128}$/;
 const LISTING_LOGICAL_ADDRESS = /^dacs1:([^:]+):([^:]+):v([1-9][0-9]*)$/;
 
 interface ParsedListingAddress {
   sellerPrimaryClaim: string;
   owner: string;
-  publicKey: Uint8Array;
   listingId: string;
   version: number;
 }
@@ -68,20 +59,13 @@ function isWellFormedUtf16(value: string): boolean {
   return true;
 }
 
-function canonicalAgent(agentId: string): {
-  owner: string;
-  publicKey: Uint8Array;
-} | null {
+function canonicalAgent(agentId: string): { owner: string } | null {
   const parsed = parseCanonicalClaimReference(agentId);
   const match = parsed?.identity.scheme === "did"
     ? parsed.identity.identifier.match(CANONICAL_DEMOS_AGENT_IDENTIFIER)
     : null;
   if (!match) return null;
-  const owner = match[1]!;
-  return {
-    owner,
-    publicKey: Uint8Array.from(Buffer.from(owner, "hex")),
-  };
+  return { owner: match[1]! };
 }
 
 function parseListingAddress(logicalAddress: string): ParseResult {
@@ -143,7 +127,6 @@ export type ListingReadRejectionCheck =
   | "content-hash"
   | "shape"
   | "context"
-  | "signature"
   | "validation";
 
 export type ListingReadRejectionCode =
@@ -157,12 +140,9 @@ export type ListingReadRejectionCode =
   | "content-hash-mismatch"
   | "content-not-canonical"
   | "invalid-record"
-  | "invalid-signature-envelope"
   | "unsupported-listing-shape"
   | "seller-mismatch"
   | "listing-id-mismatch"
-  | "service-mismatch"
-  | "signature-invalid"
   | "listing-validation-failed"
   | "history-owner-mismatch";
 
@@ -175,20 +155,13 @@ interface AuthenticatedListingBase {
   listingPin: ListingPin;
 }
 
-export type AuthenticatedListing =
-  | (AuthenticatedListingBase & {
-      status: "verified";
-      compatibility: "normative";
-      /** Exact Listing promoted only from the SDK-owned ordered step-9 result. */
-      listing: Listing;
-      validation: VerifiedListingAdmission;
-    })
-  | (AuthenticatedListingBase & {
-      status: "authenticated";
-      compatibility: "legacy-mvp";
-      /** Historical signed scope with the standalone signature removed. */
-      listing: LegacyMvpListing;
-    });
+export type AuthenticatedListing = AuthenticatedListingBase & {
+  status: "verified";
+  compatibility: "normative";
+  /** Exact Listing promoted only from the SDK-owned ordered step-9 result. */
+  listing: Listing;
+  validation: VerifiedListingAdmission;
+};
 
 export type ListingReadFailure =
   | {
@@ -214,16 +187,14 @@ export type ListingReadFailure =
   | {
       status: "indeterminate";
       logicalAddress: string;
-      stage: "index" | "read" | "verification" | "validation";
+      stage: "index" | "read" | "validation";
       reason: string;
       validation?: ListingValidationResult;
     };
 
 /**
- * `authenticated` proves exact binding/hash/context and Listing-domain
- * authorship. It does NOT mean the Listing is currently active, unrevoked,
- * reachable, or fully valid under the normative DACS-1 reader pipeline; that
- * separate disposition is supplied by the ordered validation path.
+ * A `verified` result has passed the exact binding, content-hash and
+ * Listing-context checks and the SDK-owned ordered DACS-1 reader through step 9.
  */
 export type ListingReadResult =
   | AuthenticatedListing
@@ -235,8 +206,7 @@ export interface ListingDiscoveryDeps {
     nativeAddress: string,
     anchorKind?: string,
   ) => Promise<Record<string, unknown> | null>;
-  verify: Verifier;
-  /** Required for normative reads; the SDK executes the ordered algorithm. */
+  /** Required to read a Listing; the SDK executes the ordered algorithm. */
   listingValidationDeps?: ListingValidationDeps;
   /** Required only for owner-scoped history enumeration. */
   createHistoryPageFetcher?: (
@@ -301,9 +271,10 @@ function malformedIndexResponse(
 }
 
 /**
- * Resolve and authenticate one normative or historical Listing by its canonical
- * logical address. The owner is derived from that address; callers cannot pair
- * an arbitrary logical address with an unrelated owner hint.
+ * Resolve one normative DACS-1 Listing by its canonical logical address and
+ * admit it through the ordered reader. The owner is derived from that address;
+ * callers cannot pair an arbitrary logical address with an unrelated owner
+ * hint.
  */
 export async function readListingByLogicalAddress(
   logicalAddress: string,
@@ -324,7 +295,6 @@ export async function readListingByLogicalAddress(
 
   const resolveBinding = deps.index.resolve.bind(deps.index);
   const readAnchor = deps.readAnchor.bind(deps);
-  const verifyLegacySignature = deps.verify.bind(deps);
   let capturedValidationDeps: ListingValidationDeps | undefined;
   if (deps.listingValidationDeps) {
     try {
@@ -548,12 +518,12 @@ export async function readListingByLogicalAddress(
   }
 
   const readable = readListingArtifact(record);
-  if (!readable) {
+  if (readable?.compatibility !== "normative") {
     return rejected(
       logicalAddress,
       "shape",
       "unsupported-listing-shape",
-      "record does not satisfy a supported normative or historical Listing shape",
+      "record is not a normative DACS-1 Listing",
       binding.nativeAddress,
     );
   }
@@ -567,13 +537,9 @@ export async function readListingByLogicalAddress(
     );
   }
 
-  const sellerId = readable.compatibility === "normative"
-    ? readable.listing.seller.identity.presentedBy
-    : readable.listing.agentId;
-  const listingId = readable.compatibility === "normative"
-    ? readable.listing.listingId
-    : readable.listing.serviceId;
-  const recordVersion = readable.listing.listingVersion ?? 1;
+  const sellerId = readable.listing.seller.identity.presentedBy;
+  const listingId = readable.listing.listingId;
+  const recordVersion = readable.listing.listingVersion;
   if (sellerId !== parsed.value.sellerPrimaryClaim) {
     return rejected(
       logicalAddress,
@@ -587,9 +553,7 @@ export async function readListingByLogicalAddress(
     return rejected(
       logicalAddress,
       "context",
-      readable.compatibility === "normative"
-        ? "listing-id-mismatch"
-        : "service-mismatch",
+      "listing-id-mismatch",
       "Listing id does not match the id embedded in the logical address",
       binding.nativeAddress,
     );
@@ -619,139 +583,82 @@ export async function readListingByLogicalAddress(
     );
   }
 
-  if (readable.compatibility === "normative") {
-    if (!capturedValidationDeps) {
+  if (!capturedValidationDeps) {
+    return {
+      status: "indeterminate",
+      logicalAddress,
+      stage: "validation",
+      reason:
+        "normative Listing reads require SDK-owned ordered validation dependencies",
+    };
+  }
+  let validation: ListingValidationResult;
+  try {
+    validation = structuredClone(
+      await validateListingArtifact(
+        structuredClone(record),
+        capturedValidationDeps,
+      ),
+    );
+  } catch {
+    return {
+      status: "indeterminate",
+      logicalAddress,
+      stage: "validation",
+      reason: "normative Listing ordered validation did not complete",
+    };
+  }
+  if (!isVerifiedListingAdmission(record, validation)) {
+    if (validation.disposition === "indeterminate") {
       return {
         status: "indeterminate",
         logicalAddress,
         stage: "validation",
         reason:
-          "normative Listing reads require SDK-owned ordered validation dependencies",
+          `normative Listing admission is indeterminate at reader step ` +
+          `${validation.step} (${validation.reason})`,
+        validation,
       };
     }
-    let validation: ListingValidationResult;
-    try {
-      validation = structuredClone(
-        await validateListingArtifact(
-          structuredClone(record),
-          capturedValidationDeps,
-        ),
-      );
-    } catch {
+    if (
+      validation.disposition === "rejected" ||
+      validation.disposition === "revoked"
+    ) {
       return {
-        status: "indeterminate",
+        status: "rejected",
         logicalAddress,
-        stage: "validation",
-        reason: "normative Listing ordered validation did not complete",
-      };
-    }
-    if (!isVerifiedListingAdmission(record, validation)) {
-      if (validation.disposition === "indeterminate") {
-        return {
-          status: "indeterminate",
-          logicalAddress,
-          stage: "validation",
-          reason:
-            `normative Listing admission is indeterminate at reader step ` +
-            `${validation.step} (${validation.reason})`,
-          validation,
-        };
-      }
-      if (
-        validation.disposition === "rejected" ||
-        validation.disposition === "revoked"
-      ) {
-        return {
-          status: "rejected",
-          logicalAddress,
-          nativeAddress: binding.nativeAddress,
-          check: "validation",
-          code: "listing-validation-failed",
-          reason:
-            `normative Listing admission is ${validation.disposition} at reader ` +
-            `step ${validation.step} (${validation.reason})`,
-          validation,
-        };
-      }
-      return {
-        status: "indeterminate",
-        logicalAddress,
-        stage: "validation",
+        nativeAddress: binding.nativeAddress,
+        check: "validation",
+        code: "listing-validation-failed",
         reason:
-          "normative Listing validator returned a stale, substituted, or incomplete verified result",
+          `normative Listing admission is ${validation.disposition} at reader ` +
+          `step ${validation.step} (${validation.reason})`,
         validation,
       };
     }
     return {
-      status: "verified",
-      compatibility: "normative",
-      ref: binding.nativeAddress,
+      status: "indeterminate",
       logicalAddress,
-      version: parsed.value.version,
-      contentHash: validation.listingContentHash,
-      listingPin: {
-        listingId: validation.listing.listingId,
-        version: validation.listing.listingVersion,
-        contentHash: validation.listingContentHash,
-      },
-      listing: validation.listing,
+      stage: "validation",
+      reason:
+        "normative Listing validator returned a stale, substituted, or incomplete verified result",
       validation,
     };
   }
-
-  if (
-    typeof record.signature !== "string" ||
-    !LOWER_HEX_ED25519_SIGNATURE.test(record.signature) ||
-    Object.prototype.hasOwnProperty.call(record, "signatures")
-  ) {
-    return rejected(
-      logicalAddress,
-      "shape",
-      "invalid-signature-envelope",
-      "legacy Listing requires one exact lowercase Ed25519 signature and no signatures field",
-      binding.nativeAddress,
-    );
-  }
-  let signatureValid: boolean;
-  try {
-    signatureValid = await verifyLegacySignature(
-      signedBytes(ARTIFACT_SEPARATORS.Listing, actualContentHash),
-      Uint8Array.from(Buffer.from(record.signature, "hex")),
-      parsed.value.publicKey,
-    );
-  } catch (error) {
-    return {
-      status: "indeterminate",
-      logicalAddress,
-      stage: "verification",
-      reason:
-        "Listing signature verification failed: " +
-        (error instanceof Error ? error.message : String(error)),
-    };
-  }
-  if (signatureValid !== true) {
-    return rejected(
-      logicalAddress,
-      "signature",
-      "signature-invalid",
-      "Listing signature is not valid for the seller and Listing domain",
-      binding.nativeAddress,
-    );
-  }
-
   return {
-    status: "authenticated",
-    compatibility: "legacy-mvp",
+    status: "verified",
+    compatibility: "normative",
     ref: binding.nativeAddress,
     logicalAddress,
     version: parsed.value.version,
-    contentHash: actualContentHash,
+    contentHash: validation.listingContentHash,
     listingPin: {
-      listingId: readable.listing.serviceId,
-      version: parsed.value.version,
-      contentHash: actualContentHash,
+      listingId: validation.listing.listingId,
+      version: validation.listing.listingVersion,
+      contentHash: validation.listingContentHash,
     },
-    listing: readable.listing,
+    listing: validation.listing,
+    validation,
   };
 }
 
@@ -786,7 +693,7 @@ export type ListingEnumerationResult =
     }
   | {
       status: "indeterminate";
-      stage: "history" | "index" | "read" | "verification" | "validation";
+      stage: "history" | "index" | "read" | "validation";
       listings: readonly [];
       diagnostics: readonly [];
       reason: string;
@@ -794,10 +701,10 @@ export type ListingEnumerationResult =
     };
 
 /**
- * Page through verified normative or authenticated historical Listings for one
- * known canonical Demos seller. This is owner-scoped history discovery, not a
- * global marketplace search. Independent calls are
- * at-least-once: idempotently upsert by `(logicalAddress, contentHash, ref)`.
+ * Page through verified Listings for one known canonical Demos seller. This is
+ * owner-scoped history discovery, not a global marketplace search. Independent
+ * calls are at-least-once: idempotently upsert by
+ * `(logicalAddress, contentHash, ref)`.
  * A null `nextCursor` ends only the current traversal; restart from null after
  * late binding repair or when refreshing the seller's history.
  */
@@ -946,10 +853,7 @@ export async function enumerateListingsForSeller(
       deps,
       candidate.nativeAddress,
     );
-    if (
-      result.status === "authenticated" ||
-      result.status === "verified"
-    ) {
+    if (result.status === "verified") {
       listings.push(result);
       continue;
     }

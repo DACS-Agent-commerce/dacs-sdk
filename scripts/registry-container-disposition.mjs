@@ -1239,7 +1239,9 @@ export function extractPolicyFindings(readInput) {
   // Diagnostic logs are read through the line bounds; a missing one stays missing.
   const logText = name => {
     const text = source.text(name);
-    return text === undefined ? undefined : [...evidenceLines(text)].join("\n");
+    if (text === undefined) return undefined;
+    try { return [...evidenceLines(text)].join("\n"); }
+    catch (error) { throw new Error(`${error.message}: ${name}`, { cause: error }); }
   };
   const lock = source.json("generated-package-lock.json", generatedLock);
   const packages = lock?.packages ?? {};

@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D27",
+  "registration": "D27: existing client delta lane",
+  "subject": "delta(client): D27 operator approver re-checks the request bytes"
+}
