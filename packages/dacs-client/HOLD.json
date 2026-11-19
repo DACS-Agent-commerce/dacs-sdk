@@ -1025,10 +1025,10 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "0d4431d752830fd702350705d830654ede52499f"
+        "blob": "69c8879ff310f8c4e933174ff6738624f6134238"
       },
       "scripts/check-hold.test.mjs": {
-        "blob": "08a34331a1279937f2a522a175a0adc8d84fe380"
+        "blob": "33e5e51771e8137769c7af6087897c893b1d12b1"
       },
       "scripts/check-imports.mjs": {
         "blob": "011c3f9aa92a5d7f4ad0298599e78e689b46f6b1"
