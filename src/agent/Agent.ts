@@ -96,7 +96,7 @@ import {
 import {
   type Signer,
   type Verifier,
-} from "./signedArtifact.js";
+} from "../crypto/byteSignerTypes.js";
 import {
   verifySettlementEvidence,
   type EvidenceContext,

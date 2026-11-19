@@ -22,7 +22,7 @@ import {
 import { DacsError, SubstrateError } from "../errors.js";
 import type { OwnedAnchorScan } from "../substrate/anchorResolution.js";
 import type { AnchorWriteOnceOptions } from "../substrate/SubstrateAdapter.js";
-import type { Signer } from "./signedArtifact.js";
+import type { Signer } from "../crypto/byteSignerTypes.js";
 import {
   resolveListingPayloadVerificationCapability,
   resolveListingRails,

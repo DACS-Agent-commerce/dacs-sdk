@@ -15,7 +15,7 @@ import {
   sameCanonicalClaimIdentity,
 } from "../identity/index.js";
 import { readableListingClaimReferencesAreCanonical } from "./listingClaimReferences.js";
-import type { Verifier } from "./signedArtifact.js";
+import type { Verifier } from "../crypto/byteSignerTypes.js";
 import {
   isVerifiedListingAdmission,
   type ListingValidationResult,
