@@ -286,7 +286,7 @@ export async function readReadiness(url, fetchImpl = fetch) {
 const unrun = (reason) => ({ status: "unrun", reason });
 
 /** One status per step: ran, blocked (with its reason codes or exit code) or unrun (with the reason). */
-function recordSteps({ registry, listingRef, readiness, buy }) {
+function recordSteps({ registry, readiness, buy }) {
   const roles = Object.values(readiness);
   const codes = [...new Set(roles.flatMap((role) => role.reasonCodes ?? []))];
   return {
@@ -294,8 +294,10 @@ function recordSteps({ registry, listingRef, readiness, buy }) {
     registry: registry === undefined ? unrun("the registry step has not saved its refs; run registry first") : { status: "ran" },
     readiness: roles.some((role) => role.status === "unrun") ? unrun("a role service was not observed")
       : roles.some((role) => role.status === "blocked") ? { status: "blocked", reasonCodes: codes } : { status: "ran" },
-    setup: listingRef === undefined ? unrun("no --listing-ref was given; dacs:setup prints the Listing ref when it completes")
-      : { status: "ran", evidence: "the Listing ref was given by the operator; record does not read it back" },
+    // Setup is only observable through the buy: it ran when the buy exited 0, which means the buy found the Listing.
+    setup: buy === undefined ? unrun("the Listing ref could not be confirmed because the buy was not run")
+      : buy.exitCode === 0 ? { status: "ran", evidence: "the buy found the Listing" }
+        : unrun("the Listing ref could not be confirmed because the buy did not pass"),
     buy: buy === undefined ? unrun("needs --listing-ref, the Listing ref that dacs:setup prints")
       : buy.exitCode === 0 ? { status: "ran", planOnly: true } : { status: "blocked", exitCode: buy.exitCode, notPass: buy.notPass },
     fundedPurchase: unrun(FUNDED_REASONS),
@@ -518,7 +520,7 @@ export async function record({ runDir, listingRef }, fetchImpl = fetch) {
     evmRpc: { host: evmHost },
     demosRpc: demosHost === DEFAULT_DEMOS_HOST ? { host: demosHost } : { host: "custom", chainIdentity: registry?.chainIdentity },
     authorities, payee, registry: registry?.refs, listingRef, readiness,
-    steps: recordSteps({ registry, listingRef, readiness, buy }),
+    steps: recordSteps({ registry, readiness, buy }),
     fundedRun: `Funded run: UNRUN — ${FUNDED_REASONS}`,
   };
   writeJsonAtomic(join(run, "record.json"), report);

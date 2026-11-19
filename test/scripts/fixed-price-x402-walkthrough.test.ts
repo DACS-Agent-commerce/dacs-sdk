@@ -550,7 +550,7 @@ describe("record", () => {
     expect(record.steps).toEqual({
       init: { status: "ran" }, registry: { status: "ran" },
       readiness: { status: "blocked", reasonCodes: ["readiness-latch-missing"] },
-      setup: { status: "ran", evidence: "the Listing ref was given by the operator; record does not read it back" },
+      setup: { status: "unrun", reason: "the Listing ref could not be confirmed because the buy did not pass" },
       buy: {
         status: "blocked", exitCode: 5,
         notPass: [
@@ -572,7 +572,10 @@ describe("record", () => {
     quietly();
     standInNpm(0, `${doctorText(0, ["required local.secrets: pass"])}${PLAN_LINE}`);
     const record = await walkthrough.record({ runDir: recordFixture(), listingRef: ref }, network("0x14a34", { "3101": ready, "3102": ready }));
-    expect(record.steps).toMatchObject({ readiness: { status: "ran" }, buy: { status: "ran", planOnly: true } });
+    expect(record.steps).toMatchObject({
+      readiness: { status: "ran" }, buy: { status: "ran", planOnly: true },
+      setup: { status: "ran", evidence: "the buy found the Listing" },
+    });
   });
 
   it("keeps no key, secret, absolute path or URL path", async () => {
@@ -600,7 +603,7 @@ describe("record", () => {
     const npm = standInNpm(0, "");
     const record = await walkthrough.record({ runDir: recordFixture() }, onBaseSepolia);
     expect(npm.seen()).toBeUndefined();
-    expect(record.steps.setup).toEqual({ status: "unrun", reason: "no --listing-ref was given; dacs:setup prints the Listing ref when it completes" });
+    expect(record.steps.setup).toEqual({ status: "unrun", reason: "the Listing ref could not be confirmed because the buy was not run" });
     expect(record.steps.buy).toEqual({ status: "unrun", reason: "needs --listing-ref, the Listing ref that dacs:setup prints" });
     expect(record.listingRef).toBeUndefined();
   });
