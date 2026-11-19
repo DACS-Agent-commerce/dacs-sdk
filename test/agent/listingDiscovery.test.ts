@@ -10,11 +10,7 @@ import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { ListingDraft } from "../../src/artifacts/types.js";
-import {
-  contentHash,
-  listingAddress,
-  stripSignature,
-} from "../../src/canonical/index.js";
+import { contentHash, listingAddress } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
