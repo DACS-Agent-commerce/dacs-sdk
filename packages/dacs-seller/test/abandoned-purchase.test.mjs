@@ -14,17 +14,17 @@ const LONG_AFTER = AGREEMENT_DEADLINE + 100 * ABANDONED_PURCHASE_MS;
 
 /**
  * A reader over a settled row admitted at `ADMITTED_AT`. `states` maps a later route to its journal state (a route not named has no operation),
- * `deadline` is the Agreement's deadline the agent retains, `retainsCommitmentWork` and `holdsPayment` are what the agent answers (neither by
+ * `deadline` is the Agreement's deadline the agent retains (`readDeadline` replaces the read itself), `retainsCommitmentWork` and `holdsPayment` are what the agent answers (neither by
  * default), and `row`, `clock` and `operationState` replace the defaults.
  */
-function reader({ states = {}, deadline = AGREEMENT_DEADLINE, retainsCommitmentWork = false, holdsPayment = false, row = {}, clock = ADMITTED_AT + ABANDONED_PURCHASE_MS, operationState } = {}) {
+function reader({ states = {}, deadline = AGREEMENT_DEADLINE, readDeadline = () => deadline, retainsCommitmentWork = false, holdsPayment = false, row = {}, clock = ADMITTED_AT + ABANDONED_PURCHASE_MS, operationState } = {}) {
   const reads = [];
   const state = createAbandonedPurchaseState({
     admissionRecord: (jobId) => { reads.push(['row', jobId]); return { jobId, state: 'settled', admittedAt: ADMITTED_AT, ...row }; },
     operationState: operationState ?? (({ path }) => { reads.push(['operation', path]); return states[path] ?? 'none'; }),
     retainsCommitmentWork: (jobId) => (typeof retainsCommitmentWork === 'function' ? retainsCommitmentWork(jobId) : retainsCommitmentWork),
     holdsPayment: (jobId) => (typeof holdsPayment === 'function' ? holdsPayment(jobId) : holdsPayment),
-    agreementDeadline: (jobId) => { reads.push(['deadline', jobId]); return deadline; },
+    agreementDeadline: (jobId) => { reads.push(['deadline', jobId]); return readDeadline(); },
     now: () => clock,
   });
   return { state, reads };
@@ -33,7 +33,23 @@ const read = (options) => reader(options).state({ jobId: JOB });
 const HOUR_AFTER_DEADLINE = AGREEMENT_DEADLINE + ABANDONED_PURCHASE_MS;
 
 test('a settled purchase with no later operation reads as aborted by the seller once an hour has passed', () => {
-  assert.equal(read(), 'aborted-by-self');
+  assert.equal(read({ deadline: null }), 'aborted-by-self');
+});
+
+test('a purchase whose proposal was refused and that retains no Agreement reads as aborted an hour after its admission, whatever the operation states', () => {
+  for (const states of [{ [proposals]: 'ended' }, { [proposals]: 'completed' }, { [proposals]: 'ended', [commitments]: 'ended' }, { [proposals]: 'ended', [payments]: 'ended' }]) {
+    assert.equal(read({ states, deadline: null, clock: ADMITTED_AT + ABANDONED_PURCHASE_MS - 1 }), null, `${Object.entries(states)}: young`);
+    assert.equal(read({ states, deadline: null }), 'aborted-by-self', `${Object.entries(states)}`);
+    assert.equal(read({ states, deadline: null, clock: LONG_AFTER }), 'aborted-by-self', `${Object.entries(states)}: long after`);
+  }
+});
+
+test('a purchase with no retained Agreement stays unknown while an attempt is open, and while commitment work or a payment is held', () => {
+  for (const path of [proposals, commitments, payments]) {
+    assert.equal(read({ states: { [path]: 'pending' }, deadline: null, clock: LONG_AFTER }), null, path);
+  }
+  assert.equal(read({ states: { [proposals]: 'ended' }, deadline: null, retainsCommitmentWork: true, clock: LONG_AFTER }), null, 'commitment work');
+  assert.equal(read({ states: { [proposals]: 'ended' }, deadline: null, holdsPayment: true, clock: LONG_AFTER }), null, 'payment');
 });
 
 test('a settled purchase younger than an hour reads as unknown', () => {
@@ -102,9 +118,9 @@ test('a purchase with proposal or commitment work still open reads as unknown at
   }
 });
 
-test('a purchase past its first step whose Agreement deadline is unknown reads as unknown', () => {
-  for (const deadline of [null, NaN, -1, 1.5, '3600']) {
-    assert.equal(read({ states: { [proposals]: 'completed' }, deadline, clock: LONG_AFTER }), null, String(deadline));
+test('a purchase whose retained Agreement has no readable deadline reads as unknown', () => {
+  for (const deadline of [undefined, NaN, -1, 1.5, '3600']) {
+    assert.equal(read({ states: { [proposals]: 'completed' }, readDeadline: () => deadline, clock: LONG_AFTER }), null, String(deadline));
   }
 });
 

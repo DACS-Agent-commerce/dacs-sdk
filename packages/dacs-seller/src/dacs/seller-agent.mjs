@@ -2362,10 +2362,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // session and allocation open until its payments operation has a completed answer. Synchronous and read only.
     holdsRecordedPayment: (jobId) => recordedPayment(jobId),
     // The deadline, in milliseconds, of the Agreement this seller retains for the job (the committed Agreement, or the proposal's draft before
-    // the commitment), or null when it retains none. After it a payment made late is refused. Synchronous and read only; nothing is verified.
+    // the commitment), or null when it retains none (a refused or never-made proposal leaves none). A retained Agreement with no deadline
+    // answers undefined, so a caller can tell it from none. After the deadline a payment made late is refused. Synchronous and read only; nothing is verified.
     retainedAgreementDeadline: (jobId) => {
       const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
-      return (session?.agreement ?? session?.proposal?.plan?.draft)?.terms?.deadline ?? null;
+      const agreement = session?.agreement ?? session?.proposal?.plan?.draft;
+      return agreement ? agreement.terms?.deadline ?? undefined : null;
     },
     /**
      * Reads the sources of a completed proposal, commitment or payment answer again, read only, before the stored answer is signed again.

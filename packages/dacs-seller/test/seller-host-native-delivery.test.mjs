@@ -3565,6 +3565,26 @@ const restartPastDeadline = async (w, p, afterDeadlineMs) => {
   await w.restart();
 };
 
+test('a default host frees the units of a purchase whose proposal the seller refused an hour after its admission, retaining no Agreement, and keeps them before', async (t) => {
+  const member = { scheme: 'did', verificationRequired: false };
+  const buyerRequirement = { requirementVersion: '1', required: [member], preferredPresentation: 'any' };
+  const w = await world(t, { contextSessionState: null, buyerRequirement });
+  assert.equal((await w.purchase({ expectSigned: false })).disposition, 'rejected');
+  const db = new DatabaseSync(join(w.dataDirectory, 'transport', 'transport.sqlite'), { readonly: true });
+  let allocations;
+  try { allocations = db.prepare('SELECT jobId, state FROM kit_allocations').all(); } finally { db.close(); }
+  assert.equal(allocations.length, 1);
+  const [{ jobId }] = allocations;
+  assert.notEqual(w.wireState({ jobId }, DACS_SELLER_HTTP_PATHS.proposals).state, 'none', 'the refused proposal leaves an operation in the journal');
+  assert.equal(allocationOf(w, jobId), 'live');
+  w.advance(ABANDONED_PURCHASE_MS / 2);
+  await w.restart();
+  assert.equal(allocationOf(w, jobId), 'live', 'the purchase is not yet an hour old');
+  w.advance(ABANDONED_PURCHASE_MS);
+  await w.restart();
+  assert.equal(allocationOf(w, jobId), 'released');
+});
+
 test('a default host frees the units of a purchase that stopped after its proposal once an hour has passed since the Agreement deadline', async (t) => {
   const w = await world(t, { contextSessionState: null }), p = await w.purchase({ commit: false });
   assert.equal(allocationOf(w, p.jobId), 'live');

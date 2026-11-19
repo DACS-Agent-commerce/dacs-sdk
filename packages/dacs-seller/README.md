@@ -47,13 +47,13 @@ and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host given no capability reads one state itself: a purchase that
 settled its context step, retains no commitment work and holds no payment reads as `aborted-by-self` an
-hour after the later of its admission and its Agreement's deadline (a purchase with no
-proposal has no Agreement and no deadline to wait for). Its units are
+hour after the later of its admission and its Agreement's deadline (a purchase whose
+proposal was refused or never made retains no Agreement and no deadline to wait for). Its units are
 given back and its job id cannot continue (the buyer starts again with a new job id).
 A purchase that retains commitment work, holds a payment or has a proposal, commitment or
 payment attempt still running stays open, because a payment included before the deadline
-is accepted however late it is claimed. A purchase with an Agreement whose deadline the
-seller cannot read reads as unknown. A host
+is accepted however late it is claimed. A purchase whose retained Agreement has no
+readable deadline reads as unknown. A host
 given the capability uses only that. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 
