@@ -29,7 +29,9 @@ function wallet(t, { file = false } = {}) {
   if (chainFile) writeFileSync(chainFile, JSON.stringify(newWalletChainState()));
   let node = walletChain({ file: chainFile });
   const reload = () => { node = walletChain({ file: chainFile }); return node; };
-  const path = join(dir, 'journal.sqlite'), calls = { sign: 0, signed: [], signedContents: [], broadcast: [], reads: [] }, faults = { sign: [], broadcast: [], nonce: [], state: [] };
+  const path = join(dir, 'journal.sqlite'), calls = { sign: 0, signed: [], signedContents: [], broadcast: [], reads: [], networkInfo: 0 }, faults = { sign: [], broadcast: [], nonce: [], state: [], networkInfo: [] };
+  // The node's getNetworkInfo answer, which a test may change; the signature-domain fork starts inactive.
+  const network = { answer: { forks: { osDenomination: { activated: true } } } };
   const input = (extra = {}) => evidenceInput(node.claim, extra);
   const open = (extra = {}) => createPaymentEvidenceWalletJournal({ path, readTimeoutMs: 200,
     signCreate: async (asked) => {
@@ -67,8 +69,15 @@ function wallet(t, { file = false } = {}) {
       if (fault === 'throw') throw new Error('TEST state read failed');
       if (fault === 'malformed') return 'unknown';
       return { state: node.transactionState(hash), checkedThroughBlock: node.accountNonce() };
+    },
+    readNetworkInfo: async () => {
+      calls.networkInfo++;
+      const fault = faults.networkInfo.shift();
+      if (fault === 'throw') throw new Error('TEST network info read failed');
+      if (fault === 'hang') return new Promise(() => {});
+      return network.answer;
     }, ...extra });
-  return { dir, path, chainFile, calls, faults, get chain() { return node.chain; }, other: () => node.other(), reload, open, input };
+  return { dir, path, chainFile, calls, faults, network, get chain() { return node.chain; }, other: () => node.other(), reload, open, input };
 }
 
 test('an address is signed once: the kept signed CREATE is broadcast again as the same bytes, also after the journal is reopened', async (t) => {
@@ -153,40 +162,223 @@ test('a signCreate answer that is not the signed CREATE it names is refused: not
 });
 
 const CHAIN_BOUND = (chainId) => (hash) => `demos-tx:v1:${chainId}:${hash}`;
+const activeFork = (chainId, activationHeight = 0) => ({ forks: { osDenomination: { activated: true }, signatureDomain: { activated: true, activationHeight } }, chainId });
 
-test('a CREATE signed over the bare hash is kept whether or not a signature chain id is configured', async (t) => {
-  for (const options of [{}, { signatureChainId: '7' }]) {
-    const w = wallet(t), journal = w.open(options);
-    t.after(() => journal.close());
-    assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted', JSON.stringify(options));
-  }
+test('a CREATE the node already executed stays applied after the fork activates, and a superseded one does not block a new signature', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  const { txHash } = await journal.anchorEvidence(w.input());
+  w.network.answer = activeFork(7, 100);
+  assert.deepEqual(await journal.reconcilePaymentEvidence(w.input()), { status: 'applied', txHash }, 'reconcile');
+  assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'applied', txHash }, 'anchor');
+  assert.deepEqual(await journal.ensureEvidence({ ...w.input(), expectedJournalId: journal.journalId }), { status: 'applied', txHash }, 'ensure');
+  assert.equal(w.calls.sign, 1, 'nothing was signed again');
+  assert.equal(w.calls.broadcast.length, 1, 'nothing was broadcast again');
+
+  const v = wallet(t), other = v.open();
+  t.after(() => other.close());
+  v.faults.broadcast.push('drop');
+  const first = (await other.anchorEvidence(v.input())).txHash;
+  v.other();
+  v.network.answer = activeFork(7, 100);
+  v.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
+  assert.equal((await other.reconcilePaymentEvidence(v.input())).status, 'unsigned', 'the overtaken CREATE is superseded');
+  const second = (await other.anchorEvidence(v.input())).txHash;
+  assert.notEqual(second, first, 'signed anew under the active fork');
+  assert.equal(v.calls.sign, 2);
 });
 
-test('a CREATE signed over the domain-separated message is kept when the journal\'s own chain id is configured', async (t) => {
-  const w = wallet(t), journal = w.open({ signatureChainId: '7' });
+test('a kept CREATE that may still be sent is refused for the other domain, and an unread fate does not excuse it', async (t) => {
+  const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
+  w.faults.broadcast.push('drop');
+  await journal.anchorEvidence(w.input());
+  w.network.answer = activeFork(7, 100);
+  w.faults.state.push('throw');
+  await assert.rejects(journal.reconcilePaymentEvidence(w.input()), { code: 'wallet_journal_conflict' });
+  assert.equal(w.calls.broadcast.length, 1, 'the kept bytes were not sent again');
+});
+
+test('a CREATE signed over the bare hash is kept while the node signature-domain fork is inactive', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted');
+});
+
+test('a CREATE signed over the domain-separated message is kept once the node signature-domain fork is active', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.network.answer = activeFork(7);
   w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
   assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted');
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
 });
 
-test('a kept CREATE signed over the domain-separated message is still the same evidence when the journal is reopened with the same chain id', async (t) => {
+test('a CREATE signed over the bare hash is refused once the fork is active, and a domain-separated one while it is inactive', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.network.answer = activeFork(7);
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ }, 'the bare hash under an active fork');
+  w.network.answer = { forks: { osDenomination: { activated: true }, signatureDomain: { activated: false } } };
+  w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ }, 'the chain-bound message under an inactive fork');
+  assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned', 'nothing was kept');
+});
+
+test('a kept CREATE signed over the bare hash is refused, and not broadcast again, while its absence is not proved through the fork activation', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.broadcast.push('throw');
+  await assert.rejects(journal.anchorEvidence(w.input()), /TEST node unreachable/);
+  w.network.answer = activeFork(7, 100);
+  await assert.rejects(journal.reconcilePaymentEvidence(w.input()), { code: 'wallet_journal_conflict' }, 'the index reaches block 0, the fork begins at block 100');
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_journal_conflict' });
+  const pending = w.open({ readTransactionState: async () => 'pending' });
+  t.after(() => pending.close());
+  w.network.answer = activeFork(7, 1);
+  await assert.rejects(pending.reconcilePaymentEvidence(w.input()), { code: 'wallet_journal_conflict' }, 'a CREATE the node still holds is not proved absent');
+  assert.equal(w.calls.broadcast.length, 1, 'the kept bytes were not sent again');
+  assert.equal(w.calls.sign, 1, 'nothing was signed again');
+});
+
+// A bare-hash CREATE is replaced only on a fenced proof that reaches the block the fork begins at
+// (activationHeight itself), for a CREATE the node dropped or still holds as pending, and only
+// while its nonce is free: one the account nonce reached is never given to a new signature.
+for (const held of ['absent', 'pending']) {
+  test(`a bare-hash CREATE the node ${held === 'absent' ? 'never had' : 'holds as pending'} is refused, and kept, unless a fenced proof reaches the fork's activation height`, async (t) => {
+    const w = wallet(t), journal = w.open();
+    t.after(() => journal.close());
+    w.faults.broadcast.push('drop');
+    const first = (await journal.anchorEvidence(w.input())).txHash;
+    if (held === 'pending') w.chain.pending.push(first);
+    const proof = (nonce, blockHeight, checkedThroughBlock) => w.open({ readAccountNonce: async () => ({ nonce, blockHeight }), readTransactionState: async () => ({ state: held, checkedThroughBlock }) });
+    const refused = async (label, handle) => {
+      t.after(() => handle.close());
+      for (const ask of [handle.reconcilePaymentEvidence, handle.anchorEvidence]) await assert.rejects(ask(w.input()), { code: 'wallet_journal_conflict' }, label);
+    };
+    w.network.answer = activeFork(7, 5);
+    await refused('the proof stops one block before the activation height', proof(0, 4, 4));
+    await refused('the proof stops short of the nonce snapshot', proof(0, 9, 5));
+    // A nonce the account reached is not free. An absent CREATE is then superseded as overtaken (not here);
+    // a pending one stays live, so its nonce is never given to a new signature.
+    if (held === 'pending') await refused('the nonce was reached', proof(1, 5, 5));
+    assert.equal(w.calls.sign, 1, 'nothing was signed again');
+    assert.equal(w.calls.broadcast.length, 1, 'the kept bytes were not sent again');
+    const reaching = proof(0, 5, 5);
+    t.after(() => reaching.close());
+    assert.equal((await reaching.reconcilePaymentEvidence(w.input())).status, 'unsigned', 'the proof reaches the activation height');
+  });
+}
+
+// The fork activates while a CREATE signed over the bare hash was never executed, whether the node
+// dropped it or still holds it as pending: it can no longer land, so a retry must not be held on it
+// for good. Each route that reads the kept CREATE is covered.
+for (const [route, run] of [
+  ['reconcile, then anchor', async (journal, w) => { assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned'); return journal.anchorEvidence(w.input()); }],
+  ['anchor', (journal, w) => journal.anchorEvidence(w.input())],
+  ['ensure', (journal, w) => journal.ensureEvidence({ ...w.input(), expectedJournalId: journal.journalId })],
+]) for (const held of ['absent', 'pending']) {
+  test(`a bare-hash CREATE the node ${held === 'absent' ? 'never had' : 'still holds as pending'} is replaced, at its own nonce, once the fork activates: ${route}`, async (t) => {
+    const w = wallet(t), journal = w.open();
+    t.after(() => journal.close());
+    w.faults.broadcast.push('drop');
+    const first = (await journal.anchorEvidence(w.input())).txHash;
+    if (held === 'pending') w.chain.pending.push(first);
+    w.network.answer = activeFork(7);
+    w.faults.sign.push({ nonce: 1, signedOver: CHAIN_BOUND('7') });
+    const { status, txHash } = await run(journal, w);
+    assert.equal(status, 'submitted');
+    assert.notEqual(txHash, first, 'signed anew over the chain-bound message');
+    assert.deepEqual(w.calls.signedContents.map((content) => content.nonce), [1, 1], 'the freed nonce was taken');
+    assert.equal(w.calls.broadcast.length, 2, 'the bare-hash bytes were never sent again');
+    assert.deepEqual(await journal.reconcilePaymentEvidence(w.input()), { status: 'applied', txHash });
+    assert.equal((await journal.readSignedProjection(w.input())).hash, txHash);
+  });
+}
+
+test('a replaced bare-hash CREATE keeps its record, and a failed or restarted retry can still take its nonce', async (t) => {
   const w = wallet(t);
-  let journal = w.open({ signatureChainId: '7' });
+  let journal = w.open();
+  w.faults.broadcast.push('drop');
+  const first = (await journal.anchorEvidence(w.input())).txHash;
+  w.network.answer = activeFork(7);
+  const answer = await journal.reconcilePaymentEvidence(w.input());
+  assert.deepEqual([answer.status, answer.txHash], ['unsigned', first]);
+  assert.match(answer.reason, /signed over the bare hash/);
+  w.faults.sign.push('throw');
+  await assert.rejects(journal.anchorEvidence(w.input()), /TEST wallet failed before signing/);
+  journal.close();
+  journal = w.open();
+  t.after(() => journal.close());
+  w.faults.sign.push({ nonce: 1, signedOver: CHAIN_BOUND('7') });
+  const { status, txHash } = await journal.anchorEvidence(w.input());
+  assert.equal(status, 'submitted');
+  assert.notEqual(txHash, first);
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
+});
+
+test('a replacement signed over the bare hash again is refused once the fork is active, and nothing is kept for it', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.broadcast.push('drop');
+  await journal.anchorEvidence(w.input());
+  w.network.answer = activeFork(7);
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'unsigned');
+  w.faults.sign.push({ nonce: 1 });
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ });
+  assert.equal(await journal.readSignedProjection(w.input()), null, 'no live CREATE was kept');
+  assert.equal(w.calls.broadcast.length, 1);
+});
+
+test('a journal reads the node network answer for each call and keeps the cause of a failed read', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.networkInfo.push('throw');
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_signature_domain_unreadable', message: /TEST network info read failed/ });
+  w.faults.networkInfo.push('hang');
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_signature_domain_unreadable', message: /timed out/ });
+  for (const answer of [null, { forks: {} }, activeFork(null), activeFork(-1), activeFork('7'), activeFork(7, null), activeFork(7, -1), activeFork(7, '0')]) {
+    w.network.answer = answer;
+    await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_signature_domain_unreadable', message: /getNetworkInfo/ }, JSON.stringify(answer));
+  }
+  assert.equal(w.calls.sign, 0, 'nothing was signed');
+  assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
+  w.network.answer = { forks: { osDenomination: { activated: true } } };
+  assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted', 'the next call reads the node again');
+  assert.equal(w.calls.networkInfo, 11);
+});
+
+test('a kept CREATE is not reconciled or broadcast again while the node network answer is unreadable', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  w.faults.broadcast.push('throw');
+  await assert.rejects(journal.anchorEvidence(w.input()), /TEST node unreachable/);
+  w.faults.networkInfo.push('throw');
+  await assert.rejects(journal.reconcilePaymentEvidence(w.input()), { code: 'wallet_signature_domain_unreadable' });
+  assert.equal(w.calls.broadcast.length, 1, 'the kept bytes were not sent again');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'rebroadcast', 'a readable answer lets the same bytes go out again');
+});
+
+test('a kept CREATE signed over the domain-separated message is still the same evidence when the journal is reopened', async (t) => {
+  const w = wallet(t);
+  w.network.answer = activeFork(7);
+  let journal = w.open();
   w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
   w.faults.broadcast.push('throw');
   await assert.rejects(journal.anchorEvidence(w.input()), /TEST node unreachable/);
   journal.close();
-  journal = w.open({ signatureChainId: '7' });
+  journal = w.open();
   t.after(() => journal.close());
   const [first] = w.calls.signed;
   assert.deepEqual(await journal.anchorEvidence(w.input()), { status: 'submitted', txHash: first }, 'the kept bytes are sent again, not refused as other evidence');
   assert.equal(w.calls.sign, 1, 'signed once');
 });
 
-test('a CREATE signed over any other message than the bare hash or the configured chain-bound form is refused', async (t) => {
-  const w = wallet(t), journal = w.open({ signatureChainId: '7' });
+test('a CREATE signed over any other message than the one the node fork selects is refused', async (t) => {
+  const w = wallet(t), journal = w.open();
   t.after(() => journal.close());
+  w.network.answer = activeFork(7);
   const other = 'ab'.repeat(32);
   for (const [label, signedOver] of [['another chain id', CHAIN_BOUND('8')], ['another version', (hash) => `demos-tx:v2:7:${hash}`], ['another prefix', (hash) => `demos-evm:v1:7:${hash}`],
     ['no chain id', (hash) => `demos-tx:v1::${hash}`], ['two chain id fields', (hash) => `demos-tx:v1:7:7:${hash}`], ['a leading-zero chain id', CHAIN_BOUND('07')],
@@ -198,19 +390,29 @@ test('a CREATE signed over any other message than the bare hash or the configure
   assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
 });
 
-test('a journal with no signature chain id refuses a domain-separated signature', async (t) => {
-  const w = wallet(t), journal = w.open();
-  t.after(() => journal.close());
-  w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
-  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ });
-  assert.deepEqual(w.calls.broadcast, []);
+test('a journal made with a caller-supplied signature chain id is refused', async (t) => {
+  const w = wallet(t);
+  for (const signatureChainId of ['7', '', 7, null]) {
+    assert.throws(() => w.open({ signatureChainId }), { name: 'TypeError', message: /getNetworkInfo/ }, String(signatureChainId));
+  }
 });
 
-test('a signature chain id that is not a canonical decimal string is refused when the journal is made', async (t) => {
+test('a journal made with a network info reader that is not a function is refused', async (t) => {
   const w = wallet(t);
-  for (const signatureChainId of ['', '07', '-1', '7.0', 'x7', ' 7', 7, 7n, null, {}]) {
-    assert.throws(() => w.open({ signatureChainId }), { name: 'TypeError', message: /signatureChainId/ }, String(signatureChainId));
+  for (const readNetworkInfo of [null, 'node', {}]) {
+    assert.throws(() => w.open({ readNetworkInfo }), { name: 'TypeError', message: /readNetworkInfo/ }, String(readNetworkInfo));
   }
+});
+
+test('a journal made without a network info reader keeps only a CREATE signed over the bare hash', async (t) => {
+  const w = wallet(t), journal = w.open({ readNetworkInfo: undefined });
+  t.after(() => journal.close());
+  w.faults.sign.push({ signedOver: CHAIN_BOUND('7') });
+  await assert.rejects(journal.anchorEvidence(w.input()), { code: 'wallet_sign_invalid', message: /not signed by the writer/ }, 'the chain-bound message');
+  assert.deepEqual(w.calls.broadcast, [], 'nothing was broadcast');
+  assert.equal((await journal.anchorEvidence(w.input())).status, 'submitted', 'the bare hash');
+  assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
+  assert.equal(w.calls.networkInfo, 0, 'no network answer was asked for');
 });
 
 // The kept bytes must be a CREATE the node can execute and the SR-2 readback
@@ -425,7 +627,7 @@ test('other evidence at a kept address is refused, and the journal file must be 
   }
   await assert.rejects(journal.reconcilePaymentEvidence({}), { name: 'TypeError' });
   assert.equal(w.calls.sign, 1);
-  const primitives = { signCreate: async () => null, broadcast: async () => null, readAccountNonce: async () => 0, readTransactionState: async () => 'absent' };
+  const primitives = { signCreate: async () => null, broadcast: async () => null, readAccountNonce: async () => 0, readTransactionState: async () => 'absent', readNetworkInfo: async () => null };
   const shared = join(w.dir, 'shared.sqlite');
   writeFileSync(shared, '');
   chmodSync(shared, 0o644);
@@ -491,6 +693,21 @@ test('nonce advancement with an unknown transaction keeps the CREATE until its i
   assert.equal((await journal.reconcilePaymentEvidence(w.input())).status, 'applied');
   assert.equal(w.calls.sign, 1);
   assert.equal(new Set(w.calls.broadcast).size, 1);
+});
+
+test('the state read of a kept CREATE carries the signed bytes and nonce the journal keeps for its hash', async (t) => {
+  const w = wallet(t), asked = [];
+  const journal = w.open({ readAccountNonce: async () => 1, readTransactionState: async (retained) => { asked.push(retained); return 'pending'; } });
+  t.after(() => journal.close());
+  const kept = await journal.anchorEvidence(w.input());
+  await journal.reconcilePaymentEvidence(w.input());
+  const projection = await journal.readSignedProjection({ logicalAddress: w.input().logicalAddress });
+  assert.ok(asked.length > 0);
+  for (const retained of asked) {
+    assert.deepEqual(Object.keys(retained).sort(), ['nonce', 'signedTransaction', 'txHash']);
+    assert.equal(retained.txHash, kept.txHash); assert.equal(retained.nonce, projection.content.nonce);
+    assert.deepEqual(JSON.parse(retained.signedTransaction), projection);
+  }
 });
 
 test('only a complete absence snapshot at or beyond the nonce snapshot releases a CREATE', async (t) => {
@@ -677,6 +894,14 @@ test('clearHeldWrite keeps a held evidence CREATE the chain applied, and sends n
   assert.deepEqual(await journal.anchorEvidence(input), { status: 'applied', txHash: kept.hash });
   assert.deepEqual(await journal.reconcilePaymentEvidence(input), { status: 'applied', txHash: kept.hash });
   assert.deepEqual([w.calls.sign, w.calls.broadcast.length], [0, 0]);
+});
+test('clearHeldWrite reads the held CREATE with the signed bytes and nonce the journal keeps', async (t) => {
+  const w = wallet(t), asked = [];
+  const journal = w.open({ readAccountNonce: async () => 1, readTransactionState: async (retained) => { asked.push(retained); return 'applied'; } });
+  t.after(() => journal.close());
+  const { kept, ask } = await keepHeldCreate(w);
+  assert.equal((await journal.clearHeldWrite(ask)).status, 'applied');
+  assert.deepEqual(asked.map((retained) => [retained.txHash, retained.nonce, JSON.parse(retained.signedTransaction)]), [[kept.hash, kept.content.nonce, kept]]);
 });
 for (const [label, degrade] of [
   ['a state read fails', (w) => { w.faults.state.push('throw', 'throw'); }],
@@ -1037,7 +1262,7 @@ test('a broadcast that never settles is a timeout that keeps the signed CREATE; 
 });
 
 test('a journal in a directory others can write, or reached through a symbolic link, is refused before a file is made', (t) => {
-  const w = wallet(t), open = (path) => createPaymentEvidenceWalletJournal({ path, readTimeoutMs: 200, signCreate() {}, broadcast() {}, readAccountNonce() {}, readTransactionState() {} });
+  const w = wallet(t), open = (path) => createPaymentEvidenceWalletJournal({ path, readTimeoutMs: 200, signCreate() {}, broadcast() {}, readAccountNonce() {}, readTransactionState() {}, readNetworkInfo() {} });
   const shared = join(w.dir, 'shared'), linked = join(w.dir, 'linked');
   mkdirSync(shared); chmodSync(shared, 0o777);
   symlinkSync(w.dir, linked);

@@ -8,8 +8,8 @@ qualified live deployment; unsupported qualification stays blocked.
 
 The kit has one purchase source: the seller agent's durable sessions. It has
 one Vet/context mode: the authenticated context route. There is no app database
-resolver or context switch. The standalone host (README.md) does not mount the
-context route; a host that mounts it passes `createSellerContextRoute` (a root
+resolver or context switch. The standalone host (README.md) mounts the context
+route on the wire; a host composed directly passes `createSellerContextRoute` (a root
 export) as the `context` of `createSellerHttpHandler`, with
 `createSellerTransportServerAuth` as its `authentication`, as described here.
 
@@ -193,7 +193,8 @@ Completion is not proof of Vet success; cached present answers still require
 source readback. Retain both ledgers: replacing a lost transport journal with an
 empty one is not recovery. Omitting `transportStore` retains the low-level
 ledger-only API and does not perform startup recovery. The standalone host
-does not mount this route. `context-hold-startup.test.mjs` covers these crash
+mounts the context route with no policy hold: it has no approval ledger, so its
+admission takes and releases no hold. `context-hold-startup.test.mjs` covers these crash
 windows, gating, repeat startup, inconsistent records and a fresh process.
 
 

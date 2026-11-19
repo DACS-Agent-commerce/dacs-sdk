@@ -16,6 +16,8 @@ import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PR
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from '../src/dacs/session-admission.mjs';
 import { createSellerContextAdmission, parsePolicyLedger, releaseSellerContextHolds } from '../src/devnet-demo/operator-approval.mjs';
+import { createContextAttempt } from '../src/dacs/seller-context-route.mjs';
+import { SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
 
 const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000, POLICY_MS = 10000;
 const hash = text => createHash('sha256').update(String(text)).digest('hex');
@@ -499,7 +501,7 @@ test('admission-hook-thenable-and-store-fault', async t => {
 
 test('admission-capability-identity', async t => {
   const w = world(t), p = w.prepare(); const a = await running(w, p);
-  assert.deepEqual(Object.keys(w.admission).sort(), ['addAcceptanceHook', 'admissionRecord', 'begin', 'cleanupPending', 'compensate', 'jobEffectMutex', 'reserveContext', 'runningCheck', 'sweep']);
+  assert.deepEqual(Object.keys(w.admission).sort(), ['addAcceptanceHook', 'admissionRecord', 'begin', 'cleanupPending', 'compensate', 'fitsNewPurchase', 'jobEffectMutex', 'reserveContext', 'runningCheck', 'sweep']);
   assert.ok(Object.isFrozen(a)); assert.ok(Object.isFrozen(w.admission));
   const b = await w.admission.reserveContext(p.input.jobId, w.reserveWire), copied = a.complete;
   await reject(copied(outcome), 'context_admission_closed', 409);
@@ -638,6 +640,181 @@ test('admission-release-failure-keeps-the-settlement-and-its-cause', async t => 
 const drained = (w, jobId) => w.admission.jobEffectMutex(jobId).run(() => {});
 const sweepTwice = async (w, startup = false) => { await w.admission.sweep({ startup }); await w.admission.sweep({ startup: false }); };
 const restart = async w => { w.reopen(); await sweepTwice(w, true); };
+const DIRECT_LIFETIME_MS = 300_000;
+
+for (const state of ['admitted', 'running']) {
+  for (const startup of [false, true]) {
+    test(`a stale direct ${state} admission releases its hold and slots during ${startup ? 'startup' : 'periodic'} reconciliation`, async t => {
+      const w = world(t), p = w.prepare();
+      p.input.delegationExpiresAt = null;
+      await w.admission.begin(p.input);
+      if (state === 'running') await w.admission.reserveContext(p.input.jobId, w.reserveWire);
+      const held = w.row(p.input.jobId).holdId;
+      const occupied = w.capacity.capacityReport().allotted;
+      assert.ok(occupied > 0);
+      w.control.clock += DIRECT_LIFETIME_MS - 1;
+      await w.admission.sweep({ startup: false });
+      assert.equal(w.row(p.input.jobId).state, state, 'a fresh admission is left alone');
+      assert.equal(w.holds.has(held), true);
+      w.control.clock++;
+      if (startup) w.reopen();
+      await w.admission.sweep({ startup });
+      assert.equal(w.row(p.input.jobId).state, 'aborted');
+      assert.equal(w.row(p.input.jobId).compensation.proof, 'no-effect');
+      assert.equal(w.holds.has(held), false);
+      assert.equal(w.capacity.capacityReport().allotted, 0);
+      assert.equal(w.admission.cleanupPending(), false);
+      await w.admission.sweep({ startup: false });
+      assert.equal(w.calls.release, 1, 'repeated cleanup releases the same hold once');
+    });
+  }
+}
+
+test('a stale direct admission keeps uncertain effects compensating until fresh evidence proves no effect', async t => {
+  const w = world(t), p = w.prepare();
+  p.input.delegationExpiresAt = null;
+  const capability = await running(w, p);
+  const occupied = w.capacity.capacityReport().allotted;
+  w.control.evidence = row => w.evidenceOf(row, 'undetermined');
+  w.control.clock += DIRECT_LIFETIME_MS;
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).state, 'compensating');
+  assert.equal(w.admission.runningCheck(p.input.jobId, capability.attempt, capability.rev), false);
+  assert.equal(w.holds.size, 1);
+  assert.equal(w.capacity.capacityReport().allotted, occupied);
+  assert.equal(w.admission.cleanupPending(), true);
+  w.control.evidence = row => w.evidenceOf(row, 'proven-unsigned');
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).state, 'aborted');
+  assert.equal(w.holds.size, 0);
+  assert.equal(w.capacity.capacityReport().allotted, 0);
+  assert.equal(w.calls.release, 1);
+});
+
+for (const state of ['admitted', 'running']) {
+  for (const evidence of ['undetermined', 'read-failure']) {
+    test(`a stale direct ${state} admission keeps its hold and slots after restart with ${evidence} evidence`, async t => {
+      const w = world(t), p = w.prepare();
+      p.input.delegationExpiresAt = null;
+      await w.admission.begin(p.input);
+      if (state === 'running') await w.admission.reserveContext(p.input.jobId, w.reserveWire);
+      const occupied = w.capacity.capacityReport().allotted;
+      w.control.evidence = row => {
+        if (evidence === 'read-failure') throw new Error('journal read failed');
+        return w.evidenceOf(row, evidence);
+      };
+      w.control.clock += DIRECT_LIFETIME_MS;
+      w.reopen();
+      await w.admission.sweep({ startup: true });
+      assert.equal(w.row(p.input.jobId).state, 'compensating');
+      assert.equal(w.row(p.input.jobId).compensation.proof, null);
+      assert.equal(w.holds.size, 1);
+      assert.equal(w.capacity.capacityReport().allotted, occupied);
+      assert.equal(w.calls.release, 0);
+      assert.equal(w.row(p.input.jobId).cleanup.cause.code, 'context_compensation_undetermined');
+      assert.equal(w.row(p.input.jobId).cleanup.cause.status, 503);
+      await w.admission.sweep({ startup: false });
+      assert.equal(w.row(p.input.jobId).state, 'compensating');
+      assert.equal(w.holds.size, 1);
+      assert.equal(w.capacity.capacityReport().allotted, occupied);
+      w.control.evidence = row => w.evidenceOf(row, 'proven-unsigned');
+      await w.admission.sweep({ startup: false });
+      assert.equal(w.row(p.input.jobId).state, 'aborted');
+      assert.equal(w.row(p.input.jobId).compensation.proof, 'no-effect');
+      assert.equal(w.holds.size, 0);
+      assert.equal(w.capacity.capacityReport().allotted, 0);
+      assert.equal(w.calls.release, 1);
+      assert.equal(w.calls.wire, state === 'running' ? 1 : 0);
+    });
+  }
+}
+
+test('a stale direct admission settles a completed journal outcome after an uncertain compensation pass', async t => {
+  const w = world(t), p = w.prepare();
+  p.input.delegationExpiresAt = null;
+  await running(w, p);
+  w.control.evidence = row => w.evidenceOf(row, 'undetermined');
+  w.control.clock += DIRECT_LIFETIME_MS;
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).state, 'compensating');
+  const reads = w.calls.evidence.length;
+  w.control.inspect = jobId => ({ state: 'completed', binding: w.row(jobId).contextBinding, outcome: { status: 503, text: '{}' } });
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).state, 'settled');
+  assert.equal(w.row(p.input.jobId).contextOutcome, 'other');
+  assert.equal(w.calls.evidence.length, reads, 'a completed journal outcome takes precedence over no-effect evidence');
+  assert.equal(w.holds.size, 0);
+  assert.equal(w.capacity.capacityReport().allotted, 0);
+});
+
+test('a stale direct admission cannot release its allocation while the provider owns the job lease', async t => {
+  const w = world(t), p = w.prepare();
+  p.input.delegationExpiresAt = null;
+  await running(w, p);
+  const lease = await w.admission.jobEffectMutex(p.input.jobId).acquire();
+  w.control.clock += DIRECT_LIFETIME_MS;
+  const sweeping = w.admission.sweep({ startup: false });
+  await flush();
+  assert.equal(w.row(p.input.jobId).state, 'running');
+  assert.equal(w.holds.size, 1);
+  assert.equal(w.calls.evidence.length, 0);
+  lease.release();
+  await sweeping;
+  assert.equal(w.row(p.input.jobId).state, 'aborted');
+  assert.equal(w.holds.size, 0);
+  assert.equal(w.capacity.capacityReport().allotted, 0);
+});
+
+for (const stop of ['deadline', 'close']) {
+  for (const evidence of ['no-intent', 'undetermined']) {
+    test(`the sweep reconciles a direct provider stopped by ${stop} with ${evidence} evidence`, async t => {
+      const w = world(t), p = w.prepare(), release = deferred();
+      p.input.delegationExpiresAt = null;
+      const capability = await running(w, p);
+      const lease = await w.admission.jobEffectMutex(p.input.jobId).acquire();
+      let elapsed = 0, writes = 0;
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const attempt = createContextAttempt({ jobId: p.input.jobId, effect: capability.effect, capability, admissionTransaction: w.admission,
+        now: () => w.control.clock, monotonicNow: () => elapsed });
+      const work = attempt.run(async ({ writable }) => {
+        if (evidence === 'undetermined' && writable()) writes++;
+        await release.promise;
+        if (writable()) writes++;
+      });
+      if (stop === 'deadline') {
+        elapsed = 240_000;
+        t.mock.timers.tick(elapsed);
+        await assert.rejects(work.result, error => error.code === 'operation_uncertain' && error.cause.code === 'context_deadline');
+      } else {
+        attempt.close(new SellerTransportError('seller_stopped', 503));
+        await assert.rejects(work.result, { code: 'seller_stopped' });
+      }
+      assert.equal(w.row(p.input.jobId).state, 'running');
+      assert.equal(w.holds.size, 1);
+      release.resolve();
+      await work.settled;
+      lease.release();
+      assert.equal(writes, evidence === 'no-intent' ? 0 : 1, 'late work signs nothing');
+      w.control.evidence = row => w.evidenceOf(row, evidence);
+      const occupied = w.capacity.capacityReport().allotted;
+      w.control.clock += DIRECT_LIFETIME_MS;
+      await w.admission.sweep({ startup: false });
+      if (evidence === 'undetermined') {
+        assert.equal(w.row(p.input.jobId).state, 'compensating');
+        assert.equal(w.holds.size, 1);
+        assert.equal(w.capacity.capacityReport().allotted, occupied);
+        w.control.evidence = row => w.evidenceOf(row, 'proven-unsigned');
+        await w.admission.sweep({ startup: false });
+      }
+      assert.equal(w.row(p.input.jobId).state, 'aborted');
+      assert.equal(w.holds.size, 0);
+      assert.equal(w.capacity.capacityReport().allotted, 0);
+      await w.admission.sweep({ startup: false });
+      assert.equal(w.calls.release, 1);
+    });
+  }
+}
+
 const failedWith = (w, p, code) => assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, code);
 // A row that is running whose context outcome is durable in the wire but not yet settled: the cut falls between D7 and D8a.
 async function crashAfterPublish(w, p, answer) {
@@ -766,8 +943,9 @@ test('P09b-T15 trigger (c) fires at delegation expiry plus 30,000 ms, not one mi
   assert.deepEqual(w.row(p.input.jobId), admitted); assert.equal(w.calls.release, 0);
   w.control.clock = T0 + HOUR + 30000; await w.admission.compensate(p.input.jobId, 'c');
   assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1);
-  const direct = world(t), q = direct.prepare(0x22); q.input.delegationExpiresAt = null; await direct.admission.begin(q.input);
-  direct.control.clock = Number.MAX_SAFE_INTEGER - SESSION_CHALLENGE_LIFETIME_MS; await sweepTwice(direct); await direct.admission.compensate(q.input.jobId, 'c');
+  const direct = world(t); direct.control.clock = Number.MAX_SAFE_INTEGER - SESSION_CHALLENGE_LIFETIME_MS;
+  const q = direct.prepare(0x22); q.input.delegationExpiresAt = null; await direct.admission.begin(q.input);
+  await sweepTwice(direct); await direct.admission.compensate(q.input.jobId, 'c');
   assert.equal(direct.row(q.input.jobId).state, 'admitted'); assert.equal(direct.row(q.input.jobId).cleanup.cause, null);
   const unsafe = world(t), r = unsafe.prepare(0x33); r.input.delegationExpiresAt = Number.MAX_SAFE_INTEGER - 5; await unsafe.admission.begin(r.input);
   await unsafe.admission.compensate(r.input.jobId, 'c');

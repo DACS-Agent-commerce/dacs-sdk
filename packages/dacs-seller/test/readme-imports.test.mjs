@@ -57,7 +57,6 @@ test('the README names the module the handler agent comes from; it exports creat
 
 test('the README and ADMISSION.md name the context route and how a host mounts it', () => {
   const admission = readFileSync(new URL('ADMISSION.md', packageUrl), 'utf8');
-  assert.match(readme, /does not mount the Vet and Agreement context route \(`createSellerContextRoute`/);
   assert.match(readme, /`context` option of\s+`createSellerHttpHandler\(agent, \{ authentication, context \}\)`/);
   assert.match(admission, /passes `createSellerContextRoute` \(a root\s+export\) as the `context` of `createSellerHttpHandler`/);
 });

@@ -483,7 +483,11 @@ export function formatDacsLiveDoctorTextV1(
     `gate: ${report.gate.status}`,
     ...report.checks.map((item) =>
       `${item.required ? "required" : "informational"} ${item.id}: ${item.status}` +
-      `${item.reasonCode === undefined ? "" : ` (${item.reasonCode})`}`),
+      `${item.reasonCode === undefined ? "" : ` (${item.reasonCode})`}` +
+      `${typeof item.facts?.causeCode === "string" &&
+          item.facts.causeCode.trim() === item.facts.causeCode &&
+          REASON_CODE_RE.test(item.facts.causeCode)
+        ? ` [cause: ${item.facts.causeCode}]` : ""}`),
     `report: ${report.reportHash}`,
     `exit: ${report.exitCode}`,
   ];

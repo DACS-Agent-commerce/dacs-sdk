@@ -23,6 +23,10 @@ const effectCounts = w => ({
   publications: w.effects.published.length,
   agreements: w.effects.componentSigns.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length,
 });
+const purchaseHold = (directory, job) => readStore(directory, 'transport/transport.sqlite', db => ({
+  allocation: db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(job)?.state,
+  closures: db.prepare('SELECT COUNT(*) AS n FROM kit_terminal_closures WHERE jobId = ?').get(job).n,
+}));
 const savedSession = (directory, job) => JSON.parse(retainedRows(directory).jobs.find(row => row.job === job).value).payload.body.session;
 // Payment claims cut off with work left over: what stays unfinished, the lifecycle readings and
 // restarts to cover, and the fault that leaves it so.
@@ -127,6 +131,28 @@ export function hostJobCapacityTests(world) {
       const second = await w.purchase({ commit: false });
       assert.ok(transportRows(w.dataDirectory).retired.some(row => row.job === first.jobId && row.job_retired === 1));
       assert.deepEqual(retainedRows(w.dataDirectory).jobs.map(row => row.job), [first.jobId, second.jobId]);
+    });
+  }
+
+  for (const [work, [state], , interrupt] of UNFINISHED_PAYMENTS) {
+    test(`a restart between the payment record and the completed outcome keeps the paid job open, and one retry finishes and delivers once (${work})`, async t => {
+      const ended = new Map();
+      const w = await world(t, { maxJobs: 1, deliveryEvidenceEnabled: true,
+        contextSessionState: ({ jobId }) => ended.get(jobId) ?? null });
+      const first = await w.purchase(), tx = first.pay();
+      await interrupt(w, first, () => first.claim(tx));
+      ended.set(first.jobId, state);
+      w.advance(2 * 60 * 60 * 1000);
+      await w.restart();
+      ended.clear();
+      assert.deepEqual(purchaseHold(w.dataDirectory, first.jobId), { allocation: 'live', closures: 0 }, 'the restart closes neither the session nor the allocation');
+
+      let answer;
+      for (let claim = 0; claim < 3 && answer?.delivery?.status !== 'delivered'; claim++) answer = await first.claim(tx);
+      assert.equal(answer.status, 'payment-evidenced', JSON.stringify(answer));
+      assert.equal(answer.delivery?.status, 'delivered', JSON.stringify(answer));
+      assert.equal(w.effects.signed.length, 1, 'the payment evidence is signed once');
+      assert.equal(w.createsAt(`dacs4:deliverable:${first.jobId}`), 1, 'the order is delivered once');
     });
   }
 

@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { recordName } from './delta-record.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -18,7 +19,7 @@ async function fixture(t, initial = 'original\n') {
   const dir = mkdtempSync(join(tmpdir(), 'TEST-delta-continuity-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const pkg = join(dir, prefix);
-  for (const name of ['src', 'scripts', 'evidence']) mkdirSync(join(pkg, name), { recursive: true });
+  for (const name of ['src', 'scripts', 'evidence', 'records']) mkdirSync(join(pkg, name), { recursive: true });
   const git = (...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8', stdio: 'pipe' }).trimEnd();
   git('init', '--quiet');
   const json = (name, value) => writeFileSync(join(pkg, name), JSON.stringify(value, null, 2) + '\n');
@@ -41,6 +42,7 @@ async function fixture(t, initial = 'original\n') {
   git('add', '--', ...['PROVENANCE.json', ...controls, 'DELTA-NOTES.md', 'evidence/publication-history.json'].map(name => prefix + name), ...(initial === null ? [] : [path]));
   git('commit', '--quiet', '-m', 'TEST baseline');
   const baseline = git('rev-parse', 'HEAD');
+  json('records/ANCHOR.json', { schema: 'dacs-client-anchor/v1', commit: baseline, files: { [`${prefix}DELTA-NOTES.md`]: git('rev-parse', `HEAD:${prefix}DELTA-NOTES.md`) } });
   const digest = createHash('sha256').update(readFileSync(join(pkg, 'evidence/publication-history.json'))).digest('hex');
   let checker = readFileSync(join(scripts, 'delta-map.mjs'), 'utf8');
   for (const [name, value] of [['BASELINE', baseline], ['PUBLICATION_HEAD', baseline], ['HISTORY_SHA256', digest]]) {
@@ -49,9 +51,18 @@ async function fixture(t, initial = 'original\n') {
     checker = checker.replace(pin, `export const ${name} = '${value}';`);
   }
   writeFileSync(join(pkg, 'scripts/delta-map.mjs'), checker);
-  for (const name of ['delta-assemble.mjs', 'delta-record.mjs', 'source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(pkg, 'scripts', name));
+  for (const name of ['delta-assemble.mjs', 'delta-record.mjs', 'delta-freeze.mjs', 'source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(pkg, 'scripts', name));
   const { blob, checkDeltas, lastRecordOnlyFailures, table } = await import(pathToFileURL(join(pkg, 'scripts/delta-map.mjs')));
   json('DELTA-LEDGER.json', { schema: 'dacs-client-deltas/v2', baseline, changes: [] });
+  const setupSubject = 'delta(client): D11 declare the fixture lane';
+  mkdirSync(join(pkg, 'records/ids'), { recursive: true });
+  json('records/ids/D11.json', { schema: 'dacs-client-delta-id/v1', delta: 'D11', registration: 'D11: fixture lane', subject: setupSubject });
+  git('add', '--', prefix);
+  const setup = { schema: 'dacs-client-delta-record/v1', delta: 'D11', subject: setupSubject, kind: 'commit-only', commitFiles: [] };
+  const setupName = prefix + 'records/' + recordName(setup);
+  setup.commitFiles = [...git('diff', '--cached', '--name-only').split('\n').filter(Boolean), setupName].sort();
+  json('records/' + recordName(setup), setup); git('add', '--', setupName); git('commit', '-qm', setupSubject);
+  const start = git('rev-parse', 'HEAD');
   const render = () => writeFileSync(join(pkg, 'DELTA-MAP.md'), table());
   const sourceBlob = () => existsSync(join(dir, path)) ? blob(readFileSync(join(dir, path))) : null;
   let sequence = 0;
@@ -62,11 +73,13 @@ async function fixture(t, initial = 'original\n') {
     if (generate) {
       git('add', '--', path);
       execFileSync(process.execPath, [prefix + 'scripts/delta-map.mjs', '--record', 'D11', subject], { cwd: dir, stdio: 'pipe' });
-    } else {
-      const ledger = read('DELTA-LEDGER.json');
-      ledger.changes.push({ delta: 'D11', subject, files: [{ path, before, after: sourceBlob() }] });
-      json('DELTA-LEDGER.json', ledger);
+      const name = prefix + 'records/' + recordName({ delta: 'D11', subject });
+      git('add', '--', name); git('commit', '--quiet', '-m', subject);
+      return git('rev-parse', 'HEAD');
     }
+    const ledger = read('DELTA-LEDGER.json');
+    ledger.changes.push({ delta: 'D11', subject, files: [{ path, before, after: sourceBlob() }] });
+    json('DELTA-LEDGER.json', ledger);
     const files = [...controls.map(name => prefix + name), ...(before === sourceBlob() ? [] : [path])].sort();
     json('DELTA-COMMITS.json', [...read('DELTA-COMMITS.json'), { sha: null, subject, files }]);
     render();
@@ -111,7 +124,7 @@ async function fixture(t, initial = 'original\n') {
   };
   const check = () => checkDeltas().failures;
   const recordOnlyFailures = () => lastRecordOnlyFailures();
-  return { baseline, blob, branch, check, git, json, merge, note, read, record, recordFile, recordOnlyFailures, render };
+  return { baseline: start, blob, branch, check, git, json, merge, note, read, record, recordFile, recordOnlyFailures, render };
 }
 
 async function staleMerge(t, fixed = 'fixed\n', merged = 'original\n') {
@@ -244,7 +257,7 @@ for (const [name, substitute] of [['its own new blob', (record) => record.after]
   });
 }
 
-test('a control-only last record is refused with the ledger path even when every earlier source record remains', async t => {
+test('an archived control-only record is refused with the ledger path even when every earlier source record remains', async t => {
   const history = await fixture(t);
   history.record('changed\n'); history.record('changed\n');
   const ledger = history.read('DELTA-LEDGER.json');

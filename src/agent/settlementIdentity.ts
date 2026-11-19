@@ -13,7 +13,7 @@ import {
   stripSignature,
 } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
-import type { Verifier } from "./signedArtifact.js";
+import type { Verifier } from "../crypto/byteSignerTypes.js";
 
 /** DACS-4 §9.5.8 SB-1 canonical event/instruction-level settlement identity. */
 

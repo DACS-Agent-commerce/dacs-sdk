@@ -4,6 +4,7 @@
 import * as core from '@kynesyslabs/dacs';
 import { DEMOS_SR2_FIXTURE_CHAIN_IDENTITY, createDemosSr2Adapter, createInMemoryDemosSr2Journal } from '../../src/dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../../src/dacs/wallet-transactions.mjs';
+import { INACTIVE_FORK_NETWORK_INFO } from './network-info.mjs';
 
 const BLOCK_SPACING_S = 2;
 const STORAGE_FEE_BYTES = 10_240;
@@ -49,6 +50,7 @@ export function scriptedDemosNode(now, { onApply = () => {} } = {}) {
     switch (message) {
       case 'getBlockByNumber': return clone(blocks[data.blockNumber] ?? null);
       case 'getAddressNonce': return accountNonces.get(data.address) ?? 0;
+      case 'getNetworkInfo': return clone(INACTIVE_FORK_NETWORK_INFO);
       case 'getTransactionStatus': { const found = transactionRecord(message, String(data.hash).toLowerCase()); return found ? { state: found.status === 'failed' ? 'failed' : 'included', blockNumber: found.blockNumber } : { state: 'not-found' }; }
       case 'getTxByHash': return transactionRecord(message, String(data.hash).toLowerCase());
       case 'searchStoragePrograms': return [...programs.values()].filter((program) => program.programName === data.query).map(({ storageAddress, programName }) => ({ storageAddress, programName }));
