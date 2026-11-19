@@ -7,18 +7,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
+import { DACS_SELLER_HTTP_PATHS, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { AGREEMENT_CONTEXT_SOURCE } from '../src/dacs/agreement-context-consumer.mjs';
 import { createDemDeliveryContext, demDeliveryContextHost, resolveDemDeliverySellerContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { DEM_RAIL, purchaseSupport } from '../src/dacs/listing.mjs';
 import { createContextAttempt, createSellerContextRecords } from '../src/dacs/seller-context-route.mjs';
-import { SellerTransportError, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
+import { SELLER_CONTEXT_PATH, SellerTransportError, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
 import { createDevnetDemoAgreementContextProvider } from '../src/devnet-demo/agreement-context.mjs';
 import * as guard from '../src/kit-operation-guard.mjs';
-import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
+import { SellerAgentError, createSellerAgent } from '../src/dacs/seller-agent.mjs';
 import { fixture, JOBS } from './helpers/bilateral-vet-fixture.mjs';
 import { watchSql } from './helpers/challenge-route-fixture.mjs';
 import { JOB as WIRE_JOB, JOB2 as WIRE_JOB2, T0, contextWireWorld } from './helpers/context-wire-world.mjs';
-import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
+import { NOW, buyer, seller, JOB as AGENT_JOB } from './helpers/protocol-fixture.mjs';
+import { proposalAdmissionFixture } from './helpers/proposal-admission-fixture.mjs';
 
 const [JOB] = JOBS;
 const LEASE_UNTIL = NOW + 300_000;
@@ -505,17 +507,63 @@ test('identical attempts in parallel, or a retry while the first validates, answ
   assert.deepEqual([w.counts.validations, w.counts.holds.length, w.internals.admissionCounts().starts], [1, 1, 1]);
 });
 
-test('an accepted presentation sent again is answered session_admission_unavailable 503 with no write and no reservation', async (t) => {
+test('an accepted presentation sent again after its answer completed gets that same answer, read back from the Vet records, with no write and no new provider work', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  const first = await w.post(request);
+  assert.equal(first.status, 200);
+  await w.settleJob();
+  const before = { holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, resolves: w.counts.resolves, reserves: w.reserved.calls };
+  const sql = watchSql(t);
+  const again = await w.post(request);
+  assert.deepEqual([again.status, again.text], [first.status, first.text]);
+  await request.verify(again);
+  assert.equal(sql.writes(), 0, 'no write statement');
+  assert.deepEqual({ holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, resolves: w.counts.resolves, reserves: w.reserved.calls }, before);
+  assert.equal(w.counts.readbacks, 1, 'the saved present answer was read back once');
+});
+
+test('a completed context answer is not sent again when the Vet records no longer read back as present', async (t) => {
   const w = await contextWireWorld(t), request = await w.startContext();
   assert.equal((await w.post(request)).status, 200);
   await w.settleJob();
-  const before = { holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, reserves: w.reserved.calls };
-  const sql = watchSql(t);
+  for (const readback of [async () => null, async () => ({ disposition: 'absent', reason: 'TEST the record is gone' }), async () => { throw new Error('TEST the readback failed'); }]) {
+    w.behaviour.readback = readback;
+    assert.deepEqual(summary(await w.post(request)), [503, 'session_admission_unavailable']);
+  }
+});
+
+test('a Vet readback that stalls for 10 s ends a retried context request with session_admission_unavailable 503', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  assert.equal((await w.post(request)).status, 200);
+  await w.settleJob();
+  w.behaviour.readback = () => new Promise(() => {});
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = w.post(request);
+  await flush();
+  t.mock.timers.tick(POLICY_DEADLINE_MS);
+  assert.deepEqual(summary(await pending), [503, 'session_admission_unavailable']);
+});
+
+test('a completed context answer is not sent again after the buyer\'s access has closed', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  assert.equal((await w.post(request)).status, 200);
+  await w.settleJob();
+  w.policy.access = refusal('buyer_access_closed', 409);
+  assert.deepEqual(summary(await w.post(request)), [409, 'buyer_access_closed']);
+  assert.equal(w.counts.readbacks, 0, 'nothing is read back for a buyer that is refused');
+});
+
+test('an accepted presentation sent again while its first request is still running is answered session_admission_unavailable 503 and starts no second provider work', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext(), entered = deferred(), release = deferred();
+  w.behaviour.provider = async () => { entered.resolve(); await release.promise; };
+  const first = w.post(request);
+  await entered.promise;
   const again = await w.post(request);
   assert.deepEqual(summary(again), [503, 'session_admission_unavailable']);
-  await request.verify(again);
-  assert.equal(sql.writes(), 0, 'no write statement');
-  assert.deepEqual({ holds: w.counts.holds.length, files: w.journalFiles(), writes: w.counts.vetWrites, reserves: w.reserved.calls }, before);
+  release.resolve();
+  assert.equal((await first).status, 200);
+  await w.settleJob();
+  assert.deepEqual([w.counts.resolves, w.counts.readbacks], [1, 0]);
 });
 
 test('a policy refusal while taking the hold aborts the intent and answers seller_budget_refused 409 with no journal file', async (t) => {
@@ -1112,4 +1160,138 @@ test('first admission accepts every form the admission admits: extension members
   const w = await contextWireWorld(t), request = await w.startContext({ candidate: true, scopeChange: (scope) => { scope.generatedAt = T0 + SKEW_MS + 1; } });
   assert.deepEqual(summary(await w.post(request)), [409, 'context_generated_at']);
   assertNothingStarted(w);
+});
+
+// ---- a purchase starts only from a successful context admission ----
+const STAGE_ROUTES = [DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.payments];
+let stageNonces = 0;
+/** A stage request for the job, and a count of the times its wire reservation ran. */
+function stageRequest(w, path, agreementHash = sha256Hex('agreement'), jobId = WIRE_JOB) {
+  const payload = { version: '1', kind: 'request', method: 'POST', path, bodyHash: sha256Hex('{}'), jobId, buyer: w.buyer.claim, seller: w.seller.claim, listingPin: w.pin,
+    agreementHash, nonce: sha256Hex(`stage-nonce-${++stageNonces}`).slice(0, 32), expiresAt: T0 + 30_000, profile: w.wire.binding.profile };
+  const operationId = wireOperationId(payload), calls = { reserve: 0 };
+  const checked = { reserve: async () => { calls.reserve++; return Object.freeze({ state: 'new', operationId, attempt: 0, leaseUntil: T0 + 300_000 }); } };
+  return { calls, input: { checked, payload, route: path, operationId, newJob: false, contextStart: true, paymentTx: null, keepProfile: w.wire.binding.profile, retainedWork: true } };
+}
+const nonceRows = (w) => w.internals.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n;
+/** Asks every stage route about the job: each answers `expected` and leaves no nonce and no reservation. */
+async function assertStagesRefused(w, expected, label) {
+  for (const path of STAGE_ROUTES) {
+    const { calls, input } = stageRequest(w, path), nonces = nonceRows(w);
+    await assert.rejects(w.coordinator.reserveCoordinated(input), (error) => error.code === expected[0] && error.status === expected[1], `${label}: ${path}`);
+    assert.deepEqual([calls.reserve, nonceRows(w)], [0, nonces], `${label}: ${path} reserved nothing`);
+  }
+}
+
+test('a proposal, commitment or payment request is refused unless its job has a successful context admission, and takes no nonce or reservation', async (t) => {
+  await t.test('no admission row', async (t) => {
+    const w = await contextWireWorld(t);
+    await assertStagesRefused(w, ['context_admission_closed', 409], 'no row');
+  });
+  await t.test('a row aborted by a policy refusal', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    w.behaviour.policyReserve = async () => 'TEST over budget';
+    await w.post(request); await w.settleJob();
+    assert.equal(w.rowOf().state, 'aborted');
+    await assertStagesRefused(w, ['context_admission_closed', 409], 'aborted');
+  });
+  await t.test('a row settled with a Vet non-pass', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    w.behaviour.answer = async () => ({ disposition: 'rejected', reason: 'buyer Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' });
+    await w.post(request); await w.settleJob();
+    assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], ['settled', 'vet-non-pass']);
+    await assertStagesRefused(w, ['context_admission_closed', 409], 'vet-non-pass');
+  });
+  await t.test('a row still running while the provider holds its answer', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext(), entered = deferred(), release = deferred();
+    w.behaviour.answer = async () => { entered.resolve(); await release.promise; return { disposition: 'indeterminate', reason: 'TEST the answer is held' }; };
+    const stalled = w.post(request);
+    await entered.promise;
+    assert.equal(w.rowOf().state, 'running');
+    await assertStagesRefused(w, ['session_admission_unavailable', 503], 'running');
+    release.resolve(); await stalled; await w.settleJob();
+  });
+  await t.test('a row ended after the provider gave no final answer', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    w.behaviour.answer = async () => ({ disposition: 'indeterminate', reason: 'TEST the answer is held' });
+    await w.post(request); await w.settleJob();
+    assert.equal(w.rowOf().state, 'aborted');
+    await assertStagesRefused(w, ['context_admission_closed', 409], 'ended');
+  });
+  await t.test('a row still taking its hold', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext(), entered = deferred(), release = deferred();
+    w.behaviour.policyReserve = async () => { entered.resolve(); await release.promise; return null; };
+    const stalled = w.post(request);
+    await entered.promise;
+    assert.equal(w.rowOf().state, 'intent');
+    await assertStagesRefused(w, ['session_admission_unavailable', 503], 'intent');
+    release.resolve(); await stalled; await w.settleJob();
+  });
+  await t.test('a settled success whose kept tuple is gone', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    assert.equal((await w.post(request)).status, 200); await w.settleJob();
+    w.internals.db.prepare('DELETE FROM kit_purchase_profiles WHERE job = ?').run(WIRE_JOB);
+    await assertStagesRefused(w, ['tp1_purchase_profile_mismatch', 500], 'no tuple');
+  });
+  await t.test('control: a settled success with its tuple is let on by the gate on every stage route', async (t) => {
+    const w = await contextWireWorld(t), request = await w.startContext();
+    assert.equal((await w.post(request)).status, 200); await w.settleJob();
+    for (const path of STAGE_ROUTES) assert.equal(w.closedBootstrapGate({ route: path, jobId: WIRE_JOB }), null, path);
+  });
+});
+
+test('free capacity does not open a purchase for a job whose context admission failed', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  w.behaviour.policyReserve = async () => 'TEST over budget';
+  await w.post(request); await w.settleJob();
+  assert.equal(w.capacity.fitsNewPurchase(), true, 'the aborted admission left room for a purchase');
+  await assertStagesRefused(w, ['context_admission_closed', 409], 'aborted with room');
+});
+
+test('the context route is not behind the closed-bootstrap gate: a first context request for a fresh job is admitted', async (t) => {
+  const w = await contextWireWorld(t), request = await w.startContext();
+  assert.equal(w.closedBootstrapGate({ route: SELLER_CONTEXT_PATH, jobId: WIRE_JOB }), null);
+  assert.equal(w.rowOf(), null, 'the job has no row, which would close every other route');
+  assert.equal((await w.post(request)).status, 200);
+  await w.settleJob();
+  assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], ['settled', 'success']);
+});
+
+const AGENT_EFFECT_ENTRIES = ['receiveProposal', 'commit', 'commitOnSignature', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy'];
+
+test('an agent refuses every direct effect entry without a closed-bootstrap gate, and asks its gate before any work', async (t) => {
+  const f = await proposalAdmissionFixture(t), request = { jobId: AGENT_JOB, transportIdentity: { jobId: AGENT_JOB } };
+  const ungated = await createSellerAgent({ ...f.config });
+  t.after(() => ungated.close());
+  for (const entry of AGENT_EFFECT_ENTRIES) {
+    await assert.rejects(ungated[entry](request), (error) => error.code === 'session_admission_unavailable' && error.status === 503, `${entry} without a gate`);
+  }
+  const asked = [], refusing = await f.open({ closedBootstrapGate: (input) => { asked.push(input); return { code: 'context_admission_closed', status: 409 }; } });
+  for (const entry of AGENT_EFFECT_ENTRIES) {
+    await assert.rejects(refusing[entry](request), (error) => error.code === 'context_admission_closed' && error.status === 409, `${entry} with a refusing gate`);
+  }
+  assert.deepEqual(asked, AGENT_EFFECT_ENTRIES.map((route) => ({ route, jobId: AGENT_JOB })));
+  const throwing = await f.open({ closedBootstrapGate: () => { throw new Error('TEST the gate cannot read'); } });
+  await assert.rejects(throwing.receiveProposal(request), (error) => error.code === 'session_admission_unavailable' && error.cause?.message === 'TEST the gate cannot read');
+  assert.equal(f.store.challenges.jobBinding(AGENT_JOB), null);
+});
+
+test('a proposal makes no session on its own, whatever the gate says: no accepted context presentation, no session and no write', async (t) => {
+  const f = await proposalAdmissionFixture(t), agent = await f.open();
+  const challenge = f.store.challenges.issue({ jobId: AGENT_JOB, buyer: buyer.claim }, sha256Hex('TEST challenge scope'));
+  const bundle = f.unadmitted(AGENT_JOB, buyer, (presentation) => { presentation.sessionNonce = challenge.sessionNonce; });
+  const before = f.store.challenges.retained(challenge.sessionNonce);
+  await assert.rejects(agent.receiveProposal(bundle), (error) => error.code === 'context_admission_closed' && error.status === 409);
+  assert.equal(agent.stageOf(AGENT_JOB), null);
+  assert.deepEqual(f.store.challenges.retained(challenge.sessionNonce), before, 'the challenge is not consumed by a proposal');
+  assert.equal(f.store.challenges.jobBinding(AGENT_JOB), null);
+  assert.equal(f.admission.calls.some(([method]) => method === 'admit'), false);
+});
+
+test('the agent and the challenge ledger have no operator challenge entry, and the challenge table has no origin column', async (t) => {
+  const f = await proposalAdmissionFixture(t), agent = await f.open(), w = await contextWireWorld(t);
+  assert.equal(Object.hasOwn(agent, 'issueSessionChallenge'), false);
+  assert.equal(Object.hasOwn(f.store.challenges, 'issueForOperator'), false);
+  assert.equal(Object.hasOwn(w.challenges(), 'issueForOperator'), false);
+  assert.deepEqual(w.internals.db.prepare('PRAGMA table_info(kit_challenges)').all().filter((column) => column.name === 'origin'), []);
 });

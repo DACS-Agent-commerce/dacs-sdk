@@ -160,10 +160,12 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
     if (live?.state === 'live') releaseAllWithin({ allocationId: live.allocationId, allocationRev: live.rev });
   }
   // The store's adapter observes each live allocation's job (a closure answers first); a terminal one is closed and released by the
-  // store's writer in a transaction of its own, so a failure leaves neither the closure nor the release.
-  function releaseTerminalAllocations() {
+  // store's writer in a transaction of its own, so a failure leaves neither the closure nor the release. A job that `keepOpen({ jobId, seller })`
+  // answers true for is not observed at all, so cleanup writes no closure for it and its allocation stays live.
+  function releaseTerminalAllocations(keepOpen = () => false) {
     if (db.inTransaction) throw new TypeError('terminal cleanup opens its own transaction');
-    for (const { jobId } of db.prepare("SELECT jobId FROM kit_allocations WHERE state = 'live'").all()) {
+    for (const { jobId, seller } of liveAllocations()) {
+      if (keepOpen({ jobId, seller })) continue;
       try { sessionState({ jobId }, 'cleanup'); }
       catch (error) {
         if (error?.code !== 'session_admission_unavailable' || error.status !== 503) throw error;

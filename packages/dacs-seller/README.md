@@ -19,7 +19,8 @@ broadcast can still reach a real Demos node: keep them on the fixture too. It
 is not qualified for mainnet. The standalone host preserves job ownership and refuses
 new jobs before admission at `maxJobs` (default 10,000) unless completed work
 can safely retire. Terminal DACS-5 bundle completion is not wired; slot retirement
-needs the `contextSessionState` capability described below.
+needs a terminal session state, which the `contextSessionState` capability or the
+host's own reading of abandoned purchases (described below) supplies.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
@@ -44,7 +45,16 @@ non-null non-string refuses issuance and new work with `session_admission_unavai
 503 and its cause; only explicit `null` means unknown. Promise results are ignored
 and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
-transactions. A host without the capability reclaims nothing. Context route
+transactions. A host given no capability reads one state itself: a purchase that
+settled its context step, retains no commitment work and holds no payment reads as `aborted-by-self`
+once an hour has passed since its admission and its Agreement's deadline has passed (a purchase whose
+proposal was refused or never made retains no Agreement and no deadline to wait for). Its units are
+given back and its job id cannot continue (the buyer starts again with a new job id).
+A purchase that retains commitment work, holds a payment or has a proposal, commitment or
+payment attempt still running stays open, because a payment included before the deadline
+is accepted however late it is claimed. A purchase whose retained Agreement has no
+readable deadline reads as unknown. A host
+given the capability uses only that. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 
 Verified additive migration is forward-only: the unchanged format marker does not
@@ -65,13 +75,19 @@ passed), unless a crash left it still reserving. Charges that no longer count st
 and each admission still scans them; they are never pruned. The host
 composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
-accounting and recording the reservation result. The routes do not yet reserve
-through the coordinator. Admission and accounting accept capacity through their
-internal ports.
-The routes do not yet reserve through these units, so the host's readiness does
-not read them: signed routes reserve through the store's accounting, terminal
-allocation cleanup runs at startup and when a store reader observes a terminal
-session, and the periodic terminal cleanup comes with the routes that use the units.
+accounting and recording the reservation result. Every signed effect route
+reserves through the coordinator. The other effect routes spend a unit of their
+purchase's slot, while the context route charges one general capacity unit.
+Signed reads and the signed challenge reserve nothing. The context route's admission allots a new purchase its
+allocation and refuses `seller_not_ready` (503) while the whole allotment is not
+free. While it is not, the host's readiness is false too: its discovery document says
+`ready: false` and new challenges are refused `seller_not_ready`, while purchases
+that already hold an allocation go on. Terminal allocation cleanup
+runs at startup and when a store reader observes a terminal session through
+`contextSessionState`, and the host's 60-second sweep repeats it while the host
+runs. With no `contextSessionState` the units a purchase keeps after its context
+step are given back once it reads as abandoned (above; one that retains commitment work or holds a payment stays allocated); with an operator's
+`contextSessionState` they stay allocated until that reader names a terminal state.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
 the old store's checks, startup cleanup and the coordinator) is kept as a durable,
@@ -125,8 +141,17 @@ const host = await startSellerHost({
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
                          // payment evidence anchored by the wallet journal (below), and its readback; the
                          // agent reads the signed CREATE's projection from the same journal
-  demDeliveryContext,    // createDemDeliveryContext({ ..., vetMode: KIT_TP1_VET_MODE }): the Vet context the
-                         // Agreement derives from; the host runs in that one mode (see the Vet paragraph)
+  demDeliveryContext,    // createDemDeliveryContext({ ..., vetMode: KIT_TP1_VET_MODE, recoverBuyer, resumableBuyer,
+                         // bindRetainedScope }): the Vet context the Agreement derives from; the host runs in
+                         // that one mode (see the Vet paragraph) and refuses at startup, before the lock and any
+                         // file, a capability built without the three callbacks. recoverBuyer and resumableBuyer
+                         // take (input, { writable, signal }) like resolveBuyer. recoverBuyer must be a real,
+                         // authenticated Vet readback: the host calls it (read-only) when it answers a completed
+                         // context request sent again, and a placeholder makes that retry answer
+                         // session_admission_unavailable (503). resumableBuyer is reserved for resuming an
+                         // interrupted context step (the host does not call it yet); bindRetainedScope(reader)
+                         // is called once at startup with the reader of completed context scopes and returns
+                         // { sellerBundlePresentedBy }, the Listing's seller presenter
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
@@ -151,8 +176,10 @@ const host = await startSellerHost({
 });
 // journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
 // deliveryJournal = createDeliverableWalletJournal(...) (below); the host refuses any other pair.
-// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
-// host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
+// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state. A context step
+// already admitted runs to its own outcome (or its 240-second deadline) before the state closes; after a
+// crash during a step, the next start ends that step or marks it uncertain.
+// A buyer gets its challenge from the host's signed challenge route and presents it on the context route.
 ```
 
 The host keeps three state directories under `dataDirectory`: `seller/`,
@@ -760,20 +787,22 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - It opens a new session only for a presentation of a challenge it issued,
   on a Listing its own revocation check finds not revoked, and only under
   `sessionAdmission`, before anything of it is kept, read, signed or sent.
-  - **Issuing.** `host.issueSessionChallenge({ jobId, buyer })` keeps a fresh
+  A proposal never opens a session: the context route admits the presentation
+  first, and a proposal, commitment, payment or bundle step runs only for a job
+  whose context admission settled with a success outcome
+  (`context_admission_closed` 409 otherwise, `session_admission_unavailable`
+  503 while the admission is still running).
+  - **Issuing.** The signed challenge route keeps a fresh
     256-bit nonce for that job and buyer, valid for ten minutes, in the one
     challenge ledger the host's transport store keeps (the same ledger the
-    context route issues into; this operator entry stays until the host mounts
-    that route) before it returns `{ jobId, buyer, sessionNonce, issuedAt,
-    expiresAt }`. The operator hands it to the buyer, whose bundle carries it
-    as `sessionNonce` (CORE SN-1..SN-3; delivering the challenge to the buyer
-    is up to the operator). An open challenge for the same job and buyer is
+    context route consumes it from) before it answers `{ sessionNonce, expiresAt }`.
+    The buyer's bundle carries it
+    as `sessionNonce` (CORE SN-1..SN-3). An open challenge for the same job and buyer is
     returned again; the ledger's hourly limits apply (five per buyer, twelve
     overall), and a job whose challenge was consumed takes no new one
-    (`context_job_closed`). Without a `sessionAdmission` the issuer refuses
-    `session_admission_unavailable` before anything is kept.
+    (`context_job_closed`).
   - **Generation.** Only the seller generates the nonce, using its own CSPRNG.
-    Supplying `sessionNonce` to the issuer is refused. The buyer copies the
+    The buyer copies the
     returned value into its bundle and signs afterward (CORE SN-1..SN-3).
   - **Consumption.** A presentation attempt for a new session consumes the
     nonce its bundle carries, durably and before the attempt is validated:
@@ -1067,14 +1096,13 @@ per-client limiter so one client cannot exhaust the shared request budget.
   seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
   `too_large` or `unavailable`), a closed buyer access keeps its own refusal,
   and the stored outcome is never rewritten.
-- It does not mount the Vet and Agreement context route (`createSellerContextRoute`,
-  see the root exports above) itself: the challenge
-  a session needs is the one `host.issueSessionChallenge` issued, which the
-  operator delivers to the buyer. The host keeps every issued challenge
+- It mounts the signed challenge route and the Vet and Agreement context route on
+  the wire. A buyer asks for a challenge, then presents it in the context request,
+  which the host admits, reserves and answers through the operator's
+  `demDeliveryContext`. The host keeps every issued challenge
   in the transport store's one challenge ledger, beside the seller state.
   Expired unattempted challenges may be reclaimed; accepted presentations
   retain their exact admission checkpoint and their job binding for replay.
-  The operator issues challenges only for buyers about to present.
 - The signed challenge route is composed directly, not by the host:
   `createSellerHttpHandler(agent, { authentication, context, wire })` serves
   `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the

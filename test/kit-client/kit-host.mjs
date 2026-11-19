@@ -11,15 +11,15 @@ import { wireBuyer } from '../../packages/dacs-seller/test/helpers/wire-buyer.mj
 import { createSellerTransportClientAuth } from '../../packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs';
 import { SELLER_TRANSPORT_HEADER } from '../../packages/dacs-seller/src/dacs/seller-transport-auth.mjs';
 
-/** Starts the kit's composed host over the kit's fixture capabilities; both are released when the test ends, whether it passes or fails. */
-export async function composedKitHost(t) {
+/** Starts the kit's composed host over the kit's fixture capabilities, with `changes` replacing host options; both are released when the test ends, whether it passes or fails. */
+export async function composedKitHost(t, changes = {}) {
   const fixture = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-kit-client-host-'));
   // The fixture's agent options that the host does not take (it owns its directory and Vet mode, builds its own challenge ledger and has no early commit) are left out.
   const config = { ...fixture.config };
   const { nativeArtifactAnchor } = config;
   for (const key of ['durableDirectory', 'commitOnSignature', 'nativeArtifactAnchor', 'challengeLedger', 'vetMode']) delete config[key];
-  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() });
+  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), ...changes });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { fixture, host, dataDirectory };
 }

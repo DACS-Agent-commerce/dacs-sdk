@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { createClosedBootstrapGate } from '../../src/dacs/closed-bootstrap-gate.mjs';
 import { createDemDeliveryContext, demDeliveryContextHost } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { createWireSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
@@ -36,10 +37,10 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const { state, calls, agent, buyer, seller, other } = w;
   const now = () => state.time;
   state.mono = 0;
-  const counts = { validations: 0, holds: [], releases: [], resolves: 0, vetWrites: 0, agreementSignatures: 0, reserveAcquisitions: 0 };
-  // What a test can bend: the presentation admission, the policy hold, the provider's steps and answer, the reservation (`recover` answers a recovery
+  const counts = { validations: 0, holds: [], releases: [], resolves: 0, readbacks: 0, vetWrites: 0, agreementSignatures: 0, reserveAcquisitions: 0 };
+  // What a test can bend: the presentation admission, the policy hold, the provider's steps, answer and Vet readback, the reservation (`recover` answers a recovery
   // effect the journal never issued), the wire completion (`nullEndFails`, `cutAfterPublish`, and `afterPublish`, run right after an outcome is published), the acceptance (`failAcceptance`) and the kind of effect evidence compensation reads (`evidenceKind`).
-  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, afterPublish: null, failAcceptance: false, evidenceKind: 'no-intent' };
+  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, readback: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, afterPublish: null, failAcceptance: false, evidenceKind: 'no-intent' };
   const fakeEffects = new Set(), completions = [];
   // A presentation's profile admission: the agent's own, here a counting stand-in that grants unless a test says otherwise.
   agent.admitSessionPresentation = async ({ jobId, bundle, nonce }) => {
@@ -95,7 +96,13 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     }
     return behaviour.answer ? behaviour.answer(input) : presentAnswer(input);
   };
-  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer: async () => null, resumableBuyer: async () => null,
+  // The read-only readback of the Vet records: it answers the present answer unless `behaviour.readback` says otherwise, and never writes.
+  const recoverBuyer = async (input, options) => {
+    counts.readbacks++;
+    if (options.writable() !== false) throw new Error('TEST a readback must not be allowed to write');
+    return behaviour.readback ? behaviour.readback(input) : presentAnswer(input);
+  };
+  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer, resumableBuyer: async () => null,
     bindRetainedScope: () => ({ sellerBundlePresentedBy: sellerClaim }) });
   const provider = demDeliveryContextHost(capability);
 
@@ -108,6 +115,8 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   };
   const drain = async () => { while (tracked.size > 0) await Promise.allSettled([...tracked]); };
   const wire = w.makeWire({ capacity, reservations: coordinator });
+  const closedBootstrapGate = createClosedBootstrapGate({ admission: admission.admissionRecord, purchaseProfile: (jobId) => w.store.purchaseProfile(jobId), profile: wire.binding.profile });
+  coordinator.addPreAccountingGate(closedBootstrapGate);
   const routeOptions = { listing: w.listing, wire, store: w.store, ledger: w.store.challenges, admissionTransaction: countingAdmission, coordinator, capacity, provider,
     assertBuyerAccess: async (claim) => { calls.access++; return w.policy.access(claim); }, knownJob: async (...input) => { calls.known++; return w.policy.known(...input); },
     ready: () => state.ready(), stopped: () => state.stop(), now, monotonicNow: () => state.mono, trackContextWork };
@@ -171,6 +180,6 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     return next;
   };
   return { ...w, restartHost, challenges: () => w.store.challenges, handler, route, admission, countingAdmission, coordinator, capacity, counts, behaviour, provider, post, issue, startContext, rowOf, privateRow, challengeOf, openHolds, internals,
-    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire,
+    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire, closedBootstrapGate,
     tick: (ms) => { state.mono += ms; } };
 }
