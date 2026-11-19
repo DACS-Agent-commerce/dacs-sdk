@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged package.json after the record switch merge",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "23a4e1d74372dcc8fe45d5538b73dbb01a34dc65",
+      "after": "23a4e1d74372dcc8fe45d5538b73dbb01a34dc65"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-256300cc8915.json"
+  ],
+  "note": "Both sides of the merge recorded package.json after the anchor; this record chooses the merged copy, which lists src/dacs/transaction-signature-domain.mjs in files."
+}
