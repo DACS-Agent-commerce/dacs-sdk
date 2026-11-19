@@ -11345,6 +11345,18 @@
           "after": "09fe1a480803d3b8c0bf317caca89ce2a6cdcd10"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF document the chain check and the signer-lock send of an evidence broadcast",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "5d4dc09f971278868d64b81c5874cdb00d8ac2a8",
+          "after": "635c8a69eea05cdffe14766828c14fdecb71f9f0"
+        }
+      ]
     }
   ]
 }
