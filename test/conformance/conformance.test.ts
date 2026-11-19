@@ -66,7 +66,6 @@ import { BUNDLE_OUTCOMES, perspectiveFlip } from "../../src/agent/bundleSemantic
 import { compositeVerificationAddress } from "../../src/agent/index.js";
 import {
   assignSealedEnvelopeRoles,
-  buildSealedAgreement,
   deriveFixedPriceAgreement,
   isNegotiablePriceWithinBand,
   makeCommitment,
@@ -78,6 +77,7 @@ import {
   type AnchoredCommit,
   type AnchoredReveal,
   type SealedBid,
+  type SealedWinnerContext,
   type SelectionRule,
 } from "../../src/negotiate/index.js";
 import {
@@ -500,16 +500,30 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
     };
     return { commit, reveal };
   };
-  const sealedAgreement = (ctx: Parameters<typeof buildSealedAgreement>[0]) =>
-    buildSealedAgreement(ctx, {
-      seller: LISTING_PUBLISHER,
-      listingRef: "stor-sealed-listing",
-      decimals: 0,
-      rail: "pay-dem",
-      deliveryPhase: "deliver-attested-payload",
-      deliveryFormat: "application/json",
-      expiresAt: "2026-12-31T00:00:00Z",
+  const sealedAgreement = (win: SealedWinnerContext): AgreementDocument => {
+    const roles = assignSealedEnvelopeRoles({
+      phaseKind: win.phaseKind,
+      auctionMode: win.auctionMode,
+      listingPublisher: LISTING_PUBLISHER,
+      winningBidderClaim: win.winningBidderClaim,
+      losingBidderClaims: win.losingBidderClaims,
     });
+    return {
+      jobId: win.jobId,
+      pattern: "negotiate-sealed-envelope",
+      buyer: roles.buyer,
+      seller: roles.seller,
+      listingRef: "stor-sealed-listing",
+      price: {
+        amount: win.winningBid.price.amount,
+        asset: win.winningBid.price.currency,
+        decimals: 0,
+        rail: "pay-dem",
+      },
+      delivery: { phase: "deliver-attested-payload", format: "application/json" },
+      expiresAt: "2026-12-31T00:00:00Z",
+    };
+  };
   const runProcurement = async (selectionRule: SelectionRule) => {
     const winner = sealedBidder(WINNING_BIDDER, "3", 0);
     const loser = sealedBidder(LOSING_BIDDER, "4", 1);
