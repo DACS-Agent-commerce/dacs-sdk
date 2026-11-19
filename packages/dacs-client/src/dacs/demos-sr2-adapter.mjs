@@ -20,6 +20,7 @@ import {
 import { addressForClaim, verifyDemosSignature } from '../signatures.mjs';
 import { canonicalSignature } from '../signatures.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
+import { readTransactionSignaturePrefix } from './transaction-signature-domain.mjs';
 
 // Supported public core helper for signed-to-executed content comparison.
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
@@ -267,9 +268,13 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     // exact writer's signature over that hash, and the node's transaction under
     // it. An answer that fails this (no content, other bytes, a signature that
     // does not verify) establishes nothing, so it contradicts nothing either.
+    // The signature covers the hash in the signature domain this node reports
+    // now, read once here; an unreadable domain verifies nothing.
     if (!object(signed) || !object(signed.content) || tx.hash !== txHash || !object(c) || signed.hash !== txHash
-      || sha256Hex(JSON.stringify(signed.content)) !== txHash || signed.signature?.type !== 'ed25519' || !object(tx.signature) || canonicalize(tx.signature) !== canonicalize(signed.signature)
-      || !verifyDemosSignature({ address: owner, message: txHash, signature: tx.signature.data })) reject('invalid', 'transaction lacks the exact writer authorization');
+      || sha256Hex(JSON.stringify(signed.content)) !== txHash || signed.signature?.type !== 'ed25519' || !object(tx.signature) || canonicalize(tx.signature) !== canonicalize(signed.signature)) reject('invalid', 'transaction lacks the exact writer authorization');
+    const signaturePrefix = await readTransactionSignaturePrefix(nodeCall);
+    if (signaturePrefix === null) reject('indeterminate', 'the node does not report a usable transaction signature domain');
+    if (!verifyDemosSignature({ address: owner, message: `${signaturePrefix}${txHash}`, signature: tx.signature.data })) reject('invalid', 'transaction lacks the exact writer authorization');
     // Without a projection or retained authorization, the executed content is
     // the signed content itself; otherwise it is the node's rendering of it.
     const executedIsSigned = !embedded && !projected;
