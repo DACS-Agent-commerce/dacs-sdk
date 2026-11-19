@@ -89,7 +89,7 @@ async function hostFixture(t) {
   // The host fixes its Vet mode and takes no such option.
   delete config.vetMode;
   const api = await privateModule(HOST_URL, ['setTestRecorder'], (source) => {
-    const text = sub(source, 'bindTp1Profile, inspectWireOperation, openWireRequestJournal } from', 'bindTp1Profile as REAL_BIND, inspectWireOperation, openWireRequestJournal as REAL_OPEN_JOURNAL } from');
+    const text = sub(source, 'bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from', 'bindTp1Profile as REAL_BIND, completeWireEffect, inspectWireOperation, openWireRequestJournal as REAL_OPEN_JOURNAL } from');
     return sub(text, 'const REQUIRED =', `let testRecorder = { bindings: [], journals: [] }; function setTestRecorder(value) { testRecorder = value; }
 const bindTp1Profile = async (options) => { const binding = await REAL_BIND(options); testRecorder.bindings.push(binding); return binding; };
 const openWireRequestJournal = (...args) => { const journal = REAL_OPEN_JOURNAL(...args); testRecorder.journals.push(journal); return journal; };
@@ -394,26 +394,31 @@ test('with the default budget and 9,933 earlier accounting rows, the host still 
 
 const NEW_PURCHASE = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) });
 
-// With one retained accounting row, a request is served while that row is below the reservation budget and the store's record
-// limit, and is refused `peer_store_capacity` once either limit is that row.
-const refusal = ({ status, bytes }) => [status, JSON.parse(bytes).error];
+// A new purchase is admitted by its context request, which takes a whole allotment and one general row of its own before any proposal
+// is sent. With one retained accounting row, that request is served while the reservation budget has room for the row, the allotment
+// and one more unit; it is refused `peer_store_capacity` when the allotment fits and the unit does not, `seller_not_ready` when the
+// allotment does not fit, and `peer_store_capacity` once the store's record limit is the retained row.
+const refusalOf = async (propose) => { const { code, status } = await rejection(propose(NEW_PURCHASE)); return [status, code]; };
 
-test('a host whose reservation budget is one above its retained rows serves a request while maxRecords is at its default', async (t) => {
-  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 2 });
+test('a host whose reservation budget is one above its retained rows and one allotment serves a request while maxRecords is at its default', async (t) => {
+  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 2 + PURCHASE_ALLOTMENT });
   const { answer } = await propose(NEW_PURCHASE);
   assert.equal(answer.status, 200, answer.bytes.toString());
 });
 
-test('a host whose reservation budget equals its retained rows refuses a request while maxRecords is at its default', async (t) => {
-  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 1 });
-  const { answer } = await propose(NEW_PURCHASE);
-  assert.deepEqual(refusal(answer), [503, 'peer_store_capacity']);
+test('a host whose reservation budget equals its retained rows and one allotment refuses a request while maxRecords is at its default', async (t) => {
+  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: 1 + PURCHASE_ALLOTMENT });
+  assert.deepEqual(await refusalOf(propose), [503, 'peer_store_capacity']);
+});
+
+test('a host whose reservation budget is one unit short of its retained rows and one allotment refuses a request as not ready', async (t) => {
+  const { propose } = await hostWithAccountingHistory(t, 1, { maxReservationUnits: PURCHASE_ALLOTMENT });
+  assert.deepEqual(await refusalOf(propose), [503, 'seller_not_ready']);
 });
 
 test('a host whose maxRecords equals its retained rows refuses a request while the reservation budget has room', async (t) => {
   const { propose } = await hostWithAccountingHistory(t, 1, { maxRecords: 1, maxReservationUnits: DEFAULT_RESERVATION_BUDGET });
-  const { answer } = await propose(NEW_PURCHASE);
-  assert.deepEqual(refusal(answer), [503, 'peer_store_capacity']);
+  assert.deepEqual(await refusalOf(propose), [503, 'peer_store_capacity']);
 });
 
 test('a host refuses a zero or fractional reservation budget and names the option', async (t) => {
@@ -624,7 +629,7 @@ test('the reader each signed request calls is bounded: a stalled read is pending
     await flush();
     assert.deepEqual(unhandled, []);
     const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
-    try { assert.deepEqual(['peer_jobs', 'peer_effects', 'kit_purchase_profiles'].map((table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n), [0, 0, 0], 'nothing was reserved or kept'); } finally { db.close(); }
+    try { assert.deepEqual(['peer_jobs', 'peer_effects', 'kit_purchase_profiles'].map((table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n), [0, 0, PROPOSALS_PER_BUYER], 'nothing was reserved or kept beyond the tuples the context admissions kept'); } finally { db.close(); }
     stall = false;
     assert.equal((await postSigned(host, afterwards)).status, 404, 'a later request is answered: the slots were released');
   } finally {
@@ -1187,14 +1192,16 @@ test('R20 detached profiles do not hold job slots', t => {
 test('started host signed proposal creates accounting and wire operation records', async (t) => {
   const f = await hostFixture(t), host = await f.start();
   const body = await f.proposal(host), { jobId: id, agreementHash } = body.transportIdentity;
+  // The job's context admission, made to open the session, wrote its own records first.
+  const journalFiles = () => ({ requests: namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, operations: namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length });
+  const before = journalFiles();
   const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
   const answer = await postSigned(host, await buyerWire.signRequest(PROPOSALS, body, { jobId: id, agreementHash }));
   const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
   try {
-    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations').all(), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
+    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations WHERE route = ?').all(PROPOSALS), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
   } finally { db.close(); }
-  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, 1);
-  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length, 1);
+  assert.deepEqual(Object.fromEntries(Object.entries(journalFiles()).map(([name, count]) => [name, count - before[name]])), { requests: 1, operations: 1 });
   assert.ok(answer.header, 'the started host signs the result');
 });

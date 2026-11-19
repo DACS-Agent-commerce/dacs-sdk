@@ -37,8 +37,9 @@ test("listTests refuses files it cannot list exactly", (t) => {
     "skip.test.mjs": "import { test } from 'node:test'; test('a', () => {}); test.skip('b', () => {});",
     "describe.test.mjs": "import { describe, test } from 'node:test'; describe('d', () => test('a', () => {}));",
     "name.test.mjs": "import { test } from 'node:test'; test(() => {});",
+    "default-import.test.mjs": "import test from 'node:test'; test('a', () => {});",
   });
-  for (const file of ["skip.test.mjs", "describe.test.mjs", "name.test.mjs"]) {
+  for (const file of ["skip.test.mjs", "describe.test.mjs", "name.test.mjs", "default-import.test.mjs"]) {
     assert.throws(() => listTests(file, dir), /ci-test-names: loading .* failed/, file);
   }
 });

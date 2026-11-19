@@ -1958,8 +1958,10 @@ export class DemosAdapter implements SubstrateAdapter {
           (recognisedAnswer
             ? `the node's account nonce could not be read before the deadline, `
             : `the node gave no answer before the deadline, `) +
-            `only transport failures: ${transportFailures}; account nonce ` +
-            `${accountNonce ?? "not readable"}`,
+            `only transport failures: ${transportFailures}; ` +
+            (accountNonce === undefined
+              ? "account nonce not readable"
+              : `last account nonce read ${accountNonce}`),
         )
         : undefined;
     let broadcast: BroadcastObservation | undefined;

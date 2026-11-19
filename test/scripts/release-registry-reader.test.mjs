@@ -182,6 +182,12 @@ test("an abbreviated package document that names another package, or no package,
   }
 });
 
+test("a document whose string is cut short by invalid UTF-8 is refused as registry_malformed, not oversized", async () => {
+  const bytes = Buffer.concat([Buffer.from('{"dist-tags":{"next":"1.0.0'), Buffer.from([0xc2]), Buffer.from('"}}')]);
+  const error = await refusal(readRegistryDistTags(NAME, harness([new Response(bytes, { status: 200 })]).options), "registry_malformed");
+  assert.equal(error.cause.code, "EMALFORMED");
+});
+
 // Both documents the reader decodes: the version document and the abbreviated package document.
 const readers = {
   "version document": (options) => readRegistryRelease(NAME, VERSION, options),

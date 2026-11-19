@@ -25,12 +25,14 @@ const callers = {
 };
 const cancellation = reason => { const controller = new AbortController(); return { signal: controller.signal, abort: () => controller.abort(reason) }; };
 const flushLateWork = () => new Promise(resolve => setImmediate(resolve));
-// Block reads for the reviewed Node2 layout: block zero refused, then block one and block two.
+// Block reads for the reviewed Node2 layout: numeric block zero refused, the string "0" read answered with the genesis projection, then block one and block two.
 const observations = new URL('../../../conformance/', import.meta.url);
 const reviewedBlocks = ['tp1-node-observations/block0-2026-10-20.json', 'tp1-node-observations/block1-2026-10-20.json',
   'tp1-node-observations-2026-11-08/block2-2026-11-08.json'].map(file => JSON.parse(readFileSync(new URL(file, observations))).body);
 function answerReviewedLayout(row) {
-  return jsonResponse(reviewedBlocks[heightOf(row)]);
+  const height = heightOf(row);
+  if (height === '0') return jsonResponse(JSON.stringify({ result: 200, response: { number: 0, hash: CHAIN }, require_reply: false, extra: '' }));
+  return jsonResponse(reviewedBlocks[height]);
 }
 const reviewedLayoutOptions = { blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT,
   reviewedBlockTwoHash: JSON.parse(reviewedBlocks[2]).response.hash };
@@ -130,7 +132,7 @@ test('cancellation between the block-one and block-two reads of the reviewed lay
   const control = sourceReadWorld(t, reviewedLayoutOptions);
   control.node.intercept = answerReviewedLayout;
   await control.transport.observeBinding();
-  assert.deepEqual(control.node.calls.map(heightOf), [0, 1, 2], 'the reviewed layout reads three blocks');
+  assert.deepEqual(control.node.calls.map(heightOf), [0, '0', 1, 2], 'the reviewed layout cross-checks string-zero genesis');
 
   const w = sourceReadWorld(t, reviewedLayoutOptions), stop = cancellation(reason), getContext = w.owner.getContext;
   let blockOneAnswered = false;
@@ -138,7 +140,7 @@ test('cancellation between the block-one and block-two reads of the reviewed lay
   w.owner.getContext = () => { if (blockOneAnswered) { blockOneAnswered = false; stop.abort(); } return getContext(); };
   w.node.intercept = row => { if (heightOf(row) === 1) blockOneAnswered = true; return answerReviewedLayout(row); };
   await assert.rejects(w.transport.observeBinding({ signal: stop.signal }), error => error === reason);
-  assert.deepEqual(w.node.calls.map(heightOf), [0, 1], 'block two was never requested');
+  assert.deepEqual(w.node.calls.map(heightOf), [0, '0', 1], 'block two was never requested');
 });
 
 test('with a fetch that ignores abort, readRpc and observeBinding aborted mid-flight reject the caller, then release the journal lock and the fence (close() settles, held() is false) and discard the late reply', { timeout: TEST_TIMEOUT_MS }, async t => {

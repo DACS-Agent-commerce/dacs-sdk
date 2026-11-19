@@ -10,6 +10,7 @@ import DatabaseSync from 'better-sqlite3';
 import { isMainThread } from 'node:worker_threads';
 import { admitRawJson, canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { anchorWriteMessage, canonicalSignature, verifyFixtureRecord } from './fixture-anchors.mjs';
+import { DEFAULT_SELLER_MAX_JOBS } from './seller-capacity-defaults.mjs';
 import { leaseFile, leaseHolderState, PROCESS_LEASE_ID as PROCESS, PROCESS_NAMESPACE as NAMESPACE, ProcessLeaseError, takeLease as takeProcessLease } from './process-lease.mjs';
 
 /** The domain every local journal-integrity signature starts with. */
@@ -91,8 +92,6 @@ const running = new AsyncLocalStorage();
 export class SellerRecoveryError extends Error {
   constructor(code, options) { super(code, options); this.code = code; this.status = 503; }
 }
-
-export const DEFAULT_SELLER_MAX_JOBS = 10000;
 
 // Callback adapters must enforce maxBytes before decoding their wire reply.
 const ANCHOR_REPLY_BYTES = 1024 * 1024, ANCHOR_TIMEOUT_MS = 10000;

@@ -285,10 +285,7 @@ const buyer = await createAgent({
 // buyer — resolve the stable logical address and authenticate its binding tuple,
 // signed content, seller, service, version, and Listing-domain signature.
 const resolved = await buyer.readListing(published.logicalAddress);
-if (
-  resolved.status !== "verified" ||
-  resolved.compatibility !== "normative"
-) {
+if (resolved.status !== "verified") {
   throw new Error(`listing could not pass ordered admission: ${resolved.status}`);
 }
 
@@ -553,15 +550,20 @@ exact resubmission; neither re-signing nor rebroadcasting is a permitted recover
 action.
 
 `createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
-hook. A caller can omit it, but a purchase that must finish after a restart needs
-the journal it fills (see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
+hook. `payDemSettle` and `settleFromRail` refuse a rail built without it, before
+any transfer, unless the caller passes `allowUnjournaled: true`. That opt-out
+accepts that a crash after the broadcast leaves no record of the transaction.
+A purchase that must finish after a restart needs the journal the hook fills
+(see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
 Without the hook the low-level rail provides only in-process hash-first
 observation. Across a
 process restart, at-most-once settlement requires `payDemSettle` with a
-caller-supplied durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
-additionally requires an application-owned durable journal or equivalent rail
-record. With neither durable mechanism, the SDK cannot prove that a lost
-response did not move value, so applications must not automatically retry.
+caller-supplied durable `SettlementIdempotencyStore`. The journal does not
+replace that store: if the store is lost or not shared, a plain retry can pay
+again even when the hook is set. The journal makes recovery possible; recover
+from it before any retry. With neither durable mechanism, the SDK cannot prove
+that a lost response did not move value, so applications must not
+automatically retry.
 The x402, direct ERC-20, and native DEM payment bridges require a caller-supplied
 settlement store when constructed. The SDK cannot check that the store is durable:
 production callers must supply one backed by durable, atomic storage, because an
@@ -573,6 +575,7 @@ import { createIdempotencyStore, evmErc20Settle, payDemSettle, x402Settle } from
 const settlementStore = createIdempotencyStore(durableSettlementLog);
 const x402SettlePayment = x402Settle(x402Rail, x402Paywall, { store: settlementStore });
 const evmSettle = evmErc20Settle(evmRail, evmConfig, { store: settlementStore });
+// demRail is built with journalPreparedTransfer; payDemSettle refuses one without it.
 const demSettle = payDemSettle(demRail, {}, { store: settlementStore, reconcile: demReconcile });
 ```
 
@@ -586,7 +589,8 @@ For registry dispatch, pass the same store as top-level `settlementStore` for
 x402 and ERC-20 or as `payDem.settlementStore` for native DEM.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
-`settlementStore`, and `reconcile`. The rail's timing bounds
+`settlementStore`, and `reconcile`. `journalPreparedTransfer` is required
+unless `payDem.allowUnjournaled` is `true`. The rail's timing bounds
 `inclusionTimeoutMs`, `inclusionPollIntervalMs`, `statusRequestTimeoutMs`,
 `nonceVisibilityTimeoutMs` and `transactionRecordTimeoutMs` are forwarded from
 `payDem` to `createPayDemRail` unchanged; see
@@ -698,9 +702,8 @@ anchor finality, active-listing eligibility, or complete DACS conformance.
 `readListing(logicalAddress)` and `enumerateListings(sellerId)` need only
 `AgentConfig.bindings.index`; the Agent wallet and publisher are optional for a
 read-only consumer. A normative `verified` result has passed the SDK-owned
-ordered DACS-1 reader through step 9 and carries its exact `listingPin`; an
-`authenticated` result is restricted to the explicit historical legacy-read
-arm. Both have passed exact binding-tuple, hash, Listing-context, and authorship
+ordered DACS-1 reader through step 9 and carries its exact `listingPin`. It has
+also passed exact binding-tuple, hash, Listing-context, and authorship
 checks. The binding owner is an
 index assertion; direct lookup does not by itself prove that the seller deployed
 the native anchor. Keep physical provenance separate from signed-content and
@@ -864,18 +867,19 @@ Stripe, DAHR, the faucet, or Demos.
 
 ### Sealed-envelope procurement
 
-`runSealedEnvelopeCore` supports both the backwards-compatible
+`runSealedEnvelopeCore` supports both the default
 `negotiate-sealed-envelope` demand phase and the explicit
 `negotiate-sealed-envelope-procurement` phase. Demand makes the winning bidder
 the agreement buyer. Procurement requires `auctionMode: "procurement"` and
 makes the listing publisher the agreement buyer and the winning bidder the
 seller, so the bid price always flows from agreement buyer to agreement seller.
 
-Existing demand callbacks may still return only `agreementRef` and
-`agreementHash`. A procurement `commitAgreement` callback must verify both
+The SDK does not build the agreement for this pattern; the caller's
+`commitAgreement` callback does. In both phases the callback must verify both
 agreement-party signatures, call `ctx.validateAgreementForCommit(...)` before
 anchoring, and return the exact agreement plus `verifiedSignerClaims`; the core
-repeats the role/signature gate before returning an `ok` result.
+repeats the role/signature gate before returning an `ok` result. A result with
+only `agreementRef` and `agreementHash` fails the phase.
 
 ### Fault-aware bundle helper
 

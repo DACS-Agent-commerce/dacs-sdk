@@ -2,7 +2,7 @@
 // Admission reserves two writes. Pre-payment writes still require exact
 // seller approval. This is the kit's only context mode.
 import { identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, isIdentityBundle, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
-import { admitPreAgreementRequest, admitWireRequestBody, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { admitPreAgreementRequest, admitWireRequestBody, inspectWireOperation, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { KitOperationGuardError, kitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { sellerData } from '../mcp/seller-content.mjs';
@@ -26,6 +26,8 @@ export const SELLER_CONTEXT_LIMITS = Object.freeze({ maxStartsPerBuyerPerHour: 5
 const VET_WRITES = 2;
 // The deadline of each buyer-access and known-job callback (DC18).
 const POLICY_READ_TIMEOUT_MS = 10_000;
+// The deadline of the Vet readback that checks a saved present answer before it is sent again.
+const REPLAY_READBACK_TIMEOUT_MS = 10_000;
 const HOUR_MS = 3_600_000;
 // The seller's clock window for the buyer's generatedAt (seller-agent.mjs).
 const GENERATED_AT_SKEW_MS = 10 * 60 * 1000;
@@ -154,7 +156,6 @@ function challengeAttemptInput(request, body) {
  * `writable()` is false until the work has started and after the attempt closed or its deadline or lease has passed, even before the
  * timer has run; otherwise it is the admission transaction's `runningCheck`, which the caller asks while holding the job lease and
  * outside any store transaction. Do not call it to test liveness: its first true answer latches the attempt as effect-authorized.
- * `isClosed()` tells whether the attempt has closed, which separates a provider that failed on its own from one that was stopped.
  * Throws a TypeError when the job id, the effect's lease, the capability's attempt and revision, the admission check or a clock is unusable.
  */
 export function createContextAttempt({ jobId, effect, capability, admissionTransaction, now, monotonicNow }) {
@@ -196,7 +197,7 @@ export function createContextAttempt({ jobId, effect, capability, admissionTrans
     settled.then(() => clearTimeout(timer));
     return Object.freeze({ result, settled });
   }
-  return Object.freeze({ writable, close, run, isClosed: () => closed });
+  return Object.freeze({ writable, close, run });
 }
 
 // Seller context policy and recovery ports are operator capabilities. Admission
@@ -438,12 +439,15 @@ function providerOutcome(answer, scope) {
  * The order is: the body's admission and the envelope, the job rules and the body's closed structure, the guard and stop predicate, the wire
  * admission, the nonce attempt, the presentation's validation, the admission transaction's intent, hold and acceptance, the reservation, the
  * provider's work under the job's effect mutex, and the completion. A refusal before the attempt consumes nothing; a failure after it fails the
- * challenge it owns. A reservation refused after the acceptance, and a provider that fails by itself, end the accepted row (compensation
- * trigger a), which releases its hold and slot unless an effect cannot be ruled out; a provider stopped at the deadline or by `closeAttempts`
- * keeps the attempt open. Any other error after the reservation leaves the attempt open and answers `operation_uncertain`, or the 503
- * refusal it carries. The provider's work runs inside `trackContextWork`, which keeps the job's mutex until the work has settled, also
- * after a deadline has answered.
- * A presentation that was already accepted is answered `session_admission_unavailable` (503) without a write.
+ * challenge it owns. A reservation refused after the acceptance ends the accepted row (compensation trigger a), which releases its hold and
+ * slot unless an effect cannot be ruled out. So does a provider that does not complete a final outcome, whether it fails, answers something
+ * other than a present answer or a Vet non-pass, is stopped at the deadline or by `closeAttempts`, or its completion fails: the row is ended
+ * once the provider has settled (a durable outcome is then settled from the journal). The refusal answered is `operation_uncertain`, or the
+ * 503 refusal it carries, and the wire attempt stays open. The provider's work runs inside `trackContextWork`, which keeps the job's mutex
+ * until the work has settled, also after a deadline has answered.
+ * A presentation that was already accepted is answered with the answer its first request completed, after the buyer's access and, for a
+ * present answer, both Vet records are read again; without a completed answer, or when a read fails, it is answered
+ * `session_admission_unavailable` (503). It writes nothing and starts no provider step.
  * `closeAttempts(cause)` closes every attempt still running. `store`, `capacity`, `admissionTransaction` and `coordinator` are the host's one
  * instance of each: the tuple is kept inside the acceptance, so the construction registers its hook before the first admission, and throws a
  * TypeError for a missing port, an unsupported Listing, a capacity of another store or a provider pinned to another seller presenter.
@@ -458,12 +462,9 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   const seller = listing.seller.identity.presentedBy, pin = listingPin(listing), terms = { seller, pin, support, now };
   const checkPolicy = buyerPolicyCheck({ assertBuyerAccess, knownJob });
   const running = new Set();
-  // The refusals of a provider that failed by itself, not one that was stopped at the deadline or by `closeAttempts`.
-  const failedProviders = new WeakSet();
   const { db, keepPurchaseProfileWithin } = sellerStoreInternals(store);
   admissionTransaction.addAcceptanceHook(({ jobId, purchaseProfile }) => keepPurchaseProfileWithin(jobId, purchaseProfile));
-  const operationOf = (jobId) => inspectWireOperation(wire.journal, { seller, jobId, path: SELLER_CONTEXT_PATH });
-  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: (jobId) => { const view = operationOf(jobId); return view.state === 'completed' ? view.outcome : null; } });
+  const records = createSellerContextRecords({ listing, admission: admissionTransaction.admissionRecord, contextOutcome: completedContextOutcome(wire.journal, seller) });
   const { sellerBundlePresentedBy } = provider.bindRetainedScope(records.completedScope);
   if (!sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) throw new TypeError('the provider is pinned to a seller presenter other than the Listing\'s');
 
@@ -496,12 +497,31 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
       method, path, rawBody, now: now(), requireDelegation: wire.requireDelegation, ready: ready(), requestJournal: wire.journal, retained });
   }
 
-  // The nonce attempt: this caller owns the challenge until it accepts or fails it. An accepted presentation sent again is not served yet.
+  // The nonce attempt: this caller owns the challenge until it accepts or fails it. Returns null for an accepted presentation sent again,
+  // which owns nothing and is answered by `replayCompletedAnswer`.
   function attemptChallenge(request, body) {
     const input = challengeAttemptInput(request, body), result = ledger.attempt(input);
     if (result.kind === 'refused') throw new SellerTransportError(result.code, result.status, { cause: result.cause });
-    if (result.kind === 'continuation') throw new SellerTransportError('session_admission_unavailable', 503);
+    if (result.kind === 'continuation') return null;
     return { owner: result.owner, nonce: input.nonce };
+  }
+
+  // An accepted presentation sent again gets the answer its first request completed, so a buyer that lost that answer can go on. Nothing is
+  // written and no provider step runs: without a completed answer for this request the answer is `session_admission_unavailable` (503). The buyer's
+  // access is read again, and a present answer is sent only while both Vet records still read back as present.
+  async function replayCompletedAnswer(request, body) {
+    const view = inspectWireOperation(wire.journal, request);
+    if (view.state !== 'completed' || view.binding !== wireOperationBinding(request)) throw new SellerTransportError('session_admission_unavailable', 503);
+    await checkPolicy(request);
+    const { status, text } = view.outcome;
+    if (status === 200 && savedDisposition(text) === 'present') {
+      const readback = new AbortController();
+      let answer;
+      try { answer = await boundedCall(() => provider.recoverBuyer(structuredClone(body), { writable: () => false, signal: readback.signal }), { timeoutMs: REPLAY_READBACK_TIMEOUT_MS }); }
+      catch (cause) { throw new SellerTransportError('session_admission_unavailable', 503, { cause }); } finally { readback.abort(); }
+      if (answer?.disposition !== 'present') throw new SellerTransportError('session_admission_unavailable', 503);
+    }
+    return { status, text };
   }
 
   // The owning validation in its order, then the intent, hold and acceptance. Returns once the challenge is accepted.
@@ -521,12 +541,15 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
 
   // The provider's work under the job's effect mutex, kept until the work has settled even when its answer was given at the deadline.
   // Resolves with the outcome once it is durable; rejects with what ended the work, an error after the reservation always being uncertain.
+  // The work that started the provider and did not complete a final outcome ends its accepted row once the provider has settled and the
+  // mutex is free (compensation takes the mutex itself, and a stopped provider may run on after its answer was given).
   function perform(capability, jobId, body) {
     let answer, fail;
     const outcome = new Promise((resolve, reject) => { answer = resolve; fail = reject; });
     const uncertain = (error) => (error instanceof SellerTransportError && error.status === 503 ? error : new SellerTransportError('operation_uncertain', 503, { cause: error }));
+    let providerStarted = false, completed = false;
     const work = () => admissionTransaction.jobEffectMutex(jobId).run(async (jobLease) => {
-      let attempt = null, settled = null, failedOnItsOwn = false;
+      let attempt = null, settled = null;
       try {
         // Only a new attempt may do the work. An attempt the journal hands back as a recovery is ended null, having done nothing.
         if (capability.effect.state !== 'new') {
@@ -535,27 +558,27 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
         }
         attempt = createContextAttempt({ jobId, effect: capability.effect, capability, admissionTransaction, now, monotonicNow });
         running.add(attempt);
+        providerStarted = true;
         const run = attempt.run((options) => provider.resolveBuyer(body, options));
         settled = run.settled;
-        const result = await run.result.catch((error) => { failedOnItsOwn = !attempt.isClosed(); throw error; });
-        const final = providerOutcome(result, body.scope);
+        const final = providerOutcome(await run.result, body.scope);
         await capability.complete(final, { jobLease });
+        completed = true;
         answer(final);
       } catch (error) {
-        const refusal = uncertain(error);
-        if (failedOnItsOwn) failedProviders.add(refusal);
-        fail(refusal);
+        fail(uncertain(error));
       }
       await settled;
       running.delete(attempt);
-    });
+    }).then(() => (providerStarted && !completed ? endAcceptedRow(jobId) : undefined));
     trackContextWork(work).catch(fail);
     return outcome;
   }
 
-  // A start that failed ends its accepted row (trigger a): the hold and the capacity slot are released unless an effect cannot be ruled out,
-  // and then the row stays compensating for the sweep. A failure to end it never changes the refusal being answered.
-  const endFailedStart = (jobId) => admissionTransaction.compensate(jobId, 'a').catch(() => {});
+  // An accepted row whose start or context work did not finish is ended (trigger a): its hold and capacity slot are released unless an effect
+  // cannot be ruled out, and then the row stays compensating for the sweep. A durable outcome the completion could not settle is settled from
+  // the journal. A failure to end the row never changes the refusal being answered.
+  const endAcceptedRow = (jobId) => admissionTransaction.compensate(jobId, 'a').catch(() => {});
 
   async function handleContext(input) {
     let request = null;
@@ -563,6 +586,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
       const admitted = await openRequest(input, (payload) => { request = payload; });
       const { body } = admitted;
       const challenge = attemptChallenge(request, body);
+      if (challenge === null) return { ...await replayCompletedAnswer(request, body), request };
       try { await admitFirstContact(request, admitted, challenge); } catch (error) {
         const { code, status } = refusalOf(error);
         // A challenge that cannot be failed here is closed by the startup pass.
@@ -575,15 +599,11 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
           operationId: wireOperationId(request), paymentTx: null, keepProfile: wire.binding.profile, retainedWork: false }, { jobLease }));
       } catch (error) {
         // A reservation that lost to compensation leaves the row to it; any other refusal ends the accepted row here.
-        if (error?.code !== 'context_admission_closed') await endFailedStart(request.jobId);
+        if (error?.code !== 'context_admission_closed') await endAcceptedRow(request.jobId);
         throw error;
       }
       if (typeof capability.complete !== 'function') throw new SellerTransportError('session_admission_unavailable', 503);
-      let final;
-      try { final = await perform(capability, request.jobId, body); } catch (error) {
-        if (failedProviders.has(error)) await endFailedStart(request.jobId);
-        throw error;
-      }
+      const final = await perform(capability, request.jobId, body);
       return { status: final.status, text: final.text, request };
     } catch (error) {
       const { code, status, message, cause } = refusalOf(error);
@@ -703,6 +723,18 @@ function readOrNull(read, jobId) {
 function presentedScope(text) {
   try { const answer = JSON.parse(text); return answer?.disposition === 'present' ? answer.value?.scope : null; } catch { return null; }
 }
+
+/** The wire journal's read-only view of a job's context operation: the `inspectContextOutcome` port of the admission transaction. */
+export const contextOperationView = (journal, seller) => (jobId) => inspectWireOperation(journal, { seller, jobId, path: SELLER_CONTEXT_PATH });
+
+/** The `contextOutcome` reader of `createSellerContextRecords` over a wire journal: a job's completed context outcome `{ status, text }`, or null while it is not completed. */
+export const completedContextOutcome = (journal, seller) => {
+  const operationOf = contextOperationView(journal, seller);
+  return (jobId) => {
+    const view = operationOf(jobId);
+    return view.state === 'completed' ? view.outcome : null;
+  };
+};
 
 // Read-only views of the seller's durable context records for the steps after the route.
 // admission(jobId) is the job's admission row ({ jobId, buyer, seller, listingPin, contextScopeHash, state }) or null.

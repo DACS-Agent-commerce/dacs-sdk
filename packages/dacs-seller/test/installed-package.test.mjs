@@ -255,19 +255,19 @@ test('P11a1-T22: the packed host test passes with the wire buyer helper; the pac
   assert.equal(out.refusals.unvettedProposal.contribution, null);
   assert.notEqual(out.refusals.fabricatedVetProposal.disposition, 'complete', 'a Vet reference no record backs is not signed');
   assert.equal(out.refusals.fabricatedVetProposal.contribution, null);
-  assert.deepEqual(out.refusals.replayedPresentation, { name: 'SellerRefusedError', code: 'session_not_admitted', status: 409 }, 'a presentation is admitted only on the job its challenge was issued for');
+  assert.deepEqual(out.refusals.replayedPresentation, { name: 'SellerRefusedError', code: 'context_admission_closed', status: 409 }, 'a proposal is taken only for a job whose context request was admitted');
   assert.equal(out.refusals.bareNoNonce, true);
-  assert.deepEqual(out.refusals.missingNonce, { name: 'SellerRefusedError', code: 'session_not_admitted', status: 409 }, 'DACS-1 §6.3.2: a presentation that carries no session nonce is refused');
-  assert.deepEqual(out.issuedChallenge, { nonce: true, lifetimeMs: 600000 }, 'the installed host issues a fresh 256-bit challenge with its lifetime');
+  assert.deepEqual(out.refusals.missingNonce, { status: 409, body: { error: 'context_challenge_mismatch', message: 'context_challenge_mismatch' } }, 'DACS-1 §6.3.2: a context request whose presentation carries no session nonce is refused');
+  assert.deepEqual(out.issuedChallenge, { nonce: true, lifetimeMs: 600000 }, 'the installed host issues a fresh 256-bit challenge on its wire route, with its lifetime');
   assert.equal(out.presentsIssuedChallenge, true, 'the buyer presents the random challenge the host issued through the public builder');
-  assert.deepEqual(out.refusals.contextChallenge, { status: 404, body: { error: 'not_found' } });
+  assert.deepEqual(out.refusals.contextChallenge, { status: 401, body: { error: 'peer_envelope_invalid', message: 'peer_envelope_invalid' } }, 'the challenge route is mounted and refuses an unsigned request');
   for (const attempt of [out.refusals.secondHostSameDirectory, out.refusals.secondProcessSameDirectory]) {
     assert.match(attempt, /^Error: seller state directory is in use by another live operator process/, 'one live host owns the state');
   }
   assert.deepEqual(out.restart, { stateSameContribution: true, repeatSameContribution: true });
   assert.deepEqual(out.reached, [], 'negotiation reached no operator capability but the Vet context');
   assert.deepEqual(out.vetContextJobs, ['vetted', 'unvetted', 'fabricated'], 'every admitted proposal takes its Agreement input from the Vet context');
-  assert.deepEqual(out.admittedJobs, ['vetted', 'unvetted', 'fabricated'], 'every session with an issued challenge asks the session admission; the replayed job has none, so the seller refuses it before asking');
+  assert.deepEqual(out.admittedJobs, ['vetted', 'unvetted', 'fabricated'], 'every context request over an issued challenge asks the session admission; the replayed job has none, so the seller refuses its proposal before asking');
 });
 
 test('from the packed archive with no hooks, a key opened while off yields its claim, and its returned sign refuses kit_operation_guard_off with zero cryptographic signer calls. (Round 4.) Its read-only role, given no current binding, signs nothing', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {

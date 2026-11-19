@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D38",
+  "registration": "D38: existing client delta lane",
+  "subject": "delta(client): D38 end passive lock and fence waits at the deadline"
+}

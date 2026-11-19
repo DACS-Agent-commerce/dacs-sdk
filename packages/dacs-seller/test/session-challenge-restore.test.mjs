@@ -70,7 +70,7 @@ function reclaim(t, w, { fail = false } = {}) {
     contextSessionState: ({ jobId }) => jobId === JOB ? 'vet-failed' : null });
   t.after(() => store.close());
   if (fail) database(w.storePath, db => db.exec("CREATE TRIGGER TEST_cut BEFORE INSERT ON kit_challenges BEGIN SELECT RAISE(ABORT, 'TEST reclaim cut'); END"));
-  const issue = () => store.challenges.issueForOperator({ jobId: JOB2, buyer: buyer.claim });
+  const issue = () => store.challenges.issue({ jobId: JOB2, buyer: buyer.claim }, sha256Hex('TEST challenge scope'));
   if (fail) assert.throws(issue, /TEST reclaim cut/); else issue();
   store.close();
 }
@@ -146,12 +146,12 @@ test('unaccepted legacy challenges never authorize restoration', async t => {
 });
 
 test('accepted proof rolls back with a failed job binding', async t => {
-  const f = await proposalAdmissionFixture(t), agent = await f.open(), input = await f.input(agent);
+  const f = await proposalAdmissionFixture(t), agent = await f.open();
   database(f.storePath, db => db.exec("CREATE TRIGGER TEST_cut BEFORE INSERT ON kit_job_bindings BEGIN SELECT RAISE(ABORT, 'TEST accept cut'); END"));
-  await assert.rejects(agent.stagedProposal(input), /TEST accept cut/);
+  await assert.rejects(f.input(agent), /TEST accept cut/);
   assert.equal(count(f, 'kit_accepted_challenges'), 0);
   assert.equal(count(f, 'kit_job_bindings'), 0);
-  assert.equal(f.store.challenges.retained(input.buyerIdentityBundle.sessionNonce).state, 'failed');
+  assert.deepEqual(database(f.storePath, db => db.prepare('SELECT state FROM kit_challenges').all()), [{ state: 'attempted' }], 'the accepting validator still owns the row');
 });
 
 test('proof backfill retries after a failed transaction', async t => {
@@ -238,7 +238,7 @@ test('a legacy admission with no wrapper, session or bundle hash neither stops s
     const fresh = await w.open();
     assert.deepEqual(counts(w), { active: 0, proofs: 0, bindings: 0 });
     assert.equal(w.store.challenges.retainedForSession(w.nonce), null);
-    await assert.rejects(fresh.stagedProposal(w.input), /not a challenge this seller issued/);
+    await assert.rejects(fresh.stagedProposal(w.input), /no accepted context presentation/);
     fresh.close(); w.f.reopenStore();
   }
   assert.equal(w.admission.calls.filter(([name]) => name === 'admit').length, 1);
@@ -276,7 +276,7 @@ test('a retired legacy admission keeps its proof and job binding without taking 
     assert.equal(w.store.challenges.retained(w.nonce), null);
     assert.equal(w.store.challenges.retainedForSession(w.nonce).accepted.buyerBundleHash, w.challenge.accepted.buyerBundleHash);
     assert.equal(w.store.challenges.jobBinding(JOB).nonce, w.nonce);
-    await assert.rejects(fresh.stagedProposal(w.input), /not a challenge this seller issued/);
+    await assert.rejects(fresh.stagedProposal(w.input), /no accepted context presentation/);
     fresh.close(); w.f.reopenStore();
   }
   assert.equal(w.admission.calls.filter(([name]) => name === 'admit').length, 1);

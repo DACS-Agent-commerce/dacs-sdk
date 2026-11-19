@@ -223,7 +223,8 @@ test('host issues no session challenge once close has begun',async t=>{
  await entered.promise;
  const closing=host.close();
  try{
-  assert.throws(()=>host.issueSessionChallenge({jobId:request.transportIdentity.jobId,buyer:buyer.claim}),error=>error.code==='seller_host_closing');
+  const {hostBuyer}=await import('./helpers/host-context-client.mjs');
+  await assert.rejects((await hostBuyer(host,f.config.listing,{jobId:request.transportIdentity.jobId})).challenge(),'a challenge request after close has begun is not served');
  }finally{release.resolve();}
  await pending;await closing;
 });

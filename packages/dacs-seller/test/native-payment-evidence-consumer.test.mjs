@@ -118,14 +118,19 @@ test('the confirmed transaction served by the consumer fixture carries a valid s
   assert.ok(Number.isSafeInteger(transaction.content.nonce) && transaction.content.nonce >= 0);
 });
 
-test('evidence whose CREATE is signed over the chain-bound message is present only for a consumer given that chain id', async () => {
+test('evidence whose CREATE is signed over the chain-bound message is present only while the node reports an active signature-domain fork', async () => {
   const f = await consumerFixture();
   f.signed.signature.data = `0x${seller.signBytes(Buffer.from(`demos-tx:v1:7:${f.signed.hash}`)).toString('hex')}`;
   Object.assign(f.tx, structuredClone(f.signed), { status: 'confirmed', blockNumber: 1 });
-  const consumerFor = options => createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9922/', fetchImpl: f.fetchImpl, now: () => NOW, ...options });
-  assert.equal((await consumerFor({ signatureChainId: '7' }).readEvidence(f.input)).disposition, 'present');
-  assert.equal((await consumerFor({ signatureChainId: '8' }).readEvidence(f.input)).disposition, 'indeterminate');
-  assert.equal((await consumerFor({}).readEvidence(f.input)).disposition, 'indeterminate');
+  assert.equal((await f.consumer.readEvidence(f.input)).disposition, 'indeterminate', 'the fork is inactive');
+  f.state.networkInfo = { forks: { osDenomination: { activated: true }, signatureDomain: { activated: true, activationHeight: 0 } }, chainId: 7 };
+  assert.equal((await f.consumer.readEvidence(f.input)).disposition, 'present', 'the fork is active');
+  f.state.networkInfo = { forks: { osDenomination: { activated: true }, signatureDomain: { activated: true, activationHeight: 0 } }, chainId: 8 };
+  assert.equal((await f.consumer.readEvidence(f.input)).disposition, 'indeterminate', 'the node names another chain id');
+});
+
+test('a consumer made with a caller-supplied signature chain id is refused', () => {
+  assert.throws(() => createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9922/', signatureChainId: '7' }), { name: 'TypeError', message: /getNetworkInfo/ });
 });
 
 test('matching signed evidence and observed transfer remain present', async () => {
