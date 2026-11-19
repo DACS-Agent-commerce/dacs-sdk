@@ -55,8 +55,9 @@ After retirement removes the active purchase tuple, a completed retry must match
 the wire journal. A held job without that completed binding still requires its purchase tuple.
 
 A job belongs to its retained buyer, seller and Listing pin even after its job row leaves. Another party gets
-peer_job_conflict (409); the earlier reserve path returns context_session_terminal (409) for a retired job
-with a terminal session. The first purchase also fixes its Agreement; a context step carries a scope hash and checks
+peer_job_conflict (409). The reservation coordinator refuses a request for a job whose DACS-5 session is terminal with
+context_session_terminal (409) before any accounting, unless the request replays an operation that completed under its
+binding or finishes a payment the seller recorded. The first purchase also fixes its Agreement; a context step carries a scope hash and checks
 only the parties and pin. A closed owner refuses fresh work with context_job_closed (409). A definite no-effect end
 releases the provisional Agreement only when no effect, slot, transaction or context admission retains the job. The
 owner remains open for that buyer's corrected proposal. Retrying the refused proposal with its original nonce
@@ -64,8 +65,11 @@ returns its saved answer even after a corrected proposal succeeds. Both context 
 context_job_closed (409), including after a restart with unknown session state. Retained completed requests can still replay.
 Every route refuses new or recoverable work on a retired job before writing a reservation or charging purchase capacity.
 
-A mutating route takes one effect per job across both reserve paths: an old-path slot or an accounted reservation the
-wire did not refuse excludes another effect with peer_operation_conflict (409). Effect-to-job records protect pending
+A mutating route takes one effect per job on its one reserve path. The reservation coordinator reserves one request of an
+operation (one per seller, job and route) at a time, and the wire journal keeps the binding (profile, buyer and Agreement
+hash) of the operation's first attempt. A later request with another binding starts no effect: if no earlier check
+refuses it, the journal refuses it with peer_operation_mismatch (409). One that arrives while an attempt is live gets
+seller_effect_pending (503). Effect-to-job records protect pending
 reads too. Completed and uncertain effects keep their bindings. Empty job bindings can be reclaimed on a successful
 reservation at capacity; owners remain. Reconciliation can make retained work eligible for retirement. Deleting the journal is not a
 supported recovery procedure. Accounted holds release their active slots through store retirement once all associated
@@ -220,7 +224,7 @@ require their authenticated binding before replay. peer_context_capacity (503) r
 or wire effect; a recognized presentation nonce is consumed on attempt. Challenge issuance refuses at capacity before
 SQL mutation, while retained retries can read their answers.
 
-Capacity lookup work is bounded by retained rows with indexed effect/job references. Opening an existing store creates an index on peer_effect_jobs(job). Job reclamation checks legacy unmapped effects once, then selects only the needed unused jobs through indexed anti-joins. Context reclamation runs only when capacity needs space and stops after enough trusted terminal contexts; below capacity it reads no old sessions. At a full context cap with no terminal sessions it may inspect every retained context once; D12 must supply a bounded synchronous job-state lookup. d5-challenge-retention.test.mjs T14 verifies that challenge cleanup stops inspecting terminal sessions once capacity is available, and T2 that a full-capacity refusal makes no SQL mutation; no test pins the query plans or statement counts. These focused bounds do not qualify the missing public host.
+Capacity lookup work is bounded by retained rows with indexed effect/job references. Opening an existing store creates an index on peer_effect_jobs(job). Job reclamation checks legacy unmapped effects once, then selects only the needed unused jobs through indexed anti-joins. Context reclamation runs only when capacity needs space and stops after enough trusted terminal contexts; below capacity it reads no old sessions. At a full context cap with no terminal sessions it may inspect every retained context once; D12 must supply a bounded synchronous job-state lookup. d5-challenge-retention.test.mjs T14 verifies that challenge cleanup stops inspecting terminal sessions once capacity is available, and T2 that a full-capacity refusal makes no SQL mutation; no test pins the query plans or statement counts.
 
 Run the seller checks from the repository root after building the core:
 

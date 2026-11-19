@@ -853,12 +853,16 @@ async function passDeadline(t, { w, request, pending }, atMs = DEADLINE_MS) {
   assert.equal(w.openHolds().length, 1, 'the hold is kept');
   assert.equal(w.operationOf(WIRE_JOB).state, 'pending', 'the attempt stays open');
 }
-/** After the late work ran out: no outcome and no end record, and the row still running with its hold and slot for the buyer's retry. */
-function assertNoOutcome(w) {
+/**
+ * After the late work ran out: no outcome and no end record. The row is still running with its hold and slot for the buyer's retry or,
+ * with `rowState` 'aborted', a sweep has ended it and released its hold and slot.
+ */
+function assertNoOutcome(w, rowState = 'running') {
   assert.equal(w.completions.length, 0, 'nothing completed it');
   assert.notEqual(w.operationOf(WIRE_JOB).state, 'completed');
-  assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], ['running', null]);
-  assert.deepEqual([w.openHolds().length, allocationState(w)], [1, 'live'], 'the row keeps its hold and slot');
+  assert.deepEqual([w.rowOf().state, w.rowOf().contextOutcome], [rowState, null]);
+  if (rowState === 'running') assert.deepEqual([w.openHolds().length, allocationState(w)], [1, 'live'], 'the row keeps its hold and slot');
+  else assert.deepEqual([w.openHolds().length, allocationState(w)], [0, 'released'], 'the ended row released its hold and slot');
 }
 /** A provider stalled at `stallAt` whose deadline passed and whose late work has settled, with no retry; `setup(w)` runs before the deadline. */
 async function deadlinePassedAndSettled(t, stallAt, { signOptions = DIRECT, setup = () => {} } = {}) {
@@ -891,6 +895,7 @@ test('a provider stalled before the first Vet signature: at 240,000 ms the attem
   for (const signOptions of [DIRECT, {}]) {
     const left = await deadlinePassedAndSettled(t, 'start', { signOptions });
     assert.deepEqual([...(await sweepAcrossFence(left)), left.counts.vetWrites], ['aborted', 0, 'released', 0], JSON.stringify(signOptions));
+    assertNoOutcome(left, 'aborted');
   }
 });
 
@@ -965,6 +970,7 @@ test('closing the attempts while a provider runs answers with the given cause an
   await restarted.admission.sweep({ startup: true });
   assert.deepEqual([restarted.rowOf().state, allocationState(restarted), restarted.counts.vetWrites], ['aborted', 'released', 0]);
   assert.deepEqual(restarted.counts.releases.map((release) => release.hold), [w.counts.holds[0].hold], 'the original hold was released once');
+  assertNoOutcome(restarted, 'aborted');
 });
 
 // ---- the first validation ------------------------------------------------------------------------------------------------

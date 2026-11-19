@@ -64,13 +64,16 @@ passed), unless a crash left it still reserving. Charges that no longer count st
 and each admission still scans them; they are never pruned. The host
 composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
-accounting and recording the reservation result. The routes do not yet reserve
-through the coordinator. Admission and accounting accept capacity through their
-internal ports.
-The routes do not yet reserve through these units, so the host's readiness does
-not read them: signed routes reserve through the store's accounting, terminal
-allocation cleanup runs at startup and when a store reader observes a terminal
-session, and the periodic terminal cleanup comes with the routes that use the units.
+accounting and recording the reservation result. Every effect route reserves
+through it; the context step does so under the job lease its admission holds.
+Admission and accounting accept capacity through their internal ports.
+A charge for a retained purchase stage spends a unit of its route's open slot
+while one is left; any other charge spends a general unit and is refused `peer_store_capacity` (503)
+when none is free. The host's readiness does not read the units: it reads only
+whether the host is closing and whether its startup reconciliation found a
+mismatch. Terminal allocation cleanup
+runs at startup and when a store reader observes a terminal session; no periodic
+task runs it.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
 the store's reservation accounting, startup cleanup and the coordinator) is kept as
@@ -256,9 +259,11 @@ and verifies every route the host serves, the challenge and the context step
 included, through the wire, from the `binding` of `bindTp1Profile` and the
 `endpointProof` of `verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`,
 over the seller's signed discovery document), and `resolveJob(jobId)` gives the
-approved job's `{ listingPin, agreementHash }`. On the challenge and the context
-step there is no Agreement yet: the signed Agreement hash is the hash of the
-request's own `scope`, and only `listingPin` of `resolveJob` is used. Signing (the
+approved job's `{ listingPin, agreementHash, deadline? }`; a `deadline` it gives
+is passed to the check of the buyer's `delegation`. On the challenge and the
+context step there is no Agreement yet: the signed Agreement hash is the hash of
+the request's own `scope`, and only `listingPin` and `deadline` of `resolveJob`
+are used. Signing (the
 `resolveJob` and `evidenceFor` lookups and the buyer's authority read) must
 finish within `signingTimeoutMs` (default 10,000 ms), or the
 request ends as `wire_client_signing_timeout` before anything is sent. A host mounts the Vet and Agreement context
@@ -428,14 +433,15 @@ per-client limiter so one client cannot exhaust the shared request budget.
   cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
   and body, for this seller and Listing; unsigned or mismatched requests are
-  refused before the agent runs. Every route but the challenge and the context
-  step (the Agreement proposal, Agreement state, commitment (`commitments`, and
+  refused before the agent runs. Every route (the challenge, the context step,
+  the Agreement proposal, Agreement state, commitment (`commitments`, and
   `commitments/signature` when enabled), payment and bundle routes, including the
   buyer-copy read) opens every request and signs every answer through the SDK's
   `./wire` (domain `dacs-seller-http:v1`, the host's bound TP-1 profile and the
   tuple kept for the job); a request signed under the old domain is refused. The
-  wire request journal is their journal; the two read routes reserve and store
-  nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
+  wire request journal is the journal of every effect route, the context step
+  included; the challenge writes only its challenge record, and the two read
+  routes reserve and store nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
   (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`
   first), and a delegated request for one is refused
   `peer_delegation_agreement_required`. A state read of a job that has a completed
