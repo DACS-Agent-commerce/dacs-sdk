@@ -780,7 +780,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const retainedConfirmation = async (artifact) => (await historyOf(artifact)).findLast((record) => record.state === 'confirm-acknowledged');
   // The whole debit a signed transaction commits the sender to, in OS: the declared amount plus the three fees of its
   // own signed `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). The node's fee
-  // view never enters it. `null` when any fee cannot be read, which refuses the broadcast.
+  // view never enters it. `null` when any fee cannot be read, which refuses the broadcast or the recovery resend.
   const signedDebitOs = (declaredOs, transactionFee) => {
     const fees = FEE_MEMBERS.map((member) => signedFeeOs(transactionFee?.[member]));
     return canonicalDecimal(declaredOs) && fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), BigInt(declaredOs))) : null;
@@ -1029,7 +1029,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             for(const listener of resendListeners) { try { const result=listener({...notice}); void Promise.resolve(result).catch(()=>{}); } catch { /* telemetry cannot authorize or interrupt a write */ } }
             return transmit({method:'execute',params:[{extra:'broadcastTx',data:confirmation}]},broadcastAuth,{ final,pass });
           };
-          const answer=await boundary.dispatchPass(signed,resendOnce,{ explicit:true,stage:'recovery-dispatch' });
+          // The resend's fee ceiling reads the debit of the signed transaction it resends, as the broadcast's does;
+          // a refusal there comes before the attempt is reserved, and nothing is sent.
+          const answer=await boundary.dispatchPass(signed,resendOnce,{ explicit:true,stage:'recovery-dispatch',confirmedDebitOs:signedDebitOs(signed.debitOs,tx.content.transaction_fee) });
           r={...r,storageWriteSubmission:classifyStorageWriteSubmission(answer,hash)};
           await retain(intent(hash),r); await retain(lane(address),r);
           return pending;
