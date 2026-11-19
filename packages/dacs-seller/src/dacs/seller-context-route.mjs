@@ -212,7 +212,9 @@ function providerOutcome(answer, scope) {
  * operation completed answers that outcome. One with an unfinished earlier attempt is refused `seller_effect_pending` (503) while that attempt's lease
  * lasts, and afterwards recovered by a new attempt (`resumeContext`): it works from the retained request, reads back the retained Vet records, completes
  * with what they prove or writes only the Vets still missing, and keeps the original hold and start. A recovery that cannot prove what is missing stays
- * open as `operation_uncertain` (503); neither a refused continuation nor a failed recovery ends the row.
+ * open as `operation_uncertain` (503); neither a refused continuation nor a failed recovery ends the row. A row left running is ended by the
+ * admission transaction's sweep instead: a direct request's once it is 5 minutes old, a delegated one's once its expiry plus the grace has passed,
+ * and any at the host's startup.
  * A stored outcome is answered only after `revalidateContextOutcome({ jobId, outcome })` has read the retained records back through the
  * provider and found the same answer; otherwise it throws `seller_source_unavailable` (503) with its cause and changes nothing. `readPlannedAgreement({ jobId })` (see `createPlannedAgreementReader`) is registered with `wire` for a state read before any session.
  * `closeAttempts(cause)` closes every attempt still running. `store`, `capacity`, `admissionTransaction` and `coordinator` are the host's one

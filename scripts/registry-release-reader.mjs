@@ -42,7 +42,9 @@ function classifyFailure(error, subject) {
 function decodeDocument(bytes, subject) {
   let document;
   try { document = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch (error) { throw new ReleaseError("registry_malformed", subject, "the reply is not JSON", error); }
-  try { jsonScanner()(bytes); } catch (error) { throw new ReleaseError("registry_oversized", subject, error.message, error); }
+  try { jsonScanner()(bytes); } catch (error) {
+    throw new ReleaseError(error.code === "EMALFORMED" ? "registry_malformed" : "registry_oversized", subject, error.message, error);
+  }
   return document;
 }
 

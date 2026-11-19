@@ -2,7 +2,6 @@ import type {
   Listing,
   ListingDraft,
   ListingEnvelope,
-  ReadableListing,
 } from "../artifacts/types.js";
 import { parseCanonicalClaimReference } from "../identity/claimReference.js";
 
@@ -26,12 +25,9 @@ export function listingDraftClaimReferencesArePublishable(
 
 /** Exact signed/read form, including the Listing signature's signer. */
 export function readableListingClaimReferencesAreCanonical(
-  readable: Readonly<ReadableListing>,
+  listing: Readonly<ListingEnvelope>,
 ): boolean {
-  if (readable.compatibility === "legacy-mvp") {
-    return parseCanonicalClaimReference(readable.listing.agentId) !== null;
-  }
-  return normativeListingClaimReferences(readable.listing).every(
+  return normativeListingClaimReferences(listing).every(
     (reference) => parseCanonicalClaimReference(reference) !== null,
   );
 }

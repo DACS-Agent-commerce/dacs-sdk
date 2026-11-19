@@ -20,7 +20,7 @@ export { createListingVerifier, NotConfiguredError } from './public-verification
 export { DEM_DECIMAL, OS_INTEGER } from './dacs/chain.mjs';
 /** deliveryEvidenceAddress(jobId) returns the canonical evidence address and may reject invalid identifiers. vetNotPerformedRef(jobId,party) returns the explicit unperformed-Vet reference; neither reads, writes or authorizes Vet. */
 export { deliveryEvidenceAddress, vetNotPerformedRef } from './dacs/purchase-protocol.mjs';
-/** sellerFailureCause(value) returns a recognized seller failure label or undefined; it has no side effects and does not throw for unknown labels. */
+/** sellerFailureCause(value) returns a recognized seller failure label (tls, network, response-auth, status-4xx, status-5xx, client-sign, timeout, address, redirect, oversized, other) or undefined; it has no side effects and does not throw for unknown labels. */
 export { sellerFailureCause } from './dacs/seller-http.mjs';
 /** usesNativePaymentEvidence(operation) returns whether its retained protocol selects native evidence; it performs no network or storage work. */
 export { usesNativePaymentEvidence } from './dacs/native-payment-evidence-consumer.mjs';
@@ -28,7 +28,7 @@ export { usesNativePaymentEvidence } from './dacs/native-payment-evidence-consum
 export { AGREEMENT_CONTEXT_SOURCE, isOperatorContextAuthority } from './dacs/agreement-context-consumer.mjs';
 /** DEM_DELIVERY_CONTEXT_SOURCE is the delivery capability source constant; demDeliveryContextUsage(capability) returns provider capacity, null, or {status:"error"} and invokes the supplied usage callback. isDemDeliveryContextAuthority(value) returns a label predicate; neither admits purchase actions. */
 export { DEM_DELIVERY_CONTEXT_SOURCE, demDeliveryContextUsage, isDemDeliveryContextAuthority } from './dacs/dem-delivery-context-consumer.mjs';
-/** createDemDeliveryContext({authority,resolveBuyer,resolveSeller,release=null,usage=null}) returns a frozen opaque capability that supplies the buyer and seller for DEM delivery context. It throws TypeError unless authority is a TEST- label and the resolvers (and the optional release and usage) are functions; the TEST- label stays until the testnet authority is wired. It reads, writes and admits nothing at construction. */
+/** createDemDeliveryContext({authority,resolveBuyer,resolveSeller,release=null,usage=null,readBack=null}) returns a frozen opaque capability that supplies the buyer and seller for DEM delivery context. readBack({jobId,buyer}) reads a job's retained seller Vet record writes back without signing or sending; a purchase recheck uses it after a plan step ended indeterminate. It throws TypeError unless authority is a TEST- label and the resolvers (and the optional release, usage and readBack) are functions; the TEST- label stays until the testnet authority is wired. It reads, writes and admits nothing at construction. */
 export { createDemDeliveryContext } from './dacs/dem-delivery-context-consumer.mjs';
 /** createNativeDemDeliveryCapability({authority,submit,reconcile,read,verifyReceipt}) returns a frozen opaque capability for native DEM deliverable publication and readback. It throws TypeError unless authority is a TEST- label and all four operations are functions; the TEST- label stays until the testnet authority is wired. Construction calls none of them. */
 export { createNativeDemDeliveryCapability } from './dacs/native-dem-delivery-consumer.mjs';

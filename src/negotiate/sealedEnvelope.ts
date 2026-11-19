@@ -52,8 +52,7 @@ export interface SealedRuleEvaluationInput {
  * build the authoritative anchored candidate set, select the winner, and hand
  * the winning bid plus resolved SE-8 roles to the injected `commitAgreement`
  * (which builds/signs/anchors the AgreementDocument — kept out of here so this
- * stays substrate-agnostic and testable, exactly like runSessionCore's injected
- * settle/anchor).
+ * stays substrate-agnostic and testable).
  *
  * The channel transport (L2PS / SR-4) and the SR-2 anchoring of commits/reveals
  * are the caller's concern; this consumes their *anchored* outputs (the

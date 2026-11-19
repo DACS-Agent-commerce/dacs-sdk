@@ -61,7 +61,11 @@ function sourceBoundStorageComparison({ sourceCapability, expectedIdentity, auth
 // CREATE still supplies the hash, and the transaction plus containing block
 // are authenticated below. Rich public projections remain byte-for-byte
 // strict, while partial or present-invalid projections are never upgraded.
-function creationProvenanceMatches(native, txHash, allowPairedAbsence) {
+/**
+ * Whether a storage program's creation provenance names the CREATE `txHash`: `createdByTx` is that hash and `interactionTxs`
+ * lists it, both present. With neither member, returns `allowPairedAbsence`; one member alone is false.
+ */
+export function creationProvenanceMatches(native, txHash, allowPairedAbsence) {
   const hasCreatedByTx = Object.hasOwn(native, 'createdByTx');
   const hasInteractionTxs = Object.hasOwn(native, 'interactionTxs');
   if (!hasCreatedByTx && !hasInteractionTxs) return allowPairedAbsence;
@@ -282,10 +286,11 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     if (projected && !demosTransactionContentMatches(signed.content, comparison, txHash)) reject('invalid', 'executed transaction differs from the public signed projection');
     if (embedded && projected && canonicalize(signed) !== canonicalize(saved.authorizedTransaction)) reject('invalid', 'public projection differs from the retained wallet authorization');
     // The source binding is part of authentication: a CREATE bound to another
-    // network or pin is not this chain's record.
-    // A CREATE with no metadata binding keeps this refusal's code (canonicalize
-    // throws a code-less error for an absent value).
-    if(sourceCapability && (comparison.network!==sourceCapability.pins.network || comparison.chainIdentity!==expectedIdentity || op?.metadata?.networkBinding===undefined || canonicalize(op.metadata.networkBinding)!==canonicalize(sourceCapability.transportBinding))) reject('invalid','signed Agreement metadata does not bind the exact source pin');
+    // network, chain or pin version is not this chain's record. Its endpoint and
+    // transport authority belong to the writer's own connection, so they are not
+    // compared. A CREATE with no metadata binding is refused the same way.
+    if(sourceCapability && (comparison.network!==sourceCapability.pins.network || comparison.chainIdentity!==expectedIdentity
+      || ['network','chainIdentity','pinVersion'].some(key=>op?.metadata?.networkBinding?.[key]!==sourceCapability.pins[key]))) reject('invalid','signed Agreement metadata does not bind the exact source pin');
     // Authenticated from here. The signed CREATE itself contradicts the logical
     // address, its own native address or its own envelope: the writer's fault.
     const nonce = embedded || projected ? wireInteger(c.nonce) : c.nonce;

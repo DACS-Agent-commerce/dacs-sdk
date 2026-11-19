@@ -48,6 +48,7 @@ import { isAbsolute, join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
+import { createAccountingReconciler } from './dacs/accounting-reconciliation.mjs';
 import { createContextWorkRegistry } from './dacs/context-work-registry.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
 import { demDeliveryContextHost, demDeliveryContextVetMode } from './dacs/dem-delivery-context-consumer.mjs';
@@ -57,8 +58,8 @@ import { PASSIVE_RETAINED_READ, isProvenUnsignedAbsence } from './dacs/native-de
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createContextAdmissionTransaction } from './dacs/seller-admission-transaction.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
+import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-capacity-defaults.mjs';
 import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute, createWireSellerContextRoute } from './dacs/seller-context-route.mjs';
-import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
@@ -256,11 +257,14 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
 // before the state lock and any file; `kit_store_format_unsupported` for a data
 // directory from an older kit format; `kit_journal_accounting_mismatch` for a
 // new kit store over a journal that already holds reservations; and the
-// journal's own `seller_replay_guard_invalid` with its detail. A demDeliveryContext
-// that is not a complete constructed capability (it needs `recoverBuyer`,
-// `resumableBuyer` and `bindRetainedScope`) is refused with a TypeError before the
-// lock, and a startup sweep that cannot record a row it visited refuses startup with
-// its AggregateError.
+// journal's own `seller_replay_guard_invalid` with its detail. A store that already
+// exists is reconciled with the journal before the host listens: a journal that cannot be
+// read whole, or a nonce key that names no accounting row, starts the host not ready
+// with the same `kit_journal_accounting_mismatch`, and a store that cannot commit its
+// reconciliation refuses startup. A demDeliveryContext that is not a complete
+// constructed capability (it needs `recoverBuyer`, `resumableBuyer` and
+// `bindRetainedScope`) is refused with a TypeError before the lock, and a startup
+// sweep that cannot record a row it visited refuses startup with its AggregateError.
 export async function startSellerHost(options) {
   assertKitOperationAdmitted('startSellerHost');
   if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('seller host options must be an object');
@@ -346,16 +350,23 @@ export async function startSellerHost(options) {
     try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
+    // Before anything is served the store and the journal are reconciled: every nonce key names its accounting row, a charge that
+    // never saw its result is told what the journal holds, and a completed operation returns its slot once. A mismatch keeps the host not ready.
+    const reconciliation = await createAccountingReconciler({ store, capacity, journal, inspectOperation: target => inspectWireOperation(journal, target) }).reconcileStartup();
+    // The cause is otherwise only a row in the store, so the one start that refuses purchases for it says why.
+    if (!reconciliation.ready) process.stderr.write(`seller-state: not accepting new purchases: ${reconciliation.code}: ${String(reconciliation.cause?.message ?? '').replace(/\s+/g, ' ').trim()}\n`);
     let stopping = false;
-    // The seller takes new purchases until it stops. A context row with unfinished cleanup keeps its own hold and slot, so it needs no
-    // refusal of other buyers.
-    const sellerReady = () => !stopping;
+    // The seller takes new purchases until it stops or the reconciliation found a mismatch. A context row with unfinished cleanup keeps
+    // its own hold and slot, so it needs no refusal of other buyers.
+    const sellerReady = () => !stopping && reconciliation.ready;
     // Stopped by the process stop flag or by this host's own close.
     const hostStopped = () => stopping || stopRequested();
     const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
       completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
-    // Every effect route reserves through the coordinator and ends its attempt through the completion port.
-    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission });
+    // Every effect route reserves through the coordinator and ends its attempt through the completion port. The agent's own record
+    // of unfinished work lets a payment retry finish a payment the agent recorded, even after the job's session ended.
+    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission,
+      retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.

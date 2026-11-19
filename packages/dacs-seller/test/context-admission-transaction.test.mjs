@@ -950,7 +950,7 @@ test('P09b-T17 absence on chain is not proof: a dispatched signed CREATE keeps t
   lease.control.inspect = () => ({ state: 'pending', binding: lease.row(q.input.jobId).contextBinding, attempt: 0, requestHash: hash('request'), leaseUntil: T0 + 1000 });
   lease.control.evidence = record => lease.evidenceOf(record, 'undetermined'); await lease.admission.compensate(q.input.jobId, 'd');
   assert.equal(lease.row(q.input.jobId).state, 'compensating'); assert.equal(lease.holds.size, 1);
-  for (const kind of ['executed', 'never-dispatched', 'retired', 'absent-on-chain']) {
+  for (const kind of ['absent-on-chain']) {
     const other = world(t), r = other.prepare(); await running(other, r); other.control.evidence = record => other.evidenceOf(record, kind);
     await other.admission.compensate(r.input.jobId, 'd'); assert.equal(other.row(r.input.jobId).state, 'compensating', kind); assert.equal(other.holds.size, 1, kind);
   }
@@ -1075,7 +1075,7 @@ test('P09b-T30 with the shipped guard off, `begin` and `compensate` refuse befor
   assert.deepEqual(JSON.parse(child.stdout), { begin: 'kit_operation_guard_off', compensate: 'kit_operation_guard_off', written: 0, portCalls: 0 });
 });
 
-test('P09b-T33 attempt A paused before D7, recovery B issued; A completes before and after B\'s completion, with equal and different outcomes: A never completes B, changes B\'s outcome, settles the admission or releases the hold; the same with C1 between D6 and D7, and across restart. Round 3, both orderings against compensation: (1) A paused after its durable Vet work and before D7; C1 and compensation run with no context outcome; A released refuses `context_admission_closed` and adds no end or outcome, and no replay becomes available. Here the row stays `compensating`, because C3\'s `executed` proof is P11d3\'s; P11d3 reruns this ordering to settlement `none` (H-19). (2) A publishes its successful outcome before C1; compensation sees it and settles `success` through the completed-context branch. Each asserts the admission revision, the exact journal files, the allocation-hook calls, the hold and `admissionRecord` after two sweeps and a restart', async t => {
+test('P09b-T33 attempt A paused before D7, recovery B issued; A completes before and after B\'s completion, with equal and different outcomes: A never completes B, changes B\'s outcome, settles the admission or releases the hold; the same with C1 between D6 and D7, and across restart. Round 3, both orderings against compensation: (1) A paused after its durable Vet work and before D7; C1 and compensation run with no context outcome; A released refuses `context_admission_closed` and adds no end or outcome, and no replay becomes available. Here the executed proof settles the row with context outcome `none`. (2) A publishes its successful outcome before C1; compensation sees it and settles `success` through the completed-context branch. Each asserts the admission revision, the exact journal files, the allocation-hook calls, the hold and `admissionRecord` after two sweeps and a restart', async t => {
   for (const [label, answer] of [['equal', outcome], ['different', { status: 200, text: '{"disposition":"indeterminate","other":true}' }]]) {
     const w = world(t), p = w.prepare(), a = await running(w, p), b = await w.admission.reserveContext(p.input.jobId, w.reserveWire);
     assert.equal(b.attempt, a.attempt + 1, label);
@@ -1088,15 +1088,15 @@ test('P09b-T33 attempt A paused before D7, recovery B issued; A completes before
   const fenced = world(t), q = fenced.prepare(), c = await running(fenced, q);
   assert.equal(fenced.admission.runningCheck(q.input.jobId, c.attempt, c.rev), true); fenced.compensating(q.input.jobId);
   await reject(c.complete(outcome), 'context_admission_closed', 409); assert.equal(fenced.calls.complete.length, 0); assert.equal(fenced.row(q.input.jobId).state, 'compensating');
-  // (1) A is paused after durable Vet work; C1 and compensation find no outcome. P11d3's executed proof is what would settle it, so the row stays.
+  // (1) A is paused after durable Vet work; C1 and compensation find no outcome. The executed proof settles the row with context outcome none.
   const paused = world(t), r = paused.prepare(), d = await running(paused, r); assert.equal(paused.admission.runningCheck(r.input.jobId, d.attempt, d.rev), true);
   paused.control.evidence = record => paused.evidenceOf(record, 'executed');
   const observe = () => ({ record: paused.admission.admissionRecord(r.input.jobId), row: paused.row(r.input.jobId), complete: paused.calls.complete.length, holds: paused.holds.size, effective: paused.calls.effective });
   await paused.admission.compensate(r.input.jobId, 'd'); const held = observe();
   await reject(d.complete(outcome), 'context_admission_closed', 409); await reject(d.complete(null), 'context_admission_closed', 409);
   await sweepTwice(paused); paused.reopen(); await sweepTwice(paused, true);
-  assert.deepEqual(observe(), held); assert.equal(held.record.state, 'compensating'); assert.equal(held.record.contextOutcome, null);
-  assert.equal(held.complete, 0); assert.equal(held.holds, 1); assert.equal(held.effective, 0); assert.equal(paused.wireEnds.size, 0);
+  assert.deepEqual(observe(), held); assert.equal(held.record.state, 'settled'); assert.equal(held.record.contextOutcome, 'none');
+  assert.equal(held.complete, 0); assert.equal(held.holds, 0); assert.equal(held.effective, 1); assert.equal(paused.wireEnds.size, 0);
   // (2) A publishes its successful outcome before C1: compensation sees it and settles `success`.
   const published = world(t), s = published.prepare(), e = await running(published, s); await e.complete(presented(s.input.jobId));
   const done = published.admission.admissionRecord(s.input.jobId); assert.equal(done.state, 'settled');

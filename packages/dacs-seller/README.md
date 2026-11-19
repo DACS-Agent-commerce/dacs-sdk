@@ -82,9 +82,14 @@ pending, so no later transaction or request passes it. A closure answers termina
 after a restart whatever the port then says; an unknown, nonterminal or
 asynchronous answer creates none. The coordinator refuses a request for a closed job
 `context_session_terminal` (409) after inspecting its operation and before any
-accounting, unless that operation already completed under the request's binding. After the
-terminal check, the coordinator runs the synchronous, read-only gates registered
-with `addPreAccountingGate` in registration order. Completed operations bypass both checks. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+accounting, with two exceptions. An operation that already completed under the
+request's binding is answered again. A payment retry under the request's binding
+goes on when the agent still holds a payment it recorded for the job and the
+operation has no stored answer yet, so that payment is finished once. Neither
+writes a closure. After the terminal check, the coordinator runs the synchronous,
+read-only gates registered with `addPreAccountingGate` in registration order.
+Completed operations skip the gates too; a payment retry that finishes a recorded
+payment does not. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
 is the one synchronous check for other callers, and the purchase capacity must be
 built on a store before any reader runs. These observation writes are counted apart
 from the challenge, admission and reservation writes, which a refusal still leaves
@@ -162,17 +167,36 @@ empty, and is refused with `kit_store_format_unsupported` and left unchanged whe
 row. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
+A store that already exists is checked against the journal on every start,
+before the host listens: every nonce key must name an accounting row, a charge
+that a crash left reserving is marked with what the journal holds for it (its
+charge stays counted), and the slot of an operation that completed before the
+slot was returned is returned once. If the journal cannot be read whole, or a
+key names no row, the host starts not ready, changes nothing and records
+`kit_journal_accounting_mismatch` with its cause, and writes one line to stderr:
+`seller-state: not accepting new purchases: kit_journal_accounting_mismatch: <cause>`.
+The cause is a code and a detail, for example
+`seller_replay_guard_invalid: STORE-ENUMERATION-INCOMPLETE`. It says the journal
+and the store do not agree, or the journal cannot be read whole; it may name a
+key, an operation or a job, and names a file only for an operating-system read
+error. The operator restores `seller/`, `transport/` and
+`wire-journal/` to one consistent copy (the same backup, or the same running
+host), then restarts; each start checks again. Only when the cause is an
+operating-system read error that names a file does the operator repair that file
+instead.
 
 Signed effect routes reserve through one reservation coordinator, which commits
 accounting before the wire journal publishes their attempt. A final answer
 completes the operation and returns its route slot; a later request is answered
 from it, after the existing source checks. A `waiting` proposal that kept no work
 ends the attempt without an outcome, and the next request recovers at once, the
-agent reconciling first. Retained payment work keeps its attempt open instead: a
-`held` payment, or evidence whose delivery is not done, is not ended and not
-stored. A payment that kept nothing (`indeterminate` before the evidence
-checkpoint, or `rejected`) still ends without an outcome. An uncertain or open
-attempt stays open: a request inside its 300 s lease gets `seller_effect_pending`,
+agent reconciling first. A payment answer that says the payment is in progress,
+a `held` payment or evidence whose delivery is not done, ends its attempt the
+same way and is not stored: waiting for a transfer is not a crash, so it spends
+none of the 16 attempts below. A payment that kept nothing (`indeterminate`
+before the evidence checkpoint, or `rejected`) also ends without an outcome. An
+uncertain or open attempt stays open, as does any other answer or refusal while
+payment work is unfinished: a request inside its 300 s lease gets `seller_effect_pending`,
 and the first after it recovers, spending one of 16 attempts at each lapse; after
 16 lapsed attempts the operation answers `seller_effect_unresolved`. A final
 payment answer is stored only after its sources are read again, and returns the
@@ -286,7 +310,21 @@ the producer, retry the same payment claim; do not collect another payment.
 `artifactAnchor` publishes native artifacts for the seller named by `writer`.
 Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
-the signed transaction before sending it. `readRetained({ logicalAddress,
+the signed transaction before sending it. The party Vet provider also passes
+`awaitInclusion: true`: a CREATE that call sends and that still reads back as
+pending is read again every five seconds for a bounded time while `authorize()`
+still answers `true`. The additional polls never send the CREATE again; the
+first pending read can still run the existing one-time recovery send
+(`recoverStorageWrite`) of the retained CREATE, as without `awaitInclusion`. In
+the reference anchor the bound is six minutes after the wallet's answer, and the
+wallet answers only after the transport's own inclusion wait (120 seconds by
+default), so the bound ends about eight minutes after the broadcast. Meanwhile
+the seller's other writes wait behind the pending write, up to that bound,
+instead of failing at once with a retryable error. `readBackRecords({ jobId,
+buyer })` reads a job's two retained Vet records back without signing or
+sending anything; it answers `present` only when both records read back as
+included, and `indeterminate` when one is not written yet or does not read
+back. `readRetained({ logicalAddress,
 artifactKind })` must authenticate the exact retained artifact, receipt, native
 transaction reference and signed projection when returning `status: 'present'`;
 `verifyReceipt` independently checks those bindings. Retain one logical record
@@ -374,6 +412,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   One live process owns a data directory (`seller-state.lock`): a second host,
   in this process or another, is refused; the lock of a process that is
   provably gone is taken over, and any doubt refuses until it is removed by hand.
+  On macOS and the BSDs the boot is identified by `kern.boottime`, which a
+  wall-clock step moves. After a step, the lock of a process that started before
+  it and did not exit cleanly names another boot and is not taken over: confirm
+  that no operator process runs, then remove `seller-state.lock` by hand.
   Holding that lock, the host recovers what a holder that is gone left before it
   serves: it releases every job lock row `releaseAbandonedLock` would release
   (never a live holder, nor one on this boot whose lease cannot be checked),
@@ -427,8 +469,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, keeps the attempt open: the first request after its 300 s lease
-  recovers and runs the agent's retained work again (reading back first), and a
+  done yet, ends the attempt with no outcome: the next request recovers at once
+  and runs the agent's retained work again (reading back first), and a
   different claim for the job is still
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
@@ -505,7 +547,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
   `createDeliverableWalletJournal({ path, signCreate, broadcast,
-  readAccountNonce, readTransactionState })` is that journal, built as
+  readAccountNonce, readTransactionState, readNetworkInfo })` is that journal, built as
   `createPaymentEvidenceWalletJournal` is (the same primitives, checks and
   nonce rule, in its own file with its own `journalId`; a file made for the
   other kind is refused). Both its operations, `submitAuthorized(input,
@@ -572,12 +614,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
     the cause).
 
   `createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
-  readAccountNonce, readTransactionState })` gives both functions from the
+  readAccountNonce, readTransactionState, readNetworkInfo })` gives both functions from the
   operator's wallet primitives. `signCreate(input)` signs, and does not send,
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
   `signedTransaction` is the JSON of exactly the public signed projection
   `{ hash, content, signature: { type, data } }` of the Demos signed
-  transaction: of demosdk 4.0.16's `demosclass.js` `sign()` result, only those three members (its
+  transaction: of demosdk 4.0.18's `demosclass.js` `sign()` result, only those three members (its
   `status`, `blockNumber` and `ed25519_signature` are left out; node 61b8e75
   refuses a truthy `status`, which the signature does not cover). Before it is
   kept, the journal checks it is what the node executes and the SR-2 readback
@@ -589,13 +631,32 @@ per-client limiter so one client cannot exhaust the shared request budget.
   evidence) at this logical address, with `to` and the operation's
   `storageAddress` the address the writer, the program name and the nonce
   derive, from the writer's address (`from` and `from_ed25519_address`), with
-  the writer's Ed25519 signature as `0x` and lower-case hex, over the hash or,
-  when the journal is given `signatureChainId`, over
-  `demos-tx:v1:<signatureChainId>:<hash>`. `signatureChainId` is the node's
-  chain id as a decimal string, taken from the seller's own network
-  configuration; without it only the bare hash is accepted, and any other
-  message is refused. `createNativePaymentEvidenceConsumer` takes the same
-  option for the readback.
+  the writer's Ed25519 signature as `0x` and lower-case hex, over the message
+  the node's `getNetworkInfo` answer selects: the bare hash while the node's
+  `signatureDomain` fork is inactive (or absent), and
+  `demos-tx:v1:<chainId>:<hash>` once it is active, where `chainId` is the
+  answer's safe nonnegative integer `chainId`; an active fork must also carry a
+  safe nonnegative integer `activationHeight`, and a transaction included in an
+  earlier block is still checked against the bare hash. Any other message is
+  refused, and so is a bare-hash signature for a transaction at or after an
+  active fork's `activationHeight` (a kept CREATE the node already executed is
+  not checked again against the present answer). A kept bare-hash CREATE that
+  the node has not executed, absent or still pending in its queue, and which the
+  node proves not executed through an active fork's `activationHeight` itself,
+  can no longer be executed:
+  the journal supersedes it, and the next signature may use the same nonce. One
+  not proved that far stays refused as another evidence
+  (`wallet_journal_conflict`) and is not sent again. The journal reads the
+  answer through `readNetworkInfo({ signal })` on every call (like the other
+  wallet reads it is given `readTimeoutMs`, and its reader limits the size of
+  the reply); a read that fails,
+  times out or answers anything unreadable refuses the call
+  (`wallet_signature_domain_unreadable`) before anything is signed or sent.
+  Without `readNetworkInfo` nothing is read and only a signature over the bare
+  hash is accepted, so a CREATE signed for an active fork is refused. A
+  `signatureChainId` option is refused with a `TypeError`. The SR-2 readback of
+  `createNativePaymentEvidenceConsumer` reads the same answer from its own node
+  on each authentication and answers `indeterminate` when it cannot be read.
   Its fee is the node's to set, up to a ceiling of 50 DEM for the whole debit
   of the write: the network, rpc and additional fee plus the storage and gas
   burns, summed in OS (whole DEM numbers before the node's denomination fork,
@@ -642,7 +703,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
-  `'applied'`, `'pending'`, or `'absent'`. Applied means successful execution;
+  `'applied'`, `'pending'`, or `'absent'`; the journal also passes the kept
+  `signedTransaction` and `nonce`. Applied means successful execution;
   inclusion alone does not establish execution. An ordinary miss or unknown
   answer keeps the original signed CREATE alive for rebroadcast. To release a
   CREATE whose nonce another transaction consumed, a qualified reader must
@@ -650,7 +712,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `{ state: 'absent', checkedThroughBlock }` from a complete authenticated
   transaction index, including failed transactions, on the same chain.
   `checkedThroughBlock` must be at least the nonce snapshot's `blockHeight`.
-  A bare nonce or an unfenced absence never authorizes supersession.
+  A bare nonce or an unfenced absence never authorizes supersession. A pending
+  CREATE may carry the same proof, `{ state: 'pending', checkedThroughBlock }`;
+  it does not release the CREATE, it only lets a bare-hash CREATE be replaced
+  once the signature-domain fork is active.
   The journal keeps the signed CREATE and its nonce in its SQLite file (a
   private 0600 file) before it broadcasts it, and keeps at most one live signed
   CREATE per address. Its `readSignedProjection({ logicalAddress })` answers

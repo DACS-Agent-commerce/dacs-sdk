@@ -5548,6 +5548,11 @@
           "path": "packages/dacs-client/test/native-payment-evidence-shape.test.mjs",
           "before": null,
           "after": "834d1cf7f501c8302919700b77891d11fc00dd48"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "4ae1498ab1b792c28b62d8fbeaa39fdef734007b",
+          "after": "ace418dab661a715499c8ff14040af446d256437"
         }
       ]
     },
@@ -5670,6 +5675,21 @@
           "path": "packages/dacs-client/test/runtime-floor.test.mjs",
           "before": null,
           "after": "6c920248367b799050ce5f473574a6a9ca927f1e"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "4ae1498ab1b792c28b62d8fbeaa39fdef734007b",
+          "after": "49bdc4dec0fde682b7545aa1113ccaabe338430a"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "5dca2fe396dcdd238af3a807704f249910cd9535",
+          "after": "ac1e70fc9875461069185266fc06e8468867cf68"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "9105f7786919cd0cdff1ce4e38467487f0a772e0",
+          "after": "9ff74b3e998b3c15e5ac558bdbf3bffd48af1d96"
         }
       ]
     },
@@ -5706,6 +5726,11 @@
           "path": "packages/dacs-client/test/public-readback.test.mjs",
           "before": "909b0b5753a4eff5ff00cfb31766de691c88a0ec",
           "after": "6674b54365ccd75f0ec9623205622e85bbfe9a21"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "49bdc4dec0fde682b7545aa1113ccaabe338430a",
+          "after": "d64fd90e00885915c937e0958ba53e4246a17110"
         }
       ]
     },
@@ -5748,6 +5773,21 @@
           "path": "packages/dacs-client/src/public-guidance.mjs",
           "before": null,
           "after": "3e30100bbe51407035a50afcb5f1ef2c991040fa"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "e171e4b8784185dd04d2dbb2a4bed7a7782aecd0",
+          "after": "13ef939069cf3f7c370f32a16a81394641a95524"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "ac1e70fc9875461069185266fc06e8468867cf68",
+          "after": "41f541173f20c826a0c64433d31e8c6dcfc39223"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "9ff74b3e998b3c15e5ac558bdbf3bffd48af1d96",
+          "after": "243e061b1d3f87b314a41df0a3455dba5ddfa47a"
         }
       ]
     },
@@ -5804,6 +5844,21 @@
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "d65da09f23b12c15b976cc640c9cbef7be5e894a",
           "after": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "e171e4b8784185dd04d2dbb2a4bed7a7782aecd0",
+          "after": "e29b7485dd64fcfa4be91f99bb1d2fd61e4ca20a"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "ac1e70fc9875461069185266fc06e8468867cf68",
+          "after": "707178ec0553cd1ee9304dc36a50e8e95443f49d"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "9ff74b3e998b3c15e5ac558bdbf3bffd48af1d96",
+          "after": "d00aa2e86721eed64a091c201e93875034bbcbd5"
         }
       ]
     },
@@ -5820,6 +5875,16 @@
           "path": "packages/dacs-client/test/durable-journal-owned-append.test.mjs",
           "before": "1df73fe136ac98d597f1509c074d8da73b74087e",
           "after": "8136201c3d57264ab3fe16d2ccacbef4035fdd49"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "e29b7485dd64fcfa4be91f99bb1d2fd61e4ca20a",
+          "after": "e39db5c93bef30ca6cb371afcd5f83d820c0d438"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "707178ec0553cd1ee9304dc36a50e8e95443f49d",
+          "after": "5f9c4a5eca1a8859901880bab467152ef6b9182f"
         }
       ]
     },
@@ -5872,6 +5937,21 @@
           "path": "packages/dacs-client/src/wallet/node-demos-loading.mjs",
           "before": null,
           "after": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "e171e4b8784185dd04d2dbb2a4bed7a7782aecd0",
+          "after": "8043a242f1e84e1a98435b52ad0841c2cd114545"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "ac1e70fc9875461069185266fc06e8468867cf68",
+          "after": "69340fefc30141c36b543527885c817843dab531"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "9ff74b3e998b3c15e5ac558bdbf3bffd48af1d96",
+          "after": "774960d23da0bc20bae183e6194b040ede8be08c"
         }
       ]
     },
@@ -5976,6 +6056,11 @@
           "path": "packages/dacs-client/test/chain-nonce-slot.test.mjs",
           "before": "97ed7a0cafe0934a0f587f9b1db552e1368da7b1",
           "after": "e587e56909e76be617f438ac8d478698cdb3b4da"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "4ae1498ab1b792c28b62d8fbeaa39fdef734007b",
+          "after": "3fdae810cf76b81e3968da4525d0e3b7952b5148"
         }
       ]
     },
@@ -6031,6 +6116,11 @@
           "path": "packages/dacs-client/src/purchases.mjs",
           "before": "debc333708d0ac77e36addb07640a5fdb2b3be72",
           "after": "cf5ffa1bcf4e41c741c2a3a89edda7b3de31740b"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "14e0f036609a4bf43eb6b4618e4832a96c875286",
+          "after": "0e99c8fd434f51a56ca922f4f21e91fa8da0e29b"
         }
       ],
       "sha": "a3d6ac0a087011e7a258e7d12dd068c882370576"
@@ -6043,6 +6133,11 @@
           "path": "packages/dacs-client/src/purchases.mjs",
           "before": "cf5ffa1bcf4e41c741c2a3a89edda7b3de31740b",
           "after": "debc333708d0ac77e36addb07640a5fdb2b3be72"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "0e99c8fd434f51a56ca922f4f21e91fa8da0e29b",
+          "after": "14e0f036609a4bf43eb6b4618e4832a96c875286"
         }
       ]
     },
@@ -6193,6 +6288,21 @@
           "path": "packages/dacs-client/test/public-api.test.mjs",
           "before": "88abfb10c132141730d27792596b73899fe34400",
           "after": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "3e8bb95b5166ec8add71b94f666bf2b4fdddafec",
+          "after": "5c6353d6eeaf18f34937ebc8f16f05bec1379f06"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "64eaaacd7cdbf0a2d2860a1cd030a4e2d2508547",
+          "after": "0177a0f32c09b9101ee981d518997ef3cd567cd2"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "8243a75963a3fd5e0ecceb2707d9ce20a9275a26",
+          "after": "1e6de98521e780c336435be6ae41c90c11d6709c"
         }
       ]
     },
@@ -6291,6 +6401,16 @@
           "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
           "before": "529e9fec2d2412d41405769ad294b373ca42f591",
           "after": "0b931d7660acc1a9369014510d9353ea491fa8a0"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "5c6353d6eeaf18f34937ebc8f16f05bec1379f06",
+          "after": "43ea42dfc98cfb21e0be26bd0a285d3ac58f6660"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "0177a0f32c09b9101ee981d518997ef3cd567cd2",
+          "after": "298d5e7aa170560703b7421ac57a5f4a964c5b5a"
         }
       ]
     },
@@ -6312,6 +6432,16 @@
           "path": "packages/dacs-client/test/node-wallet-final-content.test.mjs",
           "before": "520dc75570490cf8f0177623fa7cd837c098c28c",
           "after": "17e556eaaa8199a80b20fa91c1563ef50fbb85b9"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "43ea42dfc98cfb21e0be26bd0a285d3ac58f6660",
+          "after": "7f4d6f52188adeea1c8b66f706d3588cf478d647"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "298d5e7aa170560703b7421ac57a5f4a964c5b5a",
+          "after": "091100f59cea0248fa1243294b829d0605feebf9"
         }
       ]
     },
@@ -6404,6 +6534,11 @@
           "path": "packages/dacs-client/src/purchases.mjs",
           "before": "93ec1d4ba6bf5285c5da423817b610e2f36b1647",
           "after": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "18011cc2ad527d6011db520e13158fb48dfe8a51",
+          "after": "3e7b722d70a64c3573ab9e0700a825fb212f4450"
         }
       ]
     },
@@ -6562,6 +6697,11 @@
           "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
           "before": null,
           "after": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "091100f59cea0248fa1243294b829d0605feebf9",
+          "after": "227961da305073ca6949d0bee3a6568379541c67"
         }
       ]
     },
@@ -6583,6 +6723,11 @@
           "path": "packages/dacs-client/test/readme-contract.test.mjs",
           "before": "0f7e7d6618f09f8377893affcdd5449425e4646f",
           "after": "2f55d19d20546e56045fdac4ccb201635a30a0b5"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "227961da305073ca6949d0bee3a6568379541c67",
+          "after": "be71d85e055bb49a492793c286487b5f798d2ff3"
         }
       ]
     },
@@ -6594,6 +6739,11 @@
           "path": "packages/dacs-client/src/purchases.mjs",
           "before": "06748b818244cb1924ebb4fcc93ad5a23e99b848",
           "after": "4a6010356dbd967ae75c68fb30d97060fb9f0f65"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "be71d85e055bb49a492793c286487b5f798d2ff3",
+          "after": "c711fe9c0da22ade227eecbfcdf20a0507079447"
         }
       ]
     },
@@ -6610,6 +6760,11 @@
           "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
           "before": "c04831cefe549f5a2c89052f0400bcdecf8b52a7",
           "after": "6841b7b79dece95e51c8b46abf549d0370fb4789"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "c711fe9c0da22ade227eecbfcdf20a0507079447",
+          "after": "39f616e000c9d143e67b2fd62cddd1a365529477"
         }
       ]
     },
@@ -6676,6 +6831,21 @@
           "path": "packages/dacs-client/test/public-demos-reader-surface.test.mjs",
           "before": null,
           "after": "042048f96e210c436f14068e67636a078e46e8ca"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "480fe9ab41bea06f958ac2fa57b176091dc3b069",
+          "after": "8760f0cd2a4c367c48b4057ba534d29ecb09ca25"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "091100f59cea0248fa1243294b829d0605feebf9",
+          "after": "6c44eb1e7785418a4ee486e5eec852d0d236a804"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "1e6de98521e780c336435be6ae41c90c11d6709c",
+          "after": "52a9058e96c803c4e57f09f05b377cf6d8a3aca7"
         }
       ]
     },
@@ -6720,6 +6890,11 @@
           "path": "packages/dacs-client/src/substrate/demos.mjs",
           "before": "3ac12a3aecade25cda81b6a3c0065cdaafeda6c9",
           "after": "1210a631918cb1b11824b80770e1497c52738180"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "cd9d8194a0604867852eb602ab0f1482b225857c",
+          "after": "403bd524a29748f087639565e8dfa3fe3936810a"
         }
       ]
     },
@@ -6865,6 +7040,21 @@
           "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
           "before": null,
           "after": "15b6cee99bc61e26789ca19e1a36494f6fb322bc"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "c44f92343cea9dc6a5f8c970f2b8ff361015d2c7",
+          "after": "9a7d670bfc948ace23f2521535a8ca12f11eab2c"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "0376a3b7554a41fe5501dc99201bce8399dcd7e1",
+          "after": "aefdde0f37d8a52cd4bb7ef03c581f34bbae304e"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "d41f97f82ab1e6403f9100463a8339d93571f4dd",
+          "after": "ff92999cf882bc7c0e603300270bd57d2fc7c32b"
         }
       ]
     },
@@ -6897,6 +7087,16 @@
           "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
           "before": "15b6cee99bc61e26789ca19e1a36494f6fb322bc",
           "after": "e4a43f5d39bc6806039a4f3f7421d0874504effc"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "9a7d670bfc948ace23f2521535a8ca12f11eab2c",
+          "after": "6db7dac19ef5b298d14eb9bb593469023f2ad9a2"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "aefdde0f37d8a52cd4bb7ef03c581f34bbae304e",
+          "after": "f502d947c2f08129d0ed8fd0b6a81088de2acd9b"
         }
       ]
     },
@@ -7011,6 +7211,16 @@
           "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
           "before": "e4a43f5d39bc6806039a4f3f7421d0874504effc",
           "after": null
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "480fe9ab41bea06f958ac2fa57b176091dc3b069",
+          "after": "9a7d670bfc948ace23f2521535a8ca12f11eab2c"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "c147cdf37f1e04c5aacb534c6d334d524129f2e9",
+          "after": "091100f59cea0248fa1243294b829d0605feebf9"
         }
       ]
     },
@@ -7133,6 +7343,16 @@
           "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
           "before": null,
           "after": "8080ab64a3de6b4a227ea7b19ecb9d70911f035a"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "480fe9ab41bea06f958ac2fa57b176091dc3b069",
+          "after": "21df9633d28fe17a5012ed570e3e5f13e74afdb2"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "091100f59cea0248fa1243294b829d0605feebf9",
+          "after": "67dbba8a84bab165d109e4835acb0fd5e6766cea"
         }
       ]
     },
@@ -7194,6 +7414,16 @@
           "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
           "before": "8080ab64a3de6b4a227ea7b19ecb9d70911f035a",
           "after": "38eeb443a089821c4d313f54db21022689d7b1ff"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "21df9633d28fe17a5012ed570e3e5f13e74afdb2",
+          "after": "13c4298bffefb54576eac96d02b04a1c9761613a"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "67dbba8a84bab165d109e4835acb0fd5e6766cea",
+          "after": "c147cdf37f1e04c5aacb534c6d334d524129f2e9"
         }
       ]
     },
@@ -7270,6 +7500,21 @@
           "path": "packages/dacs-client/test/wire-continuation-evidence.test.mjs",
           "before": null,
           "after": "d6407d953cdd85617b4bcce9c409d3d18beed67c"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "6db7dac19ef5b298d14eb9bb593469023f2ad9a2",
+          "after": "c59d81c9644ab41b6fa5ec29919366b07717c43d"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "f502d947c2f08129d0ed8fd0b6a81088de2acd9b",
+          "after": "8592894fa6cd32051ee2392469cb5dbbdc13b4b8"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "ff92999cf882bc7c0e603300270bd57d2fc7c32b",
+          "after": "ba5e447f563d214bcaf078de3d430297982b6ee5"
         }
       ]
     },
@@ -7341,6 +7586,21 @@
           "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
           "before": null,
           "after": "3aeea852dffad587c333c12b28aa112733a7e853"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "cd71bea2779b4cc3fe3c170422e1b79642aefe83",
+          "after": "46683e0b2918a00304b1ff1e0ba89e0f6b4e9f99"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "1d829bbe2ef0e53fb804c9eb9d391b052a6c8c2e",
+          "after": "c199f0503bf91172895262cabc0e63d74f33b2aa"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "c3016ea5b102f152028a46fa7a8aff3f47b7fb1a",
+          "after": "8b9c053e208e545c17f8cd1cea2bac915fda8cbc"
         }
       ]
     },
@@ -7358,6 +7618,11 @@
           "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
           "before": "3aeea852dffad587c333c12b28aa112733a7e853",
           "after": "6982df671d7d2040341fd534d075b1225fc000f6"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "c199f0503bf91172895262cabc0e63d74f33b2aa",
+          "after": "ae322477c20c485d8ef27a15726ddce5b8a86441"
         }
       ]
     },
@@ -7374,6 +7639,11 @@
           "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
           "before": "6982df671d7d2040341fd534d075b1225fc000f6",
           "after": "3aeea852dffad587c333c12b28aa112733a7e853"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "7a387391d81ea4b88c4bcee6f05b7e3d24cb51f2",
+          "after": "9ba72079a119798798d8f08e8c18709a327b8e9b"
         }
       ]
     },
@@ -7390,6 +7660,11 @@
           "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
           "before": "3aeea852dffad587c333c12b28aa112733a7e853",
           "after": "6982df671d7d2040341fd534d075b1225fc000f6"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "9ba72079a119798798d8f08e8c18709a327b8e9b",
+          "after": "7a387391d81ea4b88c4bcee6f05b7e3d24cb51f2"
         }
       ]
     },
@@ -7417,6 +7692,16 @@
           "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
           "before": "6982df671d7d2040341fd534d075b1225fc000f6",
           "after": "501e8eefddad1bd2c38e6e35efd87178e03fedba"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "92d2cacecba110066f27c2ef6a075bac6c65c363",
+          "after": "c6e0031238b0b027f47352a9e35c5f81dad65ee3"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "b3cf44925ce4cb65759bdab6613f61981d6cda05",
+          "after": "33e737392c74215129fbc438d987c0a7bae4626e"
         }
       ]
     },
@@ -7468,6 +7753,16 @@
           "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
           "before": null,
           "after": "8f231f6102facaa62dad45d5fac984357ba11980"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "46683e0b2918a00304b1ff1e0ba89e0f6b4e9f99",
+          "after": "c5a33e4f0e24720a85cfc98341f7e3df1d8895f6"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "ae322477c20c485d8ef27a15726ddce5b8a86441",
+          "after": "4a2db6d3509c4b8d7f03723d83aeac55b8ad748e"
         }
       ],
       "compact": true
@@ -7541,6 +7836,16 @@
           "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
           "before": "53fdb217b04d43f879c51cb1169ab5ae66b20520",
           "after": "919fd780e50a524ee24c547b4ed9d0b2ae3f087c"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "f682591042d5ce3abe0747264c2b632afc48f05b",
+          "after": "0b3c539ebb80f2b9211fcc9016cc420b6310ec8e"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "1d0d69579de32409e89ec1d1fcdc5705537f7f3e",
+          "after": "c870037d700eab7b3e50a9d8f185cd94e5a305bf"
         }
       ],
       "compact": true
@@ -7587,6 +7892,11 @@
           "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
           "before": "9ba32690269d501dbd268aa6d6baab4f73e8c176",
           "after": "d268285a6a256119ca07a0d87557610764f5afa8"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "0b3c539ebb80f2b9211fcc9016cc420b6310ec8e",
+          "after": "f13533d3c5fe7133bd9a78cf0c27e1501a328a87"
         }
       ]
     },
@@ -7707,6 +8017,16 @@
           "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
           "before": "1e5d5ce574538a7e96f257dcc7aa405fa636ef56",
           "after": "53fdb217b04d43f879c51cb1169ab5ae66b20520"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "0b3c539ebb80f2b9211fcc9016cc420b6310ec8e",
+          "after": "5463d4ff37ab7bb346f7a68fd3d937f27ba779c3"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "c870037d700eab7b3e50a9d8f185cd94e5a305bf",
+          "after": "b03429a57b9faf69d8cebe9239aab679b2a40d45"
         }
       ]
     },
@@ -7946,6 +8266,16 @@
           "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
           "before": "53fdb217b04d43f879c51cb1169ab5ae66b20520",
           "after": "53fdb217b04d43f879c51cb1169ab5ae66b20520"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "5463d4ff37ab7bb346f7a68fd3d937f27ba779c3",
+          "after": "9d49fb118243197911fa45eddb64d5d0e7801e57"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "b03429a57b9faf69d8cebe9239aab679b2a40d45",
+          "after": "75cc3422489fbcbcf1b80eebf41520809c59d747"
         }
       ]
     },
@@ -8007,6 +8337,11 @@
           "path": "packages/dacs-client/test/seller-suspension.test.mjs",
           "before": "96cc7507687ca7947de04da9470fdeb230da7db9",
           "after": "97a78d7307c1ac3947efdcba2d3368ac353a582a"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "4f3769b3fa11c8940b2369fed79674edd766073f",
+          "after": "65177883b50083fd8ba97862120a5d20bb29ed4a"
         }
       ],
       "compact": true
@@ -8080,6 +8415,16 @@
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "9b3fac5c0509ab6f0e5401c7d76700814a73842d",
           "after": "225f7dbfb61729f33863364013e7dca7d31335a2"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "0d2f986bab879560827e6c94cd68205c7cdf2dba",
+          "after": "a2950554a9f225fa99dbc6ea2828e877717a0794"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "c633012e8fb98dc5e398ce904fd136b53a4d1504",
+          "after": "f719bef405af617472cb69924dd5f9bac7639c31"
         }
       ]
     },
@@ -8219,6 +8564,11 @@
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "225f7dbfb61729f33863364013e7dca7d31335a2",
           "after": "a83648f5f7606440c1cf56de620e2f3794f6049a"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "a2950554a9f225fa99dbc6ea2828e877717a0794",
+          "after": "7a03ba2681111d705f97d6c7f3a003c9976a1fc1"
         }
       ]
     },
@@ -8283,6 +8633,11 @@
           "path": "packages/dacs-client/test/seller-suspension.test.mjs",
           "before": "97a78d7307c1ac3947efdcba2d3368ac353a582a",
           "after": "c3f5dac05fd2af76c65238f819d636869f7919fb"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "75bc72c487e2ef9769e26e63401cea2c3bfd3e13",
+          "after": "51583e5256c0286a82bf8aad7c2c2e025c76b852"
         }
       ]
     },
@@ -8309,6 +8664,21 @@
           "path": "packages/dacs-client/test/runtime-floor.test.mjs",
           "before": "6c920248367b799050ce5f473574a6a9ca927f1e",
           "after": "c8133057b9b84685e1227cbb72fd1e1e8467f6ef"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "480fe9ab41bea06f958ac2fa57b176091dc3b069",
+          "after": "504e4d78f6e8738a40cf926ced895b07f64b91e7"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "39f616e000c9d143e67b2fd62cddd1a365529477",
+          "after": "96ef447f472af46dc88cb837ad02961bcba1ead8"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "1e6de98521e780c336435be6ae41c90c11d6709c",
+          "after": "72f13557a3e3e5d7d5f6ccfe223927f3ad8c6d4c"
         }
       ]
     },
@@ -8390,6 +8760,16 @@
           "path": "packages/dacs-client/test/seller-public-endpoint.test.mjs",
           "before": null,
           "after": "2b7317dc8922c4c33abc4a9ce65fe3a0eccbd2a7"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "728fc3e3882057bd485bdb01514784c9afc46b17",
+          "after": "68704de043193d6eb7fc6b870d8ce6688e6c2395"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "75cc3422489fbcbcf1b80eebf41520809c59d747",
+          "after": "cf7163ad912ac3524531f9dc9884e56ed9844397"
         }
       ]
     },
@@ -8544,6 +8924,16 @@
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026",
           "after": "8f8757994d69d512ccbf145bcd2180b622acc962"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "c44f92343cea9dc6a5f8c970f2b8ff361015d2c7",
+          "after": "9469f815602472649da7c1caec2c3668c20760c1"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "d41f97f82ab1e6403f9100463a8339d93571f4dd",
+          "after": "b809848b1484e2ed43b55cdf463c73cd1ab540b9"
         }
       ]
     },
@@ -8591,6 +8981,11 @@
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "b28b9292f54c3a9d28e5dbc56f144fc33a395303",
           "after": "f0a35af9f949550e02b20ae2f72dc75067e588d8"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "d45f55402058af49fe71f40e3f90da85d2dfd47c",
+          "after": "989a1aa010208285aa64b66bcd62b32426366500"
         }
       ]
     },
@@ -8666,6 +9061,16 @@
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "8f8757994d69d512ccbf145bcd2180b622acc962",
           "after": "abe08190196e3a17ccbb29ce6785df334c20d080"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "9469f815602472649da7c1caec2c3668c20760c1",
+          "after": "0a74bac1bed020bcdfff9446630c15424fe9ff80"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "b809848b1484e2ed43b55cdf463c73cd1ab540b9",
+          "after": "1c9fc578803380e41906d930bf58e82a519bade3"
         }
       ]
     },
@@ -8735,6 +9140,11 @@
           "path": "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs",
           "before": "aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6",
           "after": "1b83d2a67290fc5fb683667e993dbf498ecaf269"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "bcb11c44cb4c9dcba7f9fbb6ba5eb43daa6f7bb9",
+          "after": "b64dc065cf4fea24d7591d92e775bc8a6106ccd1"
         }
       ]
     },
@@ -8955,6 +9365,16 @@
           "path": "packages/dacs-client/test/public-api.test.mjs",
           "before": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2",
           "after": "f85d5b731a200483b9c5e95efa5f818b947e0e60"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "62c6e0fb4149484f0f453f6768f2b089c1023a04",
+          "after": "221a78c73880d61aee38b955850f8e555a0c1b7b"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "091100f59cea0248fa1243294b829d0605feebf9",
+          "after": "930f1b053ab8975f025537e6bc5be47d26db9e31"
         }
       ]
     },
@@ -9020,6 +9440,11 @@
           "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
           "before": "4734c66eb0b25db13d505cc6cc9df63f4237d09c",
           "after": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "dc77a8baa0559e8754c84a1693b092dddf1c7cb9",
+          "after": "8d8848d420eed696de47d2ed39e1bd0fbd203a2e"
         }
       ]
     },
@@ -9071,6 +9496,16 @@
           "path": "packages/dacs-client/test/public-api.test.mjs",
           "before": "f85d5b731a200483b9c5e95efa5f818b947e0e60",
           "after": "d54a02c9580fe133738ec19c3ec19b323be0a66c"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "221a78c73880d61aee38b955850f8e555a0c1b7b",
+          "after": "a3a43870aa3a2a5063ec98485b73e7385b3b3907"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "930f1b053ab8975f025537e6bc5be47d26db9e31",
+          "after": "4549e574f3fd9500beb5e8306ab960768c6cd6ad"
         }
       ]
     },
@@ -9197,6 +9632,21 @@
           "path": "packages/dacs-client/test/public-api.test.mjs",
           "before": "d54a02c9580fe133738ec19c3ec19b323be0a66c",
           "after": "7cf6b00589e4818b4fbd876ab327421a6e90cfba"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "a3a43870aa3a2a5063ec98485b73e7385b3b3907",
+          "after": "2c3d131bdaf62e5c7de5f5f36092c2826861f7b3"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "4549e574f3fd9500beb5e8306ab960768c6cd6ad",
+          "after": "47a40f78a82457f0a25b0ced84aa28e434c5bb0a"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "1e6de98521e780c336435be6ae41c90c11d6709c",
+          "after": "6e198e071b0088f52f83975f2aca21a7ba7ddd55"
         }
       ]
     },
@@ -9218,6 +9668,16 @@
           "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
           "before": "b6c87c9639a25759561443cf9014e3e0f402bf94",
           "after": "beb390b8c98523aeaa14210e43c207be82bf4696"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "2c3d131bdaf62e5c7de5f5f36092c2826861f7b3",
+          "after": "a70b764fbecf3428174ba7b91d809b3ce88fa0f9"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "47a40f78a82457f0a25b0ced84aa28e434c5bb0a",
+          "after": "c13f237ceee5741bb93a6fd15d3e80e2788e88e0"
         }
       ]
     },
@@ -9254,6 +9714,11 @@
           "path": "packages/dacs-client/test/public-api.test.mjs",
           "before": "f5bea631bd02f0505bde239e10be38970474caf6",
           "after": "f5bea631bd02f0505bde239e10be38970474caf6"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "20238f70539c882f3228352568eb0d59ab226e2b",
+          "after": "c40a9a218967f36af1a2fd49d26a1b39ca106518"
         }
       ]
     },
@@ -9281,6 +9746,16 @@
           "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
           "before": "757b60148d789e59fc2db8b9350176f6fd859ce8",
           "after": "8336e5393f66bcf9184b1b22b44911a9a1a32fbc"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "c40a9a218967f36af1a2fd49d26a1b39ca106518",
+          "after": "721081067a2ecd8f406fd988f9b6b3b572606b32"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "32c3838ba35661f67ceae7bd8ac0ce8a35583865",
+          "after": "5ec04a7e0862689d9ca977df5874a43f523daf89"
         }
       ]
     },
@@ -9324,6 +9799,11 @@
           "path": "packages/dacs-client/test/host-observations.test.mjs",
           "before": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d",
           "after": "167ae6649b32e02d9f9cc9695168e6c5e06b3f4d"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "8e4f7bde3041000aea3c59db87831b3cccc7e737",
+          "after": "91f0c2af418c1d5eaccbefd6f7af1dfd479ef7e7"
         }
       ]
     },
@@ -9341,6 +9821,11 @@
           "path": "packages/dacs-client/test/purchase-expiry-clocks.test.mjs",
           "before": null,
           "after": "fd0b0dd51c4fc12d8ab7c83f2b89c87b391047d1"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "0b505e8fcd2be12d23f368b3e30cb3a2b81e1572",
+          "after": "af956f12d3bde02448738066fb93d8bb537dfe77"
         }
       ]
     },
@@ -9425,6 +9910,16 @@
           "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
           "before": null,
           "after": "6c75a478fc43da0771bdb786427d4de34afa6bd6"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "a70b764fbecf3428174ba7b91d809b3ce88fa0f9",
+          "after": "052df1d3b804922e15eeac572b25d14b1ea72a53"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "6e198e071b0088f52f83975f2aca21a7ba7ddd55",
+          "after": "3cf26bb42ef091a7655e35e1a659680a1b59bc5b"
         }
       ]
     },
@@ -9469,6 +9964,11 @@
           "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
           "before": "0f43918cb45c07f7acf9c1c1e5dda8e328654a01",
           "after": "c0e9061d13141e783f3fdb484b97f66f9b45253c"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "c13f237ceee5741bb93a6fd15d3e80e2788e88e0",
+          "after": "e6126744507344a3cc0b5f26c2453bf38b246066"
         }
       ]
     },
@@ -9516,6 +10016,16 @@
           "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
           "before": "c0e9061d13141e783f3fdb484b97f66f9b45253c",
           "after": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "9e5ef630ef5cdc34c152e380d6d2cdd2ece53e96",
+          "after": "99896f36cc6629bace61b758b8acd291329b2564"
+        },
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "e6126744507344a3cc0b5f26c2453bf38b246066",
+          "after": "c13f237ceee5741bb93a6fd15d3e80e2788e88e0"
         }
       ]
     },
@@ -9785,6 +10295,197 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF update client documents for the current record base",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "87af0099909f6e6881cfb224d0236aaef747331a",
+          "after": "3d87ecf1cbf41a4fca081b8a037d73d3dd685a0d"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "c35d385d50d9059aeb2ab09b2772d95ff4d9fe02",
+          "after": "f3b9d30fd5df076edc01f796b7356ec3d04a2504"
+        },
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "97973b1f3320f9529fb504a2082b2ef30e6759e3",
+          "after": "27527a1a6ac2daf17c5cbde1b1d788e8c8e90133"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "0ffd4901238e04f0d91a4113aa65c714bcb949d4",
+      "subject": "fix(client): D11 record the nonce-slot reader's earlier commits in the delta ledger",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "3fdae810cf76b81e3968da4525d0e3b7952b5148",
+          "after": "024f01cab0d9c2f8c0d4e861eca2129172625496"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "018e85ed5ffbeca51b09598a59310a1ad836cecc",
+      "subject": "fix(client): D11 pin the handed-off cancel in the frozen package",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "7e901088451bb8ad2ac93274e44145b19cda1bed",
+          "after": "eee0041934646da822dc16c6cad707dfa565389a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "77bea7d5ea02e1239318496e24d2a32a24509b9b",
+      "subject": "fix(client): D11 record the confirmed-body cancel fix in the freeze pins and delta inventory",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "14e0f036609a4bf43eb6b4618e4832a96c875286",
+          "after": "8767ca79548b83851bf4fded69acbe4ddb554fe4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "aa2b6e30fdcd8ff220d106fd0c02b2bd848d8152",
+      "subject": "delta(client): WF P21a1bbL1 record the general-sign refusal and re-pin the freeze",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "7f4d6f52188adeea1c8b66f706d3588cf478d647",
+          "after": "89c5c03c66884b7a5cbd4c5e258e88804be1e617"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "66229890f47c147973db8fdea0cd64fe99c0bdad",
+      "subject": "delta(client): record first proposal reconciliation and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "62c6e0fb4149484f0f453f6768f2b089c1023a04",
+          "after": "471d95d3903aec7f4d13d846de78dba60add6d34"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "4f4edd0e1a81a5f34f6abaf22f09f114b577f546",
+      "subject": "delta(client): record the buyer client verifier wait and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "471d95d3903aec7f4d13d846de78dba60add6d34",
+          "after": "20390455187f64d1105afd0a6447bbdb39030c56"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "282583c863a4ce0a77040020112816427c49b49d",
+      "subject": "split(client): place provenance records in follow-on part",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "13c4298bffefb54576eac96d02b04a1c9761613a",
+          "after": "480fe9ab41bea06f958ac2fa57b176091dc3b069"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "6d1f45bd529c93545f31bfa576788d4e6047190a",
+      "subject": "delta(client): align adapter record notes",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "9a7d670bfc948ace23f2521535a8ca12f11eab2c",
+          "after": "480fe9ab41bea06f958ac2fa57b176091dc3b069"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "77f4da2eb62c53a40dc3e7b7755dcd0050320f99",
+      "subject": "fix(client): keep the unimported wire adapter out of the package and let the ledger gate see deleted files",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "51809e6760d59f48d33892ab47dd837ae0548a95",
+          "after": "1e6de98521e780c336435be6ae41c90c11d6709c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e1cb8396c7fc237967195093ef89f73b58b6d923",
+      "subject": "delta(client): record signed seller traffic provenance",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "480fe9ab41bea06f958ac2fa57b176091dc3b069",
+          "after": "13c4298bffefb54576eac96d02b04a1c9761613a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "8a73ae8d87937aa7128ae74efae1f92f9db94e0b",
+      "subject": "fix(client): ship the wire authentication module the purchase protocol imports",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "1e6de98521e780c336435be6ae41c90c11d6709c",
+          "after": "51809e6760d59f48d33892ab47dd837ae0548a95"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "22ae8c5e51f74a26bfba670a2849703e5818fe12",
+      "subject": "fix(client): describe the seller handler removal in the delta notes without plan codes",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "ff7d8c28241c1064cef93b1c9afc16bb4bf2326c",
+          "after": "4d850fc224a01a25fa65cd8933403b87e546e4be"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "5c0732411eb6d5b02912411d60623ab41662863d",
+      "subject": "delta(client): WF P21a3aa record the signer reservation size-check fixes and re-pin the freeze",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/DELTA-NOTES.md",
+          "before": "052df1d3b804922e15eeac572b25d14b1ea72a53",
+          "after": "81515adfb979a4874d12f1daa8d404617cfca3f8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF preserve key checks in the relocated transport fixture",
       "sha": null,
       "compact": true,
@@ -9925,6 +10626,1014 @@
           "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
           "before": "3f2bbe6f992aae79cd8e55a4f11c69de52468ed9",
           "after": "f2337a42eebc81e26737556a54eccee74dc3cb3b"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read client delta records through one assembler",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "d268285a6a256119ca07a0d87557610764f5afa8",
+          "after": "29ba56b6264d27cebb8cad969408ceb4bc6774af"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF order delta records by file name and check every recorded path",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "29ba56b6264d27cebb8cad969408ceb4bc6774af",
+          "after": "0db3b89514f68fbba88d99345a0ea7089911e3d7"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "7e54669ad2d3b2af37aee198f8f4de382d598186",
+          "after": "bcb216547421660a2cd0de45415cce9a0ad18ba3"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9",
+          "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test on the retire commit put part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that reserve repeats an unfinished retirement while its finishing write keeps failing",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-retirement.test.mjs",
+          "before": null,
+          "after": "6175c0421d58d74bf403ee1150a32c750011c455"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3ba sign payment-evidence CREATEs on the signer reservation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "fb364397ed046fb1211d620fb5dfa68563715c1a",
+          "after": "fedbd31b661b3ee5540213629d5e895c2a55ea3f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "7e61b54257846f628b2984bc6bee811470401dc2",
+          "after": "16c28532b8fe2b1ff6cf5acc3b50c9987aa87bfe"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": null,
+          "after": "b364d1682f678eb9c063da18de4f5646a0ce4442"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "89db1bf53f2e62853119805060587931c6b7078f",
+          "after": "63a2acf64382c128935d4bacc0c22498b2a0fe6e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "10beba68fcc095df465df8e74e5e0e27fe8dd251",
+          "after": "fb5e0177bac913dd0af186c40d8097af8503fbce"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": null,
+          "after": "a10c91b1ac1ba5e0b3754533229744649f337ce3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "b20c12b6561dea8fadb54a7e3c52e9f83e0e72e4",
+          "after": "78ca854a5b322c34ff1b099ad13b0c3b5b75d5a1"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": null,
+          "after": "659ceb2cc65e2139daf5032d9bf8dc4e1a6a72c7"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "bb26d97d15d59c621b149847feebd7c7095dbe7e",
+          "after": "deabf958f007e8e98be26cc53fd7a7d9f869f635"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "15e7ac95a7940b8712e966a83885505142afd796",
+          "after": "92d81e3b5e5bcc7381036bdc1ca189f54154e8c3"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF rebuild the payment-evidence adapter on the signer reservation record",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "b364d1682f678eb9c063da18de4f5646a0ce4442",
+          "after": "0afa4bcc983436ef2658ed8bbc4f90593edbbeab"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "fa77f92cfb5934b8e80aae284eb0f1f229888433",
+          "after": "caa9f060da7856d60ed8cb0dfd43d4ad6c97dbd7"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "a10c91b1ac1ba5e0b3754533229744649f337ce3",
+          "after": "9eeb7d5e566a2ad64e4eef0ab2a317abd92fa64a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "659ceb2cc65e2139daf5032d9bf8dc4e1a6a72c7",
+          "after": "0c4803853e13c363d12b241e1d5657501538152c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "be72001c276437177160b6a87ce365b7a24d3504",
+          "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test on the payment part",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "7847531f56abbd0395a47518e4dac00cbda6f1e0"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the wallet session merged from the retirement part",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0698e6f10714b3d5256a28af93a630a65018ac6e",
+          "after": "0698e6f10714b3d5256a28af93a630a65018ac6e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF list the payment evidence adapter among the seller members and record the blobs chosen when the lower parts merged",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0698e6f10714b3d5256a28af93a630a65018ac6e",
+          "after": "0698e6f10714b3d5256a28af93a630a65018ac6e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "02c3808d514792df7d0a707767dfb08feb08685c",
+          "after": "02c3808d514792df7d0a707767dfb08feb08685c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "8336e5393f66bcf9184b1b22b44911a9a1a32fbc",
+          "after": "0a89124816f6c933eae528c682873577e0d6edd8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4",
+          "after": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs blob after carrying the retire commit put part up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "3a24de142342cc4ca484ee015a72a9a2262a3f75",
+          "after": "3a24de142342cc4ca484ee015a72a9a2262a3f75"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the blobs chosen for the transport, wallet session and embedded wallet provider after carrying the retire commit put part up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "10714c8e99468837c2ebc47cd666ec638488bf33",
+          "after": "10714c8e99468837c2ebc47cd666ec638488bf33"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "cb7be1026524f82794127d071ed37bc9e3a8c549",
+          "after": "cb7be1026524f82794127d071ed37bc9e3a8c549"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4",
+          "after": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 test that unsent signed bytes hold the signer until their execution",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "0c4803853e13c363d12b241e1d5657501538152c",
+          "after": "a4e588ba8351ad22b97d9234aa0918e2158ecf65"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF replay the retained payment-evidence CREATE and read its execution back",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "16c28532b8fe2b1ff6cf5acc3b50c9987aa87bfe",
+          "after": "4fdcc1cb090c890ef2e90babc3e2d801e5f69c3e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "0afa4bcc983436ef2658ed8bbc4f90593edbbeab",
+          "after": "784ba66530fcc1030fb4c0dc837fcb4a7b65c4dc"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "caa9f060da7856d60ed8cb0dfd43d4ad6c97dbd7",
+          "after": "eaef929c56a238c6a47cacd1646bbed80d0fb40e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "bcb216547421660a2cd0de45415cce9a0ad18ba3",
+          "after": "9bd5c322d57372369babd53cc4a456aca3ed723a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "11db4783591d76f54036ef9c5d176ef9f54cc62e",
+          "after": "47fcf62e29a1560193069ee1ba7737eff82ae214"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "9eeb7d5e566a2ad64e4eef0ab2a317abd92fa64a",
+          "after": "67912a3a4bc79b56a4f36e47fed8cb148b3c5da1"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "0c4803853e13c363d12b241e1d5657501538152c",
+          "after": "eeb6174390def3dcf19749b82ca0d6e38aac620c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "be72001c276437177160b6a87ce365b7a24d3504",
+          "after": "ad2ca009773a8e1616f265734de2560d80d9285f"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-rpc-clock.test.mjs",
+          "before": "026f7fffb6ac5e064067f5352eb021788490322c",
+          "after": "23a5c14494356db736948abef01b67602c97eea8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged signer reservation test after carrying the payment-evidence part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "fd5942a7d5ff71be33366dd8c04bd757e9f85ce6",
+          "after": "fd5942a7d5ff71be33366dd8c04bd757e9f85ce6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read back an executed CREATE in the shapes a live node serves and record the wallet session blob chosen at the merge",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "784ba66530fcc1030fb4c0dc837fcb4a7b65c4dc",
+          "after": "7e44af5f5f7960f6430b02f5ea22fa26eca75fb3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b9290c0f6b1673b099a1a66597ef46bdaa14c387",
+          "after": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "eeb6174390def3dcf19749b82ca0d6e38aac620c",
+          "after": "f47e93e24b21002ae87f0b7ec1b7d67abf30422e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged payment evidence adapter test after carrying the payment part up",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
+          "after": "75588decc6f7f051ba27c3f90bd6b9a04031cc45"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the wallet session merged from the payment part",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b9290c0f6b1673b099a1a66597ef46bdaa14c387",
+          "after": "b9290c0f6b1673b099a1a66597ef46bdaa14c387"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs blob after carrying the client payment part up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "dd3f7330a8c14441d35ec5bc82a62ba5ac7b003a",
+          "after": "dd3f7330a8c14441d35ec5bc82a62ba5ac7b003a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the transport and wallet session blobs chosen after carrying the payment part fixes up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "8b6671bded9bac9912a64b7bf58f97fd5cacb373",
+          "after": "8b6671bded9bac9912a64b7bf58f97fd5cacb373"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "192016f0d5c93cbdd715fa2b5058bb312bc1d683",
+          "after": "192016f0d5c93cbdd715fa2b5058bb312bc1d683"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that a replay after a gate refusal before the broadcast sends the retained bytes once",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "75588decc6f7f051ba27c3f90bd6b9a04031cc45",
+          "after": "6edf96300eaead3ecf369f64ed1f626f1ac4357f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a native write while a stored evidence CREATE holds the signer",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "cb7be1026524f82794127d071ed37bc9e3a8c549",
+          "after": "f453ffb58a09484125da89d68f74b3928137b9c7"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "bcb216547421660a2cd0de45415cce9a0ad18ba3",
+          "after": "1678957be639d72489fa6cc925da8a27660ee9cb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "a4e588ba8351ad22b97d9234aa0918e2158ecf65",
+          "after": "7449baca4f938c782bfdc29625db69fb82556c43"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "7847531f56abbd0395a47518e4dac00cbda6f1e0",
+          "after": "88d543ca451ef7657ff6a2e72b271b1d73264f8f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a native write that a stored evidence CREATE holds before the broadcast, with the public refusal code",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "a36092fb9752a4d5c0ea68f11f228af9b39e0c5c",
+          "after": "6b8764f67b5afcef4f08689733628c8646833c95"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "5c1cc212cd256295f9ee763ea9609f9289fb4b89",
+          "after": "f3362e532723872079c10b44ec296bb36a31313d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF take one signer lock to issue a native write and to claim the signer for an evidence CREATE",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "6b8764f67b5afcef4f08689733628c8646833c95",
+          "after": "110e34c585c8d6f91c6dfa58886a70761956f5fe"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "7e44af5f5f7960f6430b02f5ea22fa26eca75fb3",
+          "after": "feb828af9fa3a2d6a7c00d1e37afc15c251f9c22"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "d064bbbbbe9fa405714bb56eb390b97c7e0fbe4c",
+          "after": "d47721b78cb250ef2dd929852268a54afa699a50"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "f3362e532723872079c10b44ec296bb36a31313d",
+          "after": "826cacbcdce7c240d74c70e9cee597f92ed84d78"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0043ffd03f9e5f66cdb8d4bcde86d982eff599d",
+          "after": "317ee818bdbf709601dc8452f3feb986b14066b2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF let the transaction a stored reservation holds through the native transport's reservation check",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "110e34c585c8d6f91c6dfa58886a70761956f5fe",
+          "after": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "826cacbcdce7c240d74c70e9cee597f92ed84d78",
+          "after": "b9ae1416dbbdb87fa8ad3b55cd22f09ddeebee9a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF free the signer when the evidence CREATE it holds has executed",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "feb828af9fa3a2d6a7c00d1e37afc15c251f9c22",
+          "after": "1917ff8c1b6e594bb6b181fc3b78f9f42f257797"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "b9ae1416dbbdb87fa8ad3b55cd22f09ddeebee9a",
+          "after": "f3a42056739f497fd805935c801cb490cadddb82"
+        }
+      ]
+    },
+    {
+      "delta": "D76",
+      "subject": "delta(client): D76 add demosdk 4.0.17 to the reviewed loader table",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/demos-quiet-hooks.mjs",
+          "before": "323ba838b4f2abe9189f84d6688cdaf0914b1972",
+          "after": "91d06508f63df5308dece710ffb05aeae26a5bb8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-demos-loading.test.mjs",
+          "before": "539d876bf79510f9d3bf9e09d99737131a43fdc1",
+          "after": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 accept a trailing record-only ledger entry for a committed blob",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "0db3b89514f68fbba88d99345a0ea7089911e3d7",
+          "after": "5e909c66900348ecfcab0ca9d549363d384052d3"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 refuse a trailing record-only ledger entry when any earlier record names its blob",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "5e909c66900348ecfcab0ca9d549363d384052d3",
+          "after": "f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 judge a trailing record-only ledger entry by its own commit and the record files",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "f5bc1a4ffdb00d3944309eb8b2d19cd4ee1458fa",
+          "after": "173bd74d1d40be6ab60e430a2583a604e8b6527b"
+        }
+      ]
+    },
+    {
+      "delta": "D42",
+      "subject": "delta(client): D42 count only record files committed before a trailing record-only ledger entry",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": "173bd74d1d40be6ab60e430a2583a604e8b6527b",
+          "after": "055f2de61cc3fa1100a1a06e0979fc5262ce8d24"
+        }
+      ]
+    },
+    {
+      "delta": "D74",
+      "subject": "delta(client): D74 read a held plan step's seller Vet record writes back on a purchase recheck",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs",
+          "before": "3447b6618ff3cdd808d90f3cfa8b94067f1aa9f7",
+          "after": "b190cb9f28255865882e670bbd9ef45bd9193bba"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "f6492ec9771611dd72c96e94107384db860ca748",
+          "after": "8eac38bb49a4929421c3d1362fac362c6fe00cd3"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "4bf029a4db45b1d876cb4e028bccf6d0824a315f"
+        },
+        {
+          "path": "packages/dacs-client/test/agreement-context-readback.test.mjs",
+          "before": null,
+          "after": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+          "before": "6671b70cf3fad1b68f2e4085c67352d4102a04d4",
+          "after": "f568fd35048d886ed2eeecd892fdef1b21a9d12c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "0f3d432cc8159e5f9daa24df85619930d30da89a",
+      "subject": "fix(client): enforce effect admission order and signer deadlines",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "796433f8bc1bca0d06a152305289e52f05f03812",
+          "after": "c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "83bf647eea4cbb4cf4614e97b07b52203356393c",
+          "after": "91cae7c7150797d80f48f80d9d8b5b65b432ffa8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e4a36cde219c0f9b8d899e33e34155a547e49789",
+      "subject": "fix(client): give the signer its own deadline and call the stop check without arguments",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "c32a52fb59bf53e580aaa5a8dc2372b2bc4c9355",
+          "after": "a869f29a4462d0e6e79efa2d4c25ecd5bcd686c0"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+          "before": "91cae7c7150797d80f48f80d9d8b5b65b432ffa8",
+          "after": "389314001f9655de05dc5c0871199836a2de7183"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse a wire request that expired while its authority reads were awaited",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "6ca61271e2daf5de7781479b88a971723597cc10",
+          "after": "c3b84747cf7ccce2ef05712faf388a7645628fae"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
+          "before": "38eeb443a089821c4d313f54db21022689d7b1ff",
+          "after": "04eb2b3da7ba66cc59ad2e0af1280353483464e3"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF cross-check the string-zero genesis in the shared identity reader and compare counterparty CREATEs on the shared chain tuple",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868",
+          "after": "d0e47878acae8874b2f0eb66b8201bab03e80042"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "c2420945f3a5c5dbb1c3101923fd27af3e27398f",
+          "after": "f954dada99f699178563fbfed69cea975993cff2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "285c2eba321bfb342c99dde92a5ddaa2597cdf57",
+          "after": "fc6572546c25fe38e1228338650572e2a06439c8"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": null,
+          "after": "7b891fd0e31379edd00ee55c86fd12e916cf4236"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+          "before": null,
+          "after": "b57a7c47e008a17332332980b98b8f730f8b6366"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": null,
+          "after": "e4bfba810710cd180fe8eea370f79f8ed48432d2"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "da2946d04f52ac899dfd805ec55b02ddcb3213da",
+          "after": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "f2337a42eebc81e26737556a54eccee74dc3cb3b",
+          "after": "4562053621a6e0820910e21178456be9811e2cd1"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read the recorded Node2 answers in the source observer and bring the identity fixtures to the reviewed block shape",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "f954dada99f699178563fbfed69cea975993cff2",
+          "after": "974581bbe731439d9cfed3fb255645ce445bdf8a"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c",
+          "after": "54581e517c5cb670321d09d0d401c703f576809b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+          "before": "b57a7c47e008a17332332980b98b8f730f8b6366",
+          "after": "3ceed283a2e1e1a7d2f9c7daafccf6d368066be0"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": "e4bfba810710cd180fe8eea370f79f8ed48432d2",
+          "after": "9c1f4f080ef6f461cf6878940485b075b17a11be"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d",
+          "after": "6b0e4a1deec87b0aec54e0747da4716db26c4c84"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "d2f826dc1bc3db1138b3d4df9ac61b33ffeed121",
+          "after": "bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "4562053621a6e0820910e21178456be9811e2cd1",
+          "after": "704c356cf6fde7f017f441a65604a598e56a578b"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF take the seller observer's reviewed-layout options back out of the shared identity part (they move to their own change)",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "54581e517c5cb670321d09d0d401c703f576809b",
+          "after": "b80ab3c87b3c65006005bb2a8b2b952106de6a3c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "6b0e4a1deec87b0aec54e0747da4716db26c4c84",
+          "after": "fe0f13b7fd3c59d1e8f3082819777a723fba3c8d"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "bc097958ccee7caebbf9cbd4db8c64b3cc17b6e5",
+          "after": "c7e55813ec5c437ed39a0966b6a882470884b57b"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the blobs chosen for the transport and wallet session after carrying base/main up",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "8334b5757663dba37d96f0fbe23258bd024eb9fb",
+          "after": "8334b5757663dba37d96f0fbe23258bd024eb9fb"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4",
+          "after": "0a0e0bbab70efe1c7b5fe264b64544ac4e8ea8d4"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the transport and wallet session blobs chosen at the merge of the payment part into the identity part",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bad3a1f1ad4d79385d4920942fa3f91db03aee7e",
+          "after": "bad3a1f1ad4d79385d4920942fa3f91db03aee7e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "192016f0d5c93cbdd715fa2b5058bb312bc1d683",
+          "after": "192016f0d5c93cbdd715fa2b5058bb312bc1d683"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged devnet-native-transport.mjs blob after merging 38352b8ae465",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "b0596c5f47da58f502486f59e1d0ebc2a383c2dc",
+          "after": "b0596c5f47da58f502486f59e1d0ebc2a383c2dc"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF add the pinned HTTPS connector for seller traffic",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "c2a23d02278639657358480a74e9e933492b0832",
+          "after": "7a75e86fe07501b58946cef29b61d2af5f619a16"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-https-connector.mjs",
+          "before": null,
+          "after": "ad2926ab214f03546facc9f089bbe151079b1a46"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "8f2d395270b07f99c1884c9dfae0d1032bc17c18"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+          "before": "48056110819fef0a22ae0e8bff28e5781ed1bcb6",
+          "after": "cb45766caa937eac592966d1719e218c394eeaef"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/loopback-test-ca.mjs",
+          "before": "bfe8faf4eea14100728ce274f186af84be20450d",
+          "after": "8f77bf0f70a5e6cb4252e91865eb07e36d9cfcc6"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-https-connector.test.mjs",
+          "before": null,
+          "after": "f23d2e87435ff65e1de401dae91f14760099f6d8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged index.mjs blob after merging the base",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "79a38ade5963d24c148db6424e62ff12d5f6381d",
+          "after": "79a38ade5963d24c148db6424e62ff12d5f6381d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF remove the unused cold-cache test helpers and test the cache's injected clock",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk-purchase.mjs",
+          "before": "7b01073b114cfa4def9f44dbe1f6b795eab207dd",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk.mjs",
+          "before": "4dda0ebff0f1a5312c4337040ed7b5308461f8b8",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/immutable-readbacks.test.mjs",
+          "before": null,
+          "after": "a119fdedf8851971957636875c5be5eb7cdcad74"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read back a storage CREATE the node recorded as failed as a final failed result",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "c5890ed0fba600ee9c6a1c46785adaded46c6ebe",
+          "after": "f9fe0d9b800c9be68400556d20ea19bb667cd8be"
+        },
+        {
+          "path": "packages/dacs-client/test/failed-storage-write-readback.test.mjs",
+          "before": null,
+          "after": "4782e765d80be69e40384fdd1685745565903eeb"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "47fcf62e29a1560193069ee1ba7737eff82ae214",
+          "after": "8c4d0b377bec9c7635f30cdca3e75aee1f9088f2"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF read the chain before a replay replaces an evidence CREATE's authorization and read back the storage program it made",
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "9e5f99ccb04eca67e3f52c2894053b07f0fa8b90",
+          "after": "2c54e107e740a8b9efdf4aca8ae2b17b276a98e3"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "aec7ffb01c037b98772be53a7d4c6d1b32aa3868",
+          "after": "079e163053cb315bfb1182819dab2ab0708503f2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "1917ff8c1b6e594bb6b181fc3b78f9f42f257797",
+          "after": "50c0191116a8699f2ffd58de6fdf14bb2e57c11e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "d47721b78cb250ef2dd929852268a54afa699a50",
+          "after": "e71d80b46f09ca9b5e5b4f6d630b0ccb84fb5d36"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "78ca854a5b322c34ff1b099ad13b0c3b5b75d5a1",
+          "after": "7797647b3bda845b75faa490eef6592949d87847"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "f3a42056739f497fd805935c801cb490cadddb82",
+          "after": "30cb7833dd4acb333b30b982a0cc6296b02992f0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "317ee818bdbf709601dc8452f3feb986b14066b2",
+          "after": "fd91549ae6153769b30c401c86d078189c414070"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse to replace an evidence CREATE's spent authorization when a stale status has not seen its hash",
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "2c54e107e740a8b9efdf4aca8ae2b17b276a98e3",
+          "after": "a18b4ec1c2a975f0ff7c8559701d72347a295555"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "50c0191116a8699f2ffd58de6fdf14bb2e57c11e",
+          "after": "8f99410fd7b106fba2caa65d382554562fee5f7d"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "e71d80b46f09ca9b5e5b4f6d630b0ccb84fb5d36",
+          "after": "5960c9caa5227851c0d57e9c21f49e36cf5686ce"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "30cb7833dd4acb333b30b982a0cc6296b02992f0",
+          "after": "233ece12f35da1fe1fc233dc283a766fd5f4ad1d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF settle an evidence CREATE's authorization by its complete binding, and make the approval ledger double refuse a bare id",
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "a18b4ec1c2a975f0ff7c8559701d72347a295555",
+          "after": "60daf1347f4a57582b6cf5c9baf81e24bb4945a4"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": "8f99410fd7b106fba2caa65d382554562fee5f7d",
+          "after": "9edd56ae98d80f159e7be8ab819c24ec5c821c12"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "192016f0d5c93cbdd715fa2b5058bb312bc1d683",
+          "after": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "5960c9caa5227851c0d57e9c21f49e36cf5686ce",
+          "after": "52bf2dee395974edcf132585ae1cf3237be0b6af"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": "67912a3a4bc79b56a4f36e47fed8cb148b3c5da1",
+          "after": "7bdb85058bb12df06cb2c405afa45ac4005e1d81"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "233ece12f35da1fe1fc233dc283a766fd5f4ad1d",
+          "after": "2796f3e3ca7e20570d7ecad79e432b957fb7ea64"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged node-wallet-session.mjs blob after merging c8069a6c99d5",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1",
+          "after": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged demos-sr2-adapter.mjs and devnet-native-transport.mjs blobs after merging c8069a6c99d5",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+          "before": "ba4f7ee79423380ef8056c8e4f6f672e235c2e48",
+          "after": "ba4f7ee79423380ef8056c8e4f6f672e235c2e48"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "d4ed72df62d5590841bd349736954a86371e8eb3",
+          "after": "d4ed72df62d5590841bd349736954a86371e8eb3"
         }
       ]
     },

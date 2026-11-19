@@ -1,7 +1,6 @@
 // K1's admission transaction for a context start: D2-D5 (intent, policy hold, acceptance, wire reservation), the fenced
 // completion D7/D8a-c, compensation C1-C4 with its outcome-first settlement, durable hold release, the sweep and the read-only
 // admission record. Nothing calls it until P12b1 wires the context route into it, schedules the sweep and ties `cleanupPending()` to readiness.
-// P11d3 later extends the C3 evidence kinds beyond `no-intent` and `proven-unsigned`; until then every other kind stays undetermined.
 import { randomUUID } from 'node:crypto';
 import { canonicalize, compositeVerificationAddress, isAttestationRef, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, isTp1WireProfile, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
@@ -17,8 +16,8 @@ const LIVE_STATES = ['intent', 'admitted', 'running'], HASH = /^[0-9a-f]{64}$/;
 const OUTCOME_STATES = ['admitted', 'running', 'compensating'], SWEEP_ROW_TIMEOUT_MS = 30_000;
 const DELEGATION_GRACE_MS = 30_000;
 const DIRECT_REQUEST_LIFETIME_MS = 5 * 60 * 1000;
-// C3 kinds that prove no effect; every other kind, absence and age included, is undetermined.
-const NO_EFFECT_KINDS = ['no-intent', 'proven-unsigned'];
+// C3 kinds that prove no effect; `executed` proves one. Every other kind, absence and age included, is undetermined.
+const NO_EFFECT_KINDS = ['no-intent', 'proven-unsigned', 'never-dispatched', 'retired'];
 // K1's triggers (a) to (d) and the cause each leaves on the fenced row.
 const TRIGGER_CODES = { a: 'context_start_failed', b: 'peer_operation_mismatch', c: 'context_delegation_grace', d: 'context_operator_abort' };
 const ORPHANED_INTENT_CODE = 'context_intent_orphaned';
@@ -44,7 +43,17 @@ const fail = (code, status = 409, cause) => { throw new SellerTransportError(cod
 const isRefusal = (error) => typeof error?.code === 'string' && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599;
 const refusalOf = (error) => (isRefusal(error)
   ? { code: error.code, status: error.status } : { code: 'operation_uncertain', status: 503 });
-const storedCause = (cause) => ({ ...refusalOf(cause), message: cause?.message ?? String(cause) });
+/** A failure as the row stores it: `{ code, status, message }`, with `operation_uncertain` 503 for an error that names no refusal. */
+export const storedCause = (cause) => ({ ...refusalOf(cause), message: cause?.message ?? String(cause) });
+/**
+ * What the per-address evidence kinds of one sink amount to: `'no-effect'` when every kind proves no effect, `'effects-definite'` when
+ * every kind proves no effect or an execution and at least one is an execution, and null (undetermined) otherwise.
+ */
+export function evidenceProof(kinds) {
+  const clear = kinds.map((kind) => NO_EFFECT_KINDS.includes(kind));
+  if (clear.every(Boolean)) return 'no-effect';
+  return kinds.includes('executed') && kinds.every((kind, index) => clear[index] || kind === 'executed') ? 'effects-definite' : null;
+}
 // boundedCall answers at the deadline or at the work's end, whichever is first. A late hold or lease needs the work's own end too, so
 // that is kept beside it: `result` is the bounded answer, `settled` the work's status object (it never rejects, and is no proof of success).
 function boundedWork(work, options) {
@@ -92,7 +101,8 @@ function contextOutcomeClass(row, outcome) {
  * returns the allocation's slots in the same transaction (a validated context returns only its own); `now` and `ready` are synchronous;
  * `deadlines.policyMs` bounds the policy call.
  * `inspectContextOutcome(jobId)` is the wire's synchronous, read-only operation view; `effectEvidence(row)` resolves one `{ address, kind, cause? }` per
- * Vet sink address (C3; only `no-intent` and `proven-unsigned` on both retained presenter addresses prove no effect).
+ * Vet sink address (C3; `no-intent`, `proven-unsigned`, `never-dispatched` and `retired` on both retained presenter addresses prove no effect,
+ * and `executed` on one of them with no effect possible on the other proves an effect: see `evidenceProof`).
  * `begin(request)` is D2-D4: it resolves `{ jobId, rev }` once the intent, the policy hold and the acceptance are durable. A D3 or D4 failure
  * is rejected at once and then compensated (C1-C4) under the same lease.
  * `reserveContext(jobId, reserveWire)` is D5: it resolves the wire's completed result (which grants no capability; its source is the
@@ -101,9 +111,10 @@ function contextOutcomeClass(row, outcome) {
  * `jobEffectMutex(jobId)` is `{ acquire(), run(work) }` over opaque leases. `addAcceptanceHook(hook)` registers a synchronous hook that
  * runs inside D4's transaction and refuses by throwing; the first `begin` seals registration.
  * `compensate(jobId, trigger)` fences the row for trigger `a`, `b`, `c` (only from the delegation's expiry plus 30,000 ms) or `d`, then runs C2-C4 under the
- * job mutex; it settles a completed context outcome, aborts only on proof of no effect, and otherwise keeps the row `compensating` with its cause.
+ * job mutex; it settles a completed context outcome, aborts only on proof of no effect, settles with context outcome `none` on proof that an effect happened, and otherwise keeps the row `compensating` with its cause.
  * It throws TypeError for a job that is not canonical or a trigger that is not one of those four strings; for an unknown job it writes nothing.
- * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`). It waits at most 10,000 ms for a
+ * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`). A startup sweep also ends every row
+ * still running, a direct request's included, as compensation trigger `a` does; a periodic sweep ends a delegated running row only by trigger `c`. It waits at most 10,000 ms for a
  * row's lease and 30,000 ms for its pass, records a row it could not finish on that row and goes on to the next; it rejects with an AggregateError
  * after visiting every row when it could not record one. A periodic sweep called while one runs answers that one; a startup sweep rejects with
  * TypeError while a begin is live or a sweep runs, and a periodic one leaves a live begin's intent alone. Direct admissions are fenced after
@@ -477,28 +488,29 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
       return addresses;
     } catch (cause) { return fail('context_compensation_undetermined', 503, cause); }
   }
-  // C3 and C3r: a fresh read, every time. No proof is read from the row, and anything but no-intent or proven-unsigned on both addresses is undetermined.
-  async function noEffectEvidence(row) {
+  // C3 and C3r: a fresh read, every time. No proof is read from the row, and anything but a proof of no effect or of an execution on both addresses is undetermined.
+  async function sinkProof(row) {
     const addresses = sinkAddresses(row);
     let evidence;
     try { evidence = await effectEvidence(structuredClone(row)); } catch (cause) { fail('context_compensation_undetermined', 503, cause); }
     const entries = Array.isArray(evidence) && evidence.length === addresses.length ? evidence : [];
     const byAddress = new Map(entries.map((entry) => [entry?.address, entry]));
-    if (byAddress.size !== addresses.length || !addresses.every((address) => NO_EFFECT_KINDS.includes(byAddress.get(address)?.kind))) {
-      fail('context_compensation_undetermined', 503, entries.find((entry) => entry?.cause !== undefined)?.cause);
-    }
-    return addresses.map((address) => ({ address, kind: byAddress.get(address).kind }));
+    const proof = byAddress.size === addresses.length && addresses.every((address) => byAddress.has(address)) ? evidenceProof(addresses.map((address) => byAddress.get(address).kind)) : null;
+    if (proof === null) fail('context_compensation_undetermined', 503, entries.find((entry) => entry?.cause !== undefined)?.cause);
+    return { proof, evidence: addresses.map((address) => ({ address, kind: byAddress.get(address).kind })) };
   }
-  // C3 (C3r after a restart) to C4a for a compensating row with no completed outcome. The proof and the abort are two commits on the exact
-  // revision that was read; the evidence is read fresh every time, so a saved proof never authorizes the abort.
-  async function abortOnNoEffect(row) {
+  // C3 (C3r after a restart) to C4a for a compensating row with no completed outcome. The proof and what follows it are two commits on the exact
+  // revision that was read; the evidence is read fresh every time, so a saved proof never authorizes the abort. No effect aborts the row; an
+  // execution settles it with no context outcome (D8).
+  async function resolveOnProof(row) {
     if (row.cleanup.holdCall === 'pending') fail('context_hold_call_pending', 503);
-    const evidence = await noEffectEvidence(row);
+    const { proof, evidence } = await sinkProof(row);
     const proven = transaction(() => {
       const current = read(row.jobId);
       if (current?.rev !== row.rev || current.state !== 'compensating') fail('context_admission_closed');
-      return update(current, { compensation: { ...current.compensation, proof: 'no-effect', evidence } });
+      return update(current, { compensation: { ...current.compensation, proof, evidence } });
     });
+    if (proof === 'effects-definite') return settleWithin(proven, 'none');
     return transaction(() => closeWithin(proven, { state: 'aborted', cleanup: { ...proven.cleanup, releasePending: true } }));
   }
   // A pending D3 call whose end is known is settled-unknown: compensation then releases its hold, if it appended one, by holdId.
@@ -517,7 +529,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
       if (OUTCOME_STATES.includes(row?.state)) {
         const contextOutcome = recordedOutcomeClass(row);
         if (contextOutcome !== null) row = settleWithin(row, contextOutcome);
-        else if (row.state === 'compensating') await abortOnNoEffect(row);
+        else if (row.state === 'compensating') await resolveOnProof(row);
       }
       if (await releaseHold(jobId)) clearCause(jobId);
     } catch (cause) { noteCause(jobId, cause); }
@@ -566,6 +578,15 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
       return clock() >= expiresAt && fenceWithin(jobId, row.rev, new SellerTransportError('context_direct_expired', 409));
     });
   }
+  // Fences a row that is still running with trigger (a), in one transaction with the read. A startup sweep runs before any begin, so a running
+  // row it finds belongs to a process that stopped, direct request or delegated. An `admitted` row is not fenced here: a direct request's
+  // leftover keeps its hold and slot, and a delegated one is ended by trigger (c) once its expiry plus the grace has passed.
+  function fenceRunningLeftover(jobId) {
+    return transaction(() => {
+      const row = read(jobId);
+      return row?.state === 'running' && fenceWithin(jobId, row.rev, new SellerTransportError(TRIGGER_CODES.a, 409));
+    });
+  }
   // One row of the sweep, with its own lease wait and pass deadline: a row that hangs keeps its lease and its pass, is recorded with its
   // cause, and never holds up the rows after it. Throws only when that record itself cannot be written.
   async function sweepRow(jobId, startup) {
@@ -575,7 +596,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     const pass = boundedWork(async () => {
       fenceOrphanedIntent(jobId, startup);
       await reconcile(jobId);
-      if (fenceExpiredDirect(jobId) || fenceForTrigger(jobId, 'c')) await reconcile(jobId);
+      if (fenceExpiredDirect(jobId) || fenceForTrigger(jobId, 'c') || (startup && fenceRunningLeftover(jobId))) await reconcile(jobId);
     }, { timeoutMs: SWEEP_ROW_TIMEOUT_MS });
     void pass.settled.then(() => lease.release());
     try { await pass.result; } catch (cause) {

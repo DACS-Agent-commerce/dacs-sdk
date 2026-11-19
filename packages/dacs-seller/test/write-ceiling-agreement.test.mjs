@@ -10,6 +10,7 @@ import { WRITE_FEE_CEILING_OS } from '../src/dacs/effect-boundary.mjs';
 import { policyRefusal } from '../src/devnet-demo/operator-approval.mjs';
 import { address, seller, buyer, pin, agreementHash, sourceBinding, artifactAuthority, JOBS, PAYMENT_TX_REF, deliveredHashFor, requestFor } from './helpers/d5-policy-fixtures.mjs';
 import { deliverableInput, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
+import { readInactiveForkNetworkInfo } from './helpers/network-info.mjs';
 
 const paid = () => ({ jobId: JOBS[0], seller, buyer, listingPin: pin, sourceBinding, agreementHash, amountOs: '1000000000', paymentObserved: true, paymentTxRef: { ...PAYMENT_TX_REF }, prePaymentOpen: null });
 const policy = { address, seller, sourceBinding, artifactAuthority, listingPin: () => pin, resolvePurchase: paid, paymentPhaseIndex: () => 2, deliveryPhaseIndex: () => 3, deliveredPayloadHash: deliveredHashFor };
@@ -32,7 +33,8 @@ for (const [label, rpcDem, change] of [
     signCreate: (asked) => node.signCreate(asked, change),
     broadcast: async ({ signedTransaction, txHash }) => { broadcast.push(signedTransaction); node.land(txHash); },
     readAccountNonce: async () => ({ nonce: node.accountNonce(), blockHeight: node.accountNonce() }),
-    readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.accountNonce() }) });
+    readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.accountNonce() }),
+    readNetworkInfo: readInactiveForkNetworkInfo });
   t.after(() => journal.close());
   const submitted = journal.submitAuthorized({ ...deliverableInput(node.claim), expectedJournalId: journal.journalId }, () => true);
   if (refusedByPolicy) await assert.rejects(submitted, { code: 'wallet_sign_invalid' });

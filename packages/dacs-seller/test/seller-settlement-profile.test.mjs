@@ -121,7 +121,7 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
   const journal = () => {
     if (!walletJournal) {
       walletJournal = seller.createPaymentEvidenceWalletJournal({ path: join(dir(), 'wallet-journal.sqlite'), signCreate: refuse('anchorEvidence'), broadcast: refuse('broadcast'),
-        readAccountNonce: refuse('readAccountNonce'), readTransactionState: refuse('readTransactionState') });
+        readAccountNonce: refuse('readAccountNonce'), readTransactionState: refuse('readTransactionState'), readNetworkInfo: refuse('readNetworkInfo') });
       t.after(() => walletJournal.close());
     }
     return walletJournal;
@@ -952,7 +952,7 @@ test('the native settlement profile needs the wallet journal question, so a paid
 test('createSellerAgent takes the evidence anchor and its reconciliation only from one wallet journal: a scripted, mixed, wrapped or two-journal pair is refused at construction', async (t) => {
   const w = await world(t);
   const journal = w.chain.journal(), other = seller.createPaymentEvidenceWalletJournal({ path: join(w.dir(), 'other-journal.sqlite'), signCreate: notCalled, broadcast: notCalled,
-    readAccountNonce: notCalled, readTransactionState: notCalled });
+    readAccountNonce: notCalled, readTransactionState: notCalled, readNetworkInfo: notCalled });
   t.after(() => other.close());
   const refusedAnswer = async () => ({ status: 'refused', reason: 'TEST a wallet that says it sent nothing' });
   const unsignedAnswer = async () => ({ status: 'unsigned', reason: 'TEST a wallet that says nothing can land' });

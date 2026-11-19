@@ -2,11 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import { verifyComponentSignature } from "../artifacts/signatures.js";
-import type {
-  LegacyMvpListing,
-  Listing,
-  ReadableListing,
-} from "../artifacts/types.js";
+import type { Listing, ReadableListing } from "../artifacts/types.js";
 import { readListingArtifact } from "../artifacts/validators.js";
 import {
   snapshotCanonicalJson,
@@ -19,7 +15,7 @@ import {
   sameCanonicalClaimIdentity,
 } from "../identity/index.js";
 import { readableListingClaimReferencesAreCanonical } from "./listingClaimReferences.js";
-import { verifySignedArtifact, type Verifier } from "./signedArtifact.js";
+import type { Verifier } from "./signedArtifact.js";
 import {
   isVerifiedListingAdmission,
   type ListingValidationResult,
@@ -36,14 +32,17 @@ import {
  * listing is therefore verified before it is returned, and anything that fails
  * is SKIPPED rather than surfaced.
  *
- * SIGNER↔SELLER BINDING is intrinsic: a Demos primary claim *is* the signer's
- * ed25519 public key, so we verify against the key embedded in the listing's own
- * `agentId`. A signature that verifies therefore proves the advertised seller
- * signed this exact content — there is no separate signer field to trust, and a
- * valid signature lifted from another seller's listing fails.
+ * Only normative DACS-1 Listings are returned; a record in any other shape is
+ * dropped.
+ *
+ * SIGNER↔SELLER BINDING: the Listing's `signature.signer` must be the seller's
+ * `seller.identity.presentedBy` and one of `seller.identity.claims`. Its key is
+ * resolved from that signer reference (by default the intrinsic
+ * `did:demos:agent:<64-hex>` key), so a signature copied from another seller's
+ * Listing does not verify over this content.
  *
  * Fails CLOSED: a missing, malformed, wrong-key or tampered signature drops the
- * listing. A seller claim that doesn't embed a resolvable key is also dropped
+ * listing. A signer reference that doesn't resolve to a key is also dropped
  * (we cannot establish who signed it). The gate is REQUIRED — pass `verify`, or
  * set `trustListings: true` to opt out explicitly when listings were verified
  * upstream. Neither → throws, because silently returning unverified listings is
@@ -67,17 +66,19 @@ export interface DiscoverDeps {
   /** DACS-1 §6.3.4 reader step 3 clock; defaults to Date.now(). */
   nowMs?: () => number;
   /**
-   * DACS-1 §6.3.4 ordered reader result. Required for normative Listings;
-   * discovery returns only exact-hash `verified` records.
+   * DACS-1 §6.3.4 ordered reader result. Required once a Listing passes the
+   * signature checks; discovery returns only exact-hash `verified` records.
    */
   validateListing?: (
     raw: Record<string, unknown>,
   ) => Promise<ListingValidationResult> | ListingValidationResult;
 }
 
-export type DiscoveredListing =
-  | { ref: string; compatibility: "normative"; listing: Listing }
-  | { ref: string; compatibility: "legacy-mvp"; listing: LegacyMvpListing };
+export type DiscoveredListing = {
+  ref: string;
+  compatibility: "normative";
+  listing: Listing;
+};
 
 type CapturedDiscoverDeps = Readonly<{
   verify: DiscoverDeps["verify"];
@@ -169,21 +170,24 @@ function snapshotListingArtifact(
 
 /**
  * Authenticate a structurally valid Listing without applying its admission
- * clock. Recovery uses this narrower gate only after runSessionCore proves an
+ * clock. A caller may use this narrower gate only after it has proven an
  * exact, cryptographically authenticated Agreement and successful payment for
- * the requested job. Discovery uses verifyReadableListingArtifact below;
- * runSessionCore retains the DACS-1 §6.3.4 fresh-admission clock policy.
+ * the requested job. Discovery uses verifyReadableListingArtifact below, which
+ * applies the DACS-1 §6.3.4 fresh-admission clock policy.
  */
 async function authenticateListingSnapshot(
   raw: Record<string, unknown>,
   deps: CapturedDiscoverDeps,
 ): Promise<ReadableListing | null> {
   const readable = readListingArtifact(raw);
-  if (!readable) return null;
+  if (readable?.compatibility !== "normative") return null;
   // Current signed bytes are never repaired before authorization. In
   // particular, a case-insensitive standalone read of `DID:` cannot upgrade a
   // signature that was created over non-CF-2 bytes.
-  if (deps.verify && !readableListingClaimReferencesAreCanonical(readable)) {
+  if (
+    deps.verify &&
+    !readableListingClaimReferencesAreCanonical(readable.listing)
+  ) {
     return null;
   }
   if (!deps.verify && !deps.trustListings) {
@@ -191,41 +195,23 @@ async function authenticateListingSnapshot(
       "Listing verification requires deps.verify or explicit trustListings: true",
     );
   }
-  if (readable.compatibility === "normative") {
-    // DACS-1 permits a Listing signer to be any claim carried by the seller's
-    // IdentityBundle. Until this SDK verifies the complete §6.3.2 presentation,
-    // however, claim membership alone cannot prove control of `presentedBy`.
-    // The current producer profile signs with `presentedBy`, so readers enforce
-    // that same fail-closed profile before exposing a Listing that can steer the
-    // downstream payee. `isListing` remains the normative structural predicate.
-    if (
-      !sameCanonicalClaimIdentity(
-        readable.listing.signature.signer,
-        readable.listing.seller.identity.presentedBy,
-      )
-    ) {
-      return null;
-    }
+  // DACS-1 permits a Listing signer to be any claim carried by the seller's
+  // IdentityBundle. Until this SDK verifies the complete §6.3.2 presentation,
+  // however, claim membership alone cannot prove control of `presentedBy`.
+  // The current producer profile signs with `presentedBy`, so readers enforce
+  // that same fail-closed profile before exposing a Listing that can steer the
+  // downstream payee. `isListing` remains the normative structural predicate.
+  if (
+    !sameCanonicalClaimIdentity(
+      readable.listing.signature.signer,
+      readable.listing.seller.identity.presentedBy,
+    )
+  ) {
+    return null;
   }
   if (!deps.verify) return readable;
 
   const resolveKey = deps.resolvePublicKey ?? canonicalDemosAgentPublicKey;
-  if (readable.compatibility === "legacy-mvp") {
-    try {
-      const resolved = await resolveKey(readable.listing.agentId);
-      if (!(resolved instanceof Uint8Array) || resolved.length !== 32) return null;
-      const key = Uint8Array.from(resolved);
-      const valid = await verifySignedArtifact(
-        raw,
-        ARTIFACT_SEPARATORS.Listing,
-        key,
-        deps.verify,
-      );
-      return valid === true ? readable : null;
-    } catch {
-      return null;
-    }
-  }
 
   // This SDK currently has only an Ed25519 key resolver/verifier. CORE §B.7
   // SIG-2 requires algorithm-specific verification; never reinterpret an
@@ -277,9 +263,9 @@ export async function authenticateReadableListingArtifact(
 }
 
 /**
- * DACS-1 §6.3.4 discovery/fresh-admission gate with an explicit historical
- * read arm. It applies the reader validity step, then authenticates the exact
- * artifact before returning it.
+ * DACS-1 §6.3.4 discovery/fresh-admission gate for normative Listings. It
+ * applies the reader validity step, then authenticates the exact artifact
+ * before returning it. A record in any other shape returns null.
  */
 export async function verifyReadableListingArtifact(
   raw: Record<string, unknown>,
@@ -294,19 +280,17 @@ export async function verifyReadableListingArtifact(
   const snapshot = snapshotListingArtifact(raw);
   if (!snapshot) return null;
   const readable = readListingArtifact(snapshot);
-  if (!readable) return null;
-  if (readable.compatibility === "normative") {
-    const now = capturedDeps.nowMs?.() ?? Date.now();
-    if (!Number.isSafeInteger(now) || now < 0) {
-      throw new DacsError("Listing verification clock must return unix-ms safe integer data");
-    }
-    const validity = readable.listing.validity;
-    if (
-      now < validity.notBefore ||
-      (validity.notAfter !== undefined && now > validity.notAfter)
-    ) {
-      return null;
-    }
+  if (readable?.compatibility !== "normative") return null;
+  const now = capturedDeps.nowMs?.() ?? Date.now();
+  if (!Number.isSafeInteger(now) || now < 0) {
+    throw new DacsError("Listing verification clock must return unix-ms safe integer data");
+  }
+  const validity = readable.listing.validity;
+  if (
+    now < validity.notBefore ||
+    (validity.notAfter !== undefined && now > validity.notAfter)
+  ) {
+    return null;
   }
   return authenticateListingSnapshot(snapshot, capturedDeps);
 }
@@ -348,44 +332,40 @@ export async function discoverListings(
     if (!snapshot) continue;
     const readable = await verifyReadableListingArtifact(snapshot, capturedDeps);
     if (!readable) continue;
-    if (readable.compatibility === "normative") {
-      if (!capturedDeps.validateListing) {
-        throw new DacsError(
-          "discoverListings requires deps.validateListing for normative DACS-1 " +
-            "Listings; signature validity alone is not a verified disposition",
-        );
-      }
-      let validation: ListingValidationResult;
-      try {
-        const capturedValidation = snapshotCanonicalJsonRead(
-          await capturedDeps.validateListing(
-            snapshotCanonicalJson(snapshot, "Listing validator input"),
-          ),
-          "Listing validation result",
-        );
-        if (
-          capturedValidation === null ||
-          typeof capturedValidation !== "object" ||
-          Array.isArray(capturedValidation)
-        ) {
-          continue;
-        }
-        validation = capturedValidation as ListingValidationResult;
-      } catch {
+    if (!capturedDeps.validateListing) {
+      throw new DacsError(
+        "discoverListings requires deps.validateListing for normative DACS-1 " +
+          "Listings; signature validity alone is not a verified disposition",
+      );
+    }
+    let validation: ListingValidationResult;
+    try {
+      const capturedValidation = snapshotCanonicalJsonRead(
+        await capturedDeps.validateListing(
+          snapshotCanonicalJson(snapshot, "Listing validator input"),
+        ),
+        "Listing validation result",
+      );
+      if (
+        capturedValidation === null ||
+        typeof capturedValidation !== "object" ||
+        Array.isArray(capturedValidation)
+      ) {
         continue;
       }
-      if (!isVerifiedListingAdmission(snapshot, validation)) {
-        continue;
-      }
-      // Promote an envelope only from the exact ordered-validation result.
-      found.push({
-        ref,
-        compatibility: "normative",
-        listing: validation.listing,
-      });
+      validation = capturedValidation as ListingValidationResult;
+    } catch {
       continue;
     }
-    found.push({ ref, ...readable });
+    if (!isVerifiedListingAdmission(snapshot, validation)) {
+      continue;
+    }
+    // Promote an envelope only from the exact ordered-validation result.
+    found.push({
+      ref,
+      compatibility: "normative",
+      listing: validation.listing,
+    });
   }
   return found;
 }

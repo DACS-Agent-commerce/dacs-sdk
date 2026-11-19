@@ -7,6 +7,10 @@ import { createCompletedOutcomeReader } from '../src/dacs/seller-http.mjs';
 import { SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { BUYER, PATHS, PIN, SELLER, jobFor, proposeJob, statementsDuring, world } from './helpers/wire-routes-world.mjs';
 import { operationOf } from './helpers/route-recovery-world.mjs';
+import { seller } from './helpers/protocol-fixture.mjs';
+import { fixturePaymentWorld } from './helpers/wire-payment-fixture.mjs';
+import { arrangeRecord } from './helpers/completed-source-cells.mjs';
+import { deliveryEvidenceAddress } from '../src/dacs/purchase-protocol.mjs';
 
 // Another purchase holds one allotment, and two records are left: a signed request completes a proposal and a repeat of it uses the
 // second, so `free` is 0 while the store still has room for records.
@@ -221,4 +225,32 @@ test('inspection-only completed branches may answer the identical signed request
   const reader = createCompletedOutcomeReader({ journal: w.handle.wire.journal, seller: SELLER.claim }), { binding } = operationOf(w, job.jobId, PATHS.proposals);
   for (let n = 0; n < 2; n++) assert.deepEqual(await reader.completedOutcomeWithoutReservation({ path: PATHS.proposals, jobId: job.jobId, binding, revalidate: async () => {} }), { status: 200, text: first.text });
   assert.deepEqual(snapshot(w), before, 'the reader reserves nothing either');
+});
+
+test('a completed payment retrieved at zero free capacity stays passive and withholds its stored answer when a source fails, on each call', async (t) => {
+  const w = await fixturePaymentWorld(t), first = await w.pay();
+  assert.equal(first.body.status, 'delivered');
+  w.reopen({ maxRecords: w.handle.capacity.capacityReport().used });
+  assert.equal(w.handle.capacity.capacityReport().free, 0);
+  const paymentSnapshot = () => ({ ...snapshot(w), writes: w.f.anchors.writes.length, agentSignatures: w.counts.signed.length, publicSubmits: w.counts.publicSubmits,
+    session: w.f.agent.durableSessionOf(w.jobId), outcome: operationOf(w, w.jobId, PATHS.payments) });
+  const before = paymentSnapshot(), { binding } = before.outcome;
+  const reader = createCompletedOutcomeReader({ journal: w.handle.wire.journal, seller: seller.claim });
+  const readSettled = () => reader.completedOutcomeWithoutReservation({ path: PATHS.payments, jobId: w.jobId, binding,
+    revalidate: (outcome) => w.agent.revalidateCompletedAnswer({ path: PATHS.payments, jobId: w.jobId, outcome }) });
+  for (let call = 1; call <= 2; call++) {
+    assert.equal((await w.pay()).text, first.text, `call ${call}: a replay is answered with the stored bytes`);
+    assert.deepEqual(await readSettled(), { status: 200, text: first.text }, `call ${call}: the settled reader returns the stored bytes`);
+  }
+  assert.deepEqual(paymentSnapshot(), before, 'authentic sources leave no row, file, attempt, signature or write');
+  const restore = arrangeRecord(w, deliveryEvidenceAddress(w.jobId), () => { throw new Error('TEST delivery unavailable'); });
+  for (let call = 1; call <= 2; call++) {
+    const refused = await w.pay();
+    assert.deepEqual([refused.status, refused.body.error, refused.signed], [503, 'seller_source_unavailable', true], `call ${call}`);
+    const withheld = await readSettled().catch((error) => error);
+    assert.deepEqual([withheld.code, withheld.status], ['seller_source_unavailable', 503], `call ${call}: the settled reader withholds the answer`);
+  }
+  assert.deepEqual(paymentSnapshot(), before, 'failing sources change nothing');
+  restore();
+  assert.equal((await w.pay()).text, first.text, 'authentic inclusion returns the stored bytes');
 });

@@ -12,9 +12,19 @@ npm ci --prefix tools/lint --ignore-scripts
 npm run lint --prefix tools/lint
 ```
 
+`eslint-config.test.mjs` checks which rules the config turns on for which files:
+
+```bash
+node --test tools/lint/eslint-config.test.mjs
+```
+
+## Unused variables
+
+`tsconfig.json` does not turn on `noUnusedLocals` or `noUnusedParameters`, so `@typescript-eslint/no-unused-vars` reports unused variables, parameters and caught errors in TypeScript, with the same defaults as the JavaScript rule. An underscore prefix does not silence it; delete the name or use it.
+
 ## Existing issues
 
-`eslint-suppressions.json` lists the issues that were already in the code when the linter was added, as a count per file and rule. They don't fail the run. A new issue fails it, unless a listed issue of the same rule in the same file was removed in the same change, because the list holds counts rather than exact lines.
+`eslint-suppressions.json` lists the issues that were already in the code when the linter, or a rule in it, was added, as a count per file and rule. They don't fail the run. A new issue fails it, unless a listed issue of the same rule in the same file was removed in the same change, because the list holds counts rather than exact lines.
 
 After fixing listed issues, shrink the list, or the run fails:
 
@@ -79,4 +89,4 @@ What it does not see:
 ## What's left out
 
 - `test/package-consumer/`: its own project, which needs the packed packages.
-- Type-aware checks cover TypeScript under `src`, `test` and `packages/*/{src,test}`. JavaScript files have no types to read, so a missed `await` isn't caught there.
+- Type-aware checks cover TypeScript under `src`, `test` and `packages/*/{src,test,test-postgres}`. JavaScript files have no types to read, so a missed `await` isn't caught there.

@@ -871,36 +871,35 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
     expect(deps.stats.creates).toBe(3);
   });
 
-  test("reads an existing legacy MVP version only through the compatibility boundary", async () => {
+  test("refuses to publish over an earlier-shape version and writes nothing", async () => {
     const deps = fakeDeps();
     const prefix = "dacs1%3Adid%3Ademos%3Aseller%3Amarket-data%3Av";
     deps.scanOwnAnchorsByNamePrefix = async () => ({
       status: "ok",
       anchors: [
         {
-          address: "stor-legacy-v1",
+          address: "stor-earlier-v1",
           programName: `${prefix}1`,
           value: {
             agentId: SELLER,
             serviceId: "market-data",
-            name: "Legacy Market Data",
-            description: "Historical SDK Listing",
+            name: "Earlier Market Data",
+            description: "Earlier SDK Listing",
             claimRequirements: [],
             supportedNegotiation: ["negotiate-fixed-price"],
             supportedPaymentRails: ["pay-x402"],
             supportedDelivery: ["deliver-attested-payload"],
             listingVersion: 1,
-            signature: "legacy-signature",
+            signature: "earlier-signature",
           },
         },
       ],
     });
 
-    const result = await publishListingCore(
-      listing({ listingVersion: 2 }),
-      deps,
-    );
-    expect(result.listingPin.version).toBe(2);
+    await expect(
+      publishListingCore(listing({ listingVersion: 2 }), deps),
+    ).rejects.toThrow(/stor-earlier-v1 is not a readable signed Listing/);
+    expect(deps.stats.creates).toBe(0);
   });
 
   test("fails closed when the visible owner-bound history already has a gap", async () => {
@@ -1027,7 +1026,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
     ).rejects.toThrow(/stable canonical JSON/);
   });
 
-  test("refuses the historical MVP shape on the write path", async () => {
+  test("refuses the earlier MVP shape on the write path", async () => {
     const deps = fakeDeps();
     await expect(
       publishListingCore(
@@ -1038,7 +1037,7 @@ describe("publishListingCore (§6.3.4 versioned + write-once — #29/#46)", () =
         } as never,
         deps,
       ),
-    ).rejects.toThrow(/normative unsigned|legacy MVP shapes are read-only/);
+    ).rejects.toThrow(/normative unsigned DACS-1 §6\.3\.4 Listing$/);
     expect(deps.stats.creates).toBe(0);
   });
 

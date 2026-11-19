@@ -32,6 +32,7 @@ import { createSessionAdmissionFixture } from './helpers/session-admission-fixtu
 import { createOldDomainRequestSigner } from './helpers/old-domain-request.mjs';
 import { wireAuthentication, wireBuyer } from './helpers/wire-buyer.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
+import { INACTIVE_FORK_NETWORK_INFO, readInactiveForkNetworkInfo } from './helpers/network-info.mjs';
 import { privateModule, privateModuleUrl } from './helpers/private-module.mjs';
 import { createNativeRetrySeam } from './helpers/native-retry-seam.mjs';
 import { testNetwork, FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
@@ -100,6 +101,7 @@ function demosNode(now = () => NOW) {
   const nodeCall = (message, data) => {
     switch (message) {
       case 'getBlockByNumber': return clone(blocks[data.blockNumber] ?? null);
+      case 'getNetworkInfo': return clone(INACTIVE_FORK_NETWORK_INFO);
       case 'getTransactionStatus': { const tx = txs.get(String(data.hash).toLowerCase()); return tx ? { state: 'included', blockNumber: tx.blockNumber } : { state: 'not-found' }; }
       case 'getTxByHash': return clone(txs.get(String(data.hash).toLowerCase()) ?? null);
       case 'searchStoragePrograms': return faults.indexEmpty(data.query) ? []
@@ -154,7 +156,7 @@ function demosNode(now = () => NOW) {
     const metadata = { logicalAddress, contentHash: (artifactKind === 'Deliverable' ? core.sha256Hex(core.canonicalize(artifact)) : core.contentHash(artifact)), envelopeHash: core.sha256Hex(core.canonicalize(artifact)), artifactKind, ...(deliveryBinding ? { deliveryBinding: clone(deliveryBinding) } : {}) };
     content.data[1].metadata = metadata;
     content.from_ed25519_address = owner;
-    // What demosdk 4.0.16 sign adds to a storage CREATE (checked against the SDK below): the node's fee, and the
+    // What demosdk 4.0.18 sign adds to a storage CREATE (checked against the SDK below): the node's fee, and the
     // execution edits its GCRGeneration writes before the hash exists: the storage fee burn (1 DEM per started
     // 10240 bytes of the program's JSON), the storage program, the gas burn and the nonce increment.
     content.transaction_fee = { network_fee: 2, rpc_fee: 3, additional_fee: 0, rpc_address: null };
@@ -450,6 +452,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       if (fault === 'throw') throw new Error('TEST account nonce read failed');
       return { nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() };
     },
+    readNetworkInfo: readInactiveForkNetworkInfo,
     readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
     broadcast: async ({ signedTransaction, txHash }) => {
       effects.broadcast.push(signedTransaction);
@@ -501,6 +504,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       await faults.beforeDeliveryNonce?.();
       return { nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() };
     },
+    readNetworkInfo: readInactiveForkNetworkInfo,
     readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
     broadcast: async ({ signedTransaction, txHash }) => {
       effects.deliveryBroadcast.push(signedTransaction);
