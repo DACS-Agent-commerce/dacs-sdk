@@ -13,7 +13,6 @@ import type { ListingDraft } from "../../src/artifacts/types.js";
 import {
   contentHash,
   listingAddress,
-  stripSignature,
 } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
