@@ -67,7 +67,7 @@ The first PR implements only the DACS-1 artifact boundary:
 - structural validation of every normative field and closed action variant;
 - `seller.publicEndpoint` HTTPS validation without network access or probing;
 - structured Listing signatures under CORE §B.7 and DACS-1 §6.3.4;
-- an explicit `LegacyMvpListing` read path; publication rejects it;
+- a read path for the earlier SDK Listing shape (since removed); publication rejected that shape;
 - one exact `(listingId, listingVersion, contentHash)` session pin; and
 - Standard-backed positive and negative vector tests, including SIG-5
   preserve-unknown and unknown-phase refusal.

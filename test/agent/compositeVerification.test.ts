@@ -17,6 +17,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  readCompositeVerificationRecord,
   sha256Hex,
   signComponentArtifact,
   signedBytes,
@@ -496,6 +497,10 @@ describe("strict DACS-2 composite verification closure", () => {
     expect(isCompositeVerificationRecord(f.record)).toBe(true);
     expect(isVerifyResult({ ...f.result, resultVersion: "2" })).toBe(false);
     expect(isCompositeVerificationRecord({ ...f.record, recordVersion: "2" })).toBe(false);
+    expect(readCompositeVerificationRecord(f.record)).toEqual({
+      compatibility: "current",
+      record: f.record,
+    });
   });
 
   test("exact wire guards reject inherited fields, accessors, and nested overlays", async () => {
@@ -1740,7 +1745,7 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code: "verify-result-shape" });
   });
 
-  test("strict verification refuses an earlier-shape record as record-shape", async () => {
+  test("an earlier-shape record is unreadable and refused as record-shape", async () => {
     const f = await fixture();
     const earlier = {
       subject: PARTY,
@@ -1757,6 +1762,7 @@ describe("strict DACS-2 composite verification closure", () => {
       verifiedAt: "2026-01-01T00:00:00Z",
     };
     expect(isCompositeVerificationRecord(earlier)).toBe(false);
+    expect(readCompositeVerificationRecord(earlier)).toBeNull();
     await expect(
       verifyCompositeVerificationRecord(earlier, f.expected, f.deps),
     ).resolves.toMatchObject({ status: "invalid", code: "record-shape" });
