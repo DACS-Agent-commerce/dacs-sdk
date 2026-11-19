@@ -50,8 +50,8 @@ test('buyer result is recovered after a lost seller checkpoint without consuming
 test('unknown buyer nonce ledger never authorizes evaluation',async()=>{
  const f=productionFixture();f.counterparty.readRecord=async()=>({status:'absent'});await assert.rejects(f.run(),e=>e.code==='seller_vet_reconciliation_required');assert.equal(f.seen.length,0);f.base.close();
 });
-test('inherited core verifier refusal of qualified CVR signer stays closed',async()=>{
- const f=productionFixture();f.controls.qualifiedSigner=true;await assert.rejects(f.run(),e=>e.code==='seller_vet_invalid');f.base.close();
+test('a CVR signed by the verifier claim with added parameters is accepted',async()=>{
+ const f=productionFixture();f.controls.qualifiedSigner=true;const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');f.base.close();
 });
 for(const state of ['accepted','included'])test(`merely ${state} receipts never close staged Vet`,async()=>{
  const f=productionFixture();f.controls.receiptState=state;f.controls.receiptVerdict='valid';await assert.rejects(f.run());f.base.close();
