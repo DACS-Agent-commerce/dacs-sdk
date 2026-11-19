@@ -195,6 +195,13 @@ test("a seam reply over the byte bound, a list over its bound, and a stalled or 
   await assert.rejects(w.authority.authorityRpc(RPC_BLOCK(0)), { code: 'authority_list_too_large' });
   replies.push(jsonResponse(JSON.stringify(ok({ rows: new Array(LIST_LIMIT).fill(0) }))));
   assert.equal((await w.authority.authorityRpc(RPC_BLOCK(0))).response.rows.length, LIST_LIMIT, 'a list at its bound is admitted');
+  // A wide object under the byte bound (300,000 fields) is refused like a long list, not by the stack.
+  const wide = JSON.stringify(ok(Object.fromEntries(Array.from({ length: 300000 }, (_, index) => [index, 0]))));
+  assert.ok(wide.length < 4 * MIB);
+  replies.push(jsonResponse(wide));
+  await assert.rejects(w.authority.authorityRpc(RPC_BLOCK(0)), { code: 'authority_list_too_large' });
+  replies.push(jsonResponse(JSON.stringify(ok(Object.fromEntries(Array.from({ length: LIST_LIMIT }, (_, index) => [index, 0]))))));
+  assert.equal(Object.keys((await w.authority.authorityRpc(RPC_BLOCK(0))).response).length, LIST_LIMIT, 'an object at its bound is admitted');
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const late = deferred();
   replies.push(late.promise);

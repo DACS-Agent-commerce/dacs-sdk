@@ -25,7 +25,7 @@ test('a second confirmation of acknowledged bytes in the same lease is answered 
   assert.deepEqual(w.node.broadcasts, [tx.hash]);
 });
 
-test('a confirmation the seller policy refuses is recorded acknowledged; after a restart the node is not asked again and nothing is sent without approval', async t => {
+test('a confirmation the seller policy refuses is recorded acknowledged; after a restart the node is not asked again and the bytes are sent once only when the policy approves', async t => {
   let approves = false;
   const policy = { approveConfirmedWrite: async () => approves };
   const w = world(t, { bound: await bindFixture() });
@@ -34,16 +34,18 @@ test('a confirmation the seller policy refuses is recorded acknowledged; after a
   const tx = w.signedTransfer(1);
   await assert.rejects(w.confirm(tx), { code: 'approval_required' });
   await w.restart({}, policy);
+  const refused = await w.lease();
+  await assert.rejects(w.confirm(tx), { code: 'approval_required' });
+  await assert.rejects(w.prepareBroadcast(refused.leaseId, tx.hash), { code: 'native_confirmation_required' });
+  await w.release(refused.leaseId);
   approves = true;
   const lease = await w.lease();
   const again = await settle(w.confirm(tx));
   if (again.value) await settle(w.prepareBroadcast(lease.leaseId, tx.hash).then(() => w.broadcast(again.value)));
   assert.equal(w.node.confirms, 1, 'the node is asked to confirm the bytes once');
-  assert.ok(w.node.broadcasts.length <= 1, 'the bytes are sent at most once');
-  assert.equal(again.error?.code, 'eb_persist_failed');
-  assert.equal(again.error?.cause?.code, 'eb_history_conflict');
-  assert.deepEqual(w.node.broadcasts, []);
-  assert.deepEqual(states(await w.records(tx)), ACKNOWLEDGED_PASS);
+  assert.equal(again.value?.response?.data?.valid, true);
+  assert.deepEqual(w.node.broadcasts, [tx.hash]);
+  assert.deepEqual(states(await w.records(tx)).slice(0, 3), ACKNOWLEDGED_PASS);
 });
 
 test('after the seller policy refused a confirmation, the same lease asks the policy again on the retained answer and sends once only when it approves', async t => {

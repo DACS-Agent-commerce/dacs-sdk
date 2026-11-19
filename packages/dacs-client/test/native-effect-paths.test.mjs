@@ -665,7 +665,7 @@ test('through the Node wallet session a send survives a restart at each history 
       assert.ok((await w.records()).some(record => /held|withheld/.test(record.state)), phase + '/' + change);
       if (phase === 'dispatch-started') {
         const next = await w.restart(); next.state.stopped = false;
-        await next.send(); assert.equal(next.node.broadcasts.length, 0, 'a withheld broadcast stays readback-only after restart');
+        await next.send(); assert.equal(next.node.broadcasts.length, 1, 'a broadcast withheld before its send goes out once when the same request comes again after a restart');
       }
     });
   }

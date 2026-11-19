@@ -1,6 +1,6 @@
 // A confirmation retained before the process died: after the restart its exact bytes and
-// gas are still the transaction's, nothing is broadcast on its own, and a new lease cannot
-// confirm the same bytes again. The real transport and durable
+// gas are still the transaction's, nothing is broadcast on its own, and a new lease is
+// answered from it without asking the node again. The real transport and durable
 // journal run in this process against a scripted TEST node. No network, chain or funds.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -25,16 +25,17 @@ test('a confirmation retained before a restart keeps its bytes and gas, and the 
   assert.deepEqual(w.node.broadcasts, []);
 });
 
-test('after a restart a new lease cannot confirm the retained bytes again, so nothing reaches a broadcast', async t => {
+test('after a restart a new lease is answered from the retained confirmation without asking the node again, and the bytes are sent once', async t => {
   const w = world(t, { bound: await bindFixture() });
   w.open({});
   await w.lease();
-  const tx = w.signedTransfer(1);
-  await w.confirm(tx);
+  const tx = w.signedTransfer(1), first = await w.confirm(tx);
   await w.restart({});
-  await w.lease();
-  await assert.rejects(w.confirm(tx), error => error.code === 'eb_persist_failed' && error.cause?.code === 'eb_history_conflict');
+  const lease = await w.lease();
+  assert.deepEqual(await w.confirm(tx), first);
   assert.equal(w.node.confirms, 1);
-  assert.deepEqual(w.node.broadcasts, []);
   assert.deepEqual((await w.records(tx)).map(record => record.state), ['signed', 'confirm-started', 'confirm-acknowledged']);
+  await w.prepareBroadcast(lease.leaseId, tx.hash);
+  await w.broadcast(first);
+  assert.deepEqual(w.node.broadcasts, [tx.hash]);
 });

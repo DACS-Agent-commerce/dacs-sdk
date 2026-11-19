@@ -211,14 +211,16 @@ export function createNodeObserver({ owner, clock = { now: () => Date.now() } } 
   });
 }
 
-// True when no array anywhere in `value` has more than `limit` entries. Iterative, so nesting cannot overflow the stack.
+// True when no array or object anywhere in `value` has more than `limit` entries. Iterative, and members are pushed
+// one at a time, so neither nesting nor width can overflow the stack.
 function listsWithin(value, limit) {
   const pending = [value];
   while (pending.length > 0) {
     const next = pending.pop();
     if (next === null || typeof next !== 'object') continue;
-    if (Array.isArray(next) && next.length > limit) return false;
-    pending.push(...Object.values(next));
+    const members = Object.values(next);
+    if (members.length > limit) return false;
+    for (const member of members) pending.push(member);
   }
   return true;
 }
@@ -248,7 +250,7 @@ function createReadQueue(limit) {
  * connectionGeneration()}`, with no sign or send. `authorityRpc` sends one node read over the owner's current transport and resolves
  * the decoded reply. Only `getBlockByNumber` and `getNetworkInfo` are sent (readonly_only for anything else). It takes no connection fence,
  * journal lock or signer, so it works while an effect pass holds the fence. A reply is limited to 4 MiB before decoding and 1024
- * entries per array after (authority_list_too_large). At most four reads run at once; the rest queue inside the same 10 s deadline
+ * entries per array or object after (authority_list_too_large). At most four reads run at once; the rest queue inside the same 10 s deadline
  * (tp1_authority_timeout, cause kept). A caller's abort rejects with its own reason. A failed fetch, body read or decode rejects with
  * its original error. `claim` is read synchronously by the production reader; `connectionGeneration()` is the owner's connection id.
  * Throws TypeError for an owner the observer refuses or a `claim` that is not a function.

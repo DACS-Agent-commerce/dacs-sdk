@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "77d3fbc5ecae9c26371aa6b3706461124db246f9"
+        "blob": "3e7bc875cef1054e8dc11f623ec2e30e29cfda03"
       },
       "DELTA-LEDGER.json": {
-        "blob": "bd8fc0609c6458e1a9d664a604fe1a87cbe3b7e3"
+        "blob": "0f9fee13cd5a84586dc23d62ad60ed611ff4e40b"
       },
       "DELTA-MAP.md": {
-        "blob": "d5574631572e8b4c55e8c1be07b4dc9477361f3f"
+        "blob": "ff5aefc1e03459086e0229386e2d8f7c841637cc"
       },
       "DELTA-NOTES.md": {
         "blob": "74ec7eeab1bd2c1197b87f69eabc9a384d9dad7f"
@@ -1061,7 +1061,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "7765dd7da8bc610d80f92a9f7a9670dfa11ba4c2"
+        "blob": "14d9ae2016a89b40423e69dff1fef75bcbb872b8"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "5ffafe960fd73bb1ee673c4c671ce0dd822f3eff"
@@ -1376,7 +1376,7 @@
         "blob": "91d06508f63df5308dece710ffb05aeae26a5bb8"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "527bfdb9b1fc18983b1b41bfb5c40e160e9444ff"
+        "blob": "f596428e36c1b9810391a33cd5535c1482e17123"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
@@ -1400,7 +1400,7 @@
         "blob": "9edd56ae98d80f159e7be8ab819c24ec5c821c12"
       },
       "src/wallet/node-wallet-session.mjs": {
-        "blob": "b8ac86bc9630a8beda77a27ebf1354489bd7a409"
+        "blob": "4df1614c68f92c8d472ebd6e25f233f7a3ea7a66"
       },
       "src/wallet/pass-context.mjs": {
         "blob": "a597cf52137c96b22d5959c6c06911c9ac4ed45d"
@@ -1415,7 +1415,7 @@
         "blob": "9069600b09ede1b6e8bf4e988ead912a2374f1df"
       },
       "test/authority-reader.test.mjs": {
-        "blob": "b62856e040048e1a29229c023595e23fcf3410dd"
+        "blob": "42b2f3c8d0830475ba50527c220e4a4274b8180c"
       },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
@@ -1961,7 +1961,7 @@
         "blob": "6841b7b79dece95e51c8b46abf549d0370fb4789"
       },
       "test/native-acknowledged-confirmation.test.mjs": {
-        "blob": "b4acfab270c77b0ac7cf2644848d747cf09732e6"
+        "blob": "122b8943b0593bc72cba7834b71af60b278204ba"
       },
       "test/native-adapter-auth.test.mjs": {
         "blob": "91f280b7acb69e762e39971b0858c38c86442c6e"
@@ -1979,13 +1979,13 @@
         "blob": "ecdb0723a39419fb7c17f336a5faa26981e03448"
       },
       "test/native-confirmed-before-broadcast-cut.test.mjs": {
-        "blob": "54f90c1b1d92690153d3883c85b882a0d017af2a"
+        "blob": "40829819637ca5fa8851d827f2db1eec8bb95241"
       },
       "test/native-confirmed-debit.test.mjs": {
         "blob": "aff81cbf4c5831d24441debf6244ade1a15b59a2"
       },
       "test/native-effect-paths.test.mjs": {
-        "blob": "6d3eacf154eb619d9ec525d6a6857e60a493b5de"
+        "blob": "259e6645e3bd08d8f21ac90daf026c99ccc4fdb0"
       },
       "test/native-lock-order.test.mjs": {
         "blob": "389096e902bd290ae6cd3b4bef2fd38994043547"
@@ -1997,13 +1997,16 @@
         "blob": "f3e5f3945d0629e243eccfea79d3953a4242027a"
       },
       "test/native-repeated-confirmation.test.mjs": {
-        "blob": "f1ef6fcb454d242e21b2cc419227087a025a99de"
+        "blob": "5181cd627c0f0bfc8b43dd9e361a48cd2e0126e0"
       },
       "test/native-stage-help.test.mjs": {
         "blob": "fd8943b54a6e03026a28eafeaa992de1d66d2fdc"
       },
       "test/native-supersession-unavailable.test.mjs": {
         "blob": "a3c2c1f30dde168de241dd1d8845b67f18b7b3bd"
+      },
+      "test/native-withheld-broadcast-retry.test.mjs": {
+        "blob": "09fe1a480803d3b8c0bf317caca89ce2a6cdcd10"
       },
       "test/negotiate-phase-after-readback.test.mjs": {
         "blob": "9869cc55d5b9235033ffd0382583a5e3948f5f4f"

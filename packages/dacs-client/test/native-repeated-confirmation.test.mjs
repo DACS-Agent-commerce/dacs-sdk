@@ -1,9 +1,9 @@
-// The same signed bytes confirmed again through a new lease. While the bytes' history holds no
-// more than a refused or unanswered confirmation, the new lease continues the operation that
-// signed them: the node is asked again and one confirmation chain goes on to a single send.
-// After an acknowledged confirmation or a broadcast record the new lease keeps its own
-// operation, its signed record is refused and the node is not asked again. After a restart
-// the node is not asked again either, and the bytes are never sent a second time.
+// The same signed bytes confirmed again through a new lease. While nothing in the bytes' history
+// may have sent them, the new lease continues the operation that signed them: a refused or
+// unanswered confirmation is asked of the node again, an acknowledged one is answered from its
+// retained record, and one confirmation chain goes on to a single send. After a broadcast that
+// may have been sent the new lease keeps its own operation, its signed record is refused and the
+// node is not asked again. The bytes are never sent a second time, also after a restart.
 // The real transport and durable journal run in this process against a scripted TEST node.
 // No network, chain or funds.
 import assert from 'node:assert/strict';
@@ -64,22 +64,25 @@ const ACKNOWLEDGED = {
 };
 
 for (const [ending, leave] of Object.entries(ACKNOWLEDGED)) {
-  test(`after ${ending}, a new lease keeps its own operation: its signed record is refused and the node is not asked again`, async t => {
+  test(`after ${ending}, a new lease continues the signed operation: it is answered from the retained confirmation, the node is not asked again and the bytes are sent once`, async t => {
     const w = world(t, { bound: await bindFixture() });
     w.open({});
     const earlier = await w.lease(), tx = w.signedTransfer(1);
     await leave(w, tx);
     const left = await w.records(tx), asked = w.node.confirms;
     await w.release(earlier.leaseId);
-    await w.lease();
-    await assert.rejects(w.confirm(tx), historyConflict);
+    const lease = await w.lease();
+    const confirmation = await w.confirm(tx);
     assert.equal(w.node.confirms, asked);
     assert.deepEqual(await w.records(tx), left);
-    assert.deepEqual(w.node.broadcasts, []);
+    await w.prepareBroadcast(lease.leaseId, tx.hash);
+    await w.broadcast(confirmation);
+    assert.deepEqual(w.node.broadcasts, [tx.hash]);
+    assert.ok((await w.records(tx)).every(record => record.operationId === earlier.leaseId), 'every record names the operation that signed the bytes');
   });
 }
 
-test('after a broadcast withheld right after dispatch-started, a new lease keeps its own operation and the node is not asked again', async t => {
+test('after a broadcast withheld right after dispatch-started and a restart, a new lease continues the signed operation, the node is not asked again and the bytes are sent once', async t => {
   const w = world(t, { bound: await bindFixture() });
   w.open({});
   const earlier = await w.lease(), tx = w.signedTransfer(1), confirmation = await w.confirm(tx);
@@ -89,6 +92,23 @@ test('after a broadcast withheld right after dispatch-started, a new lease keeps
   assert.deepEqual(states(await w.records(tx)), [...ACKNOWLEDGED_PASS, 'signed', 'dispatch-started', 'dispatch-withheld']);
   await w.restart({});
   w.stopped = false;
+  const lease = await w.lease();
+  assert.deepEqual(await w.confirm(tx), confirmation);
+  assert.equal(w.node.confirms, 1);
+  await w.prepareBroadcast(lease.leaseId, tx.hash);
+  await w.broadcast(confirmation);
+  assert.deepEqual(w.node.broadcasts, [tx.hash]);
+});
+
+test('after a broadcast whose send may have happened, a new lease keeps its own operation: its signed record is refused and the bytes are read back only', async t => {
+  const w = world(t, { bound: await bindFixture() });
+  w.open({});
+  const earlier = await w.lease(), tx = w.signedTransfer(1), confirmation = await w.confirm(tx);
+  await w.prepareBroadcast(earlier.leaseId, tx.hash);
+  cutAppend(w, 'dispatch-started', { after: true });
+  await assert.rejects(w.broadcast(confirmation), { code: 'eb_persist_failed' });
+  assert.deepEqual(states(await w.records(tx)), [...ACKNOWLEDGED_PASS, 'signed', 'dispatch-started']);
+  await w.restart({});
   await w.lease();
   await assert.rejects(w.confirm(tx), historyConflict);
   assert.equal(w.node.confirms, 1);
@@ -100,8 +120,9 @@ const settle = promise => promise.then(value => ({ value }), error => ({ error }
 // What the first lease did with the acknowledged bytes before the process restarted (`leave`),
 // what lets a new lease open after the restart (`reopen`), and how the new lease's confirmation
 // of the same bytes is refused (`refused`).
+// An acknowledged confirmation that was not broadcast goes on through a new lease after a restart
+// (native-confirmed-before-broadcast-cut.test.mjs).
 const BEFORE_RESTART = {
-  'an acknowledged confirmation': { leave: async () => {}, reopen: async () => {}, refused: historyConflict },
   'an acknowledged confirmation broadcast once': {
     leave: async (w, lease, tx, confirmation) => {
       await w.prepareBroadcast(lease.leaseId, tx.hash);

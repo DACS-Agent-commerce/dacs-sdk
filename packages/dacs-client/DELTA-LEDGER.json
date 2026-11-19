@@ -11298,6 +11298,53 @@
           "after": "5d4dc09f971278868d64b81c5874cdb00d8ac2a8"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF let a payment refused before its send go on through a new lease, and refuse wide authority replies by size",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "527bfdb9b1fc18983b1b41bfb5c40e160e9444ff",
+          "after": "f596428e36c1b9810391a33cd5535c1482e17123"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b8ac86bc9630a8beda77a27ebf1354489bd7a409",
+          "after": "4df1614c68f92c8d472ebd6e25f233f7a3ea7a66"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": "b62856e040048e1a29229c023595e23fcf3410dd",
+          "after": "42b2f3c8d0830475ba50527c220e4a4274b8180c"
+        },
+        {
+          "path": "packages/dacs-client/test/native-acknowledged-confirmation.test.mjs",
+          "before": "b4acfab270c77b0ac7cf2644848d747cf09732e6",
+          "after": "122b8943b0593bc72cba7834b71af60b278204ba"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmed-before-broadcast-cut.test.mjs",
+          "before": "54f90c1b1d92690153d3883c85b882a0d017af2a",
+          "after": "40829819637ca5fa8851d827f2db1eec8bb95241"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "6d3eacf154eb619d9ec525d6a6857e60a493b5de",
+          "after": "259e6645e3bd08d8f21ac90daf026c99ccc4fdb0"
+        },
+        {
+          "path": "packages/dacs-client/test/native-repeated-confirmation.test.mjs",
+          "before": "f1ef6fcb454d242e21b2cc419227087a025a99de",
+          "after": "5181cd627c0f0bfc8b43dd9e361a48cd2e0126e0"
+        },
+        {
+          "path": "packages/dacs-client/test/native-withheld-broadcast-retry.test.mjs",
+          "before": null,
+          "after": "09fe1a480803d3b8c0bf317caca89ce2a6cdcd10"
+        }
+      ]
     }
   ]
 }

@@ -55,14 +55,16 @@ const ADDRESS = /^0x[0-9a-f]{64}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const CONTEXT = ['network', 'endpoint', 'transportAuthority', 'connectionId'];
 const sameContext = (a,b) => CONTEXT.every((k) => a?.[k] === b?.[k]);
-// The dispatch history records a confirmation leaves while the node has not acknowledged it: the signed bytes, then
-// confirm passes that were refused (withheld before the node saw them, or answered without a valid confirmation)
-// or never answered.
-const UNACKNOWLEDGED_CONFIRMATION_STATES = new Set(['signed', 'confirm-started', 'confirm-withheld', 'confirm-unknown']);
-// Whether a signed artifact's history ends in a refused or unanswered confirmation and never went further: no
-// acknowledged confirmation and no dispatch, recovery or held record. Only then may a new lease continue the
-// operation that signed these bytes.
-const endsInUnacknowledgedConfirmation = (records) => records.every((record) => UNACKNOWLEDGED_CONFIRMATION_STATES.has(record.state));
+// The dispatch history records that never mean the bytes were sent: the signed bytes, every confirm record (the node
+// only checks the bytes), and a dispatch pass refused before its send (`dispatch-started` paired with `dispatch-withheld`).
+const UNSENT_STATES = new Set(['signed', 'confirm-started', 'confirm-withheld', 'confirm-unknown', 'confirm-acknowledged', 'dispatch-started', 'dispatch-withheld']);
+// Whether nothing in a signed artifact's history may have sent it: no unpaired or answered dispatch, and no recovery
+// or held record. Only then may a new lease continue the operation that signed these bytes.
+const nothingSent = (records) => records.every((record) => UNSENT_STATES.has(record.state)
+  && (record.state !== 'dispatch-started' || records.some((other) => other.state === 'dispatch-withheld' && other.passId === record.passId)));
+// A lane or intent record the broadcast finished at its last check, before anything was sent: it holds no lane and
+// its bytes may be confirmed and broadcast again.
+const withheldBroadcast = (record) => record?.stage === 'failed' && record.failure?.withheld === true;
 // RPC auth headers are fresh and single-use. Wallets stamp them with their own
 // clock in ms and sign a new set for every request (the embedded wallet for
 // bind and signature, the SDK for confirmTx and broadcastTx), so a set more
@@ -168,12 +170,16 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // dispatch history (the exact signed bytes, `confirm-started`, then
 // `confirm-acknowledged` or `confirm-unknown`) before and after the node sees it. An
 // acknowledged confirmation is final for its bytes: the node is not asked to confirm them again.
+// While nothing may have sent the bytes, a new lease for them continues their operation and is
+// answered from that retained confirmation; after a possible send they are read back only.
 // The seller policy, if any, is asked after the acknowledgement is retained; its refusal
 // leaves the acknowledgement and nothing is broadcast.
 // The broadcast then carries that retained confirmation, byte for byte with its gas, as the
 // boundary's dispatch stage: its whole debit (the amount plus every fee, from the node's fee
 // view or else from the confirmed transaction) is checked against the fee ceiling first, and a
-// refusal leaves `dispatch-withheld`. CREATE recovery holds the boundary's fence for the
+// refusal leaves `dispatch-withheld`. A refusal at the last check, after the lane record is written and
+// before the request, finishes the lane as `failed` (withheld): nothing was sent, and a new lease may confirm
+// and broadcast the same bytes. CREATE recovery holds the boundary's fence for the
 // artifact's own operation and runs its confirmation and sole resend as the
 // `recovery-confirm` and `recovery-dispatch` stages. Every effectful request is made by
 // `transmit`, which finishes all its awaits (the transport context included) first and then
@@ -745,20 +751,20 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // bytes, `confirm-started` before the node sees them, then `confirm-acknowledged` with the
   // node's answer and gas when `accepted()`, or `confirm-unknown` with the cause.
   const confirmAsStage = async (lease, tx, confirmOnce, accepted) => {
-    await continueSignedOperation(lease, tx);
     return lease.fence.hold.run(async () => boundary.dispatchPass(await retainSigned(operationOf(lease, tx), Buffer.from(JSON.stringify(tx))), confirmOnce,
       { explicit:true, stage:'confirm', material:(answer) => accepted() ? { confirmation:answer, gasOperation:answer.response.data.gas_operation ?? null } : undefined }));
   };
-  // Every record of one signed artifact names the same operation. When an earlier lease signed these exact bytes and their
-  // history ends in a refused or unanswered confirmation (then the same request again), the lease takes over that operation:
-  // its fence hold moves to the earlier operation id on the same connection, and the node is asked again. After an
-  // acknowledged confirmation or any dispatch record the lease keeps its own operation, so the history refuses its signed
-  // record (`eb_history_conflict`) and the node is not asked again. A transport holds one lease per address, so no other
-  // lease of this transport adds a record for these bytes between this read and the takeover.
+  // Every record of one signed artifact names the same operation. When an earlier lease signed these exact bytes and
+  // nothing in their history may have sent them (then the same request again), the lease takes over that operation: its
+  // fence hold moves to the earlier operation id on the same connection. An acknowledged confirmation is then answered from
+  // its retained record, and any other is asked of the node again. Once the history holds a dispatch that may have been
+  // sent, the lease keeps its own operation, so the history refuses its signed record (`eb_history_conflict`) and the bytes
+  // are read back only. A transport holds one lease per address, so no other lease of this transport adds a record for
+  // these bytes between this read and the takeover.
   const continueSignedOperation = async (lease, tx) => {
     const records=await historyOf({ lane:lane(tx.content.from),artifactHash:sha(JSON.stringify(tx)) });
     const earlier=records.find((record) => record.state === 'signed');
-    if (!earlier || earlier.operationId === lease.operationId || !endsInUnacknowledgedConfirmation(records)) return;
+    if (!earlier || earlier.operationId === lease.operationId || !nothingSent(records)) return;
     const connection=lease.fence.context;
     await lease.fence.release();
     lease.operationId=earlier.operationId;
@@ -908,7 +914,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           const tx=await node('getTxByHash',{hash});
           if(tx?.status==='failed') return failedStorageWrite(hash,r,binding,status,tx);
         }
-        if (status?.state !== 'included' || !Number.isSafeInteger(status.blockNumber)) return { disposition:'pending',hash,nonce:r.nonce,noResend:true };
+        if (status?.state !== 'included' || !Number.isSafeInteger(status.blockNumber)) {
+          // A broadcast withheld at its last check was never sent: it is finished, and an interrupted lane write is repaired.
+          if (!withheldBroadcast(r)) return { disposition:'pending',hash,nonce:r.nonce,noResend:true };
+          if (latest?.hash === hash && latest.stage !== 'failed') await retain(lane(address),r);
+          return { disposition:'failed',hash,nonce:r.nonce,noResend:true,resolved:true };
+        }
         const proofStarted=now(),cached=writeProofs.get(hash);
         writeProofs.delete(hash);
         const reused=cached && writeProof && canonicalize(writeProof)===canonicalize({disposition:'included',receipt:cached.receipt,noResend:true}) && sameContext(cached.context,await context()) && cached.signed===JSON.stringify(r.signedTransaction) && cached.receipt.blockNumber===status.blockNumber;
@@ -1111,7 +1122,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       if(call.extra === 'confirmTx') {
         l.confirmed=null;l.readyHash=null;
         const issuedBefore=await journal.get(intent(tx.hash));
-        if(issuedBefore){refuseRetiredPin(issuedBefore);fail('outcome_unknown','an issued native hash is readback-only, never reconfirmed or resent');}
+        if(issuedBefore && !withheldBroadcast(issuedBefore)){refuseRetiredPin(issuedBefore);fail('outcome_unknown','an issued native hash is readback-only, never reconfirmed or resent');}
         const transfer=await identityOf(tx.content);
         // A transfer whose settlement terms cannot be read, or whose payer is
         // not its signer, is not one the cancellation records can name.
@@ -1127,6 +1138,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           await claimTransfer(l,transfer,true);
         });
         step(tx,'sign','complete',l.signStarted);
+        await continueSignedOperation(l,tx);
         // An acknowledged confirmation is final for its bytes: in the operation that holds it, a repeated
         // confirmation is answered from the retained record and the node is not asked again.
         const retained=await retainedConfirmation({ lane:lane(tx.content.from),artifactHash:sha(JSON.stringify(tx)) });
@@ -1163,7 +1175,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             await refuseWhileReserved(tx.content.from,tx.hash);
             const previous=await journal.get(lane(tx.content.from));
             const issuedBefore=await journal.get(intent(tx.hash));
-            if((previous && (!['observed','failed'].includes(previous.stage) || previous.hash === tx.hash)) || issuedBefore) { refuseRetiredPin(previous); refuseRetiredPin(issuedBefore); fail('outcome_unknown','issued native transfers cannot be resent'); }
+            if((previous && (!['observed','failed'].includes(previous.stage) || (previous.hash === tx.hash && !withheldBroadcast(previous)))) || (issuedBefore && !withheldBroadcast(issuedBefore))) { refuseRetiredPin(previous); refuseRetiredPin(issuedBefore); fail('outcome_unknown','issued native transfers cannot be resent'); }
             // Under the lock of the journal claim below: a cancelled transfer is never claimed.
             const claiming=await identityOf(tx.content);
             if(await cancelledTransfer(tx.content.from,claiming)) await refuseCancelled(tx.content.from,claiming,'broadcast');
@@ -1177,9 +1189,21 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
               await retain(lane(tx.content.from),issued);
               await retain(intent(tx.hash),issued);
               const started=now();
-              let answer;
-              try { answer=await transmitWithoutWriteProof(body,headers,{ final,pass }); } // one call, never retry on unknown; the inclusion poll below is the only source of a writeProof
-              catch(error){step(tx,'broadcast','unknown',started);throw error;}
+              let answer,sending=false,withheld=false;
+              // Notes a refusal by the last check, which comes before the request: then nothing was sent.
+              const last=async(check,effect)=>{
+                try { return await final(check,() => { sending=true; return effect(); }); } catch(error) { withheld=!sending; throw error; }
+              };
+              try { answer=await transmitWithoutWriteProof(body,headers,{ final:last,pass }); } // one call, never retry on unknown; the inclusion poll below is the only source of a writeProof
+              catch(error){
+                // Refused before the request, the lane is finished here while its locks are held, so it holds no
+                // lane and is not read back as pending. Intent first, as readback repairs an interrupted lane write.
+                if(withheld) {
+                  const finished={ ...issued,stage:'failed',failure:{ withheld:true } };
+                  await retain(intent(tx.hash),finished).then(() => retain(lane(tx.content.from),finished)).catch(() => {});
+                } else step(tx,'broadcast','unknown',started);
+                throw error;
+              }
               step(tx,'broadcast','complete',started);
               const answered={ ...issued,stage:answer?.result === 200 ? 'broadcast-accepted' : 'broadcast-answered' };
               if(tx.content.type==='storageProgram') {
@@ -1189,7 +1213,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
               await retain(intent(tx.hash),answered); await retain(lane(tx.content.from),answered);
               return answer;
             };
-            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs,tx.content.transaction_fee) }));
+            // The wallet's broadcast is a fresh request of its own: a dispatch an earlier lease withheld before its send goes on.
+            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:confirmedDebitOs(retained.gasOperation,artifact.debitOs,tx.content.transaction_fee) }));
           });
         });
         if (accepted?.result === 200) {
