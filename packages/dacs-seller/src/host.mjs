@@ -54,7 +54,7 @@ import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
 import { demDeliveryContextHost, demDeliveryContextVetMode } from './dacs/dem-delivery-context-consumer.mjs';
 import { addressForClaim } from './dacs/demos-claims.mjs';
 import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
-import { PASSIVE_RETAINED_READ, isProvenUnsignedAbsence } from './dacs/native-dem-delivery-consumer.mjs';
+import { PASSIVE_RETAINED_READ, isDeadRefusedCreate, isProvenUnsignedAbsence } from './dacs/native-dem-delivery-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createContextAdmissionTransaction } from './dacs/seller-admission-transaction.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
@@ -101,11 +101,17 @@ const NO_HOLD_POLICY = Object.freeze({ reserve: async () => null, release: async
 // How often a running host re-runs the admission sweep over unfinished context rows.
 const SWEEP_INTERVAL_MS = 60000;
 
-// Compensation's evidence for the two Vet sink addresses of a context row: the anchor's own fresh, passive proof that no CREATE intent was
-// kept. Any other answer proves nothing, so the row keeps its hold and its slot.
+// Compensation's evidence for the two Vet sink addresses of a context row, from the anchor's own fresh, passive readback: its proof that no
+// CREATE intent was kept, its proof that the node refused the CREATE and it can no longer be included, or a present Vet whose receipt for
+// this address is finalized and verifies. Any other answer proves nothing, so the row keeps its hold and its slot.
 const vetAddressEvidence = (anchor) => (row) => Promise.all([row.vetAddresses.buyer, row.vetAddresses.seller].map(async (address) => {
-  const read = await anchor.readRetained({ logicalAddress: address, artifactKind: 'CompositeVerificationRecord', fresh: true, proofOfNoIntent: true }, PASSIVE_RETAINED_READ);
-  return { address, kind: isProvenUnsignedAbsence(read) ? 'proven-unsigned' : 'undetermined' };
+  const artifactKind = 'CompositeVerificationRecord';
+  const read = await anchor.readRetained({ logicalAddress: address, artifactKind, fresh: true, proofOfNoIntent: true }, PASSIVE_RETAINED_READ);
+  if (isProvenUnsignedAbsence(read)) return { address, kind: 'proven-unsigned' };
+  if (isDeadRefusedCreate(read)) return { address, kind: 'retired' };
+  const landed = read?.status === 'present' && read.receipt?.logicalAddress === address && read.receipt.state === 'finalized'
+    && await anchor.verifyReceipt({ logicalAddress: address, artifact: read.artifact, artifactKind, receipt: read.receipt, fresh: true }) === 'valid';
+  return { address, kind: landed ? 'executed' : 'undetermined' };
 }));
 
 // A native artifact readback is an operator capability. Every accepted read
