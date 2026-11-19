@@ -157,10 +157,9 @@ test('construction snapshots admission and the consumed key before its first awa
  assert.ok(replacement.some(value=>value!==0),'the replacement buffer was not consumed');replacement.fill(0);
 });
 
-test("the delta map records the transport owner's port source and every edited line of sdk-provider.mjs, util/http.mjs and network-binding.mjs", async () => {
-const { ledger, locations } = await import('../scripts/delta-map.mjs');
-const map = readFileSync(new URL('../DELTA-MAP.md', import.meta.url), 'utf8');
-assert.match(map, /frontend `d6f0e16` `http-mcp\/src\/devnet-demo\/operator-network\.mjs:197-224`/);
+test("the generated delta map locates every recorded transport and signing change", async () => {
+const { ledger, locations, table } = await import('../scripts/delta-map.mjs');
+const map = table();
 const record = ledger().changes.find(change => change.subject.startsWith('delta(client): WF P21a1bb '));
 for (const name of ['public/portal/embedded-wallet/sdk-provider.mjs', 'util/http.mjs', 'dacs/network-binding.mjs']) {
   const path = `packages/dacs-client/src/${name}`;

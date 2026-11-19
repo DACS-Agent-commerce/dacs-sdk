@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D19",
+  "registration": "D19: existing client delta lane",
+  "subject": "delta(client): D19 pin every scope clause of native payment evidence with the real SDK verifier"
+}

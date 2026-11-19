@@ -295,41 +295,11 @@ export {
   type ParserDecision,
   type PredicateResult,
 } from "./parserSpec.js";
-export {
-  runSessionCore,
-  // Explicitly legacy-named: these strings support old resume/read paths and
-  // are not the current normative DACS addressing contract.
-  legacyMvpSessionAnchorName,
-  type SessionDeps,
-  type SessionResult,
-  type SessionVetRequest,
-  type VetFinalityAuthenticationRequest,
-  type SessionTerms,
-} from "./runSessionCore.js";
 export type {
   SettleRequest,
   SettleResult,
   SettlementRecoveryAttempt,
 } from "../rails/settlementTypes.js";
-export {
-  assertCheckpointPayloadShape,
-  createInMemorySessionStore,
-  SESSION_STORE_VERSION,
-  type SessionStore,
-  type SessionRecord,
-  type SessionReceipt,
-  type SessionCheckpoint,
-  type CheckpointValue,
-  type SessionLease,
-  type SessionPhase,
-  type SessionLoad,
-  type TransitionInput,
-  type TransitionResult,
-} from "./sessionStore.js";
-export {
-  createFsSessionStore,
-  type FsSessionStoreOptions,
-} from "./sessionStoreFs.js";
 export {
   FENCED_SESSION_STORE_VERSION,
   assertCheckpointPayloadShape as assertFencedCheckpointPayloadShape,
@@ -592,9 +562,8 @@ export {
   buildSignedArtifact,
   verifySignedArtifact,
   type SignedArtifact,
-  type Signer,
-  type Verifier,
 } from "./signedArtifact.js";
+export type { Signer, Verifier } from "../crypto/byteSignerTypes.js";
 export {
   runFulfilmentCore,
   sellerFulfilmentId,

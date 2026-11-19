@@ -368,6 +368,8 @@ test("the package-only freeze retains the original purchase prerequisites", () =
   const record = JSON.parse(readFileSync(join(PACKAGE_DIR, "HOLD.json"), "utf8"));
   const step1 = JSON.parse(reviewed("HOLD.json"));
   const hold = record.holds[0], original = step1.holds[0];
+  assert.ok(Object.hasOwn(record.step1Freeze.files, 'DELTA-LEDGER.json'));
+  assert.equal(Object.hasOwn(record.step1Freeze.files, 'DELTA-MAP.md'), false);
   assert.equal(record.step1Freeze.schema, 'dacs-client-freeze/v3');
   assert.equal(record.step1Freeze.outside, undefined);
   assert.equal(record.step1Freeze.literalNameTripwire, undefined);
@@ -388,7 +390,10 @@ test("the package-only freeze retains the original purchase prerequisites", () =
 test("the generated held map renders the record and planned re-pins", { skip: NEEDS_SOURCE }, () => {
   const generator = join(SCRIPT_DIR, "import-cut-map.mjs");
   const rendered = execFileSync(process.execPath, [generator, "--source", SOURCE], { encoding: "utf8", maxBuffer: 1 << 25 });
-  assert.equal(rendered, readFileSync(join(PACKAGE_DIR, "IMPORT-CUT-MAP.md"), "utf8"));
+  // The committed map pins historical evidence and the core hold rules.
+  // Its destination audit is an on-demand view of record-named source files.
+  const held = text => text.split('## 10.')[0];
+  assert.equal(held(rendered), held(readFileSync(join(PACKAGE_DIR, "IMPORT-CUT-MAP.md"), "utf8")));
   const record = JSON.parse(readFileSync(join(PACKAGE_DIR, "HOLD.json"), "utf8"));
   const repins = record.step1Freeze.plannedRepins;
   const expected = `Planned re-pins: ${repins.what} ${repins.changes.map((change) => `\`${change.id}\`: ${change.what}`).join(" ")} ${repins.mergePolicy}`;

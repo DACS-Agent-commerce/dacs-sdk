@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D77",
+  "registration": "D77: existing client delta lane",
+  "subject": "delta(client): D77 declare the expected blob without a value the allowed-path loop never reads"
+}

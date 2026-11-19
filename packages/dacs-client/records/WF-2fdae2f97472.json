@@ -1,0 +1,13 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF check that the real package assembles clean and ends with its record files",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/DELTA-MAP.md",
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/WF-2fdae2f97472.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/delta-assemble.test.mjs"
+  ]
+}

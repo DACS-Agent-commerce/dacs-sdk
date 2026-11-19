@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { createClosedBootstrapGate } from '../../src/dacs/closed-bootstrap-gate.mjs';
 import { createDemDeliveryContext, demDeliveryContextHost } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { agreementInput } from '../../src/dacs/purchase-protocol.mjs';
 import { createWireSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
@@ -32,8 +33,8 @@ export function presentationFor(presenter, nonce, at) {
   return { ...bundle, presentation: { kind: 'per-claim', signatures: [{ ref: presenter.claim, signature: presenter.signBytes(Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`)).toString('base64url') }] } };
 }
 
-export async function contextWireWorld(t, { requireDelegation = false, storeOptions = {} } = {}) {
-  const w = await challengeWorld(t, { requireDelegation, store: storeOptions });
+export async function contextWireWorld(t, { requireDelegation = false, storeOptions = {}, resume = null } = {}) {
+  const w = await challengeWorld(t, { requireDelegation, store: storeOptions, resume });
   const { state, calls, agent, buyer, seller, other } = w;
   const now = () => state.time;
   state.mono = 0;
@@ -59,6 +60,7 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     if (outcome === null && behaviour.nullEndFails) throw new Error('TEST the null end was not published');
     if (fakeEffects.has(effect)) return;
     completeWireEffect(journal, effect, outcome);
+    if (outcome !== null) behaviour.afterPublish?.();
     if (outcome !== null && behaviour.cutAfterPublish) throw new Error('TEST cut after the outcome was published');
   };
   const admission = createContextAdmissionTransaction({ store: w.store, policy, capacity,
@@ -118,6 +120,8 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   };
   const drain = async () => { while (tracked.size > 0) await Promise.allSettled([...tracked]); };
   const wire = w.makeWire({ capacity, reservations: coordinator });
+  const closedBootstrapGate = createClosedBootstrapGate({ admission: admission.admissionRecord, purchaseProfile: (jobId) => w.store.purchaseProfile(jobId), profile: wire.binding.profile });
+  coordinator.addPreAccountingGate(closedBootstrapGate);
   const routeOptions = { listing: w.listing, wire, store: w.store, ledger: w.store.challenges, admissionTransaction: countingAdmission, coordinator, capacity, provider,
     assertBuyerAccess: async (claim) => { calls.access++; return w.policy.access(claim); }, knownJob: async (...input) => { calls.known++; return w.policy.known(...input); },
     ready: () => state.ready(), stopped: () => state.stop(), now, monotonicNow: () => state.mono, trackContextWork };
@@ -171,7 +175,18 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   /** Waits for every unfinished provider task and for the job's mutex, which a failed admission's compensation holds. */
   const settleJob = async (jobId = JOB) => { await drain(); await admission.jobEffectMutex(jobId).run(() => {}); await drain(); };
   const privateRow = (jobId = JOB) => JSON.parse(internals.db.prepare('SELECT record FROM kit_context_admissions WHERE jobId = ?').get(jobId).record);
-  return { ...w, challenges: () => w.store.challenges, handler, route, admission, countingAdmission, coordinator, capacity, counts, behaviour, provider, post, issue, startContext, rowOf, privateRow, challengeOf, openHolds, internals,
-    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire, handlerOver,
+  /**
+   * A fresh host on this world's store and journal files, as after a restart: this host's store and journal are closed, its in-memory work is
+   * gone, and the new world starts at this one's wall clock with a new store generation.
+   */
+  const restartHost = async () => {
+    w.store.close();
+    journal.close?.();
+    const next = await contextWireWorld(t, { requireDelegation, storeOptions, resume: { directory: w.directory, generation: state.generation } });
+    next.state.time = state.time;
+    return next;
+  };
+  return { ...w, restartHost, challenges: () => w.store.challenges, handler, route, admission, countingAdmission, coordinator, capacity, counts, behaviour, provider, post, issue, startContext, rowOf, privateRow, challengeOf, openHolds, internals,
+    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire, handlerOver, closedBootstrapGate,
     tick: (ms) => { state.mono += ms; } };
 }

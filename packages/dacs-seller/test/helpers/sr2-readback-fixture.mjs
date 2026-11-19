@@ -21,7 +21,9 @@ export function readbackFixture(options = {}) {
   const tx = { ...structuredClone(signed), status: 'confirmed', blockNumber: 1 };
   const native = { success: true, storageAddress: nativeAddress, owner: seller.address, programName, data: structuredClone(artifact), metadata: structuredClone(signed.content.data[1].metadata), createdByTx: signed.hash, interactionTxs: [signed.hash] };
   const block = { number: 1, status: 'confirmed', hash: sha256Hex('TEST SR2 block'), content: { timestamp: observedAt / 1000, ordered_transactions: [signed.hash] }, validation_data: { simulated: true, chainIdentity: identity } };
-  const state = { signed, tx, native, block, rows: [{ programName, storageAddress: nativeAddress }], calls: [] };
+  // The node's getNetworkInfo answer: the signature-domain fork is inactive unless a test sets `networkInfo`.
+  const networkInfo = Object.hasOwn(options, 'networkInfo') ? options.networkInfo : { forks: { osDenomination: { activated: true } } };
+  const state = { signed, tx, native, block, networkInfo, rows: [{ programName, storageAddress: nativeAddress }], calls: [] };
   const fetchImpl = async (url, init) => {
     const path = new URL(url).pathname;
     state.calls.push({ path, init });
@@ -30,7 +32,7 @@ export function readbackFixture(options = {}) {
     if (path.startsWith('/storage-program/')) response = state.native;
     else {
       const { message, data } = JSON.parse(init.body).params[0];
-      const values = { getTxByHash: state.tx, searchStoragePrograms: state.rows, getAddressNonce: 0 };
+      const values = { getTxByHash: state.tx, searchStoragePrograms: state.rows, getAddressNonce: 0, getNetworkInfo: state.networkInfo };
       response = { result: 200, response: message === 'getBlockByNumber' ? data.blockNumber === 0 ? { number: 0, status: 'confirmed', hash: identity } : state.block : values[message] };
     }
     return new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json', 'x-dacs-simulation': 'fixture' } });
