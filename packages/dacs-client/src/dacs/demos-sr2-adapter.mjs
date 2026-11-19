@@ -268,11 +268,12 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     // exact writer's signature over that hash, and the node's transaction under
     // it. An answer that fails this (no content, other bytes, a signature that
     // does not verify) establishes nothing, so it contradicts nothing either.
-    // The signature covers the hash in the signature domain this node reports
-    // now, read once here; an unreadable domain verifies nothing.
+    // The signature covers the hash in the signature domain in force at the
+    // block that included it, by the fork state this node reports, read once
+    // here; an unreadable domain verifies nothing.
     if (!object(signed) || !object(signed.content) || tx.hash !== txHash || !object(c) || signed.hash !== txHash
       || sha256Hex(JSON.stringify(signed.content)) !== txHash || signed.signature?.type !== 'ed25519' || !object(tx.signature) || canonicalize(tx.signature) !== canonicalize(signed.signature)) reject('invalid', 'transaction lacks the exact writer authorization');
-    const signaturePrefix = await readTransactionSignaturePrefix(nodeCall);
+    const signaturePrefix = await readTransactionSignaturePrefix(nodeCall, tx.blockNumber);
     if (signaturePrefix === null) reject('indeterminate', 'the node does not report a usable transaction signature domain');
     if (!verifyDemosSignature({ address: owner, message: `${signaturePrefix}${txHash}`, signature: tx.signature.data })) reject('invalid', 'transaction lacks the exact writer authorization');
     // Without a projection or retained authorization, the executed content is
