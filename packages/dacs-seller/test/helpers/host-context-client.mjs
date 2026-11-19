@@ -53,7 +53,8 @@ export async function contextHostFixture(t) {
 
 /**
  * A buyer for `host`. `challenge(jobId)` posts the signed challenge request, `context(jobId, nonce)` the signed context request
- * over that challenge, and `requestContext(jobId)` both; each answers `{ status, text, body, signed }`.
+ * over that challenge, and `requestContext(jobId)` both; each answers `{ status, text, body, signed }`. `scopeFor(jobId)` is the
+ * challenge scope the buyer sends.
  */
 export async function hostBuyer(host, listing, { jobId: defaultJob }) {
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
@@ -82,5 +83,5 @@ export async function hostBuyer(host, listing, { jobId: defaultJob }) {
     if (issued.status !== 200) throw new Error(`TEST the challenge was refused: ${issued.text}`);
     return context(jobId, issued.body.sessionNonce);
   };
-  return { challenge, context, requestContext };
+  return { challenge, context, requestContext, scopeFor };
 }

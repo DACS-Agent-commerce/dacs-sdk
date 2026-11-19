@@ -9,10 +9,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, openWireEnvelope } from '@kynesyslabs/dacs/wire';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
+import { presentationFor } from './helpers/context-wire-world.mjs';
+import { contextHostFixture } from './helpers/host-context-client.mjs';
 import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
 import { NOW, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
 import { authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
@@ -42,7 +44,11 @@ async function wireClient({ pin = PIN, agreementHash = AGREEMENT_HASH, readAutho
   const options = { signer, binding, connection, endpointProof, publicEndpoint: FIXTURE_ENDPOINT, seller: seller.claim, resolveJob: () => ({ listingPin: pin, agreementHash }), now: () => NOW, ...overrides };
   return { auth: createSellerWireClientAuth(options), binding, connection, signs, options };
 }
-const bodyFor = (path) => (path === PATHS.state || path === PATHS.proposals ? { transportIdentity: { jobId: JOB } } : { jobId: JOB });
+const CONTEXT_ROUTES = [PATHS.contextChallenge, PATHS.context];
+function bodyFor(path) {
+  if (CONTEXT_ROUTES.includes(path)) return { scope: { jobId: JOB, listingPin: PIN } };
+  return path === PATHS.state || path === PATHS.proposals ? { transportIdentity: { jobId: JOB } } : { jobId: JOB };
+}
 const openedAs = ({ binding, connection }, header, options = {}) => openWireEnvelope(header, 'request', { binding, local: connection(), purchaseProfile: null, requireDelegation: false, ...options });
 
 test('each moved route is signed under the wire domain with the binding\'s TP-1 profile, and the wire opens it', async () => {
@@ -101,20 +107,54 @@ test('a session signer with the buyer\'s delegation signs as the buyer and embed
   assert.deepEqual((await openedAs(client, header, { requireDelegation: true })).payload, payload);
 });
 
-test('an answer is verified by the wire, and only for a request this signer signed', async () => {
+test('an answer is verified by the wire, and an answer that is not signed by it is refused', async () => {
   const client = await wireClient();
   const wired = await client.auth.request(PATHS.state, bodyFor(PATHS.state), JSON.stringify(bodyFor(PATHS.state)));
   await assert.rejects(client.auth.verifyResponse(wired.payload, { header: 'not-a-wire-header', status: 200, responseBytes: Buffer.from('{}') }));
-  assert.throws(() => client.auth.verifyResponse({ ...wired.payload }, { header: 'any', status: 200, responseBytes: Buffer.from('{}') }), { code: 'wire_client_route_unsupported' });
 });
 
-for (const path of [DACS_SELLER_HTTP_PATHS.contextChallenge, DACS_SELLER_HTTP_PATHS.context, '/dacs/v1/unknown']) {
-  test(`the route ${path} has no signer and is refused before anything is signed`, async () => {
-    const client = await wireClient();
-    await assert.rejects(client.auth.request(path, { scope: { jobId: JOB } }, '{}'), { code: 'wire_client_route_unsupported' });
-    assert.equal(client.signs.calls, 0);
-  });
-}
+test('the challenge and context routes are signed under the wire domain with the binding\'s profile and the scope hash, and the wire opens them', async () => {
+  const client = await wireClient();
+  for (const path of CONTEXT_ROUTES) {
+    const body = bodyFor(path);
+    const text = JSON.stringify(body);
+    const { payload, header } = await client.auth.request(path, body, text);
+    const opened = await openedAs(client, header);
+    assert.deepEqual(opened.payload, payload, path);
+    assert.deepEqual({ path: payload.path, jobId: payload.jobId, profile: payload.profile, bodyHash: payload.bodyHash, agreementHash: payload.agreementHash, listingPin: payload.listingPin },
+      { path, jobId: JOB, profile: client.binding.profile, bodyHash: sha256Hex(text), agreementHash: sha256Hex(canonicalize(body.scope)), listingPin: PIN }, path);
+  }
+});
+
+test('the scope hash of a context request is the body\'s own, not the job lookup\'s Agreement hash', async () => {
+  const client = await wireClient({ agreementHash: OTHER_HASH });
+  const body = bodyFor(PATHS.context);
+  const { payload } = await client.auth.request(PATHS.context, body, JSON.stringify(body));
+  assert.equal(payload.agreementHash, sha256Hex(canonicalize(body.scope)));
+});
+
+test('an answer to a context route is verified by the wire, and an answer that is not signed by it is refused', async () => {
+  const client = await wireClient();
+  const body = bodyFor(PATHS.contextChallenge);
+  const signed = await client.auth.request(PATHS.contextChallenge, body, JSON.stringify(body));
+  await assert.rejects(client.auth.verifyResponse(signed.payload, { header: 'not-a-wire-header', status: 200, text: '{}', responseBytes: Buffer.from('{}') }));
+});
+
+test('a context request without a canonical job in its scope is refused before anything is looked up or signed', async () => {
+  let lookups = 0;
+  const client = await wireClient({ resolveJob: () => { lookups++; return { listingPin: PIN, agreementHash: AGREEMENT_HASH }; } });
+  for (const body of [{}, { scope: null }, { scope: { jobId: 'not-a-job' } }, { jobId: JOB }]) {
+    await assert.rejects(client.auth.request(PATHS.context, body, JSON.stringify(body)), { code: 'peer_job_invalid' }, JSON.stringify(body));
+  }
+  assert.equal(lookups, 0);
+  assert.equal(client.signs.calls, 0);
+});
+
+test('a request for a path outside the kit\'s routes is refused before anything is signed', async () => {
+  const client = await wireClient();
+  await assert.rejects(client.auth.request('/dacs/v1/unknown', { jobId: JOB }, '{}'), { code: 'wire_client_route_unsupported' });
+  assert.equal(client.signs.calls, 0);
+});
 
 test('a configuration with a missing binding, endpoint proof, seller or job resolver is refused at construction', async () => {
   const { options } = await wireClient();
@@ -133,6 +173,7 @@ test('a stalled authority read, job lookup or evidence lookup ends as a signing 
     ['authority reader', PATHS.state, { readAuthority }, () => { authorityStalled = true; }],
     ['resolveJob', PATHS.state, { resolveJob: STALLED }],
     ['evidenceFor', PATHS.state, { evidenceFor: STALLED }],
+    ['resolveJob on a context route', PATHS.context, { resolveJob: STALLED }],
   ];
   for (const [name, path, overrides, stall = () => {}] of cases) {
     const client = await wireClient({ ...overrides, signingTimeoutMs: SIGNING_TIMEOUT_MS });
@@ -191,4 +232,22 @@ test('an answer whose body was changed after the seller signed it is refused as 
   const client = createSellerAgentClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: tampering });
   await assert.rejects(client.propose(request), { name: 'SellerUnavailableError' });
   assert.equal(client.failureCause, 'response-auth');
+});
+
+test('a kit client with the shipped wire auth gets a challenge and the context answer from a running host, each answer verified', async (t) => {
+  const f = await contextHostFixture(t);
+  const host = await f.start();
+  const { scopeFor } = await f.buyerFor(host);
+  const session = testWallet(99);
+  const base = await wireClient({ pin: host.listingPin });
+  const delegationPayload = { version: '1', kind: 'seller-session-delegation', buyer: buyer.claim, seller: seller.claim, sessionPublicKey: session.claim.slice('did:demos:agent:'.length), listingPin: host.listingPin, jobId: JOB,
+    notBefore: NOW - SESSION_LEAD_MS, expiresAt: NOW + SESSION_LIFETIME_MS, profile: base.binding.profile };
+  const delegation = { payload: delegationPayload, signature: BUYER.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(delegationPayload))).toString('base64url') };
+  const authentication = createSellerWireClientAuth({ ...base.options, signer: { claim: session.claim, sign: session.signBytes }, delegation });
+  const client = createSellerAgentClient({ url: host.url, authentication, timeoutMs: CLIENT_TIMEOUT_MS });
+  const scope = scopeFor(JOB);
+  const { sessionNonce } = await client.contextChallenge({ scope });
+  const bundle = presentationFor(buyer, sessionNonce, NOW);
+  const answer = await client.agreementContext({ scope: { ...scope, buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle });
+  assert.equal(answer.disposition, 'present');
 });

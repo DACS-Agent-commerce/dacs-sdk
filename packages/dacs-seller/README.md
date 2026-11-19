@@ -253,14 +253,15 @@ profile in each request, and refuses a request signed under the transport's
 old domain. The buyer's `authentication` for
 `createSellerAgentClient` is `createSellerWireClientAuth({ signer, binding,
 connection, endpointProof, publicEndpoint, seller, resolveJob })`: it signs
-and verifies every route but the challenge and the context step through the
-wire, from the `binding` of `bindTp1Profile` and the `endpointProof` of
-`verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`, over the seller's
-signed discovery document), and `resolveJob(jobId)` gives the approved job's
-`{ listingPin, agreementHash }`. The challenge and the context step are refused
-before anything is signed. Signing (the
-`resolveJob` and `evidenceFor` lookups and the buyer's authority read)
-must finish within `signingTimeoutMs` (default 10,000 ms), or the
+and verifies every route the host serves, the challenge and the context step
+included, through the wire, from the `binding` of `bindTp1Profile` and the
+`endpointProof` of `verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`,
+over the seller's signed discovery document), and `resolveJob(jobId)` gives the
+approved job's `{ listingPin, agreementHash }`. On the challenge and the context
+step there is no Agreement yet: the signed Agreement hash is the hash of the
+request's own `scope`, and only `listingPin` of `resolveJob` is used. Signing (the
+`resolveJob` and `evidenceFor` lookups and the buyer's authority read) must
+finish within `signingTimeoutMs` (default 10,000 ms), or the
 request ends as `wire_client_signing_timeout` before anything is sent. A host mounts the Vet and Agreement context
 route on the wire by passing `{ ...createSellerContextRoute({ ... }), ...createWireSellerContextRoute({ ... }) }`
 as the `context` option of `createSellerHttpHandler(agent, { wire, context })`;
