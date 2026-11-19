@@ -11345,6 +11345,18 @@
           "after": "09fe1a480803d3b8c0bf317caca89ce2a6cdcd10"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF document the authority object bound and a broadcast refused before its send",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "5d4dc09f971278868d64b81c5874cdb00d8ac2a8",
+          "after": "25cbd22d1a8f1fcad57398a59cb93c5d731fe90e"
+        }
+      ]
     }
   ]
 }
