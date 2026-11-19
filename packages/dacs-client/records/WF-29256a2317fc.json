@@ -1,0 +1,12 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF distinguish qualified and unqualified selector refusals",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/WF-29256a2317fc.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/delta-provenance.test.mjs"
+  ]
+}

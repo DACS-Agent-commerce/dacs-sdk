@@ -1,0 +1,36 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client documents and move the record anchor to the merge",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/DELTA-NOTES.md",
+      "before": "8b582646a7369d32ad7462fc9c88fb6519f6d5d6",
+      "after": "8b582646a7369d32ad7462fc9c88fb6519f6d5d6"
+    },
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "60daf1347f4a57582b6cf5c9baf81e24bb4945a4",
+      "after": "60daf1347f4a57582b6cf5c9baf81e24bb4945a4"
+    },
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "08d949faa51fbee956200125ed7c253786b66a85",
+      "after": "08d949faa51fbee956200125ed7c253786b66a85"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-db1e69ca0ce9.json",
+    "packages/dacs-client/records/ids/D25.json",
+    "packages/dacs-client/records/ids/D42.json",
+    "packages/dacs-client/records/ids/D74.json",
+    "packages/dacs-client/records/ids/D76.json",
+    "packages/dacs-client/records/ids/D77.json",
+    "packages/dacs-client/records/ids/D78.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "Both sides of the merge recorded these documents; this record chooses the merged copies. The commit also declares the merged lanes and moves the anchor to the merge."
+}

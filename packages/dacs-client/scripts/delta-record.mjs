@@ -22,7 +22,7 @@
 //
 //   {"schema": "dacs-client-anchor/v1", "commit": "<40 hex>", "files": {"<path>": "<blob>"}}
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const RECORD_SCHEMA = 'dacs-client-delta-record/v1';
@@ -36,9 +36,9 @@ const KEYS = ['schema', 'delta', 'subject', 'sha', 'kind', 'files', 'commitFiles
 // re-pin, so no record names one. Every module a core script loads is core
 // (core-imports.test.mjs).
 export const CORE_FILES = Object.freeze([
-  'HOLD.json', 'DELTA-LEDGER.json', 'DELTA-COMMITS.json', 'DELTA-MAP.md',
+  'HOLD.json', 'DELTA-LEDGER.json', 'DELTA-COMMITS.json',
   'LICENSE', 'IMPORT-CUT-MAP.md', 'D15-SOURCES.json', 'PROVENANCE.json',
-  'records/.gitkeep', 'records/ANCHOR.json',
+  'records/ANCHOR.json',
   'scripts/check-hold.mjs', 'scripts/delta-freeze.mjs', 'scripts/delta-assemble.mjs', 'scripts/delta-record.mjs', 'scripts/delta-map.mjs',
   'scripts/check-provenance.mjs', 'scripts/pin-delta.mjs', 'scripts/source-git.mjs', 'scripts/publication-text.mjs',
   'scripts/path-mapping.mjs', 'scripts/test.mjs', 'scripts/copy-verbatim.mjs', 'scripts/import-cut-map.mjs',
@@ -46,10 +46,10 @@ export const CORE_FILES = Object.freeze([
   'scripts/check-hold.test.mjs', 'scripts/delta-continuity.test.mjs', 'scripts/delta-frontier.test.mjs',
   'scripts/delta-provenance.test.mjs', 'scripts/check-provenance.test.mjs', 'scripts/test-layout.test.mjs',
   'scripts/delta-record.test.mjs', 'scripts/delta-assemble.test.mjs', 'scripts/core-imports.test.mjs',
-  'scripts/delta-freeze.test.mjs', 'scripts/delta-anchor.test.mjs',
+  'scripts/delta-freeze.test.mjs', 'scripts/delta-anchor.test.mjs', 'scripts/delta-switch.test.mjs',
   'test/delta-ledger-gate.test.mjs',
 ]);
-export const isCorePath = path => CORE_FILES.includes(path) || path.startsWith('evidence/');
+export const isCorePath = path => CORE_FILES.includes(path) || path.startsWith('evidence/') || path === 'records/.gitkeep';
 // Sources, tests, the README, the manifest, the notes and scripts outside the core.
 const RECORD_NAMED = /^(?:src\/|test\/|scripts\/|README\.md$|package\.json$|DELTA-NOTES\.md$)/;
 /** True when the package-relative `path` holds the blob its records name (core paths never do). */
@@ -96,7 +96,10 @@ function fileFailures(record) {
   return failures;
 }
 
-function commitFileFailures(record) {
+// DELTA-MAP.md was a core file while the package stored the rendered map; these commit-only records predate that change and name it.
+const MAP_COMMIT_ONLY_RECORDS = Object.freeze(['D77-5963710ebcba.json', 'WF-2fdae2f97472.json']);
+
+function commitFileFailures(name, record) {
   const list = record.commitFiles;
   if (!Array.isArray(list) || list.length === 0 || !list.every(path => typeof path === 'string' && path !== '')) return ['commitFiles must list the paths the commit changes'];
   const failures = isSortedUnique(list) ? [] : ['commitFiles must be sorted and unique'];
@@ -104,6 +107,7 @@ function commitFileFailures(record) {
   // A commit-only record stands for a commit that changes only core or record files.
   if (record.kind === 'commit-only') for (const path of list) {
     const rel = path.startsWith(PACKAGE_PREFIX) ? path.slice(PACKAGE_PREFIX.length) : null;
+    if (rel === 'DELTA-MAP.md' && MAP_COMMIT_ONLY_RECORDS.includes(name)) continue;
     if (rel !== null && !isCorePath(rel) && !rel.startsWith('records/')) failures.push(`a commit-only record's commit changes ${path}`);
   }
   return failures;
@@ -128,7 +132,7 @@ export function validateRecord(name, record) {
   const supersedes = record.supersedes;
   if (supersedes !== undefined && !(Array.isArray(supersedes) && supersedes.length > 0 && supersedes.every(other => RECORD_NAME.test(other) && other !== name) && new Set(supersedes).size === supersedes.length)) failures.push('supersedes must list other record file names once each');
   if (failures.length === 0) {
-    failures.push(...fileFailures(record), ...commitFileFailures(record));
+    failures.push(...fileFailures(record), ...commitFileFailures(name, record));
     if (name !== recordName(record)) failures.push(`file name must be ${recordName(record)}`);
   }
   return failures.map(failure => `${at}: ${failure}`);
@@ -147,4 +151,23 @@ export function readAnchor(packageDir) {
     && Object.entries(anchor.files).every(([path, blob]) => path.startsWith(PACKAGE_PREFIX) && isAnchored(path.slice(PACKAGE_PREFIX.length)) && BLOB.test(blob));
   if (!valid) throw new Error(`${at}: not an anchor (schema, a commit and anchored paths with their blobs)`);
   return { commit: anchor.commit, files: anchor.files };
+}
+
+/** Reads lane declarations by id; malformed files are reported in `failures`. */
+export function readDeclarations(packageDir, failures = []) {
+  const dir = join(packageDir, 'records/ids'), declarations = new Map();
+  if (!existsSync(dir)) return declarations;
+  if (!lstatSync(dir).isDirectory()) { failures.push(`${PACKAGE_PREFIX}records/ids: not an id directory`); return declarations; }
+  for (const name of readdirSync(dir).sort()) {
+    const at = `${PACKAGE_PREFIX}records/ids/${name}`;
+    let value;
+    try { if (lstatSync(join(dir, name)).isFile()) value = JSON.parse(readFileSync(join(dir, name), 'utf8')); } catch { /* invalid declaration */ }
+    if (!/^[A-Z][A-Z0-9]*\.json$/.test(name) || !value || Object.keys(value).sort().join() !== 'delta,registration,schema,subject' ||
+        value.schema !== 'dacs-client-delta-id/v1' || name !== `${value.delta}.json` ||
+        ![value.registration, value.subject].every(text => typeof text === 'string' && text.trim() && !/[\r\n]/.test(text))) {
+      failures.push(`${at}: invalid id declaration`); continue;
+    }
+    declarations.set(value.delta, value);
+  }
+  return declarations;
 }
