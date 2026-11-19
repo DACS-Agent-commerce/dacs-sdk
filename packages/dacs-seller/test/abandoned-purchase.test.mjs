@@ -127,6 +127,14 @@ test('a purchase with proposal or commitment work still open reads as unknown at
   }
 });
 
+test('a purchase whose proposal is still pending reads as unknown from an hour after its admission on, whether or not an Agreement is retained yet', () => {
+  for (const deadline of [null, undefined, AGREEMENT_DEADLINE]) {
+    for (const after of [0, 30_000, ABANDONED_PURCHASE_MS, LONG_AFTER - ADMITTED_AT]) {
+      assert.equal(read({ states: { [proposals]: 'pending' }, deadline, clock: ADMITTED_AT + ABANDONED_PURCHASE_MS + after }), null, `${String(deadline)} +${after}`);
+    }
+  }
+});
+
 test('a purchase whose retained Agreement has no readable deadline reads as unknown', () => {
   for (const deadline of [undefined, NaN, -1, 1.5, '3600']) {
     assert.equal(read({ states: { [proposals]: 'completed' }, readDeadline: () => deadline, clock: LONG_AFTER }), null, String(deadline));

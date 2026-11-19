@@ -205,7 +205,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast; 'refuse-broadcast' signs and keeps it and the node refuses it (see refusedCreates).
-async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true }, contextSessionState = () => null, hostOptions = {} } = {}) {
+async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true }, contextSessionState = () => null, hostOptions = {}, deadlineSecAfterCommit } = {}) {
   // Armed by the 'reservation-before-work' cut: the next payment claim is reserved and then lost before any work, as by a process that
   // died there. The 'work-before-completion' cut loses the response of the claim whose work is done, so nothing completes it.
   let lostBeforeWork = false, lostBeforeCompletion = false;
@@ -236,7 +236,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey,now:clock });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Native host seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
-    category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000 });
+    category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000, ...(deadlineSecAfterCommit === undefined ? {} : { deadlineSecAfterCommit }) });
   if (buyerRequirement) draft.buyerRequirement = clone(buyerRequirement);
   if (!schemaUrl) delete draft.offering.deliverable.schemaUrl;
   // All binding strings have fixed canonical lengths. Declare the exact
@@ -3618,10 +3618,10 @@ test('a default host keeps the units of a purchase whose payment claim was cut s
 
 // A host with room for one purchase's units, whose periodic sweep the test runs by hand.
 const ONE_PURCHASE_UNITS = 100;
-async function oneRoomHost(t) {
+async function oneRoomHost(t, worldOptions = {}) {
   const timers = [], setInterval = globalThis.setInterval;
   t.mock.method(globalThis, 'setInterval', (callback, ms, ...rest) => { timers.push({ callback, ms }); return setInterval(callback, ms, ...rest); });
-  const w = await world(t, { contextSessionState: null, hostOptions: { maxReservationUnits: ONE_PURCHASE_UNITS } });
+  const w = await world(t, { contextSessionState: null, hostOptions: { maxReservationUnits: ONE_PURCHASE_UNITS }, ...worldOptions });
   // Runs the periodic sweep once and lets it settle, then waits until `done()` holds.
   const sweep = async (done = () => true) => {
     timers.filter(({ ms }) => ms === 60_000).at(-1).callback();
@@ -3644,6 +3644,20 @@ test('a default host gives back the units of a purchase whose commitment was ref
   await sweep(() => allocationOf(w, p.jobId) === 'released');
   p.anchor();
   await assert.rejects(p.client().commit(p.jobId), 'a commitment after the deadline is not accepted, since it could not be paid');
+  assert.equal((await w.purchase({ commit: false })).proposalAnswer.disposition, 'complete', 'the next buyer is admitted');
+});
+
+test('a commitment made after the Agreement deadline but within an hour of admission is refused with 409, leaves no pending attempt, and its units are given back after the hour', async (t) => {
+  const { w, sweep } = await oneRoomHost(t, { deadlineSecAfterCommit: ABANDONED_PURCHASE_MS / 2000 });
+  const p = await w.purchase({ commit: false });
+  const lateBy = 1_000;
+  assert.ok(p.agreement.terms.deadline - NOW + lateBy < ABANDONED_PURCHASE_MS, 'the commitment comes within an hour of admission');
+  w.advance(p.agreement.terms.deadline - NOW + lateBy);
+  await assert.rejects(p.client().commit(p.jobId), (error) => error.code === 'agreement_deadline_passed' && error.status === 409);
+  assert.equal(w.wireState(p, DACS_SELLER_HTTP_PATHS.commitments).state, 'ended', 'the refusal had no effect, so its attempt is not left pending');
+  assert.equal(allocationOf(w, p.jobId), 'live', 'an hour has not passed since admission');
+  w.advance(ABANDONED_PURCHASE_MS);
+  await sweep(() => allocationOf(w, p.jobId) === 'released');
   assert.equal((await w.purchase({ commit: false })).proposalAnswer.disposition, 'complete', 'the next buyer is admitted');
 });
 
