@@ -162,10 +162,13 @@ function exactAliases(block, expectedIdentity) {
  * agree. A refused, malformed or unavailable string-zero answer refuses the
  * observation; it is never read as the literal-error marker.
  * Returns a read-only binder whose observations grant no signing authority.
+ * Each observation keeps its own state, so overlapping calls are independent;
+ * only `exclusive: true` (the transport's own fenced binders) makes an
+ * overlapping call reject with binding_busy.
  * Throws NetworkBindingError for an invalid policy; the binder's methods reject
  * with NetworkBindingError and keep a failed reader's error as `cause`.
  */
-export function createDemosNetworkBinder({ expected: input, reader, fallback = null, now = () => Date.now(), maxAgeMs = 10_000, timeoutMs = 10_000 } = {}) {
+export function createDemosNetworkBinder({ expected: input, reader, fallback = null, now = () => Date.now(), maxAgeMs = 10_000, timeoutMs = 10_000, exclusive = false } = {}) {
   const expected = record(input, 'unpinned_network');
   exactKeys(expected, EXPECTED_KEYS, 'unpinned_network');
   if (!exactMatch(NETWORK, expected.network)) fail('unpinned_network', 'An exact reviewed network label is required');
@@ -267,8 +270,10 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
   }
 
   async function observe(saved = undefined, recovery = false) {
-    if (busy) fail('binding_busy', 'A network identity observation is already in progress');
-    busy = true;
+    if (exclusive) {
+      if (busy) fail('binding_busy', 'A network identity observation is already in progress');
+      busy = true;
+    }
     try {
       const deadline = performance.now() + timeoutMs;
       if (saved !== undefined) persisted(saved, { allowExpired: recovery });
@@ -308,7 +313,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
         bindingVersion: DEMOS_NETWORK_BINDING_VERSION, bindingId: id, ...expected,
         connectionId: connection.connectionId, source: Object.freeze(source), observedAt, expiresAt,
       });
-    } finally { busy = false; }
+    } finally { if (exclusive) busy = false; }
   }
 
   return Object.freeze({
