@@ -53,6 +53,7 @@ function confirmation(transaction: { hash: string; content: Record<string, unkno
  */
 async function startNode(failures: Record<string, number>, recordsTransfers = false) {
   const keys: string[] = [];
+  const txByHashRequests: string[] = [];
   let broadcast: { hash: string; content: Record<string, unknown> } | undefined;
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -72,6 +73,9 @@ async function startNode(failures: Record<string, number>, recordsTransfers = fa
         : `${request.method}:${content.message}`;
       const index = keys.filter((seen) => seen === key).length;
       keys.push(key);
+      if (key === "nodeCall:getTxByHash") {
+        txByHashRequests.push(content.data.hash);
+      }
       if (key === "execute:broadcastTx") {
         // The node has the transaction even when its answer to the buyer is a 502.
         broadcast = content.data?.response?.data?.transaction;
@@ -100,6 +104,8 @@ async function startNode(failures: Record<string, number>, recordsTransfers = fa
   return {
     url: `http://127.0.0.1:${port}`,
     count: (key: string) => keys.filter((seen) => seen === key).length,
+    txByHashRequests,
+    broadcastHash: () => broadcast?.hash,
   };
 }
 
@@ -211,6 +217,10 @@ describe("Demos payment rails send a transfer once", () => {
     expect(node.count("execute:confirmTx")).toBe(1);
     expect(node.count("execute:broadcastTx")).toBe(1);
     expect(node.count("nodeCall:getTxByHash")).toBeGreaterThanOrEqual(1);
+    expect(result.txHash).toBe(node.broadcastHash());
+    for (const hash of node.txByHashRequests) {
+      expect(hash).toBe(result.txHash);
+    }
     expect(result).toEqual({
       ok: true,
       txHash: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -227,6 +237,10 @@ describe("Demos payment rails send a transfer once", () => {
 
     expect(node.count("execute:broadcastTx")).toBe(1);
     expect(node.count("nodeCall:getTxByHash")).toBeGreaterThanOrEqual(1);
+    expect(result.txHash).toBe(node.broadcastHash());
+    for (const hash of node.txByHashRequests) {
+      expect(hash).toBe(result.txHash);
+    }
     expect(result).toEqual({
       ok: true,
       txHash: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -243,6 +257,10 @@ describe("Demos payment rails send a transfer once", () => {
 
     expect(node.count("execute:broadcastTx")).toBe(1);
     expect(node.count("nodeCall:getTxByHash")).toBeGreaterThanOrEqual(1);
+    expect(result.txHash).toBe(node.broadcastHash());
+    for (const hash of node.txByHashRequests) {
+      expect(hash).toBe(result.txHash);
+    }
     expect(result.ok).toBe(false);
     expect(result.txHash).toMatch(/^[0-9a-f]{64}$/);
   });

@@ -6267,8 +6267,45 @@ describe("durable fulfilment TP-1 G3 orchestrator Vet mode", () => {
       expect(await snapshot(h)).toEqual(before);
     });
 
+  test("an unsupported durable Vet mode that is a string is quoted in the reason", async () => {
+    const h = durableHarness();
+    const deps: DurableSellerFulfilmentDeps = { ...h.deps, vetMode: "tp1-g3" as never };
+
+    const result = await runDurableFulfilmentCore(h.fixture.request, deps, h.durability);
+
+    expect(result).toMatchObject({
+      code: "durable-dependencies-invalid",
+      reasons: [expect.stringContaining('Vet mode is unsupported: "tp1-g3"')],
+    });
+  });
+
+  test("an unsupported durable Vet mode that is not a string is named by its type in the reason", async () => {    const h = durableHarness();
+    const deps: DurableSellerFulfilmentDeps = { ...h.deps, vetMode: 1 as never };
+
+    const result = await runDurableFulfilmentCore(h.fixture.request, deps, h.durability);
+
+    expect(result).toMatchObject({
+      code: "durable-dependencies-invalid",
+      reasons: [expect.stringContaining("Vet mode is unsupported: type number")],
+    });
+  });
+
+  test("an unsupported durable Vet mode string is cut to a bounded length and its control characters are escaped in the reason", async () => {
+    const h = durableHarness();
+    const typo = `tp1\n${"g".repeat(500)}`;
+    const deps: DurableSellerFulfilmentDeps = { ...h.deps, vetMode: typo as never };
+
+    const result = await runDurableFulfilmentCore(h.fixture.request, deps, h.durability);
+
+    if (result.decision !== "indeterminate") throw new Error("expected an indeterminate result");
+    const reason = result.reasons.join(" ");
+    expect(reason).toContain('Vet mode is unsupported: "tp1\\n');
+    expect(reason).not.toContain("\n");
+    expect(reason.length).toBeLessThan(200);
+  });
+
   test.each(stageDirections)(
-    "durable recovery under fresh deps and a reopened store refuses retained Vet provenance of the other mode with a reason containing vet_mode_mismatch:, before any replay, projection or effect: the store records are byte-equal before and after, and receipt, delivery, evidence, signer and transport calls are 0 (retained %s, recovering %s, stage: %s)", async (retained, recovering, stage) => {
+    "durable recovery under fresh deps and a reopened store refuses retained Vet provenance of the other mode with the code durable-vet-mode-mismatch and a reason containing vet_mode_mismatch:, before any replay, projection or effect: the store records are byte-equal before and after, and receipt, delivery, evidence, signer and transport calls are 0 (retained %s, recovering %s, stage: %s)", async (retained, recovering, stage) => {
       const h = harnessIn(retained);
       const recover = await reachStage(h, stage);
       const before = await snapshot(h);
@@ -6280,7 +6317,7 @@ describe("durable fulfilment TP-1 G3 orchestrator Vet mode", () => {
 
       expect(refused).toMatchObject({
         decision: "indeterminate",
-        code: "durable-permit-inspection-failed",
+        code: "durable-vet-mode-mismatch",
         reasons: [expect.stringContaining("vet_mode_mismatch:")],
         safeToRetryDelivery: false,
       });

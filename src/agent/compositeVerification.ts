@@ -79,7 +79,7 @@ export interface CompositeVerificationExpectations {
   bundleHash: string;
   /** The hash is recomputed from this complete requirement object. */
   requirement: CompositeBundleRequirement;
-  /** Exact verifier identity required on the composite signature. */
+  /** Verifier identity required on the composite signature; the signer may add parameters. */
   verifier: string;
   freshness: ExpectedVerifyResult[];
   dealSpecific: ExpectedVerifyResult[];
@@ -1662,7 +1662,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
     "dacs-composite:v1:",
     {
       isSignerAuthorized: (_artifact, signature) =>
-        signature.signer === expectedSnapshot.verifier,
+        sameCanonicalClaimIdentity(signature.signer, expectedSnapshot.verifier),
       resolvePublicKey: capturedDeps.resolvePublicKey,
       verify: capturedDeps.verify,
     },
