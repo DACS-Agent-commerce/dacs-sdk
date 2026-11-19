@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF distinguish network binding refusal messages",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "10714c8e99468837c2ebc47cd666ec638488bf33",
+      "after": "6ca071c8cae9382ce68098b4f6b8d3e23adc2d42"
+    },
+    {
+      "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+      "before": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54",
+      "after": "4fa364bde560527dba390642c2e442fb377a1ea6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-c7f1e627d509.json",
+    "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "packages/dacs-client/test/native-broadcast-once.test.mjs"
+  ]
+}
