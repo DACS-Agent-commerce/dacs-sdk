@@ -987,10 +987,11 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           binding=await storageRecoveryBinder.beforeBroadcast(binding);
           const broadcastAuth=await headers();
           if(!await absent() || !sameContext(originalContext,await context())) return pending;
-          // The domain may have changed since the confirmation: the signature is checked again, on a fresh read once the
-          // kept answer is past its lifetime, before the resend is reserved. A refusal sends nothing.
-          await verifyTransactionSignature(tx);
           const resendOnce=async(bytes,final)=>{
+            // The domain may have changed since the confirmation or while the dispatch record was written: the signature
+            // is checked again here, on a fresh read once the kept answer is past its lifetime, with nothing awaited
+            // between that check and the reservation. A refusal reserves and sends nothing.
+            await verifyTransactionSignature(tx);
             // Reserve the sole attempt before dispatch. A crash consumes it too;
             // reopening the journal can never start another retransmission loop.
             r={...r,storageWriteResends:1,networkBinding:binding};

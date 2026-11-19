@@ -8210,5 +8210,19 @@
       "packages/dacs-client/test/helpers/native-create-world.mjs",
       "packages/dacs-client/test/native-signature-domain-recheck.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): WF check the signature domain inside the CREATE recovery resend step, right before the resend is reserved",
+    "compact": true,
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "packages/dacs-client/test/native-signature-domain-recheck.test.mjs"
+    ]
   }
 ]

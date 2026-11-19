@@ -11228,6 +11228,23 @@
           "after": "a122b46a4c1891de04bd568010fc3f2ea309396c"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF check the signature domain inside the CREATE recovery resend step, right before the resend is reserved",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "d5da2b712d7b2368f793861823b0d64dc233f7fd",
+          "after": "059058648fe0bc4c71fcfb56248ab9c96df45a0e"
+        },
+        {
+          "path": "packages/dacs-client/test/native-signature-domain-recheck.test.mjs",
+          "before": "a122b46a4c1891de04bd568010fc3f2ea309396c",
+          "after": "4881ecd2a63638b1f9adcae7821704b572b88eb5"
+        }
+      ]
     }
   ]
 }
