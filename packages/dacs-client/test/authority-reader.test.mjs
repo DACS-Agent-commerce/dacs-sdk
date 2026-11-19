@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { contentHash } from '@kynesyslabs/dacs';
 import { assertTp1Authority, assertTp1Binding, bindTp1Profile, signSellerSessionDelegation, TESTNET_PROFILE_TP1, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal } from '../src/dacs/demos-sr2-adapter.mjs';
 import { createDevnetAgreementTransport } from '../src/wallet/devnet-native-transport.mjs';
@@ -12,6 +13,9 @@ import { createEffectFence } from '../src/wallet/effect-fence.mjs';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
 import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
 import { AUTHORITY_READ_DEADLINE_MS } from '../src/public-admission.mjs';
+import { addressForClaim } from '../src/signatures.mjs';
+import { fixtureListing } from './fixtures/listings.mjs';
+import { createEphemeralWallet } from './fixtures/wallet.mjs';
 import { createAuthorityFixture } from './fixtures/tp1-authority-reader.mjs';
 import { record, ownLocal, shared } from './helpers/chain-identity-fixture.mjs';
 import { queuedOwner } from './helpers/queued-owner.mjs';
@@ -86,7 +90,10 @@ const RPC_BLOCK = number => ({ method: 'nodeCall', params: [{ message: 'getBlock
 const mismatch = { code: 'tp1_participant_profile_mismatch' };
 const causesOf = error => { const causes = []; for (let next = error; next; next = next.cause) causes.push(next); return causes; };
 const enrollment = (claim, patch = {}) => ({ claim, profile: { ...OWN_PROFILE }, modules: { ...TESTNET_PROFILE_TP1.tuple }, evidence: 'TEST-enrollment-record', revoked: false, ...patch });
-const purchaseRow = (jobId, seller = SELLER) => ({ terms: { protocol: { jobId } }, state: { listing: { seller: { identity: { presentedBy: seller } } } } });
+// The members of a saved purchase row the reader uses, where the purchase service saves them: the buyer's wallet address in
+// its terms, the job id in its protocol terms and the verified Listing in its protocol state (`savedPurchase` builds a whole row).
+const purchaseRow = (jobId, seller = SELLER, buyer = BUYER) => ({ terms: { buyer: { accountId: 'TEST-buyer', wallet: addressForClaim(buyer) }, seller: { claim: seller }, protocol: { jobId } },
+  state: { protocol: { stage: 'identity', listing: { seller: { identity: { presentedBy: seller } } }, attempts: [] } } });
 const otherChainBlock = () => jsonResponse(JSON.stringify(ok({ number: 0, status: 'confirmed', hash: 'e'.repeat(64), content: {} })));
 const countingSigner = claim => { const signer = { claim, signs: 0, async sign() { signer.signs++; return Buffer.alloc(64, 7); } }; return signer; };
 const delegationPayload = (buyer, jobId) => ({ version: '1', kind: 'seller-session-delegation', buyer, sessionPublicKey: '9'.repeat(64), seller: SELLER,
@@ -108,6 +115,16 @@ function readerWorld(t, { fetchImpl } = {}) {
   const bind = () => bindTp1Profile({ record, local: owner.currentLocal(), readAuthority: reader });
   t.after(() => owner.close());
   return { node, owner, authority, wallet, registered, rows, enrolled, reads, sources, reader, bind };
+}
+
+// A whole saved purchase row as the purchase service's `prepare` writes it for a protocol purchase: its terms with the buyer's
+// wallet address and the job id, its state with the protocol's prepared state, which keeps the seller-signed Listing.
+function savedPurchase() {
+  const buyer = createEphemeralWallet(), seller = createEphemeralWallet(), listing = fixtureListing(seller, { listingId: 'TEST-listing', now: T0 });
+  const terms = { operation: 'purchase', buyer: { accountId: 'TEST-buyer', wallet: buyer.address }, seller: { claim: seller.claim, payee: seller.address },
+    listing: { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) }, price: { amount: '2.5', amountOs: '2500000000' }, protocol: { jobId: JOB } };
+  const state = { preparedVerification: { checks: [], evidence: {} }, protocol: { stage: 'identity', listing: structuredClone(listing), attempts: [] } };
+  return { row: { terms, state }, jobId: JOB, buyer: buyer.claim, seller: seller.claim };
 }
 
 // The client composition from an unopened owner: the test supplies no binding, reader or boundary.
@@ -166,6 +183,64 @@ test('the production reader serves discovery and job checks from registered List
   await assert.rejects(signSellerSessionDelegation(delegationPayload(BUYER, UNKNOWN_JOB), signer, binding, current), mismatch, 'a row saved for another job answers nothing');
   assert.equal(signer.signs, 0, 'no refused case reached the signer');
   for (const name of Object.keys(w.sources)) assert.throws(() => createAuthorityReader({ ...w.sources, [name]: undefined }), TypeError, name);
+});
+
+test('a purchase as the purchase service saves it, with its Listing in the protocol state, authorizes its enrolled seller for its job', async t => {
+  const { row, jobId, buyer, seller } = savedPurchase();
+  const w = readerWorld(t);
+  w.wallet.claim = buyer;
+  w.rows.set(jobId, row);
+  w.enrolled.set(seller, [enrollment(seller)]);
+  const binding = await w.bind(), current = w.owner.currentLocal();
+  assert.deepEqual((await w.reader({ local: { ...current }, sessionId: jobId, participants: [buyer, seller] })).participants.map(entry => entry.claim), [buyer, seller]);
+  await assertTp1Authority(binding, current, [buyer, seller], jobId);
+});
+
+test("a saved purchase of another buyer gives no participants for a job, even with an enrolled seller", async t => {
+  const w = readerWorld(t), current = w.owner.currentLocal();
+  w.rows.set(JOB, purchaseRow(JOB, SELLER, OTHER_BUYER));
+  for (const participants of [[BUYER, SELLER], [SELLER], [OTHER_BUYER, SELLER]]) {
+    assert.deepEqual((await w.reader({ local: { ...current }, sessionId: JOB, participants })).participants, [], participants.join(' '));
+  }
+  const { row, jobId, seller } = savedPurchase();
+  w.rows.set(jobId, row);
+  w.enrolled.set(seller, [enrollment(seller)]);
+  for (const participants of [[BUYER, seller], [seller]]) {
+    assert.deepEqual((await w.reader({ local: { ...current }, sessionId: jobId, participants })).participants, [], 'a saved row of another wallet');
+  }
+  assert.equal(w.reads.enrollment, 0, "no enrollment was read for another buyer's row");
+});
+
+test("a direct wire signing call for another buyer's saved purchase is refused and produces no signature", async t => {
+  const w = readerWorld(t), signer = countingSigner(BUYER), binding = await w.bind(), current = w.owner.currentLocal();
+  w.rows.set(JOB, purchaseRow(JOB, SELLER, OTHER_BUYER));
+  await assert.rejects(signSellerSessionDelegation(delegationPayload(BUYER, JOB), signer, binding, current), mismatch);
+  assert.equal(signer.signs, 0, 'the signer was never reached');
+});
+
+test("the current buyer's own saved purchase authorizes its enrolled seller, with the wallet written in each accepted form", async t => {
+  const { row, jobId, buyer, seller } = savedPurchase(), hex = buyer.slice(-64);
+  const w = readerWorld(t), signer = countingSigner(buyer);
+  w.wallet.claim = buyer;
+  w.enrolled.set(seller, [enrollment(seller)]);
+  const binding = await w.bind(), current = w.owner.currentLocal();
+  for (const wallet of ['0x' + hex, hex, '0X' + hex.toUpperCase(), ' 0x' + hex + ' ']) {
+    w.rows.set(jobId, { ...row, terms: { ...row.terms, buyer: { ...row.terms.buyer, wallet } } });
+    assert.equal((await w.reader({ local: { ...current }, sessionId: jobId, participants: [buyer, seller] })).participants.length, 2, wallet);
+  }
+  w.rows.set(jobId, row);
+  assert.equal((await signSellerSessionDelegation({ ...delegationPayload(buyer, jobId), seller }, signer, binding, current)).payload.jobId, jobId);
+  assert.equal(signer.signs, 1);
+});
+
+test('a saved purchase whose buyer wallet is missing or malformed gives no participants', async t => {
+  const w = readerWorld(t), current = w.owner.currentLocal(), row = purchaseRow(JOB);
+  const terms = [undefined, 7, '', '0x' + '4'.repeat(63), '0x' + 'g'.repeat(64), BUYER].map(wallet => ({ ...row.terms, buyer: { ...row.terms.buyer, wallet } }));
+  terms.push({ ...row.terms, buyer: undefined }, { ...row.terms, buyer: null });
+  for (const changed of terms) {
+    w.rows.set(JOB, { ...row, terms: changed });
+    assert.deepEqual((await w.reader({ local: { ...current }, sessionId: JOB, participants: [BUYER, SELLER] })).participants, [], String(changed.buyer?.wallet));
+  }
 });
 
 test('while held, every action refuses profile_not_admitted before any read, and direct reader calls sign and send nothing', async t => {
@@ -364,11 +439,14 @@ test('the composed reader answers for the finalized wallet: its own claim is the
   const rows = new Map(), enrolled = new Map();
   const w = await compositionWorld(t, { input: { purchases: { findByJobId: jobId => rows.get(jobId) ?? null }, participantImplementations: { entriesFor: claim => enrolled.get(claim) ?? [] } } });
   const composition = await w.build(), address = composition.wallet.getPublicAccount().address, claim = 'did:demos:agent:' + address.slice(2);
-  rows.set(JOB, purchaseRow(JOB));
+  rows.set(JOB, purchaseRow(JOB, SELLER, claim));
   enrolled.set(SELLER, [enrollment(SELLER)]);
   const { binding } = composition;
   assert.equal(binding.profile.chainIdentity, CHAIN);
   await assertTp1Authority(binding, w.owner.currentLocal(), [claim, SELLER], JOB);
+  rows.set(JOB, purchaseRow(JOB, SELLER, OTHER_BUYER));
+  await assert.rejects(assertTp1Authority(binding, w.owner.currentLocal(), [claim, SELLER], JOB), mismatch, "another buyer's saved purchase");
+  rows.set(JOB, purchaseRow(JOB, SELLER, claim));
   enrolled.delete(SELLER);
   await assert.rejects(assertTp1Authority(binding, w.owner.currentLocal(), [claim, SELLER], JOB), mismatch);
 });

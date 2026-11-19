@@ -1,0 +1,24 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF answer job authority only for the wallet's own saved purchase and read its seller from the saved Listing",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/authority-reader.mjs",
+      "before": "a716f91bd5546fd66aa328a7a772da2046175dbd",
+      "after": "c622df624308ae77961e9cb4adca9d23e3cd6a8d"
+    },
+    {
+      "path": "packages/dacs-client/test/authority-reader.test.mjs",
+      "before": "42b2f3c8d0830475ba50527c220e4a4274b8180c",
+      "after": "107b331fa526acd9e4c13b643e9efbc2e9195611"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-310ee47f7a1e.json",
+    "packages/dacs-client/src/wallet/authority-reader.mjs",
+    "packages/dacs-client/test/authority-reader.test.mjs"
+  ],
+  "note": "A job's counterparty now comes only from a saved purchase whose buyer wallet, converted to a claim, is the session wallet's claim, and its seller is read from the Listing the purchase service saves at state.protocol.listing. Another buyer's row, or a row with no well-formed buyer wallet, answers no participants."
+}
