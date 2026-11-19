@@ -1057,6 +1057,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       ? { agreement: candidate, ref: fixtureRef(agreementAddress, session.agreementHash), native: null }
       : await readBuyerAgreement(agreementAddress, session.buyerBundle.presentedBy, session.agreementHash, projection);
     if (contentHash(agreement) !== session.agreementHash) throw new SellerAgentError('agreement_substituted', 'anchored Agreement differs from the one the seller contributed to');
+    // A payment is accepted only when included before the Agreement's deadline, so a first commitment at or after it could never be paid.
+    // Work already retained (an attempt, a publication request or the commitment) is finished or read back as before.
+    if (!session.commitment && session.commitCreatedAt === undefined && !session.signatureCommitmentAttempt && !session.commitmentPublishAsked
+        && now() >= agreement.terms.deadline) throw new SellerAgentError('agreement_deadline_passed', 'the Agreement deadline has passed, so no payment for it could be accepted', 409);
     // Retain public proof only after ordinary native authentication, before any
     // commitment effect. Restart can reauthenticate it without buyer authority.
     if (native && projection !== undefined) session.agreementSignedProjection = structuredClone(projection);
