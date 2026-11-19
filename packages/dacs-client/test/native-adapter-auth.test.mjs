@@ -8,12 +8,15 @@ import {readFileSync} from 'node:fs';
 import {sha256Hex} from '@kynesyslabs/dacs';
 import {createDevnetAgreementTransport} from '../src/wallet/devnet-native-transport.mjs';
 import {createDemosSr2Adapter,createInMemoryDemosSr2Journal,isDemosSr2Contradiction} from '../src/dacs/demos-sr2-adapter.mjs';
+import {readTransactionSignaturePrefix} from '../src/dacs/transaction-signature-domain.mjs';
 import {deriveStorageAddress} from '../src/dacs/wallet-transactions.mjs';
 const f=JSON.parse(readFileSync(new URL('./fixtures/sr2-public-creates.json',import.meta.url)));
 const clone=v=>structuredClone(v), writer='did:demos:agent:'+f.owner.slice(2);
-// What the public testnet reports today: the signatureDomain fork is not active.
-const DOMAIN_INACTIVE={forks:{signatureDomain:{activated:false}}};
-const domainActive=chainId=>({forks:{signatureDomain:{activated:true}},chainId});
+const recordedNetworkInfo=name=>JSON.parse(JSON.parse(readFileSync(new URL(`../../../conformance/tp1-node-observations/${name}.json`,import.meta.url))).body).response;
+// A node that reports the signatureDomain fork, not yet active. The CREATE is included at block 7.
+const OS_DENOMINATION={activationHeight:0,activated:true,currentHeight:9};
+const DOMAIN_INACTIVE={forks:{osDenomination:OS_DENOMINATION,signatureDomain:{activationHeight:null,activated:false,currentHeight:9}}};
+const domainActive=(chainId,activationHeight=7)=>({forks:{osDenomination:OS_DENOMINATION,signatureDomain:{activationHeight,activated:true,currentHeight:9}},chainId});
 function setup({projection=clone(f.valid),owner=f.owner,networkInfo=DOMAIN_INACTIVE,changeTx=()=>{},changeNative=()=>{},changeBlock=()=>{}}={}) {
  const op=projection.content.data[1],tx={...clone(projection),status:'confirmed',blockNumber:7};
  const native={success:true,storageAddress:op.storageAddress,owner,programName:op.programName,data:clone(op.data),metadata:clone(op.metadata),createdByTx:projection.hash,interactionTxs:[projection.hash]};
@@ -99,21 +102,72 @@ for(const [name,messageFor] of [
  const h=signedWorld(messageFor,domainActive(7));
  await assert.rejects(h.read(),refusedUnmarked);
 });
+// The Demos SDK signs the bare hash when the node reports no signatureDomain fork.
+for(const [name,networkInfo] of [
+ ['a signatureDomain-less network info answer',{forks:{osDenomination:{activated:true}},chainId:7}],
+ ['the recorded answer of a node build without the signatureDomain fork',recordedNetworkInfo('network')],
+ ['the recorded answer of a node build with the signatureDomain fork not active',recordedNetworkInfo('network-2026-10-20')],
+]){
+ test(`with ${name} a bare-hash signature verifies`,async()=>{
+  const h=setup({networkInfo}),r=await h.read();
+  assert.equal(r.status,'present');assert.equal(await h.verifyReceipt(r.receipt),'valid');
+ });
+ test(`with ${name} a signature over the domain form is refused`,async()=>{
+  await assert.rejects(signedWorld(hash=>`demos-tx:v1:1:${hash}`,networkInfo).read(),refusedUnmarked);
+ });
+}
+test('the recorded answer of the node build without the signatureDomain fork does not report it',()=>{
+ assert.equal(Object.hasOwn(recordedNetworkInfo('network').forks,'signatureDomain'),false);
+});
+// The form follows the block that included the CREATE (block 7), not the fork state at readback.
+for(const activationHeight of [8,1000]){
+ test(`with the signature domain active from block ${activationHeight} a CREATE included at block 7 verifies the bare hash`,async()=>{
+  const h=signedWorld(hash=>hash,domainActive(7,activationHeight)),r=await h.read();
+  assert.equal(r.status,'present');assert.equal(await h.verifyReceipt(r.receipt),'valid');
+ });
+ test(`with the signature domain active from block ${activationHeight} a CREATE included at block 7 refuses the domain form`,async()=>{
+  await assert.rejects(signedWorld(hash=>`demos-tx:v1:7:${hash}`,domainActive(7,activationHeight)).read(),refusedUnmarked);
+ });
+}
+for(const activationHeight of [7,6,0]){
+ test(`with the signature domain active from block ${activationHeight} a CREATE included at block 7 verifies the domain form`,async()=>{
+  const h=signedWorld(hash=>`demos-tx:v1:7:${hash}`,domainActive(7,activationHeight)),r=await h.read();
+  assert.equal(r.status,'present');assert.equal(await h.verifyReceipt(r.receipt),'valid');
+ });
+ test(`with the signature domain active from block ${activationHeight} a CREATE included at block 7 refuses the bare hash`,async()=>{
+  await assert.rejects(signedWorld(hash=>hash,domainActive(7,activationHeight)).read(),refusedUnmarked);
+ });
+}
 for(const [name,networkInfo] of [
  ['an unreadable',new Error('TEST-network-info-unreadable')],
  ['a non-object','TEST-not-an-object'],
  ['a fork-less',{chainId:7}],
- ['a signatureDomain-less',{forks:{osDenomination:{activated:true}},chainId:7}],
- ['a non-boolean activation',{forks:{signatureDomain:{activated:'true'}},chainId:7}],
- ['an active chain-id-less',{forks:{signatureDomain:{activated:true}}}],
+ ['an osDenomination-less',{forks:{signatureDomain:{activationHeight:null,activated:false,currentHeight:9}},chainId:7}],
+ ['a null signatureDomain',{forks:{osDenomination:OS_DENOMINATION,signatureDomain:null},chainId:7}],
+ ['a non-boolean activation',{forks:{osDenomination:OS_DENOMINATION,signatureDomain:{activationHeight:7,activated:'true',currentHeight:9}},chainId:7}],
+ ['an active chain-id-less',domainActive(undefined)],
  ['a negative chain id',domainActive(-1)],
  ['a fractional chain id',domainActive(7.5)],
  ['a decimal-string chain id',domainActive('7')],
  ['an unsafe chain id',domainActive(2**53)],
+ ['an active activation-height-less',{forks:{osDenomination:OS_DENOMINATION,signatureDomain:{activated:true,currentHeight:9}},chainId:7}],
+ ['an active unscheduled',domainActive(7,null)],
+ ['a negative activation height',domainActive(7,-1)],
+ ['a fractional activation height',domainActive(7,6.5)],
+ ['a decimal-string activation height',domainActive(7,'6')],
+ ['an unsafe activation height',domainActive(7,2**53)],
 ])test(`${name} network info answer leaves the readback indeterminate and applies nothing`,async()=>{
  const h=setup({networkInfo});
  await assert.rejects(h.read(),e=>e.code==='indeterminate');
  assert.deepEqual(await h.adapterJournal.records(),[]);assert.equal(h.effects(),0);
+});
+test('with the signature domain active a transaction without an inclusion height leaves the readback indeterminate and applies nothing',async()=>{
+ const h=setup({networkInfo:domainActive(7),changeTx:tx=>{delete tx.blockNumber;}});
+ await assert.rejects(h.read(),e=>e.code==='indeterminate');
+ assert.deepEqual(await h.adapterJournal.records(),[]);assert.equal(h.effects(),0);
+});
+for(const inclusionHeight of [undefined,null,-1,7.5,'7',2**53])test(`with the signature domain active an inclusion height of ${JSON.stringify(inclusionHeight)??'undefined'} has no signature form`,async()=>{
+ assert.equal(await readTransactionSignaturePrefix(async()=>domainActive(7),inclusionHeight),null);
 });
 test('verifyReceipt answers indeterminate when the signature domain becomes unreadable',async()=>{
  const h=setup(),r=await h.read();
