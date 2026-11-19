@@ -370,6 +370,33 @@ describe("Demos write evidence program-name support", () => {
     expect(() => assertDemosWriteEvidence(alternate))
       .toThrow(/only SDK-derived program names are supported/);
   });
+  it.each(["no storage payload", "missing program name", "non-string program name"])(
+    "does not attribute %s to unsupported naming",
+    (cause) => {
+      const invalid = structuredClone(evidence);
+      const signed = JSON.parse(invalid.signedTransaction);
+      if (cause === "no storage payload") {
+        signed.content.data = [];
+      } else if (cause === "missing program name") {
+        delete signed.content.data[1].programName;
+      } else {
+        signed.content.data[1].programName = 42;
+      }
+      invalid.signedTransaction = canonicalize(signed);
+      invalid.signedTransactionHash = demosSignedTransactionProofHash(signed);
+      expect(() => assertDemosWriteEvidence(invalid))
+        .toThrow(/^Demos signed transaction does not bind its native write$/);
+    },
+  );
+  it("explains an alternate payload name when the native read name is SDK-derived", () => {
+    const invalid = structuredClone(evidence);
+    const signed = JSON.parse(invalid.signedTransaction);
+    signed.content.data[1].programName = "other-implementation-deliverable";
+    invalid.signedTransaction = canonicalize(signed);
+    invalid.signedTransactionHash = demosSignedTransactionProofHash(signed);
+    expect(() => assertDemosWriteEvidence(invalid))
+      .toThrow(/only SDK-derived program names are supported/);
+  });
   it("continues accepting the SDK-derived program name", () => {
     expect(() => assertDemosWriteEvidence(evidence)).not.toThrow();
   });

@@ -588,18 +588,22 @@ per-client limiter so one client cannot exhaust the shared request budget.
   configuration; without it only the bare hash is accepted, and any other
   message is refused. `createNativePaymentEvidenceConsumer` takes the same
   option for the readback.
-  SR-2 readback and the core Demos write-evidence checks support only the
-  program name returned by `logicalToStorageProgramName(logicalAddress)`.
-  A correctly signed CREATE using another native program name is unsupported,
-  even when the exact native address and signed projection are supplied; it is
-  refused with `only SDK-derived program names are supported`. This restriction
-  also applies to native payment evidence readback.
   Its fee is the node's to set, up to a ceiling of 50 DEM for the whole debit
   of the write: the network, rpc and additional fee plus the storage and gas
   burns, summed in OS (whole DEM numbers before the node's denomination fork,
   OS strings after it), must not be above 50 DEM, and a fee that cannot be
   summed exactly is refused. Below the ceiling the fee is not compared with any
   expected amount.
+
+  SR-2 readback and the core Demos write-evidence checks support only the
+  program name returned by `logicalToStorageProgramName(logicalAddress)`.
+  For a correctly signed CREATE using another native program name, a read
+  supplied with an exact native address or signed projection is refused with
+  `only SDK-derived program names are supported`. A default read supplied with
+  neither returns `indeterminate` with `name-index visibility does not establish
+  authenticated absence`. This restriction also applies to native payment
+  evidence readback.
+
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent. A kept CREATE whose whole debit is above the ceiling is never
   broadcast again, and until the operator clears it (below)
