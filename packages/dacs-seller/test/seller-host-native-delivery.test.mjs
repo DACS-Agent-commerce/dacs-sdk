@@ -3553,8 +3553,9 @@ test('wire-payment-retained-work-before-finish', async (t) => {
   }
 });
 
-// A default host (no operator `contextSessionState`) reads a purchase that has paid nothing as abandoned an hour after its Agreement's deadline.
+// A default host (no operator `contextSessionState`) reads a purchase that has paid nothing as abandoned once its Agreement's deadline has passed.
 const ABANDONED_PURCHASE_MS = 3_600_000;
+const MARGIN_MS = 5 * 60_000;
 const allocationOf = (w, jobId) => {
   const db = new DatabaseSync(join(w.dataDirectory, 'transport', 'transport.sqlite'), { readonly: true });
   try { return db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
@@ -3585,12 +3586,12 @@ test('a default host frees the units of a purchase whose proposal the seller ref
   assert.equal(allocationOf(w, jobId), 'released');
 });
 
-test('a default host frees the units of a purchase that stopped after its proposal once an hour has passed since the Agreement deadline', async (t) => {
+test('a default host frees the units of a purchase that stopped after its proposal once the Agreement deadline has passed', async (t) => {
   const w = await world(t, { contextSessionState: null }), p = await w.purchase({ commit: false });
   assert.equal(allocationOf(w, p.jobId), 'live');
-  await restartPastDeadline(w, p, ABANDONED_PURCHASE_MS / 2);
+  await restartPastDeadline(w, p, -MARGIN_MS);
   assert.equal(allocationOf(w, p.jobId), 'live', 'the buyer can still commit until the deadline');
-  w.advance(ABANDONED_PURCHASE_MS);
+  w.advance(2 * MARGIN_MS);
   await w.restart();
   assert.equal(allocationOf(w, p.jobId), 'released');
 });
@@ -3630,17 +3631,19 @@ async function oneRoomHost(t) {
   return { w, sweep };
 }
 
-test('a default host gives back the units of a purchase whose commitment was refused with no effect an hour after its Agreement deadline, with no restart, and admits the next buyer', async (t) => {
+test('a default host gives back the units of a purchase whose commitment was refused with no effect once its Agreement deadline has passed, with no restart, and admits the next buyer', async (t) => {
   const { w, sweep } = await oneRoomHost(t);
   const p = await w.purchase({ commit: false, anchored: false });
   await assert.rejects(p.client().commit(p.jobId), (error) => error.code === 'agreement_not_anchored');
   assert.notEqual(w.wireState(p, DACS_SELLER_HTTP_PATHS.commitments).state, 'none', 'the refused commitment leaves an operation in the journal');
   await assert.rejects(w.purchase({ commit: false }), (error) => error.code === 'seller_not_ready', 'the first purchase\'s units leave none for a second');
-  w.advance(p.agreement.terms.deadline - NOW + ABANDONED_PURCHASE_MS / 2);
+  w.advance(p.agreement.terms.deadline - NOW - MARGIN_MS);
   await sweep();
-  assert.equal(allocationOf(w, p.jobId), 'live', 'the buyer can still anchor and commit until an hour after the deadline');
-  w.advance(ABANDONED_PURCHASE_MS);
+  assert.equal(allocationOf(w, p.jobId), 'live', 'the buyer can still anchor and commit until the deadline');
+  w.advance(2 * MARGIN_MS);
   await sweep(() => allocationOf(w, p.jobId) === 'released');
+  p.anchor();
+  await assert.rejects(p.client().commit(p.jobId), 'a commitment after the deadline is not accepted, since it could not be paid');
   assert.equal((await w.purchase({ commit: false })).proposalAnswer.disposition, 'complete', 'the next buyer is admitted');
 });
 

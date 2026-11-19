@@ -1,5 +1,5 @@
 // The session state the host reads when the operator supplies none: a purchase that retains no commitment work and holds no payment reads as
-// aborted by the seller an hour after the later of its admission and its Agreement's deadline. A purchase that retains commitment work, holds
+// aborted by the seller once an hour has passed since its admission and its Agreement's deadline has passed. A purchase that retains commitment work, holds
 // a payment or has a proposal, commitment or payment attempt pending, and every other purchase, reads as unknown.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,7 +30,6 @@ function reader({ states = {}, deadline = AGREEMENT_DEADLINE, readDeadline = () 
   return { state, reads };
 }
 const read = (options) => reader(options).state({ jobId: JOB });
-const HOUR_AFTER_DEADLINE = AGREEMENT_DEADLINE + ABANDONED_PURCHASE_MS;
 
 test('a settled purchase with no later operation reads as aborted by the seller once an hour has passed', () => {
   assert.equal(read({ deadline: null }), 'aborted-by-self');
@@ -74,22 +73,32 @@ test('a purchase that holds a recorded or retained payment reads as unknown at a
 test('a payment refused with no effect on a purchase with no commitment work reads as aborted like one with no payment', () => {
   for (const state of ['ended', 'completed']) {
     const states = { [proposals]: 'completed', [payments]: state };
-    assert.equal(read({ states, clock: HOUR_AFTER_DEADLINE - 1 }), null, `${state}: a commitment may still come before the deadline`);
-    assert.equal(read({ states, clock: HOUR_AFTER_DEADLINE }), 'aborted-by-self', state);
+    assert.equal(read({ states, clock: AGREEMENT_DEADLINE - 1 }), null, `${state}: a commitment may still come before the deadline`);
+    assert.equal(read({ states, clock: AGREEMENT_DEADLINE }), 'aborted-by-self', state);
   }
 });
 
-test('a purchase with a completed proposal and no commitment reads as aborted an hour after the Agreement deadline, and unknown before', () => {
+test('a purchase with a completed proposal and no commitment reads as aborted at the Agreement deadline, and unknown before', () => {
   const states = { [proposals]: 'completed' };
-  assert.equal(read({ states, clock: HOUR_AFTER_DEADLINE - 1 }), null);
-  assert.equal(read({ states, clock: HOUR_AFTER_DEADLINE }), 'aborted-by-self');
+  assert.equal(read({ states, clock: AGREEMENT_DEADLINE - 1 }), null);
+  assert.equal(read({ states, clock: AGREEMENT_DEADLINE }), 'aborted-by-self');
 });
 
-test('a commitment attempt that ended or completed with a refusal and left no commitment work reads as aborted an hour after the deadline, and unknown before', () => {
+test('a purchase is never open to a commitment that could not be paid: no later than its Agreement deadline once an hour has passed since its admission', () => {
+  for (const states of [{ [proposals]: 'completed' }, { [proposals]: 'completed', [commitments]: 'ended' }, { [proposals]: 'completed', [payments]: 'completed' }]) {
+    for (const deadline of [ADMITTED_AT + ABANDONED_PURCHASE_MS / 2, ADMITTED_AT + ABANDONED_PURCHASE_MS, AGREEMENT_DEADLINE]) {
+      const closesAt = Math.max(deadline, ADMITTED_AT + ABANDONED_PURCHASE_MS);
+      assert.equal(read({ states, deadline, clock: closesAt - 1 }), null, `${Object.keys(states)} deadline +${deadline - ADMITTED_AT}`);
+      assert.equal(read({ states, deadline, clock: closesAt }), 'aborted-by-self', `${Object.keys(states)} deadline +${deadline - ADMITTED_AT}`);
+    }
+  }
+});
+
+test('a commitment attempt that ended or completed with a refusal and left no commitment work reads as aborted at the deadline, and unknown before', () => {
   for (const state of ['ended', 'completed']) {
     for (const states of [{ [commitments]: state }, { [proposals]: 'completed', [commitments]: state }]) {
-      assert.equal(read({ states, clock: HOUR_AFTER_DEADLINE - 1 }), null, `${state}: a commitment may still come before the deadline`);
-      assert.equal(read({ states, clock: HOUR_AFTER_DEADLINE }), 'aborted-by-self', state);
+      assert.equal(read({ states, clock: AGREEMENT_DEADLINE - 1 }), null, `${state}: a commitment may still come before the deadline`);
+      assert.equal(read({ states, clock: AGREEMENT_DEADLINE }), 'aborted-by-self', state);
       assert.equal(read({ states, clock: LONG_AFTER }), 'aborted-by-self', state);
     }
   }
@@ -98,7 +107,7 @@ test('a commitment attempt that ended or completed with a refusal and left no co
 test('a purchase that retains commitment work reads as unknown at any age, since a payment made before the deadline may be claimed late', () => {
   for (const state of ['none', 'pending', 'ended', 'completed']) {
     for (const states of [{ [commitments]: state }, { [proposals]: 'completed', [commitments]: state }]) {
-      for (const clock of [AGREEMENT_DEADLINE - 1, AGREEMENT_DEADLINE, HOUR_AFTER_DEADLINE, LONG_AFTER]) {
+      for (const clock of [AGREEMENT_DEADLINE - 1, AGREEMENT_DEADLINE, AGREEMENT_DEADLINE + ABANDONED_PURCHASE_MS, LONG_AFTER]) {
         assert.equal(read({ states, retainsCommitmentWork: true, clock }), null, `${state} ${Object.keys(states)} at ${clock - AGREEMENT_DEADLINE}`);
       }
       for (const deadline of [null, NaN, ADMITTED_AT - 1]) {

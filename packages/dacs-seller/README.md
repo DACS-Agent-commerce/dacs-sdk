@@ -46,8 +46,8 @@ non-null non-string refuses issuance and new work with `session_admission_unavai
 and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host given no capability reads one state itself: a purchase that
-settled its context step, retains no commitment work and holds no payment reads as `aborted-by-self` an
-hour after the later of its admission and its Agreement's deadline (a purchase whose
+settled its context step, retains no commitment work and holds no payment reads as `aborted-by-self`
+once an hour has passed since its admission and its Agreement's deadline has passed (a purchase whose
 proposal was refused or never made retains no Agreement and no deadline to wait for). Its units are
 given back and its job id cannot continue (the buyer starts again with a new job id).
 A purchase that retains commitment work, holds a payment or has a proposal, commitment or
