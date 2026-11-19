@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mock } from 'node:test';
 import DatabaseSync from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { testWallet } from './protocol-fixture.mjs';
 import { T0 } from './reservation-accounting-fixture.mjs';
 import { sellerApi as seller } from './seller-internal-api.mjs';
@@ -19,8 +19,9 @@ import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
 import { scriptedDemosNode } from './native-payment-node.mjs';
 import { readInactiveForkNetworkInfo } from './network-info.mjs';
 import { createSessionAdmissionFixture } from './session-admission-fixture.mjs';
-import { mixedAuthentication, wireBuyer } from './wire-buyer.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
+import { HOST_CONTEXT_CALLBACKS } from './host-context-callbacks.mjs';
+import { wireAuthentication, wireBuyer } from './wire-buyer.mjs';
+import { createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { finalizedCommitmentReader } from './finalized-commitment-reader.mjs';
 import { createNativeRetrySeam } from './native-retry-seam.mjs';
@@ -41,7 +42,7 @@ const JOURNAL_LEASE_MS = 300_000;
 const DELEGATION_MS = 21_600_000;
 const SESSION_NOT_BEFORE_SKEW_MS = 30_000;
 const PRICE_DEM = '2.5';
-const ACCOUNTING_TABLES = ['peer_effects', 'peer_nonces', 'peer_slots', 'kit_reservations'];
+const ACCOUNTING_TABLES = ['peer_effects', 'kit_reservations'];
 /** The world's clock starts here; a session delegation lasts `DELEGATION_MS` from it, and the Agreement deadline is later still. */
 export { T0, DELEGATION_MS };
 const clone = (value) => structuredClone(value);
@@ -238,7 +239,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     readNetworkInfo: readInactiveForkNetworkInfo });
   let wallet = openWallet();
   const demDeliveryContext = createDemDeliveryContext({ authority: AUTHORITY, vetMode: KIT_TP1_VET_MODE,
-    resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
+    resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); }, ...HOST_CONTEXT_CALLBACKS,
     resolveSeller: async ({ jobId }) => {
       const input = await vettedInput(jobId);
       const invocation = (party, claim, verifier) => ({ vetRecordRef: input[party].vetRecordRef, evaluatedParty: claim, requirement: clone(party === 'buyer' ? listing.buyerRequirement : SELLER_REQUIREMENT),
@@ -299,9 +300,8 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   const purchase = async ({ resume = null } = {}) => {
     const jobId = resume ?? `01J8N4YV7YVYQ4DB7M8T${String(++jobSequence).padStart(6, '0')}`;
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
-    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, authentication: mixedAuthentication(
-      { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash, seller.createSellerTransportClientAuth({
-        buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock })) });
+    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, authentication: wireAuthentication(
+      { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash) });
     if (resume === null) {
       const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
       const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
@@ -326,7 +326,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     // Sends the exact bytes of a signed request, as often as it is called, and returns the status and the body the seller signed.
     const post = async ({ header, text }) => {
       steps.push({ step: 'request' });
-      const response = await fetch(`${host.url}${PAYMENTS_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: header }, body: text });
+      const response = await fetch(`${host.url}${PAYMENTS_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: header }, body: text });
       const answerText = await response.text();
       return { status: response.status, text: answerText, body: JSON.parse(answerText) };
     };
