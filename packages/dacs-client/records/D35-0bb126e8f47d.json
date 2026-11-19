@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "D35",
+  "subject": "delta(client): D35 inject the readback cache test clock as the monotonic clock",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/immutable-readbacks.test.mjs",
+      "before": "a119fdedf8851971957636875c5be5eb7cdcad74",
+      "after": "e7285b73d536e6e819d70b66f4054b423cc83d5f"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/D35-0bb126e8f47d.json",
+    "packages/dacs-client/test/immutable-readbacks.test.mjs"
+  ]
+}
