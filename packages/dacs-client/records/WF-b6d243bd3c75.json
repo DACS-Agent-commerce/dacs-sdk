@@ -1,0 +1,78 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF export passContext, check job authority before the broadcast lane is written and answer no participants for a job that is not the wallet's",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "25cbd22d1a8f1fcad57398a59cb93c5d731fe90e",
+      "after": "3ee46ec8fa0e37c8fa6d9c5fbcab6524cdaf49e6"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/authority-reader.mjs",
+      "before": "c622df624308ae77961e9cb4adca9d23e3cd6a8d",
+      "after": "b29e4153a118268ee7a5643a8cbc294712a0b21a"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "a84cd02fdd340f9c5a17a36472e0bbc933238f7d",
+      "after": "9e3226dde4459873227f8fd197c055626d964be5"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+      "before": "1928920fabd97766cd4e600436152fbbcc7cb2a5",
+      "after": "ad9da7787180b298cbea4d0e98c2f44f734b9e37"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "4df1614c68f92c8d472ebd6e25f233f7a3ea7a66",
+      "after": "d1e00ac07a97361371da334d633faed9718b51d5"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/pass-context.mjs",
+      "before": "a597cf52137c96b22d5959c6c06911c9ac4ed45d",
+      "after": "023f1b576ae2e0273a8713abda20cf93de916ab1"
+    },
+    {
+      "path": "packages/dacs-client/test/authority-reader.test.mjs",
+      "before": "93ee16a9c2065f3aa71e0d8ea98a74138cdbc322",
+      "after": "541f805b0d1f7fafac99369030a42a09cd7c6899"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/pass-context-fixture.mjs",
+      "before": "a9255725078543aca75d57db18244e7b7b6fbe3c",
+      "after": "5594e5efcd0f392dbc3a2d7fbf0009c98820c18f"
+    },
+    {
+      "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+      "before": "2ebeb1fcc8edc071a9f782152560e42479846de3",
+      "after": "8c93c30249f14f12f5d4b68d58b3af76b7557778"
+    },
+    {
+      "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+      "before": "f545d35a67ae4465c4b9cb7bb102bad21df3e1d8",
+      "after": "340d83fcac140c0ac7cd2d5277c66674a7684186"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "ae9ce572e9076dc07dee3e35b4f307f79c37dcee",
+      "after": "acbe28242cd3d146e3076c05e164deed97ac2307"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-b6d243bd3c75.json",
+    "packages/dacs-client/src/wallet/authority-reader.mjs",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/src/wallet/effect-boundary.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/src/wallet/pass-context.mjs",
+    "packages/dacs-client/test/authority-reader.test.mjs",
+    "packages/dacs-client/test/helpers/pass-context-fixture.mjs",
+    "packages/dacs-client/test/native-effect-paths.test.mjs",
+    "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ],
+  "note": "The Node wallet entry point exports passContext, so a seller host can make the job pass its composition requires. The effect boundary's dispatchPass takes an optional synchronous authorize check that runs with its dispatch checks, and the native broadcast passes the pass's current-authorization check there, so a job withdrawn by then is withheld before any lane or intent record is written and the wallet's lane stays free. The fee checks are unchanged. The authority reader keeps reading the seller from the saved Listing, and a job with no saved purchase of the wallet's, or whose Listing names no seller, now answers no participants, the wallet's own claim included."
+}

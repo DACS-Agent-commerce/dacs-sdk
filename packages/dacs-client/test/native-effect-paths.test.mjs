@@ -726,6 +726,28 @@ test('a job pass transmits only while its current-authorization check answers tr
   });
 });
 
+test('a job pass whose authority is withdrawn before the broadcast is withheld before any lane record is written, and the wallet can send again', async t => {
+  const { buildNativeTransferPayload } = await import('../src/dacs/wallet-transactions.mjs');
+  const { T0 } = await import('./helpers/tp1-node-fixture.mjs');
+  let current = true, withdrawOnce = true;
+  const cause = Object.assign(new Error('TEST-current-authorization'), { code: 'context_admission_closed' });
+  const currentAuthorization = () => { if (!current) throw cause; return true; };
+  const w = await gateWorld(t, { seller: false, journalWrap: cutHistory(record => { if (withdrawOnce && record.state === 'dispatch-started') { withdrawOnce = false; current = false; } }) });
+  const first = await (await openPass(w, { pass: { context: passContext({ operationClass: 'job-create', currentAuthorization }) } })).run(() => w.send());
+  assert.equal(first.success, false);
+  assert.equal(w.node.broadcasts.length, 0);
+  const records = (await w.journal().entries()).map(([, record]) => record);
+  assert.ok(records.some(record => record.state === 'dispatch-withheld'), 'the boundary records the broadcast as withheld');
+  // The transport's lane and intent records carry a `stage` (a withheld one is finished as `failed`); the boundary's own records carry a `state`.
+  assert.deepEqual(records.filter(record => 'stage' in record), [], 'no lane or intent record names bytes that were never sent');
+  current = true;
+  const other = { method: 'sendTransaction', params: [buildNativeTransferPayload({ from: w.session.wallet.getPublicAccount().address, to: '0x' + '3'.repeat(64),
+    amountOs: '2600000000', nonce: 1, timestamp: T0, encoding: 'os-string' })] };
+  const second = await (await openPass(w, { pass: { context: passContext({ operationClass: 'job-create', currentAuthorization }) } })).run(() => w.session.wallet.request(other));
+  assert.equal(second.success, true);
+  assert.equal(w.node.broadcasts.length, 1);
+});
+
 test('the Node wallet session refuses construction without a stop check and asks it at each effect boundary stage', async t => {
   const absent = await finalizedWorld(t, { input: { stopped: undefined } });
   await assert.rejects(absent.build(), TypeError);
