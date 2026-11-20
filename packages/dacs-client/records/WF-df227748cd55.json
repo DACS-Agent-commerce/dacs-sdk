@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged native transport and broadcast-once test with the signature domain checks",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "9407ac41dab35f1f0110a5bca792fdc1245e0c52",
+      "after": "9407ac41dab35f1f0110a5bca792fdc1245e0c52"
+    },
+    {
+      "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+      "before": "4c2483ad4e9c56d00d51d9c2b451481f6c4cabb0",
+      "after": "4c2483ad4e9c56d00d51d9c2b451481f6c4cabb0"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-df227748cd55.json"
+  ],
+  "note": "Both sides of the merge recorded the native transport and the broadcast-once test; this record chooses the merged copies. They keep the base's native signature domain checks, which take the domain the node reports in getNetworkInfo and check it again before a CREATE recovery resend is reserved, and every monotonic clock read of the other side for durations and waits, with the test's clock options and its wall-jump case. No anchored file changed on this side of the merge, so the anchor stays where the base put it."
+}
