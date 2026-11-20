@@ -130,7 +130,7 @@ async function stoppedHost(t, writes) {
   const pending = w.buyer.context(JOB, w.issued.body.sessionNonce);
   const seen = await reached(stopped.entered, pending);
   await stopped.kill();
-  await assert.rejects(pending, { name: 'TypeError', message: 'fetch failed' }, 'the killed host sends no answer');
+  await assert.rejects(pending, { code: 'ECONNRESET' }, 'the killed host sends no answer');
   for (const [call, count] of Object.entries(seen)) w.provider.seen[call] += count;
   // The provider of the next starts does not hold: a call they should not make fails the test instead of stalling it.
   w.provider.gate.resolve();
@@ -229,13 +229,19 @@ for (const { name, writes } of KEPT) {
   });
 }
 
-// A Vet CREATE the node refused may be published again (`mayPublishAgain`), so a row ended on one must leave nothing on the host that could
-// publish a replacement: no retry of the buyer's presentation (the request that resumes an unfinished context step), no new challenge, no
-// later sweep and no restart may reach the provider or the anchor for that job again.
-for (const [path, ended] of [['the provider\'s own failure', failedStart], ['the startup sweep', stoppedHost]]) {
-  test(`a row ${path} ended on a Vet the node refused for good gets no replacement Vet from a retry, a new challenge, later sweeps or a restart`, async (t) => {
-    const w = await ended(t, { seller: 'refused' });
-    assert.deepEqual(held(w.f.dataDirectory), ['aborted', 'released'], 'the row ended on the refused Vet');
+// A Vet CREATE the node refused may be published again (`mayPublishAgain`), and a Vet that landed has already been written, so a row ended
+// on either must leave nothing on the host that could publish another: no retry of the buyer's presentation (the request that resumes an
+// unfinished context step), no new challenge, no later sweep and no restart may reach the provider or the anchor for that job again. A
+// refused Vet aborts the row; a landed one settles it with context outcome `none`.
+const CLOSED = [
+  { name: 'a Vet the node refused for good', writes: { seller: 'refused' }, ends: 'aborted' },
+  { name: 'a Vet that landed', writes: { seller: 'landed' }, ends: 'settled', contextOutcome: 'none' },
+];
+for (const { name, writes, ends, contextOutcome } of CLOSED) for (const [path, ended] of [['the provider\'s own failure', failedStart], ['the startup sweep', stoppedHost]]) {
+  test(`a row ${path} ended on ${name} gets no further Vet from a retry, a new challenge, later sweeps or a restart`, async (t) => {
+    const w = await ended(t, writes);
+    assert.deepEqual(held(w.f.dataDirectory), [ends, 'released'], `the row ended on ${name}`);
+    if (contextOutcome !== undefined) assert.equal(storeState(w.f.dataDirectory).record.contextOutcome, contextOutcome);
     const calls = () => ({ ...w.provider.seen, published: [...w.vet.published] });
     const before = calls();
     assert.deepEqual(before, { resolves: 1, recovers: 0, resumes: 0, published: [ADDRESS.seller] });
@@ -254,6 +260,6 @@ for (const [path, ended] of [['the provider\'s own failure', failedStart], ['the
     await retry();
     await w.sweeps.sweep();
     assert.deepEqual(calls(), before, 'the provider and the anchor were not reached for this job again');
-    assert.deepEqual(held(w.f.dataDirectory), ['aborted', 'released']);
+    assert.deepEqual(held(w.f.dataDirectory), [ends, 'released']);
   });
 }
