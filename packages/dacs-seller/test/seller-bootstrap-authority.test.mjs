@@ -256,6 +256,13 @@ test('from an unopened transport and no binding, the host builds in five stages 
     assert.equal(existsSync(join(w.f.dataDirectory, LOCK_FILE)), false, `${stage}: the state lock is released`);
     rmSync(join(w.f.dataDirectory, 'effects'), { force: true, recursive: true });
   }
+  // A second host on a held data directory is refused the lock after its binding: its port is closed and nothing is finalized.
+  const running = await w.start();
+  const second = testWalletSession();
+  await assert.rejects(w.start({ walletSession: second.walletSession }), { code: 'seller_state_locked', reason: 'held' });
+  assert.equal(second.events.at(-1), 'close', 'a refused lock closes the port');
+  assert.equal(second.events.filter((event) => event.finalize).length, 0, 'a refused lock finalizes nothing');
+  await running.close();
 });
 
 test('the effects directory and its parent are synced before finalization; a failed sync refuses startup, a retry syncs again, and the acknowledged directories survive the power-loss model', { timeout: TEST_TIMEOUT_MS }, async (t) => {
