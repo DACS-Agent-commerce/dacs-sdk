@@ -44,12 +44,6 @@ store. After a restart, the buyer's payment job, built on
 submits again only once that read shows the payment authorization unused. See
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
 
-The exported `SignedArtifact`, `buildSignedArtifact()` and
-`verifySignedArtifact()` symbols are earlier raw-hex helpers; no SDK reader uses
-them. New producers
-and readers must use `ComponentSignedArtifact`,
-`signComponentArtifact()` and `verifyComponentSignature()`.
-
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
