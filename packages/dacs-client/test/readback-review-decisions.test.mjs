@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { ARTIFACT_SEPARATORS, canonicalize, contentHash, demosSignedTransactionProofHash, ed25519Sign, finalityCommitmentAddress, fixedPriceAgreementLogicalAddress, logicalToStorageProgramName, paymentEvidenceAddress, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey, sha256Hex, signComponentArtifact } from '@kynesyslabs/dacs';
 import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 const store={transaction,isUniqueViolation},buyerAccess={assertWallet(){}};
 const state=globalThis[Symbol.for('d15.review.readers')]={};
 // Loader modules run in a separate thread; returned fakes execute in this test's realm.
@@ -29,7 +30,7 @@ const keyPair=seedByte=>{const seed=new Uint8Array(32).fill(seedByte),hex=Buffer
 const sellerKeys=keyPair(17),otherKeys=keyPair(23);
 const CHAIN='f'.repeat(64),BUYER='0x'+'e'.repeat(64),SELLER=sellerKeys.claim,JOB='01HZY3K8V9Q2W4E6R7T8Y9X0AB';
 const journal={get:async()=>null,put:async()=>{throw Error('not used');},entries:async()=>[],withWalletLock:(_k,work)=>work()};
-const sourceCapability=createDevnetSettlementTransport({settlementPublication:{policy:DEVNET_SETTLEMENT_POLICY,artifactKind:'SettlementEvidence',phase:'pay-dem',railId:'demos-native:DEM',phaseIndex:2,authority:'TEST-review'},expected:{network:'testnet',chainIdentity:CHAIN,pinVersion:'TEST-1',endpoint:'https://rpc.invalid/',transportAuthority:'TEST-owner'},transportOwner:{getContext(){throw Error('offline');},acquireConnectionFence(){throw Error('offline');}},journal});
+const sourceCapability=createDevnetSettlementTransport({ boundary: readOnlyBoundary,settlementPublication:{policy:DEVNET_SETTLEMENT_POLICY,artifactKind:'SettlementEvidence',phase:'pay-dem',railId:'demos-native:DEM',phaseIndex:2,authority:'TEST-review'},expected:{network:'testnet',chainIdentity:CHAIN,pinVersion:'TEST-1',endpoint:'https://rpc.invalid/',transportAuthority:'TEST-owner'},transportOwner:{getContext(){throw Error('offline');},acquireConnectionFence(){throw Error('offline');}},journal});
 const authority='TEST-RUN-review0000';
 const commitment=createDevnetNativeCommitmentCapability({authority,anchor:{authority,readRetained(){throw Error('not used');},verifyReceipt(){throw Error('not used');}}});
 const listing={listingId:'TEST',listingVersion:1,seller:{identity:{presentedBy:SELLER}},offering:{title:'TEST'}};

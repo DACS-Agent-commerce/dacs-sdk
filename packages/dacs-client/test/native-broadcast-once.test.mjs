@@ -5,6 +5,7 @@
 // The real native transport, embedded wallet and durable journal run in this
 // process against a scripted TEST node. A TEST stand-in for the injected Demos
 // SDK class signs with a real Ed25519 key. No network, chain, funds or app.
+import { BOUND_PIN_VERSION, writingBoundary } from './helpers/transport-boundary.mjs'; // first: it installs the purchase-admission hook before any source module loads
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -17,7 +18,7 @@ import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs'
 import { createDevnetNativeWalletTransport, createSdkWalletSession } from '../src/public/portal/embedded-wallet/sdk-provider.mjs';
 
 const OWNER='TEST-native-owner', ORIGIN='https://wallet.test', PAYEE='0x'+'7'.repeat(64);
-const PINS={network:'testnet',chainIdentity:'c'.repeat(64),pinVersion:'TEST-native-pins',endpoint:'https://rpc.invalid/',transportAuthority:OWNER};
+const PINS={network:'testnet',chainIdentity:'c'.repeat(64),pinVersion:BOUND_PIN_VERSION,endpoint:'https://rpc.invalid/',transportAuthority:OWNER};
 const CONTEXT={network:PINS.network,endpoint:PINS.endpoint,transportAuthority:OWNER,connectionId:'TEST-connection'};
 const sha=v=>createHash('sha256').update(v).digest('hex');
 const ok=response=>({result:200,response,require_reply:false,extra:null});
@@ -67,8 +68,9 @@ async function world(t,{inclusionWaitMs=0,authPause=()=>new Promise(resolve=>set
  let stamp=Date.now()+60000;
  const sdkAuth=()=>{const identity=`ed25519:${address}`,timestamp=String(stamp++);return {identity,timestamp,signature:signText(sha(`${identity}:${timestamp}`))};};
  let journal=openDurableWalletJournal({path,mode:'create'}),transport;
- const start=()=>{transport=createDevnetNativeTransport({expected:PINS,journal,fetchImpl:node.fetch,inclusionWaitMs,inclusionPollMs:1,sleep:async()=>{},...clockOptions,
-  transportOwner:{getContext:()=>({...CONTEXT}),acquireConnectionFence:()=>({context:{...CONTEXT},release(){}})}});};
+ const start=()=>{const transportOwner={getContext:()=>({...CONTEXT}),acquireConnectionFence:()=>({context:{...CONTEXT},release(){}})};
+  transport=createDevnetNativeTransport({expected:PINS,journal,fetchImpl:node.fetch,inclusionWaitMs,inclusionPollMs:1,sleep:async()=>{},...clockOptions,
+  boundary:writingBoundary({owner:transportOwner,journal}),transportOwner});};
  start();
  // The same-origin binding relay the wallet posts to. The wallet stamps its
  // bind and signature auth with Date.now(); the delay stands in for the HTTP

@@ -8,6 +8,7 @@ import { TP1_APPROVED_IDENTITY_RECORD as record } from '@kynesyslabs/dacs/wire';
 import { createDevnetAgreementTransport } from '../../src/wallet/devnet-native-transport.mjs';
 import { scriptedNode } from './tp1-node-fixture.mjs';
 import { queuedOwner } from './queued-owner.mjs';
+import { readOnlyBoundary } from './read-only-boundary.mjs';
 const { openDurableWalletJournal } = await import('../../src/wallet/durable-journal.mjs');
 
 export const MIB = 1024 * 1024;
@@ -36,7 +37,7 @@ export function deferred() {
 /** Builds the source transport over `journal` and `owner`; extra options (a reviewed layout, say) pass through. No node is reached unless the owner's fetchImpl reaches one. */
 export function sourceReadTransport({ journal, owner, ...options }) {
   const { endpoint, transportAuthority } = owner.local;
-  return createDevnetAgreementTransport({
+  return createDevnetAgreementTransport({ boundary: readOnlyBoundary,
     expected: { network: record.network, chainIdentity: record.chainIdentity, pinVersion: record.pinVersion, endpoint, transportAuthority },
     transportOwner: owner, journal, fetchImpl: (...args) => owner.fetchImpl(...args), fallback: SOURCE_FALLBACK, ...options,
   });

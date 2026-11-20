@@ -11636,6 +11636,440 @@
           "after": "d4ed72df62d5590841bd349736954a86371e8eb3"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF finalize the Node wallet session with its effect boundary and require one on the native transport",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "60daf1347f4a57582b6cf5c9baf81e24bb4945a4",
+          "after": "dc4946ab4363eb346c6359897530ce1afa6ade02"
+        },
+        {
+          "path": "packages/dacs-client/package.json",
+          "before": "08d949faa51fbee956200125ed7c253786b66a85",
+          "after": "88359dd7f67b5a91ac68760931f8e2ddc5c251b5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+          "before": "aae9cc8e17848ff796c10b1c2289b7da798eefa0",
+          "after": "7e7181f3e64f5e1be2dccd7ee991d363f2292a63"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "974581bbe731439d9cfed3fb255645ce445bdf8a",
+          "after": "0f218e6e7a49859004e10cad557543279983aa9c"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "79a38ade5963d24c148db6424e62ff12d5f6381d",
+          "after": "8510accbe3d7775b372da96a18fe8e1c96ba7b10"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/authority-reader.mjs",
+          "before": null,
+          "after": "a716f91bd5546fd66aa328a7a772da2046175dbd"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "d4ed72df62d5590841bd349736954a86371e8eb3",
+          "after": "de54603868ea1c6bee96cd95670ebd62ed3e34e7"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "a869f29a4462d0e6e79efa2d4c25ecd5bcd686c0",
+          "after": "97948082e383966553ced55aa7fd07a2f63b2b92"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "5175a4ced21f4ab6fe22b8f077ebafdb069970f1",
+          "after": "b8ac86bc9630a8beda77a27ebf1354489bd7a409"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/pass-context.mjs",
+          "before": null,
+          "after": "a597cf52137c96b22d5959c6c06911c9ac4ed45d"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": "7b891fd0e31379edd00ee55c86fd12e916cf4236",
+          "after": "b62856e040048e1a29229c023595e23fcf3410dd"
+        },
+        {
+          "path": "packages/dacs-client/test/buyer-chain-indeterminate.test.mjs",
+          "before": "5e2e079c0c7bcb73c0711d0c825f54e6dc72dd6d",
+          "after": "2078c6806c4e326961517a8c03c1bea7a943a7df"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": "8c32f5d5d67d96b10c78979703a6b2670fe97295",
+          "after": "87293871b948c8faa2cf5a126bd216a227f7994d"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-stages.test.mjs",
+          "before": null,
+          "after": "c860a7fcd62e3e2dd5baf9177784328df3c39277"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+          "before": "3ceed283a2e1e1a7d2f9c7daafccf6d368066be0",
+          "after": "a647a27450c9260dc8bf62665878ded6a805a813"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/context-gate.mjs",
+          "before": null,
+          "after": "dc6f8bbe303ec654b62f458608f8f4fc302639dd"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "02c3808d514792df7d0a707767dfb08feb08685c",
+          "after": "94739099b0f48472982cacb684bfca5159cc1dce"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/finalized-node-child.mjs",
+          "before": null,
+          "after": "a0f89a008bcc257cbfa0486aa8f5a08f20f71eea"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/finalized-node-world.mjs",
+          "before": null,
+          "after": "d07e2e16bd48863054a4b1894037279f91d9db00"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-boundary.mjs",
+          "before": null,
+          "after": "439c667b1e6f716ecf7c430c8ef3b0024442d6e0"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "8c4d0b377bec9c7635f30cdca3e75aee1f9088f2",
+          "after": "dd0fc3cfdb040fc10c00d848a4228ace9ab17dea"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-effect-world.mjs",
+          "before": null,
+          "after": "2f2b88f66e451763705f28cc3bc68f7b7fe5986d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-lock-order-child.mjs",
+          "before": "f808491afd7a868398cad255e96315ebda2c0b89",
+          "after": "3e8eb8c9c8003e20b412490648adee210a1b374b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/pass-context-fixture.mjs",
+          "before": null,
+          "after": "a9255725078543aca75d57db18244e7b7b6fbe3c"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/passive-native-world.mjs",
+          "before": "b3613746bd86f461bab85ce8a9db8e6df5675315",
+          "after": "7a201173426c23e579b9d59b6cb6cfcb17dcdace"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/read-only-boundary.mjs",
+          "before": null,
+          "after": "9e0c8597b7ef4837fa3de4ba3179ddd28197c214"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/resume-retained-confirmation.mjs",
+          "before": null,
+          "after": "6fd5e030b6383136624354f664b78f2420ddb6e4"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/seller-facade-confirm.mjs",
+          "before": "fbe4e61ed581878e2dd912a9e2b2b486009f9742",
+          "after": "d59c456b766503c5bdc843b480b6bd5039f34895"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-world.mjs",
+          "before": "d99dfa33ba877ff2fdcefcce104abe9cf9727e88",
+          "after": "7e717fceb219d03a3c699bf56bcd62ccf792521c"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "7797647b3bda845b75faa490eef6592949d87847",
+          "after": "b2e9a7a0a9683e6bd0e9d4b03d5fe95da65f315d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/transport-boundary.mjs",
+          "before": null,
+          "after": "3a1214dbdbbb441e0f23afac075ca42fe87a98ff"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+          "before": "71a70d307b2be21ea10fca0a15de1d8eb27f2912",
+          "after": "24cbdfd17fde5a683364a922cb3e26c7155e2ee9"
+        },
+        {
+          "path": "packages/dacs-client/test/native-acknowledged-confirmation.test.mjs",
+          "before": null,
+          "after": "b4acfab270c77b0ac7cf2644848d747cf09732e6"
+        },
+        {
+          "path": "packages/dacs-client/test/native-adapter-auth.test.mjs",
+          "before": "c235684fe53222ad6af5c1c77ce1c087738cefc2",
+          "after": "91f280b7acb69e762e39971b0858c38c86442c6e"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-answer-split-record-cuts.test.mjs",
+          "before": null,
+          "after": "c1a6c2a8feaf3f45f225e1a32725c13a4bef09e2"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+          "before": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54",
+          "after": "65ebb36b24625fafe7f59b03af96f027c4dc1a3d"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-split-record-cuts.test.mjs",
+          "before": null,
+          "after": "7882fcc300bbc699caa917eb9241663cf8a7126f"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmation-persistence-cuts.test.mjs",
+          "before": null,
+          "after": "ecdb0723a39419fb7c17f336a5faa26981e03448"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmed-before-broadcast-cut.test.mjs",
+          "before": null,
+          "after": "54f90c1b1d92690153d3883c85b882a0d017af2a"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmed-debit.test.mjs",
+          "before": null,
+          "after": "aff81cbf4c5831d24441debf6244ade1a15b59a2"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": null,
+          "after": "6d3eacf154eb619d9ec525d6a6857e60a493b5de"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "37e944e9f1b36e944b7af495fe532ba43b208aaa",
+          "after": "3b833ced997efcb25db41f789c785d27f89ebf1d"
+        },
+        {
+          "path": "packages/dacs-client/test/native-recovery-reservation-crash-cuts.test.mjs",
+          "before": null,
+          "after": "f3e5f3945d0629e243eccfea79d3953a4242027a"
+        },
+        {
+          "path": "packages/dacs-client/test/native-repeated-confirmation.test.mjs",
+          "before": null,
+          "after": "f1ef6fcb454d242e21b2cc419227087a025a99de"
+        },
+        {
+          "path": "packages/dacs-client/test/network-binding.test.mjs",
+          "before": "9c1f4f080ef6f461cf6878940485b075b17a11be",
+          "after": "24ae3f7f1b1fe4b8413ccbbfb743c1bb68faa5f2"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "0a89124816f6c933eae528c682873577e0d6edd8",
+          "after": "f545d35a67ae4465c4b9cb7bb102bad21df3e1d8"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-fresh-child.test.mjs",
+          "before": "396b4f470820de6aa77cce86839ce5a287b31ccd",
+          "after": "83dfa643b37be6f41fce4e554f78dbdcf287a6d6"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-lanes.test.mjs",
+          "before": "ad4e44d9bf20ae4274b06491c97cf5190504da5c",
+          "after": "48315ddd6ec8c91e244ef36d3c23dd7c6bb8344a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": "cb7e6298b275bb6123561c5afa4a52a4981b72bf",
+          "after": "dd1514d4b4be7abff9676b4c0c01300820856711"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": "c7e55813ec5c437ed39a0966b6a882470884b57b",
+          "after": "e782d6b277386e1ccfb9ea8ce87c5b69e2b7bb9a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-rpc-clock.test.mjs",
+          "before": "23a5c14494356db736948abef01b67602c97eea8",
+          "after": "c144860ba14b9d518ee6d908d0011c40af8c49cd"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "e3fbe968e1ab056b5aee351d668cd064e4abd4c4",
+          "after": "f1d237749cd1cec37162e3b15f57927a50c07761"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
+          "before": "e84121241791b080837b9e2fbff8161aa1936889",
+          "after": "b90bd40e6ea744556bd0e1191130aaff3343aa7d"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "704c356cf6fde7f017f441a65604a598e56a578b",
+          "after": "26d2e7a6565227e7b53812340ff529efecb5a89e"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "683f3a9c22c09a4207d1f588e0108cb327b579f2",
+          "after": "ada0bb057896b9ff4b6d3e07ef02b7244564c659"
+        },
+        {
+          "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+          "before": "8e433835a01a81de01ea3a4d6f377270905ae434",
+          "after": "e76cd5452caead6305781a833e58352861bbfa2d"
+        },
+        {
+          "path": "packages/dacs-client/test/pass-context.test.mjs",
+          "before": null,
+          "after": "a5a6f42bc371993c9985ba4181b9af79322bfec1"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "486970306e8b48607e190ce43ffd2f6f0b46113c",
+          "after": "ae9ce572e9076dc07dee3e35b4f307f79c37dcee"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "6ef2bd3df352fcca8200df647c7d0345cd5eac8f",
+          "after": "79bbdf941514278fd77d9c36250c73bc67112bc3"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "49d984bfcf705c7d3d1928720d9f8f0d759f8c0b",
+          "after": "fe922e1d97b80df4c6f626d15de371299e52fec6"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-continuation-evidence.test.mjs",
+          "before": "d6407d953cdd85617b4bcce9c409d3d18beed67c",
+          "after": "ca19616de38519c9ca54fc58b30378a71aec291e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test that the broadcast claim holds the signer's reservation lock through the dispatch pass",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "2796f3e3ca7e20570d7ecad79e432b957fb7ea64",
+          "after": "364cc659896829029c9aa9e1b51b450b6cd2b30a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF clear a dead holder's signer reservation lock when a native write is read back",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "de54603868ea1c6bee96cd95670ebd62ed3e34e7",
+          "after": "527bfdb9b1fc18983b1b41bfb5c40e160e9444ff"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "dd0fc3cfdb040fc10c00d848a4228ace9ab17dea",
+          "after": "b2b21710138f547df34db304f65ac5a77de27d75"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "3b833ced997efcb25db41f789c785d27f89ebf1d",
+          "after": "389096e902bd290ae6cd3b4bef2fd38994043547"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": "364cc659896829029c9aa9e1b51b450b6cd2b30a",
+          "after": "0b016e6ac76f89baaf22e010bb37704a76a1bf12"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF document the Node wallet session's required options, its whole-debit fee ceiling and the seller pass refusal",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "dc4946ab4363eb346c6359897530ce1afa6ade02",
+          "after": "5d4dc09f971278868d64b81c5874cdb00d8ac2a8"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF let a payment refused before its send go on through a new lease, and refuse wide authority replies by size",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "527bfdb9b1fc18983b1b41bfb5c40e160e9444ff",
+          "after": "f596428e36c1b9810391a33cd5535c1482e17123"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b8ac86bc9630a8beda77a27ebf1354489bd7a409",
+          "after": "4df1614c68f92c8d472ebd6e25f233f7a3ea7a66"
+        },
+        {
+          "path": "packages/dacs-client/test/authority-reader.test.mjs",
+          "before": "b62856e040048e1a29229c023595e23fcf3410dd",
+          "after": "42b2f3c8d0830475ba50527c220e4a4274b8180c"
+        },
+        {
+          "path": "packages/dacs-client/test/native-acknowledged-confirmation.test.mjs",
+          "before": "b4acfab270c77b0ac7cf2644848d747cf09732e6",
+          "after": "122b8943b0593bc72cba7834b71af60b278204ba"
+        },
+        {
+          "path": "packages/dacs-client/test/native-confirmed-before-broadcast-cut.test.mjs",
+          "before": "54f90c1b1d92690153d3883c85b882a0d017af2a",
+          "after": "40829819637ca5fa8851d827f2db1eec8bb95241"
+        },
+        {
+          "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+          "before": "6d3eacf154eb619d9ec525d6a6857e60a493b5de",
+          "after": "259e6645e3bd08d8f21ac90daf026c99ccc4fdb0"
+        },
+        {
+          "path": "packages/dacs-client/test/native-repeated-confirmation.test.mjs",
+          "before": "f1ef6fcb454d242e21b2cc419227087a025a99de",
+          "after": "5181cd627c0f0bfc8b43dd9e361a48cd2e0126e0"
+        },
+        {
+          "path": "packages/dacs-client/test/native-withheld-broadcast-retry.test.mjs",
+          "before": null,
+          "after": "09fe1a480803d3b8c0bf317caca89ce2a6cdcd10"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF document the authority object bound and a broadcast refused before its send",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/README.md",
+          "before": "5d4dc09f971278868d64b81c5874cdb00d8ac2a8",
+          "after": "25cbd22d1a8f1fcad57398a59cb93c5d731fe90e"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF test CREATE recovery started during a leased broadcast",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "389096e902bd290ae6cd3b4bef2fd38994043547",
+          "after": "d7bf0812efbfb4d709fb075e328b1a27cb4d9b9e"
+        }
+      ]
     }
   ]
 }

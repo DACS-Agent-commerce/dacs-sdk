@@ -37,12 +37,29 @@ export interface DacsPublicJsonReadOptionsV1 {
   dependencies?: Readonly<DacsPublicJsonReadDependenciesV1>;
 }
 
+/** Reason code and, when a lower-level failure caused it, that failure as `cause`. */
 export class DacsPublicJsonError extends Error {
   override readonly name = "DacsPublicJsonError";
 
-  constructor(readonly reasonCode: string) {
-    super(reasonCode);
+  constructor(readonly reasonCode: string, options?: Readonly<{ cause: unknown }>) {
+    super(reasonCode, options);
   }
+}
+
+const TLS_ERROR_CODE = /^(?:ERR_TLS_|ERR_SSL_|CERT_|DEPTH_ZERO_|SELF_SIGNED_|UNABLE_TO_)/u;
+const CONNECTION_ERROR_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "EPIPE",
+]);
+
+/** Names the failure class of a transport error, keeping the error as the cause. */
+function requestFailure(error: unknown): DacsPublicJsonError {
+  const code = typeof error === "object" && error !== null && "code" in error &&
+    typeof error.code === "string" ? error.code : "";
+  if (TLS_ERROR_CODE.test(code)) return new DacsPublicJsonError("public-json-tls-failed", { cause: error });
+  if (CONNECTION_ERROR_CODES.has(code)) {
+    return new DacsPublicJsonError("public-json-connection-failed", { cause: error });
+  }
+  return new DacsPublicJsonError("public-json-request-unavailable", { cause: error });
 }
 
 export async function resolveDacsPublicHostV1(
@@ -207,7 +224,7 @@ export async function readDacsPublicJsonV1(
     });
   } catch (error) {
     if (error instanceof DacsPublicJsonError) throw error;
-    throw new DacsPublicJsonError("public-json-request-unavailable");
+    throw requestFailure(error);
   }
   if (response.redirected === true || response.status >= 300 && response.status < 400) {
     throw new DacsPublicJsonError("public-json-redirect-refused");
