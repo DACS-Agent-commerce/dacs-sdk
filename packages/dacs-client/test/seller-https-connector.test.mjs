@@ -600,10 +600,10 @@ test('concurrent requests to two origins each connect only to their own admitted
   assert.equal(seller.seen.connections, 2);
 });
 
-test('no production module imports the connector yet', () => {
+test('only the seller client and the protocol composition import the connector', () => {
   const sources = readdirSync(join(packageDir, 'src'), { recursive: true }).filter((file) => file.endsWith('.mjs'));
   const importers = sources.filter((file) => file !== 'dacs/seller-https-connector.mjs' && /seller-https-connector/.test(readFileSync(join(packageDir, 'src', file), 'utf8')));
-  assert.deepEqual(importers, []);
+  assert.deepEqual(importers.sort(), ['dacs/protocol-purchases.mjs', 'dacs/seller-http.mjs']);
 });
 
 test('refuses origins that are not public endpoints and requests that are not seller routes before resolution', async () => {

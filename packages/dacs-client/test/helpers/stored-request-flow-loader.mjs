@@ -10,9 +10,10 @@ export function resolve(specifier, context, next) {
     ['buyer-chain-readback', `export const createBuyerChainReadback = () => ${state}.chain;`],
     ['native-agreement-payment-consumer', `export const nativeAgreementPaymentConfig = () => ${state}.payment;`],
     ['native-payment-evidence-consumer', `export const nativePaymentEvidenceConfig = () => ${state}.evidence;`],
-    ['seller-http', `import { createSellerAgentClient as actual } from ${JSON.stringify(source('seller-http'))};
-      export const createSellerAgentClient = options => {
-        const client = actual({ ...options, fetchImpl: ${state}.fetch });
+    ['seller-http', `import { createSellerHttpsClient as actual } from ${JSON.stringify(source('seller-http'))};
+      import { connectorFromFetch } from ${JSON.stringify(new URL('./seller-https-rig.mjs', import.meta.url).href)};
+      export const createSellerHttpsClient = options => {
+        const client = actual({ ...options, connector: connectorFromFetch(${state}.fetch) });
         if (client.commitOnSignature) {
           const send = client.commitOnSignature;
           client.commitOnSignature = (...args) => (${state}.signature = send(...args));
