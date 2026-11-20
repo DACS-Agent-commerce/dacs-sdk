@@ -213,3 +213,20 @@ test('a retained CREATE whose late-write wait has ended is not waited for again 
   assert.equal(w.sleeps.length, sleeps, 'no wait');
   assert.equal(w.captured.length, 1, 'no new wallet request');
 });
+
+test('a restart after the wallet answered but before its answer was recorded reads the CREATE back once and starts no late-write wait', async () => {
+  const w = await lateWriteWorld({ blockMs: Infinity });
+  const put = w.journal.put;
+  w.journal.put = async (key, value) => {
+    if (value?.stage === 'issued') throw new Error('TEST process stopped before the answer was recorded');
+    return put.call(w.journal, key, value);
+  };
+  await assert.rejects(w.publish(), /TEST process stopped/);
+  w.journal.put = put;
+  assert.notEqual(w.stage(), 'issued');
+  const out = await w.publish();
+  assert.match(out.reason, UNRESOLVED);
+  assert.equal(w.sleeps.length, 0, 'no wait');
+  assert.equal(w.captured.length, 1, 'no new wallet request');
+  assert.equal(w.recoveries.length, 1, 'only the retained CREATE\'s one recovery check');
+});
