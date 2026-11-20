@@ -15,6 +15,8 @@ const FORMAT_REFUSED = 'kit_store_format_unsupported';
 
 const refuse = (reason, detail, cause) => Object.assign(
   new Error(`${FORMAT_REFUSED}: ${detail}`, cause === undefined ? undefined : { cause }), { code: FORMAT_REFUSED, reason });
+/** Makes the Error with code `kit_store_format_unsupported`, the `reason` and `detail` given, and `cause` when one is passed. */
+export { refuse as kitFormatRefusal };
 
 // The entry's stat, or null when it is absent; any other failure refuses with its cause.
 async function statOrNull(directory, name) {

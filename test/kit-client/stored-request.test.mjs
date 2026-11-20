@@ -2,18 +2,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { storedWorld, PATHS, nonce, sameBodies } from '../../packages/dacs-client/test/helpers/stored-request-fixture.mjs';
-import { bindPurchaseCapacity } from '../../packages/dacs-seller/test/helpers/bound-transport-store.mjs';
-import { JOB, T0, sellerTransportPair } from './fixtures.mjs';
+import { JOB } from './fixtures.mjs';
 
 test("a retry after a lost response re-signs the stored bytes with a fresh nonce and expiry, accepts the seller's completed answer, and the seller performs one effect", async (t) => {
-  const s = await storedWorld(t), { store } = await sellerTransportPair(t);
-  // The host builds the store with its purchase capacity; a store without one refuses every reservation.
-  bindPurchaseCapacity(store, () => T0);
+  const s = await storedWorld(t);
   let effects = 0, lost = true;
+  const performed = new Set();
   const respond = async (init) => {
-    // The real kit's durable reservation store is the idempotent effect boundary.
-    const reserved = store.reserve(nonce(init), JSON.parse(init.body));
-    if (reserved.disposition === 'perform') { effects++; store.finish(reserved, 200, JSON.stringify({ status: 'complete' })); }
+    // The seller's effect boundary: one effect per job, however many requests carry it.
+    const { jobId } = nonce(init);
+    if (!performed.has(jobId)) { performed.add(jobId); effects++; }
     if (lost) { lost = false; throw new Error('TEST-lost-answer'); }
     return s.reply(init);
   };

@@ -8,6 +8,7 @@ import * as wire from '@kynesyslabs/dacs/wire';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from './purchase-admission-hook.mjs';
 import { LOCAL } from '../fixtures/tp1-authority-reader.mjs';
 import { fixtureListing } from '../fixtures/listings.mjs';
+import { readOnlyBoundary } from './read-only-boundary.mjs';
 installPurchaseAdmissionHook();
 export const { setPurchaseAdmission } = await loadAdmissionDouble();
 const { openDatabase } = await import('./purchase-integrity-database.mjs');
@@ -106,7 +107,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
         return [];
       }, withWalletLock: (_key, work) => work()
     };
-    const sourceCapability = createDevnetSettlementTransport({
+    const sourceCapability = createDevnetSettlementTransport({ boundary: readOnlyBoundary,
       settlementPublication: { policy: DEVNET_SETTLEMENT_POLICY, artifactKind: 'SettlementEvidence', phase: 'pay-dem', railId: 'demos-native:DEM', phaseIndex: 2, authority: 'TEST-wire' },
       expected: {
         network: 'testnet', chainIdentity: w.binding.profile.chainIdentity, pinVersion: w.binding.profile.pinVersion, endpoint: w.local.endpoint, transportAuthority: w.local.transportAuthority

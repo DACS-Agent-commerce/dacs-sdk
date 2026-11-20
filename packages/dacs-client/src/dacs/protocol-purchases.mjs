@@ -46,7 +46,7 @@ import {
   protocolSupport,
 } from './purchase-protocol.mjs';
 import { AGREEMENT_CONTEXT_SOURCE, agreementContextConfig, resolveAgreementContext } from './agreement-context-consumer.mjs';
-import { DEM_DELIVERY_CONTEXT_SOURCE, demDeliveryContextConfig, releaseDemDeliveryContext, resolveDemDeliveryBuyerContext } from './dem-delivery-context-consumer.mjs';
+import { DEM_DELIVERY_CONTEXT_SOURCE, demDeliveryContextConfig, readBackDemDeliveryContext, releaseDemDeliveryContext, resolveDemDeliveryBuyerContext } from './dem-delivery-context-consumer.mjs';
 import { SELLER_SR2_PUBLIC_PROJECTION } from './seller-sr2-agreement-consumer.mjs';
 import { NATIVE_AGREEMENT_PAYMENT, usesNativeAgreementPayment, nativeAgreementPaymentConfig } from './native-agreement-payment-consumer.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, usesNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
@@ -813,6 +813,25 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (usesDemDeliveryContext(planned.operation) && planned.operation.state.protocol.planned) releaseDemDeliveryContext(demDeliveryContext, { jobId: planned.operation.terms.protocol.jobId, generatedAt: planned.operation.state.protocol.planned.draft.generatedAt });
     return planned;
   }
+  // A plan step can end with its context indeterminate before the seller's Vet
+  // record writes read back as included, and nothing else in this process
+  // reads them again. While no plan step runs, a recheck asks the DEM delivery
+  // context to read them back (readback only: nothing is signed or sent) and,
+  // once they all do, notes it, so the next plan request completes from them.
+  // One readback per purchase runs at a time; concurrent rechecks share it. A
+  // recheck waits for it up to the seller request deadline: one still running
+  // then answers nothing new (it never rejects otherwise), and the next recheck
+  // joins it.
+  const contextReadbacks = new Map();
+  async function readBackAgreementContext(operation) {
+    const last = operation.state.protocol.attempts?.at(-1);
+    if (!usesDemDeliveryContext(operation) || planRunning(operation) || last?.step !== 'agreement-context' || last.outcome !== 'indeterminate') return operation;
+    const key = flightKey(operation);
+    if (!contextReadbacks.has(key)) contextReadbacks.set(key, readBackDemDeliveryContext(demDeliveryContext, { jobId: operation.terms.protocol.jobId, buyer: buyerClaim(operation) }).finally(() => contextReadbacks.delete(key)));
+    const read = await withinSellerDeadline(contextReadbacks.get(key)).catch(() => null);
+    return read?.disposition === 'present' ? note(operation, 'agreement-context-readback', 'present', read.reason) : operation;
+  }
+
   // Once a purchase ends, the provider drops the job's in-memory entries.
   if (demDeliveryContext) ops.onTransition?.((changed) => {
     if (!ENDED_STATUSES.has(changed.status) || !usesDemDeliveryContext(changed)) return;
@@ -1385,6 +1404,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
         return advanceNativeEvidence(current, coords, { retained: pointerAsk ? null : kept, ...(pointerAsk ? { pointerAsk } : {}) });
       }
       if (operation.status === 'agreement_pending' && ['agreement-signing', 'agreement-anchored'].includes(stage) && operation.state.protocol.signatures) return submitAgreement(operation);
+      if (operation.status === 'agreement_pending' && stage === 'identity') return readBackAgreementContext(operation);
       return operation;
     }
     return operation;

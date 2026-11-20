@@ -1,7 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
 import { DacsError, SubstrateError } from "../errors.js";
-import { verifySignedArtifact, type Verifier } from "../agent/signedArtifact.js";
+import type { Verifier } from "../crypto/byteSignerTypes.js";
 import {
   isComponentSignature,
   verifyComponentSignature,
@@ -48,8 +48,6 @@ export interface RegistryResolveDeps {
   stewardSigner: string;
   /** Verify a signature over raw bytes for a public key. */
   verify: Verifier;
-  /** Explicit opt-in for reading and normalising pre-ComponentSignature entries. */
-  legacySignatures?: "reject" | "verify-with-pinned-key";
 }
 
 /** Stable DACS-4 v0.x rail-registry index address (§9.4.2/§9.4.3). */
@@ -152,8 +150,6 @@ export interface RailRegistrySelectionProvider {
   /** Pinned PA-2 Ed25519 steward key. */
   stewardPublicKey: Uint8Array;
   verify: Verifier;
-  /** Explicit compatibility policy for pre-ComponentSignature definitions. */
-  legacySignatures?: "reject" | "verify-with-pinned-key";
 }
 
 /** Immutable provenance retained out-of-band for a runtime-authorised rail. */
@@ -174,7 +170,6 @@ interface CapturedRegistryResolveDeps {
   stewardPublicKey: Uint8Array;
   stewardSigner: string;
   verify: Verifier;
-  legacySignatures: RegistryResolveDeps["legacySignatures"];
 }
 
 function captureRegistryResolveDeps(
@@ -185,7 +180,6 @@ function captureRegistryResolveDeps(
     const stewardPublicKeyCandidate: unknown = deps.stewardPublicKey;
     const stewardSignerCandidate: unknown = deps.stewardSigner;
     const verifyCandidate: unknown = deps.verify;
-    const legacySignatures = deps.legacySignatures;
     if (typeof readRegistryCandidate !== "function") {
       throw new TypeError("readRegistry must be a function");
     }
@@ -207,13 +201,6 @@ function captureRegistryResolveDeps(
     if (typeof verifyCandidate !== "function") {
       throw new TypeError("verify must be a function");
     }
-    if (
-      legacySignatures !== undefined &&
-      legacySignatures !== "reject" &&
-      legacySignatures !== "verify-with-pinned-key"
-    ) {
-      throw new TypeError("legacySignatures is not a supported policy");
-    }
 
     return {
       readRegistry: Function.prototype.bind.call(
@@ -226,7 +213,6 @@ function captureRegistryResolveDeps(
         verifyCandidate,
         deps,
       ) as Verifier,
-      legacySignatures,
     };
   } catch (cause) {
     throw new DacsError("invalid registry resolver dependencies", { cause });
@@ -1024,7 +1010,6 @@ interface CapturedRailRegistryProvider {
   stewardSigner: string;
   stewardPublicKey: Uint8Array;
   verify: Verifier;
-  legacySignatures: RailRegistrySelectionProvider["legacySignatures"];
 }
 
 function captureRailRegistryProvider(
@@ -1073,21 +1058,12 @@ function captureRailRegistryProvider(
     "stewardPublicKey",
     "rail registry steward public key",
   ).value;
-  const legacySignatures = stableProviderProperty(
-    source,
-    "legacySignatures",
-    "rail registry legacy-signature policy",
-  );
   if (
     !isCanonicalClaimReference(stewardWriter) ||
     !isCanonicalClaimReference(stewardSigner) ||
     !nodeTypes.isUint8Array(publicKey) ||
     nodeTypes.isProxy(publicKey) ||
-    publicKey.byteLength !== 32 ||
-    (legacySignatures.found &&
-      legacySignatures.value !== undefined &&
-      legacySignatures.value !== "reject" &&
-      legacySignatures.value !== "verify-with-pinned-key")
+    publicKey.byteLength !== 32
   ) {
     throw new DacsError("rail registry provider trust material is malformed");
   }
@@ -1101,10 +1077,6 @@ function captureRailRegistryProvider(
     stewardSigner,
     stewardPublicKey: Uint8Array.from(publicKey),
     verify,
-    legacySignatures: legacySignatures.value as
-      | "reject"
-      | "verify-with-pinned-key"
-      | undefined,
   };
 }
 
@@ -1205,31 +1177,7 @@ async function authenticateRailEntry(
   rawEntry: Readonly<Record<string, unknown>>,
   provider: CapturedRailRegistryProvider,
 ): Promise<Readonly<RailDefinition>> {
-  let candidate = rawEntry as Record<string, unknown>;
-  if (typeof candidate.signature === "string") {
-    if (
-      provider.legacySignatures !== "verify-with-pinned-key" ||
-      !(await verifySignedArtifact(
-        candidate,
-        "dacs-rail:v1:",
-        Uint8Array.from(provider.stewardPublicKey),
-        (bytes, signature, publicKey) =>
-          verifyWithCapturedDeps(provider.verify, bytes, signature, publicKey),
-      ))
-    ) {
-      throw new DacsError(
-        "rail registry entry legacy signature is rejected or invalid under the steward key",
-      );
-    }
-    candidate = immutableProviderJson({
-      ...candidate,
-      signature: {
-        algorithm: "ed25519",
-        signer: provider.stewardSigner,
-        value: Buffer.from(candidate.signature, "hex").toString("base64url"),
-      },
-    }, "normalised legacy rail definition");
-  }
+  const candidate = rawEntry as Record<string, unknown>;
   if (!isRailDefinition(candidate)) {
     throw new DacsError("rail registry entry has an invalid signed definition shape");
   }

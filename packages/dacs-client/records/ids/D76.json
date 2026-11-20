@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D76",
+  "registration": "D76: existing client delta lane",
+  "subject": "delta(client): D76 add demosdk 4.0.17 to the reviewed loader table"
+}

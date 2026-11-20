@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D42",
+  "registration": "D42: existing client delta lane",
+  "subject": "delta(client): D42 accept a trailing record-only ledger entry for a committed blob"
+}

@@ -17,7 +17,9 @@ export const W = 'tp1-g3-orchestrator', OTHER = testWallet(4), copy = structured
 export const address = party => compositeVerificationAddress(JOB, party.claim);
 export const deferred = () => { let resolve; const promise = new Promise(done => resolve = done); return { promise, resolve }; };
 export async function signedRecord(record, signer = SELLER) { const unsigned = { ...record }; delete unsigned.signature; return signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.CompositeVerificationRecord, { signer: signer.claim, algorithm: 'ed25519', sign: signer.signBytes }); }
-export async function orchestratorFixture(t, { real = false, disk = false, vetMode = W } = {}) {
+// sleep (with real): replaces the real anchor's wait between readbacks of a pending CREATE.
+// signRpc (with real): the real anchor's RPC signer, which its recovery send needs.
+export async function orchestratorFixture(t, { real = false, disk = false, vetMode = W, sleep, signRpc } = {}) {
     const listing = await k4Listing(), records = new Map(), controls = { signatures: [], creates: [], reads: [], counterpartyCalls: 0 };
     let base = createInMemoryPartyVetStore(), path;
     const handles = [];
@@ -55,7 +57,7 @@ export async function orchestratorFixture(t, { real = false, disk = false, vetMo
     };
     let native;
     if (real) {
-        native = await anchorFixture({ writer: { claim: SELLER.claim, sign: SELLER.signBytes }, vetMode, now: () => T0 });
+        native = await anchorFixture({ writer: { claim: SELLER.claim, sign: SELLER.signBytes }, vetMode, now: () => T0, sleep, signRpc });
         native.source.observeBinding = async () => ({});
         native.source.binding = async () => ({ disposition: 'included' });
         native.controls.reader.read = async (logicalAddress) => ({ ...await read({ logicalAddress }), demosEvidence: {} });
@@ -71,13 +73,13 @@ export async function orchestratorFixture(t, { real = false, disk = false, vetMo
     };
     const config = { anchor: openAnchor(), vetMode, listing, store, buyerAccess: createOperatorBuyerAccess({ openBuyerAccess: false, custodyBuyer: BUYER.claim, buyerForJob: () => BUYER.address }), now: () => T0, log: () => { }, wallet: { claim: SELLER.claim, signBytes: async (bytes) => { await controls.beforeSign?.(bytes); controls.signatures.push(Buffer.from(bytes).toString()); return SELLER.signBytes(bytes); } }, counterparty: Object.fromEntries(['issueChallenge', 'evaluate', 'readRecord'].map(key => [key, () => { controls.counterpartyCalls++; throw new Error('TEST W counterparty ' + key); }])) };
     const provider = (extra = {}) => createDevnetDemoAgreementContextProvider({ ...config, ...extra });
-    const fresh = () => { const handle = path ? openPartyVetStore({ path, mode: 'open' }) : base; if (path)
-        handles.push(handle); return provider({ store: wrapped(handle), anchor: openAnchor() }); };
+    const fresh = (extra = {}) => { const handle = path ? openPartyVetStore({ path, mode: 'open' }) : base; if (path)
+        handles.push(handle); return provider({ store: wrapped(handle), anchor: openAnchor(), ...extra }); };
     const run = (p = provider(), value = input) => p.resolveBuyer(value, { writable: () => true });
     const sellerRequest = () => ({ jobId: JOB, listingPin: listingPin(listing), buyerIdentityBundle: input.buyerIdentityBundle, generatedAt: input.scope.generatedAt });
     const row = async () => (await base.entries())[0]?.[1];
-    const cut = async (role, phase, { lostAck = false } = {}) => {
-        const reached = deferred(), resume = deferred();
+    // Runs `action` once, right after the store update that first brings the party's signing step to `phase`.
+    const when = (role, phase, action) => {
         let hit = false;
         controls.afterUpdate = async (before, next) => {
             const ops = next?.ops?.[role], old = before?.ops?.[role];
@@ -91,18 +93,24 @@ export async function orchestratorFixture(t, { real = false, disk = false, vetMo
             if (!match)
                 return;
             hit = true;
+            await action();
+        };
+    };
+    const cut = async (role, phase, { lostAck = false } = {}) => {
+        const reached = deferred(), resume = deferred();
+        when(role, phase, async () => {
             reached.resolve();
             if (lostAck)
                 throw new Error('TEST signature save acknowledgement lost');
             await resume.promise;
-        };
+        });
         const pending = run();
         void pending.catch(() => { });
         await reached.promise;
         controls.afterUpdate = null;
         return { pending, resume, entry: copy((await row()).ops[role]) };
     };
-    return { listing, records, controls, base, store, config, input, native, openAnchor, provider, fresh, run, sellerRequest, row, cut, receipt };
+    return { listing, records, controls, base, store, config, input, native, openAnchor, provider, fresh, run, sellerRequest, row, cut, when, receipt };
 }
 export function assertPresent(answer) { assert.equal(answer?.disposition, 'present', JSON.stringify(answer)); return answer.value; }
 export async function blocked(work) { let out; try {

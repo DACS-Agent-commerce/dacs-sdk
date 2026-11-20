@@ -61,10 +61,41 @@ describe("DACS node configuration", () => {
       dataDirectory: "/var/lib/dacs/buyer",
       publicBaseUrl: "https://buyer.example",
       demos: { rpcUrl: "wss://rpc.example/ws", storageReadUrl: "https://read.example" },
-      rail: { registryIndexRef: "dacs-rail-index:v1", requestedNetwork: "eip155:8453" },
+      rail: { registryIndexRef: "dacs-rail-index:v1", requestedNetwork: "eip155:84532" },
       limits,
     })).toMatchObject({ mode: "live-demos", role: "buyer" });
   });
+
+  function liveConfigWithNetwork(requestedNetwork: string) {
+    return {
+      mode: "live-demos",
+      profile: DACS_NODE_LIVE_PROFILE,
+      role: "buyer",
+      dataDirectory: "/var/lib/dacs/buyer",
+      demos: { rpcUrl: "https://rpc.example" },
+      rail: { registryIndexRef: "index", requestedNetwork },
+      limits,
+    };
+  }
+
+  it.each([
+    ["Ethereum mainnet", "eip155:1"],
+    ["Base mainnet", "eip155:8453"],
+    ["the word mainnet", "mainnet"],
+    ["a test network that is not listed", "eip155:11155111"],
+    ["a malformed network", "network"],
+  ])("rejects mainnet and unlisted rail.requestedNetwork values: %s", (_, requestedNetwork) => {
+    expect(() => validateDacsAgentConfig(liveConfigWithNetwork(requestedNetwork)))
+      .toThrow(new TypeError("live configuration is malformed or profile-incompatible"));
+  });
+
+  it.each(["eip155:84532", "demos"])(
+    "admits the supported test network %s for rail.requestedNetwork",
+    (requestedNetwork) => {
+      expect(validateDacsAgentConfig(liveConfigWithNetwork(requestedNetwork)))
+        .toMatchObject({ rail: { requestedNetwork } });
+    },
+  );
 
   it("deeply detaches and freezes every admitted configuration branch", () => {
     const input = {
@@ -74,7 +105,7 @@ describe("DACS node configuration", () => {
       dataDirectory: "/var/lib/dacs/seller",
       publicBaseUrl: "https://seller.example",
       demos: { rpcUrl: "wss://rpc.example/ws", storageReadUrl: "https://read.example" },
-      rail: { registryIndexRef: "dacs-rail-index:v1", requestedNetwork: "eip155:8453" },
+      rail: { registryIndexRef: "dacs-rail-index:v1", requestedNetwork: "eip155:84532" },
       limits: {
         maxServiceAmount: { asset: "USDC", amount: "1.25" },
         maxSetupSpendDem: "2",
@@ -90,7 +121,7 @@ describe("DACS node configuration", () => {
 
     expect(admitted).toMatchObject({
       demos: { rpcUrl: "wss://rpc.example/ws" },
-      rail: { requestedNetwork: "eip155:8453" },
+      rail: { requestedNetwork: "eip155:84532" },
       limits: { maxServiceAmount: { amount: "1.25" } },
     });
     expect(admitted.mode).toBe("live-demos");
@@ -115,7 +146,7 @@ describe("DACS node configuration", () => {
       demos: { rpcUrl: "https://rpc.example" },
       rail: {
         registryIndexRef: "index",
-        requestedNetwork: "network",
+        requestedNetwork: "eip155:84532",
         enabledProfiles,
       },
       limits,
@@ -133,7 +164,7 @@ describe("DACS node configuration", () => {
       role: "buyer",
       dataDirectory: "./data",
       demos: { rpcUrl: "https://rpc.example" },
-      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      rail: { registryIndexRef: "index", requestedNetwork: "eip155:84532" },
       limits,
     });
     if (admitted.mode !== "live-demos") throw new Error("expected live configuration");
@@ -157,7 +188,7 @@ describe("DACS node configuration", () => {
       role: "buyer",
       dataDirectory: "./data",
       demos: { rpcUrl: "https://rpc.example" },
-      rail: { registryIndexRef: "index", requestedNetwork: "network", enabledProfiles },
+      rail: { registryIndexRef: "index", requestedNetwork: "eip155:84532", enabledProfiles },
       limits,
     })).toThrow();
   });
@@ -177,7 +208,7 @@ describe("DACS node configuration", () => {
       dataDirectory: "./data",
       publicBaseUrl,
       demos: { rpcUrl: "https://rpc.example" },
-      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      rail: { registryIndexRef: "index", requestedNetwork: "eip155:84532" },
       limits,
     })).not.toThrow();
   });
@@ -195,7 +226,7 @@ describe("DACS node configuration", () => {
       dataDirectory: "./data",
       publicBaseUrl,
       demos: { rpcUrl: "https://rpc.example" },
-      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      rail: { registryIndexRef: "index", requestedNetwork: "eip155:84532" },
       limits,
     })).toThrow();
   });
@@ -224,7 +255,7 @@ describe("DACS node configuration", () => {
       dataDirectory: "./data",
       publicBaseUrl: "https://seller.example",
       demos,
-      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      rail: { registryIndexRef: "index", requestedNetwork: "eip155:84532" },
       limits,
     })).toThrow();
   });
@@ -253,7 +284,7 @@ describe("DACS node configuration", () => {
       dataDirectory: "./data",
       publicBaseUrl: "https://seller.example",
       demos,
-      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      rail: { registryIndexRef: "index", requestedNetwork: "eip155:84532" },
       limits,
     })).not.toThrow();
   });
@@ -280,7 +311,7 @@ describe("DACS node configuration", () => {
       role: "demo-all",
       dataDirectory: "./data",
       demos: { rpcUrl: "https://rpc.example" },
-      rail: { registryIndexRef: "index", requestedNetwork: "network" },
+      rail: { registryIndexRef: "index", requestedNetwork: "eip155:84532" },
       limits,
     },
     {

@@ -6,15 +6,10 @@ import {
   type ListingDiscoveryDeps,
 } from "../../src/agent/listingDiscovery.js";
 import type { ListingValidationDeps } from "../../src/agent/listingValidation.js";
-import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { ListingDraft } from "../../src/artifacts/types.js";
-import {
-  contentHash,
-  listingAddress,
-  stripSignature,
-} from "../../src/canonical/index.js";
+import { contentHash, listingAddress } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -22,6 +17,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
 import {
   createCatalogBindingIndex,
@@ -45,11 +41,6 @@ const seller = (seedByte: number) => {
 
 const SELLER = seller(7);
 const OTHER = seller(9);
-const verify = (
-  bytes: Uint8Array,
-  signature: Uint8Array,
-  publicKey: Uint8Array,
-) => ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey));
 
 interface Fixture {
   logicalAddress: string;
@@ -80,11 +71,11 @@ async function listingFixture(options: {
     supportedDelivery: ["deliver-attested-payload"],
     ...(version === 1 && options.omitV1 ? {} : { listingVersion: version }),
   };
-  const record = (await buildSignedArtifact(
-    body,
-    ARTIFACT_SEPARATORS.Listing,
-    (bytes) => ed25519Sign(bytes, options.signer ?? SELLER.privateKey),
-  )) as unknown as Record<string, unknown>;
+  const bytes = signedBytes(ARTIFACT_SEPARATORS.Listing, contentHash(body));
+  const signature = Buffer.from(
+    ed25519Sign(bytes, options.signer ?? SELLER.privateKey),
+  ).toString("hex");
+  const record: Record<string, unknown> = { ...body, signature };
   const logicalAddress = listingAddress(SELLER.did, serviceId, version);
   const nativeAddress = `stor-${serviceId}-${version}`;
   return {
@@ -206,7 +197,6 @@ function depsFor(
       fixtures.map((fixture) => fixture.binding),
     ),
     readAnchor: async (nativeAddress) => records.get(nativeAddress) ?? null,
-    verify,
     ...over,
   };
 }
@@ -378,28 +368,23 @@ describe("readListingByLogicalAddress (#54)", () => {
     });
   });
 
-  test("authenticates a v1 Listing from only its logical address", async () => {
+  test("rejects a correctly signed earlier-shape Listing as an unsupported shape", async () => {
     const fixture = await listingFixture({ omitV1: true });
     const result = await readListingByLogicalAddress(
       fixture.logicalAddress,
-      depsFor([fixture]),
+      depsFor([fixture], {
+        listingValidationDeps: normativeValidationDeps(),
+      }),
     );
 
     expect(result).toMatchObject({
-      status: "authenticated",
-      compatibility: "legacy-mvp",
-      logicalAddress: fixture.logicalAddress,
-      ref: fixture.nativeAddress,
-      version: 1,
-      contentHash: fixture.binding.contentHash,
-      listing: {
-        agentId: SELLER.did,
-        serviceId: "market-data",
-      },
+      status: "rejected",
+      check: "shape",
+      code: "unsupported-listing-shape",
+      reason: "record is not a normative DACS-1 Listing",
+      nativeAddress: fixture.nativeAddress,
     });
-    if (result.status === "authenticated") {
-      expect("signature" in result.listing).toBe(false);
-    }
+    expect("listing" in result).toBe(false);
   });
 
   test("rejects noncanonical and unsafe logical addresses before index I/O", async () => {
@@ -500,28 +485,13 @@ describe("readListingByLogicalAddress (#54)", () => {
     }
   });
 
-  test("rejects hash mismatch, wrong signer, cross-service lift, and cross-version lift", async () => {
-    const valid = await listingFixture();
-    const wrongSigner = await listingFixture({ signer: OTHER.privateKey });
-    const crossService = await listingFixture({
-      body: {
-        ...stripSignature(valid.record),
-        serviceId: "other-service",
-      },
+  test("rejects hash mismatch, cross-listing lift, and cross-version lift", async () => {
+    const valid = await normativeListingFixture();
+    const crossListing = await normativeListingFixture({
+      listingId: "other-listing",
     });
-    const crossVersion = await listingFixture({
-      body: {
-        agentId: SELLER.did,
-        serviceId: "market-data",
-        name: "Market Data",
-        description: "v2 lifted into v1",
-        claimRequirements: [],
-        supportedNegotiation: ["negotiate-fixed-price"],
-        supportedPaymentRails: ["pay-x402"],
-        supportedDelivery: ["deliver-attested-payload"],
-        listingVersion: 2,
-      },
-    });
+    const crossVersion = await normativeListingFixture({ version: 2 });
+    const validationDeps = normativeValidationDeps();
 
     const hashMismatch = {
       ...valid,
@@ -530,34 +500,30 @@ describe("readListingByLogicalAddress (#54)", () => {
     expect(
       await readListingByLogicalAddress(
         valid.logicalAddress,
-        depsFor([hashMismatch]),
+        depsFor([hashMismatch], { listingValidationDeps: validationDeps }),
       ),
     ).toMatchObject({ status: "rejected", code: "content-hash-mismatch" });
-    expect(
-      await readListingByLogicalAddress(
-        wrongSigner.logicalAddress,
-        depsFor([wrongSigner]),
-      ),
-    ).toMatchObject({ status: "rejected", code: "signature-invalid" });
 
-    const liftedService = {
-      ...crossService,
+    const liftedListing = {
+      ...crossListing,
       logicalAddress: valid.logicalAddress,
+      nativeAddress: valid.nativeAddress,
       binding: {
         ...valid.binding,
-        contentHash: contentHash(crossService.record),
+        contentHash: contentHash(crossListing.record),
       },
     };
     expect(
       await readListingByLogicalAddress(
         valid.logicalAddress,
-        depsFor([liftedService]),
+        depsFor([liftedListing], { listingValidationDeps: validationDeps }),
       ),
-    ).toMatchObject({ status: "rejected", code: "service-mismatch" });
+    ).toMatchObject({ status: "rejected", code: "listing-id-mismatch" });
 
     const liftedVersion = {
       ...crossVersion,
       logicalAddress: valid.logicalAddress,
+      nativeAddress: valid.nativeAddress,
       binding: {
         ...valid.binding,
         contentHash: contentHash(crossVersion.record),
@@ -566,30 +532,32 @@ describe("readListingByLogicalAddress (#54)", () => {
     expect(
       await readListingByLogicalAddress(
         valid.logicalAddress,
-        depsFor([liftedVersion]),
+        depsFor([liftedVersion], { listingValidationDeps: validationDeps }),
       ),
     ).toMatchObject({ status: "rejected", code: "version-mismatch" });
   });
 
-  test("rejects invalid standalone envelopes and structurally invalid signed bytes", async () => {
-    const valid = await listingFixture();
-    const signatures = {
-      ...valid.record,
-      signatures: [{ signer: SELLER.did }],
-    };
-    const withSignatures: Fixture = {
+  test("rejects a string signature envelope and a structurally invalid record", async () => {
+    const valid = await normativeListingFixture();
+    const stringSignature: Fixture = {
       ...valid,
-      record: signatures,
-      binding: { ...valid.binding, contentHash: contentHash(signatures) },
+      record: { ...valid.record, signature: "abc" },
+    };
+    stringSignature.binding = {
+      ...valid.binding,
+      contentHash: contentHash(stringSignature.record),
     };
     expect(
       await readListingByLogicalAddress(
         valid.logicalAddress,
-        depsFor([withSignatures]),
+        depsFor([stringSignature], {
+          listingValidationDeps: normativeValidationDeps(),
+        }),
       ),
     ).toMatchObject({
       status: "rejected",
-      code: "invalid-signature-envelope",
+      check: "shape",
+      code: "unsupported-listing-shape",
     });
 
     const malformed = await listingFixture({
@@ -613,24 +581,6 @@ describe("readListingByLogicalAddress (#54)", () => {
     ).toMatchObject({
       status: "rejected",
       code: "unsupported-listing-shape",
-    });
-
-    const oddSignature: Fixture = {
-      ...valid,
-      record: { ...valid.record, signature: "abc" },
-    };
-    oddSignature.binding = {
-      ...valid.binding,
-      contentHash: contentHash(oddSignature.record),
-    };
-    expect(
-      await readListingByLogicalAddress(
-        valid.logicalAddress,
-        depsFor([oddSignature]),
-      ),
-    ).toMatchObject({
-      status: "rejected",
-      code: "invalid-signature-envelope",
     });
   });
 
@@ -667,7 +617,8 @@ describe("readListingByLogicalAddress (#54)", () => {
   });
 
   test("pins the record before an asynchronous verifier observes caller mutation", async () => {
-    const fixture = await listingFixture();
+    const fixture = await normativeListingFixture();
+    const validationDeps = normativeValidationDeps();
     let entered!: () => void;
     const verifierEntered = new Promise<void>((resolve) => {
       entered = resolve;
@@ -679,46 +630,56 @@ describe("readListingByLogicalAddress (#54)", () => {
     const pending = readListingByLogicalAddress(
       fixture.logicalAddress,
       depsFor([fixture], {
-        verify: async (bytes, signature, key) => {
-          entered();
-          await gate;
-          return verify(bytes, signature, key);
+        listingValidationDeps: {
+          ...validationDeps,
+          verifyListingSignature: async (input) => {
+            entered();
+            await gate;
+            return validationDeps.verifyListingSignature(input);
+          },
         },
       }),
     );
     await verifierEntered;
-    fixture.record.serviceId = "mutated-after-read";
+    fixture.record.listingId = "mutated-after-read";
     release();
 
     await expect(pending).resolves.toMatchObject({
-      status: "authenticated",
-      listing: { serviceId: "market-data" },
+      status: "verified",
+      listing: { listingId: "normative-market-data" },
     });
   });
 
   test("keeps an execution failure distinct from a definitively invalid signature", async () => {
-    const fixture = await listingFixture();
+    const fixture = await normativeListingFixture();
     await expect(
       readListingByLogicalAddress(
         fixture.logicalAddress,
         depsFor([fixture], {
-          verify: async () => {
-            throw new Error("crypto provider unavailable");
+          listingValidationDeps: {
+            ...normativeValidationDeps(),
+            verifyListingSignature: async () => {
+              throw new Error("crypto provider unavailable");
+            },
           },
         }),
       ),
     ).resolves.toMatchObject({
       status: "indeterminate",
-      stage: "verification",
-      reason: expect.stringContaining("crypto provider unavailable"),
+      stage: "validation",
+      validation: {
+        disposition: "indeterminate",
+        step: 4,
+        reason: "listing-signature-unavailable",
+      },
     });
   });
 });
 
 describe("enumerateListingsForSeller (#54)", () => {
-  test("pages through authenticated historical versions and ignores other artifact kinds", async () => {
-    const v1 = await listingFixture({ omitV1: true });
-    const v2 = await listingFixture({ version: 2 });
+  test("pages through verified versions and ignores other artifact kinds", async () => {
+    const v1 = await normativeListingFixture();
+    const v2 = await normativeListingFixture({ version: 2 });
     const seenOwners: string[] = [];
     const pages = [
       {
@@ -748,6 +709,7 @@ describe("enumerateListingsForSeller (#54)", () => {
       },
     ];
     const deps = depsFor([v1, v2], {
+      listingValidationDeps: normativeValidationDeps(),
       createHistoryPageFetcher: (owner) => {
         seenOwners.push(owner);
         return async (cursor) => pages[cursor === null ? 0 : 1]!;
@@ -773,10 +735,46 @@ describe("enumerateListingsForSeller (#54)", () => {
     expect(seenOwners).toEqual([SELLER.owner, SELLER.owner]);
   });
 
+  test("lists an earlier-shape version under diagnostics, not listings", async () => {
+    const earlier = await listingFixture({ omitV1: true });
+    const current = await normativeListingFixture({ version: 2 });
+    const deps = depsFor([earlier, current], {
+      listingValidationDeps: normativeValidationDeps(),
+      createHistoryPageFetcher: () => async () => ({
+        entries: [earlier, current].map((fixture) => ({
+          nativeAddress: fixture.nativeAddress,
+          logicalAddress: fixture.logicalAddress,
+          owner: SELLER.owner,
+        })),
+        nextCursor: null,
+      }),
+    });
+
+    const result = await enumerateListingsForSeller(SELLER.did, deps);
+    expect(result).toMatchObject({
+      status: "page",
+      listings: [{ ref: current.nativeAddress, version: 2 }],
+      diagnostics: [
+        {
+          nativeAddress: earlier.nativeAddress,
+          result: {
+            status: "rejected",
+            check: "shape",
+            code: "unsupported-listing-shape",
+          },
+        },
+      ],
+    });
+  });
+
   test("a deterministic bad candidate is diagnosed without suppressing a later valid one", async () => {
-    const bad = await listingFixture({ serviceId: "bad", signer: OTHER.privateKey });
-    const good = await listingFixture({ serviceId: "good" });
+    const bad = await normativeListingFixture({
+      listingId: "bad",
+      signer: OTHER.privateKey,
+    });
+    const good = await normativeListingFixture({ listingId: "good" });
     const deps = depsFor([bad, good], {
+      listingValidationDeps: normativeValidationDeps(),
       createHistoryPageFetcher: () => async () => ({
         entries: [bad, good].map((fixture) => ({
           nativeAddress: fixture.nativeAddress,
@@ -794,15 +792,15 @@ describe("enumerateListingsForSeller (#54)", () => {
       diagnostics: [
         {
           nativeAddress: bad.nativeAddress,
-          result: { status: "rejected", code: "signature-invalid" },
+          result: { status: "rejected", code: "listing-validation-failed" },
         },
       ],
     });
   });
 
   test("history and mid-page index/read uncertainty are atomic and retry the input cursor", async () => {
-    const first = await listingFixture({ serviceId: "first" });
-    const second = await listingFixture({ serviceId: "second" });
+    const first = await normativeListingFixture({ listingId: "first" });
+    const second = await normativeListingFixture({ listingId: "second" });
     const page = {
       entries: [first, second].map((fixture) => ({
         nativeAddress: fixture.nativeAddress,
@@ -843,6 +841,7 @@ describe("enumerateListingsForSeller (#54)", () => {
         SELLER.did,
         depsFor([first, second], {
           index,
+          listingValidationDeps: normativeValidationDeps(),
           createHistoryPageFetcher: () => async () => page,
         }),
         { cursor: "retry-me" },
@@ -855,17 +854,21 @@ describe("enumerateListingsForSeller (#54)", () => {
       retryCursor: "retry-me",
     });
 
+    const validationDeps = normativeValidationDeps();
     let verificationCount = 0;
     await expect(
       enumerateListingsForSeller(
         SELLER.did,
         depsFor([first, second], {
-          verify: async (...args) => {
-            verificationCount += 1;
-            if (verificationCount === 2) {
-              throw new Error("crypto provider offline");
-            }
-            return verify(...args);
+          listingValidationDeps: {
+            ...validationDeps,
+            verifyListingSignature: async (input) => {
+              verificationCount += 1;
+              if (verificationCount === 2) {
+                throw new Error("crypto provider offline");
+              }
+              return validationDeps.verifyListingSignature(input);
+            },
           },
           createHistoryPageFetcher: () => async () => page,
         }),
@@ -873,7 +876,7 @@ describe("enumerateListingsForSeller (#54)", () => {
       ),
     ).resolves.toMatchObject({
       status: "indeterminate",
-      stage: "verification",
+      stage: "validation",
       listings: [],
       diagnostics: [],
       retryCursor: "retry-me",
@@ -881,13 +884,14 @@ describe("enumerateListingsForSeller (#54)", () => {
   });
 
   test("defines independent cursor pages as at-least-once", async () => {
-    const fixture = await listingFixture();
+    const fixture = await normativeListingFixture();
     const entry = {
       nativeAddress: fixture.nativeAddress,
       logicalAddress: fixture.logicalAddress,
       owner: SELLER.owner,
     };
     const deps = depsFor([fixture], {
+      listingValidationDeps: normativeValidationDeps(),
       createHistoryPageFetcher: () => async (cursor) =>
         cursor === null
           ? { entries: [entry], nextCursor: "overlap" }
@@ -911,7 +915,7 @@ describe("enumerateListingsForSeller (#54)", () => {
   });
 
   test("advances past definitive binding absence and finds a late repair on restart", async () => {
-    const fixture = await listingFixture();
+    const fixture = await normativeListingFixture();
     let repaired = false;
     const index: BindingIndex = {
       resolve: async () =>
@@ -921,6 +925,7 @@ describe("enumerateListingsForSeller (#54)", () => {
     };
     const deps = depsFor([fixture], {
       index,
+      listingValidationDeps: normativeValidationDeps(),
       createHistoryPageFetcher: () => async () => ({
         entries: [
           {

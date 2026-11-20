@@ -30,6 +30,7 @@ function harness(queue, { fireTimers = false } = {}) {
       return typeof next === "function" ? next(init) : next;
     },
     now: () => clock.time,
+    monotonicNow: () => clock.time,
     wait: async (milliseconds) => { clock.waits.push(milliseconds); clock.time += milliseconds; },
     schedule: (callback) => { if (fireTimers) queueMicrotask(callback); return 0; },
     cancel: () => {},
@@ -181,6 +182,12 @@ test("an abbreviated package document that names another package, or no package,
   }
 });
 
+test("a document whose string is cut short by invalid UTF-8 is refused as registry_malformed, not oversized", async () => {
+  const bytes = Buffer.concat([Buffer.from('{"dist-tags":{"next":"1.0.0'), Buffer.from([0xc2]), Buffer.from('"}}')]);
+  const error = await refusal(readRegistryDistTags(NAME, harness([new Response(bytes, { status: 200 })]).options), "registry_malformed");
+  assert.equal(error.cause.code, "EMALFORMED");
+});
+
 // Both documents the reader decodes: the version document and the abbreviated package document.
 const readers = {
   "version document": (options) => readRegistryRelease(NAME, VERSION, options),
@@ -207,4 +214,16 @@ test("a version document and an abbreviated package document within the byte lim
     const unparsable = await refusal(read(harness([json(unterminated)]).options), "registry_malformed");
     assert.ok(unparsable.cause instanceof SyntaxError, label);
   }
+});
+
+for (const jump of [-60_000, 60_000]) test(`registry retry budget ignores a ${jump} ms wall jump`, async () => {
+  let elapsed = 0, wall = 1_000_000, reads = 0;
+  await assert.rejects(readRegistryRelease(NAME, VERSION, {
+    deadline: wall + 1_500, now: () => wall, monotonicNow: () => elapsed,
+    fetch: async () => { reads += 1; return json({}, { status: 503 }); },
+    schedule: () => 0, cancel() {},
+    wait: async delay => { elapsed += delay; wall += jump; },
+  }), { code: 'registry_unavailable' });
+  assert.equal(elapsed, 1_500);
+  assert.equal(reads, 2);
 });

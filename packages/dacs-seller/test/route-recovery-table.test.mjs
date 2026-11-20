@@ -8,7 +8,12 @@ import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createOperatorBuyerAccess } from '../src/devnet-demo/buyer-access.mjs';
 import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { WIRE_ROUTE_PATHS } from '../src/dacs/seller-wire-requests.mjs';
-import { JOB, testWallet } from './helpers/protocol-fixture.mjs';
+import DatabaseSync from 'better-sqlite3';
+import { paymentEvidenceAddress } from '@kynesyslabs/dacs';
+import { deliverableAddress, deliveryEvidenceAddress, listingPin } from '../src/dacs/purchase-protocol.mjs';
+import { JOB, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
+import { EVIDENCE_SIGNATURE, OTHER_TX, fixturePaymentWorld, includedTransfer } from './helpers/wire-payment-fixture.mjs';
+import { arrangeReceipts, arrangeRecord, arrangeTransfer, fixtureReceiptsFile, nativeRecord, nativeTransfer, omit } from './helpers/completed-source-cells.mjs';
 import { BUYER, SELLER, PIN, continuingWorld, derive, jobFor, proposeJob, world } from './helpers/wire-routes-world.mjs';
 import { BUNDLE_REFUSALS, SHORT_LEASE_MS, bundleWorld, claimedTransport, completions, editSession, markPaid, operationOf, proposalSigningRig, reconcileInput, realWorld, tempDirectory } from './helpers/route-recovery-world.mjs';
 
@@ -18,14 +23,14 @@ const ADMISSION_READ_MAX_BYTES = 65_536;
 
 test('NEW-D1a-table-scope', async (t) => {
   const enabled = createSellerEffectRoutes({ commitOnSignature: false });
-  const owned = [PATHS.proposals, PATHS.bundleRequest, PATHS.bundleCountersignature, PATHS.commitments].sort();
+  const owned = [PATHS.proposals, PATHS.payments, PATHS.bundleRequest, PATHS.bundleCountersignature, PATHS.commitments].sort();
   assert.deepEqual(Object.keys(enabled).sort(), owned, 'one row per owned route');
   assert.deepEqual(Object.keys(createSellerEffectRoutes({ commitOnSignature: true })).sort(), [...owned, PATHS.commitmentSignature].sort(), 'the signature row exists only when enabled');
   for (const bad of [undefined, null, 'true', 1]) assert.throws(() => createSellerEffectRoutes({ commitOnSignature: bad }), TypeError, `commitOnSignature ${bad}`);
   assert.throws(() => createSellerEffectRoutes(), TypeError);
   assert.ok(Object.isFrozen(SELLER_EFFECT_ROUTES) && Object.values(SELLER_EFFECT_ROUTES).every((route) => Object.isFrozen(route)), 'the table and its rows are frozen');
   assert.throws(() => { enabled[PATHS.payments] = enabled[PATHS.proposals]; }, TypeError);
-  for (const path of [PATHS.state, PATHS.bundleBuyerCopy, PATHS.payments, PATHS.commitmentSignature, '/dacs/v1/context', `${PATHS.proposals}?x=1`, PATHS.proposals.toUpperCase()]) {
+  for (const path of [PATHS.state, PATHS.bundleBuyerCopy, PATHS.commitmentSignature, '/dacs/v1/context', `${PATHS.proposals}?x=1`, PATHS.proposals.toUpperCase()]) {
     assert.equal(enabled[path], undefined, `${path} has no row`);
   }
   for (const route of Object.values(enabled)) assert.deepEqual(Object.keys(route).sort(), ['endAfter', 'idempotenceKey', 'recover', 'revalidate', 'sink']);
@@ -44,7 +49,7 @@ test('NEW-D1a-table-scope', async (t) => {
 });
 
 test('the route table has one row per enabled non-context effect route and none for read routes; commitments/signature only when enabled', () => {
-  const effectRoutes = [PATHS.proposals, PATHS.commitments, PATHS.bundleRequest, PATHS.bundleCountersignature];
+  const effectRoutes = [PATHS.proposals, PATHS.payments, PATHS.commitments, PATHS.bundleRequest, PATHS.bundleCountersignature];
   for (const commitOnSignature of [false, true]) {
     const routes = Object.keys(createSellerEffectRoutes({ commitOnSignature })).sort();
     assert.deepEqual(routes, [...effectRoutes, ...(commitOnSignature ? [PATHS.commitmentSignature] : [])].sort(), `commit-on-signature ${commitOnSignature}`);
@@ -300,7 +305,7 @@ test('completed revalidation: route {proposals, commitments, commitments/signatu
 
   await t.test('a job the seller holds nothing for, and a path with no completed answer, are not revalidated', async () => {
     await assert.rejects(w.fixture.agent().revalidateCompletedAnswer({ path: PATHS.proposals, jobId: jobFor('revalidate-unknown'), outcome: w.outcome }), (error) => error.code === 'seller_source_unavailable' && error.cause === 'absent');
-    for (const path of [PATHS.payments, PATHS.state, PATHS.bundleRequest]) {
+    for (const path of [PATHS.state, PATHS.bundleRequest]) {
       await assert.rejects(w.fixture.agent().revalidateCompletedAnswer({ path, jobId: w.jobId, outcome: w.outcome }), TypeError, path);
     }
   });
@@ -403,6 +408,29 @@ const commitmentRevalidation = (w, outcome = w.outcome) => w.fixture.agent().rev
 
 const closedAccess = () => createOperatorBuyerAccess({ openBuyerAccess: false, custodyBuyer: testWallet(9).claim });
 
+for (const early of [false, true]) for (const unavailable of ['closed access', 'unready buyer lookup']) {
+  test(`completed ${early ? 'signature' : 'ordinary'} commitment replay refuses ${unavailable} and preserves the stored outcome`, async (t) => {
+    const w = await completedCommitment(t, early), settled = commitmentSnapshot(w), openAccess = w.fixture.config.buyerAccess;
+    assert.equal((await w.commitmentRequest()).text, w.first.text, 'the allowed replay returns the stored bytes');
+    w.fixture.config.buyerAccess = createOperatorBuyerAccess({
+      openBuyerAccess: unavailable === 'unready buyer lookup',
+      custodyBuyer: testWallet(9).claim,
+      buyerForJob: () => buyer.address,
+      buyerLookupReady: () => unavailable !== 'unready buyer lookup',
+    });
+    await w.fixture.reopen();
+    const refused = await w.commitmentRequest();
+    assert.deepEqual({ status: refused.status, signed: refused.signed, error: refused.body.error },
+      { status: 409, signed: true, error: 'buyer_access_closed' }, 'the access refusal keeps its own code');
+    assert.equal(operationOf(w, w.jobId, w.commitmentPath).state, 'completed');
+    assert.deepEqual(commitmentSnapshot(w), settled, 'the refusal changes no retained work or outcome');
+    w.fixture.config.buyerAccess = openAccess;
+    await w.fixture.reopen();
+    assert.equal((await w.commitmentRequest()).text, w.first.text, 'restored access returns the same stored bytes');
+    assert.deepEqual(commitmentSnapshot(w), settled, 'retrying signs and publishes no new commitment');
+  });
+}
+
 test('buyer access closed after proposal completion withholds replay without changing the outcome', async (t) => {
   const w = await completedProposal(t), settled = snapshot(w), openAccess = w.fixture.config.buyerAccess;
   assert.equal((await w.request(PATHS.proposals)).text, w.first.text, 'a passing control returns the stored bytes');
@@ -491,4 +519,180 @@ test('native passive read and readRetained never recover a pending accepted CREA
     anchor.publish = publish;
     assert.equal((await c.commitmentRequest()).status, 200, 'restored authentic inclusion permits the replay again');
   }
+});
+
+// ---- A final payment's capacity ----
+
+// The seller's allocation for the job of a payment world, with the payments route reserving a purchase slot.
+async function purchaseWorld(t, options) {
+  const w = await fixturePaymentWorld(t, options);
+  w.handle.wireOverrides = { capacity: { retainedAllocated: ({ route }) => route === PATHS.payments } };
+  w.reopen();
+  sellerStoreInternals(w.handle.store).transaction(() => w.handle.capacity.allocateWithin({ jobId: w.jobId, buyer: BUYER.claim, seller: SELLER.claim, listingPin: listingPin(w.f.listing) }));
+  const allocation = () => w.handle.capacity.capacityReport().allocations.find((entry) => entry.jobId === w.jobId);
+  const figures = () => { const { used, allotted } = w.handle.capacity.capacityReport(); return { used, allotted }; };
+  return { ...w, allocation, figures };
+}
+const finished = (w) => completions(w).filter((row) => row.route === PATHS.payments);
+
+test('a final payment returns its route slot and the remaining purchase once', async (t) => {
+  for (const commitOnSignature of [true, false]) for (const recovered of [false, true]) {
+    const w = await purchaseWorld(t, { commitOnSignature }), cell = `commit on signature ${commitOnSignature}, recovered ${recovered}`;
+    const live = w.allocation(), allotted = w.figures().allotted;
+    assert.deepEqual([live.state, live.rev], ['live', 1], cell);
+    if (recovered) {
+      w.script.signFault = EVIDENCE_SIGNATURE;
+      assert.equal((await w.pay()).body.error, 'operation_uncertain', cell);
+      assert.deepEqual([w.allocation().state, w.allocation().rev, w.figures().allotted], [live.state, live.rev, allotted], `${cell}: an open attempt returns nothing`);
+      assert.deepEqual(finished(w), [], cell);
+      w.lapse();
+    }
+    const before = w.figures();
+    assert.equal((await w.pay()).body.status, 'delivered', cell);
+    const settled = w.allocation();
+    assert.deepEqual([settled.state, settled.rev, settled.slots[PATHS.payments].state], ['released', 2, 'returned'], `${cell}: the purchase is released at the new revision`);
+    assert.equal(w.figures().allotted, 0, cell);
+    assert.equal(w.figures().used, before.used + 1, `${cell}: the spent unit is never refunded`);
+    assert.deepEqual(finished(w).map((row) => row.cleanup), ['purchase-final'], cell);
+    for (const restart of [false, true]) {
+      if (restart) await w.restart();
+      assert.equal((await w.pay()).status, 200, `${cell}: the replay answers the stored outcome`);
+      assert.deepEqual([w.allocation().state, w.allocation().rev, finished(w).length], ['released', 2, 1], `${cell}: a replay returns nothing, restart ${restart}`);
+    }
+  }
+});
+
+test('a final payment of the general class is recorded and returns no purchase slot', async (t) => {
+  const w = await fixturePaymentWorld(t);
+  assert.equal((await w.pay()).body.status, 'delivered');
+  assert.deepEqual(finished(w).map((row) => row.cleanup), ['purchase-final']);
+  assert.deepEqual(w.handle.capacity.capacityReport().allocations, [], 'the job holds no purchase');
+});
+
+test('a final payment whose cleanup fails after publication keeps its outcome and returns nothing, and a replay does not repair it', async (t) => {
+  const w = await purchaseWorld(t);
+  const db = new DatabaseSync(w.storePath);
+  t.after(() => db.close());
+  db.exec("CREATE TRIGGER TEST_cut BEFORE UPDATE ON kit_allocations BEGIN SELECT RAISE(ABORT, 'TEST cleanup cut'); END");
+  const cut = await w.pay();
+  assert.notEqual(cut.status, 200, 'the answer was not sent');
+  assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed', 'the outcome is published');
+  assert.deepEqual(finished(w), [], 'no completion is recorded');
+  db.exec('DROP TRIGGER TEST_cut');
+  const kept = w.allocation();
+  assert.equal((await w.pay()).status, 200, 'the stored outcome is answered');
+  assert.deepEqual([w.allocation().state, w.allocation().rev, finished(w).length], [kept.state, kept.rev, 0], 'the replay leaves the cleanup to the startup repair');
+});
+
+// ---- A completed payment's sources are read again before each stored answer ----
+
+const OVERSIZED_REPLY_CHARS = 600_000;
+const never = () => new Promise(() => {});
+const fixtureRecords = (w) => ({ payment: paymentEvidenceAddress(w.jobId, 'demos-native:DEM', 2), deliverable: deliverableAddress(w.jobId), delivery: deliveryEvidenceAddress(w.jobId) });
+const changedArtifact = (row) => ({ ...row, artifact: { ...row.artifact, observedAt: 1 } });
+const FIXTURE_SOURCE_CELLS = [
+  ['the transfer is not found', 'absent', (w) => arrangeTransfer(w, async () => ({ status: 'not-found' }))],
+  ['the transfer is not yet included', 'unavailable', (w) => arrangeTransfer(w, async () => ({ status: 'pending', reason: 'demos-pending' }))],
+  ['the transfer read fails', 'unavailable', (w) => arrangeTransfer(w, async () => { throw new Error('TEST node unreachable'); })],
+  ['the transfer amount is not the price', 'changed', (w) => arrangeTransfer(w, (txHash) => includedTransfer(txHash, { amountOs: '1' }))],
+  ['the transfer was paid by another key', 'changed', (w) => arrangeTransfer(w, (txHash) => includedTransfer(txHash, { payer: seller.address }))],
+  ['the permit is gone from the receipt state', 'changed', (w) => arrangeReceipts(fixtureReceiptsFile(w), (state) => { state.records = {}; state.permits = {}; })],
+  ['the permit authorizes a different rail registry version', 'changed', (w) => arrangeReceipts(fixtureReceiptsFile(w), (state) => { Object.values(state.records)[0].selected.authorization.railRegistryVersion = 2; })],
+  ['the receipt state that holds the permit is damaged', 'unavailable', (w) => arrangeReceipts(fixtureReceiptsFile(w), (state) => { state.permits = {}; })],
+  ['the payment evidence record differs', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).payment, changedArtifact)],
+  ['the payment evidence record is absent', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).payment, () => ({ status: 'absent' }))],
+  ['the Deliverable record differs', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).deliverable, changedArtifact)],
+  ['the Deliverable record is absent', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).deliverable, () => ({ status: 'absent' }))],
+  ['the Deliverable record is larger than the reply limit', 'too_large', (w) => arrangeRecord(w, fixtureRecords(w).deliverable, (row) => ({ ...row, artifact: { ...row.artifact, padding: 'x'.repeat(OVERSIZED_REPLY_CHARS) } }))],
+  ['the delivery evidence record differs', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).delivery, (row) => ({ ...row, artifact: { ...row.artifact, outcome: 'failure' } }))],
+  ['the delivery evidence names another Deliverable', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).delivery, (row) => ({ ...row, artifact: { ...row.artifact, deliverableContentHash: derive('another Deliverable') } }))],
+  ['the delivery evidence cannot be read', 'unavailable', (w) => arrangeRecord(w, fixtureRecords(w).delivery, () => { throw new Error('TEST delivery unavailable'); })],
+  ['the delivery evidence record has another receipt', 'changed', (w) => arrangeRecord(w, fixtureRecords(w).delivery, (row) => ({ ...row, receipt: { ...row.receipt, contentHash: derive('another record') } }))],
+];
+
+// What a replay of a completed fixture payment must leave as it was: the outcome and the durable state, and every count of a mutating step.
+const fixtureSnapshot = (w) => ({ outcome: operationOf(w, w.jobId, PATHS.payments), completions: completions(w), session: w.f.agent.durableSessionOf(w.jobId),
+  writes: [w.evidenceCreates(), w.deliverableWrites(), w.deliveryEvidenceWrites()], agentSignatures: w.counts.signed.length, publicSubmits: w.counts.publicSubmits });
+// The answer to a replay of the completed payment, withheld by a source that fails, twice, and again exactly as stored once the source is restored.
+async function assertWithheldThenRestored(label, { send, snapshot, stored, cause, arrange }) {
+  const before = snapshot(), undo = arrange();
+  for (const call of [1, 2]) {
+    const refused = await send();
+    assert.deepEqual([refused.status, refused.body.error, refused.body.cause], [503, 'seller_source_unavailable', cause], `${label}, call ${call}`);
+    assert.notEqual(refused.text, stored, `${label}, call ${call}: the stored text is withheld`);
+    assert.deepEqual(snapshot(), before, `${label}, call ${call}: nothing changed`);
+  }
+  undo();
+  assert.equal((await send()).text, stored, `${label}: authentic sources return the stored bytes`);
+  assert.deepEqual(snapshot(), before, `${label}: the restored answer changed nothing`);
+}
+
+async function checkFixtureSources(t) {
+  const w = await fixturePaymentWorld(t), first = await w.pay();
+  assert.deepEqual([first.status, first.body.status], [200, 'delivered']);
+  const send = () => w.pay(), stored = first.text, base = { send, snapshot: () => fixtureSnapshot(w), stored };
+  assert.equal((await send()).text, stored, 'a replay with authentic sources answers the stored bytes');
+  for (const [label, cause, arrange] of FIXTURE_SOURCE_CELLS) await assertWithheldThenRestored(label, { ...base, cause, arrange: () => arrange(w) });
+  // A receipt observed later than the stored one keeps every identity and passes.
+  const undoLater = arrangeRecord(w, fixtureRecords(w).deliverable, (row) => ({ ...row, receipt: { ...row.receipt, observedAt: row.receipt.observedAt + 5000 } }));
+  assert.equal((await send()).text, stored, 'a later observation of the same Deliverable passes');
+  undoLater();
+  // A read that never answers is stopped at its deadline.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const observed = w.counts.observations.length;
+  for (const call of [1, 2]) {
+    const hung = arrangeTransfer(w, never), answering = send();
+    for (let turns = 0; w.counts.observations.length === observed + call - 1; turns++) {
+      assert.ok(turns < 100000, 'the transfer is read');
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    t.mock.timers.tick(ADMISSION_READ_TIMEOUT_MS);
+    const refused = await answering;
+    assert.deepEqual([refused.status, refused.body.error, refused.body.cause], [503, 'seller_source_unavailable', 'timeout'], `a transfer read that never answers, call ${call}`);
+    hung();
+  }
+  t.mock.timers.reset();
+  assert.equal((await send()).text, stored);
+  // A transaction other than the retained one is not read: the job already has its payment.
+  const reads = w.counts.observations.length, other = await w.pay({ txHash: OTHER_TX });
+  assert.deepEqual([other.status, other.body.error, w.counts.observations.length], [409, 'payment_already_recorded', reads]);
+}
+
+// The native world's sources: the transfer and the three records its node serves, and the receipt state.
+const nativeSourceCells = (txHash) => [
+  ['the transfer read fails', 'unavailable', (w) => nativeTransfer(w, txHash, () => { throw new Error('TEST node unreachable'); })],
+  ['the transfer cannot be found', 'unavailable', (w) => nativeTransfer(w, txHash, () => null)],
+  ['the transfer amount changed', 'unavailable', (w) => nativeTransfer(w, txHash, (record) => ({ ...record, content: { ...record.content, amount: '1', data: ['native', { nativeOperation: 'send', args: [record.content.to, '1'] }] } }))],
+  ['the permit is gone from the receipt state', 'changed', (w) => arrangeReceipts(w.receiptsFile, (state) => { state.records = {}; state.permits = {}; })],
+  ['the spent permit authorizes a different rail registry version', 'changed', (w) => arrangeReceipts(w.receiptsFile, (state) => { Object.values(state.records)[0].consumed.claim.authorization.railRegistryVersion = 2; })],
+  ['the payment evidence is gone', 'unavailable', (w) => nativeRecord(w, 'dacs4:payment:', () => null)],
+  ['the payment evidence record differs', 'unavailable', (w) => nativeRecord(w, 'dacs4:payment:', (record) => ({ ...record, data: { ...record.data, outcome: 'failure' } }))],
+  ['the Deliverable is gone', 'unavailable', (w) => nativeRecord(w, 'dacs4:deliverable:', () => null)],
+  ['the Deliverable record differs', 'unavailable', (w) => nativeRecord(w, 'dacs4:deliverable:', (record) => ({ ...record, data: { ...record.data, title: 'another title' } }))],
+  ['the Deliverable projection names another content hash', 'unavailable', (w) => nativeRecord(w, 'dacs4:deliverable:', (record) => ({ ...record, metadata: { ...record.metadata, contentHash: derive('another content') } }))],
+  ['the Deliverable receipt names another transaction', 'unavailable', (w) => nativeRecord(w, 'dacs4:deliverable:', (record) => ({ ...record, createdByTx: derive('another transaction') }))],
+  ['the delivery evidence is gone', 'unavailable', (w) => nativeRecord(w, 'dacs4:evidence:', () => null)],
+  ['the delivery evidence record differs', 'unavailable', (w) => nativeRecord(w, 'dacs4:evidence:', (record) => ({ ...record, data: { ...record.data, outcome: 'failure' } }))],
+  ['the delivery evidence cannot be read', 'unavailable', (w) => nativeRecord(w, 'dacs4:evidence:', () => { throw new Error('TEST delivery unavailable'); })],
+];
+
+async function checkNativeSources(t) {
+  const { nativePaymentWorld } = await import('./helpers/native-payment-wire-fixture.mjs');
+  const w = await nativePaymentWorld(t), p = await w.purchase(), txHash = p.pay(), otherTxHash = p.pay();
+  assert.equal((await p.claim(txHash)).status, 'payment-evidenced');
+  const send = () => p.send(txHash, { lapse: false }), stored = (await send()).text;
+  // Every answer is signed and every signed request leaves a nonce in the journal and the accounting rows, so those are left out of what
+  // a replay must not change. The receipt count is the test's own edit in the permit cells.
+  const snapshot = () => ({ ...omit(w.snapshot(p), ['rows', 'journal', 'receipts']), outcome: w.wireState(p), effects: omit(w.counts, ['responseSignatures']),
+    anchorRows: [...w.anchors.journal.rows], sourceRows: [...w.anchors.sourceJournal.rows] });
+  for (const [label, cause, arrange] of nativeSourceCells(txHash)) await assertWithheldThenRestored(label, { send, snapshot, stored, cause, arrange: () => arrange(w) });
+  w.advance(3_600_000);
+  assert.equal((await send()).text, stored, 'a later clock alone changes nothing');
+  const reads = w.transferReads().flat().length, other = await p.send(otherTxHash, { lapse: false });
+  assert.deepEqual([other.status, other.body.error, w.transferReads().flat().length], [409, 'payment_already_recorded', reads], 'another transaction is not read');
+}
+
+test('completed payment sources are checked again before stored answers are returned', async (t) => {
+  await checkFixtureSources(t);
+  await checkNativeSources(t);
 });

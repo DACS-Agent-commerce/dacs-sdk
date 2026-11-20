@@ -15,6 +15,7 @@ const BASE = Object.freeze({
   standardRevision: "a".repeat(40),
   profile: "dacs-sdk:fixed-price-x402:v1",
   now: () => 1_000,
+  monotonicNow: () => 0,
 });
 
 function passingProbes(): DacsLiveDoctorProbesV1 {
@@ -25,6 +26,44 @@ function passingProbes(): DacsLiveDoctorProbesV1 {
 }
 
 describe("complete live doctor gate", () => {
+  it.each([
+    [1.2344, 1.234],
+    [1.2346, 1.235],
+  ])("rounds a fractional probe duration of %s ms to %s ms", async (elapsed, expected) => {
+    let clock = 1_000;
+    const report = await runDacsLiveDoctorV1({
+      ...BASE,
+      monotonicNow: () => clock,
+      probes: {
+        "local.node-version": () => {
+          clock += elapsed;
+          return { status: "pass" };
+        },
+      },
+    });
+    expect(report.checks.find((check) => check.id === "local.node-version")?.durationMs)
+      .toBe(expected);
+  });
+
+  it("hashes the rounded probe duration in the doctor report", async () => {
+    async function reportWithElapsed(elapsed: number) {
+      let clock = 1_000;
+      return runDacsLiveDoctorV1({
+        ...BASE,
+        monotonicNow: () => clock,
+        probes: {
+          "local.node-version": () => {
+            clock += elapsed;
+            return { status: "pass" };
+          },
+        },
+      });
+    }
+    const first = await reportWithElapsed(1.2341);
+    const second = await reportWithElapsed(1.2344);
+    expect(second.reportHash).toBe(first.reportHash);
+  });
+
   it("reports every check and leaves missing capabilities visibly blocked", async () => {
     const report = await runDacsLiveDoctorV1(BASE);
     expect(report.schema).toBe(DACS_LIVE_DOCTOR_REPORT_SCHEMA);
@@ -207,4 +246,24 @@ describe("complete live doctor gate", () => {
       operationRailProfile: "x402",
     })).rejects.toThrow(/operation rail is not enabled/);
   });
+});
+
+for (const jump of [-60_000, 60_000]) {
+  it(`doctor probe elapsed time ignores a ${jump} ms wall jump`, async () => {
+    let elapsed = 0, wall = 1_000_000;
+    const first = DACS_LIVE_DOCTOR_CHECK_IDS[0];
+    if (first === undefined) throw new Error("doctor must define a check");
+    const probes = { ...passingProbes(), [first]: async () => {
+      elapsed = 10; wall += 10 + jump; return { status: "pass" as const };
+    } };
+    const report = await runDacsLiveDoctorV1({ ...BASE, probes, now: () => wall, monotonicNow: () => elapsed });
+    expect(report.checks.find(check => check.id === first)?.durationMs).toBe(10);
+    expect(report.generatedAt).toBe(1_000_000);
+  });
+}
+
+it("refuses a non-function monotonic clock", async () => {
+  const wallClock = vi.fn(() => 1_000);
+  await expect(Reflect.apply(runDacsLiveDoctorV1, undefined, [{ ...BASE, now: wallClock, monotonicNow: 0 }])).rejects.toThrow(TypeError);
+  expect(wallClock).not.toHaveBeenCalled();
 });

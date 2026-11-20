@@ -332,7 +332,7 @@ function runVitest(host, files, titles, outputFile) {
     "-t", titles.map(escapeRegExp).join("|"),
     ...files,
   ];
-  const started = Date.now();
+  const started = performance.now();
   return new Promise((resolvePromise) => {
     const child = spawn(process.execPath, args, {
       cwd: host,
@@ -352,12 +352,12 @@ function runVitest(host, files, titles, outputFile) {
     }, RUN_TIMEOUT_MS);
     child.once("error", (error) => {
       clearTimeout(timer);
-      resolvePromise({ exitCode: null, timedOut, durationMs: Date.now() - started,
+      resolvePromise({ exitCode: null, timedOut, durationMs: performance.now() - started,
         stderr: String(error) });
     });
     child.once("close", (code) => {
       clearTimeout(timer);
-      resolvePromise({ exitCode: code, timedOut, durationMs: Date.now() - started,
+      resolvePromise({ exitCode: code, timedOut, durationMs: performance.now() - started,
         stderr: stderr.slice(0, 4_000) });
     });
   });
@@ -507,7 +507,7 @@ async function repositoryTargets() {
   ])));
 }
 
-const started = Date.now();
+const started = performance.now();
 const vitestCli = join(repoRoot, "node_modules", "vitest", "vitest.mjs");
 if (!existsSync(vitestCli)) throw new Error(`installed Vitest CLI is missing: ${vitestCli}`);
 const vitestManifest = JSON.parse(
@@ -530,7 +530,7 @@ try {
   }
   const baselinePassed = baselines.every((item) => item.status === "passed");
   for (const definition of MUTANTS) {
-    if (!baselinePassed || Date.now() - started > TOTAL_BUDGET_MS) {
+    if (!baselinePassed || performance.now() - started > TOTAL_BUDGET_MS) {
       mutants.push({ id: definition.id, contract: definition.contract, status: "not-run",
         restored: true });
       continue;
@@ -551,7 +551,7 @@ const report = {
   repositoryTargets: { sha256: before, unchanged },
   baselines,
   mutants,
-  durationMs: Date.now() - started,
+  durationMs: performance.now() - started,
   passed: unchanged &&
     baselines.every((item) => item.status === "passed") &&
     mutants.every((item) => item.status === "killed" && item.restored === true),

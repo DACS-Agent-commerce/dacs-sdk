@@ -8,13 +8,13 @@
 // provably cannot, and only then is the address signed anew.
 //
 // createDeliverableWalletJournal({ path, signCreate, broadcast, readAccountNonce,
-//   readTransactionState, now, readTimeoutMs, signatureChainId }) takes the wallet primitives of
+//   readTransactionState, readNetworkInfo, now, readTimeoutMs }) takes the wallet primitives of
 // the payment-evidence journal, and signCreate is asked for the Deliverable's
 // storage CREATE: { logicalAddress, artifact (the report), writer, artifactKind:
 // 'Deliverable', jobId, receiptContentHash, deliveryBinding }. The CREATE it
 // answers is checked as that journal checks one, and its metadata must carry
 // exactly that deliveryBinding.
-// Returns { submitAuthorized, resume, readSignedProjection, journalId, close }.
+// Returns { submitAuthorized, resume, readSignedProjection, clearHeldWrite, journalId, close }.
 // Both wallet operations take (input, authorize) and are guarded: input names
 // the journal the seller recorded for the order before anything could be signed
 // (expectedJournalId; another is wallet_journal_changed), and authorize() must
@@ -31,7 +31,9 @@
 //    lets submitAuthorized sign anew), otherwise { status: 'rebroadcast' |
 //    'pending' | 'applied', txHash } for the one kept CREATE, broadcast again
 //    unchanged unless it is applied;
-//  - readSignedProjection({ logicalAddress }) is the kept CREATE's public projection.
+//  - readSignedProjection({ logicalAddress }) is the kept CREATE's public projection;
+//  - clearHeldWrite({ logicalAddress, txHash }) is the operator's step for a kept
+//    CREATE held above the per-write ceiling, as the payment-evidence journal's.
 // input is { logicalAddress, report, writer, jobId, receiptContentHash,
 // deliveryBinding, expectedJournalId }, where writer names an account, receiptContentHash is the
 // SHA-256 of the canonical report, the report, the binding and logicalAddress
@@ -106,7 +108,7 @@ export function createDeliverableWalletJournal(options) {
   const guarded = (input, authorize, resume) => core.guardedCreate({ ...createInput(input), expectedJournalId: input.expectedJournalId, authorize }, { resume });
   const submitAuthorized = async (input, authorize) => ({ status: 'accepted', reconciliationId: (await guarded(input, authorize, false)).txHash });
   const resume = async (input, authorize) => guarded(input, authorize, true);
-  const journal = Object.freeze({ submitAuthorized, resume, readSignedProjection: core.readSignedProjection, journalId: core.journalId, close: core.close });
+  const journal = Object.freeze({ submitAuthorized, resume, readSignedProjection: core.readSignedProjection, clearHeldWrite: core.clearHeldWrite, journalId: core.journalId, close: core.close });
   journals.set(submitAuthorized, journal);
   journals.set(resume, journal);
   return journal;

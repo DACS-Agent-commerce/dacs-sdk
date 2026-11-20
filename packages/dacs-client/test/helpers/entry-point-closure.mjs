@@ -9,7 +9,7 @@ export const packageDir = fileURLToPath(new URL('../..', import.meta.url));
 export const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs'];
 
 /** Modules the package ships that no entry point imports. */
-const PACKED_UNREACHED_MODULES = ['src/wallet/effect-fence.mjs', 'src/wallet/effect-history.mjs', 'src/wallet/effect-boundary.mjs'];
+const PACKED_UNREACHED_MODULES = ['src/wallet/effect-fence.mjs', 'src/wallet/effect-history.mjs', 'src/wallet/effect-boundary.mjs', 'src/dacs/seller-https-connector.mjs'];
 
 /** Package-relative paths of every module reachable from the four entry points, plus the packed unreached modules, sorted. Throws if an import leaves `src/`. */
 export function entryPointClosure() {

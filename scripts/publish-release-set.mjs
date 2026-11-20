@@ -29,8 +29,8 @@ const jobStartedAt = Number(args[5]);
 if (!/^[1-9]\d{0,15}$/u.test(args[5]) || jobStartedAt > Date.now()) {
   throw new Error("--job-started-at must be the job start in epoch milliseconds, not in the future");
 }
-const deadline = Math.min(Date.now() + PUBLISH_DEADLINE_MS, jobStartedAt + PUBLISH_JOB_TIMEOUT_MS - PUBLISH_JOB_RESERVE_MS);
-const timeLeft = () => deadline - Date.now();
+const deadline = performance.now() + Math.min(PUBLISH_DEADLINE_MS, jobStartedAt + PUBLISH_JOB_TIMEOUT_MS - PUBLISH_JOB_RESERVE_MS - Date.now());
+const timeLeft = () => deadline - performance.now();
 
 const provenance = JSON.parse(
   await readFile(resolve(artifactDirectory, "release-provenance.json"), "utf8"),
@@ -68,7 +68,7 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 // Reads the registry's release: undefined when absent; another integrity is refused with `conflictCode`.
 async function readExactRelease({ name, receipt }, conflictCode) {
-  const release = await readRegistryRelease(name, provenance.version, { deadline });
+  const release = await readRegistryRelease(name, provenance.version, { deadline: Date.now() + timeLeft(), monotonicDeadline: deadline });
   if (release !== undefined && release.integrity !== receipt.integrity) {
     throw new ReleaseError(conflictCode, name, "the registry's integrity differs from the admitted archive");
   }
@@ -77,12 +77,12 @@ async function readExactRelease({ name, receipt }, conflictCode) {
 
 // Calls `probe` until it settles (not undefined) or the propagation window ends; the run's deadline ending it stops the run.
 async function pollWithinWindow(probe, name) {
-  const windowEnd = Math.min(Date.now() + REGISTRY_PROPAGATION_WINDOW_MS, deadline);
-  while (Date.now() < deadline) {
+  const windowEnd = Math.min(performance.now() + REGISTRY_PROPAGATION_WINDOW_MS, deadline);
+  while (performance.now() < deadline) {
     const settled = await probe();
     if (settled !== undefined) return settled;
-    if (Date.now() >= windowEnd && windowEnd < deadline) return undefined;
-    await sleep(Math.max(0, Math.min(REGISTRY_POLL_INTERVAL_MS, windowEnd - Date.now())));
+    if (performance.now() >= windowEnd && windowEnd < deadline) return undefined;
+    await sleep(Math.max(0, Math.min(REGISTRY_POLL_INTERVAL_MS, windowEnd - performance.now())));
   }
   throw new ReleaseError("publish_budget_exhausted", name, "the run's deadline passed while waiting for the registry");
 }
@@ -91,7 +91,7 @@ async function pollWithinWindow(probe, name) {
 async function requireNextTag(name) {
   let observed;
   const settled = await pollWithinWindow(async () => {
-    observed = (await readRegistryDistTags(name, { deadline }))?.next;
+    observed = (await readRegistryDistTags(name, { deadline: Date.now() + timeLeft(), monotonicDeadline: deadline }))?.next;
     return observed === provenance.version ? true : undefined;
   }, name);
   if (settled === undefined) {

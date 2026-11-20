@@ -602,6 +602,7 @@ import {
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
+import { generatedRoleConfig } from "../dacs.config.js";
 
 const ROLES = Object.freeze(["buyer", "seller"] as const);
 const AUTHORITY_RE = /^did:demos:agent:[0-9a-f]{64}$/;
@@ -1619,6 +1620,11 @@ export async function runGeneratedDoctor(
     enabledRailProfiles = dacsLiveRailProfiles(buyer);
     dacsLiveRailProfiles(seller);
   } catch {
+    let networkRefused = false;
+    try {
+      const network = generatedRoleConfig("buyer").rail.requestedNetwork;
+      networkRefused = network !== "eip155:84532" && network !== "demos";
+    } catch { /* the network cannot be read, so only the generic reason applies */ }
     const probes: DacsLiveDoctorProbesV1 = Object.freeze({
       "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
         : fail("node-version-unsupported"),
@@ -1626,6 +1632,9 @@ export async function runGeneratedDoctor(
       "local.version-bindings": versionBindings,
       "local.configuration": () => fail("configuration-invalid"),
       "local.deployment-runtime": (context) => dockerRuntime(context, operation?.servicesRunning),
+      ...(networkRefused
+        ? { "x402.testnet-policy": () => fail("x402-mainnet-or-unsupported-network") }
+        : {}),
     });
     const report = await runDacsLiveDoctorV1({
       phase,
@@ -2526,9 +2535,9 @@ async function safeLog(role: Role) {
 }
 
 async function endpointAvailable(role: Role, timeoutMs = 30_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   const endpoint = new URL("/health", serviceEndpoint(role));
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     try {
       const response = await fetch(endpoint, { signal: AbortSignal.timeout(1_000) });
       if (response.ok) return true;
@@ -2547,8 +2556,8 @@ async function stopRecord(record: LocalProcessRecord): Promise<"stopped" | "stal
   }
   if (!ownedCommand(record)) throw new Error("local-runtime-process-identity-mismatch");
   process.kill(record.pid, "SIGTERM");
-  const deadline = Date.now() + 15_000;
-  while (alive(record.pid) && Date.now() < deadline) {
+  const deadline = performance.now() + 15_000;
+  while (alive(record.pid) && performance.now() < deadline) {
     await new Promise((done) => setTimeout(done, 100));
   }
   if (alive(record.pid)) throw new Error("local-runtime-process-stop-timeout");
