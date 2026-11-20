@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
 import { keccak256, stringToHex } from "viem";
 
-import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
+import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
+import type { Signer } from "../../src/crypto/byteSignerTypes.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
 import { contentHash } from "../../src/canonical/index.js";

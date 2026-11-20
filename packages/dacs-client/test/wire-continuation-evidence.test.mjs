@@ -5,6 +5,7 @@ import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS as PATHS } from '@kynes
 import { CONTINUING_PATHS } from '../../../dist/wire/discovery.js';
 import { world, purchase, party, validReceipt, setPurchaseAdmission, PUBLIC_ENDPOINT, T0, JOB } from './helpers/wire-client-fixture.mjs';
 import { committedPurchase } from './helpers/wire-committed-purchase.mjs';
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 // The fixture installs the admission double, so the modules that read admission state load after it.
 const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
 const { purchaseStore, createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
@@ -243,7 +244,7 @@ test('the verified commitment readback returns the anchored tuple, whose canonic
   const made = await committedPurchase({ jobId: JOB, publicEndpoint: PUBLIC_ENDPOINT }), seller = party(2);
   const projection = { hash: 'b'.repeat(64), content: { from: `0x${seller.raw}`, to: made.anchored.nativeAddress, data: ['storageProgram', { metadata: { logicalAddress: `dacs3:commit:${JOB}`, artifactKind: 'FinalityCommitmentRecord' } }] }, signature: { type: 'ed25519', data: '00' } };
   const receipt = { ...made.anchored.anchorReceipt, writer: seller.claim, transactionRef: { kind: 'demos', value: projection.hash } };
-  const sourceCapability = createDevnetAgreementTransport({ expected: { network: 'testnet', chainIdentity: 'f'.repeat(64), pinVersion: 'TEST-1', endpoint: 'https://rpc.invalid/', transportAuthority: 'TEST-owner' },
+  const sourceCapability = createDevnetAgreementTransport({ boundary: readOnlyBoundary, expected: { network: 'testnet', chainIdentity: 'f'.repeat(64), pinVersion: 'TEST-1', endpoint: 'https://rpc.invalid/', transportAuthority: 'TEST-owner' },
     transportOwner: { getContext() { throw Error('unused'); }, acquireConnectionFence() { throw Error('unused'); } }, journal: { get: async () => null, put: async () => { throw Error('read only'); }, entries: async () => [], withWalletLock: (_key, work) => work() } });
   const reader = { read: async () => ({ status: 'present', artifact: made.anchored.record, artifactKind: 'FinalityCommitmentRecord', receipt }), verifyReceipt: async () => 'valid' };
   const result = await createBuyerChainReadback({ sourceCapability, reader }).readCommitment({ agreement: made.agreement, listing: made.listing, seller: seller.claim, signedProjection: projection });

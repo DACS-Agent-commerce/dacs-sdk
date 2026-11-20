@@ -562,9 +562,8 @@ export {
   buildSignedArtifact,
   verifySignedArtifact,
   type SignedArtifact,
-  type Signer,
-  type Verifier,
 } from "./signedArtifact.js";
+export type { Signer, Verifier } from "../crypto/byteSignerTypes.js";
 export {
   runFulfilmentCore,
   sellerFulfilmentId,

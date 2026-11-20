@@ -21,7 +21,7 @@ import {
   isChainTxRef,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
-import { type Verifier } from "./signedArtifact.js";
+import { type Verifier } from "../crypto/byteSignerTypes.js";
 import {
   isCanonicalClaimReference,
   sameCanonicalClaimIdentity,

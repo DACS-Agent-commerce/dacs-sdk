@@ -134,7 +134,6 @@ async function effectEntries() {
   await attempt('startSellerHost', () => startSellerHost({}));
   await attempt('createSellerAgent', () => createSellerAgent({}));
   await attempt('issue', () => ledger.issue());
-  await attempt('issueForOperator', () => ledger.issueForOperator());
   ledgerDb.close();
   const { createContextAdmissionTransaction } = await import('../../src/dacs/seller-admission-transaction.mjs');
   const { createSellerTransportStore: createAdmissionStore, sellerStoreInternals } = await import('../../src/dacs/seller-transport-auth.mjs');

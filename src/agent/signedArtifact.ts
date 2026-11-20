@@ -3,6 +3,7 @@ import {
   type DomainSeparator,
   signedBytes,
 } from "../crypto/index.js";
+import type { Signer, Verifier } from "../crypto/byteSignerTypes.js";
 
 /**
  * Legacy MVP artifact carrying a raw lowercase-hex signature string.
@@ -15,16 +16,6 @@ import {
 export type SignedArtifact<T extends object> = T & {
   signature: string;
 };
-
-/** Signs raw bytes, returning the signature bytes (e.g. wired to the wallet). */
-export type Signer = (bytes: Uint8Array) => Promise<Uint8Array> | Uint8Array;
-
-/** Verifies a signature over raw bytes for a given public key. */
-export type Verifier = (
-  bytes: Uint8Array,
-  signature: Uint8Array,
-  publicKey: Uint8Array,
-) => Promise<boolean> | boolean;
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");

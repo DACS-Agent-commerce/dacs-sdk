@@ -14,7 +14,6 @@ import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { Listing, ListingDraft } from "../../src/artifacts/types.js";
 import {
   isDeliverableSpec,
-  isLegacyMvpListing,
   isListing,
   isListingDraft,
   isListingEnvelope,
@@ -456,28 +455,27 @@ describe("normative DACS-1 §6.3.4 Listing", () => {
   });
 });
 
-describe("explicit legacy Listing read compatibility", () => {
-  const legacy = {
-    agentId: "did:demos:agent:legacy",
-    serviceId: "legacy-service",
-    name: "Legacy",
-    description: "Historical SDK MVP artifact",
+describe("earlier SDK Listing shape", () => {
+  const earlierShape = {
+    agentId: "did:demos:agent:earlier",
+    serviceId: "earlier-service",
+    name: "Earlier",
+    description: "Listing in the earlier SDK shape",
     claimRequirements: [],
     supportedNegotiation: ["negotiate-fixed-price"],
     supportedPaymentRails: ["pay-x402"],
     supportedDelivery: ["deliver-attested-payload"],
   };
 
-  it("reads a legacy signed artifact but never treats it as normative", () => {
-    expect(isLegacyMvpListing(legacy)).toBe(true);
-    expect(isListing(legacy)).toBe(false);
+  it("is neither a Listing nor readable as a signed Listing", () => {
+    expect(isListing(earlierShape)).toBe(false);
     expect(
-      readListingArtifact({ ...legacy, signature: "legacy-hex-signature" }),
-    ).toMatchObject({ compatibility: "legacy-mvp", listing: legacy });
+      readListingArtifact({ ...earlierShape, signature: "hex-signature" }),
+    ).toBeNull();
   });
 
-  it("rejects the legacy shape as a new Listing draft", () => {
-    expect(isListingDraft(legacy)).toBe(false);
+  it("is refused as a new Listing draft", () => {
+    expect(isListingDraft(earlierShape)).toBe(false);
   });
 });
 

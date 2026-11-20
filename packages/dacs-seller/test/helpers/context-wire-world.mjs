@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, completeWireEffect, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { createClosedBootstrapGate } from '../../src/dacs/closed-bootstrap-gate.mjs';
 import { createDemDeliveryContext, demDeliveryContextHost } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { agreementInput } from '../../src/dacs/purchase-protocol.mjs';
 import { createWireSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
@@ -37,14 +38,14 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const { state, calls, agent, buyer, seller, other } = w;
   const now = () => state.time;
   state.mono = 0;
-  const counts = { validations: 0, holds: [], releases: [], resolves: 0, vetWrites: 0, writesByRole: { seller: 0, buyer: 0 }, resumables: 0, agreementSignatures: 0, reserveAcquisitions: 0, sourceReads: 0 };
+  const counts = { validations: 0, holds: [], releases: [], resolves: 0, readbacks: 0, vetWrites: 0, writesByRole: { seller: 0, buyer: 0 }, resumables: 0, agreementSignatures: 0, reserveAcquisitions: 0, sourceReads: 0 };
   const NON_PASS_ANSWERS = {
     first: { disposition: 'rejected', reason: 'seller Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' },
     second: { disposition: 'rejected', reason: 'buyer Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' },
   };
-  // What a test can bend: the presentation admission, the policy hold, the provider's steps and answer, the reservation (`recover` answers a recovery
+  // What a test can bend: the presentation admission, the policy hold, the provider's steps, answer and Vet readback, the reservation (`recover` answers a recovery
   // effect the journal never issued), the wire completion (`nullEndFails`, `cutAfterPublish`, and `afterPublish`, run right after an outcome is published), the acceptance (`failAcceptance`) and the kind of effect evidence compensation reads (`evidenceKind`).
-  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, source: null, afterFirstWrite: null, beforeReserve: null, afterReserve: null, beforeWork: null, beforeAnswer: null, records: null, nonPass: null, unknownIntent: false, recover: false, nullEndFails: false, cutAfterPublish: false, afterPublish: null, failAcceptance: false, evidenceKind: 'no-intent' };
+  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, source: null, readback: null, afterFirstWrite: null, beforeReserve: null, afterReserve: null, beforeWork: null, beforeAnswer: null, records: null, nonPass: null, unknownIntent: false, recover: false, nullEndFails: false, cutAfterPublish: false, afterPublish: null, failAcceptance: false, evidenceKind: 'no-intent' };
   const fakeEffects = new Set(), completions = [];
   // A presentation's profile admission: the agent's own, here a counting stand-in that grants unless a test says otherwise.
   agent.admitSessionPresentation = async ({ jobId, bundle, nonce }) => {
@@ -119,9 +120,16 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     await behaviour.beforeAnswer?.(input, options);
     return finalAnswer(input);
   };
-  // The passive read of what the provider retained: by default the answer it gave, which a test replaces to change, lose or fail the source.
+  // The passive read of what the provider retained: by default the answer it gave, which a test replaces to change, lose or fail the source
+  // (`source`). Each read is counted in `sourceReads` and in `readbacks`. `readback` answers a read-only Vet readback and throws for a read
+  // that may write; the predicate is asked only then, since asking a recovery's own predicate takes its write authority.
   const recoverBuyer = async (input, options) => {
     counts.sourceReads++;
+    counts.readbacks++;
+    if (behaviour.readback) {
+      if (options.writable() !== false) throw new Error('TEST a readback must not be allowed to write');
+      return behaviour.readback(input);
+    }
     if (behaviour.source) return behaviour.source(input, options);
     if (behaviour.records) return missingRoles().length === 0 ? finalAnswer(input) : null;
     return behaviour.answer ? behaviour.answer(input) : presentAnswer(input);
@@ -143,6 +151,8 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   };
   const drain = async () => { while (tracked.size > 0) await Promise.allSettled([...tracked]); };
   const wire = w.makeWire({ capacity, reservations: coordinator });
+  const closedBootstrapGate = createClosedBootstrapGate({ admission: admission.admissionRecord, purchaseProfile: (jobId) => w.store.purchaseProfile(jobId), profile: wire.binding.profile });
+  coordinator.addPreAccountingGate(closedBootstrapGate);
   const routeOptions = { listing: w.listing, wire, store: w.store, ledger: w.store.challenges, admissionTransaction: countingAdmission, coordinator, capacity, provider,
     assertBuyerAccess: async (claim) => { calls.access++; return w.policy.access(claim); }, knownJob: async (...input) => { calls.known++; return w.policy.known(...input); },
     ready: () => state.ready(), stopped: () => state.stop(), now, monotonicNow: () => state.mono, trackContextWork };
@@ -207,6 +217,6 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     return next;
   };
   return { ...w, restartHost, challenges: () => w.store.challenges, handler, route, admission, countingAdmission, coordinator, capacity, counts, behaviour, provider, post, issue, startContext, rowOf, privateRow, challengeOf, openHolds, internals,
-    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire, handlerOver,
+    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire, handlerOver, closedBootstrapGate,
     tick: (ms) => { state.mono += ms; } };
 }

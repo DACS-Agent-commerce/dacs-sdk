@@ -867,18 +867,19 @@ Stripe, DAHR, the faucet, or Demos.
 
 ### Sealed-envelope procurement
 
-`runSealedEnvelopeCore` supports both the backwards-compatible
+`runSealedEnvelopeCore` supports both the default
 `negotiate-sealed-envelope` demand phase and the explicit
 `negotiate-sealed-envelope-procurement` phase. Demand makes the winning bidder
 the agreement buyer. Procurement requires `auctionMode: "procurement"` and
 makes the listing publisher the agreement buyer and the winning bidder the
 seller, so the bid price always flows from agreement buyer to agreement seller.
 
-Existing demand callbacks may still return only `agreementRef` and
-`agreementHash`. A procurement `commitAgreement` callback must verify both
+The SDK does not build the agreement for this pattern; the caller's
+`commitAgreement` callback does. In both phases the callback must verify both
 agreement-party signatures, call `ctx.validateAgreementForCommit(...)` before
 anchoring, and return the exact agreement plus `verifiedSignerClaims`; the core
-repeats the role/signature gate before returning an `ok` result.
+repeats the role/signature gate before returning an `ok` result. A result with
+only `agreementRef` and `agreementHash` fails the phase.
 
 ### Fault-aware bundle helper
 

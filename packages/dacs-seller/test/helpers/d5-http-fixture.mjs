@@ -42,7 +42,7 @@ async function world(t){
   if(!bundles.has(cacheKey)) {
    challenge={sessionNonce:randomBytes(32).toString('hex')};
    const db=new DatabaseSync(path);
-   try { db.prepare("INSERT INTO kit_challenges (nonce,jobId,buyer,challengeScopeHash,origin,issuedAt,expiresAt,state) VALUES (?,?,?,?,'route',?,?,'issued')").run(challenge.sessionNonce,jobId,actor.claim,sellerContextScopeHash(sellerContextChallengeScope(scope)),time,time+600000); }
+   try { db.prepare("INSERT INTO kit_challenges (nonce,jobId,buyer,challengeScopeHash,issuedAt,expiresAt,state) VALUES (?,?,?,?,?,?,'issued')").run(challenge.sessionNonce,jobId,actor.claim,sellerContextScopeHash(sellerContextChallengeScope(scope)),time,time+600000); }
    finally { db.close(); }
   }
   bundle.sessionNonce=challenge.sessionNonce;

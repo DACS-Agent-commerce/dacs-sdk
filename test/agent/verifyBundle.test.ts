@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { buildAgent, type AgentConfig } from "../../src/agent/Agent.js";
-import type { Signer } from "../../src/agent/signedArtifact.js";
+import type { Signer } from "../../src/crypto/byteSignerTypes.js";
 import {
   AttestationRefRejection,
   verifyBundleCore,

@@ -2,8 +2,8 @@
 // capability is the shipped devnet capability with its evidence reader on, and the payment evidence goes through the shipped wallet journal.
 // The Demos node is scripted (native-payment-node.mjs). Test stand-ins besides the node: the Agreement readback (an in-memory map, so an
 // Agreement is served without an Agreement transaction on the node), the finality reader and its test finality oracle for the commitment
-// record, the anchor's source and request functions, session admission and the vet records, the vet input the delivery context resolves,
-// and the rail authority. Nothing prefills a payment: grants, signatures, CREATEs and deliveries are the seller's own steps, counted here.
+// record, the anchor's source and request functions, session admission and the vet records, the buyer's context answer and the vet input
+// the delivery context resolves, and the rail authority. Nothing prefills a payment: grants, signatures, CREATEs and deliveries are the seller's own steps, counted here.
 import { mkdtempSync, realpathSync, rmSync, readdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,7 +19,8 @@ import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
 import { scriptedDemosNode } from './native-payment-node.mjs';
 import { readInactiveForkNetworkInfo } from './network-info.mjs';
 import { createSessionAdmissionFixture } from './session-admission-fixture.mjs';
-import { HOST_CONTEXT_CALLBACKS } from './host-context-callbacks.mjs';
+import { presentContextAnswer } from './host-context-callbacks.mjs';
+import { hostBuyer } from './host-context-client.mjs';
 import { wireAuthentication, wireBuyer } from './wire-buyer.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
@@ -51,11 +52,6 @@ const walletOf = (tag) => { const wallet = testWallet(tag); return { ...wallet, 
 const identityFor = (party, presentedAt) => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'native-payment-wire' });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
-};
-const presentChallenge = (party, presentedAt, sessionNonce) => {
-  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'native-payment-wire' });
-  const bundle = { ...unsigned.bundle, sessionNonce }, bundleHash = core.sha256Hex(core.canonicalize(bundle));
-  return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
 let jobSequence = 0;
 
@@ -147,10 +143,10 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   } };
 
   const buyerBundles = new Map(), inputs = new Map(), agreements = new Map();
+  // The buyer asks the host's challenge route for the job's challenge and presents it on the context route, which admits the session.
   const buyerBundleFor = async (jobId) => {
     if (!buyerBundles.has(jobId)) {
-      const challenge = await host.issueSessionChallenge({ jobId, buyer: buyerKey.claim });
-      buyerBundles.set(jobId, presentChallenge(buyerKey, T0, challenge.sessionNonce));
+      buyerBundles.set(jobId, await (await hostBuyer(host, listing, { jobId, buyer: buyerKey, seller: sellerKey, clock })).admit(jobId));
     }
     return buyerBundles.get(jobId);
   };
@@ -239,7 +235,8 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     readNetworkInfo: readInactiveForkNetworkInfo });
   let wallet = openWallet();
   const demDeliveryContext = createDemDeliveryContext({ authority: AUTHORITY, vetMode: KIT_TP1_VET_MODE,
-    resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); }, ...HOST_CONTEXT_CALLBACKS,
+    resolveBuyer: async (input) => presentContextAnswer(input),
+    recoverBuyer: async () => null, resumableBuyer: async () => null, bindRetainedScope: () => ({ sellerBundlePresentedBy: sellerKey.claim }),
     resolveSeller: async ({ jobId }) => {
       const input = await vettedInput(jobId);
       const invocation = (party, claim, verifier) => ({ vetRecordRef: input[party].vetRecordRef, evaluatedParty: claim, requirement: clone(party === 'buyer' ? listing.buyerRequirement : SELLER_REQUIREMENT),

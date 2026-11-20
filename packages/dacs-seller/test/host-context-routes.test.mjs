@@ -7,14 +7,26 @@ import { existsSync, readdirSync } from 'node:fs';
 import { Server } from 'node:http';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { DACS_SELLER_DISCOVERY_PATH } from '@kynesyslabs/dacs/wire';
+import { provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
+import * as guard from '../src/kit-operation-guard.mjs';
 import { HOST_CONTEXT_CALLBACKS } from './helpers/host-context-callbacks.mjs';
-import { contextCapability, contextHostFixture, presentContextAnswer } from './helpers/host-context-client.mjs';
-import { JOB } from './helpers/protocol-fixture.mjs';
+import { contextCapability, contextHostFixture, hostBuyer, presentContextAnswer } from './helpers/host-context-client.mjs';
+import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
+import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 
 const OTHER_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0B';
+const THIRD_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0C';
+const ABANDONED_PURCHASE_MS = 3_600_000;
+// One purchase allocation holds 68 units. After its context step 52 stay held (51 unspent, 1 charged), so 100 leaves too little for a second purchase.
+const ONE_PURCHASE_BUDGET = 100;
 const CONTEXT_DEADLINE_MS = 240_000;
 const SWEEP_INTERVAL_MS = 60_000;
 const LEASE_WAIT_MS = 10_000;
+// Room for one new purchase allocation (68 units) beside a purchase whose context step completed (its 51 unspent units and its
+// charged unit), with a few general units for the requests' own charges. A step left open keeps its whole 68 instead, and the next
+// purchase does not fit.
+const SMALL_BUDGET = 128;
 const SWEEP_SQL = /state IN \('intent', 'compensating', 'admitted', 'running'\)/;
 const deferred = () => {
   let resolve, reject;
@@ -29,6 +41,33 @@ const admissionState = (directory, jobId = JOB) => {
   const db = new Database(join(directory, 'transport', 'transport.sqlite'), { readonly: true });
   try { return db.prepare('SELECT state FROM kit_context_admissions WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
 };
+// A context row's state and hold release, and the state of the purchase allocation that holds its slot.
+const contextRowOf = (directory, jobId = JOB) => {
+  const db = new Database(join(directory, 'transport', 'transport.sqlite'), { readonly: true });
+  try {
+    const row = db.prepare('SELECT state, record FROM kit_context_admissions WHERE jobId = ?').get(jobId);
+    const { releasePending, cause } = JSON.parse(row.record).cleanup;
+    return { state: row.state, releasePending, cause, allocation: db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(jobId)?.state ?? null };
+  } finally { db.close(); }
+};
+const NO_CONTEXT = () => ({ disposition: 'absent', reason: 'TEST no context', code: 'context_absent' });
+// The fixture's artifact anchor with the devnet anchor's no-intent proof: an address with no retained CREATE is proven unsigned.
+const provingNoIntent = (anchor) => ({ ...anchor, readRetained: async (query, options) => {
+  const read = await anchor.readRetained(query, options);
+  return query.proofOfNoIntent === true && read.status === 'absent' ? provenUnsignedAbsence('TEST no CREATE intent') : read;
+} });
+
+const allocationState = (directory, jobId = JOB) => {
+  const db = new Database(join(directory, 'transport', 'transport.sqlite'), { readonly: true });
+  try { return db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
+};
+
+/** Runs the host's periodic sweep once and waits until `done()` holds, in turns of the event loop and never in wall-clock time. */
+async function sweepUntil(sweep, done) {
+  sweep.callback();
+  for (let turn = 0; turn < 200 && !done(); turn++) await flush();
+  assert.equal(done(), true, 'the sweep did not finish its work');
+}
 
 /**
  * A provider that makes its two Vet writes, each after asking the attempt's predicate, and waits on `gate` at `stall`: `first` (before the
@@ -100,7 +139,7 @@ for (const [stall, where] of [['first', 'before the first Vet write'], ['between
         t.mock.timers.reset();
         assert.deepEqual([answer.status, answer.signed, answer.body.error], [503, true, 'operation_uncertain'], answer.text);
         provider.seen.late = true;
-        const stateAtAnswer = admissionState(f.dataDirectory);
+        assert.equal(admissionState(f.dataDirectory), 'running', 'the row stays open at the timeout answer');
 
         let closed = false;
         const closing = host.close().then(() => { closed = true; });
@@ -115,8 +154,9 @@ for (const [stall, where] of [['first', 'before the first Vet write'], ['between
         await flush();
         assert.equal(provider.seen.lateWrites, 0, 'no Vet write after the deadline');
         assert.deepEqual(unhandled, []);
-        assert.equal(admissionState(f.dataDirectory), stateAtAnswer, 'the settled work completed nothing');
+        assert.equal(admissionState(f.dataDirectory), 'running', 'the settled work completed nothing, and its row stays running for the buyer\'s retry');
         await (await f.start()).close();
+        assert.equal(admissionState(f.dataDirectory), 'compensating', 'the startup sweep ends the row for cleanup');
         assert.notEqual(admissionState(f.dataDirectory), null, 'the retained admission survives the restart');
       });
     }
@@ -159,25 +199,59 @@ test('a context request still being admitted when close begins is refused and ne
   assert.equal(existsSync(lockPath(f.dataDirectory)), false);
 });
 
-test('host close closes the write authority of a live context attempt before it waits for the work', async (t) => {
-  const provider = stalledProvider('between'), f = await contextHostFixture(t);
-  const host = await f.start({ demDeliveryContext: provider.capability });
-  const pending = (await f.buyerFor(host)).requestContext();
-  await reached(provider.seen.entered, pending);
-  assert.equal(provider.seen.options.writable(), true, 'the attempt is writable while the host is open');
-  const closing = host.close();
-  assert.equal(provider.seen.options.writable(), false, 'the attempt is closed before close first waits');
-  assert.equal(provider.seen.options.signal.aborted, true);
-  provider.seen.late = true;
-  provider.gate.resolve();
-  const answer = await pending;
+for (const [stall, where] of [['first', 'before its first Vet write'], ['between', 'between its Vet writes'], ['answer', 'before its answer']]) {
+  test(`host close while a context step runs, stalled ${where}, lets the step end with its real outcome and frees its slot for the next buyer`, async (t) => {
+    const provider = stalledProvider(stall);
+    t.after(() => provider.gate.resolve());
+    const f = await contextHostFixture(t);
+    const host = await f.start({ demDeliveryContext: provider.capability, maxReservationUnits: SMALL_BUDGET });
+    const pending = (await f.buyerFor(host)).requestContext();
+    await reached(provider.seen.entered, pending);
+    let closed = false;
+    const closing = host.close().then(() => { closed = true; });
+    await flush();
+    assert.equal(provider.seen.options.signal.aborted, false, 'stopping does not abort the running step');
+    assert.equal(closed, false, 'close waits for the running step');
+    assert.equal(existsSync(lockPath(f.dataDirectory)), true);
+    provider.gate.resolve();
+    const answer = await pending;
+    await closing;
+    assert.deepEqual([answer.status, answer.signed, answer.body.disposition], [200, true, 'present'], answer.text);
+    assert.equal(provider.seen.writes, 2, 'both Vet writes were made');
+    assert.equal(existsSync(lockPath(f.dataDirectory)), false);
+    assert.equal(admissionState(f.dataDirectory), 'settled', 'the step completed');
+
+    const restarted = await f.start({ maxReservationUnits: SMALL_BUDGET });
+    assert.equal(admissionState(f.dataDirectory), 'settled', 'the completed step survives the restart');
+    const next = await (await f.buyerFor(restarted)).requestContext(OTHER_JOB);
+    assert.equal(next.status, 200, `the context slot was returned, so the next purchase is admitted: ${next.text}`);
+  });
+}
+
+test('a context request whose step is reserved but not yet started when close begins still runs it to its real outcome', async (t) => {
+  const seen = { resolves: 0 };
+  const f = await contextHostFixture(t);
+  const host = await f.start({ demDeliveryContext: contextCapability({ resolveBuyer: async (input) => { seen.resolves++; return presentContextAnswer(input); } }) });
+  // Close begins as the admission row turns running, after the reservation and before the provider's work is registered.
+  let closing = null;
+  const prepare = Database.prototype.prepare;
+  t.mock.method(Database.prototype, 'prepare', function (sql) {
+    const statement = prepare.call(this, sql);
+    if (!sql.startsWith('UPDATE kit_context_admissions SET state = ?')) return statement;
+    const run = statement.run;
+    statement.run = function (...args) {
+      const result = run.apply(this, args);
+      if (args[0] === 'running') closing ??= host.close();
+      return result;
+    };
+    return statement;
+  });
+  const answer = await (await f.buyerFor(host)).requestContext();
+  assert.notEqual(closing, null, 'close began while the step was being reserved');
   await closing;
-  assert.equal(answer.status, 503);
-  assert.equal(provider.seen.writes, 1);
-  assert.equal(provider.seen.lateWrites, 0);
-  assert.equal(existsSync(lockPath(f.dataDirectory)), false);
-  assert.notEqual(admissionState(f.dataDirectory), 'settled');
-  await (await f.start()).close();
+  assert.deepEqual([answer.status, answer.body.disposition], [200, 'present'], answer.text);
+  assert.equal(seen.resolves, 1);
+  assert.equal(admissionState(f.dataDirectory), 'settled');
 });
 
 test('a context row whose cleanup is unfinished keeps its own job refused and does not make the host refuse another buyer\'s challenge', async (t) => {
@@ -190,6 +264,25 @@ test('a context row whose cleanup is unfinished keeps its own job refused and do
   const other = await buyer.challenge(OTHER_JOB);
   assert.equal(other.status, 200, other.text);
   assert.equal((await buyer.challenge(JOB)).status === 200, false, 'the unfinished job itself is not served again');
+});
+
+test('a fresh host on a stopped host\'s store ends the direct request\'s running context row before it listens, so its hold and slot take a new job', async (t) => {
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  const f = await contextHostFixture(t), options = { maxReservationUnits: SMALL_BUDGET, artifactAnchor: provingNoIntent(f.native) };
+  // The provider answers while the kit guard is off, so nothing ends the accepted row, as when the process stops before the row ends.
+  const stopped = await f.start({ ...options, demDeliveryContext: contextCapability({ resolveBuyer: async () => { guard.setKitOperationGuardForTest('off'); return NO_CONTEXT(); } }) });
+  const answer = await (await f.buyerFor(stopped)).requestContext(JOB, { delegated: false });
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  await stopped.close();
+  assert.equal(answer.status >= 500, true, answer.text);
+  assert.deepEqual(contextRowOf(f.dataDirectory), { state: 'running', releasePending: false, cause: null, allocation: 'live' }, 'the row was left running with its slot');
+
+  const atListen = [], listen = Server.prototype.listen;
+  t.mock.method(Server.prototype, 'listen', function (...args) { atListen.push(contextRowOf(f.dataDirectory)); return listen.apply(this, args); });
+  const restarted = await f.start(options);
+  assert.deepEqual(atListen, [{ state: 'aborted', releasePending: false, cause: null, allocation: 'released' }], 'the row is ended, its hold released and its slot free before the host listens');
+  const next = await (await f.buyerFor(restarted)).requestContext(OTHER_JOB, { delegated: false });
+  assert.deepEqual([next.status, next.body.disposition], [200, 'present'], `the freed slot takes a new job: ${next.text}`);
 });
 
 test('a sweep that cannot take the lease of a running context step records its cause there and does not make the host refuse another buyer', async (t) => {
@@ -238,4 +331,73 @@ test('the host runs one unref\'d 60 second sweep at a time, and close stops the 
   await pending;
   await closing;
   assert.equal(existsSync(lockPath(f.dataDirectory)), false);
+});
+
+/** A started host on a clock the test moves, with its periodic sweep captured and the buyers that talk to it. */
+async function hostOnMovingClock(t, f, options = {}) {
+  const clock = { elapsed: 0, now: () => NOW + clock.elapsed };
+  const timers = [], setInterval = globalThis.setInterval;
+  t.mock.method(globalThis, 'setInterval', (callback, ms, ...rest) => { const timer = setInterval(callback, ms, ...rest); timers.push({ callback, ms }); return timer; });
+  const host = await f.start({ maxReservationUnits: ONE_PURCHASE_BUDGET, now: clock.now, ...options });
+  const sweep = timers.find(({ ms }) => ms === SWEEP_INTERVAL_MS);
+  const buyerFor = (jobId) => hostBuyer(host, f.config.listing, { jobId, clock: clock.now });
+  return { clock, sweep, buyerFor, host };
+}
+
+test('the default host frees the units of a purchase that stopped after its context step once an hour has passed, and then admits the next buyer', async (t) => {
+  const f = await contextHostFixture(t), { clock, sweep, buyerFor } = await hostOnMovingClock(t, f);
+  const first = await (await buyerFor(JOB)).requestContext();
+  assert.equal(first.status, 200, first.text);
+  assert.equal(allocationState(f.dataDirectory), 'live', 'the context step keeps the rest of the purchase\'s units');
+  const refused = await (await buyerFor(OTHER_JOB)).challenge();
+  assert.deepEqual([refused.status, refused.body.error], [503, 'seller_not_ready']);
+
+  clock.elapsed = ABANDONED_PURCHASE_MS - 1;
+  sweep.callback();
+  await flush();
+  assert.equal(allocationState(f.dataDirectory), 'live', 'a purchase younger than an hour keeps its units');
+
+  clock.elapsed = ABANDONED_PURCHASE_MS;
+  await sweepUntil(sweep, () => allocationState(f.dataDirectory) === 'released');
+  const next = await (await buyerFor(THIRD_JOB)).requestContext();
+  assert.equal(next.status, 200, next.text);
+});
+
+test('the default host frees the units of a purchase that was abandoned before it restarted', async (t) => {
+  const f = await contextHostFixture(t), { buyerFor, host } = await hostOnMovingClock(t, f);
+  assert.equal((await (await buyerFor(JOB)).requestContext()).status, 200);
+  await host.close();
+  assert.equal(allocationState(f.dataDirectory), 'live');
+  await f.start({ maxReservationUnits: ONE_PURCHASE_BUDGET, now: () => NOW + 2 * ABANDONED_PURCHASE_MS });
+  assert.equal(allocationState(f.dataDirectory), 'released');
+});
+
+test('the host publishes ready: false and refuses a new challenge while a new purchase\'s whole allotment does not fit, and ready again once the units are given back', async (t) => {
+  const f = await contextHostFixture(t, { publicEndpoint: FIXTURE_ENDPOINT }), { clock, sweep, buyerFor, host } = await hostOnMovingClock(t, f);
+  const signer = (wallet) => ({ claim: wallet.claim, sign: wallet.signBytes });
+  const published = async () => {
+    const response = await fetch(host.url + DACS_SELLER_DISCOVERY_PATH);
+    assert.equal(response.status, 200);
+    const wire = await wireBuyer({ buyer: signer(buyer), seller: signer(seller), listingPin: host.listingPin, clock: clock.now });
+    return (await wire.verifyDiscovery(Buffer.from(await response.arrayBuffer()))).ready;
+  };
+  assert.equal(await published(), true);
+  assert.equal((await (await buyerFor(JOB)).requestContext()).status, 200);
+  assert.equal(await published(), false, 'the first purchase\'s units leave too few for a second');
+  const refused = await (await buyerFor(OTHER_JOB)).challenge();
+  assert.deepEqual([refused.status, refused.body.error], [503, 'seller_not_ready']);
+  clock.elapsed = ABANDONED_PURCHASE_MS;
+  await sweepUntil(sweep, () => allocationState(f.dataDirectory) === 'released');
+  assert.equal(await published(), true);
+});
+
+test('a host given its own contextSessionState reads no purchase as abandoned', async (t) => {
+  const f = await contextHostFixture(t), { clock, sweep, buyerFor } = await hostOnMovingClock(t, f, { contextSessionState: () => null });
+  assert.equal((await (await buyerFor(JOB)).requestContext()).status, 200);
+  clock.elapsed = 2 * ABANDONED_PURCHASE_MS;
+  sweep.callback();
+  await flush();
+  assert.equal(allocationState(f.dataDirectory), 'live');
+  const refused = await (await buyerFor(OTHER_JOB)).challenge();
+  assert.deepEqual([refused.status, refused.body.error], [503, 'seller_not_ready']);
 });

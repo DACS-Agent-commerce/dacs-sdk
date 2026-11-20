@@ -1,6 +1,6 @@
 // K1's admission transaction for a context start: D2-D5 (intent, policy hold, acceptance, wire reservation), the fenced
 // completion D7/D8a-c, compensation C1-C4 with its outcome-first settlement, durable hold release, the sweep and the read-only
-// admission record. Nothing calls it until P12b1 wires the context route into it, schedules the sweep and ties `cleanupPending()` to readiness.
+// admission record. The host routes the context step through it and runs its sweep at startup and every minute.
 import { randomUUID } from 'node:crypto';
 import { canonicalize, compositeVerificationAddress, isAttestationRef, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, isTp1WireProfile, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
@@ -119,7 +119,8 @@ function contextOutcomeClass(row, outcome) {
  * after visiting every row when it could not record one. A periodic sweep called while one runs answers that one; a startup sweep rejects with
  * TypeError while a begin is live or a sweep runs, and a periodic one leaves a live begin's intent alone. Direct admissions are fenced after
  * five minutes from acceptance; only fresh no-effect evidence permits abort and release. `cleanupPending()` is true while a row is
- * compensating, or holds a pending release, a pending policy call or a cleanup cause. `admissionRecord(jobId)` is the frozen read-only projection, or null.
+ * compensating, or holds a pending release, a pending policy call or a cleanup cause. `fitsNewPurchase()` is whether a new purchase's whole
+ * allotment fits, after the slot retirement admission runs first. `admissionRecord(jobId)` is the frozen read-only projection, or null.
  * Throws TypeError for an unusable option; operations reject with a SellerTransportError (guard errors keep their own class) that keeps its cause.
  */
 export function createContextAdmissionTransaction({ store, policy, capacity, effectEvidence, inspectContextOutcome, completeWire, now, ready, deadlines }) {
@@ -630,6 +631,13 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     return db.prepare(`SELECT jobId, state, rev FROM kit_context_admissions WHERE state = 'compensating' OR ${OPEN_CLEANUP}`).all()
       .some((row) => !ownedByLiveBegin(row));
   }
+  // Whether a new purchase's whole allotment fits now. When it does not as the store stands, and no transaction is open, the slot
+  // retirement admission runs first is run here too, so the answer agrees with what admission would decide.
+  function fitsNewPurchase() {
+    const fits = capacity.fitsNewPurchase();
+    if (fits || db.inTransaction) return fits;
+    return transaction(() => { retireSlotsWithin(clock(), undefined, { capacity: true, jobs: [] }); return capacity.fitsNewPurchase(); });
+  }
   function admissionRecord(jobId) {
     const row = isCanonicalJobId(jobId) ? read(jobId) : null;
     if (row === null) return null;
@@ -637,7 +645,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
       nonce: row.nonce, presentationHash: row.presentationHash, state: row.state, rev: row.rev, admittedAt: row.admittedAt, contextOutcome: row.contextOutcome });
   }
 
-  const api = Object.freeze({ begin, reserveContext, runningCheck, jobEffectMutex, compensate, sweep, cleanupPending, admissionRecord,
+  const api = Object.freeze({ begin, reserveContext, runningCheck, jobEffectMutex, compensate, sweep, cleanupPending, fitsNewPurchase, admissionRecord,
     addAcceptanceHook(hook) {
       if (hooksSealed || typeof hook !== 'function') throw new TypeError('an acceptance hook is a synchronous function registered before the first begin');
       acceptanceHooks.push(hook);

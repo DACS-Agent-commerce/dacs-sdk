@@ -1,12 +1,14 @@
+import './helpers/transport-boundary.mjs'; // first: it installs the purchase-admission hook before any source module loads
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
-import { DEVNET_NODE2_BLOCK_LAYOUT, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE } from '../src/wallet/devnet-native-transport.mjs';
-import { createWorld, JOB_IDS } from './helpers/native-create-world.mjs';
-import { deferred, jsonResponse, MIB, ok, sizedReply, sourceReadTransport, sourceReadWorld } from './helpers/source-read-world.mjs';
+// Loaded after the admission hook, so the effect boundary under test sees the admission double.
+const { DEVNET_NODE2_BLOCK_LAYOUT, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE } = await import('../src/wallet/devnet-native-transport.mjs');
+const { createWorld, JOB_IDS } = await import('./helpers/native-create-world.mjs');
+const { deferred, jsonResponse, MIB, ok, sizedReply, sourceReadTransport, sourceReadWorld } = await import('./helpers/source-read-world.mjs');
 const { openDurableWalletJournal } = await import('../src/wallet/durable-journal.mjs');
 
 const CHAIN = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;
@@ -114,7 +116,7 @@ test('after the extraction, the same malformed identity envelope is refused in s
     const messages = [], world = createWorld({ journal: sourceReadWorld(t).journal, identityAnswer, onNode: async message => { messages.push(message); } });
     t.after(() => world.capability.close());
     const create = await world.makeCreate(JOB_IDS[0], 1);
-    await world.retain(create, 'broadcast-accepted');
+    await world.retain(create, 'broadcast-accepted', { signed: true });
     messages.length = 0;
     const result = await world.recover(create);
     return { result, messages, sent: world.sent };

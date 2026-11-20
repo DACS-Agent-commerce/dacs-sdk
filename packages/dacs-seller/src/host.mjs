@@ -19,9 +19,8 @@
 // is still authorized, instead of holding the paid order for good.
 // Each new session is opened only for a presentation that carries a
 // challenge this host issued for its job and buyer (through the signed
-// challenge route, or `issueSessionChallenge`, which the operator hands to the
-// buyer; the first attempt consumes it) into the transport store's one
-// challenge ledger, on a
+// challenge route; the first attempt, on the context route, consumes it) into
+// the transport store's one challenge ledger, on a
 // Listing the agent's own revocation check (core checkListingRevocation over
 // the operator's readings) finds not revoked, and under the operator's
 // seller-owned sessionAdmission (session-admission.mjs): both parties' exact
@@ -46,7 +45,8 @@ import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { createAbandonedPurchaseState } from './dacs/abandoned-purchase.mjs';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { createAccountingReconciler } from './dacs/accounting-reconciliation.mjs';
 import { createContextWorkRegistry } from './dacs/context-work-registry.mjs';
@@ -58,12 +58,13 @@ import { PASSIVE_RETAINED_READ, isProvenUnsignedAbsence } from './dacs/native-de
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createContextAdmissionTransaction } from './dacs/seller-admission-transaction.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
+import { createClosedBootstrapGate } from './dacs/closed-bootstrap-gate.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-capacity-defaults.mjs';
 import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute, createWireSellerContextRoute } from './dacs/seller-context-route.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
-import { SellerTransportError, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
@@ -242,8 +243,7 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
   if (held !== null) throw journalAccountingMismatch(`${JOURNAL_DIRECTORY}/${held} exists but the kit store is new`);
 }
 
-// Resolves once the host listens: { url, listingPin, seller, timeouts,
-// issueSessionChallenge({ jobId, buyer }), close() }.
+// Resolves once the host listens: { url, listingPin, seller, timeouts, close() }.
 // Rejects with KitOperationGuardError (kit_operation_guard_off) first of all,
 // before reading the options, while the kit's operation guard is off.
 // Rejects with a TypeError before opening anything when an option is missing,
@@ -274,9 +274,9 @@ export async function startSellerHost(options) {
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
-    maxReservationUnits = maxRecords, host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
+    maxReservationUnits = maxRecords, host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
-  if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
+  if (contextSessionState !== null && typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
@@ -321,7 +321,10 @@ export async function startSellerHost(options) {
     // The store comes first: its one challenge ledger is the agent's only challenge store, and the agent checks the
     // sessions it restores against that ledger.
     mkdirSync(transport, { recursive: true, mode: 0o700 });
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, contextSessionState,
+    // Without an operator reader the host reads abandoned purchases itself; the reader is set once the admission records and the journal exist.
+    let abandonedPurchaseState = () => null;
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested,
+      contextSessionState: contextSessionState ?? ((target) => abandonedPurchaseState(target)),
       wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
     // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
@@ -330,14 +333,14 @@ export async function startSellerHost(options) {
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();
     store.recoverLostContextReservations();
-    // A purchase whose session already ended gives its unspent units back before anything is served.
-    capacity.releaseTerminalAllocations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     const sellerClaim = listing.seller.identity.presentedBy;
     // The agent asks which context requests were admitted through these records; the admission transaction and the journal they read are
     // opened below, before any request is served.
     const records = createSellerContextRecords({ listing, admission: (jobId) => admission.admissionRecord(jobId), contextOutcome: (jobId) => completedContextOutcome(journal, sellerClaim)(jobId) });
-    const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'), jobSlotReleased: store.jobSlotReleased,
+    // One gate, registered with the coordinator and asked by the agent: a purchase starts only from a successful context admission.
+    const closedBootstrapGate = createClosedBootstrapGate({ admission: (jobId) => admission.admissionRecord(jobId), purchaseProfile: (jobId) => store.purchaseProfile(jobId), profile: binding.profile });
+    const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'), jobSlotReleased: store.jobSlotReleased, closedBootstrapGate,
       agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE,
       contextRequest: records.exactRequest });
     opened.push(() => agent.close());
@@ -363,14 +366,22 @@ export async function startSellerHost(options) {
     const hostStopped = () => stopping || stopRequested();
     const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
       completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
+    abandonedPurchaseState = createAbandonedPurchaseState({ admissionRecord: admission.admissionRecord, now, agreementDeadline: agent.retainedAgreementDeadline,
+      operationState: ({ jobId, path }) => inspectWireOperation(journal, { jobId, seller: sellerClaim, path }).state,
+      retainsCommitmentWork: (jobId) => agent.retainsCommitmentWork(jobId),
+      holdsPayment: (jobId) => agent.retainsPaymentWork(jobId) || agent.holdsRecordedPayment(jobId) });
     // Every effect route reserves through the coordinator and ends its attempt through the completion port. The agent's own record
     // of unfinished work lets a payment retry finish a payment the agent recorded, even after the job's session ended.
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission,
       retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
+    reservations.addPreAccountingGate(closedBootstrapGate);
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
+    // The readiness the discovery document publishes and the challenge and stage routes read: also false while a new purchase's whole
+    // allotment does not fit. The context route keeps `sellerReady`, so an accepted context request sent again is still answered.
+    const acceptsNewPurchase = () => sellerReady() && admission.fitsNewPurchase();
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.
-    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, stopped: hostStopped, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
+    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: acceptsNewPurchase, stopped: hostStopped, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
     const contextWork = createContextWorkRegistry();
     const buyerWalletAccess = operatorBuyerAccessConfig(buyerAccess);
     const assertBuyerAccess = (buyerClaim) => buyerWalletAccess.assertWallet(addressForClaim(buyerClaim));
@@ -379,6 +390,11 @@ export async function startSellerHost(options) {
       knownJob: null, ready: sellerReady, stopped: hostStopped, now, monotonicNow: () => performance.now(), trackContextWork: contextWork.track });
     // The challenge route serves the challenge on the wire and names the paths; the wire route serves the context step.
     const context = { ...createSellerContextRoute({ listing, now, assertBuyerAccess }), ...contextRoute };
+    // A purchase whose session already ended gives its unspent units back before anything is served, unless its job holds a recorded
+    // payment and the payments operation has no completed answer: that job's paid retry still needs its session and allocation.
+    const keepPaidJobOpen = ({ jobId, seller }) => agent.holdsRecordedPayment(jobId)
+      && inspectWireOperation(journal, { jobId, seller, path: DACS_SELLER_HTTP_PATHS.payments }).state !== 'completed';
+    capacity.releaseTerminalAllocations(keepPaidJobOpen);
     // Rows an earlier process left unfinished are settled or fenced before any route is mounted.
     await admission.sweep({ startup: true });
     // The state directories and the new transport database entry are durable
@@ -434,22 +450,22 @@ export async function startSellerHost(options) {
       server.once('error', reject);
       server.listen({ host, port, exclusive: true }, () => { server.off('error', reject); resolve(); });
     });
-    // Unfinished context rows are swept again while the host runs, one sweep at a time. A sweep that cannot finish a row records its cause on
-    // that row and a later sweep tries again, so a failed pass has nothing more to report here.
+    // Unfinished context rows are swept again while the host runs, one sweep at a time, and the units of purchases whose session has ended
+    // or been abandoned are given back. A sweep that cannot finish a row records its cause on that row and a later sweep tries again, so a
+    // failed pass has nothing more to report here.
     let sweeping = null;
     const sweepTimer = setInterval(() => {
-      sweeping ??= admission.sweep({ startup: false }).catch(() => {}).finally(() => { sweeping = null; });
+      sweeping ??= admission.sweep({ startup: false }).catch(() => {}).then(() => capacity.releaseTerminalAllocations(keepPaidJobOpen)).catch(() => {})
+        .finally(() => { sweeping = null; });
     }, SWEEP_INTERVAL_MS).unref();
     let closing = null;
     // Stops accepting, lets requests in progress finish, waits for the provider
     // work and the sweep still running, then closes the journal and the agent
-    // state they write to and releases the state lock.
+    // state they write to and releases the state lock. A context step already
+    // admitted runs to its own outcome or deadline; stopping refuses only new ones.
     const close = () => closing ??= (async () => {
       stopping = true;
       clearInterval(sweepTimer);
-      contextWork.stop();
-      // Before the first wait: the provider of a live context attempt may sign nothing more from here on.
-      contextRoute.closeAttempts(new SellerTransportError('seller_stopped', 503));
       const socketsClosed = new Promise((resolve) => server.close(resolve));
       server.closeIdleConnections();
       destroyUndispatched();
@@ -459,6 +475,8 @@ export async function startSellerHost(options) {
       // shutdown-induced uncertain effect. A readback past its deadline has
       // already answered uncertain, so this wait stays bounded.
       await Promise.allSettled([...active]);
+      // No request is left to start a provider step, so none starts from here on.
+      contextWork.stop();
       // Only now stop the underlying native work, then wait for it: a
       // capability that honours the signal stops early; one that does not
       // keeps ownership until it finishes.
@@ -480,19 +498,6 @@ export async function startSellerHost(options) {
       listingPin: structuredClone(agent.listingPin),
       seller: agent.claim,
       timeouts: { ...TIMEOUTS },
-      // CORE SN-1..SN-4: { jobId, buyer, sessionNonce, issuedAt, expiresAt },
-      // kept in the one challenge ledger before it is returned; the buyer's bundle presents it.
-      // The agent's refusals are forwarded, `session_admission_unavailable` when it has no session admission.
-      // Once shutdown has begun the host refuses to issue, even while the
-      // agent itself is still open for the requests that are draining.
-      issueSessionChallenge: (input) => {
-        if (stopping) {
-          const error = new Error('the seller host is closing; no session challenge is issued');
-          error.code = 'seller_host_closing';
-          throw error;
-        }
-        return agent.issueSessionChallenge(structuredClone(input));
-      },
       close,
     });
   } catch (error) {

@@ -521,7 +521,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // (this store's own callers), the final liveness check is a no-op: the context route passes its own.
   const challenges = Object.freeze({ ...ledger, acceptWithin,
     issue: (request, challengeScopeHash, authorization = NO_DELEGATION) => ledger.issue({ jobId: request?.jobId, buyer: request?.buyer }, challengeScopeHash, authorization),
-    issueForOperator: request => ledger.issueForOperator({ jobId: request?.jobId, buyer: request?.buyer }),
     accept: (owner, nonce, record) => transaction(() => acceptWithin(owner, nonce, record)) });
   // Profiles retain purchase identity without holding an execution slot.
   const retainedJobs = () => ledgerJobs('jobs');
