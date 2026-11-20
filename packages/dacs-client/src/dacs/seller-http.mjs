@@ -14,6 +14,7 @@ import { settleOnAbort } from '../util/http.mjs';
 import { isDacsPublicAddressV1, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { classifySellerAnswer, SELLER_ANSWER_CLASS, SELLER_EFFECT_UNRESOLVED } from './seller-response-class.mjs';
 import { createSellerHttpsConnector, SellerHttpsConnectorError } from './seller-https-connector.mjs';
+import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 
 const MAX_BODY = 64 * 1024;
 /** The most response header bytes the connector reads from a seller. */
@@ -283,12 +284,15 @@ export function createSellerHttpsClient(options) {
 /**
  * Builds the seller client behind the public `createPublicSellerClient`: `{admission, publicEndpoint, authentication, timeoutMs, commitOnSignature}`
  * over the real pinned connector, with no request records. Returns `origin` and the named POST methods only, so a caller cannot reach the
- * route adapter or the effect-boundary callbacks. Throws TypeError for any other option or an invalid endpoint or authentication.
+ * route adapter or the effect-boundary callbacks. Throws TypeError for any other option, an invalid endpoint or authentication, a
+ * `timeoutMs` that is not an integer from 1000 through 300000, or a `commitOnSignature` that is not a boolean.
  */
 export function buildPublicSellerClient(options) {
   const unaccepted = Object.keys(options).find((name) => !PUBLIC_CLIENT_OPTIONS.has(name));
   if (unaccepted !== undefined) throw new TypeError(`seller client option is not accepted: ${unaccepted}`);
-  const { publicEndpoint, authentication, timeoutMs, commitOnSignature } = options;
+  const { publicEndpoint, authentication, timeoutMs } = options;
+  if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > SELLER_MAX_TIMEOUT_MS)) throw new TypeError('timeoutMs must be an integer from 1000 through 300000');
+  const commitOnSignature = commitOnSignatureConfig(options.commitOnSignature);
   const client = createSellerHttpsClient({ publicEndpoint, authentication, timeoutMs, commitOnSignature, connector: createSellerHttpsConnector() });
   const { origin, propose, agreementState, commit, submitPayment, bundleRequest, countersign, confirmBuyerCopy } = client;
   return { origin, propose, agreementState, commit, ...(client.commitOnSignature ? { commitOnSignature: client.commitOnSignature } : {}), submitPayment, bundleRequest, countersign, confirmBuyerCopy };

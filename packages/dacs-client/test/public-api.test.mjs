@@ -344,6 +344,23 @@ test('createPublicSellerClient requires admission and rejects every active metho
   }
 });
 
+test('createPublicSellerClient refuses a timeoutMs outside 1000 through 300000 and a commitOnSignature that is not a boolean', async () => {
+  const { createPublicSellerClient } = await import('@kynesyslabs/dacs-client');
+  const { binding, currentLocal } = await bindFixture();
+  const authentication = { request: async () => assert.fail('nothing is signed'), verifyResponse: async () => assert.fail('nothing is verified') };
+  const build = (extra) => createPublicSellerClient({ admission: { binding, currentLocal }, publicEndpoint: 'https://seller.example.test', authentication, ...extra });
+  for (const timeoutMs of [-1, 0, 999, 300001, 1500.5, Number.NaN, Infinity, '5000', 'abc', null]) {
+    assert.throws(() => build({ timeoutMs }), { name: 'TypeError', message: 'timeoutMs must be an integer from 1000 through 300000' }, String(timeoutMs));
+  }
+  for (const timeoutMs of [undefined, 1000, 300000]) assert.equal(build({ timeoutMs }).origin, 'https://seller.example.test', String(timeoutMs));
+  for (const commitOnSignature of ['false', 'true', 1, 0, null, {}]) {
+    assert.throws(() => build({ commitOnSignature }), { name: 'TypeError', message: 'commitOnSignature must be boolean' }, String(commitOnSignature));
+  }
+  assert.equal('commitOnSignature' in build({ commitOnSignature: false }), false);
+  assert.equal('commitOnSignature' in build({}), false);
+  assert.equal(typeof build({ commitOnSignature: true }).commitOnSignature, 'function');
+});
+
 test('an archive installed outside the checkout exports createPublicSellerClient, constructs the held client and loads without SQLite, with no checkout-relative import', (t) => {
   const { app, run } = installPackedPair(t);
   writeFileSync(join(app, 'seller-client.mjs'), `

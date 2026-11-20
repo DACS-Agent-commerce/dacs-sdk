@@ -79,7 +79,7 @@ test('a 512 KiB response passes and 512 KiB plus one byte is refused before deco
   assert.equal(verifications.length, verifiedBefore);
 });
 
-test('every CF-5 corpus vector on the HTTPS path is refused with its admission code or verified unchanged', async (t) => {
+test('every raw-JSON ingress corpus vector on the HTTPS path is refused with its admission code or verified unchanged', async (t) => {
   let current;
   const seller = await startHttpsSeller(t, (_req, res) => { res.writeHead(200, { ...JSON_TYPE, 'content-length': current.length }); res.end(current); });
   const received = [];
