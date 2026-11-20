@@ -593,13 +593,6 @@ type LatestRecipeSelection
 type LatestRecipeSelector
 type LegacyBundlePhaseEntry
 type LegacyMvpAgreementDocument
-type LegacyMvpAnyAttestationBundle
-type LegacyMvpAttestationBundle
-type LegacyMvpAttestationRef
-type LegacyMvpFaultAttestationBundle
-type LegacyMvpPhaseSummaryEntry
-type LegacyMvpSettlementEvidence
-type LegacyMvpTxRef
 type Listing
 type ListingCatalogClientConfig
 type ListingCatalogPage
@@ -1682,13 +1675,6 @@ value isFixedPriceAgreementSignatureContribution
 value isHistoricalRecipeResolution
 value isIdentityBundle
 value isLatestRecipeSelection
-value isLegacyMvpAgreementDocument
-value isLegacyMvpAnyAttestationBundle
-value isLegacyMvpAttestationBundle
-value isLegacyMvpAttestationRef
-value isLegacyMvpFaultAttestationBundle
-value isLegacyMvpSettlementEvidence
-value isLegacyMvpTxRef
 value isListing
 value isListingDraft
 value isListingEnvelope

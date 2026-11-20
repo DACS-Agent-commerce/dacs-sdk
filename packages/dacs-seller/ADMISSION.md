@@ -68,11 +68,13 @@ Every route refuses new or recoverable work on a retired job before writing a re
 A mutating route takes one effect per job on its one reserve path. The reservation coordinator reserves one request of an
 operation (one per seller, job and route) at a time, and the wire journal keeps the binding (profile, buyer and Agreement
 hash) of the operation's first attempt. A request whose signed nonce is already reserved, the exact signed request sent
-again included, is refused with peer_request_replayed (409) when it reaches the reservation, and starts no effect. A
+again included, is refused with peer_request_replayed (409) when it reaches the reservation, and starts no effect. At
+full capacity, though, an exact replay of an operation that completed under its binding, on a route that revalidates its
+stored outcome, is answered with that outcome before the nonce check: it never reaches the reservation. A
 later request with another binding starts no effect: if no earlier check refuses it, the journal refuses it with
 peer_operation_mismatch (409). A request with a fresh nonce under the operation's binding that passes those checks
-while the operation's latest attempt is still live (its lease has not run out) gets seller_effect_pending (503).
-Effect-to-job records protect pending
+while the operation's latest attempt is still live (its lease has not run out) gets seller_effect_pending (503) before
+it is charged: it leaves no reservation row, unit or nonce key. Effect-to-job records protect pending
 reads too. Completed and uncertain effects keep their bindings. Empty job bindings can be reclaimed on a successful
 reservation at capacity; owners remain. Reconciliation can make retained work eligible for retirement. Deleting the journal is not a
 supported recovery procedure. Accounted holds release their active slots through store retirement once all associated

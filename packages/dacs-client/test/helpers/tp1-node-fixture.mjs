@@ -41,7 +41,7 @@ export function scriptedNode() {
         : { number: data.blockNumber, status: 'confirmed', hash: 'b'.repeat(64), content: { previousHash: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, ordered_transactions: [...node.applied.keys()] } });
       else if (message === 'getAddressNonce') answer = ok(node.nonce);
       else if (message === 'getNetworkParameters') answer = ok({ networkFee: 1, rpcFee: 0, additionalFee: 0 });
-      else if (message === 'getNetworkInfo') answer = ok({ forks: { osDenomination: { activated: true } } });
+      else if (message === 'getNetworkInfo') answer = ok({ forks: { osDenomination: { activated: true }, signatureDomain: { activated: false } }, chainId: 1 });
       else if (message === 'getTransactionStatus') answer = ok(node.applied.has(data.hash) ? { state: 'included', blockNumber: 1 } : { state: 'unknown' });
       else if (message === 'getTxByHash') answer = node.applied.has(data.hash) ? ok({ ...structuredClone(node.applied.get(data.hash)), status: 'confirmed', blockNumber: 1 }) : { result: 400, response: 'error' };
       else throw new Error('TEST-unscripted-node-read:' + message);

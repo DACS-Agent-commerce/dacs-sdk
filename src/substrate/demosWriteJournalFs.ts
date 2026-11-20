@@ -632,7 +632,7 @@ export async function createFsDemosWriteJournal(
       createdAt: Date.now(),
     };
     while (!await acquireMutationGate(digest, owner)) {
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         throw new DacsError(`timed out acquiring Demos wallet mutation gate ${digest}`);
       }
       await sleep(LOCK_RETRY_MS);
@@ -665,7 +665,7 @@ export async function createFsDemosWriteJournal(
         hostname: localHostname,
         createdAt: Date.now(),
       };
-      const deadline = Date.now() + lockTimeoutMs;
+      const deadline = performance.now() + lockTimeoutMs;
 
       const reclaimStaleLock = async (): Promise<boolean> =>
         withMutationGate(digest, deadline, async () => {
@@ -717,7 +717,7 @@ export async function createFsDemosWriteJournal(
         let releasedPath: string | undefined;
         await withMutationGate(
           digest,
-          Date.now() + lockTimeoutMs,
+          performance.now() + lockTimeoutMs,
           async () => {
             if (sameOwner(await readLockOwner(lockPath), owner)) {
               releasedPath = `${lockPath}.${token}.released`;
@@ -754,7 +754,7 @@ export async function createFsDemosWriteJournal(
         for (;;) {
           const availability = await lockAvailability(lockPath);
           if (availability === "occupied") {
-            if (Date.now() >= deadline) {
+            if (performance.now() >= deadline) {
               throw new DacsError(
                 `timed out acquiring Demos wallet journal ${digest}`,
               );
@@ -783,7 +783,7 @@ export async function createFsDemosWriteJournal(
             const code = (error as NodeJS.ErrnoException).code;
             if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
           }
-          if (Date.now() >= deadline) {
+          if (performance.now() >= deadline) {
             throw new DacsError(
               `timed out acquiring Demos wallet journal ${digest}`,
             );

@@ -53,8 +53,8 @@ export async function contextHostFixture(t, { publicEndpoint = null } = {}) {
  * over that challenge, and `requestContext(jobId)` both; each answers `{ status, text, body, signed }`. Requests are delegated to a session
  * key; `{ delegated: false }` signs the context request with the buyer's own key instead. `scopeFor(jobId)` is the challenge scope the
  * buyer sends, and `admit(jobId)` the first admission a proposal needs. `connection` and `readAuthority` are the buyer's own (the
- * fixture authority by default). `signChallenge(jobId, options)` signs a challenge request without sending it, and `post(path, signed)`
- * sends a signed request as it is.
+ * fixture authority by default). `signChallenge(jobId, options)` signs a challenge request without sending it, `post(path, signed)`
+ * sends a signed request as it is, and `send(path, jobId, body)` signs `body` under a new envelope at the buyer's clock and posts it.
  */
 export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyerKey = buyer, seller: sellerKey = seller, clock = () => NOW,
   connection = () => ({ ...TEST_CONNECTION }), readAuthority = authorityReader() }) {
@@ -98,5 +98,5 @@ export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyer
     if (answered.status !== 200) throw refusal('context request', answered);
     return answered.bundle;
   };
-  return { challenge, context, requestContext, scopeFor, admit, signChallenge, post, verifyDiscovery: wire.verifyDiscovery };
+  return { challenge, context, requestContext, scopeFor, admit, send, signChallenge, post, verifyDiscovery: wire.verifyDiscovery };
 }

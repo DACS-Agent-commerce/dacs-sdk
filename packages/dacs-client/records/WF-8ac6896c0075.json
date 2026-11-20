@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged native transport with the dispatch authority check",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "30c3cf52b5f4a9596472a0c4833d6a10a86ed0ed",
+      "after": "30c3cf52b5f4a9596472a0c4833d6a10a86ed0ed"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-8ac6896c0075.json"
+  ],
+  "note": "Both sides of the merge recorded the native transport; this record chooses the merged copy. It keeps the base's dispatch authority check, which runs before the lane and intent are retained, and every monotonic clock read of the other side for durations and waits. No anchored file changed on this side of the merge, so the anchor stays where the base put it."
+}

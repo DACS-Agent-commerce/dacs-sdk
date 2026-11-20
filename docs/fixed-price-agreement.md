@@ -20,7 +20,6 @@ repository call.
 | Provisional deadline derives from `generatedAt + deadlineSecAfterCommit` | DACS-3 §8.4.1; §8.5.2 check 7 |
 | Buyer and seller sign the signature-free agreement hash under the artifact-specific domain; Base64URL is canonical and unpadded | DACS-3 §8.5.1; CORE §B.7 SIG-2/SIG-6 |
 | Unknown/unsupported pricing and auto-accept without its verified commitment plus live instance signature fail closed | DACS-3 §8.4.1; §8.5.2 MTR-5; CORE §11.1.2 |
-| Early SDK buyer-only agreements are read only as `LegacyMvpAgreementDocument`; they are never exposed as normative writes | CORE §11.1.2 |
 
 The finalized agreement commitment, authoritative `committedAt` checks, and the
 barrier before irreversible settlement remain owned by #99. The auto-accept

@@ -53,7 +53,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-planned-agreement.mjs': { effect: {  }, pure: ['createPlannedAgreementReader', 'plannedStateRecords'] },
   'src/dacs/seller-proposal-time.mjs': { effect: {  }, pure: ['proposalTimeProblem'] },
   'src/dacs/seller-purchase-capacity.mjs': { effect: {  }, pure: ['createPurchaseCapacity', 'ownsPurchaseCapacity'] },
-  'src/dacs/seller-reservation-accounting.mjs': { effect: { createReservationAccounting: ['reserveAccounted'], createReservationCoordinator: ['reserveCoordinated'] }, pure: ['requestNonceKey'] },
+  'src/dacs/seller-reservation-accounting.mjs': { effect: { createReservationAccounting: ['reserveAccounted'], createReservationCoordinator: ['reserveCoordinated'] }, pure: ['createLiveAttemptGate', 'requestNonceKey'] },
   'src/dacs/seller-transport-auth.mjs': { effect: {  }, pure: ['SellerTransportError', 'createSellerTransportStore', 'pinValid', 'readSellerSessionState', 'sellerContextChallengeScope', 'sellerContextScopeHash', 'sellerStoreInternals', 'validateBody'] },
   'src/dacs/seller-wire-client-auth.mjs': { effect: { createSellerWireClientAuth: ['createSellerWireClientAuth'] }, pure: [] },
   'src/dacs/seller-wire-discovery.mjs': { effect: {  }, pure: ['signedDiscovery'] },

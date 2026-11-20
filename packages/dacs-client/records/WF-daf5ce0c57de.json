@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "Pin the merged transport provenance",
+  "sha": "daf5ce0c57ded7c4ef3a0d4785f83a90f3229a5d",
+  "kind": "checkpoint",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "0c74411ed6b1dd5dd86ad44bd9023c0257e8fec0",
+      "after": "0c74411ed6b1dd5dd86ad44bd9023c0257e8fec0"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/DELTA-COMMITS.json",
+    "packages/dacs-client/DELTA-LEDGER.json",
+    "packages/dacs-client/DELTA-MAP.md",
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "The commit changed only the archive, the pins and the rendered map, and left the transport blob of the commit before it unchanged. This checkpoint states that blob."
+}
