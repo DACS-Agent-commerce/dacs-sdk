@@ -430,7 +430,6 @@ export function createDacsDemosRailRegistryProviderV1(
     stewardPublicKey: Uint8Array.from(stewardPublicKey),
     verify: (bytes, signature, publicKey) =>
       ed25519Verify(bytes, signature, publicKeyFromRaw(publicKey)),
-    legacySignatures: "reject" as const,
   };
   return Object.freeze(provider);
 }

@@ -5,7 +5,7 @@ import { rmSync } from 'node:fs';
 import { runFreshChild } from './helpers/fresh-node-child.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
-import { api, world, mnemonicBytes, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
+import { api, finalization, world, mnemonicBytes, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 
 test("an accepted native send is broadcast once; its lane stays readback-only across a restart of the composition", async t => {
@@ -24,8 +24,15 @@ test("two overlapping sends on one wallet serialize on the lane; neither is sent
 const w=await world(t); const results=await Promise.all([w.send(),w.send()]); assert.equal(results.filter(r=>r.success).length,1,JSON.stringify(results)); assert.equal(w.node.broadcasts.length,1);
 });
 
-test("confirmTx answering valid:false is confirm_rejected, nothing is broadcast and the lane is released", async t => {
-const w=await world(t); w.node.mode='confirm-refuse'; const result=await w.send(); assert.equal(result.error.code,'confirm_rejected',JSON.stringify(result)); assert.equal(w.node.broadcasts.length,0); w.node.mode='accept'; assert.equal((await w.send()).success,true);
+test("confirmTx answering valid:false is confirm_rejected, nothing is broadcast and the same request can be sent again", async t => {
+const w=await world(t); w.node.mode='confirm-refuse'; const result=await w.send(); assert.equal(result.error.code,'confirm_rejected',JSON.stringify(result)); assert.equal(w.node.broadcasts.length,0);
+const again=await w.send(); assert.equal(again.error.code,'confirm_rejected','the node is asked again and refuses again',JSON.stringify(again)); assert.equal(w.node.broadcasts.length,0);
+w.node.mode='accept'; const sent=await w.send(); assert.equal(sent.success,true,JSON.stringify(sent)); assert.equal(w.node.broadcasts.length,1);
+});
+
+test("a confirmation the node never answered is asked again for the same request, also after a restart, and an accepted answer then sends once", async t => {
+const w=await world(t); w.node.mode='confirm-lost'; const first=await w.send(); assert.equal(first.error.code,'upstream_unavailable',JSON.stringify(first)); assert.equal(w.node.broadcasts.length,0);
+await w.restart(); w.node.mode='accept'; const sent=await w.send(); assert.equal(sent.success,true,JSON.stringify(sent)); assert.equal(w.node.broadcasts.length,1);
 });
 
 test('restart at signature-return and confirm-send cuts through the Node session', async t => {
@@ -66,7 +73,7 @@ async function crashAndRestart(t, cut) {
   return new Response(JSON.stringify({result:400,response:'error',require_reply:false,extra:null}),{headers:{'content-type':'application/json'}});
  }});t.after(()=>owner.close());
  const {binding}=await bindFixture({local:owner.currentLocal()});setPurchaseAdmission('testnet-tp1');t.after(()=>setPurchaseAdmission('held'));
- const session=await api.createNodeWalletSession({owner,journal,admission:{binding,currentLocal:owner.currentLocal},key:mnemonicBytes(),clock:{now:()=>T0},approve:async()=>true});t.after(()=>session.close());
+ const session=await api.createNodeWalletSession({owner,journal,admission:{binding,currentLocal:owner.currentLocal},key:mnemonicBytes(),clock:{now:()=>T0},approve:async()=>true,...finalization});t.after(()=>session.close());
  assert.equal(calls.length,0,'restart alone sends nothing');
  const read=await session.wallet.request({method:'readNativeTransfer',params:[{hash:before.hash}]});assert.equal(read.success,true,JSON.stringify(read));assert.equal(read.data.noResend,true,JSON.stringify(read));
  const result=await session.wallet.request(request);assert.equal(result.error.code,'outcome_unknown');

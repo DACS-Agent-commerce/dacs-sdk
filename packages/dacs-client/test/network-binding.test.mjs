@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bindTp1Profile } from '@kynesyslabs/dacs/wire';
-import { createHeldTransportFacade } from '../src/wallet/node-wallet-session.mjs';
 import { createAuthorityFixture } from './fixtures/tp1-authority-reader.mjs';
-import { shared, native, captured, record, local, ownLocal, hash, envelope } from './helpers/chain-identity-fixture.mjs';
+import { shared, native, captured, record, local, ownLocal, hash, envelope, expected, NOW } from './helpers/chain-identity-fixture.mjs';
+// Loaded after the admission hook, so the effect boundary under test sees the admission double.
+const { deferred } = await import('./helpers/source-read-world.mjs');
+const { createDemosNetworkBinder } = await import('../src/dacs/network-binding.mjs');
+const { createHeldTransportFacade } = await import('../src/wallet/node-wallet-session.mjs');
 
 test('the string-zero genesis is cross-checked against block one and the approved pin in the shared reader, the constructed held transport facade and native strict recovery', async t => {
   await t.test('documented fallback binds the recorded two-field genesis and uses typed heights', async () => {
@@ -103,4 +106,21 @@ test('the string-zero genesis is cross-checked against block one and the approve
     await assert.rejects(h.transport.observeBinding());
     assert.equal(h.effects(), 0);
   });
+});
+
+test('overlapping observations on one binder each finish, and only an exclusive binder refuses the second with binding_busy', async () => {
+  const blockZero = { number: 0, status: 'confirmed', hash: record.chainIdentity, content: {} };
+  const binderOver = (gate, exclusive) => createDemosNetworkBinder({ expected, now: () => NOW, exclusive, reader: {
+    getContext: () => ({ ...local }),
+    async getBlockByNumber() { await gate.promise; return { value: structuredClone(blockZero), context: { ...local }, observedAt: NOW, fromCache: false, redirected: false }; },
+  } });
+  const open = deferred(), overlapping = binderOver(open, false), pair = [overlapping.bind(), overlapping.bind()];
+  open.resolve();
+  const [first, second] = await Promise.all(pair);
+  assert.equal(first.chainIdentity, record.chainIdentity);
+  assert.equal(second.chainIdentity, record.chainIdentity);
+  const held = deferred(), exclusive = binderOver(held, true), running = exclusive.bind();
+  await assert.rejects(exclusive.bind(), { code: 'binding_busy' });
+  held.resolve();
+  assert.equal((await running).chainIdentity, record.chainIdentity);
 });
