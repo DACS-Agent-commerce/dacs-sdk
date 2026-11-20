@@ -60,7 +60,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
       return outcome;
     } };
   const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock, leaseMs: LEASE_MS });
-  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,now:()=>NOW }) });
+  const handle = seller.createSellerHttpHandler(facade, { wire });
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);
     Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
@@ -148,25 +148,6 @@ test('a waiting proposal keeps its HTTP retry slot until the durable responder c
   assert.equal(w.proposalCalls(), 2, 'only the completed proposal is stored');
 });
 
-// Only payment claims and durable proposals resume through reconciliation.
-// Other routes stay read-only; only unstarted payment claims may be released.
-test('the transport store permits retained retries for payment claims and proposals, with payment-only release', (t) => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-store-')));
-  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:()=>NOW });
-  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const jobId = JOB, reservation = { disposition: 'uncertain', effectKey: 'TEST-effect', owner: 'TEST-owner' };
-  for (const path of ['/dacs/v1/commitments', '/dacs/v1/commitments/signature', '/dacs/v1/bundles/buyer-copy']) {
-    assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { retry: true }), { code: 'peer_reconciliation_invalid' }, path);
-    assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { noEffect: true }), { code: 'peer_reconciliation_invalid' }, `${path}: no release either`);
-  }
-  assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/payments' }, 200, '{}', { retry: true, noEffect: true }), { code: 'peer_reconciliation_invalid' });
-  for (const path of ['/dacs/v1/payments', '/dacs/v1/agreements/proposals']) {
-    assert.throws(() => store.reconcile(reservation, { jobId, path }, 200, '{}', { retry: true }), (error) => error.code !== 'peer_reconciliation_invalid',
-      `${path} passes the guard and is checked against its retained effect`);
-  }
-  assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/agreements/proposals' }, 200, '{}', { noEffect: true }), error=>error.code==='peer_reconciliation_conflict');
-});
-
 // An expired session delegation on a wire effect route refuses before reading back
 // what the journal already holds (docs/SELLER-SESSION-DELEGATION.md). Running
 // a payment claim again can sign and send (a new evidence CREATE): never then.
@@ -211,8 +192,7 @@ async function delegatedWorld(t, answers, publication = null) {
   const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock, requireDelegation: true });
   payload.profile = wire.binding.profile;
   delegation.signature = buyerKey.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + core.canonicalize(payload))).toString('base64url');
-  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,
-    now: clock, requireDelegation: true }) });
+  const handle = seller.createSellerHttpHandler(facade, { wire });
   let lastResponse;
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);

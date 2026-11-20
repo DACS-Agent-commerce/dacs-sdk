@@ -558,11 +558,6 @@ export {
   type BuyerBundleCheckpointState,
   type BuyerBundleFinalizationStatusLoad,
 } from "./durableBuyerBundleFinalization.js";
-export {
-  buildSignedArtifact,
-  verifySignedArtifact,
-  type SignedArtifact,
-} from "./signedArtifact.js";
 export type { Signer, Verifier } from "../crypto/byteSignerTypes.js";
 export {
   runFulfilmentCore,

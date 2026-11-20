@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { canonicalize, generateCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, admitWireArtifact, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, admitWireArtifact, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { fixtureListing } from '../fixtures/listings.mjs';
 import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { purchaseSupport } from '../../src/dacs/listing.mjs';
@@ -16,7 +16,6 @@ import { AGREEMENT_CONTEXT_SOURCE } from '../../src/dacs/agreement-context-consu
 import { createSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth } from '../../src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportStore } from './bound-transport-store.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { testWallet } from './protocol-fixture.mjs';
@@ -27,14 +26,13 @@ export const T0 = Date.UTC(2026, 9, 27, 12);
 export const JOB = generateCanonicalJobId({ timestamp: T0, entropy: new Uint8Array(10).fill(0x11) });
 export const JOB2 = generateCanonicalJobId({ timestamp: T0, entropy: new Uint8Array(10).fill(0x22) });
 export const CHALLENGE_PATH = DACS_SELLER_HTTP_PATHS.contextChallenge;
-export const CONTEXT_PATH = SELLER_CONTEXT_PATH;
+export const CONTEXT_PATH = DACS_SELLER_HTTP_PATHS.context;
 export const CHALLENGE_LIFETIME_MS = 600_000;
 const CLAIM_PREFIX = 'did:demos:agent:';
 const DELEGATION_LEAD_MS = 30_000;
 const DELEGATION_LIFETIME_MS = 3_600_000;
 const [SELLER, BUYER, OTHER, SESSION] = [testWallet(2), testWallet(1), testWallet(3), testWallet(99)];
 const signer = (wallet) => ({ claim: wallet.claim, sign: wallet.signBytes });
-const unexpected = (name) => () => { throw new Error(`TEST the challenge route reached ${name}`); };
 
 /** Resolves `entered` when the callback that awaits `pass()` is reached, and lets it go on at `release()`. */
 export function gate() {
@@ -74,11 +72,9 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
   };
   open();
   t.after(() => store.close());
-  const route = createSellerContextRoute({ listing, now, writable: unexpected('writable'),
+  const route = createSellerContextRoute({ listing, now,
     assertBuyerAccess: async (buyer) => { calls.access++; return policy.access(buyer); },
-    knownJob: async (...input) => { calls.known++; return policy.known(...input); },
-    admitPresentation: unexpected('admitPresentation'), admitWrites: unexpected('admitWrites'), releaseWrites: unexpected('releaseWrites'),
-    resolveBuyer: unexpected('resolveBuyer'), recover: unexpected('recover') });
+    knownJob: async (...input) => { calls.known++; return policy.known(...input); } });
   const journal = openWireRequestJournal(journalDirectory, { leaseMs: 300_000, clock: now });
   t.after(() => journal.close?.());
   const agent = { claim: SELLER.claim, listingPin: pin, transportAgreementOf: () => { calls.transportAgreementOf++; return null; },
@@ -90,8 +86,7 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
   let wire = null;
   const compose = () => {
     wire = makeWire();
-    const authentication = createSellerTransportServerAuth({ sellerSigner: signer(SELLER), listingPin: pin, store, now, requireDelegation });
-    handler = createSellerHttpHandler(agent, { authentication, context: route, wire });
+    handler = createSellerHttpHandler(agent, { context: route, wire });
   };
   compose();
 
@@ -116,7 +111,7 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
     signature: by.signBytes(Buffer.from(DACS_SELLER_HTTP_DOMAINS.request + canonicalize(payload))).toString('base64url'), ...(delegation ? { delegation } : {}) })).toString('base64url') });
   const post = async ({ url = CHALLENGE_PATH, header, text, headers, chunks }) => {
     const res = await exchange(handler, { url, header, text, headers, chunks });
-    return { status: res.status, text: res.text, body: JSON.parse(res.text), signature: res.headers?.[SELLER_TRANSPORT_HEADER] };
+    return { status: res.status, text: res.text, body: JSON.parse(res.text), signature: res.headers?.[DACS_SELLER_HTTP_HEADER] };
   };
   const rows = () => { const db = new Database(path, { readonly: true }); try { return db.prepare('SELECT * FROM kit_challenges').all(); } finally { db.close(); } };
   const journalFiles = () => readdirSync(journalDirectory).filter((name) => /^[ko]-/.test(name)).length;
@@ -131,12 +126,12 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
       }
     } finally { db.close(); }
   };
-  /** One context record in the admissions table, so a store limited to one record is full. */
-  const seedContextRecord = () => {
+  /** One context record in the admissions table, so a store limited to one record is full; it counts as a start of `buyer`, another buyer by default. */
+  const seedContextRecord = ({ buyer = OTHER } = {}) => {
     const db = new Database(path);
     try {
       db.exec('CREATE TABLE IF NOT EXISTS peer_context_admissions (job TEXT PRIMARY KEY, buyer TEXT NOT NULL, seller TEXT NOT NULL, listing_pin TEXT NOT NULL, scope_hash TEXT NOT NULL, effect TEXT NOT NULL, admitted_at INTEGER NOT NULL)');
-      db.prepare('INSERT INTO peer_context_admissions VALUES (?,?,?,?,?,?,?)').run(JOB2, OTHER.claim, SELLER.claim, canonicalize(pin), sha256Hex('TEST-scope'), sha256Hex('TEST-effect'), state.time);
+      db.prepare('INSERT INTO peer_context_admissions VALUES (?,?,?,?,?,?,?)').run(JOB2, buyer.claim, SELLER.claim, canonicalize(pin), sha256Hex('TEST-scope'), sha256Hex('TEST-effect'), state.time);
     } finally { db.close(); }
   };
   const restart = () => { store.close(); open(); compose(); };

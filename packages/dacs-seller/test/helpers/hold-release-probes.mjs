@@ -178,14 +178,13 @@ test('hold-release preserves used, buyer-window units and every reservation row'
   assert.equal(units(), count); assert.deepEqual(f.rows(), rows); assert.deepEqual(f.holds(), holds);
 });
 
-test('hold-release keeps the owner on both reserve paths and replays the stored result', async t => {
+test('hold-release keeps the owner and replays the stored result', async t => {
   const [f, session] = await fixture(t);
   await completed(f);
   session.state = 'finalised'; f.setTime(T0 + HOUR + 1); retire(f);
   assert.equal(retired(f)[0]?.job_retired, 1);
   const before = proof(f), foreign = f.payload({ buyer: OTHER.claim });
   await assert.rejects(f.reserve(f.args(foreign)), { code: 'peer_job_conflict', status: 409 });
-  assert.throws(() => f.store().reserve(foreign, {}, { keepProfile: FIXTURE_PROFILE }), { code: 'context_session_terminal', status: 409 });
   assert.deepEqual(proof(f), before);
   assert.equal((await next(f)).state, 'new');
   const rows = f.rows(), holds = f.holds(), jobs = f.jobRows();
@@ -215,14 +214,6 @@ test('retired work preserves buyer and job capacity refusal order', async t => {
   await assert.rejects(f.reserve(foreign), capacity);
   await assert.rejects(f.reserve(f.args(f.payload({ path: CONTEXT }))), { code: 'peer_buyer_nonce_limit', status: 429 });
   assert.deepEqual(proof(f), before);
-});
-
-test('hold-release old reserve reclaims a completed accounted hold', async t => {
-  const [f, session] = await fixture(t);
-  await completed(f); session.state = 'finalised'; f.setTime(T0 + HOUR + 1);
-  const rows = f.rows(), holds = f.holds();
-  assert.equal(f.store().reserve(f.payload({ jobId: JOB2 }), {}, { keepProfile: FIXTURE_PROFILE }).disposition, 'perform');
-  assert.equal(retired(f)[0]?.job_retired, 1); assert.deepEqual(f.rows(), rows); assert.deepEqual(f.holds(), holds);
 });
 
 test('hold-release a stored completed operation proves completion without a current wire view', async t => {
@@ -260,18 +251,6 @@ for (const state of ['pending', 'unknown', 'reader-throws', 'no-effect', ...Obje
   } else {
     assert.equal((await next(f)).state, 'new'); assert.equal(retired(f)[0].job_retired, 1);
   }
-});
-
-test('hold-release refused work stays closed on the old path after an unknown-session restart', async t => {
-  const [f, session] = await fixture(t);
-  await assert.rejects(f.reserve(f.args(f.payload(), { checked: { reserve: async () => {
-    throw new SellerTransportError('proposal_refused', 409);
-  } } })), { code: 'proposal_refused' });
-  session.state = 'finalised'; f.setTime(T0 + HOUR + 1); retire(f);
-  assert.equal(retired(f)[0]?.job_retired, 1);
-  session.state = null; f.reopen(); const before = proof(f);
-  assert.throws(() => f.store().reserve(f.payload(), {}, { keepProfile: FIXTURE_PROFILE }), { code: 'context_session_terminal', status: 409 });
-  assert.deepEqual(proof(f), before);
 });
 
 test('hold-release a retired context job cannot create an uncounted accounted hold', async t => {

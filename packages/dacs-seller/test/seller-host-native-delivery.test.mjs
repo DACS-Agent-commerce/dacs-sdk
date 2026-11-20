@@ -27,11 +27,11 @@ import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '..
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_FIXTURE_CHAIN_IDENTITY } from '../src/dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 import { wireRouteFixture } from './helpers/wire-continuation-fixture.mjs';
-import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
-import { mixedAuthentication, wireBuyer } from './helpers/wire-buyer.mjs';
+import { createOldDomainRequestSigner } from './helpers/old-domain-request.mjs';
+import { wireAuthentication, wireBuyer } from './helpers/wire-buyer.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import { INACTIVE_FORK_NETWORK_INFO, readInactiveForkNetworkInfo } from './helpers/network-info.mjs';
 import { privateModule, privateModuleUrl } from './helpers/private-module.mjs';
@@ -222,7 +222,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const agentUrl = agentTransform ? await privateModuleUrl(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], agentTransform) : null;
   const hostModule = await privateModule(new URL('../src/host.mjs', import.meta.url), ['setCutAgent'], source => {
     const cut = source.replace('const REQUIRED =', 'let cutAgent = (agent) => agent; function setCutAgent(value) { cutAgent = value; }\nconst REQUIRED =')
-      .replace('createSellerHttpHandler(agent, { authentication, wire, context })', 'createSellerHttpHandler(cutAgent(agent, wire), { authentication, wire, context })');
+      .replace('createSellerHttpHandler(agent, { wire, context })', 'createSellerHttpHandler(cutAgent(agent, wire), { wire, context })');
     return agentUrl === null ? cut : cut.replace("from './dacs/seller-agent.mjs'", `from '${agentUrl}'`);
   });
   hostModule.setCutAgent(cutAgent);
@@ -630,9 +630,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
     // Every route used by this purchase is signed and verified through wire.
     const client = () => {
-      const api = seller.createSellerAgentClient({ url: host.url, timeoutMs:NATIVE_FLOW_TIMEOUT_MS, authentication: mixedAuthentication(
-      { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash, seller.createSellerTransportClientAuth({
-        buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock })) });
+      const api = seller.createSellerAgentClient({ url: host.url, timeoutMs:NATIVE_FLOW_TIMEOUT_MS, authentication: wireAuthentication(
+      { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash) });
       return { ...api, commit: (...args) => { retrySeam.beforeRetry(); return api.commit(...args); } };
     };
     const proposalRequest = { proposal, transportIdentity, buyerIdentityBundle: await buyerBundleFor(jobId) };
@@ -978,7 +977,7 @@ test('a paid outside buyer recovers an uncertain payment after access closes and
   assert.equal(w.capabilities().buyerAccess.allowsWallet(w.buyerKey.address), false);
   const signed = await w.signedClaim(p, tx);
   const response = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
-    headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody });
+    headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.rawBody });
   const pending = await response.json();
   assert.equal(response.status, 200, shown(pending));
   assert.equal(pending.status, 'payment-evidenced', 'the rebroadcast is read back on this retry');
@@ -2540,7 +2539,7 @@ test('read-only commitment reconciliation cannot start provably unsent work', as
  const agent = await w.agentFor();
  try {
   const body = { jobId: p.jobId }, text = JSON.stringify(body);
-  const { payload } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
+  const { payload } = await createOldDomainRequestSigner({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
    resolveJob: () => ({ listingPin: seller.listingPin(w.listing), agreementHash: p.agreementHash }), now: w.capabilities().now }).request('/dacs/v1/commitments', body, text);
   const answer = await agent.reconcileTransport({ request: payload, body, rawBody: Buffer.from(text), readOnly: true });
   assert.equal(answer.disposition, 'indeterminate');
@@ -2558,7 +2557,7 @@ test('commitment transport reconciliation reads an uncertain retained commitment
  const agent = await w.agentFor();
  try {
   const body = { jobId: p.jobId }, text = JSON.stringify(body);
-  const { payload } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
+  const { payload } = await createOldDomainRequestSigner({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
    resolveJob: () => ({ listingPin: seller.listingPin(w.listing), agreementHash: p.agreementHash }), now: w.capabilities().now }).request('/dacs/v1/commitments', body, text);
   const readsBefore = w.effects.retainedReads.length;
   w.faults.artifactRead.push('unknown');
@@ -2751,7 +2750,7 @@ test('a retained delivery is rechecked by the agent while a repeated wire reques
   const signed = await w.signedClaim(p, tx);
   const post = async (expectedStatus = 200) => {
     const response = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
-      headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody });
+      headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.rawBody });
     assert.equal(response.status, expectedStatus);
     return response.json();
   };
@@ -3116,7 +3115,7 @@ test('enabling publication after a delivery-ready order changes nothing: a repla
 
   await w.host().close();
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
-  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
+  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
   assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
   assert.equal(done.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
@@ -3133,7 +3132,7 @@ test('a delivery-ready session retained without its own evidence copy is replaye
   await w.editRetainedSession(p.jobId, (session) => { delete session.deliveryReady.evidence; });
   await w.host().close();
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
-  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
+  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
   assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
   assert.equal(done.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
@@ -3384,7 +3383,7 @@ for(const failure of ['none','unavailable','changed'])test(`disabling evidence p
  const first=await p.claim(tx);assert.equal(first.delivery?.status,'delivered',shown(first));
  const signed=await w.signedClaim(p,tx);await w.host().close();
  const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
- const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});return{status:res.status,body:await res.json()};};
+ const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[DACS_SELLER_HTTP_HEADER]:request.header},body:request.rawBody});return{status:res.status,body:await res.json()};};
  if(failure==='unavailable')w.node.faults.transactionDown=hash=>hash===w.signedCreate(address).hash;
  if(failure==='changed')w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
  const observed=await post();
@@ -3403,7 +3402,7 @@ test('disabling publication recovers an already landed evidence CREATE with a lo
  w.faults.artifactPublish.push('SettlementEvidence:land-throw');const held=await p.claim(tx);
  assert.equal(held.delivery?.evidencePublication,'held-readback-only');assert.equal(w.createsAt(address),1);
  const signed=await w.signedClaim(p,tx);await w.host().close();const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
- const response=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:signed.rawBody});
+ const response=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[DACS_SELLER_HTTP_HEADER]:signed.header},body:signed.rawBody});
  assert.equal(response.status,200);const done=await response.json();assert.equal(done.delivery?.status,'delivered',shown(done));
  assert.equal(done.delivery.evidenceRef.anchor.locator,address);assert.equal(w.createsAt(address),1);
 });
@@ -3412,7 +3411,7 @@ test('disabling publication holds absent prior work without a new CREATE and ena
  const w=await world(t,{deliveryEvidenceEnabled:true}),p=await w.purchase(),tx=p.pay(),address=evidenceAddress(p);
  w.faults.artifactPublish.push('SettlementEvidence');assert.equal((await p.claim(tx)).delivery?.evidencePublication,'held-readback-only');assert.equal(w.createsAt(address),0);
  await w.host().close();let running=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>running.close());
- const post=async()=>{const signed=await w.signedClaim(p,tx);const response=await fetch(`${running.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:signed.rawBody});assert.equal(response.status,200);return response.json();};
+ const post=async()=>{const signed=await w.signedClaim(p,tx);const response=await fetch(`${running.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[DACS_SELLER_HTTP_HEADER]:signed.header},body:signed.rawBody});assert.equal(response.status,200);return response.json();};
  for(let attempt=0;attempt<2;attempt++){const held=await post();assert.equal(held.delivery?.evidencePublication,'held-readback-only',shown(held));assert.equal(w.createsAt(address),0);}
  await running.close();running=await w.startShipped({deliveryEvidenceEnabled:true});assert.equal((await post()).delivery?.status,'delivered');assert.equal(w.createsAt(address),1);
 });
@@ -3478,9 +3477,7 @@ for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expi
   } };
   const { wire, createBuyer } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: w.buyerKey, seller: w.sellerKey, store, now,
     readCommitmentReceipt: w.capabilities().readCommitmentReceipt, requireDelegation: true });
-  const handler = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({
-    sellerSigner: w.sellerKey, listingPin: pin, store, now, requireDelegation: true,
-  }) });
+  const handler = seller.createSellerHttpHandler(facade, { wire });
   const body = { jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE };
   const rawBody = JSON.stringify(body);
   const signedRequest = async () => {
@@ -3494,7 +3491,7 @@ for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expi
   };
   const post = async (signed) => {
     const req = Readable.from([Buffer.from(rawBody)]);
-    Object.assign(req, { url: '/dacs/v1/payments', method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header },
+    Object.assign(req, { url: '/dacs/v1/payments', method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header },
       socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
     const res = { destroyed: false, writableEnded: false, headersSent: false,
       writeHead(status) { this.status = status; this.headersSent = true; }, end(text) { this.body = JSON.parse(text); this.writableEnded = true; } };

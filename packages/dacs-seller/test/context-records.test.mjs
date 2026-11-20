@@ -5,13 +5,13 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateCanonicalJobId, identityBundleHash } from '@kynesyslabs/dacs';
-import { completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { AGREEMENT_CONTEXT_SOURCE } from '../src/dacs/agreement-context-consumer.mjs';
 import { DEM_RAIL, purchaseSupport } from '../src/dacs/listing.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { createSellerContextRecords } from '../src/dacs/seller-context-route.mjs';
-import { SELLER_CONTEXT_PATH, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
+import { sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
 import { fixtureIdentityBundle, fixtureListing } from './fixtures/listings.mjs';
 import { testWallet } from './helpers/protocol-fixture.mjs';
 
@@ -43,8 +43,8 @@ function journalWorld(t) {
   const open = () => openWireRequestJournal(directory, { leaseMs: 1000, clock: () => T });
   let journal = open(), requests = 0;
   // Each request carries its own key, so a second reservation of one job is a recovery, not a replay.
-  const reserve = (jobId) => reserveEffect(journalStore(journal), { key: hash(`key-${++requests}`), seller: seller.claim, jobId, path: SELLER_CONTEXT_PATH, binding: hash('binding'), requestHash: hash(`request-${requests}`) });
-  const reader = () => (jobId) => { const view = inspectWireOperation(journal, { seller: seller.claim, jobId, path: SELLER_CONTEXT_PATH }); return view.state === 'completed' ? view.outcome : null; };
+  const reserve = (jobId) => reserveEffect(journalStore(journal), { key: hash(`key-${++requests}`), seller: seller.claim, jobId, path: DACS_SELLER_HTTP_PATHS.context, binding: hash('binding'), requestHash: hash(`request-${requests}`) });
+  const reader = () => (jobId) => { const view = inspectWireOperation(journal, { seller: seller.claim, jobId, path: DACS_SELLER_HTTP_PATHS.context }); return view.state === 'completed' ? view.outcome : null; };
   const files = () => readdirSync(directory, { recursive: true }).sort().map((name) => { const path = join(directory, String(name)); return [String(name), statSync(path).isFile() ? hash(readFileSync(path)) : 'dir']; });
   return { directory, reserve, files, complete: (effect, outcome) => completeWireEffect(journal, effect, outcome), reopen: () => { journal = open(); return reader(); }, contextOutcome: reader() };
 }
