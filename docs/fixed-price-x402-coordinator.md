@@ -349,9 +349,6 @@ Raw callback exceptions are never persisted. Records retain bounded reason
 codes such as `anchor-threw` or `operation-threw`; sensitive provider messages,
 headers, credentials and stack traces stay outside the SDK journal.
 
-In the repository, `docs/fixed-price-x402-walkthrough.md` walks through a generated live project on
-testnet as far as the buy's doctor, which blocks today, and lists what does not run yet.
-
 ## Normative traceability
 
 | Coordinator invariant | DACS Standard source |
