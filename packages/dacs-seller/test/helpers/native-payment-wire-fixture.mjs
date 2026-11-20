@@ -22,6 +22,7 @@ import { createSessionAdmissionFixture } from './session-admission-fixture.mjs';
 import { presentContextAnswer } from './host-context-callbacks.mjs';
 import { hostBuyer } from './host-context-client.mjs';
 import { wireAuthentication, wireBuyer } from './wire-buyer.mjs';
+import { fetchAsHost, proxyListener } from './listener-host.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { finalizedCommitmentReader } from './finalized-commitment-reader.mjs';
@@ -257,6 +258,8 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   const lockedJobs = () => readStore(join('seller', 'seller-state.sqlite'), [], (db) => db.prepare('SELECT job FROM seller_locks ORDER BY job').all().map((row) => row.job));
   const rails = { authority: railSteward().railAuthority() };
   const hosts = [];
+  // Every request reaches the host under the Host its Listing's endpoint names.
+  const hostFetch = fetchAsHost({ authority: new URL(listing.seller.publicEndpoint).host });
   t.after(async () => {
     try { for (const running of hosts) await running.close(); } finally {
       wallet.close();
@@ -268,7 +271,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: node.rpcUrl, fetchImpl: node.fetchImpl, anchorEvidence: wallet.anchorEvidence, now: clock }),
     reconcilePaymentEvidence: wallet.reconcilePaymentEvidence, demDeliveryContext,
     nativeDemDelivery: createDevnetDemoDeliveryCapability({ authority: AUTHORITY, anchor: { ...artifactAnchor, authority: AUTHORITY }, deliveryEvidenceEnabled: true }),
-    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), now: clock, artifactAnchor, dataDirectory });
+    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), listener: proxyListener({ publicOrigin: listing.seller.publicEndpoint }), now: clock, artifactAnchor, dataDirectory });
   const start = async () => { const running = await startSellerHost(capabilities()); hosts.push(running); return running; };
   let host = await start();
   // The commitment the buyer attaches to a request: the seller's CREATE as the node and its finality reader show it.
@@ -297,7 +300,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   const purchase = async ({ resume = null } = {}) => {
     const jobId = resume ?? `01J8N4YV7YVYQ4DB7M8T${String(++jobSequence).padStart(6, '0')}`;
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
-    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, authentication: wireAuthentication(
+    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
       { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash) });
     if (resume === null) {
       const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
@@ -323,7 +326,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     // Sends the exact bytes of a signed request, as often as it is called, and returns the status and the body the seller signed.
     const post = async ({ header, text }) => {
       steps.push({ step: 'request' });
-      const response = await fetch(`${host.url}${PAYMENTS_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: header }, body: text });
+      const response = await hostFetch(`${host.url}${PAYMENTS_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: header }, body: text });
       const answerText = await response.text();
       return { status: response.status, text: answerText, body: JSON.parse(answerText) };
     };
