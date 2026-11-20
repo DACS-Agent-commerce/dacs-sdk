@@ -421,8 +421,13 @@ describe("durable continuity state store", () => {
           async readCurrent(request) {
             const receipt = await witness.readCurrent(request);
             if (receipt === null) return null;
-            const { signature: _signature, ...statement } = receipt;
-            return signer.sign({ ...statement, lineageKey: "another-lineage" });
+            return signer.sign({
+              receiptVersion: "1", kind: "current", authorityId: AUTHORITY_ID, epoch: EPOCH,
+              lineageKey: "another-lineage", revision: receipt.revision,
+              stateHash: receipt.stateHash, operationId: request.operationId,
+              requestHash: request.requestHash, clientNonce: request.clientNonce,
+              candidateId: null, mutationIndex: null, priorRevision: null, priorStateHash: null,
+            });
           },
         },
       };
