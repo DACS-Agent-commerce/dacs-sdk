@@ -19,7 +19,8 @@ broadcast can still reach a real Demos node: keep them on the fixture too. It
 is not qualified for mainnet. The standalone host preserves job ownership and refuses
 new jobs before admission at `maxJobs` (default 10,000) unless completed work
 can safely retire. Terminal DACS-5 bundle completion is not wired; slot retirement
-needs the `contextSessionState` capability described below.
+needs a terminal session state, which the `contextSessionState` capability or the
+host's own reading of abandoned purchases (described below) supplies.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
@@ -44,7 +45,16 @@ non-null non-string refuses issuance and new work with `session_admission_unavai
 503 and its cause; only explicit `null` means unknown. Promise results are ignored
 and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
-transactions. A host without the capability reclaims nothing. Context route
+transactions. A host given no capability reads one state itself: a purchase that
+settled its context step, retains no commitment work and holds no payment reads as `aborted-by-self`
+once an hour has passed since its admission and its Agreement's deadline has passed (a purchase whose
+proposal was refused or never made retains no Agreement and no deadline to wait for). Its units are
+given back and its job id cannot continue (the buyer starts again with a new job id).
+A purchase that retains commitment work, holds a payment or has a proposal, commitment or
+payment attempt still running stays open, because a payment included before the deadline
+is accepted however late it is claimed. A purchase whose retained Agreement has no
+readable deadline reads as unknown. A host
+given the capability uses only that. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 
 Verified additive migration is forward-only: the unchanged format marker does not
@@ -65,13 +75,19 @@ passed), unless a crash left it still reserving. Charges that no longer count st
 and each admission still scans them; they are never pruned. The host
 composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
-accounting and recording the reservation result. The routes do not yet reserve
-through the coordinator. Admission and accounting accept capacity through their
-internal ports.
-The routes do not yet reserve through these units, so the host's readiness does
-not read them: signed routes reserve through the store's accounting, terminal
-allocation cleanup runs at startup and when a store reader observes a terminal
-session, and the periodic terminal cleanup comes with the routes that use the units.
+accounting and recording the reservation result. Every signed effect route
+reserves through the coordinator. The other effect routes spend a unit of their
+purchase's slot, while the context route charges one general capacity unit.
+Signed reads and the signed challenge reserve nothing. The context route's admission allots a new purchase its
+allocation and refuses `seller_not_ready` (503) while the whole allotment is not
+free. While it is not, the host's readiness is false too: its discovery document says
+`ready: false` and new challenges are refused `seller_not_ready`, while purchases
+that already hold an allocation go on. Terminal allocation cleanup
+runs at startup and when a store reader observes a terminal session through
+`contextSessionState`, and the host's 60-second sweep repeats it while the host
+runs. With no `contextSessionState` the units a purchase keeps after its context
+step are given back once it reads as abandoned (above; one that retains commitment work or holds a payment stays allocated); with an operator's
+`contextSessionState` they stay allocated until that reader names a terminal state.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
 the old store's checks, startup cleanup and the coordinator) is kept as a durable,
@@ -83,9 +99,14 @@ pending, so no later transaction or request passes it. A closure answers termina
 after a restart whatever the port then says; an unknown, nonterminal or
 asynchronous answer creates none. The coordinator refuses a request for a closed job
 `context_session_terminal` (409) after inspecting its operation and before any
-accounting, unless that operation already completed under the request's binding. After the
-terminal check, the coordinator runs the synchronous, read-only gates registered
-with `addPreAccountingGate` in registration order. Completed operations bypass both checks. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+accounting, with two exceptions. An operation that already completed under the
+request's binding is answered again. A payment retry under the request's binding
+goes on when the agent still holds a payment it recorded for the job and the
+operation has no stored answer yet, so that payment is finished once. Neither
+writes a closure. After the terminal check, the coordinator runs the synchronous,
+read-only gates registered with `addPreAccountingGate` in registration order.
+Completed operations skip the gates too; a payment retry that finishes a recorded
+payment does not. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
 is the one synchronous check for other callers, and the purchase capacity must be
 built on a store before any reader runs. These observation writes are counted apart
 from the challenge, admission and reservation writes, which a refusal still leaves
@@ -120,8 +141,17 @@ const host = await startSellerHost({
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
                          // payment evidence anchored by the wallet journal (below), and its readback; the
                          // agent reads the signed CREATE's projection from the same journal
-  demDeliveryContext,    // createDemDeliveryContext({ ..., vetMode: KIT_TP1_VET_MODE }): the Vet context the
-                         // Agreement derives from; the host runs in that one mode (see the Vet paragraph)
+  demDeliveryContext,    // createDemDeliveryContext({ ..., vetMode: KIT_TP1_VET_MODE, recoverBuyer, resumableBuyer,
+                         // bindRetainedScope }): the Vet context the Agreement derives from; the host runs in
+                         // that one mode (see the Vet paragraph) and refuses at startup, before the lock and any
+                         // file, a capability built without the three callbacks. recoverBuyer and resumableBuyer
+                         // take (input, { writable, signal }) like resolveBuyer. recoverBuyer must be a real,
+                         // authenticated Vet readback: the host calls it (read-only) when it answers a completed
+                         // context request sent again, and a placeholder makes that retry answer
+                         // session_admission_unavailable (503). resumableBuyer is reserved for resuming an
+                         // interrupted context step (the host does not call it yet); bindRetainedScope(reader)
+                         // is called once at startup with the reader of completed context scopes and returns
+                         // { sellerBundlePresentedBy }, the Listing's seller presenter
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
@@ -146,8 +176,10 @@ const host = await startSellerHost({
 });
 // journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
 // deliveryJournal = createDeliverableWalletJournal(...) (below); the host refuses any other pair.
-// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
-// host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
+// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state. A context step
+// already admitted runs to its own outcome (or its 240-second deadline) before the state closes; after a
+// crash during a step, the next start ends that step or marks it uncertain.
+// A buyer gets its challenge from the host's signed challenge route and presents it on the context route.
 ```
 
 The host keeps three state directories under `dataDirectory`: `seller/`,
@@ -159,17 +191,36 @@ with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
+A store that already exists is checked against the journal on every start,
+before the host listens: every nonce key must name an accounting row, a charge
+that a crash left reserving is marked with what the journal holds for it (its
+charge stays counted), and the slot of an operation that completed before the
+slot was returned is returned once. If the journal cannot be read whole, or a
+key names no row, the host starts not ready, changes nothing and records
+`kit_journal_accounting_mismatch` with its cause, and writes one line to stderr:
+`seller-state: not accepting new purchases: kit_journal_accounting_mismatch: <cause>`.
+The cause is a code and a detail, for example
+`seller_replay_guard_invalid: STORE-ENUMERATION-INCOMPLETE`. It says the journal
+and the store do not agree, or the journal cannot be read whole; it may name a
+key, an operation or a job, and names a file only for an operating-system read
+error. The operator restores `seller/`, `transport/` and
+`wire-journal/` to one consistent copy (the same backup, or the same running
+host), then restarts; each start checks again. Only when the cause is an
+operating-system read error that names a file does the operator repair that file
+instead.
 
 Signed effect routes reserve through one reservation coordinator, which commits
 accounting before the wire journal publishes their attempt. A final answer
 completes the operation and returns its route slot; a later request is answered
 from it, after the existing source checks. A `waiting` proposal that kept no work
 ends the attempt without an outcome, and the next request recovers at once, the
-agent reconciling first. Retained payment work keeps its attempt open instead: a
-`held` payment, or evidence whose delivery is not done, is not ended and not
-stored. A payment that kept nothing (`indeterminate` before the evidence
-checkpoint, or `rejected`) still ends without an outcome. An uncertain or open
-attempt stays open: a request inside its 300 s lease gets `seller_effect_pending`,
+agent reconciling first. A payment answer that says the payment is in progress,
+a `held` payment or evidence whose delivery is not done, ends its attempt the
+same way and is not stored: waiting for a transfer is not a crash, so it spends
+none of the 16 attempts below. A payment that kept nothing (`indeterminate`
+before the evidence checkpoint, or `rejected`) also ends without an outcome. An
+uncertain or open attempt stays open, as does any other answer or refusal while
+payment work is unfinished: a request inside its 300 s lease gets `seller_effect_pending`,
 and the first after it recovers, spending one of 16 attempts at each lapse; after
 16 lapsed attempts the operation answers `seller_effect_unresolved`. A final
 payment answer is stored only after its sources are read again, and returns the
@@ -284,7 +335,21 @@ the producer, retry the same payment claim; do not collect another payment.
 `artifactAnchor` publishes native artifacts for the seller named by `writer`.
 Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
-the signed transaction before sending it. `readRetained({ logicalAddress,
+the signed transaction before sending it. The party Vet provider also passes
+`awaitInclusion: true`: a CREATE that call sends and that still reads back as
+pending is read again every five seconds for a bounded time while `authorize()`
+still answers `true`. The additional polls never send the CREATE again; the
+first pending read can still run the existing one-time recovery send
+(`recoverStorageWrite`) of the retained CREATE, as without `awaitInclusion`. In
+the reference anchor the bound is six minutes after the wallet's answer, and the
+wallet answers only after the transport's own inclusion wait (120 seconds by
+default), so the bound ends about eight minutes after the broadcast. Meanwhile
+the seller's other writes wait behind the pending write, up to that bound,
+instead of failing at once with a retryable error. `readBackRecords({ jobId,
+buyer })` reads a job's two retained Vet records back without signing or
+sending anything; it answers `present` only when both records read back as
+included, and `indeterminate` when one is not written yet or does not read
+back. `readRetained({ logicalAddress,
 artifactKind })` must authenticate the exact retained artifact, receipt, native
 transaction reference and signed projection when returning `status: 'present'`;
 `verifyReceipt` independently checks those bindings. Retain one logical record
@@ -372,6 +437,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   One live process owns a data directory (`seller-state.lock`): a second host,
   in this process or another, is refused; the lock of a process that is
   provably gone is taken over, and any doubt refuses until it is removed by hand.
+  On macOS and the BSDs the boot is identified by `kern.boottime`, which a
+  wall-clock step moves. After a step, the lock of a process that started before
+  it and did not exit cleanly names another boot and is not taken over: confirm
+  that no operator process runs, then remove `seller-state.lock` by hand.
   Holding that lock, the host recovers what a holder that is gone left before it
   serves: it releases every job lock row `releaseAbandonedLock` would release
   (never a live holder, nor one on this boot whose lease cannot be checked),
@@ -426,8 +495,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
   included, for example) keeps nothing, so the same claim reaches payment
   intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, keeps the attempt open: the first request after its 300 s lease
-  recovers and runs the agent's retained work again (reading back first), and a
+  done yet, ends the attempt with no outcome: the next request recovers at once
+  and runs the agent's retained work again (reading back first), and a
   different claim for the job is still
   refused (`peer_operation_conflict`). After the checkpoint the retained work
   alone decides what a claim may send: a readback that fails on a retry (a
@@ -504,7 +573,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
   `createDeliverableWalletJournal({ path, signCreate, broadcast,
-  readAccountNonce, readTransactionState })` is that journal, built as
+  readAccountNonce, readTransactionState, readNetworkInfo })` is that journal, built as
   `createPaymentEvidenceWalletJournal` is (the same primitives, checks and
   nonce rule, in its own file with its own `journalId`; a file made for the
   other kind is refused). Both its operations, `submitAuthorized(input,
@@ -571,12 +640,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
     the cause).
 
   `createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
-  readAccountNonce, readTransactionState })` gives both functions from the
+  readAccountNonce, readTransactionState, readNetworkInfo })` gives both functions from the
   operator's wallet primitives. `signCreate(input)` signs, and does not send,
   the storage CREATE (`{ signedTransaction, txHash, nonce }`).
   `signedTransaction` is the JSON of exactly the public signed projection
   `{ hash, content, signature: { type, data } }` of the Demos signed
-  transaction: of demosdk 4.0.16's `demosclass.js` `sign()` result, only those three members (its
+  transaction: of demosdk 4.0.18's `demosclass.js` `sign()` result, only those three members (its
   `status`, `blockNumber` and `ed25519_signature` are left out; node 61b8e75
   refuses a truthy `status`, which the signature does not cover). Before it is
   kept, the journal checks it is what the node executes and the SR-2 readback
@@ -588,13 +657,32 @@ per-client limiter so one client cannot exhaust the shared request budget.
   evidence) at this logical address, with `to` and the operation's
   `storageAddress` the address the writer, the program name and the nonce
   derive, from the writer's address (`from` and `from_ed25519_address`), with
-  the writer's Ed25519 signature as `0x` and lower-case hex, over the hash or,
-  when the journal is given `signatureChainId`, over
-  `demos-tx:v1:<signatureChainId>:<hash>`. `signatureChainId` is the node's
-  chain id as a decimal string, taken from the seller's own network
-  configuration; without it only the bare hash is accepted, and any other
-  message is refused. `createNativePaymentEvidenceConsumer` takes the same
-  option for the readback.
+  the writer's Ed25519 signature as `0x` and lower-case hex, over the message
+  the node's `getNetworkInfo` answer selects: the bare hash while the node's
+  `signatureDomain` fork is inactive (or absent), and
+  `demos-tx:v1:<chainId>:<hash>` once it is active, where `chainId` is the
+  answer's safe nonnegative integer `chainId`; an active fork must also carry a
+  safe nonnegative integer `activationHeight`, and a transaction included in an
+  earlier block is still checked against the bare hash. Any other message is
+  refused, and so is a bare-hash signature for a transaction at or after an
+  active fork's `activationHeight` (a kept CREATE the node already executed is
+  not checked again against the present answer). A kept bare-hash CREATE that
+  the node has not executed, absent or still pending in its queue, and which the
+  node proves not executed through an active fork's `activationHeight` itself,
+  can no longer be executed:
+  the journal supersedes it, and the next signature may use the same nonce. One
+  not proved that far stays refused as another evidence
+  (`wallet_journal_conflict`) and is not sent again. The journal reads the
+  answer through `readNetworkInfo({ signal })` on every call (like the other
+  wallet reads it is given `readTimeoutMs`, and its reader limits the size of
+  the reply); a read that fails,
+  times out or answers anything unreadable refuses the call
+  (`wallet_signature_domain_unreadable`) before anything is signed or sent.
+  Without `readNetworkInfo` nothing is read and only a signature over the bare
+  hash is accepted, so a CREATE signed for an active fork is refused. A
+  `signatureChainId` option is refused with a `TypeError`. The SR-2 readback of
+  `createNativePaymentEvidenceConsumer` reads the same answer from its own node
+  on each authentication and answers `indeterminate` when it cannot be read.
   Its fee is the node's to set, up to a ceiling of 50 DEM for the whole debit
   of the write: the network, rpc and additional fee plus the storage and gas
   burns, summed in OS (whole DEM numbers before the node's denomination fork,
@@ -641,7 +729,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
-  `'applied'`, `'pending'`, or `'absent'`. Applied means successful execution;
+  `'applied'`, `'pending'`, or `'absent'`; the journal also passes the kept
+  `signedTransaction` and `nonce`. Applied means successful execution;
   inclusion alone does not establish execution. An ordinary miss or unknown
   answer keeps the original signed CREATE alive for rebroadcast. To release a
   CREATE whose nonce another transaction consumed, a qualified reader must
@@ -649,7 +738,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `{ state: 'absent', checkedThroughBlock }` from a complete authenticated
   transaction index, including failed transactions, on the same chain.
   `checkedThroughBlock` must be at least the nonce snapshot's `blockHeight`.
-  A bare nonce or an unfenced absence never authorizes supersession.
+  A bare nonce or an unfenced absence never authorizes supersession. A pending
+  CREATE may carry the same proof, `{ state: 'pending', checkedThroughBlock }`;
+  it does not release the CREATE, it only lets a bare-hash CREATE be replaced
+  once the signature-domain fork is active.
   The journal keeps the signed CREATE and its nonce in its SQLite file (a
   private 0600 file) before it broadcasts it, and keeps at most one live signed
   CREATE per address. Its `readSignedProjection({ logicalAddress })` answers
@@ -701,19 +793,22 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - It opens a new session only for a presentation of a challenge it issued,
   on a Listing its own revocation check finds not revoked, and only under
   `sessionAdmission`, before anything of it is kept, read, signed or sent.
-  - **Issuing.** `host.issueSessionChallenge({ jobId, buyer })` keeps a fresh
+  A proposal never opens a session: the context route admits the presentation
+  first, and a proposal, commitment, payment or bundle step runs only for a job
+  whose context admission settled with a success outcome
+  (`context_admission_closed` 409 otherwise, `session_admission_unavailable`
+  503 while the admission is still running).
+  - **Issuing.** The signed challenge route keeps a fresh
     256-bit nonce for that job and buyer, valid for ten minutes, in the one
     challenge ledger the host's transport store keeps (the same ledger the
-    context route issues into) before it returns `{ jobId, buyer, sessionNonce, issuedAt,
-    expiresAt }`. The operator hands it to the buyer, whose bundle carries it
-    as `sessionNonce` (CORE SN-1..SN-3; delivering the challenge to the buyer
-    is up to the operator). An open challenge for the same job and buyer is
+    context route consumes it from) before it answers `{ sessionNonce, expiresAt }`.
+    The buyer's bundle carries it
+    as `sessionNonce` (CORE SN-1..SN-3). An open challenge for the same job and buyer is
     returned again; the ledger's hourly limits apply (five per buyer, twelve
     overall), and a job whose challenge was consumed takes no new one
-    (`context_job_closed`). Without a `sessionAdmission` the issuer refuses
-    `session_admission_unavailable` before anything is kept.
+    (`context_job_closed`).
   - **Generation.** Only the seller generates the nonce, using its own CSPRNG.
-    Supplying `sessionNonce` to the issuer is refused. The buyer copies the
+    The buyer copies the
     returned value into its bundle and signs afterward (CORE SN-1..SN-3).
   - **Consumption.** A presentation attempt for a new session consumes the
     nonce its bundle carries, durably and before the attempt is validated:
@@ -1010,13 +1105,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
 - It mounts the signed challenge route and the Vet and Agreement context route on
   the wire. A buyer asks for a challenge, then presents it in the context request,
   which the host admits, reserves and answers through the operator's
-  `demDeliveryContext`. A challenge is the one that route issued or the one
-  `host.issueSessionChallenge` issued, which the operator delivers to the
-  buyer. The host keeps every issued challenge
+  `demDeliveryContext`. The host keeps every issued challenge
   in the transport store's one challenge ledger, beside the seller state.
   Expired unattempted challenges may be reclaimed; accepted presentations
   retain their exact admission checkpoint and their job binding for replay.
-  The operator issues challenges only for buyers about to present.
 - The signed challenge route is composed directly, not by the host:
   `createSellerHttpHandler(agent, { authentication, context, wire })` serves
   `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the

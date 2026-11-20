@@ -4,6 +4,7 @@
 // Usage: node payment-evidence-authorization-withdrawn.mjs JOURNAL
 import { createPaymentEvidenceWalletJournal } from '../../src/index.mjs';
 import { evidenceInput, walletChain } from './payment-evidence-wallet-chain.mjs';
+import { readInactiveForkNetworkInfo } from './network-info.mjs';
 
 const [path] = process.argv.slice(2);
 const node = walletChain();
@@ -13,7 +14,8 @@ const journal = createPaymentEvidenceWalletJournal({ path,
   // The node drops every broadcast, so the first CREATE stays kept and is overtaken by the other writes.
   broadcast: async () => {},
   readAccountNonce: async () => { if (withdrawOnRead) authorized = false; return { nonce: node.accountNonce(), blockHeight: node.accountNonce() }; },
-  readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.accountNonce() }) });
+  readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.accountNonce() }),
+  readNetworkInfo: readInactiveForkNetworkInfo });
 const first = await journal.anchorEvidence(evidenceInput(node.claim));
 node.other();
 node.other();

@@ -111,7 +111,7 @@ function config(role: "buyer" | "seller"): DacsAgentConfig {
     demos: { rpcUrl: "http://127.0.0.1:5350" },
     rail: {
       registryIndexRef: FIXED_PRICE_X402_REGISTRY_INDEX_REF,
-      requestedNetwork: "eip155:8453",
+      requestedNetwork: "eip155:84532",
     },
     limits: {
       maxServiceAmount: { asset: "USDC", amount: "1" },

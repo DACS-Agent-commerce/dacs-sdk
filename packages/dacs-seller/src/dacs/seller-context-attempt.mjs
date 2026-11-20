@@ -24,7 +24,6 @@ const contextDeadline = () => Object.assign(new Error('the context attempt passe
  * `writable()` is false until the work has started and after the attempt closed or its deadline or lease has passed, even before the
  * timer has run; otherwise it is the admission transaction's `runningCheck`, which the caller asks while holding the job lease and
  * outside any store transaction. Do not call it to test liveness: its first true answer latches the attempt as effect-authorized.
- * `isClosed()` tells whether the attempt has closed, which separates a provider that failed on its own from one that was stopped.
  * Throws a TypeError when the job id, the effect's lease, the capability's attempt and revision, the admission check or a clock is unusable.
  */
 export function createContextAttempt({ jobId, effect, capability, admissionTransaction, now, monotonicNow }) {
@@ -66,5 +65,5 @@ export function createContextAttempt({ jobId, effect, capability, admissionTrans
     settled.then(() => clearTimeout(timer));
     return Object.freeze({ result, settled });
   }
-  return Object.freeze({ writable, close, run, isClosed: () => closed });
+  return Object.freeze({ writable, close, run });
 }

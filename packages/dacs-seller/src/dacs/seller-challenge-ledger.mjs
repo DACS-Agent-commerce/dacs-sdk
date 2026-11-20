@@ -48,16 +48,10 @@ const readCount = (value, name) => {
   return value;
 };
 
-// The guard names its entry, so each issue entry reports its own name.
-function assertIssueAdmitted(origin) {
-  if (origin === 'route') assertKitOperationAdmitted('issue');
-  else assertKitOperationAdmitted('issueForOperator');
-}
-
-function validateIssueRequest(request, challengeScopeHash, origin) {
+function validateIssueRequest(request, challengeScopeHash) {
   if (!isRecord(request) || !isCanonicalJobId(request.jobId)) fail('peer_job_invalid');
   const unknownMember = Object.keys(request).some((key) => key !== 'jobId' && key !== 'buyer');
-  if (unknownMember || !isCanonicalClaimReference(request.buyer) || (origin === 'route' && !isHash(challengeScopeHash))) fail('context_scope_invalid');
+  if (unknownMember || !isCanonicalClaimReference(request.buyer) || !isHash(challengeScopeHash)) fail('context_scope_invalid');
 }
 
 // The presenting claim of the accepted bundle when it is exactly the presentation this row was attempted with, else null: canonical
@@ -100,7 +94,7 @@ function legacyAcceptance(legacy) {
     const accepted = legacy.attempt.accepted;
     const admittedAt = accepted === undefined ? legacy.issuedAt : accepted.admittedAt;
     const buyerBundleHash = accepted === undefined ? legacy.buyerBundleHash : accepted.buyerBundleHash;
-    const row = { nonce: legacy.sessionNonce, jobId: legacy.jobId, buyer: legacy.buyer, challengeScopeHash: null, origin: 'operator',
+    const row = { nonce: legacy.sessionNonce, jobId: legacy.jobId, buyer: legacy.buyer, challengeScopeHash: null,
       issuedAt: legacy.issuedAt, expiresAt: legacy.expiresAt, state: 'accepted', presentationHash: legacy.attempt.presentationHash,
       owner: null, attemptedAt: admittedAt, failure: null, accepted: accepted === undefined ? null : {
         buyerBundleText: canonicalize(accepted.buyerBundle), buyerBundleHash, admission: accepted.admission, admittedAt,
@@ -125,16 +119,15 @@ const normaliseAttempt = ({ nonce, jobId, buyer, challengeScopeHash, presentatio
 const isRowParty = (row, input) => input.jobId === row.jobId
   && input.challengeScopeHash === row.challengeScopeHash && sameCanonicalClaimIdentity(row.buyer, input.buyer);
 
-// The path a row is attempted and answered on: that of its origin. The one other path is a continuation: the context
-// step of a route row, read on `proposal` while it validates (`attempted`) or once it is `accepted`, and never written.
-const ORIGIN_PATHS = Object.freeze({ route: 'context', operator: 'proposal' });
+// A row is attempted and answered on the `context` path. The one other path is a continuation: the context step's row,
+// read on `proposal` while it validates (`attempted`) or once it is `accepted`, and never written.
 const CONTINUED_STATES = Object.freeze(['attempted', 'accepted']);
-const onOriginPath = (row, input) => input.path === ORIGIN_PATHS[row.origin];
-const isContinuation = (row, input) => row.origin === 'route' && input.path === 'proposal' && CONTINUED_STATES.includes(row.state);
+const onContextPath = (input) => input.path === 'context';
+const isContinuation = (row, input) => input.path === 'proposal' && CONTINUED_STATES.includes(row.state);
 
 // K1 attempt step 7 on an `issued` row: the code the first attempt fails with, or null when it may validate.
 function firstAttemptRefusal(row, input, time) {
-  if (!onOriginPath(row, input) || !isRowParty(row, input)) return 'context_challenge_mismatch';
+  if (!onContextPath(input) || !isRowParty(row, input)) return 'context_challenge_mismatch';
   if (time >= row.expiresAt) return 'context_challenge_expired';
   return input.presentationHash === null ? 'context_challenge_attempt_invalid' : null;
 }
@@ -150,10 +143,10 @@ const REPLAY_ANSWERS = Object.freeze({
   failed: (row) => refused('context_challenge_failed', 409, row.failure?.code),
 });
 
-// A row past `issued` answers only its own party presenting the stored presentation hash, on its origin path or its one continuation;
+// A row past `issued` answers only its own party presenting the stored presentation hash, on the context path or its one continuation;
 // anyone else, any other path, or a state with no answer, finds it consumed.
 function replayAnswer(row, input) {
-  const matched = isRowParty(row, input) && (onOriginPath(row, input) || isContinuation(row, input))
+  const matched = isRowParty(row, input) && (onContextPath(input) || isContinuation(row, input))
     && input.presentationHash === row.presentationHash && Object.hasOwn(REPLAY_ANSWERS, row.state);
   return matched ? REPLAY_ANSWERS[row.state](row) : refused('context_challenge_consumed');
 }
@@ -166,19 +159,18 @@ function replayAnswer(row, input) {
  * Its unavailable-state errors propagate at issuance; reclamation treats them as unknown and retains the row.
  * `admissionCounts({ jobId })` returns `{ contextRecords, starts, buyerStarts(buyer) }`
  * over durable rows (`jobId` is the job being issued for, so a count may leave out a record that job already holds). `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
- * Entries: `issue(request, challengeScopeHash, authorization)` and `issueForOperator(request)` return
- * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class);
+ * Entries: `issue(request, challengeScopeHash, authorization)` returns
+ * `{ sessionNonce, expiresAt }` or throws SellerTransportError (a guard refusal keeps its own class);
  * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check;
  * it, the guard and the stop check also run before a reused live nonce is returned.
  * `attempt(input)` returns `{ kind: 'validate', owner }`, `{ kind: 'continuation', accepted }` or
  * `{ kind: 'refused', code, status, cause? }`. The row's party is its job, scope (absent counts as null) and
- * canonical buyer, with the presentation hash it stored. A row's path is that of its origin (`context` for a
- * route row, `proposal` for an operator row), plus one continuation: a route row read on `proposal`, only while
- * `attempted` or once `accepted`, so the proposal continues the context step's acceptance.
+ * canonical buyer, with the presentation hash it stored. A row's path is `context`, plus one continuation: the row
+ * read on `proposal`, only while `attempted` or once `accepted`, so the proposal continues the context step's acceptance.
  * An `accepted`, `attempted` or `failed` row answers its continuation, `context_attempt_pending` or
  * `context_challenge_failed` with the stored cause only to its party on one of its paths;
  * anyone else, or any other path or state, gets `context_challenge_consumed` and nothing is written. A first attempt by anyone but the
- * party fails the row as `context_challenge_mismatch`, except a route row on `proposal`, which is refused
+ * party fails the row as `context_challenge_mismatch`, except a first attempt on `proposal`, which is refused
  * unchanged. Throws if the row changed under the lock. `accept` and `recordFailed` return whether the row was
  * `attempted` by that owner and changed; their `Within` forms need an open transaction and open none.
  * `accept` stores only the canonical bytes of the presentation the row was attempted with (its stored hash, its nonce
@@ -206,7 +198,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   }
   db.exec(`CREATE TABLE IF NOT EXISTS kit_challenges (
     nonce TEXT PRIMARY KEY, jobId TEXT NOT NULL, buyer TEXT NOT NULL, challengeScopeHash TEXT,
-    origin TEXT NOT NULL CHECK (origin IN ('route', 'operator')), issuedAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL,
+    issuedAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('issued', 'attempted', 'accepted', 'failed')),
     presentationHash TEXT, owner TEXT, attemptedAt INTEGER, failure TEXT, accepted TEXT);
     CREATE INDEX IF NOT EXISTS kit_challenges_job ON kit_challenges(jobId);
@@ -288,8 +280,8 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
       }
       if (binding) fail('seller_job_bound');
       // A retired admission is history: its proof and binding stay, but it takes no active row, so it never charges challenge capacity.
-      if (!retired) run(`INSERT INTO kit_challenges (nonce, jobId, buyer, challengeScopeHash, origin, issuedAt, expiresAt, state,
-        presentationHash, owner, attemptedAt, failure, accepted) VALUES (?, ?, ?, NULL, 'operator', ?, ?, 'accepted', ?, NULL, ?, NULL, ?)`,
+      if (!retired) run(`INSERT INTO kit_challenges (nonce, jobId, buyer, challengeScopeHash, issuedAt, expiresAt, state,
+        presentationHash, owner, attemptedAt, failure, accepted) VALUES (?, ?, ?, NULL, ?, ?, 'accepted', ?, NULL, ?, NULL, ?)`,
       row.nonce, row.jobId, row.buyer, row.issuedAt, row.expiresAt, row.presentationHash, row.attemptedAt, JSON.stringify(row.accepted));
       archiveWithin(row);
       run('INSERT INTO kit_job_bindings VALUES (?, ?, ?, ?, ?, ?)', row.jobId, row.nonce, row.buyer, row.presentationHash, buyerBundleHash, admittedAt);
@@ -327,14 +319,14 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   }
 
   // K1 step 16, for a new and a reused nonce alike: the guard and the stop again, then the route's final expiry check.
-  function assertStillAllowed(origin, authorization) {
-    assertIssueAdmitted(origin);
+  function assertStillAllowed(authorization) {
+    assertKitOperationAdmitted('issue');
     if (stopped() !== false) fail('seller_stopped', 503);
-    if (origin === 'route') requireSynchronous(authorization.assertStillLive(), 'assertStillLive');
+    requireSynchronous(authorization.assertStillLive(), 'assertStillLive');
   }
 
   // K1 steps 7-17, inside the transaction: every refusal is decided before the first write.
-  function issueInTransaction({ jobId, buyer }, challengeScopeHash, origin, authorization, time) {
+  function issueInTransaction({ jobId, buyer }, challengeScopeHash, authorization, time) {
     if (isTerminal(jobId)) fail('context_session_terminal');
     const jobRows = all('SELECT * FROM kit_challenges WHERE jobId = ?', jobId);
     if (jobRows.some((row) => row.state !== 'issued')) fail('context_job_closed');
@@ -346,26 +338,26 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
       enforceAdmissionLimits(buyer, jobId);
     }
     // A reused nonce is answered only while the seller may still answer: it skips the counts and the writes, not step 16.
-    assertStillAllowed(origin, authorization);
+    assertStillAllowed(authorization);
     if (live) return answerOf(live);
     const nonce = randomBytes(32).toString('hex');
     const expiresAt = time + SESSION_CHALLENGE_LIFETIME_MS;
     for (const stale of reclaimed) run('DELETE FROM kit_challenges WHERE nonce = ?', stale);
-    run(`INSERT INTO kit_challenges (nonce, jobId, buyer, challengeScopeHash, origin, issuedAt, expiresAt, state)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'issued')`, nonce, jobId, buyer, challengeScopeHash, origin, time, expiresAt);
+    run(`INSERT INTO kit_challenges (nonce, jobId, buyer, challengeScopeHash, issuedAt, expiresAt, state)
+      VALUES (?, ?, ?, ?, ?, ?, 'issued')`, nonce, jobId, buyer, challengeScopeHash, time, expiresAt);
     return answerOf({ nonce, expiresAt });
   }
 
-  function issueChallenge(origin, request, challengeScopeHash, authorization) {
-    assertIssueAdmitted(origin);
-    validateIssueRequest(request, challengeScopeHash, origin);
-    if (origin === 'route' && typeof authorization?.assertStillLive !== 'function') throw new TypeError('issue needs the final-liveness closure assertStillLive');
+  function issueChallenge(request, challengeScopeHash, authorization) {
+    assertKitOperationAdmitted('issue');
+    validateIssueRequest(request, challengeScopeHash);
+    if (typeof authorization?.assertStillLive !== 'function') throw new TypeError('issue needs the final-liveness closure assertStillLive');
     // A seller that is not ready, or has no room for a whole purchase, issues nothing.
     if (ready() !== true) fail('seller_not_ready', 503);
     // K1 step 6 refuses an unusable clock before the lock is taken. The lock can be waited for: expiry,
     // reuse and the written times use the clock read again once it is held.
     readClock(SESSION_CHALLENGE_LIFETIME_MS);
-    return transaction(() => issueInTransaction(request, challengeScopeHash ?? null, origin, authorization, readClock(SESSION_CHALLENGE_LIFETIME_MS)));
+    return transaction(() => issueInTransaction(request, challengeScopeHash, authorization, readClock(SESSION_CHALLENGE_LIFETIME_MS)));
   }
 
   // A transition the lock guarantees changes exactly one row; anything else throws so the caller's transaction rolls back.
@@ -379,7 +371,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (row === null) return refused('context_challenge_mismatch');
     if (row.state !== 'issued') return replayAnswer(row, input);
     if (ready() !== true) return refused('seller_not_ready', 503);
-    if (input.path === 'proposal' && row.origin === 'route') return refused('context_challenge_mismatch');
+    if (input.path === 'proposal') return refused('context_challenge_mismatch');
     const code = firstAttemptRefusal(row, input, time);
     if (code !== null) {
       changeOne("UPDATE kit_challenges SET state = 'failed', presentationHash = ?, attemptedAt = ?, failure = ? WHERE nonce = ? AND state = 'issued'",
@@ -442,8 +434,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   }
 
   return Object.freeze({
-    issue: (request, challengeScopeHash, authorization) => issueChallenge('route', request, challengeScopeHash, authorization),
-    issueForOperator: (request) => issueChallenge('operator', request, null),
+    issue: issueChallenge,
     attempt,
     accept: (owner, nonce, record) => transaction(() => acceptWithin(owner, nonce, record)),
     acceptWithin,

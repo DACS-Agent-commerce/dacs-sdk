@@ -11,14 +11,17 @@ const observations = new URL('../../../conformance/', import.meta.url);
 const files = ['tp1-node-observations/block0-2026-10-20.json', 'tp1-node-observations/block1-2026-10-20.json',
   'tp1-node-observations-2026-11-08/block2-2026-11-08.json'];
 const bodies = files.map(file => JSON.parse(JSON.parse(readFileSync(new URL(file, observations))).body));
+const stringZeroGenesis = JSON.parse(JSON.parse(readFileSync(new URL('tp1-node-observations/genesis-string-zero-2026-10-20.json', observations))).body);
 const otherHash = 'f'.repeat(64);
+// Numeric heights 0 to 2 get the recorded block answers; the string "0" read gets the recorded genesis answer.
 function recorded(w, mutate = () => {}) {
   const counts = [0, 0, 0];
   w.node.intercept = row => {
     const call = row.body.params[0];
     if (call.message !== 'getBlockByNumber') return;
     const height = call.data.blockNumber;
-    assert.ok(height >= 0 && height <= 2, 'only the reviewed identity heights are read');
+    if (height === '0') return new Response(JSON.stringify(stringZeroGenesis), { headers: { 'content-type': 'application/json' } });
+    assert.ok(Number.isInteger(height) && height >= 0 && height <= 2, 'only the reviewed identity heights are read');
     const answer = structuredClone(bodies[height]);
     const replacement = mutate(answer, height, ++counts[height]);
     return new Response(JSON.stringify(replacement === undefined ? answer : replacement), { headers: { 'content-type': 'application/json' } });

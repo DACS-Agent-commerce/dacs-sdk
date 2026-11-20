@@ -24,10 +24,16 @@ export type FaultCategory = "transient" | "permanent" | "counterparty" | "substr
  */
 const codeCategory = {
   "schema.invalid_field": "permanent",
+  "settlement.unjournaled_rail": "permanent",
 } as const satisfies Record<string, FaultCategory>;
 
 /** A code from the catalog. */
 export type DacsErrorCode = keyof typeof codeCategory;
+
+/** The catalog codes that belong to one fault category. */
+type DacsErrorCodeIn<C extends FaultCategory> = {
+  [K in DacsErrorCode]: (typeof codeCategory)[K] extends C ? K : never;
+}[DacsErrorCode];
 
 /** True when `code` is a catalog code; names inherited from `Object.prototype` are not. */
 export function isDacsErrorCode(code: string): code is DacsErrorCode {
@@ -63,25 +69,25 @@ export class DacsError extends Error {
   }
 }
 
-/** A transient fault — a retry may succeed. */
+/** A transient fault — a retry may succeed. Its `code`, if given, must be a catalog code of the transient category. */
 export class TransientError extends DacsError {
-  constructor(message: string, options?: { cause?: unknown; code?: DacsErrorCode }) {
+  constructor(message: string, options?: { cause?: unknown; code?: DacsErrorCodeIn<"transient"> }) {
     super(message, { ...options, category: "transient" });
     this.name = "TransientError";
   }
 }
 
-/** The counterparty misbehaved (terms mismatch, invalid signature, …). */
+/** The counterparty misbehaved (terms mismatch, invalid signature, …). Its `code`, if given, must be a catalog code of the counterparty category. */
 export class CounterpartyError extends DacsError {
-  constructor(message: string, options?: { cause?: unknown; code?: DacsErrorCode }) {
+  constructor(message: string, options?: { cause?: unknown; code?: DacsErrorCodeIn<"counterparty"> }) {
     super(message, { ...options, category: "counterparty" });
     this.name = "CounterpartyError";
   }
 }
 
-/** The substrate (chain / anchor layer) faulted — blameless, not a party's fault. */
+/** The substrate (chain / anchor layer) faulted — blameless, not a party's fault. Its `code`, if given, must be a catalog code of the substrate category. */
 export class SubstrateError extends DacsError {
-  constructor(message: string, options?: { cause?: unknown; code?: DacsErrorCode }) {
+  constructor(message: string, options?: { cause?: unknown; code?: DacsErrorCodeIn<"substrate"> }) {
     super(message, { ...options, category: "substrate" });
     this.name = "SubstrateError";
   }
@@ -108,15 +114,12 @@ export function faultCategory(err: unknown): FaultCategory {
 }
 
 /**
- * Thrown by an operation this build declares but does not implement. Callers
- * classify it as `permanent`: retrying does not help.
+ * Thrown by an operation that is declared but not available. `feature` names
+ * what is unavailable. The error is `permanent`: retrying does not help.
  */
 export class NotImplementedError extends DacsError {
-  constructor(feature: string, taskRef?: string) {
-    super(
-      `Not implemented: ${feature}` +
-        (taskRef ? ` (planned: ${taskRef})` : ""),
-    );
+  constructor(feature: string) {
+    super(`Not implemented: ${feature}`);
     this.name = "NotImplementedError";
   }
 }

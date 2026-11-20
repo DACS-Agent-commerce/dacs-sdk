@@ -1415,19 +1415,78 @@ describe("pay-dem waits for the node's nonce read before signing the next paymen
 });
 
 describe("payDemSettle bridge registration", () => {
-  const declared = async (config: { journalPreparedTransfer?: () => Promise<void> }) => {
+  const declared = async (
+    config: { journalPreparedTransfer?: () => Promise<void> },
+    allowUnjournaled?: boolean,
+  ) => {
     const rail = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret", ...config });
-    return settlementBridgeTraits(payDemSettle(rail, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) }));
+    return settlementBridgeTraits(payDemSettle(rail, {}, {
+      store: createIdempotencyStore(createInMemorySettlementLog()),
+      ...(allowUnjournaled === undefined ? {} : { allowUnjournaled }),
+    }));
   };
 
   it("payDemSettle declares whether the rail it wraps has a prepared-transfer journal", async () => {
     expect(await declared({ journalPreparedTransfer: async () => undefined })).toEqual({ journaled: true });
-    expect(await declared({})).toEqual({ journaled: false });
+    expect(await declared({}, true)).toEqual({ journaled: false });
   });
 
   it("payDemSettle over a hand-built rail declares nothing", () => {
     const handBuilt = { address: WALLET, settle: vi.fn() };
     expect(settlementBridgeTraits(payDemSettle(handBuilt, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) }))).toEqual({});
+  });
+});
+
+describe("payDemSettle requires a prepared-transfer journal unless the caller allows a rail without one", () => {
+  const request = {
+    rail: "pay-dem", phase: "pay-dem", amount: "1", asset: "DEM",
+    payee: `did:demos:agent:${"cd".repeat(32)}`, expectedPayee: RECIPIENT,
+    jobId: "unjournaled-rail", phaseIndex: 0,
+  } as const;
+  const unjournaledRail = () => createPayDemRail({ rpc: "https://node.test", secret: "test-secret" });
+
+  it("payDemSettle refuses a rail built without a prepared-transfer journal before any transfer", async () => {
+    const rail = await unjournaledRail();
+    const store = createIdempotencyStore(createInMemorySettlementLog());
+    const claim = vi.spyOn(store, "once");
+
+    let refusal: unknown;
+    try {
+      payDemSettle(rail, {}, { store });
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(DacsError);
+    expect(refusal).toMatchObject({
+      code: "settlement.unjournaled_rail",
+      message: expect.stringMatching(/journalPreparedTransfer.*allowUnjournaled.*a crash after the broadcast, before the settlement outcome is recorded, leaves no recorded transaction hash to recover from/),
+    });
+    expect(claim).not.toHaveBeenCalled();
+    expect(sdk.transfer).not.toHaveBeenCalled();
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("payDemSettle settles over a rail without a journal when the caller allows it", async () => {
+    const settle = payDemSettle(await unjournaledRail(), {}, {
+      store: createIdempotencyStore(createInMemorySettlementLog()),
+      allowUnjournaled: true,
+    });
+
+    await expect(settle(request)).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: 42 });
+    expect(sdk.transfer).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("payDemSettle refuses an allowUnjournaled that is not exactly true", async () => {
+    const rail = await unjournaledRail();
+    for (const allowUnjournaled of [false, "true", 1]) {
+      expect(() => payDemSettle(rail, {}, {
+        store: createIdempotencyStore(createInMemorySettlementLog()),
+        // @ts-expect-error the opt-out is a boolean
+        allowUnjournaled,
+      })).toThrow(expect.objectContaining({ code: "settlement.unjournaled_rail" }));
+    }
+    expect(sdk.transfer).not.toHaveBeenCalled();
   });
 });
 
