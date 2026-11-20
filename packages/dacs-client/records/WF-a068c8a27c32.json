@@ -1,0 +1,60 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF read the chain before a storage CREATE is confirmed and keep and hand back its confirmation's reference block",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "4aa236b4094b10a6b0937561bbba4ca45b25ab3f",
+      "after": "45aa0677684fdf92a94ad42066ef0fa534043bf5"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "118f1210403295ac90fdf36055542f87a41c97b6",
+      "after": "e734ee949ca079ec7da3cc708ef6daa6bb961d4f"
+    },
+    {
+      "path": "packages/dacs-client/test/failed-storage-write-readback.test.mjs",
+      "before": "4782e765d80be69e40384fdd1685745565903eeb",
+      "after": "8cbc9a4b667087cccb683232e2353ded9eb50df9"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/native-create-boundary.mjs",
+      "before": "ba71ccdd0c79ed65ba414de200558d5a8b5a38c3",
+      "after": "2d9fce21573694835e2107335893f973b1fe7e55"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+      "before": "a6202502bed1bac3307c57ad9c5a4ab4ee355f72",
+      "after": "c9eb47740d119d27269303a30d23ed32445dadfa"
+    },
+    {
+      "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+      "before": "20363fa9ad52212473f485ddbff7ecfdc6af3e2d",
+      "after": "0f187f71ec3ac034e048745f27fa8bf6a332047d"
+    },
+    {
+      "path": "packages/dacs-client/test/native-create-timing.test.mjs",
+      "before": null,
+      "after": "a05fadceae220f869de47542bcff2d29f0e8c418"
+    },
+    {
+      "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+      "before": "d7bf0812efbfb4d709fb075e328b1a27cb4d9b9e",
+      "after": "c2b26855c429938e30f118066f88fc5d8c50435e"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-a068c8a27c32.json",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/test/failed-storage-write-readback.test.mjs",
+    "packages/dacs-client/test/helpers/native-create-boundary.mjs",
+    "packages/dacs-client/test/helpers/native-create-world.mjs",
+    "packages/dacs-client/test/native-broadcast-once.test.mjs",
+    "packages/dacs-client/test/native-create-timing.test.mjs",
+    "packages/dacs-client/test/native-lock-order.test.mjs"
+  ],
+  "note": "A storage CREATE reads the chain under its operation's fence before its confirmation, and its broadcast reads no chain block. A CREATE recovery reads the chain, the absence of the write and the account nonce before its confirmation, and nothing of them after it. Between the confirmation and the broadcast or the recovery's single resend the node receives no write and no other confirmation: only local checks run, plus at most one getNetworkInfo read for the unchanged signature-domain check when the kept answer is older than a minute, which never changes the kept reference block. The confirmation's reference_block is kept on the write's lane and intent rows as storageWriteReferenceBlock, replaced only by a recovery's exact-byte reconfirmation, and handed back as referenceBlock on the broadcast result and on every pending readback of a storage write, including a failed write whose named block does not list it. A confirmation with no reference block gives null, never a height. A native transfer keeps and reports none. The fee checks, broadcast flags and withheld-broadcast retry are unchanged."
+}
