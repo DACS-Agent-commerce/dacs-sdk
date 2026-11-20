@@ -12,6 +12,7 @@ import { provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.
 import * as guard from '../src/kit-operation-guard.mjs';
 import { HOST_CONTEXT_CALLBACKS } from './helpers/host-context-callbacks.mjs';
 import { contextCapability, contextHostFixture, hostBuyer, presentContextAnswer } from './helpers/host-context-client.mjs';
+import { fetchAsHost } from './helpers/listener-host.mjs';
 import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 
@@ -376,7 +377,7 @@ test('the host publishes ready: false and refuses a new challenge while a new pu
   const f = await contextHostFixture(t, { publicEndpoint: FIXTURE_ENDPOINT }), { clock, sweep, buyerFor, host } = await hostOnMovingClock(t, f);
   const signer = (wallet) => ({ claim: wallet.claim, sign: wallet.signBytes });
   const published = async () => {
-    const response = await fetch(host.url + DACS_SELLER_DISCOVERY_PATH);
+    const response = await fetchAsHost()(host.url + DACS_SELLER_DISCOVERY_PATH);
     assert.equal(response.status, 200);
     const wire = await wireBuyer({ buyer: signer(buyer), seller: signer(seller), listingPin: host.listingPin, clock: clock.now });
     return (await wire.verifyDiscovery(Buffer.from(await response.arrayBuffer()))).ready;
@@ -422,10 +423,9 @@ const charged = (directory) => {
 async function pendingAfterDeadline(t) {
   const clock = { monotonic: 0 };
   t.mock.method(performance, 'now', () => clock.monotonic);
-  const posted = [], post = globalThis.fetch;
-  t.mock.method(globalThis, 'fetch', (url, init) => { posted.push({ url, init }); return post(url, init); });
+  const posted = [], post = fetchAsHost();
   const provider = stalledProvider('first'), f = await contextHostFixture(t);
-  const host = await f.start({ demDeliveryContext: provider.capability }), buyer = await f.buyerFor(host);
+  const host = await f.start({ demDeliveryContext: provider.capability }), buyer = await f.buyerFor(host, { requests: posted });
   const issued = await buyer.challenge();
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const pending = buyer.context(JOB, issued.body.sessionNonce);

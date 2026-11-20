@@ -1,7 +1,8 @@
 // Narrow HTTP transport for the seller agent (seller-agent.mjs) and the
 // buyer-side client the plugin uses to reach it.
 //
-// Server/client stay loopback-only. The server's only authenticator is the wire context (`wire`, made by
+// The server runs behind the host's listener policy (`listener`, see host.mjs): the right `Host`, and in proxy mode a loopback socket. Without
+// a policy it answers loopback sockets only and checks no `Host`. The client stays loopback-only. The server's only authenticator is the wire context (`wire`, made by
 // createWireContext in seller-wire-requests.mjs): it opens each request and signs each answer through `./wire`.
 // The wire journal owns the effects of the routes, the reservation coordinator accounts for them, the completion port ends each
 // attempt (by the rule of the route's row in seller-effect-routes.mjs, where it has one), and read routes reserve nowhere.
@@ -31,6 +32,9 @@ const MAX_CLIENT_TIMEOUT_MS = 2 ** 31 - 1;
 // How long a wire route waits for the agent's settlement-credit check before it withholds a signed 200.
 const SETTLEMENT_CREDIT_TIMEOUT_MS = 10000;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+// A request that repeats one of these is refused before its body is read: Node joins or drops the later copies in `req.headers`.
+const SINGLE_VALUE_HEADERS = Object.freeze(['content-type', 'content-encoding', DACS_SELLER_HTTP_HEADER]);
+const DEFAULT_HTTPS_PORT = 443;
 export const loopbackSocket = (address) => address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 export { SELLER_PRE_EFFECT_REFUSALS } from './seller-agent.mjs';
 // Unfinished proposals (`waiting` or `indeterminate`) retain their retry
@@ -217,9 +221,15 @@ function readRequest(req, timeoutMs) {
 // has a `publicEndpoint`, serves the signed discovery document at DACS_SELLER_DISCOVERY_PATH. Its signer names the seller
 // and its `requireDelegation` the delegation rule; the listing pin is the agent's own. Throws a TypeError for the removed
 // `authentication` option, and for a `wire` that createWireContext did not make for this agent.
-export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire } = {}) {
+// `listener` is the host's policy, `{ mode: 'proxy' | 'tls', expectedHost }`: `expectedHost` is the authority of the Listing's endpoint, the
+// one `Host` served (with `:443` added when it names no port), and `tls` mode serves non-loopback sockets. `now` reads the clock of the rate window.
+// A request is refused before its body is read, in this order: a non-loopback socket (no policy or proxy mode), the rate and concurrency
+// limits, a missing, repeated or other `Host` (421), a repeated content-type, content-encoding or peer header (400), then route and method.
+export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire, listener, now = () => performance.now() } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
   if (authentication !== undefined) throw new TypeError('createSellerHttpHandler no longer takes `authentication`: the `wire` context is its only authenticator');
+  if (listener !== undefined && (!['proxy', 'tls'].includes(listener?.mode) || typeof listener.expectedHost !== 'string')) throw new TypeError('listener is { mode: "proxy" | "tls", expectedHost }');
+  if (typeof now !== 'function') throw new TypeError('now must be a function');
   if (['retainsPaymentWork', 'assertSettlementCredit'].some((name) => typeof agent[name] !== 'function')) throw new TypeError('the wire routes need the agent\'s retainsPaymentWork and assertSettlementCredit');
   const auth = wireAuthenticator(wire, agent);
   if (![bodyTimeoutMs, maxRequestsPerWindow, rateWindowMs, maxConcurrent].every((n) => Number.isSafeInteger(n) && n > 0)) throw new Error('seller transport limits must be positive integers');
@@ -247,7 +257,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       return Buffer.byteLength(pointedText) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes ? text : pointedText;
     } catch { return text; }
   };
-  let windowStart = performance.now();
+  const servedHosts = listener === undefined ? null : new Set([listener.expectedHost, ...(new URL(`https://${listener.expectedHost}`).port === '' ? [`${listener.expectedHost}:${DEFAULT_HTTPS_PORT}`] : [])]);
+  // `headersDistinct` keeps every copy of a header; `headers.host` keeps only the first.
+  const hostServed = (req) => { const hosts = req.headersDistinct.host; return hosts?.length === 1 && servedHosts.has(hosts[0].toLowerCase()); };
+  const repeatsSingleValueHeader = (req) => SINGLE_VALUE_HEADERS.some((name) => req.headersDistinct[name]?.length > 1);
+  let windowStart = now();
   let requests = 0;
   let active = 0;
   // The headers of one answer, signed over its exact text by the wire when there is an authenticated request.
@@ -321,10 +335,12 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     };
     const finishWith = (outcome) => conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)));
     try {
-      if (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress)) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
-      if (performance.now() - windowStart >= rateWindowMs) { windowStart = performance.now(); requests = 0; }
+      if (listener?.mode !== 'tls' && (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress))) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
+      if (now() - windowStart >= rateWindowMs) { windowStart = now(); requests = 0; }
       if (++requests > maxRequestsPerWindow || active >= maxConcurrent) return await send(res, 429, { error: 'seller_rate_limited' }, null, { close: true });
       active++; counted = true;
+      if (servedHosts !== null && !hostServed(req)) return await send(res, 421, { error: 'host_not_served' }, null, { close: true });
+      if (repeatsSingleValueHeader(req)) return await send(res, 400, { error: 'duplicate_header' }, null, { close: true });
       if (wire.publicEndpoint != null && req.url === DACS_SELLER_DISCOVERY_PATH) return await serveDiscovery(req, res);
       // Match the raw request target exactly: query strings, alternate paths
       // and encoded aliases cannot evade the path authenticated by the peer.
