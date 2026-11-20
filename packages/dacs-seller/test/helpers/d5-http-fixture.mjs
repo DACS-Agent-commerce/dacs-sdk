@@ -12,6 +12,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PassThrough} from 'node:stream';
 import {identityBundleHash} from '@kynesyslabs/dacs';
+import {distinctHeaders} from './listener-host.mjs';
 import {DACS_SELLER_HTTP_HEADER,DACS_SELLER_HTTP_PATHS} from '@kynesyslabs/dacs/wire';
 import {createOldDomainRequestSigner} from './old-domain-request.mjs';
 const {createSellerTransportStore}=await import('./bound-transport-store.mjs');
@@ -20,7 +21,7 @@ const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX','01ARZ3NDE
 const T=1800000000000;
 function bundleFor(buyer,at=T){const b={bundleVersion:'1',presentedBy:buyer.claim,presentedAt:at,sessionNonce:'a'.repeat(64),claims:[{ref:buyer.claim}]};return {...b,presentation:{kind:'per-claim',signatures:[{ref:buyer.claim,signature:buyer.sign(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(b))).toString('base64url')}]}};}
 function exchange(handler,{text='{}',header,url=DACS_SELLER_HTTP_PATHS.context,headers={},method='POST',chunks}={}){
- const req=new PassThrough();Object.assign(req,{url,method,headers:{'content-type':'application/json',...(header?{[DACS_SELLER_HTTP_HEADER]:header}:{}),...headers},socket:{remoteAddress:'127.0.0.1',localAddress:'127.0.0.1'}});
+ const req=new PassThrough();const requestHeaders={'content-type':'application/json',...(header?{[DACS_SELLER_HTTP_HEADER]:header}:{}),...headers};Object.assign(req,{url,method,headers:requestHeaders,headersDistinct:distinctHeaders(requestHeaders),socket:{remoteAddress:'127.0.0.1',localAddress:'127.0.0.1'}});
  const res={destroyed:false,writableEnded:false,headersSent:false,writeHead(status,h){this.status=status;this.headers=h;this.headersSent=true},end(text){this.text=text;this.writableEnded=true;}};
  const pending=handler(req,res);queueMicrotask(()=>{for(const chunk of chunks??[text])req.write(chunk);req.end()});return Promise.resolve(pending).then(()=>res);
 }

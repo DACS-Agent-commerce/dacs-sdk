@@ -73,13 +73,14 @@ for (const jump of [-60_000, 60_000]) {
       Date: { now: () => 1_000_000 + elapsed + (elapsed > 0 ? jump : 0) }, performance: { now: () => elapsed },
       assertKitOperationAdmitted() {}, ROUTES: {}, SIGNATURE_ROUTES: {}, createSellerEffectRoutes: () => ({}), loopbackSocket: () => true,
       DACS_SELLER_HTTP_LIMITS: { maxResponseBodyBytes: 10_000 }, wireAuthenticator: () => ({}),
+      SINGLE_VALUE_HEADERS: [], SellerTransportError: class extends Error {}, WireError: class extends Error {},
     });
     const claim = 'seller';
     const agent = { claim, retainsPaymentWork() {}, assertSettlementCredit() {} };
     const wire = { signer: { claim }, requireDelegation: false, publicEndpoint: null };
     const handler = create(agent, { wire, maxRequestsPerWindow: 1, rateWindowMs: 10 });
     let status;
-    const request = () => handler({ socket: {}, url: '/missing' }, {
+    const request = () => handler({ socket: {}, url: '/missing', headersDistinct: {} }, {
       writeHead(value) { status = value; }, end() {},
     });
     await request(); assert.equal(status, 404);
