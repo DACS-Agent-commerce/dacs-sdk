@@ -19,7 +19,7 @@ import { KIT_TP1_VET_MODE, startSellerHost } from '../src/host.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { BUYER, JOB, JOB2, OTHER, PIN, SELLER, T0, accountingFixture } from './helpers/reservation-accounting-fixture.mjs';
-import { testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { hostAuthority } from './helpers/kit-wallet-session.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 
 const MISMATCH = 'kit_journal_accounting_mismatch';
@@ -509,7 +509,7 @@ test('a host over an existing store stays not ready while a nonce key names no a
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-host-reconciliation-'));
   const { nativeArtifactAnchor, ...config } = f.config;
   for (const option of ['durableDirectory', 'commitOnSignature', 'vetMode', 'challengeLedger']) delete config[option];
-  const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() }, hosts = [];
+  const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, ...hostAuthority() }, hosts = [];
   t.after(async () => { for (const host of hosts) await host.close().catch(() => {}); await rm(dataDirectory, { recursive: true, force: true }); });
   const written = [], write = process.stderr.write;
   t.after(() => { process.stderr.write = write; });

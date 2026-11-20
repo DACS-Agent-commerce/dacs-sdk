@@ -23,6 +23,8 @@ import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { createSellerEffectRoutes } from './seller-effect-routes.mjs';
 
 const MAX_BODY = 64 * 1024;
+/** How many requests one handler serves at once unless its `maxConcurrent` says otherwise; the host bounds its live bootstrap scopes by it too. */
+export const SELLER_HTTP_MAX_CONCURRENT = 8;
 const MAX_RESPONSE_LIST = 256;
 // A refusal whose string `cause` names what the buyer can act on carries it in its answer.
 const CAUSE_ANSWERED_REFUSALS = new Set(['context_challenge_failed', 'seller_stopped', 'seller_source_unavailable']);
@@ -217,7 +219,7 @@ function readRequest(req, timeoutMs) {
 // has a `publicEndpoint`, serves the signed discovery document at DACS_SELLER_DISCOVERY_PATH. Its signer names the seller
 // and its `requireDelegation` the delegation rule; the listing pin is the agent's own. Throws a TypeError for the removed
 // `authentication` option, and for a `wire` that createWireContext did not make for this agent.
-export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire } = {}) {
+export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = SELLER_HTTP_MAX_CONCURRENT, commitOnSignature = false, publicSignedCreates = null, context = null, wire } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
   if (authentication !== undefined) throw new TypeError('createSellerHttpHandler no longer takes `authentication`: the `wire` context is its only authenticator');
   if (['retainsPaymentWork', 'assertSettlementCredit'].some((name) => typeof agent[name] !== 'function')) throw new TypeError('the wire routes need the agent\'s retainsPaymentWork and assertSettlementCredit');
@@ -286,6 +288,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     let reservation;
     let body;
     let counted = false;
+    let bootstrapScope;
     // An attempt is answered once, in this order: sign its exact bytes, await the credit check of a 200, end the attempt
     // through `end` (which first checks the attempt is still current), write. Nothing is awaited between that check and the write.
     // Only the routes the wire serves have table rows, looked up by their exact path.
@@ -339,6 +342,9 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const rawBody = await readRequest(req, bodyTimeoutMs);
       try { body = admitRawJson(rawBody); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
+      // Before the wire opens the request: its own signature, and a scope for this request only (ended below). A signature
+      // that does not verify is refused here, unsigned, before any authority read.
+      bootstrapScope = wire.bootstrap?.enter(req.headers[DACS_SELLER_HTTP_HEADER]);
       // The context step answers unsigned text; it is signed here under the opened request, and a request that never opened is sent unsigned.
       if (contextStep) {
         const answer = await context.handleContext({ rawBody, header: req.headers[DACS_SELLER_HTTP_HEADER], method: req.method, path: req.url });
@@ -421,6 +427,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         if (!res.headersSent && !res.destroyed) { res.writeHead(503, { 'content-type': 'application/json', connection: 'close' }); res.end('{"error":"operation_uncertain"}'); }
       }
     } finally {
+      bootstrapScope?.end();
       if (counted) active--;
     }
   };

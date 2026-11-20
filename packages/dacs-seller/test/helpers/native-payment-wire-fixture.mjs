@@ -27,7 +27,8 @@ import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.
 import { finalizedCommitmentReader } from './finalized-commitment-reader.mjs';
 import { createNativeRetrySeam } from './native-retry-seam.mjs';
 import { railSteward } from './rail-authority-fixture.mjs';
-import { testNetwork, FIXTURE_PROFILE } from './wire-authority-fixture.mjs';
+import { hostAuthority } from './kit-wallet-session.mjs';
+import { FIXTURE_PROFILE } from './wire-authority-fixture.mjs';
 import { createSellerDurableState } from '../../src/dacs/seller-durable-state.mjs';
 import { createDemDeliveryContext } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { KIT_TP1_VET_MODE, startSellerHost } from '../../src/host.mjs';
@@ -268,7 +269,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: node.rpcUrl, fetchImpl: node.fetchImpl, anchorEvidence: wallet.anchorEvidence, now: clock }),
     reconcilePaymentEvidence: wallet.reconcilePaymentEvidence, demDeliveryContext,
     nativeDemDelivery: createDevnetDemoDeliveryCapability({ authority: AUTHORITY, anchor: { ...artifactAnchor, authority: AUTHORITY }, deliveryEvidenceEnabled: true }),
-    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), now: clock, artifactAnchor, dataDirectory });
+    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, ...hostAuthority(), now: clock, artifactAnchor, dataDirectory });
   const start = async () => { const running = await startSellerHost(capabilities()); hosts.push(running); return running; };
   let host = await start();
   // The commitment the buyer attaches to a request: the seller's CREATE as the node and its finality reader show it.

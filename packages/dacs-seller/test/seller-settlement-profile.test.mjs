@@ -21,7 +21,7 @@ import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
-import { testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { hostAuthority } from './helpers/kit-wallet-session.mjs';
 import { FIRST_ADMISSION_SCOPE, withFirstAdmission } from './helpers/first-admission.mjs';
 
 let nextWallet=90;
@@ -305,7 +305,7 @@ test('the standalone host refuses to start without the whole chain to delivery',
   const { now: _now, ...required } = rest;
   for (const missing of ['nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']) {
     const dataDirectory = w.dir({ empty: true });
-    const options = { ...required, artifactAnchor, dataDirectory, tp1Network: testNetwork(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() };
+    const options = { ...required, artifactAnchor, dataDirectory, ...hostAuthority(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() };
     delete options[missing];
     await assert.rejects(seller.startSellerHost(options), { name: 'TypeError', message: new RegExp(`requires ${missing}$`) });
     assert.deepEqual(readdirSync(dataDirectory), [], `nothing is opened without ${missing}`);

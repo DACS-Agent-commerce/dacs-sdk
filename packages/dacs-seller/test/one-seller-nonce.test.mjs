@@ -22,7 +22,7 @@ import { purchaseSupport } from '../src/dacs/listing.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from '../src/dacs/agreement-context-consumer.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
-import { testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { hostAuthority } from './helpers/kit-wallet-session.mjs';
 
 const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000;
 const buyer = testWallet(1), seller = testWallet(2);
@@ -102,7 +102,7 @@ async function hostFixture(t, edit = source => source) {
   const api = await privateModule(new URL('../src/host.mjs', import.meta.url), ['testStore', 'setStartupFailure'], source => edit(
     source.replace("const generation = randomBytes(16).toString('hex');", "if (failStartup) throw new Error('TEST generation source failed'); const generation = randomBytes(16).toString('hex');").replace('const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });', 'const journal = Object.freeze({});').replace('const REQUIRED =', 'let testStore; let failStartup = false; function setStartupFailure(value) { failStartup = value; }\nconst REQUIRED =').replace('opened.push(() => store.close());', 'testStore = store; opened.push(() => store.close());')));
   const start = async changes => current = await api.startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor,
-    dataDirectory, tp1Network: testNetwork(), now: () => NOW, ...changes });
+    dataDirectory, ...hostAuthority(), now: () => NOW, ...changes });
   t.after(async () => { await current?.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { start, api, close: () => current.close(), path: join(dataDirectory, 'transport', 'transport.sqlite') };
 }

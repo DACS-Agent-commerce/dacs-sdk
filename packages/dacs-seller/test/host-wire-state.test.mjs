@@ -24,7 +24,7 @@ import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
 import { T } from './helpers/d5-http-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
 import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
-import { TEST_CONNECTION, authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { hostAuthority, testWalletSession } from './helpers/kit-wallet-session.mjs';
 import { wireBuyer } from './helpers/wire-buyer.mjs';
 import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
@@ -89,9 +89,10 @@ async function hostFixture(t) {
   // The host fixes its Vet mode and takes no such option.
   delete config.vetMode;
   const api = await privateModule(HOST_URL, ['setTestRecorder'], (source) => {
-    const text = sub(source, 'bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from', 'bindTp1Profile as REAL_BIND, completeWireEffect, inspectWireOperation, openWireRequestJournal as REAL_OPEN_JOURNAL } from');
+    const text = sub(sub(source, 'completeWireEffect, inspectWireOperation, openWireRequestJournal } from', 'completeWireEffect, inspectWireOperation, openWireRequestJournal as REAL_OPEN_JOURNAL } from'),
+      'import { openSellerStages } from', 'import { openSellerStages as REAL_OPEN_STAGES } from');
     return sub(text, 'const REQUIRED =', `let testRecorder = { bindings: [], journals: [] }; function setTestRecorder(value) { testRecorder = value; }
-const bindTp1Profile = async (options) => { const binding = await REAL_BIND(options); testRecorder.bindings.push(binding); return binding; };
+const openSellerStages = async (options) => { const stages = await REAL_OPEN_STAGES(options); testRecorder.bindings.push(stages.binding); return stages; };
 const openWireRequestJournal = (...args) => { const journal = REAL_OPEN_JOURNAL(...args); testRecorder.journals.push(journal); return journal; };
 const REQUIRED =`);
   });
@@ -99,7 +100,7 @@ const REQUIRED =`);
   const recorded = { bindings: [], journals: [] };
   api.setTestRecorder(recorded);
   const hosts = [];
-  const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), now: () => NOW };
+  const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, ...hostAuthority(), now: () => NOW };
   const start = async (changes = {}) => {
     const host = await api.startSellerHost({ ...options, ...changes });
     hosts.push(host);
@@ -571,19 +572,25 @@ test('P10-T07 table: newly created state entry (marker, seller/, transport/, wir
   });
 });
 
-test('a started host reads its connection once at startup and again for each signed request and answer, every time calling connection() on tp1Network', async (t) => {
+// A fresh wallet-session port whose connection reader is `connectionAuthority(scope, real)`; `real` is the port's own reader.
+const withConnection = (connectionAuthority) => {
+  const { walletSession } = testWalletSession();
+  return { ...walletSession, connectionAuthority: (scope) => connectionAuthority(scope, walletSession.connectionAuthority) };
+};
+
+test('a started host reads its connection once at startup and again for each signed request and answer, every time calling context() on the wallet session\'s authority', async (t) => {
   const f = await hostFixture(t);
   const receivers = [];
-  const reader = authorityReader();
-  const tp1Network = { connection() { receivers.push(this); return { ...TEST_CONNECTION }; }, readAuthority: (scope) => reader(scope) };
-  const host = await f.start({ tp1Network });
-  assert.deepEqual(receivers, [tp1Network], 'startup binds over one read');
+  const { walletSession } = testWalletSession();
+  const authority = { ...walletSession.authority, context() { receivers.push(this); return walletSession.authority.context(); } };
+  const host = await f.start({ walletSession: { ...walletSession, authority } });
+  assert.deepEqual(receivers, [authority], 'startup binds over one read');
   const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
   const answer = await postSigned(host, await unknownStateRequest(buyerWire, 'receiver'));
   assert.equal(answer.status, 404);
   await verifiedAnswer(buyerWire, answer);
   assert.ok(receivers.length >= 3, `the request and its answer read the connection again (${receivers.length} reads)`);
-  assert.ok(receivers.every((receiver) => receiver === tp1Network), 'every read ran on tp1Network');
+  assert.ok(receivers.every((receiver) => receiver === authority), 'every read ran on the authority');
 });
 
 test('the reader each signed request calls is bounded: a stalled read is pending at 9,999 ms and ends tp1_authority_timeout at 10,000 ms with the deadline as its cause; the refusals (unsigned: the request was never authenticated) reserve nothing and free every request slot; a late answer is ignored and never unhandled', async (t) => {
@@ -591,12 +598,11 @@ test('the reader each signed request calls is bounded: a stalled read is pending
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
-  const reader = authorityReader();
   const stalled = [];
   let stall = false;
-  const readAuthority = (scope) => (stall ? new Promise((resolve) => { stalled.push(() => resolve(reader(scope))); }) : reader(scope));
+  const walletSession = withConnection((scope, real) => (stall ? new Promise((resolve) => { stalled.push(() => resolve(real(scope))); }) : real(scope)));
   try {
-    const host = await f.start({ tp1Network: testNetwork({ readAuthority }) });
+    const host = await f.start({ walletSession });
     const [binding] = f.bindings;
     const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
     // Signed proposals up to the buyer's challenge limit; the other stalled requests are signed state reads, which need no challenge.
@@ -610,7 +616,7 @@ test('the reader each signed request calls is bounded: a stalled read is pending
     stall = true;
     mock.timers.enable({ apis: ['setTimeout'] });
     let direct = 'pending';
-    const reading = assertTp1Authority(binding, TEST_CONNECTION, [], null).then(() => { direct = 'passed'; }, (error) => { direct = error; });
+    const reading = assertTp1Authority(binding, binding.local, [], null).then(() => { direct = 'passed'; }, (error) => { direct = error; });
     const answers = proposals.map((signed) => postSigned(host, signed));
     for (let turn = 0; stalled.length < HANDLER_CONCURRENCY + 1 && turn < 1000; turn++) await flush();
     assert.equal(stalled.length, HANDLER_CONCURRENCY + 1, 'every proposal is waiting on the reader');
@@ -641,14 +647,18 @@ test('the reader each signed request calls is bounded: a stalled read is pending
 });
 
 test('P10-T09 a plain-HTTP endpoint or a revision-1 chain refuses before the lock and before any file', async (t) => {
+  const plainHttp = () => {
+    const { walletSession } = testWalletSession();
+    return { ...walletSession, authority: { ...walletSession.authority, context: () => ({ ...walletSession.authority.context(), endpoint: 'http://rpc.example.invalid/' }) } };
+  };
   const cases = [
-    ['a plain-HTTP endpoint', { connection: () => ({ ...TEST_CONNECTION, endpoint: 'http://rpc.example.invalid/' }) }, 'tp1_local_binding_invalid'],
-    ['a reader naming another chain', { readAuthority: authorityReader({ chainIdentity: derive('revision-1-chain') }) }, 'tp1_connection_unverified'],
+    ['a plain-HTTP endpoint', plainHttp, 'tp1_local_binding_invalid'],
+    ['a reader naming another chain', () => withConnection(async (scope, real) => ({ ...await real(scope), chainIdentity: derive('revision-1-chain') })), 'tp1_connection_unverified'],
   ];
-  for (const [label, network, code] of cases) {
+  for (const [label, walletSession, code] of cases) {
     await t.test(label, async (subtest) => {
       const f = await hostFixture(subtest);
-      assert.equal((await rejection(f.start({ tp1Network: testNetwork(network) }))).code, code);
+      assert.equal((await rejection(f.start({ walletSession: walletSession() }))).code, code);
       assert.deepEqual(namesIn(f.dataDirectory), [], 'no lock, marker or state file exists');
     });
   }
@@ -658,14 +668,14 @@ test('P10-T10 a rejecting reader keeps its cause, a stalled one times out at 10,
   await t.test('a rejecting reader keeps its cause', async (subtest) => {
     const f = await hostFixture(subtest);
     const cause = new Error('TEST authority unavailable');
-    const error = await rejection(f.start({ tp1Network: testNetwork({ readAuthority: () => Promise.reject(cause) }) }));
+    const error = await rejection(f.start({ walletSession: withConnection(() => Promise.reject(cause)) }));
     assert.equal(error, cause);
     assert.deepEqual(namesIn(f.dataDirectory), []);
   });
   await t.test('a TimeoutError the reader raises itself is its own error, not the host\'s deadline', async (subtest) => {
     const f = await hostFixture(subtest);
     const cause = new DOMException('TEST the reader\'s own request timed out', 'TimeoutError');
-    const error = await rejection(f.start({ tp1Network: testNetwork({ readAuthority: () => Promise.reject(cause) }) }));
+    const error = await rejection(f.start({ walletSession: withConnection(() => Promise.reject(cause)) }));
     assert.equal(error, cause);
     assert.equal(isBoundedCallTimeout(error), false);
     assert.deepEqual(namesIn(f.dataDirectory), []);
@@ -678,12 +688,11 @@ test('P10-T10 a rejecting reader keeps its cause, a stalled one times out at 10,
       process.on('unhandledRejection', onUnhandled);
       let settleLate;
       let reads = 0;
-      const reader = authorityReader();
-      const readAuthority = (scope) => { reads++; return new Promise((resolve, reject) => { settleLate = () => (late === 'answer' ? resolve(reader(scope)) : reject(new Error('TEST late failure'))); }); };
+      const walletSession = withConnection((scope, real) => { reads++; return new Promise((resolve, reject) => { settleLate = () => (late === 'answer' ? resolve(real(scope)) : reject(new Error('TEST late failure'))); }); });
       mock.timers.enable({ apis: ['setTimeout'] });
       try {
         let outcome = 'pending';
-        const starting = f.start({ tp1Network: testNetwork({ readAuthority }) }).then(() => { outcome = 'started'; }, (error) => { outcome = error; });
+        const starting = f.start({ walletSession }).then(() => { outcome = 'started'; }, (error) => { outcome = error; });
         mock.timers.tick(AUTHORITY_DEADLINE_MS - 1);
         await flush();
         assert.equal(outcome, 'pending', 'still waiting at 9,999 ms');
@@ -709,17 +718,19 @@ test('P10-T10 a rejecting reader keeps its cause, a stalled one times out at 10,
 test('P10-T11 the host binds only the SDK\'s approved record; no option or environment variable names one', async (t) => {
   const f = await hostFixture(t);
   const forged = { ...TP1_APPROVED_IDENTITY_RECORD, chainIdentity: derive('forged-chain'), provenance: { ...TP1_APPROVED_IDENTITY_RECORD.provenance } };
-  for (const options of [{ record: forged }, { identityRecord: forged }, { tp1Network: { ...testNetwork(), record: forged } }]) {
+  for (const options of [{ record: forged }, { identityRecord: forged }, { tp1Network: { record: forged } }]) {
     const error = await rejection(f.start(options));
     assert.equal(error.name, 'TypeError');
-    assert.match(error.message, /unknown (seller host|tp1Network) option/);
+    assert.match(error.message, /unknown seller host option/);
   }
-  assert.equal((await rejection(f.start({ tp1Network: undefined }))).message, 'the seller host requires tp1Network');
-  assert.match((await rejection(f.start({ tp1Network: { connection: () => ({}) } }))).message, /tp1Network/);
+  assert.equal((await rejection(f.start({ walletSession: undefined }))).message, 'the seller host requires walletSession');
+  assert.equal((await rejection(f.start({ participantImplementations: undefined }))).message, 'the seller host requires participantImplementations');
+  assert.match((await rejection(f.start({ walletSession: { authority: {} } }))).message, /walletSession/);
   assert.deepEqual(namesIn(f.dataDirectory), [], 'every refusal came before any file');
   const names = ['DACS_TP1_RECORD', 'DACS_TP1_IDENTITY_RECORD', 'TP1_RECORD'];
   for (const name of names) process.env[name] = JSON.stringify(forged);
-  try { await f.start(); } finally { for (const name of names) delete process.env[name]; }
+  // A record carried on the wallet-session port is never read either.
+  try { await f.start({ walletSession: { ...testWalletSession().walletSession, record: forged } }); } finally { for (const name of names) delete process.env[name]; }
   const [binding] = f.bindings;
   assert.equal(binding.recordDigest, sha256Hex(canonicalize(TP1_APPROVED_IDENTITY_RECORD)));
   assert.deepEqual(binding.profile, PROFILE);
@@ -732,8 +743,9 @@ test('P10-T14 with the shipped guard off, start refuses before the binding read,
   const script = `
     const { startSellerHost } = await import(${JSON.stringify(HOST_URL.href)});
     let reads = 0;
-    const tp1Network = { connection: () => { reads++; return {}; }, readAuthority: () => { reads++; } };
-    try { await startSellerHost({ dataDirectory: process.env.DATA_DIRECTORY, tp1Network }); }
+    const read = () => { reads++; };
+    const walletSession = { authority: { authorityRpc: read, context: () => { reads++; return {}; }, connectionGeneration: read }, connectionAuthority: read, finalize: read };
+    try { await startSellerHost({ dataDirectory: process.env.DATA_DIRECTORY, walletSession }); }
     catch (error) { process.stdout.write(JSON.stringify({ code: error.code, reads }) + '\\n'); }`;
   const kept = (process.env.NODE_OPTIONS ?? '').split(' ').filter((option) => option !== '' && !option.includes(GUARD_FIXTURE)).join(' ');
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: PACKAGE_DIRECTORY, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: kept, DATA_DIRECTORY: directory } });

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { commitmentFixture } from '../../packages/dacs-seller/test/helpers/commitment-fixture.mjs';
 import { NOW, buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
-import { testNetwork } from '../../packages/dacs-seller/test/helpers/wire-authority-fixture.mjs';
+import { hostAuthority } from '../../packages/dacs-seller/test/helpers/kit-wallet-session.mjs';
 import { KIT_TP1_VET_MODE, startSellerHost } from '../../packages/dacs-seller/src/host.mjs';
 import { wireBuyer } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
 import { createSellerTransportClientAuth } from '../../packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs';
@@ -19,7 +19,7 @@ export async function composedKitHost(t, changes = {}) {
   const config = { ...fixture.config };
   const { nativeArtifactAnchor } = config;
   for (const key of ['durableDirectory', 'commitOnSignature', 'nativeArtifactAnchor', 'challengeLedger', 'vetMode']) delete config[key];
-  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), ...changes });
+  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, ...hostAuthority(), ...changes });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { fixture, host, dataDirectory };
 }

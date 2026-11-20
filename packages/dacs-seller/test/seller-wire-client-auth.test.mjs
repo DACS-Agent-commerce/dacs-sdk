@@ -17,7 +17,8 @@ import { presentationFor } from './helpers/context-wire-world.mjs';
 import { contextHostFixture } from './helpers/host-context-client.mjs';
 import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
 import { NOW, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
-import { authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { hostAuthority } from './helpers/kit-wallet-session.mjs';
+import { authorityReader } from './helpers/wire-authority-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { startSellerHost } from '../src/host.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
@@ -206,7 +207,7 @@ async function runningHost(t) {
   delete config.durableDirectory;
   delete config.commitOnSignature;
   delete config.vetMode;
-  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() });
+  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, ...hostAuthority() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { f, host };
 }
