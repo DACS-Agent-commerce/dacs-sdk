@@ -170,6 +170,19 @@ test('a node read that fails or is oversized during the exclusion check proves n
   assert.equal(w.captured.length, 1);
 });
 
+test('a throw from the authorization check ends the late-write wait with no further readback', async () => {
+  let readsAtSleep = null;
+  const w = await lateWriteWorld({ blockMs: Infinity, onSleep: () => { readsAtSleep = w.reads.length; } });
+  const out = await w.publish({ authorize: async () => {
+    if (w.sleeps.length > 0) throw new Error('TEST authorization check failed');
+    return true;
+  } });
+  assert.match(out.reason, UNRESOLVED);
+  assert.equal(w.sleeps.length, 1, 'one poll, then the wait ended');
+  assert.equal(w.reads.length, readsAtSleep, 'no readback after the check failed');
+  assert.equal(w.captured.length, 1);
+});
+
 test('a restart during the late-write wait resumes readback only, with no new wallet request, signature or recovery send', async () => {
   let stopped = false;
   const w = await lateWriteWorld({ blockMs: Infinity, onSleep: (count) => {
