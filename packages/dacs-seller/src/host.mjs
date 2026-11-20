@@ -33,11 +33,10 @@
 // step: it has no approval ledger.
 // Before it opens anything the host binds the SDK's approved TP-1 identity
 // record through its production authority reader over the operator's
-// `walletSession` and `participantImplementations` (host-stages.mjs); no
-// option, environment variable or file names a record. Under the state lock it
-// checks the data directory's format marker (kit-format.json), builds its one
-// effect boundary over <dataDirectory>/effects and finalizes the wallet
-// session with it (nothing routes through the boundary yet), keeps the wire request journal at
+// `walletSession` and `participantImplementations`; no option, environment
+// variable or file names a record. Under the state lock it checks the data
+// directory's format marker (kit-format.json), finalizes the wallet session with
+// its one effect boundary over <dataDirectory>/effects, keeps the wire request journal at
 // <dataDirectory>/wire-journal under a 300 s lease, so an unusable journal
 // refuses startup, and holds the binding, the journal and the seller's signer in a
 // wire context for the signed routes. Every route opens each request and signs

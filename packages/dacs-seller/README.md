@@ -165,14 +165,12 @@ const host = await startSellerHost({
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
   readCommitmentReceipt, // Chain-bound current SR-2 receipt reader, with bounded I/O.
   walletSession,         // { authority, connectionAuthority, finalize, close? }: the seller's wallet session.
-                         // authority is its read-only capability { authorityRpc, context, connectionGeneration }
-                         // (no sign or send); connectionAuthority(scope) is the connection reader over it (the
-                         // client's createAuthorityReader); finalize({ binding, effectBoundary, stopped,
-                         // feeCeilingOs, stateLock, dataDirectory }) resolves the effect-capable session, with
-                         // close(). Before it opens any state the host binds the SDK's approved TP-1 identity
-                         // record through its own production reader over this session (each read within
-                         // 10,000 ms; tp1_authority_timeout): no option, environment variable or file names a
-                         // record. Under the state lock it finalizes the session with its one effect boundary
+                         // authority is its read-only capability (it cannot sign or send); connectionAuthority
+                         // is the client's createAuthorityReader over it; finalize({ binding, effectBoundary,
+                         // stopped, feeCeilingOs, stateLock, dataDirectory }) resolves the session, with close().
+                         // Before it opens any state the host binds the SDK's approved TP-1 record (no option,
+                         // environment variable or file names one) through its production reader over this
+                         // session, each read within 10,000 ms (tp1_authority_timeout). Under the lock it finalizes it
   participantImplementations, // { entriesFor(claim) -> [{ claim, profile, modules, evidence, revoked }] }: the
                          // independently approved enrollment of each buyer, read on every request; a buyer
                          // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch

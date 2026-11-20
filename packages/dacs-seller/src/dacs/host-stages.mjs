@@ -1,7 +1,5 @@
-// The seller host's authority stages, in order: the kit session's read-only authority capability, the production
-// authority reader over it, the TP-1 binding read through that reader, then, once the host holds the state lock, the
-// effect history, the host's one effect boundary and the session's finalization. Nothing that can sign or send exists
-// before the last stage, and a failed stage closes what the stages acquired.
+// The seller host's authority stages, in order: the session's read-only capability, the production reader, the TP-1 binding,
+// and, under the state lock, the effect history, the one effect boundary and the session's finalization.
 import { join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD, WireError, bindTp1Profile } from '@kynesyslabs/dacs/wire';
 import { createSellerAuthorityReader } from './authority-reader.mjs';
@@ -37,20 +35,15 @@ function checkWalletSession(walletSession) {
 }
 
 /**
- * Opens the host's first three stages and returns `{ binding, local(), bootstrap, finalize(input), close() }`.
- * - `walletSession` is the kit session port: `authority` (its read-only capability `{authorityRpc, context, connectionGeneration}`),
- *   `connectionAuthority` (the connection reader over that capability), `finalize(input)` (resolves the effect-capable session,
- *   with `close()`) and, optionally, `close()`. Once its shape is checked the stages own it: every later failure and `close()` close it.
- * - `participantImplementations`, `sellerClaim`, `listingPin` and `retainedJob` are the reader's inputs (see
- *   `createSellerAuthorityReader`); `maxConcurrent` bounds the live bootstrap scopes.
- * `binding` is bound to the SDK-approved record through the production reader, whose every read ends within 10,000 ms;
- * `local()` reads the session's current connection; `bootstrap` holds the request-local scopes.
- * `finalize({ dataDirectory, stopped, stateLock })`, called once the host holds the state lock, initialises and syncs
- * `<dataDirectory>/effects`, builds the host's one effect boundary over `binding` and finalizes the session with it; it
- * resolves `{ effectBoundary, session }`. `close()` closes the finalized session, then the port, once.
- * Throws TypeError for a malformed port before anything is read. Rejects with TypeError for a missing reader input, the
- * binding's own error (`tp1_*`, with the reader's error as its cause; `tp1_authority_timeout` after 10,000 ms), and
- * `finalize` with the failing step's error; each of these first closes what the stages acquired.
+ * Opens the first three stages and resolves `{ binding, local(), bootstrap, finalize(input), close() }`. `walletSession` is the
+ * session port: its read-only `authority` capability, its `connectionAuthority` reader, `finalize(input)` and an optional
+ * `close()`; once its shape is checked the stages own it. The other inputs feed the reader and the bootstrap scopes.
+ * `binding` is made through the production reader, each read within 10,000 ms; `local()` reads the current connection.
+ * `finalize({ dataDirectory, stopped, stateLock })`, called under the state lock, creates and syncs `<dataDirectory>/effects`,
+ * builds the one effect boundary over `binding`, finalizes the session with it and resolves `{ effectBoundary, session }`.
+ * `close()` closes the finalized session, then the port, once. Throws TypeError for a malformed port. Rejects with a missing
+ * input's TypeError, the binding's own error (`tp1_*`; `tp1_authority_timeout` after 10,000 ms) or the failing finalize
+ * step's error, each after closing what the stages acquired.
  */
 export async function openSellerStages({ walletSession, participantImplementations, sellerClaim, listingPin, retainedJob, maxConcurrent }) {
   checkWalletSession(walletSession);

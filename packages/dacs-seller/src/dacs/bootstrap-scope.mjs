@@ -1,7 +1,5 @@
-// The seller's request-local bootstrap scope. Before the wire opens a signed request, the host checks the buyer's own
-// signature on it and, when that holds for this seller and Listing, relates the buyer to the job for the rest of that
-// request only. The authority reader reads the scope; it grants no admission, nonce, hold or effect authority, writes
-// nothing, and ends with its request.
+// The seller's request-local bootstrap scope: a buyer whose own signature the host checked is related to the job for that
+// request only. It grants no admission, nonce, hold or effect authority, and writes nothing.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, WireError, admitWireJson, isWirePayload, wireEnvelopeSigningBytes } from '@kynesyslabs/dacs/wire';
@@ -47,18 +45,14 @@ function signedScope(envelope) {
 }
 
 /**
- * Returns `{enter(header), current(jobId)}`, the bootstrap scopes of one seller (`sellerClaim`) and its current Listing
- * (`listingPin`), at most `maxConcurrent` live at once. `retainedJob(jobId)` reads the job's retained context admission row, or null.
- * - `enter(header)`, called once per request before any wire call, reads the request's envelope header within the wire's
- *   header limit and verifies the buyer's signature: a delegation's by the buyer wallet, a direct request's by the buyer. When
- *   the signed payload names this seller and Listing, and the job's retained row is not `compensating` or `aborted`, it registers
- *   `{jobId, buyer, seller, listingPin}` for the calling request and returns its handle; `handle.end()` (idempotent) ends it. A
- *   header it cannot read, another seller or Listing, a claim spelling that is not canonical, such a row, or a full set registers
- *   nothing and returns a handle whose `end()` does nothing; the wire then refuses the request with its own code. Throws WireError
- *   `peer_delegation_signature_invalid` or `peer_signature_invalid` (401) when the signature does not verify, before any authority read.
- * - `current(jobId)` returns the calling request's scope while its handle is live and names that job; else null, also for
- *   work that outlives its request.
- * Throws TypeError for a missing seller claim, Listing pin, `retainedJob` function or positive integer `maxConcurrent`.
+ * Returns `{enter(header), current(jobId)}`: the bootstrap scopes of one seller and Listing, at most `maxConcurrent` live.
+ * `enter(header)`, called once per request before any wire call, reads the envelope header within the wire's limit and
+ * verifies the buyer's signature (the buyer wallet's on a delegation, else the buyer's on the request). When the signed payload
+ * names this seller and Listing and the job's row (`retainedJob(jobId)`) is not `compensating` or `aborted`, it registers
+ * `{jobId, buyer, seller, listingPin}` for the calling request and returns a handle whose `end()` ends it. Anything else registers
+ * nothing, and the wire refuses the request with its own code. Throws WireError `peer_delegation_signature_invalid` or
+ * `peer_signature_invalid` (401) when the signature does not verify. `current(jobId)` returns the calling request's live scope
+ * for that job, else null, also for work that outlives its request. Throws TypeError for a missing or malformed input.
  */
 export function createBootstrapScopes({ sellerClaim, listingPin, retainedJob, maxConcurrent }) {
   if (typeof sellerClaim !== 'string' || listingPin === null || typeof listingPin !== 'object') throw new TypeError('bootstrap scopes need the seller claim and its Listing pin');

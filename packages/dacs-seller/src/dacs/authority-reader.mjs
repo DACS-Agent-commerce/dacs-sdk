@@ -1,7 +1,5 @@
-// The seller kit's production TP-1 authority reader: the function the wire calls as `readAuthority`. It reads only:
-// the connection through the kit session's connection reader, and local evidence (the request's own bootstrap scope,
-// the retained context admission row and the enrollment source), each on every call. It takes no fence, lock or
-// signer, and it keeps no state between calls.
+// The seller kit's production TP-1 authority reader, the wire's `readAuthority`. It reads its sources on every call, takes no
+// fence, lock or signer, and keeps no state between calls.
 import { canonicalize } from '@kynesyslabs/dacs';
 import { DACS_SELLER_DISCOVERY_FORMAT, TESTNET_PROFILE_TP1, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
 
@@ -19,22 +17,15 @@ function requireInputs({ connectionAuthority, identityRecord, claim, listingPin,
 }
 
 /**
- * Returns the seller's `Tp1AuthorityReader` for `bindTp1Profile` and every later wire check. All inputs are required:
- * - `connectionAuthority(scope)`: the kit session's connection reader, asked only `{local, sessionId: null, participants: []}`;
- *   it resolves the connection decision, or nothing for a connection it cannot authenticate;
- * - `identityRecord`: the SDK-approved identity record; `claim`: the seller's own claim; `listingPin`: its current Listing pin;
- * - `bootstrap.current(jobId)`: the calling request's authenticated bootstrap scope `{jobId, buyer, seller, listingPin}`, or null
- *   (`createBootstrapScopes` enters none for a job whose retained row was already `compensating` or `aborted`);
- * - `retainedJob(jobId)`: the job's retained context admission row (with `state`, `buyer`, `seller` and `listingPin`), or null;
- * - `participantImplementations.entriesFor(claim)`: the independently approved enrollment for a claim, as entries
- *   `{claim, profile, modules, evidence, revoked}`.
- * The answer is the connection decision with the participants asked for, in the order asked. Discovery answers the seller's
- * own entry for exactly its own claim. A job answers the buyer and the seller of the request's bootstrap scope, or of a retained
- * row in `intent`, `admitted` or `running`, when that scope names this seller and Listing; the buyer's profile and modules come
- * only from its one current, unrevoked enrollment. A row in any other state with no scope, a missing enrollment, or any other
- * set of participants answers no participants, which the wire refuses as a participant mismatch. A connection the session
- * cannot authenticate answers nothing, and a connection reader failure rejects with its original error.
- * Throws TypeError at construction when an input is missing; no completed binding is needed.
+ * Returns the seller's `Tp1AuthorityReader` for `bindTp1Profile` and every later wire check. Inputs, all required:
+ * `connectionAuthority(scope)` (the session's connection reader, asked only the connection scope), the SDK-approved
+ * `identityRecord`, the seller's `claim` and current `listingPin`, `bootstrap.current(jobId)` (the calling request's scope or
+ * null), `retainedJob(jobId)` (the job's context admission row or null) and `participantImplementations.entriesFor(claim)`.
+ * Discovery answers the seller's own entry for exactly its own claim. A job answers its buyer and the seller, in the order
+ * asked, from the request's scope or else a row in `intent`, `admitted` or `running`, when it names this seller and Listing;
+ * the buyer's profile and modules come only from its one current, unrevoked enrollment. Anything else answers no
+ * participants, which the wire refuses as a participant mismatch. An unauthenticated connection answers nothing, and a
+ * connection reader failure rejects with its own error. Throws TypeError when an input is missing.
  */
 export function createSellerAuthorityReader(inputs = {}) {
   requireInputs(inputs);

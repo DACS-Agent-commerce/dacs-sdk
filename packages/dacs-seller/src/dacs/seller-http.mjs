@@ -342,8 +342,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const rawBody = await readRequest(req, bodyTimeoutMs);
       try { body = admitRawJson(rawBody); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
-      // Before the wire opens the request: its own signature, and a scope for this request only (ended below). A signature
-      // that does not verify is refused here, unsigned, before any authority read.
+      // Before the wire opens the request: the buyer's own signature (refused here before any authority read), then a scope for this request only.
       bootstrapScope = wire.bootstrap?.enter(req.headers[DACS_SELLER_HTTP_HEADER]);
       // The context step answers unsigned text; it is signed here under the opened request, and a request that never opened is sent unsigned.
       if (contextStep) {
