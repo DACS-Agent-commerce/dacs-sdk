@@ -567,7 +567,8 @@ describe("DACS-1 §6.3.4 Listing text bounds count NFC scalar values", () => {
 const LISTING_SIZE_LIMIT = 16_384;
 
 const unsignedCanonicalOctets = (listing: Listing): number => {
-  const { signature: _signature, ...unsigned } = listing;
+  const unsigned: Partial<Listing> = { ...listing };
+  delete unsigned.signature;
   return Buffer.byteLength(canonicalize(unsigned), "utf8");
 };
 
