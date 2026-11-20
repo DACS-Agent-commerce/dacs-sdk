@@ -2,7 +2,7 @@
 // attempt, and each request the approver accepted is settled in its ledger by what the request wrote to the journals.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { artifactWrite, inWalletPass, JOB_CREATE, jsonResponse, ok, outcomes, preparedWrite, refuseConfirmation, replyTo, sendWrite, settlingApproval, settlingWorld, writesOf } from './helpers/seller-node-wallet-world.mjs';
+import { artifactWrite, jsonResponse, ok, outcomes, preparedWrite, refuseConfirmation, replyTo, sendWrite, settlingApproval, settlingWorld, writesOf } from './helpers/seller-node-wallet-world.mjs';
 
 const { OPERATOR_CLOSING } = await import('../src/devnet-demo/operator-approval.mjs');
 const { sellerDiagnostic } = await import('../src/seller-diagnostics.mjs');

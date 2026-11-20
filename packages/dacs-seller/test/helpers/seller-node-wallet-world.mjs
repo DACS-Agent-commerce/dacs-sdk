@@ -221,7 +221,7 @@ export const evidenceInput = (world, label = 'a') => ({ logicalAddress: `dacs4:p
   writer: `did:demos:agent:${world.wallet.address.slice(2)}`, artifactKind: 'SettlementEvidence', jobId: `TEST-job-${label}`, receiptContentHash: 'e1'.repeat(32) });
 
 // Requests through the composed walletFactory, for the approval accounting suites.
-export const JOB_CREATE = () => api.passContext({ operationClass: 'job-create', currentAuthorization: () => true });
+const JOB_CREATE = () => api.passContext({ operationClass: 'job-create', currentAuthorization: () => true });
 
 /**
  * The seller approval double: it accepts every request after `gate(request)` resolves (or rejects), and `settle` records each
