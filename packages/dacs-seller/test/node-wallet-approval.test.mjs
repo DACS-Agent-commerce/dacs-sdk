@@ -100,7 +100,11 @@ test('a settlement error or a logger error never puts the message, nested cause 
   const secret = 'TEST-secret-settlement-message';
   const failure = Object.assign(new Error(secret, { cause: new Error('TEST-secret-nested-cause') }), { code: 'approval_reservation_unavailable' });
   const written = [];
-  for (const stream of [process.stdout, process.stderr]) t.mock.method(stream, 'write', chunk => { written.push(String(chunk)); return true; });
+  // Each write is recorded and still passed on, so the test runner's own reports are not swallowed.
+  for (const stream of [process.stdout, process.stderr]) {
+    const write = stream.write.bind(stream);
+    t.mock.method(stream, 'write', (chunk, ...rest) => { written.push(String(chunk)); return write(chunk, ...rest); });
+  }
   const reference = await settlingWorld(t);
   const expected = (await artifactWrite(reference)).answer.success;
 
