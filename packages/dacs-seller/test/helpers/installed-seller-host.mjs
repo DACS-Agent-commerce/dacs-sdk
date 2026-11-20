@@ -153,18 +153,34 @@ const journalDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-wa
 const journal = seller.createPaymentEvidenceWalletJournal({ path: join(journalDirectory, 'wallet-journal.sqlite'), signCreate: refuse('wallet.signCreate'), broadcast: refuse('wallet.broadcast'),
   readAccountNonce: refuse('wallet.readAccountNonce'), readTransactionState: refuse('wallet.readTransactionState'),
   readNetworkInfo: refuse('wallet.readNetworkInfo') });
-// The wire's test-only authority semantics, inlined: this file runs alone in the consumer application,
-// where the repository's fixture helper is not available. It confirms the approved chain for the
-// connection and participants it is asked about.
+// The buyer's own test-only authority, inlined: this file runs alone in the consumer application, where the
+// repository's fixture helper is not available. It confirms the approved chain for the connection and
+// participants it is asked about.
 const approvedRecord = wire.TP1_APPROVED_IDENTITY_RECORD;
 const approvedProfile = { id: wire.TP1_PROFILE_ID, revision: wire.TP1_PROFILE_REVISION, base: wire.TP1_BASE_REVISION, chainIdentity: approvedRecord.chainIdentity, pinVersion: approvedRecord.pinVersion };
-const tp1Network = {
+const buyerNetwork = {
   connection: () => ({ endpoint: 'https://rpc.example.invalid/', transportAuthority: 'installed-authority', connectionId: 'installed-conn-1' }),
   readAuthority: (scope) => ({ local: { ...scope.local }, chainIdentity: approvedRecord.chainIdentity, provenance: 'test-only-independent-authority/v1', sessionId: scope.sessionId,
     participants: scope.participants.map((claim) => ({ claim, profile: approvedProfile, modules: wire.TESTNET_PROFILE_TP1.tuple })) }),
 };
+// The seller's wallet-session port, inlined: the client that supplies it in a deployment is not installed beside the kit. It
+// answers offline: its connection reader confirms the approved chain for this one connection and nothing else, and its node
+// read is never reached. Participants come only from the installed kit's production reader and the enrollment below.
+const sellerConnection = { endpoint: 'https://rpc.example.invalid/', transportAuthority: 'installed-seller-authority', connectionId: 'installed-seller-conn-1' };
+const walletSession = () => ({
+  authority: { authorityRpc: refuse('walletSession.authorityRpc'), context: () => ({ network: approvedRecord.network, ...sellerConnection }), connectionGeneration: () => sellerConnection.connectionId },
+  connectionAuthority: () => ({ local: { ...sellerConnection }, chainIdentity: approvedRecord.chainIdentity, provenance: 'test-only-installed-connection/v1', sessionId: null, participants: [] }),
+  finalize: async () => ({ close: async () => {} }),
+});
+const enrollmentReads = [];
+let buyerEnrolled = true;
+const participantImplementations = { entriesFor: (claim) => {
+  enrollmentReads.push(claim);
+  return buyerEnrolled && claim === buyerKey.claim ? [{ claim, profile: approvedProfile, modules: { ...wire.TESTNET_PROFILE_TP1.tuple }, evidence: 'TEST-installed-enrollment', revoked: false }] : [];
+} };
 const capabilities = () => ({
-  tp1Network,
+  walletSession: walletSession(),
+  participantImplementations,
   readCommitmentReceipt: Object.assign(refuse('readCommitmentReceipt'), { chainIdentity: approvedRecord.chainIdentity }),
   now:()=>now,
   nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: journal.anchorEvidence, fetchImpl: refuse('nativePaymentEvidence.fetch') }),
@@ -253,13 +269,13 @@ let buyerBundle, plan, buyerContribution, proposal, transportIdentity, unvetted,
 // domain and verifies each answer over its exact received bytes.
 const wireEndpoint = 'https://seller.example.invalid';
 const wireBuyerSession = async () => {
-  const binding = await wire.bindTp1Profile({ record: approvedRecord, local: tp1Network.connection(), readAuthority: tp1Network.readAuthority });
+  const binding = await wire.bindTp1Profile({ record: approvedRecord, local: buyerNetwork.connection(), readAuthority: buyerNetwork.readAuthority });
   const document = await wire.signDiscoveryDocument({ format: wire.DACS_SELLER_DISCOVERY_FORMAT, profile: binding.profile, seller: sellerKey.claim, publicEndpoint: wireEndpoint, transport: [wire.DACS_SELLER_HTTP_V1],
-    listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: now, expiresAt: now + 600_000 }, signer, binding, tp1Network.connection());
+    listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: now, expiresAt: now + 600_000 }, signer, binding, buyerNetwork.connection());
   const listingRecord = { seller: sellerKey.claim, publicEndpoint: wireEndpoint, listingPin: pin };
   const readListingEligibility = () => ({ ...listingRecord, pricingKind: 'fixed', negotiation: 'negotiate-fixed-price', commitPhase: wire.TP1_COMMIT_PHASE, rail: 'pay-dem', delivery: wire.TP1_CAPABILITIES.delivery,
     service: { kind: 'fixed-text' }, output: wire.TP1_CAPABILITIES.output, buyerRequestInput: false, notBefore: now - 86_400_000, expiresAt: now + 86_400_000 });
-  const endpointProof = await wire.verifyEndpointProof(document, { listing: listingRecord, binding, local: tp1Network.connection(), now, readListingEligibility });
+  const endpointProof = await wire.verifyEndpointProof(document, { listing: listingRecord, binding, local: buyerNetwork.connection(), now, readListingEligibility });
   return { binding, endpointProof };
 };
 let wireBuyerReady = null;
@@ -274,12 +290,12 @@ const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) =>
       const signature = buyerKey.sign(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.request + core.canonicalize(payload))).toString('base64url');
       return { payload, header: Buffer.from(core.canonicalize({ payload, signature })).toString('base64url') };
     }
-    return wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: tp1Network.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
+    return wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: buyerNetwork.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
       jobId, text, seller: sellerKey.claim, job: { listingPin, agreementHash, profile: binding.profile }, delegation: null, now, lifetimeMs: 30_000 });
   },
   verifyResponse: async (request, { header, status, responseBytes }) => {
     const { binding } = await wireBuyerReady;
-    return wire.verifyWireResponse(request, { header, status, body: responseBytes, now, binding, local: tp1Network.connection() });
+    return wire.verifyWireResponse(request, { header, status, body: responseBytes, now, binding, local: buyerNetwork.connection() });
   },
 } });
 // The buyer's own signed request to a context route, with no delegation: `answer` is the status and parsed body the host sent.
@@ -289,7 +305,7 @@ const contextScopeFor = (jobId) => ({ source: AGREEMENT_CONTEXT_SOURCE, wallet: 
 const postContextRoute = async (url, path, jobId, body) => {
   const { binding, endpointProof } = await (wireBuyerReady ??= wireBuyerSession());
   const text = JSON.stringify(body);
-  const signed = await wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: tp1Network.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
+  const signed = await wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: buyerNetwork.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
     jobId, text, seller: sellerKey.claim, job: { listingPin: pin, agreementHash: core.sha256Hex(core.canonicalize(body.scope)), profile: binding.profile }, delegation: null, now, lifetimeMs: 30_000 });
   const response = await fetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: signed.header }, body: text });
   return { status: response.status, body: await response.json() };
@@ -351,6 +367,11 @@ out.refusals = {
   secondHostSameDirectory: await refusal({ signer, listing, dataDirectory, ...capabilities() }),
   secondProcessSameDirectory: JSON.parse(spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--second', dataDirectory], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: 60000 }).stdout.trim().split('\n').at(-1)).secondProcess,
 };
+// The installed reader read the buyer's enrollment, and with that enrollment withdrawn it refuses the buyer's own signed request.
+const readBuyer = enrollmentReads.includes(buyerKey.claim);
+buyerEnrolled = false;
+out.authority = { readBuyer, withdrawn: await requestChallenge(host.url, freshJob()) };
+buyerEnrolled = true;
 await host.close();
 
 // Restart on the same state: the retained contribution is answered again.
