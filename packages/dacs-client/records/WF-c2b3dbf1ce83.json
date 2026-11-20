@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged README and seller HTTP module",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "bf8eb785fdc2b96b0a9b78eb17088c0ef4126a31",
+      "after": "bf8eb785fdc2b96b0a9b78eb17088c0ef4126a31"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+      "before": "327dc144db799e27dc04384dc6bf57c4a1cbe244",
+      "after": "327dc144db799e27dc04384dc6bf57c4a1cbe244"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-c2b3dbf1ce83.json"
+  ],
+  "note": "Both sides of the merge recorded the README and the seller HTTP module; this record chooses the merged copy of each. It keeps the bounded HTTPS seller changes of this side and every change of the base. No anchored file changed on this side of the merge, so the anchor stays where the base put it."
+}
