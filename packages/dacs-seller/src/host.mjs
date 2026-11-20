@@ -37,10 +37,9 @@
 // directory's format marker (kit-format.json), keeps the wire request journal at
 // <dataDirectory>/wire-journal under a 300 s lease, so an unusable journal
 // refuses startup, and holds the binding, the journal and the seller's signer in a
-// wire context for the signed routes. The
-// Agreement proposal, state and commitment routes open every request and sign
-// every answer through that context (seller-wire-requests.mjs), with the transport
-// store as their journal; the payment and bundle routes still use the old server auth.
+// wire context for the signed routes. Every route opens each request and signs
+// each answer through that context (seller-wire-requests.mjs), which is the host's
+// only authenticator; the transport store journals the routes.
 import { existsSync, mkdirSync, opendirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -65,7 +64,7 @@ import { completedContextOutcome, contextOperationView, createSellerContextRecor
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
-import { SellerTransportError, createSellerTransportServerAuth, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
@@ -101,10 +100,6 @@ const CONTEXT_POLICY_DEADLINE_MS = 10000;
 const NO_HOLD_POLICY = Object.freeze({ reserve: async () => null, release: async () => {} });
 // How often a running host re-runs the admission sweep over unfinished context rows.
 const SWEEP_INTERVAL_MS = 60000;
-
-// The one old context route object serves the challenge on the wire (`challengeOnWire`) and carries the paths; the wire route serves the
-// context step itself, so every provider and write port the old object takes refuses.
-const oldContextStepRefused = () => { throw new SellerTransportError('session_admission_unavailable', 503); };
 
 // Compensation's evidence for the two Vet sink addresses of a context row: the anchor's own fresh, passive proof that no CREATE intent was
 // kept. Any other answer proves nothing, so the row keeps its hold and its slot.
@@ -266,11 +261,10 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
 // exists is reconciled with the journal before the host listens: a journal that cannot be
 // read whole, or a nonce key that names no accounting row, starts the host not ready
 // with the same `kit_journal_accounting_mismatch`, and a store that cannot commit its
-// reconciliation refuses startup. A demDeliveryContext
-// that is not a complete constructed capability (it needs `recoverBuyer`,
-// `resumableBuyer` and `bindRetainedScope`) is refused with a TypeError before the
-// lock, and a startup sweep that cannot record a row it visited refuses startup with
-// its AggregateError.
+// reconciliation refuses startup. A demDeliveryContext that is not a complete
+// constructed capability (it needs `recoverBuyer`, `resumableBuyer` and
+// `bindRetainedScope`) is refused with a TypeError before the lock, and a startup
+// sweep that cannot record a row it visited refuses startup with its AggregateError.
 export async function startSellerHost(options) {
   assertKitOperationAdmitted('startSellerHost');
   if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('seller host options must be an object');
@@ -394,8 +388,8 @@ export async function startSellerHost(options) {
     // The route binds the provider's retained-scope reader once, as it is built, before any request or provider work.
     const contextRoute = createWireSellerContextRoute({ listing, wire, store, ledger: store.challenges, admissionTransaction: admission, coordinator: reservations, capacity, provider, assertBuyerAccess,
       knownJob: null, ready: sellerReady, stopped: hostStopped, now, monotonicNow: () => performance.now(), trackContextWork: contextWork.track });
-    const context = { ...createSellerContextRoute({ listing, now, assertBuyerAccess, resolveBuyer: oldContextStepRefused, admitPresentation: oldContextStepRefused, writable: oldContextStepRefused,
-      admitWrites: oldContextStepRefused, releaseWrites: oldContextStepRefused, recover: oldContextStepRefused }), ...contextRoute };
+    // The challenge route serves the challenge on the wire and names the paths; the wire route serves the context step.
+    const context = { ...createSellerContextRoute({ listing, now, assertBuyerAccess }), ...contextRoute };
     // A purchase whose session already ended gives its unspent units back before anything is served, unless its job holds a recorded
     // payment and the payments operation has no completed answer: that job's paid retry still needs its session and allocation.
     const keepPaidJobOpen = ({ jobId, seller }) => agent.holdsRecordedPayment(jobId)
@@ -412,8 +406,7 @@ export async function startSellerHost(options) {
     // parent entry has been synced yet.
     await DURABLE_SYNC.directory(transport);
     await DURABLE_SYNC.directory(dataDirectory);
-    const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
-    const handler = createSellerHttpHandler(agent, { authentication, wire, context });
+    const handler = createSellerHttpHandler(agent, { wire, context });
     const active = new Set();
     // Connections with no dispatched request cannot be drained: a buyer that
     // stops after a partial request line would hold server.close() forever,

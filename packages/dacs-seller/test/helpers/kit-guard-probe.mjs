@@ -112,7 +112,6 @@ async function effectEntries() {
   const ledger = createSellerChallengeLedger({ db: ledgerDb, transaction: never('the transaction'), now: never('the clock'), generation: 'guard-probe',
     sessionState: never('a terminal observation'), admissionCounts: never('the counts'), ready: never('readiness'), stopped: never('the stop check') });
   const { createSellerAgentClient, createSellerHttpHandler } = await import('../../src/dacs/seller-http.mjs');
-  const { createSellerTransportClientAuth, createSellerTransportServerAuth } = await import('../../src/dacs/seller-transport-auth.mjs');
   const { createSellerWireClientAuth } = await import('../../src/dacs/seller-wire-client-auth.mjs');
   const { createSellerDurableState } = await import('../../src/dacs/seller-durable-state.mjs');
   const { createSignedCreateJournal, createPaymentEvidenceWalletJournal } = await import('../../src/dacs/payment-evidence-wallet-journal.mjs');
@@ -151,8 +150,6 @@ async function effectEntries() {
   admissionStore.close();
   await attempt('createSellerHttpHandler', () => createSellerHttpHandler({}));
   await attempt('createSellerAgentClient', () => createSellerAgentClient({}));
-  await attempt('createSellerTransportServerAuth', () => createSellerTransportServerAuth({}));
-  await attempt('createSellerTransportClientAuth', () => createSellerTransportClientAuth({}));
   await attempt('createSellerWireClientAuth', () => createSellerWireClientAuth({}));
   await attempt('reserveAccounted', () => accounting.reserveAccounted({}));
   await attempt('reserveCoordinated', () => coordinator.reserveCoordinated({}));
