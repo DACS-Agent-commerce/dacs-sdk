@@ -20,6 +20,7 @@ import {
 import { addressForClaim, verifyDemosSignature } from '../signatures.mjs';
 import { canonicalSignature } from '../signatures.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
+import { readTransactionSignaturePrefix } from './transaction-signature-domain.mjs';
 
 // Supported public core helper for signed-to-executed content comparison.
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
@@ -61,7 +62,11 @@ function sourceBoundStorageComparison({ sourceCapability, expectedIdentity, auth
 // CREATE still supplies the hash, and the transaction plus containing block
 // are authenticated below. Rich public projections remain byte-for-byte
 // strict, while partial or present-invalid projections are never upgraded.
-function creationProvenanceMatches(native, txHash, allowPairedAbsence) {
+/**
+ * Whether a storage program's creation provenance names the CREATE `txHash`: `createdByTx` is that hash and `interactionTxs`
+ * lists it, both present. With neither member, returns `allowPairedAbsence`; one member alone is false.
+ */
+export function creationProvenanceMatches(native, txHash, allowPairedAbsence) {
   const hasCreatedByTx = Object.hasOwn(native, 'createdByTx');
   const hasInteractionTxs = Object.hasOwn(native, 'interactionTxs');
   if (!hasCreatedByTx && !hasInteractionTxs) return allowPairedAbsence;
@@ -263,9 +268,14 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     // exact writer's signature over that hash, and the node's transaction under
     // it. An answer that fails this (no content, other bytes, a signature that
     // does not verify) establishes nothing, so it contradicts nothing either.
+    // The signature covers the hash in the signature domain in force at the
+    // block that included it, by the fork state this node reports, read once
+    // here; an unreadable domain verifies nothing.
     if (!object(signed) || !object(signed.content) || tx.hash !== txHash || !object(c) || signed.hash !== txHash
-      || sha256Hex(JSON.stringify(signed.content)) !== txHash || signed.signature?.type !== 'ed25519' || !object(tx.signature) || canonicalize(tx.signature) !== canonicalize(signed.signature)
-      || !verifyDemosSignature({ address: owner, message: txHash, signature: tx.signature.data })) reject('invalid', 'transaction lacks the exact writer authorization');
+      || sha256Hex(JSON.stringify(signed.content)) !== txHash || signed.signature?.type !== 'ed25519' || !object(tx.signature) || canonicalize(tx.signature) !== canonicalize(signed.signature)) reject('invalid', 'transaction lacks the exact writer authorization');
+    const signaturePrefix = await readTransactionSignaturePrefix(nodeCall, tx.blockNumber);
+    if (signaturePrefix === null) reject('indeterminate', 'the node does not report a usable transaction signature domain');
+    if (!verifyDemosSignature({ address: owner, message: `${signaturePrefix}${txHash}`, signature: tx.signature.data })) reject('invalid', 'transaction lacks the exact writer authorization');
     // Without a projection or retained authorization, the executed content is
     // the signed content itself; otherwise it is the node's rendering of it.
     const executedIsSigned = !embedded && !projected;
@@ -282,10 +292,11 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     if (projected && !demosTransactionContentMatches(signed.content, comparison, txHash)) reject('invalid', 'executed transaction differs from the public signed projection');
     if (embedded && projected && canonicalize(signed) !== canonicalize(saved.authorizedTransaction)) reject('invalid', 'public projection differs from the retained wallet authorization');
     // The source binding is part of authentication: a CREATE bound to another
-    // network or pin is not this chain's record.
-    // A CREATE with no metadata binding keeps this refusal's code (canonicalize
-    // throws a code-less error for an absent value).
-    if(sourceCapability && (comparison.network!==sourceCapability.pins.network || comparison.chainIdentity!==expectedIdentity || op?.metadata?.networkBinding===undefined || canonicalize(op.metadata.networkBinding)!==canonicalize(sourceCapability.transportBinding))) reject('invalid','signed Agreement metadata does not bind the exact source pin');
+    // network, chain or pin version is not this chain's record. Its endpoint and
+    // transport authority belong to the writer's own connection, so they are not
+    // compared. A CREATE with no metadata binding is refused the same way.
+    if(sourceCapability && (comparison.network!==sourceCapability.pins.network || comparison.chainIdentity!==expectedIdentity
+      || ['network','chainIdentity','pinVersion'].some(key=>op?.metadata?.networkBinding?.[key]!==sourceCapability.pins[key]))) reject('invalid','signed Agreement metadata does not bind the exact source pin');
     // Authenticated from here. The signed CREATE itself contradicts the logical
     // address, its own native address or its own envelope: the writer's fault.
     const nonce = embedded || projected ? wireInteger(c.nonce) : c.nonce;

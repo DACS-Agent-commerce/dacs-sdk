@@ -13,7 +13,7 @@ import { createContextOutcomeRevalidation } from '../src/dacs/seller-context-con
 import { createPlannedAgreementReader } from '../src/dacs/seller-planned-agreement.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
-import { JOB as WIRE_JOB, JOB2 as WIRE_JOB2, SELLER_CONTEXT_PATH, T0, contextWireWorld, deferred } from './helpers/context-wire-world.mjs';
+import { JOB as WIRE_JOB, JOB2 as WIRE_JOB2, T0, contextWireWorld, deferred } from './helpers/context-wire-world.mjs';
 import { watchSql } from './helpers/challenge-route-fixture.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { BUYER, SELLER, address, assertPresent, orchestratorFixture } from './helpers/vet-orchestrator-fixture.mjs';
@@ -24,7 +24,7 @@ const FIRST_VET_NON_PASS = { disposition: 'rejected', reason: 'seller Vet decisi
 const SECOND_VET_NON_PASS = { disposition: 'rejected', reason: 'buyer Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' };
 
 /** The same signed body sent again under a new envelope, as a retry that lost its answer does. */
-const resign = async (w, request, options = {}) => ({ ...request, ...(await w.sign({ jobId: WIRE_JOB, actor: w.buyer, body: request.body, hash: sha256Hex(canonicalize(request.body.scope)), path: SELLER_CONTEXT_PATH, ...options })), url: SELLER_CONTEXT_PATH });
+const resign = async (w, request, options = {}) => ({ ...request, ...(await w.sign({ jobId: WIRE_JOB, actor: w.buyer, body: request.body, hash: sha256Hex(canonicalize(request.body.scope)), path: DACS_SELLER_HTTP_PATHS.context, ...options })), url: DACS_SELLER_HTTP_PATHS.context });
 
 /** A first admission whose process died between its acceptance and the reservation: the row is `admitted`, nothing has run. */
 async function admittedAndCut(w, options) {
@@ -863,7 +863,7 @@ test('the context wire ports name equivalents for every old direct-context test 
     const source = await sourceOf(file);
     assert.equal(source.includes('createSellerTransportClientAuth'), false, `${file} uses no old client auth`);
   }
-  assert.equal(typeof (await import('../src/index.mjs')).createSellerTransportClientAuth, 'function', 'the old auth is still exported until it is removed');
+  assert.equal((await import('../src/index.mjs')).createSellerTransportClientAuth, undefined, 'the old client auth is no longer exported');
   const manifest = JSON.parse(await readFile(new URL('./fixtures/context-wire-ports.json', import.meta.url), 'utf8'));
   assert.ok(manifest.every((entry) => !['wire-equivalent', 'predecessor-equivalent'].includes(entry.disposition) || entry.replacement !== null), 'each equivalent names its replacement');
   assert.ok(manifest.some((entry) => entry.disposition === 'wire-equivalent' && entry.replacement.file === 'context-recovery-wire.test.mjs'));

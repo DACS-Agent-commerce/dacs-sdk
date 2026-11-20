@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D37",
+  "registration": "D37: existing client delta lane",
+  "subject": "delta(client): D37 project elapsed approvals against the wall clock in diagnostic reads"
+}

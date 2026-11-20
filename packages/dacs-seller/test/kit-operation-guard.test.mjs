@@ -20,17 +20,18 @@ const GUARD_EXPORTS = ['KIT_OPERATION_GUARD', 'KitOperationGuardError', 'assertK
 // Exported only by the fixture loader's copy of the guard.
 const LOADER_SETTER = 'setKitOperationGuardForTest';
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs'];
-// Guarded entries that exist only on a capability the guarded `reserveContext` issues, so the off-state probe cannot reach them;
-// context-admission-transaction.test.mjs flips the guard off after the capability exists and pins each.
-const REACHED_BY_ISSUED_CAPABILITY = ['complete'];
+// Guarded entries that exist only on a capability the guarded `reserveContext` issues, or on the store's internal adapter, so the
+// off-state probe cannot reach them; context-admission-transaction.test.mjs flips the guard off after the capability exists and pins
+// `complete`, and helpers/coordinator-guard-off-probe.mjs pins `terminalSession`.
+const REACHED_BY_ISSUED_CAPABILITY = ['complete', 'terminalSession'];
 // The entries each module guards, named as the error's `entry` (51-2, 51-3).
 const GUARD_SITES = {
   'src/host.mjs': ['startSellerHost'],
   'src/dacs/seller-agent.mjs': ['createSellerAgent'],
   'src/dacs/seller-admission-transaction.mjs': ['begin', 'runningCheck', 'reserveContext', 'complete', 'compensate'],
-  'src/dacs/seller-challenge-ledger.mjs': ['issue', 'issueForOperator'],
+  'src/dacs/seller-challenge-ledger.mjs': ['issue'],
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
-  'src/dacs/seller-transport-auth.mjs': ['createSellerTransportClientAuth'],
+  'src/dacs/seller-transport-auth.mjs': ['terminalSession'],
   'src/dacs/seller-reservation-accounting.mjs': ['reserveAccounted', 'reserveCoordinated'],
   'src/dacs/seller-wire-client-auth.mjs': ['createSellerWireClientAuth'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],

@@ -7,7 +7,7 @@ import { describe, expect, test } from "vitest";
 import { createPublicClient, createWalletClient, defineChain, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import type { Signer } from "../../src/agent/signedArtifact.js";
+import type { Signer } from "../../src/crypto/byteSignerTypes.js";
 import { verifyBundleCore, type VerifyBundleDeps } from "../../src/agent/verifyBundleCore.js";
 import { attestationBundleHash, buildTwoSidedBundle } from "../../src/agent/twoSidedBundle.js";
 import {

@@ -20,7 +20,7 @@ export { createListingVerifier, NotConfiguredError } from './public-verification
 export { DEM_DECIMAL, OS_INTEGER } from './dacs/chain.mjs';
 /** deliveryEvidenceAddress(jobId) returns the canonical evidence address and may reject invalid identifiers. vetNotPerformedRef(jobId,party) returns the explicit unperformed-Vet reference; neither reads, writes or authorizes Vet. */
 export { deliveryEvidenceAddress, vetNotPerformedRef } from './dacs/purchase-protocol.mjs';
-/** sellerFailureCause(value) returns a recognized seller failure label or undefined; it has no side effects and does not throw for unknown labels. */
+/** sellerFailureCause(value) returns a recognized seller failure label (tls, network, response-auth, status-4xx, status-5xx, client-sign, timeout, address, redirect, oversized, other) or undefined; it has no side effects and does not throw for unknown labels. */
 export { sellerFailureCause } from './dacs/seller-http.mjs';
 /** usesNativePaymentEvidence(operation) returns whether its retained protocol selects native evidence; it performs no network or storage work. */
 export { usesNativePaymentEvidence } from './dacs/native-payment-evidence-consumer.mjs';
@@ -28,7 +28,7 @@ export { usesNativePaymentEvidence } from './dacs/native-payment-evidence-consum
 export { AGREEMENT_CONTEXT_SOURCE, isOperatorContextAuthority } from './dacs/agreement-context-consumer.mjs';
 /** DEM_DELIVERY_CONTEXT_SOURCE is the delivery capability source constant; demDeliveryContextUsage(capability) returns provider capacity, null, or {status:"error"} and invokes the supplied usage callback. isDemDeliveryContextAuthority(value) returns a label predicate; neither admits purchase actions. */
 export { DEM_DELIVERY_CONTEXT_SOURCE, demDeliveryContextUsage, isDemDeliveryContextAuthority } from './dacs/dem-delivery-context-consumer.mjs';
-/** createDemDeliveryContext({authority,resolveBuyer,resolveSeller,release=null,usage=null}) returns a frozen opaque capability that supplies the buyer and seller for DEM delivery context. It throws TypeError unless authority is a TEST- label and the resolvers (and the optional release and usage) are functions; the TEST- label stays until the testnet authority is wired. It reads, writes and admits nothing at construction. */
+/** createDemDeliveryContext({authority,resolveBuyer,resolveSeller,release=null,usage=null,readBack=null}) returns a frozen opaque capability that supplies the buyer and seller for DEM delivery context. readBack({jobId,buyer}) reads a job's retained seller Vet record writes back without signing or sending; a purchase recheck uses it after a plan step ended indeterminate. It throws TypeError unless authority is a TEST- label and the resolvers (and the optional release, usage and readBack) are functions; the TEST- label stays until the testnet authority is wired. It reads, writes and admits nothing at construction. */
 export { createDemDeliveryContext } from './dacs/dem-delivery-context-consumer.mjs';
 /** createNativeDemDeliveryCapability({authority,submit,reconcile,read,verifyReceipt}) returns a frozen opaque capability for native DEM deliverable publication and readback. It throws TypeError unless authority is a TEST- label and all four operations are functions; the TEST- label stays until the testnet authority is wired. Construction calls none of them. */
 export { createNativeDemDeliveryCapability } from './dacs/native-dem-delivery-consumer.mjs';
@@ -64,6 +64,10 @@ export { DemosSr2BridgeError } from './dacs/demos-sr2-wallet-bridge.mjs';
 export { DemosSr2Error } from './dacs/demos-sr2-adapter.mjs';
 /** NetworkBindingError(code,message) returns an Error for a refused network binding; construction performs no reads, writes or binding admission. */
 export { NetworkBindingError } from './dacs/network-binding.mjs';
+/** createDemosNetworkBinder({expected,reader,fallback,now,maxAgeMs,timeoutMs,exclusive}) returns the shared read-only chain-identity binder: bind() resolves a fresh observation of the chain compared with the independently reviewed pin, and never authorizes. Overlapping observations are independent unless `exclusive` is set, which makes an overlapping call reject binding_busy. It throws NetworkBindingError for an invalid pin, reader or policy; bind rejects with NetworkBindingError and keeps the reader's own cause. It performs only the reads the supplied reader makes. */
+export { createDemosNetworkBinder } from './dacs/network-binding.mjs';
+/** createAuthorityReader({authority,identityRecord,claim,listings,purchases,participantImplementations}) returns the client's production Tp1AuthorityReader for bindTp1Profile and every wire check. It reads the chain through authority.authorityRpc and local evidence (the Listing registry, saved purchase rows and enrollment) on every call, and takes no fence, lock or signer. It answers no participants for missing, revoked, ambiguous or unrelated evidence, and no decision for a connection it cannot authenticate; a transport failure rejects with its original error. It throws TypeError at construction when an input is missing, and needs no completed binding. */
+export { createAuthorityReader } from './wallet/authority-reader.mjs';
 /** BuyerChainReadbackUnsupported(message) returns an Error for an unsupported buyer readback capability; constructing it performs no reads. */
 export { BuyerChainReadbackUnsupported } from './dacs/buyer-chain-readback.mjs';
 /** WalletFormatError(message) returns an Error for malformed wallet addresses or signatures; constructing it performs no wallet operation. */

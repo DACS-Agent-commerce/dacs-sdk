@@ -12,9 +12,8 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
 import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
-import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { contextHostFixture } from './helpers/host-context-client.mjs';
 import { LISTING_AUTHORITY, captureServers, distinctHeaders, proxyListener, rawExchange, requestText, tlsListener } from './helpers/listener-host.mjs';
 import { NOW } from './helpers/protocol-fixture.mjs';
@@ -80,7 +79,7 @@ async function assertRefused(world, text, { status, error }, label) {
   const answer = await world.send(text);
   assert.equal(answer.status, status, `${label}: status (${answer.body})`);
   if (error !== undefined) assert.equal(errorOf(answer), error, `${label}: error`);
-  assert.equal(answer.headers[SELLER_TRANSPORT_HEADER], undefined, `${label}: the refusal is unsigned`);
+  assert.equal(answer.headers[DACS_SELLER_HTTP_HEADER], undefined, `${label}: the refusal is unsigned`);
   assert.deepEqual(world.state(), world.before, `${label}: the agent, the journal and the store are untouched`);
   return answer;
 }
@@ -93,7 +92,7 @@ test('an unsigned request is refused before any effect in both modes', async (t)
     const world = await admissionWorld(t, { mode });
     const answer = await assertRefused(world, post(PAYMENTS, { body: '{"jobId":"01J8N4YV7YVYQ4DB7M8T4C7W0A"}' }), { status: 401 }, `${mode}: no envelope`);
     assert.match(errorOf(answer), /^peer_/);
-    await assertRefused(world, post(PAYMENTS, { headers: [...JSON_HEADERS, [SELLER_TRANSPORT_HEADER, 'AAAA']], body: '{}' }), { status: 401 }, `${mode}: an envelope that is not one`);
+    await assertRefused(world, post(PAYMENTS, { headers: [...JSON_HEADERS, [DACS_SELLER_HTTP_HEADER, 'AAAA']], body: '{}' }), { status: 401 }, `${mode}: an envelope that is not one`);
   }
 });
 
@@ -103,7 +102,7 @@ test('wrong, missing and duplicate Host answer 421 before the body or authentica
     const signed = await world.buyer.signedChallenge();
     const invalid = `${signed.header.slice(0, -4)}AAAA`;
     for (const [signature, header] of [['valid', signed.header], ['invalid', invalid]]) {
-      const peer = [...JSON_HEADERS, [SELLER_TRANSPORT_HEADER, header]];
+      const peer = [...JSON_HEADERS, [DACS_SELLER_HTTP_HEADER, header]];
       const cases = {
         'another name': { host: 'other.example.invalid' },
         'the loopback address': { host: `127.0.0.1:${world.port}` },
@@ -189,10 +188,10 @@ test('GET, HEAD, PUT and OPTIONS on POST routes answer 405 and a lowercase metho
 test('duplicate peer, content-type or content-encoding headers answer 400 duplicate_header before the body is read', async (t) => {
   const world = await admissionWorld(t);
   const signed = await world.buyer.signedChallenge();
-  const peer = [SELLER_TRANSPORT_HEADER, signed.header];
+  const peer = [DACS_SELLER_HTTP_HEADER, signed.header];
   const cases = {
     'two peer headers': [...JSON_HEADERS, peer, peer],
-    'two peer headers of different values': [...JSON_HEADERS, peer, [SELLER_TRANSPORT_HEADER, 'AAAA']],
+    'two peer headers of different values': [...JSON_HEADERS, peer, [DACS_SELLER_HTTP_HEADER, 'AAAA']],
     'two content types': [...JSON_HEADERS, ['content-type', 'application/json'], peer],
     'two content types of different values': [...JSON_HEADERS, ['content-type', 'text/plain'], peer],
     'two content encodings': [...JSON_HEADERS, ['content-encoding', 'identity'], ['content-encoding', 'identity'], peer],
@@ -272,7 +271,7 @@ test('a body slower than the body deadline answers 408 (mock timers)', async (t)
 
 test('a 4,097-character envelope is peer_envelope_invalid 401, headers over 16 KiB answer 431, and a 4,096-character envelope passes the size check', async (t) => {
   const world = await admissionWorld(t);
-  const send = (header) => world.send(post(PAYMENTS, { headers: [...JSON_HEADERS, [SELLER_TRANSPORT_HEADER, header]], body: '{}' }));
+  const send = (header) => world.send(post(PAYMENTS, { headers: [...JSON_HEADERS, [DACS_SELLER_HTTP_HEADER, header]], body: '{}' }));
   const tooLong = await send('A'.repeat(MAX_ENVELOPE_CHARS + 1));
   assert.equal(tooLong.status, 401);
   assert.equal(errorOf(tooLong), 'peer_envelope_invalid');

@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D78",
+  "registration": "D78: existing client delta lane",
+  "subject": "delta(client): D78 let the import audit accept the payment evidence adapter's provider import"
+}

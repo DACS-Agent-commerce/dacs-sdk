@@ -5,12 +5,16 @@ import { dirname } from 'node:path';
 const PRIVATE_FILE_MODE=0o600;
 const TEMPORARY_SUFFIX_BYTES=6;
 
-async function syncPath(path){const handle=await open(path,'r');try{await handle.sync();}finally{await handle.close();}}
+// A failed open or sync is rethrown with the path in its message, the original error as `cause` and its `code`.
+async function syncPath(path){
+  try{const handle=await open(path,'r');try{await handle.sync();}finally{await handle.close();}}
+  catch(cause){throw Object.assign(new Error(`cannot sync ${path}: ${cause?.message??cause}`,{cause}),{code:cause?.code});}
+}
 
-/** Flushes the entries of a directory to disk. Throws if it cannot be opened or synced. */
+/** Flushes the entries of a directory to disk. Throws an error naming the directory, with the original as `cause`, if it cannot be opened or synced. */
 export const syncDirectory=syncPath;
 
-/** Flushes the contents of an existing file to disk without changing it. Throws if it cannot be opened or synced. */
+/** Flushes the contents of an existing file to disk without changing it. Throws an error naming the file, with the original as `cause`, if it cannot be opened or synced. */
 export const syncFile=syncPath;
 
 /**

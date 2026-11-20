@@ -1,0 +1,67 @@
+{
+  "name": "DACS Directory",
+  "description": "A discovery catalog for signed, chain-anchored DACS agent services.",
+  "dacsDirectoryVersion": "2",
+  "restrictions": [
+    "TP-1"
+  ],
+  "humanUrl": "https://directory.example",
+  "agentCard": "https://directory.example/.well-known/agent.json",
+  "api": "https://directory.example/api/dacs",
+  "catalog": "https://directory.example/api/dacs/listings",
+  "bundleBindings": "https://directory.example/api/dacs/bundles/{jobId}",
+  "openapi": "https://directory.example/openapi.json",
+  "schemas": {
+    "listingSummary": "https://directory.example/schemas/listing-summary.v2.schema.json"
+  },
+  "substrates": {
+    "demos": {
+      "network": "testnet",
+      "rpcUrl": "https://rpc.example",
+      "anchors": {
+        "storage-program": {
+          "locatorPattern": "^stor-[0-9a-f]{40}$",
+          "read": {
+            "method": "GET",
+            "urlTemplate": "https://rpc.example/storage-program/{locator}",
+            "authentication": "none",
+            "responseSuccessPointer": "/success",
+            "responseDataPointer": "/data",
+            "responseOwnerPointer": "/owner",
+            "responseProgramNamePointer": "/programName"
+          }
+        }
+      }
+    }
+  },
+  "status": "https://directory.example/api/dacs/status",
+  "inspectService": "https://directory.example/api/dacs/inspect-service/{listingId}/{version}?seller={primaryClaim}",
+  "artifactProfiles": {
+    "current": "dacs-v0.1",
+    "compatibility": "legacy-sdk-v0.1",
+    "fixture": "fixture-listing",
+    "missingProfileMeans": "legacy-sdk-v0.1"
+  },
+  "maturity": {
+    "listings": "dual-profile discovery reader; browser publication omitted; pay-bearing preparation requires verified rail authority",
+    "identityTier": "self-declared unless a fresh DACS-2 verifiedBy result is resolved",
+    "reputation": "Completion verification unavailable. Testnet publishes observed counts and individual evidence; completion and fault rates and numeric reputation scores are null."
+  },
+  "verification": {
+    "policy": "strict party signatures plus referenced-artifact signature/hash checks",
+    "limitation": "RPC bytes pass through the directory server; client verification proves internal consistency, not independent chain inclusion."
+  },
+  "filters": [
+    "category",
+    "tag",
+    "credential",
+    "primaryClaim",
+    "identityTier",
+    "rail",
+    "priceMax",
+    "q",
+    "profile",
+    "limit",
+    "cursor"
+  ]
+}

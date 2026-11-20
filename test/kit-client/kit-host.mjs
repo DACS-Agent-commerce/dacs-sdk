@@ -10,7 +10,7 @@ import { KIT_TP1_VET_MODE, startSellerHost } from '../../packages/dacs-seller/sr
 import { FIXTURE_ENDPOINT, wireBuyer } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
 import { fetchAsHost, proxyListener } from '../../packages/dacs-seller/test/helpers/listener-host.mjs';
 import { createSellerTransportClientAuth } from '../../packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs';
-import { SELLER_TRANSPORT_HEADER } from '../../packages/dacs-seller/src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER } from '../../packages/dacs-client/test/helpers/old-seller-transport.mjs';
 
 /** Starts the kit's composed host over the kit's fixture capabilities, with `changes` replacing host options; both are released when the test ends, whether it passes or fails. */
 export async function composedKitHost(t, changes = {}) {

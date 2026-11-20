@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { keccak256, stringToHex } from "viem";
 
-import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
+import type { Signer } from "../../src/crypto/byteSignerTypes.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
 import { contentHash } from "../../src/canonical/index.js";
@@ -13,6 +13,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
 import {
   RAIL_REGISTRY_INDEX_ADDRESS,
@@ -1509,26 +1510,20 @@ describe("registry resolution (T12/T13)", () => {
     ).rejects.toThrow(/signature is not valid under the steward key/);
   });
 
-  test("legacy registry signatures require an explicit policy and are normalised", async () => {
-    const legacy = await buildSignedArtifact(
-      x402Definition({ railId: "legacy" }),
-      "dacs-rail:v1:",
-      signerFor(STEWARD_SEED),
+  test("rejects a rail definition whose signature is a raw hex string", async () => {
+    const definition = x402Definition({ railId: "x402:hex-signature" });
+    const signature = await signerFor(STEWARD_SEED)(
+      signedBytes("dacs-rail:v1:", contentHash(definition)),
     );
-    const doc = { entries: [legacy] } as Record<string, unknown>;
+    const entry = { ...definition, signature: Buffer.from(signature).toString("hex") };
 
-    await expect(resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "legacy", depsFor(doc))).rejects.toThrow(
-      /legacy signature is rejected/,
-    );
-    const resolved = await resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "legacy", {
-      ...depsFor(doc),
-      legacySignatures: "verify-with-pinned-key",
-    });
-    expect(resolved.signature).toMatchObject({
-      algorithm: "ed25519",
-      signer: stewardSigner,
-    });
-    expect(resolved.signature.value).not.toMatch(/=/);
+    await expect(
+      resolveRail(
+        RAIL_REGISTRY_INDEX_ADDRESS,
+        "x402:hex-signature",
+        depsFor({ entries: [entry] }),
+      ),
+    ).rejects.toThrow(/invalid signed definition shape/);
   });
 
   test("authenticates and returns one owned registry snapshot across async verification", async () => {
@@ -1580,7 +1575,6 @@ describe("registry resolution (T12/T13)", () => {
     resolutionDeps.readAnchoredJson = async () => ({ attacker: true });
     resolutionDeps.resolveDefinitionReceipt = async () => null;
     resolutionDeps.authenticateDefinition = () => "invalid";
-    resolutionDeps.legacySignatures = "reject";
     gate.resolve();
 
     await expect(pending).resolves.toMatchObject({ railId: "x402:default" });

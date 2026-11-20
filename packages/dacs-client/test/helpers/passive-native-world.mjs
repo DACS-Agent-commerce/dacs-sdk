@@ -1,4 +1,5 @@
 import { createDevnetAgreementTransport } from '../../src/wallet/devnet-native-transport.mjs';
+import { readOnlyBoundary } from './read-only-boundary.mjs';
 
 export const NOW = 1_900_000_000_000, HASH = 'a'.repeat(64), IDENTITY = 'f'.repeat(64);
 export const PAYER = '0x' + 'b'.repeat(64), PAYEE = '0x' + 'c'.repeat(64);
@@ -45,7 +46,7 @@ export function passiveNativeWorld({ onFetch = () => {}, onFence = () => {}, sta
       writes.length = 0; calls.length = 0; lockKeys.length = 0; fences.acquired = fences.released = 0;
     } };
   let held = false;
-  world.source = createDevnetAgreementTransport({ expected, journal, now: () => NOW,
+  world.source = createDevnetAgreementTransport({ boundary: readOnlyBoundary, expected, journal, now: () => NOW,
     transportOwner: { getContext: () => ({ ...context }), acquireConnectionFence: async () => {
       await onFence();
       if (held) throw new Error('TEST-double-fence');

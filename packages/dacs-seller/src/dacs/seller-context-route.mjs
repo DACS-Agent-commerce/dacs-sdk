@@ -2,30 +2,26 @@
 // Admission reserves two writes. Pre-payment writes still require exact
 // seller approval. This is the kit's only context mode.
 import { identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, isIdentityBundle, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
-import { admitPreAgreementRequest, admitWireRequestBody, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS as PATHS, admitPreAgreementRequest, admitWireRequestBody, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { KitOperationGuardError, kitOperationAdmitted } from '../kit-operation-guard.mjs';
-import { sellerData } from '../mcp/seller-content.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from './agreement-context-consumer.mjs';
 import { DEM_RAIL, canonicalize, purchaseSupport, verifyComponent } from './listing.mjs';
 import { listingPin } from './purchase-protocol.mjs';
 import { deepFreeze } from './seller-challenge-ledger.mjs';
-import { SellerRefusedError, sellerFailureAttempt } from './seller-http.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { openWireRequest } from './seller-wire-requests.mjs';
 import { createContextAttempt } from './seller-context-attempt.mjs';
 import { createAcceptedContinuation, createContextOutcomeRevalidation, createContinuationCheck } from './seller-context-continuation.mjs';
 import { resumeContext } from './seller-context-recovery.mjs';
 import { createPlannedAgreementReader } from './seller-planned-agreement.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals } from './seller-transport-auth.mjs';
+import { SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals } from './seller-transport-auth.mjs';
 
 // The deadline of each buyer-access and known-job callback (DC18).
 const POLICY_READ_TIMEOUT_MS = 10_000;
 // The seller's clock window for the buyer's generatedAt (seller-agent.mjs).
 const GENERATED_AT_SKEW_MS = 10 * 60 * 1000;
-// dem-delivery-context-consumer.mjs keeps at most 240 characters of a reason.
-const REASON_MAX = 240;
 
 // The challenge scope is the context scope without the bundle hash, which only the presentation carries.
 const CHALLENGE_SCOPE_KEYS = SELLER_CONTEXT_SCOPE_KEYS.filter((key) => key !== 'buyerBundleHash');
@@ -137,8 +133,8 @@ export function createSellerContextRoute({ listing, assertBuyerAccess, knownJob 
   const challengeScopeProblem = (scope) => scopeTermsProblem(scope, null, { seller, pin, support, now });
   const checkPolicy = buyerPolicyCheck({ assertBuyerAccess, knownJob });
   return Object.freeze({
-    path: SELLER_CONTEXT_PATH,
-    challengePath: SELLER_CONTEXT_CHALLENGE_PATH,
+    path: PATHS.context,
+    challengePath: PATHS.contextChallenge,
     /**
      * The challenge route on the wire (K1 issue steps 1-17, K2 for `contextChallenge`). `wire` is a `createWireContext` context
      * with its stop check; `input` is the raw request: `header`, `method`, `path`, the exact `rawBody` and its parsed `body`, and
@@ -216,7 +212,9 @@ function providerOutcome(answer, scope) {
  * operation completed answers that outcome. One with an unfinished earlier attempt is refused `seller_effect_pending` (503) while that attempt's lease
  * lasts, and afterwards recovered by a new attempt (`resumeContext`): it works from the retained request, reads back the retained Vet records, completes
  * with what they prove or writes only the Vets still missing, and keeps the original hold and start. A recovery that cannot prove what is missing stays
- * open as `operation_uncertain` (503); neither a refused continuation nor a failed recovery ends the row.
+ * open as `operation_uncertain` (503); neither a refused continuation nor a failed recovery ends the row. A row left running is ended by the
+ * admission transaction's sweep instead: a direct request's once it is 5 minutes old, a delegated one's once its expiry plus the grace has passed,
+ * and any at the host's startup.
  * A stored outcome is answered only after `revalidateContextOutcome({ jobId, outcome })` has read the retained records back through the
  * provider and found the same answer; otherwise it throws `seller_source_unavailable` (503) with its cause and changes nothing. `readPlannedAgreement({ jobId })` (see `createPlannedAgreementReader`) is registered with `wire` for a state read before any session.
  * `closeAttempts(cause)` closes every attempt still running. `store`, `capacity`, `admissionTransaction` and `coordinator` are the host's one
@@ -406,98 +404,6 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
   return Object.freeze({ handleContext, revalidateContextOutcome, readPlannedAgreement, closeAttempts: (cause) => { for (const attempt of running) attempt.close(cause); } });
 }
 
-// Codes this plugin's seller route and transport emit; any other code is
-// seller text and goes into the envelope.
-const KNOWN_REFUSALS = new Set(['peer_job_invalid', 'context_challenge_mismatch', 'context_challenge_consumed', 'context_challenge_expired', 'buyer_bundle_unauthenticated', 'context_scope_invalid', 'context_generated_at', 'buyer_access_closed', 'context_job_unknown',
-  'seller_budget_refused', 'unpaid_start_limit', 'buyer_unpaid_start_limit', 'peer_envelope_invalid', 'peer_signature_invalid', 'peer_signer_wrong',
-  'peer_delegation_required', 'peer_delegation_invalid', 'peer_delegation_signature_invalid', 'peer_delegation_mismatch', 'peer_delegation_expired',
-  'peer_delegation_deadline', 'peer_delegation_agreement_mismatch', 'peer_audience_wrong', 'peer_expired', 'peer_request_mismatch', 'peer_listing_mismatch',
-  'peer_job_mismatch', 'peer_context_mismatch', 'peer_nonce_conflict', 'peer_job_conflict', 'peer_operation_conflict', 'not_found']);
-
-// Signed admission refusals the seller returns only for bytes its journal
-// does not know: it answers known bytes from the journal before admission
-// in the same transaction as challenge consumption; start limits use the
-// reserve transaction. The buyer may then drop its saved request. A refusal
-// the journal makes (peer_operation_conflict, peer_job_conflict) is not here.
-export const SELLER_CONTEXT_FRESH_REFUSALS = Object.freeze(['peer_job_invalid', 'context_challenge_mismatch', 'context_challenge_consumed', 'context_challenge_expired', 'buyer_bundle_unauthenticated', 'context_scope_invalid', 'context_generated_at', 'buyer_access_closed',
-  'context_job_unknown', 'seller_budget_refused', 'unpaid_start_limit', 'buyer_unpaid_start_limit']);
-const refusedReason = (code) => `seller refused the context request (${code})`;
-// True only for the exact reason the client below gives such a refusal.
-export const sellerContextRequestUnknown = (reason) => SELLER_CONTEXT_FRESH_REFUSALS.some((code) => reason === refusedReason(code));
-
-// Plugin text, then any seller text as one complete envelope that fits the
-// consumer's reason cap, so truncation never cuts an envelope open.
-export function sellerContextReason(head, sellerText) {
-  if (sellerText === undefined || sellerText === null || sellerText === '') return head;
-  let points = [...String(sellerText)].slice(0, REASON_MAX);
-  while (points.length) {
-    const reason = `${head}: ${sellerData(points.join('')).text}`;
-    if (reason.length <= REASON_MAX) return reason;
-    points = points.slice(0, points.length - Math.max(1, Math.floor((reason.length - REASON_MAX) / 12)));
-  }
-  return `${head} (seller text omitted)`;
-}
-
-// Main's provider refuses a job an earlier server version left without party
-// Vet state with this code (agreement-context.mjs LEGACY_PARTY_VET_STATE); the
-// purchase names it as its own error, as in-process.
-const LEGACY_PARTY_VET_STATE = 'legacy_party_vet_state_missing';
-
-function checkedAnswer(answer, { scope, sellerScope }) {
-  const disposition = answer?.disposition;
-  const vetFailure = disposition === 'rejected' && keys(answer, ['disposition', 'reason', 'code', 'errorClass'])
-    && answer.code === PARTY_VET_NON_PASS && VET_FAILURE_CLASSES.includes(answer.errorClass);
-  const named = vetFailure || (disposition === 'rejected' && keys(answer, ['disposition', 'reason', 'code']) && answer.code === LEGACY_PARTY_VET_STATE);
-  if (['absent', 'rejected', 'indeterminate'].includes(disposition) && (keys(answer, ['disposition', 'reason']) || named) && typeof answer.reason === 'string') {
-    return { disposition, reason: sellerContextReason(`seller context answer is ${disposition}`, answer.reason), ...(named ? { code: answer.code } : {}), ...(vetFailure ? { errorClass: answer.errorClass } : {}) };
-  }
-  if (disposition !== 'present' || !keys(answer, ['disposition', 'value']) || !keys(answer.value, ['input', 'scope'])) return { disposition: 'indeterminate', reason: 'seller context answer is malformed' };
-  if (answer.value.scope?.jobId !== scope.jobId || answer.value.input?.jobId !== scope.jobId) return { disposition: 'rejected', reason: 'seller context answer names another job' };
-  if (!same(answer.value.scope, sellerScope)) return { disposition: 'rejected', reason: 'seller context answer scope differs from the request' };
-  // The caller (dem-delivery-context-consumer.mjs) checks the input exactly.
-  return { disposition: 'present', value: { scope: structuredClone(scope), input: answer.value.input } };
-}
-
-// clientFor(operation, scopeHash) returns the authenticated seller client
-// (seller-http.mjs) for this purchase, signing with the custody buyer or the
-// purchase's delegated session key. The plugin's account and operation ids
-// stay out of the request. Only the request saved on the purchase before its
-// first send, `{ scope, buyerBundle }` with the exact seller scope, is ever
-// sent, so a retry sends exactly the same bytes.
-export function createSellerContextClient({ clientFor }) {
-  if (typeof clientFor !== 'function') throw new TypeError('the seller context client needs an authenticated seller client per purchase');
-  return Object.freeze({
-    async resolveBuyer({ scope, buyerIdentityBundle }, { operation } = {}) {
-      requireJobId(scope?.jobId);
-      const { account, operation: operationId, ...sellerScope } = scope;
-      if (!keys(sellerScope, SELLER_CONTEXT_SCOPE_KEYS)) throw new TypeError('the Agreement-context scope differs from the seller context request');
-      const saved = operation?.state?.protocol?.sellerContextRequest;
-      if (!record(saved) || !same(saved.scope, sellerScope) || !same(saved.buyerBundle, buyerIdentityBundle)) throw new TypeError('the context request differs from the one saved on the purchase; nothing was sent');
-      const client = clientFor(operation, sellerContextScopeHash(sellerScope));
-      let answer;
-      try { answer = await client.agreementContext(JSON.parse(canonicalize({ scope: sellerScope, buyerIdentityBundle: saved.buyerBundle }))); }
-      catch (error) {
-        // Any other failure is the client's unavailable request: the purchase
-        // records main's facts about this attempt (seller-http.mjs
-        // sellerFailureAttempt), its bounded cause and `dispatched: false` only
-        // for the local TLS guard's refusal before signing. Neither says nothing
-        // was written: an earlier attempt may have sent these bytes.
-        if (!(error instanceof SellerRefusedError)) {
-          const { causeCode, dispatched } = sellerFailureAttempt(error);
-          return { disposition: 'indeterminate', reason: `DEM delivery context failed: ${failureText(error)}`, ...(causeCode ? { causeCode } : {}), ...(dispatched === false ? { dispatched } : {}) };
-        }
-        // The seller gives these signed refusals only before its provider runs,
-        // so this request wrote nothing: `written: false`, which the consumer
-        // keeps for this capability alone (ops health then reads no Vet write
-        // back). Every other refusal and every answer carries no such mark.
-        return { disposition: 'rejected', reason: KNOWN_REFUSALS.has(error.code) ? refusedReason(error.code)
-          : sellerContextReason('seller refused the context request', `${error.code}: ${error.message}`), ...(SELLER_CONTEXT_FRESH_REFUSALS.includes(error.code) ? { written: false } : {}) };
-      }
-      return checkedAnswer(answer, { scope, sellerScope });
-    },
-  });
-}
-
 // Admission states in which the seller accepted a context request and has not aborted it.
 const ACCEPTED_ADMISSION_STATES = Object.freeze(['admitted', 'running', 'settled']);
 
@@ -517,7 +423,7 @@ function presentedScope(text) {
 }
 
 /** The wire journal's read-only view of a job's context operation: the `inspectContextOutcome` port of the admission transaction. */
-export const contextOperationView = (journal, seller) => (jobId) => inspectWireOperation(journal, { seller, jobId, path: SELLER_CONTEXT_PATH });
+export const contextOperationView = (journal, seller) => (jobId) => inspectWireOperation(journal, { seller, jobId, path: PATHS.context });
 
 /** The `contextOutcome` reader of `createSellerContextRecords` over a wire journal: a job's completed context outcome `{ status, text }`, or null while it is not completed. */
 export const completedContextOutcome = (journal, seller) => {

@@ -1,6 +1,8 @@
 # dacs-sdk
 
-TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents — the reusable runtime that takes an agent through the five-stage lifecycle: **Identify → Vet → Negotiate → Settle → Verify**.
+TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents — the reusable runtime that takes an agent through the five-stage lifecycle: **Identify → Vet → Negotiate → Settle → Verify**.
+
+DACS here means Demos Agent Commerce Standards. It is not related to other software or packages called DACS.
 
 > **Status: pre-alpha / in development.** This repo is being extracted from the `agent-commerce-demo` reference implementation into a reusable library. See **[IMPLEMENTATION.md](./IMPLEMENTATION.md)** for the v0.1 MVP build plan.
 
@@ -41,12 +43,6 @@ store. After a restart, the buyer's payment job, built on
 `advanceX402BuyerSettlement`, first reconciles an attempt that has no recorded outcome against the chain, and
 submits again only once that read shows the payment authorization unused. See
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
-
-The exported `SignedArtifact`, `buildSignedArtifact()` and
-`verifySignedArtifact()` symbols are legacy raw-hex compatibility surfaces used
-by historical readers. New producers
-and readers must use `ComponentSignedArtifact`,
-`buildComponentSignedArtifact()` and `verifyComponentSignature()`.
 
 | Stage | API | Notes |
 | --- | --- | --- |
@@ -283,10 +279,7 @@ const buyer = await createAgent({
 // buyer — resolve the stable logical address and authenticate its binding tuple,
 // signed content, seller, service, version, and Listing-domain signature.
 const resolved = await buyer.readListing(published.logicalAddress);
-if (
-  resolved.status !== "verified" ||
-  resolved.compatibility !== "normative"
-) {
+if (resolved.status !== "verified") {
   throw new Error(`listing could not pass ordered admission: ${resolved.status}`);
 }
 
@@ -551,17 +544,20 @@ exact resubmission; neither re-signing nor rebroadcasting is a permitted recover
 action.
 
 `createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
-hook. A caller can omit it, but a purchase that must finish after a restart needs
-the journal it fills (see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
-Only the older session runner (`runSessionCore`) refuses a pay-dem bridge built
-over a rail without it.
+hook. `payDemSettle` and `settleFromRail` refuse a rail built without it, before
+any transfer, unless the caller passes `allowUnjournaled: true`. That opt-out
+accepts that a crash after the broadcast leaves no record of the transaction.
+A purchase that must finish after a restart needs the journal the hook fills
+(see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
 Without the hook the low-level rail provides only in-process hash-first
 observation. Across a
 process restart, at-most-once settlement requires `payDemSettle` with a
-caller-supplied durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
-additionally requires an application-owned durable journal or equivalent rail
-record. With neither durable mechanism, the SDK cannot prove that a lost
-response did not move value, so applications must not automatically retry.
+caller-supplied durable `SettlementIdempotencyStore`. The journal does not
+replace that store: if the store is lost or not shared, a plain retry can pay
+again even when the hook is set. The journal makes recovery possible; recover
+from it before any retry. With neither durable mechanism, the SDK cannot prove
+that a lost response did not move value, so applications must not
+automatically retry.
 The x402, direct ERC-20, and native DEM payment bridges require a caller-supplied
 settlement store when constructed. The SDK cannot check that the store is durable:
 production callers must supply one backed by durable, atomic storage, because an
@@ -573,6 +569,7 @@ import { createIdempotencyStore, evmErc20Settle, payDemSettle, x402Settle } from
 const settlementStore = createIdempotencyStore(durableSettlementLog);
 const x402SettlePayment = x402Settle(x402Rail, x402Paywall, { store: settlementStore });
 const evmSettle = evmErc20Settle(evmRail, evmConfig, { store: settlementStore });
+// demRail is built with journalPreparedTransfer; payDemSettle refuses one without it.
 const demSettle = payDemSettle(demRail, {}, { store: settlementStore, reconcile: demReconcile });
 ```
 
@@ -586,7 +583,8 @@ For registry dispatch, pass the same store as top-level `settlementStore` for
 x402 and ERC-20 or as `payDem.settlementStore` for native DEM.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
-`settlementStore`, and `reconcile`. The rail's timing bounds
+`settlementStore`, and `reconcile`. `journalPreparedTransfer` is required
+unless `payDem.allowUnjournaled` is `true`. The rail's timing bounds
 `inclusionTimeoutMs`, `inclusionPollIntervalMs`, `statusRequestTimeoutMs`,
 `nonceVisibilityTimeoutMs` and `transactionRecordTimeoutMs` are forwarded from
 `payDem` to `createPayDemRail` unchanged; see
@@ -698,9 +696,8 @@ anchor finality, active-listing eligibility, or complete DACS conformance.
 `readListing(logicalAddress)` and `enumerateListings(sellerId)` need only
 `AgentConfig.bindings.index`; the Agent wallet and publisher are optional for a
 read-only consumer. A normative `verified` result has passed the SDK-owned
-ordered DACS-1 reader through step 9 and carries its exact `listingPin`; an
-`authenticated` result is restricted to the explicit historical legacy-read
-arm. Both have passed exact binding-tuple, hash, Listing-context, and authorship
+ordered DACS-1 reader through step 9 and carries its exact `listingPin`. It has
+also passed exact binding-tuple, hash, Listing-context, and authorship
 checks. The binding owner is an
 index assertion; direct lookup does not by itself prove that the seller deployed
 the native anchor. Keep physical provenance separate from signed-content and
@@ -733,7 +730,13 @@ const search = await queryListingCatalog(catalog, {
   rail: "x402:default",
   limit: 50,
 });
-if (search.status !== "ok") throw new Error(search.reason);
+if (search.status !== "ok") {
+  // reason explains every indeterminate result. An unsupported rate filter
+  // also returns code: "unsupported-filter" and filters: the requested names
+  // that the Directory does not advertise.
+  if (search.code === "unsupported-filter") console.log(search.filters);
+  throw new Error(search.reason);
+}
 
 const candidate = search.page.listings[0];
 if (!candidate) throw new Error("no matching listing");
@@ -754,6 +757,22 @@ redirect refusal, omitted ambient credentials, response-size limits, and finite
 timeouts are defaults. Plain HTTP requires explicit `allowInsecureHttp: true`
 for trusted development catalogs. `reachabilityHint` and `reputationHint` remain
 operational pre-filters, never validity or trust evidence.
+
+Queries setting `minCompletionRate` or `minRating` first read the Directory's
+`/.well-known/dacs-directory.json` on the catalog origin; set
+`directoryManifestUrl` to override that absolute HTTPS URL. Query arguments are
+validated before any network request. For manifest versions `"1"` and `"2"`,
+the advertised `catalog` URL must match `catalogUrl`, and every requested rate
+filter must appear in `filters`. Otherwise, missing advertised filters produce
+`{ status: "indeterminate", reason, code: "unsupported-filter", filters: [...] }`
+without a listings request. Filters are never silently removed.
+
+A manifest HTTP 404 preserves the original request as a compatibility fallback
+for an unadvertised catalog; it identifies no Directory version. Other unreadable,
+malformed, mismatched or unknown-version manifests return `indeterminate`.
+Queries without rate filters do not read the manifest. Negotiation and listings
+share one `timeoutMs` deadline and caller cancellation signal; `maxResponseBytes`
+bounds each decoded response, including the manifest.
 
 Handle enumeration results by status. A `page` may contain permanent candidate
 `diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
@@ -842,18 +861,19 @@ Stripe, DAHR, the faucet, or Demos.
 
 ### Sealed-envelope procurement
 
-`runSealedEnvelopeCore` supports both the backwards-compatible
+`runSealedEnvelopeCore` supports both the default
 `negotiate-sealed-envelope` demand phase and the explicit
 `negotiate-sealed-envelope-procurement` phase. Demand makes the winning bidder
 the agreement buyer. Procurement requires `auctionMode: "procurement"` and
 makes the listing publisher the agreement buyer and the winning bidder the
 seller, so the bid price always flows from agreement buyer to agreement seller.
 
-Existing demand callbacks may still return only `agreementRef` and
-`agreementHash`. A procurement `commitAgreement` callback must verify both
+The SDK does not build the agreement for this pattern; the caller's
+`commitAgreement` callback does. In both phases the callback must verify both
 agreement-party signatures, call `ctx.validateAgreementForCommit(...)` before
 anchoring, and return the exact agreement plus `verifiedSignerClaims`; the core
-repeats the role/signature gate before returning an `ok` result.
+repeats the role/signature gate before returning an `ok` result. A result with
+only `agreementRef` and `agreementHash` fails the phase.
 
 ### Fault-aware bundle helper
 
@@ -958,19 +978,15 @@ Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
 `{ rail, txHash, kind }` transaction refs are exposed only through the
 explicitly named `LegacyMvp*` read/resume compatibility types and validators.
 Normative producers, including `buildTwoSidedBundle`, reject those legacy
-shapes. The existing buyer-only `runSessionCore` producer remains explicitly
-quarantined on `LegacyMvp*` until its v0.3 migration in #81.
+shapes.
 
 `verifyBundle` and `verifyBundleCore` no longer read artifacts of those early
 shapes: such an input is refused with `not an attestation bundle`, whether it
 is a whole early-shape bundle or a current bundle that carries one early-shape
 reference.
 
-Its deterministic historical names are available as
-`legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit
-prefix is intentional: these strings must not be used as the current DACS
-address grammar. New code should use the typed address helper exported by the
-relevant producer, such as `compositeVerificationAddress`,
+To compute the address of an artifact, use the typed address helper exported
+by the module that produces it, such as `compositeVerificationAddress`,
 `fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
 
 The public `attestationAddress`, `paymentEvidenceAddress`, `ratingAddress`, and

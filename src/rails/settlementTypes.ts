@@ -24,14 +24,16 @@ export interface SettleRequest {
    */
   phaseIndex?: number;
   /**
-   * Ordered durable transaction attempts supplied only to `resumeSettlement`.
-   * A fresh process uses this history to reconcile every ambiguous attempt and
-   * prove a replacement submission supersedes the latest one. Ordinary fresh
+   * Ordered durable transaction attempts. A recovery request (one with
+   * `recoveryOnly` set) may carry them so a fresh process can reconcile every
+   * ambiguous attempt against the node; reconciliation only reads and never
+   * submits a replacement. A request that carries them without `recoveryOnly`
+   * makes `payDemSettle` audit the history read-only. Ordinary fresh
    * settlement requests omit it.
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
   /**
-   * Set by `runSession` on every `resumeSettlement` request. A bridge honours it
+   * The caller sets this on every recovery request. A bridge honours it
    * by never taking a fresh claim: it settles through its store's `recover`,
    * whose own atomic claim returns a recorded outcome or reconciles an
    * unresolved intent (adopting a payment it proves landed), and refuses when
@@ -58,7 +60,7 @@ export interface SettleResult {
   payee: string;
   /**
    * Rail-specific finality (§9.5.x / PC-6). When a rail knows the finality model
-   * it settled under, it reports it here and runSessionCore records it on the
+   * it settled under, it reports it here and the caller records it on the
    * evidence instead of the default provider-receipt. E.g. §9.5.9 pay-dem →
    * `{ model: "bft-final" }`. Omit for a receipt-confirmed rail.
    */

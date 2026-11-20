@@ -1,7 +1,7 @@
 // The kit's buyer-side wire signer, `createSellerWireClientAuth`: it signs the routes the host answers through `./wire`
-// (a TP-1 profile in every request) and verifies their answers, where `createSellerTransportClientAuth` signs under the
-// old domain with no profile. The unit cases sign against the fixture binding (helpers/wire-buyer.mjs supplies the
-// binding and the verified endpoint proof only); the running-host cases go through `createSellerAgentClient`.
+// (a TP-1 profile in every request) and verifies their answers. The unit cases sign against the fixture binding
+// (helpers/wire-buyer.mjs supplies the binding and the verified endpoint proof only); the running-host cases go through
+// `createSellerAgentClient`.
 //
 // The running-host cases need a runner where `/` is root-owned (K5-J0).
 import test from 'node:test';
@@ -22,7 +22,6 @@ import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { startSellerHost } from '../src/host.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { createSellerAgentClient } from '../src/dacs/seller-http.mjs';
-import { SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_PATH } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
 import { fetchAsHost, proxyListener } from './helpers/listener-host.mjs';
 
@@ -46,7 +45,7 @@ async function wireClient({ pin = PIN, agreementHash = AGREEMENT_HASH, readAutho
   const options = { signer, binding, connection, endpointProof, publicEndpoint: FIXTURE_ENDPOINT, seller: seller.claim, resolveJob: () => ({ listingPin: pin, agreementHash }), now: () => NOW, ...overrides };
   return { auth: createSellerWireClientAuth(options), binding, connection, signs, options };
 }
-const CONTEXT_ROUTES = [SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_PATH];
+const CONTEXT_ROUTES = [PATHS.contextChallenge, PATHS.context];
 function bodyFor(path) {
   if (CONTEXT_ROUTES.includes(path)) return { scope: { jobId: JOB, listingPin: PIN } };
   return path === PATHS.state || path === PATHS.proposals ? { transportIdentity: { jobId: JOB } } : { jobId: JOB };
@@ -109,6 +108,12 @@ test('a session signer with the buyer\'s delegation signs as the buyer and embed
   assert.deepEqual((await openedAs(client, header, { requireDelegation: true })).payload, payload);
 });
 
+test('an answer is verified by the wire, and an answer that is not signed by it is refused', async () => {
+  const client = await wireClient();
+  const wired = await client.auth.request(PATHS.state, bodyFor(PATHS.state), JSON.stringify(bodyFor(PATHS.state)));
+  await assert.rejects(client.auth.verifyResponse(wired.payload, { header: 'not-a-wire-header', status: 200, responseBytes: Buffer.from('{}') }));
+});
+
 test('the challenge and context routes are signed under the wire domain with the binding\'s profile and the scope hash, and the wire opens them', async () => {
   const client = await wireClient();
   for (const path of CONTEXT_ROUTES) {
@@ -124,15 +129,15 @@ test('the challenge and context routes are signed under the wire domain with the
 
 test('the scope hash of a context request is the body\'s own, not the job lookup\'s Agreement hash', async () => {
   const client = await wireClient({ agreementHash: OTHER_HASH });
-  const body = bodyFor(SELLER_CONTEXT_PATH);
-  const { payload } = await client.auth.request(SELLER_CONTEXT_PATH, body, JSON.stringify(body));
+  const body = bodyFor(PATHS.context);
+  const { payload } = await client.auth.request(PATHS.context, body, JSON.stringify(body));
   assert.equal(payload.agreementHash, sha256Hex(canonicalize(body.scope)));
 });
 
 test('an answer to a context route is verified by the wire, and an answer that is not signed by it is refused', async () => {
   const client = await wireClient();
-  const body = bodyFor(SELLER_CONTEXT_CHALLENGE_PATH);
-  const signed = await client.auth.request(SELLER_CONTEXT_CHALLENGE_PATH, body, JSON.stringify(body));
+  const body = bodyFor(PATHS.contextChallenge);
+  const signed = await client.auth.request(PATHS.contextChallenge, body, JSON.stringify(body));
   await assert.rejects(client.auth.verifyResponse(signed.payload, { header: 'not-a-wire-header', status: 200, text: '{}', responseBytes: Buffer.from('{}') }));
 });
 
@@ -140,7 +145,7 @@ test('a context request without a canonical job in its scope is refused before a
   let lookups = 0;
   const client = await wireClient({ resolveJob: () => { lookups++; return { listingPin: PIN, agreementHash: AGREEMENT_HASH }; } });
   for (const body of [{}, { scope: null }, { scope: { jobId: 'not-a-job' } }, { jobId: JOB }]) {
-    await assert.rejects(client.auth.request(SELLER_CONTEXT_PATH, body, JSON.stringify(body)), { code: 'peer_job_invalid' }, JSON.stringify(body));
+    await assert.rejects(client.auth.request(PATHS.context, body, JSON.stringify(body)), { code: 'peer_job_invalid' }, JSON.stringify(body));
   }
   assert.equal(lookups, 0);
   assert.equal(client.signs.calls, 0);
@@ -169,7 +174,7 @@ test('a stalled authority read, job lookup or evidence lookup ends as a signing 
     ['authority reader', PATHS.state, { readAuthority }, () => { authorityStalled = true; }],
     ['resolveJob', PATHS.state, { resolveJob: STALLED }],
     ['evidenceFor', PATHS.state, { evidenceFor: STALLED }],
-    ['resolveJob on a context route', SELLER_CONTEXT_PATH, { resolveJob: STALLED }],
+    ['resolveJob on a context route', PATHS.context, { resolveJob: STALLED }],
   ];
   for (const [name, path, overrides, stall = () => {}] of cases) {
     const client = await wireClient({ ...overrides, signingTimeoutMs: SIGNING_TIMEOUT_MS });

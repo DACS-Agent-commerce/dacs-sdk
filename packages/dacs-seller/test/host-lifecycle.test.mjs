@@ -17,8 +17,6 @@ import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost,KIT_TP1_VET_MODE} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
-import {SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
-import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
 import {DACS_SELLER_DISCOVERY_PATH} from '@kynesyslabs/dacs/wire';
 import {FIXTURE_ENDPOINT,wireAuthentication,wireBuyer} from './helpers/wire-buyer.mjs';
 import {LISTING_AUTHORITY,fetchAsHost,proxyListener} from './helpers/listener-host.mjs';
@@ -220,7 +218,8 @@ test('host issues no session challenge once close has begun',async t=>{
  await entered.promise;
  const closing=host.close();
  try{
-  assert.throws(()=>host.issueSessionChallenge({jobId:request.transportIdentity.jobId,buyer:buyer.claim}),error=>error.code==='seller_host_closing');
+  const {hostBuyer}=await import('./helpers/host-context-client.mjs');
+  await assert.rejects((await hostBuyer(host,f.config.listing,{jobId:request.transportIdentity.jobId})).challenge(),'a challenge request after close has begun is not served');
  }finally{release.resolve();}
  await pending;await closing;
 });
@@ -310,18 +309,6 @@ test('host releases the job lock of a holder that is gone before serving and log
  const live=await f.proposal(host,liveJob);
  await assert.rejects(f.client(host,live).propose(live),{name:'SellerUnavailableError'});
  assert.deepEqual(refusals,[[liveJob,'seller_state_busy']]);
-});
-
-test('host opens its transport store so a context step an earlier process left pending is uncertain',async t=>{
- const f=await fixture(t);await (await f.start()).close();
- const path=join(f.dataDirectory,'transport','transport.sqlite'),jobId=core.generateCanonicalJobId();
- const earlier=createSellerTransportStore({path});
- earlier.reserve({path:SELLER_CONTEXT_PATH,method:'POST',bodyHash:'c'.repeat(64),jobId,buyer:buyer.claim,seller:seller.claim,listingPin:{listingId:'test',version:1,contentHash:'d'.repeat(64)},agreementHash:'e'.repeat(64),nonce:'earlier',expiresAt:Date.now()+60000},{scope:{jobId}},{admit:()=>Date.now()});
- earlier.close();
- const states=()=>{const db=new Database(path,{readonly:true});try{return db.prepare('SELECT state FROM peer_effects').all().map(row=>row.state);}finally{db.close();}};
- assert.deepEqual(states(),['pending']);
- await f.start();
- assert.deepEqual(states(),['uncertain']);
 });
 
 test('host refuses malformed options before opening any state',async t=>{

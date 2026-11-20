@@ -1,3 +1,4 @@
+import { diagnosticCauseCode } from "./diagnosticCause.js";
 import type {
   DacsLiveDoctorProbeV1,
   DacsLiveDoctorProbesV1,
@@ -87,8 +88,12 @@ function pass(facts?: Readonly<Record<string, string | number | boolean | null>>
   return Object.freeze({ status: "pass" as const, ...(facts === undefined ? {} : { facts }) });
 }
 
-function fail(reasonCode: string) {
-  return Object.freeze({ status: "fail" as const, reasonCode });
+function fail(reasonCode: string, facts?: Readonly<Record<string, string | number | boolean | null>>) {
+  return Object.freeze({
+    status: "fail" as const,
+    reasonCode,
+    ...(facts === undefined ? {} : { facts }),
+  });
 }
 
 function safeEndpoint(value: unknown, publicEndpoint = false): value is string {
@@ -355,8 +360,10 @@ export function createDacsRoleServiceDoctorProbesV1(
       return observed.every((item) => item.authenticated === true && item.durable === true &&
         item.acknowledged === true && item.noAction === true)
         ? pass({ directionCount: 2 }) : fail("transport-diagnostic-failed");
-    } catch {
-      return fail("transport-diagnostic-unavailable");
+    } catch (error) {
+      return fail("transport-diagnostic-unavailable", Object.freeze({
+        causeCode: diagnosticCauseCode(error),
+      }));
     }
   };
   const publicReachability: DacsLiveDoctorProbeV1 = async ({ signal }) => {

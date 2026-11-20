@@ -2,16 +2,16 @@
 // through `./wire`. It signs each request with `signWireRequest` (the binding's TP-1 profile in every request) and verifies
 // each answer with `verifyWireResponse` over the exact received bytes. This covers every route the host serves, the context
 // challenge and the context step included.
-import { WireError, isPublicEndpoint, signWireRequest, verifyWireResponse } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS, WireError, isPublicEndpoint, signWireRequest, verifyWireResponse } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
-import { SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_PATH, sellerContextScopeHash } from './seller-transport-auth.mjs';
+import { sellerContextScopeHash } from './seller-transport-auth.mjs';
 import { WIRE_ROUTE_PATHS } from './seller-wire-requests.mjs';
 
 // What `evidenceFor` may add to a request; any other member it returns is dropped, so it cannot replace the signer or the binding.
 const EVIDENCE_MEMBERS = Object.freeze(['commitment', 'agreement', 'signedListing', 'continuation']);
 // The routes taken before any Agreement exists: their job and Agreement hash come from the body's scope.
-const CONTEXT_PATHS = Object.freeze([SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH]);
+const CONTEXT_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.context, DACS_SELLER_HTTP_PATHS.contextChallenge]);
 // The client's own deadline starts only once signing returns, so signing (the caller's lookups, the buyer's authority read and
 // the signer) has this one, the same as the host's authority reader. `boundedCall` takes at most Node's timer limit.
 const SIGNING_TIMEOUT_MS = 10000;

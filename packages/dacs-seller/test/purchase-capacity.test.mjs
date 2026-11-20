@@ -593,11 +593,12 @@ function paused(input, outcome = () => input.checked.reserve()) {
   return { reached, open, input: { ...input, checked: { reserve: async () => { reach(); await opened; return outcome(); } } } };
 }
 
-// The coordinator over a world's accounting, capacity and admission transaction; `control.operation` answers the next inspection.
+// The coordinator over a world's accounting, capacity and admission transaction; `control.operation` answers the next inspection and
+// `control.unfinished` the agent's unfinished-work read.
 function withCoordinator(w) {
-  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none; w.control.payloads = new Map();
+  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none; w.control.unfinished = () => false; w.control.payloads = new Map();
   w.coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity: w.capacity, admissionTransaction: w.admission,
-    inspectOperation: target => { w.inspections++; return w.control.operation(target); } });
+    inspectOperation: target => { w.inspections++; return w.control.operation(target); }, retainsUnfinishedWork: target => w.control.unfinished(target) });
   w.contextInput = (p, path = PATHS.context) => {
     const payload = { version: '1', kind: 'request', method: 'POST', path, bodyHash: hash('{}'), jobId: p.jobId, buyer: p.input.buyer, seller: SELLER, listingPin: PIN,
       agreementHash: hash('agreement'), nonce: hash(`nonce-${++w.nonces}`).slice(0, 32), expiresAt: w.control.clock + 30000, profile: PROFILE };
@@ -1158,6 +1159,46 @@ test('terminal checks and registered gates run before accounting under the opera
   assert.equal(durableClosures(crowd.w).length, 1); assert.equal(crowd.w.report().used, 0);
 });
 
+// A payment request for `p` whose admitted body claims PAYMENT_TX, as the payment route hands it to the coordinator.
+const PAYMENT_TX = hash('payment transaction');
+const paymentInput = (w, p) => {
+  const input = w.contextInput(p, PATHS.payments);
+  return { ...input, paymentTx: PAYMENT_TX, checked: { ...input.checked, body: { txHash: PAYMENT_TX } } };
+};
+
+test('a terminal session lets only a payment retry that must finish its recorded payment reach accounting', async t => {
+  const { w, p } = await coordinated(t), asked = [], charged = () => w.report().used;
+  const underThisBinding = state => target => ({ ...(state === 'pending' ? view.pending(w.control.clock + 300000) : view.ended), binding: wireOperationBinding(target) });
+  w.control.state = onlyJob(p.jobId, () => 'settle-failed');
+  w.control.unfinished = target => { asked.push(target); return true; };
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'context_session_terminal', 409);
+  assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'settle-failed', 'effect-path'), 'a new payment operation is refused and closes the job');
+  w.control.operation = () => view.ended;
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'context_session_terminal', 409);
+  w.control.operation = underThisBinding('ended');
+  await rejects(attemptRoute(w, p, PATHS.commitments), 'context_session_terminal', 409);
+  assert.deepEqual(asked, [], 'a new operation, another binding and another route never ask for the payment work');
+
+  w.control.unfinished = target => { asked.push(target); return false; };
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'context_session_terminal', 409);
+  assert.deepEqual(asked, [{ jobId: p.jobId, path: PATHS.payments }], 'a job with no recorded payment work is refused');
+  const cut = new Error('TEST unfinished-work read failed');
+  w.control.unfinished = () => { throw cut; };
+  await assert.rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), error => error === cut);
+  assert.equal(charged(), 0, 'nothing is charged for a refused request');
+
+  w.control.unfinished = () => true;
+  for (const state of ['ended', 'pending']) {
+    w.control.operation = underThisBinding(state);
+    assert.equal((await attemptRoute(w, p, PATHS.payments, paymentInput(w, p))).state, 'new', `an ${state} payment with its recorded work reaches the reservation`);
+  }
+  assert.equal(charged(), 2, 'each retry is charged as any retry');
+  assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'settle-failed', 'effect-path'), 'the closure stays as it was');
+  w.coordinator.addPreAccountingGate(() => ({ code: 'TEST_gate_refused', status: 422 }));
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'TEST_gate_refused', 422);
+  assert.equal(charged(), 2, 'a gate still refuses it before accounting');
+});
+
 test('terminal-gate-shape-and-thenable-refusals', async t => {
   const unhandled = watchUnhandled(t), { w, p } = await coordinated(t);
   for (const notGate of ['gate', null, {}, undefined]) assert.throws(() => w.coordinator.addPreAccountingGate(notGate), TypeError);
@@ -1225,39 +1266,6 @@ test('issuance and reclamation preserve terminal observations across request rol
     assert.deepEqual(durableClosures(quiet), [], label);
   }
   await settle(); assert.deepEqual(unhandled, []);
-});
-
-// Each retiring reader of the session state observes through the same adapter, on every active path.
-const TERMINAL_REFUSAL = error => error.code === 'context_session_terminal' && error.status === 409;
-const proposalOf = (f, jobId) => f.payload({ jobId });
-const reserveProposal = (f, jobId) => f.store().reserve(proposalOf(f, jobId), {}, { keepProfile: FIXTURE_PROFILE });
-const contextOf = (f, jobId) => [f.payload({ path: PATHS.context, jobId }), { scope: { jobId } }];
-const reserveContext = (f, jobId) => f.store().reserve(...contextOf(f, jobId), { admit: () => fixture.T0 });
-const retiringReaders = {
-  'a new proposal': { run: f => assert.throws(() => reserveProposal(f, fixture.JOB), TERMINAL_REFUSAL) },
-  'the classify dry run': { run: f => assert.throws(() => f.store().classify(proposalOf(f, fixture.JOB), {}, { keepProfile: FIXTURE_PROFILE }), TERMINAL_REFUSAL) },
-  'the context step': { run: f => assert.throws(() => reserveContext(f, fixture.JOB), TERMINAL_REFUSAL) },
-  assertPending: { before: f => reserveProposal(f, fixture.JOB), run: (f, held) => assert.throws(() => f.store().assertPending(held), TERMINAL_REFUSAL) },
-  claim: { before: f => { f.store().finish(reserveProposal(f, fixture.JOB), 503, '{}'); return reserveProposal(f, fixture.JOB); },
-    run: (f, held) => assert.throws(() => f.store().claim(held, proposalOf(f, fixture.JOB)), { code: 'seller_unavailable', status: 503 }) },
-  resume: { before: f => { f.store().finish(reserveContext(f, fixture.JOB), 503, '{}'); return reserveContext(f, fixture.JOB); },
-    run: (f, held) => assert.throws(() => f.store().resume(held, contextOf(f, fixture.JOB)[0]), TERMINAL_REFUSAL) },
-  'context reclamation': { before: f => { f.store().finish(reserveContext(f, fixture.JOB), 200, '{}'); f.setTime(fixture.T0 + 7200000); }, run: f => { reserveContext(f, fixture.JOB2); }, maxContextRecords: 1 },
-  'job reclamation': { before: f => { f.store().finish(reserveProposal(f, fixture.JOB), 200, '{}'); f.setTime(fixture.T0 + 7200000); }, run: f => { reserveProposal(f, fixture.JOB2); }, maxJobs: 1 },
-};
-
-test('all terminal readers and classify preserve their observations', async t => {
-  for (const [name, { before, run, ...limits }] of Object.entries(retiringReaders)) {
-    const w = await coordination(t, {}, limits); w.allocate(fixture.JOB);
-    const held = before?.(w.f);
-    w.control.state = onlyJob(fixture.JOB, () => 'finalised');
-    run(w.f, held);
-    const closed = new Database(w.f.path, { readonly: true });
-    try { assert.deepEqual(closed.prepare(CLOSURES_SQL).all().map(row => ({ ...row })), closureOf(fixture.JOB), name); } finally { closed.close(); }
-    assert.equal(w.internals.transaction(() => w.capacity.allocationWithin(fixture.JOB)).state, 'released', name);
-    w.control.state = () => null; w.reopen();
-    assert.deepEqual(w.internals.terminalSession(fixture.JOB), { terminal: true, state: 'finalised' }, name);
-  }
 });
 
 test('terminal-observer-rollback-flush-crash-cuts', t => {

@@ -7,24 +7,34 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { createAuthorityFixture } from '../fixtures/tp1-authority-reader.mjs';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from './purchase-admission-hook.mjs';
+import { recordingApproval } from './payment-evidence-approval-double.mjs';
 installPurchaseAdmissionHook();
 export const { setPurchaseAdmission } = await loadAdmissionDouble();
 export const api = await import('../../src/wallet/node-wallet-session.mjs');
 const { openDurableWalletJournal } = await import('../../src/wallet/durable-journal.mjs');
 const { buildNativeTransferPayload } = await import('../../src/dacs/wallet-transactions.mjs');
 export const T0 = 1793102400000;
+/** The stop check and fee ceiling every session construction needs. */
+export const finalization = Object.freeze({ stopped: async () => false, feeCeilingOs: '50000000000' });
 export const mnemonicBytes = () => new TextEncoder().encode(entropyToMnemonic(new Uint8Array(32).fill(3), wordlist));
 export const ok = response => ({ result: 200, response, require_reply: false, extra: null });
 export function scriptedNode() {
   const node = { calls: [], broadcasts: [], confirms: [], applied: new Map(), mode: 'accept', nonce: 0, intercept: null };
   node.fetch = async (url, init) => {
-    const body = JSON.parse(init.body), call = body.params[0];
+    const body = init.body === undefined ? null : JSON.parse(init.body), call = body?.params[0];
     const row = { url: String(url), body, headers: { ...init.headers }, redirect: init.redirect };
     node.calls.push(row);
     const intercepted = await node.intercept?.(row);
     if (intercepted) return intercepted;
     let answer;
-    if (body.method === 'nodeCall') {
+    if (body === null) {
+      // The storage program read: the program an applied storage CREATE made, or a 404.
+      const address = new URL(url).pathname.split('/storage-program/')[1];
+      const created = [...node.applied.values()].find(tx => tx.content.to === address && tx.content.data?.[0] === 'storageProgram');
+      if (!created) return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+      const operation = created.content.data[1];
+      answer = { success: true, data: operation.data, owner: created.content.from, programName: operation.programName, storageAddress: address, metadata: operation.metadata };
+    } else if (body.method === 'nodeCall') {
       const { message, data } = call;
       if (message === 'getBlockByNumber') answer = ok(data.blockNumber === 0
         ? { number: 0, status: 'confirmed', hash: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, content: {} }
@@ -69,9 +79,10 @@ export async function world(t, { held = false, journalWrap = x => x, ownerWrap =
     owners.push(owner);
     const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: owner.currentLocal(), readAuthority: authority.read });
     const admission = { binding, currentLocal: owner.currentLocal };
-    // A seller composition requires the host's proof that it owns the state directory.
-    const stateOwnership = createSession === api.createNodeSellerComposition ? { stateOwnership: { directory: dir, held: () => true } } : {};
-    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...stateOwnership, ...sessionOptions });
+    // A seller composition requires the host's proof that it owns the state directory and its payment-evidence approval ledger.
+    const sellerInputs = createSession === api.createNodeSellerComposition
+      ? { stateOwnership: { directory: dir, held: () => true }, paymentEvidenceApproval: recordingApproval() } : {};
+    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...finalization, ...sellerInputs, ...sessionOptions });
     sessions.push(session);
     return { owner, admission };
   }
@@ -84,7 +95,8 @@ export async function world(t, { held = false, journalWrap = x => x, ownerWrap =
     lane: async () => (await journal.entries()).find(([k]) => k.startsWith('devnet/native-wallet/'))?.[1],
     restart: async () => { await session.close(); journal.close(); return start(); } };
 }
-export async function agreementRequest(w) {
+// With `complete`, the Agreement also carries the members the bridge's own planning requires.
+export async function agreementRequest(w, { complete = false } = {}) {
   const { canonicalize, sha256Hex } = await import('@kynesyslabs/dacs');
   const { createPrivateKey, createPublicKey, sign } = await import('node:crypto');
   const { deriveStorageAddress } = await import('../../src/dacs/wallet-transactions.mjs');
@@ -95,6 +107,12 @@ export async function agreementRequest(w) {
   const scope = { payeeBoundAgreementVersion:'1', derivedFromPattern:'fixed-price', jobId,
     parties:[{role:'buyer',primaryClaim:owner},{role:'seller',primaryClaim:seller}],
     terms:{price:{currency:'DEM',amount:'1'},rail:{railId:'demos-native:DEM',railVersion:1},payoutBindings:[{payeeAddress:'0x'+seller.slice('did:demos:agent:'.length),phaseIndex:2,railId:'demos-native:DEM'}]} };
+  if (complete) {
+    scope.listingRef = { listingId: 'TEST-listing', version: 1, contentHash: 'c'.repeat(64) };
+    scope.generatedAt = T0;
+    Object.assign(scope.terms, { deliverable: { deliverableType: 'storage-program', hash: 'd'.repeat(64) }, deadline: T0 + 60_000 });
+    for (const party of scope.parties) Object.assign(party, { bundleHash: 'e'.repeat(64), vetRecordRef: { anchor: { kind: 'https', locator: 'https://example.invalid/vet' }, contentHash: 'f'.repeat(64) } });
+  }
   const contentHash = sha256Hex(canonicalize(scope)), message = 'dacs-payee-bound-agreement:v1:' + contentHash;
   const signed = await w.session.wallet.request({method:'sign',params:[message]});
   assert.equal(signed.success,true,JSON.stringify(signed));

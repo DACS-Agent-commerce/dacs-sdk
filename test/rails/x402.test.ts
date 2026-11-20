@@ -782,7 +782,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       phaseIndex: 3,
     }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
-    // runSession passes the human Price.asset symbol; the bridge must NOT use it
+    // The request carries the human Price.asset symbol; the bridge must NOT use it
     // for the guard — it uses the rail-configured on-chain token id.
     await settle({
       rail: "pay-x402",

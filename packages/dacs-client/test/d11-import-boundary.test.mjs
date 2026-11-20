@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import * as wallet from '../src/public/portal/embedded-wallet/sdk-provider.mjs';
 import * as helpers from '../src/wallet/payload-helpers.mjs';
 import { createDevnetAgreementTransport } from '../src/wallet/devnet-native-transport.mjs';
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 
 function fresh(source) {
  const result=spawnSync(process.execPath,['--input-type=module','-e',source],{encoding:'utf8'});
@@ -29,7 +30,7 @@ test('served provider loads as a standalone data module', async () => {
 test('production native claim uses the pure payload digest without wallet actions', async () => {
  const {pins}=JSON.parse(readFileSync(new URL('./fixtures/sr2-public-creates.json',import.meta.url)));
  let writes=0,reads=0;
- const source=createDevnetAgreementTransport({expected:pins,now:()=>1790000020000,
+ const source=createDevnetAgreementTransport({ boundary: readOnlyBoundary,expected:pins,now:()=>1790000020000,
   journal:{get:async()=>null,entries:async()=>[],put:async()=>{writes++;},withWalletLock:(_key,fn)=>fn()},
   transportOwner:{getContext:()=>{throw Error('unexpected connection');},acquireConnectionFence:()=>{throw Error('unexpected fence');}},
   fetchImpl:()=>{reads++;throw Error('unexpected fetch');}});
