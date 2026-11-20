@@ -106,7 +106,10 @@ operation has no stored answer yet, so that payment is finished once. Neither
 writes a closure. After the terminal check, the coordinator runs the synchronous,
 read-only gates registered with `addPreAccountingGate` in registration order.
 Completed operations skip the gates too; a payment retry that finishes a recorded
-payment does not. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+payment does not. The host registers a gate that refuses a request with a fresh
+nonce under the binding of an operation whose unfinished attempt is still inside
+its lease `seller_effect_pending` (503), so that retry is not charged and its
+nonce is not published. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
 is the one synchronous check for other callers, and the purchase capacity must be
 built on a store before any reader runs. These observation writes are counted apart
 from the challenge, admission and reservation writes, which a refusal still leaves
