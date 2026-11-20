@@ -450,6 +450,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       if(!names(row) || !names(retained)) return unavailable('the lane and intent rows do not name the one retained transaction');
       refuseRetiredPin(row); refuseRetiredPin(retained);
       if(!unanswered(row) || !unanswered(retained)) return { status:'earlier-possible',message:'a broadcast answer is retained' };
+      // One row at broadcast-started and the other finished as withheld conflict: a reopen keeps rows at broadcast-started as they
+      // are, so the withheld row would still say nothing was sent while the bytes are on the wire.
+      if(row.stage !== retained.stage) return unavailable('the lane and intent rows are at different stages');
     } else if(row && !['observed','failed'].includes(row.stage)) return unavailable('the lane holds another unfinished transfer');
     return { ...classifyDispatchHistory(records),tx };
   }
@@ -1303,7 +1306,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             if(rowsIssued) { refuseRetiredPin(previous); refuseRetiredPin(issuedBefore); }
             // Inside a reopen the history is read again under the lane lock, with or without rows; outside one, issued rows refuse.
             if(rowsIssued || reopen?.hash === tx.hash) await refuseIssued(tx.hash,'issued native transfers cannot be resent',reopen);
-            // The reopened hash's rows already name these bytes: retaining them again would overwrite them, so only the answer updates them.
+            // The reopened hash's rows, both still at broadcast-started, already name these bytes: retaining them again would overwrite
+            // them, so only the answer updates them.
             const rowsKept=rowsIssued && previous?.hash === tx.hash;
             // Under the lock of the journal claim below: a cancelled transfer is never claimed.
             const claiming=await identityOf(tx.content);

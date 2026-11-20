@@ -22,12 +22,13 @@ const settle = promise => promise.then(value => ({ value }), error => ({ error }
 const intentKey = tx => `devnet/native-transfer/${tx.hash}`;
 
 // One process: the transport over the shared journal, with its own registry of capabilities, as the session wires it.
-// `faults.finish` makes the lane and intent writes that finish a withheld broadcast as failed fail.
+// `faults.finish` makes the lane and intent writes that finish a withheld broadcast as failed fail; 'lane' fails the lane's only.
 function boot(w) {
   const grants = createReopenGrants(), faults = {};
   let tick = Date.now();
+  const failsFinish = (key, value) => value?.stage === 'failed' && (faults.finish === true || (faults.finish === 'lane' && key === laneKey(w)));
   const extra = { reopenGrants: { consume: grants.consume }, stamps: { next: () => ++tick },
-    journal: w.faultyJournal((key, value) => { w.puts.push({ key, stage: value?.stage }); return faults.finish === true && value?.stage === 'failed'; }),
+    journal: w.faultyJournal((key, value) => { w.puts.push({ key, stage: value?.stage }); return failsFinish(key, value); }),
     fetchImpl: (url, init) => faults.broadcast && JSON.parse(init.body).params?.[0]?.extra === 'broadcastTx' ? Promise.reject(new Error('TEST-answer-lost')) : w.node.fetch(url, init) };
   return { grants, faults, extra };
 }
@@ -136,6 +137,26 @@ test('with the real transport, history adapter and durable journal, the first na
     assert.deepEqual(w.puts.slice(puts).map(put => put.stage), ['broadcast-accepted', 'broadcast-accepted'], 'the lane and intent rows are not retained again before the send');
     await assert.rejects(reopen(w, tx), code('outcome_unknown'));
     assert.deepEqual(w.node.broadcasts, [tx.hash], 'a repeat makes no second broadcast');
+  });
+  await t.test('a withheld broadcast whose lane finishing write alone failed leaves conflicting rows: the reopen refuses before any send and the lane stays held; a readback finishes the lane as withheld, and a later reopen sends once', async t => {
+    const first = await start(t), tx = first.signedTransfer(1);
+    first.faults.finish = 'lane';
+    await withholdBroadcast(first, tx, STOP);
+    assert.equal((await first.journal().get(laneKey(first))).stage, 'broadcast-started');
+    const intentRow = await first.journal().get(intentKey(tx));
+    assert.deepEqual([intentRow.stage, intentRow.failure], ['failed', { withheld: true }]);
+    const w = await restart(first);
+    await assert.rejects(reopen(w, tx), code('outcome_unknown'));
+    assert.deepEqual(w.node.broadcasts, [], 'nothing was sent');
+    assert.equal((await w.journal().get(laneKey(w))).stage, 'broadcast-started', 'the lane is not freed');
+    assert.deepEqual(await w.journal().get(intentKey(tx)), intentRow, 'the intent row is unchanged');
+    await assert.rejects(w.lease(), code('outcome_unknown'));
+    const readback = await w.transport().binding({ phase: 'readback', address: w.address, hash: tx.hash });
+    assert.deepEqual([readback.disposition, readback.resolved], ['failed', true]);
+    assert.equal((await w.journal().get(laneKey(w))).stage, 'failed', 'the readback finishes the lane as withheld');
+    assert.equal((await reopen(w, tx)).result, 200);
+    assert.deepEqual(w.node.broadcasts, [tx.hash]);
+    assert.equal((await w.journal().get(intentKey(tx))).stage, 'broadcast-accepted');
   });
   await t.test('two concurrent explicit requests make one broadcast', async t => {
     const first = await start(t), tx = first.signedTransfer(1);
