@@ -198,7 +198,7 @@ async function assertHeld(world, id, barrier) {
   assert.equal((await world.ledger.budget()).writes, 1, `${barrier}: one counted write`);
 }
 
-test('a payment-evidence CREATE\'s authorization is prepared before signing; after restart a refused replay of an unknown dispatch leaves the same authorization held in the real ledger', async t => {
+test("a payment-evidence CREATE's authorization is prepared before signing; after restart a refused replay of an unknown dispatch leaves the same authorization held in the real ledger", async t => {
   let world;
   const heldAtSignature = [];
   await spyTransactionSignatures(t.mock, async () => { heldAtSignature.push((await world.ledger.open()).length); });
@@ -318,7 +318,7 @@ test('policy mode through the real composeSellerApproval: an artifact CREATE thr
   assert.equal(world.confirmations.shared + world.confirmations.retained, linkedLines, 'the callback ran once per confirmation');
 });
 
-test('the purchase closes or the debit changes between preparation and confirmation: zero broadcasts; the artifact write\'s hold is released with confirmation-mismatch, while the payment-evidence authorization stays held', async t => {
+test("the purchase closes or the debit changes between preparation and confirmation: zero broadcasts; the artifact write's hold is released with confirmation-mismatch, while the payment-evidence authorization stays held", async t => {
   const world = await ledgerWorld(t), input = world.evidenceInput();
   // The evidence write is prepared, then the purchase closes before its confirmation.
   world.faults.prepare = async (real, args) => { const binding = await real(...args); world.purchaseState.purchase = false; return binding; };
@@ -438,7 +438,7 @@ test('through the real journal and ledger, confirm successfully then lose broadc
   assert.equal((await world.ledger.budget()).writes, 1, 'one counted write');
 });
 
-test('overlapping seller writes: each confirmation consumes only its own preparation, the evidence authorization is untouched by the artifact write\'s, and the ledger\'s lines match each write', async t => {
+test("overlapping seller writes: each confirmation consumes only its own preparation, the evidence authorization is untouched by the artifact write's, and the ledger's lines match each write", async t => {
   const world = await ledgerWorld(t), input = world.evidenceInput(), artifact = artifactRequest(world);
   const [approved, anchored] = await Promise.all([world.approve(artifact), world.anchor(input)]);
   assert.equal(approved, true);
@@ -525,7 +525,7 @@ test('the ledger refuses a payment-evidence-storage-create request whose values 
   assert.deepEqual(await world.ledger.open(), []);
 });
 
-test('the ledger refuses an unknown kind, and refuses each known kind carrying another kind\'s shape, with invalid_params and no hold (one assertion per kind)', async t => {
+test("the ledger refuses an unknown kind, and refuses each known kind carrying another kind's shape, with invalid_params and no hold (one assertion per kind)", async t => {
   const world = await ledgerWorld(t), adapter = await adapterRequest(world);
   const settlement = requestFor({ artifactKind: 'SettlementEvidence', phase: 'pay-dem', walletAddress: world.address, writer: world.claim, sourceBinding: world.sourceBinding });
   const kindOf = (request, kind) => ({ ...request, content: { ...request.content, kind } });
