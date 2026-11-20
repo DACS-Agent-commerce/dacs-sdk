@@ -199,7 +199,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
     if (observedAt > at || at - observedAt > maxAgeMs) fail('stale_observation', 'The read is stale or from the future');
   };
 
-  // One wall-clock deadline covers the context reads and every block read.
+  // One monotonic deadline covers the context reads and every block read.
   // A timed-out injected operation is read-only and cannot yield a later fence.
   async function bounded(callback, deadline) {
     const remaining = Math.ceil(deadline - performance.now());

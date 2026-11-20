@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record the transport blob merged from the base",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "90c4bd23a7af4405b8416b1906c9228a34aba8a5",
+      "after": "90c4bd23a7af4405b8416b1906c9228a34aba8a5"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/DELTA-COMMITS.json",
+    "packages/dacs-client/DELTA-LEDGER.json",
+    "packages/dacs-client/DELTA-MAP.md",
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ]
+}
