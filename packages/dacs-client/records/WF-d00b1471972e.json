@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged transport with the stabilised genesis and the storage CREATE reference block",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "be7d9466e15802ae0316085c226308a10ac155df",
+      "after": "be7d9466e15802ae0316085c226308a10ac155df"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-d00b1471972e.json"
+  ],
+  "note": "Both sides of the merge recorded the native transport: one passes a stabilised genesis to every binder and reads the chain identity, the other reads the chain before a storage CREATE is confirmed and keeps and hands back its confirmation's reference block. This record chooses the merged copy, which keeps every change of both sides."
+}
