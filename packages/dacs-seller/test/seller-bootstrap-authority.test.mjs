@@ -95,7 +95,7 @@ const refusal = (status, error, authorityRead = true) => ({ status, error, signe
 // A refusal's record without its count of authority reads, for refusals that reach the wire's participant check.
 const withoutAuthority = (result) => Object.fromEntries(Object.entries(result).filter(([key]) => key !== 'authority'));
 
-test('with the buyer\'s valid signature, Listing and job scope kept: its enrollment removed, revoked, duplicated, or with one profile or module member changed each refuses tp1_participant_profile_mismatch with zero effect signatures; a signed buyer declaration alone never enrolls; a failed bootstrap signature refuses peer_delegation_signature_invalid or peer_signature_invalid with zero authority calls', { timeout: TEST_TIMEOUT_MS }, async (t) => {
+test("with the buyer's valid signature, Listing and job scope kept: its enrollment removed, revoked, duplicated, or with one profile or module member changed each refuses tp1_participant_profile_mismatch with zero effect signatures; a signed buyer declaration alone never enrolls; a failed bootstrap signature refuses peer_delegation_signature_invalid or peer_signature_invalid with zero authority calls", { timeout: TEST_TIMEOUT_MS }, async (t) => {
   const w = await sellerWorld(t);
   const host = await w.start();
   const b = await w.buyerFor(host);
@@ -306,7 +306,7 @@ test('the effects directory and its parent are synced before finalization; a fai
   await host.close();
 });
 
-test('from empty job and admission stores, with the buyer enrolled in the kit composition and the seller enrolled in the buyer\'s, the production reader admits discovery, the first challenge and the context request; a second job and a restart work; a compensating or aborted context admission row, work after its request\'s bootstrap scope ended, and a correctly signed request that only declares the TP-1 tuple refuse tp1_participant_profile_mismatch with zero seller signatures; a host composed without participantImplementations throws TypeError; the host\'s delegation bytes equal the wire\'s pinned delegation vector; with the stop flag set the discovery scope still answers', { timeout: TEST_TIMEOUT_MS }, async (t) => {
+test("from empty job and admission stores, with the buyer enrolled in the kit composition and the seller enrolled in the buyer's, the production reader admits discovery, the first challenge and the context request; a second job and a restart work; a compensating or aborted context admission row, work after its request's bootstrap scope ended, and a correctly signed request that only declares the TP-1 tuple refuse tp1_participant_profile_mismatch with zero seller signatures; a host composed without participantImplementations throws TypeError; the host's delegation bytes equal the wire's pinned delegation vector; with the stop flag set the discovery scope still answers", { timeout: TEST_TIMEOUT_MS }, async (t) => {
   const failing = job(100);
   const capability = contextCapability({ resolveBuyer: async (input, options) => {
     if (input.scope.jobId === failing) { options.writable(); throw new Error('TEST the Vet readback failed'); }
