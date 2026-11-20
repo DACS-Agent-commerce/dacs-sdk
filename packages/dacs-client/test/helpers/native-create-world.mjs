@@ -68,9 +68,10 @@ export function queuingFenceOwner(events = []) {
  * `answer(message, call)` replaces the node's whole answer to a call when it returns one. `timeoutMs` is the transport's read deadline.
  * `boundary` is the transport's effect boundary (by default a real one over `journal` and `owner`), `pinVersion` its pin version and `gas` the
  * `gas_operation` the node confirms with. `now` is the transport's clock and `networkInfoAnswer()` what getNetworkInfo answers.
+ * `referenceBlock()` gives the reference block of each confirmation (`null` leaves the field out).
  */
 export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, answer = () => undefined, stamps, timeoutMs, boundary = writingBoundary({ owner, journal }), pinVersion = PINS.pinVersion, gas = null,
-  now = () => NOW, networkInfoAnswer = () => networkInfo() }) {
+  now = () => NOW, networkInfoAnswer = () => networkInfo(), referenceBlock = () => 0 }) {
   const wallet = deterministicWallet();
   const sent = { confirms: [], broadcasts: [] };
   const answerNode = async (init) => {
@@ -86,7 +87,8 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     if (message === 'getTxByHash') return { result: 400, response: 'error', require_reply: false, extra: null };
     if (message === 'confirmTx') {
       sent.confirms.push(call.data.hash);
-      return reply({ data: { valid: true, reference_block: 0, message: 'TEST validated\n', gas_operation: gas, transaction: call.data },
+      const reference = referenceBlock();
+      return reply({ data: { valid: true, ...(reference === null ? {} : { reference_block: reference }), message: 'TEST validated\n', gas_operation: gas, transaction: call.data },
         signature: { type: 'ed25519', data: `0x${'11'.repeat(64)}` }, rpc_public_key: { type: 'ed25519', data: `0x${'22'.repeat(32)}` } });
     }
     if (message === 'broadcastTx') {
