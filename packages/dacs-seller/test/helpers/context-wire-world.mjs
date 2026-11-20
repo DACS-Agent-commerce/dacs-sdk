@@ -4,19 +4,20 @@
 // issues a challenge over HTTP and builds the matching presentation.
 import { createHash } from 'node:crypto';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
-import { completeWireEffect, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, completeWireEffect, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { createClosedBootstrapGate } from '../../src/dacs/closed-bootstrap-gate.mjs';
 import { createDemDeliveryContext, demDeliveryContextHost } from '../../src/dacs/dem-delivery-context-consumer.mjs';
+import { agreementInput } from '../../src/dacs/purchase-protocol.mjs';
 import { createWireSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
 import { createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth, sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
+import { sellerContextChallengeScope, sellerContextScopeHash, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { CHALLENGE_PATH, JOB, JOB2, T0, challengeWorld } from './challenge-route-fixture.mjs';
 import { admittedSession } from './challenge-api.mjs';
 
-export { JOB, JOB2, T0, SELLER_CONTEXT_PATH };
+export { JOB, JOB2, T0 };
 const POLICY_DEADLINE_MS = 10_000;
 const hash = (text) => createHash('sha256').update(String(text)).digest('hex');
 const vetRef = (tag) => ({ vetRecordRef: { anchor: { kind: 'storage-program', locator: `vet-${tag}` }, contentHash: hash(tag) } });
@@ -37,10 +38,14 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const { state, calls, agent, buyer, seller, other } = w;
   const now = () => state.time;
   state.mono = 0;
-  const counts = { validations: 0, holds: [], releases: [], resolves: 0, readbacks: 0, vetWrites: 0, agreementSignatures: 0, reserveAcquisitions: 0 };
+  const counts = { validations: 0, holds: [], releases: [], resolves: 0, readbacks: 0, vetWrites: 0, writesByRole: { seller: 0, buyer: 0 }, resumables: 0, agreementSignatures: 0, reserveAcquisitions: 0, sourceReads: 0 };
+  const NON_PASS_ANSWERS = {
+    first: { disposition: 'rejected', reason: 'seller Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' },
+    second: { disposition: 'rejected', reason: 'buyer Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' },
+  };
   // What a test can bend: the presentation admission, the policy hold, the provider's steps, answer and Vet readback, the reservation (`recover` answers a recovery
   // effect the journal never issued), the wire completion (`nullEndFails`, `cutAfterPublish`, and `afterPublish`, run right after an outcome is published), the acceptance (`failAcceptance`) and the kind of effect evidence compensation reads (`evidenceKind`).
-  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, readback: null, afterFirstWrite: null, beforeReserve: null, recover: false, nullEndFails: false, cutAfterPublish: false, afterPublish: null, failAcceptance: false, evidenceKind: 'no-intent' };
+  const behaviour = { admit: null, policyReserve: null, provider: null, answer: null, source: null, readback: null, afterFirstWrite: null, beforeReserve: null, afterReserve: null, beforeWork: null, beforeAnswer: null, records: null, nonPass: null, unknownIntent: false, recover: false, nullEndFails: false, cutAfterPublish: false, afterPublish: null, failAcceptance: false, evidenceKind: 'no-intent' };
   const fakeEffects = new Set(), completions = [];
   // A presentation's profile admission: the agent's own, here a counting stand-in that grants unless a test says otherwise.
   agent.admitSessionPresentation = async ({ jobId, bundle, nonce }) => {
@@ -53,7 +58,7 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     reserve: async (request) => { counts.holds.push(request); return behaviour.policyReserve ? behaviour.policyReserve(request) : null; },
     release: async ({ jobId, hold }) => { counts.releases.push({ jobId, hold }); },
   };
-  const operationOf = (jobId) => inspectWireOperation(journal, { seller: seller.claim, jobId, path: SELLER_CONTEXT_PATH });
+  const operationOf = (jobId) => inspectWireOperation(journal, { seller: seller.claim, jobId, path: DACS_SELLER_HTTP_PATHS.context });
   const completeWire = (effect, outcome) => {
     completions.push({ effect, outcome });
     if (outcome === null && behaviour.nullEndFails) throw new Error('TEST the null end was not published');
@@ -66,12 +71,17 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     effectEvidence: async (row) => [row.vetAddresses.buyer, row.vetAddresses.seller].map((address) => ({ address, kind: behaviour.evidenceKind })),
     inspectContextOutcome: operationOf, completeWire, now, ready: () => state.ready(), deadlines: { policyMs: POLICY_DEADLINE_MS } });
   const coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target), admissionTransaction: admission });
-  const reserved = { calls: 0, ownerships: [] };
+  const reserved = { calls: 0, ownerships: [], effects: [] };
   const reserveCoordinated = coordinator.reserveCoordinated.bind(coordinator);
   coordinator.reserveCoordinated = async (input, ownership) => {
     reserved.calls++; reserved.ownerships.push(ownership);
     await behaviour.beforeReserve?.();
-    if (!behaviour.recover) return reserveCoordinated(input, ownership);
+    if (!behaviour.recover) {
+      const effect = await reserveCoordinated(input, ownership);
+      reserved.effects.push(effect);
+      await behaviour.afterReserve?.(effect);
+      return effect;
+    }
     const effect = Object.freeze({ state: 'recover', operationId: wireOperationId(input.payload), attempt: 1, leaseUntil: now() + 300_000 });
     fakeEffects.add(effect);
     return effect;
@@ -85,30 +95,56 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
 
   // The provider: two Vet writes, each asking the attempt's predicate first, as the real provider does before it signs.
   const sellerClaim = seller.claim;
-  const presentAnswer = (input) => ({ disposition: 'present', value: { scope: structuredClone(input.scope), input: { jobId: input.scope.jobId, buyer: vetRef('buyer'), seller: vetRef('seller') } } });
+  // The answer carries a real Agreement input over the request's bundle and generatedAt, with a stand-in Vet record named for each party.
+  const presentAnswer = (input) => {
+    const agreement = agreementInput({ jobId: input.scope.jobId, listing: w.listing, buyerBundle: input.buyerIdentityBundle, generatedAt: input.scope.generatedAt });
+    return { disposition: 'present', value: { scope: structuredClone(input.scope), input: { ...agreement, buyer: { ...agreement.buyer, ...vetRef('buyer') }, seller: { ...agreement.seller, ...vetRef('seller') } } } };
+  };
+  // With `behaviour.records` a Set, the provider keeps its Vet records across attempts: the seller's first, then the buyer's. `behaviour.nonPass`
+  // 'first' or 'second' makes that Vet the one that refuses, so the first needs one record and the second two. Without it, every attempt writes twice.
+  const VET_ORDER = ['seller', 'buyer'];
+  const required = () => (behaviour.nonPass === 'first' ? 1 : 2);
+  const missingRoles = () => VET_ORDER.slice(0, required()).filter((role) => !behaviour.records.has(role));
+  const finalAnswer = (input) => (behaviour.nonPass ? NON_PASS_ANSWERS[behaviour.nonPass] : behaviour.answer ? behaviour.answer(input) : presentAnswer(input));
   const resolveBuyer = async (input, options) => {
     counts.resolves++;
+    await null; // the real provider always awaits first, after the attempt has the work's promise
     if (behaviour.provider) await behaviour.provider(input, options);
-    for (let write = 0; write < 2; write++) {
+    const roles = behaviour.records ? missingRoles() : [null, null];
+    for (const [write, role] of roles.entries()) {
       if (options.writable() !== true) throw Object.assign(new Error('the purchase is no longer pending'), { code: 'not-pending' });
       counts.vetWrites++;
+      if (role !== null) { counts.writesByRole[role]++; behaviour.records.add(role); }
       if (write === 0 && behaviour.afterFirstWrite) await behaviour.afterFirstWrite(input, options);
     }
+    await behaviour.beforeAnswer?.(input, options);
+    return finalAnswer(input);
+  };
+  // The passive read of what the provider retained: by default the answer it gave, which a test replaces to change, lose or fail the source
+  // (`source`). Each read is counted in `sourceReads` and in `readbacks`. `readback` answers a read-only Vet readback and throws for a read
+  // that may write; the predicate is asked only then, since asking a recovery's own predicate takes its write authority.
+  const recoverBuyer = async (input, options) => {
+    counts.sourceReads++;
+    counts.readbacks++;
+    if (behaviour.readback) {
+      if (options.writable() !== false) throw new Error('TEST a readback must not be allowed to write');
+      return behaviour.readback(input);
+    }
+    if (behaviour.source) return behaviour.source(input, options);
+    if (behaviour.records) return missingRoles().length === 0 ? finalAnswer(input) : null;
     return behaviour.answer ? behaviour.answer(input) : presentAnswer(input);
   };
-  // The read-only readback of the Vet records: it answers the present answer unless `behaviour.readback` says otherwise, and never writes.
-  const recoverBuyer = async (input, options) => {
-    counts.readbacks++;
-    if (options.writable() !== false) throw new Error('TEST a readback must not be allowed to write');
-    return behaviour.readback ? behaviour.readback(input) : presentAnswer(input);
+  const resumableBuyer = async () => {
+    counts.resumables++;
+    return behaviour.records && !behaviour.unknownIntent && missingRoles().length > 0 ? { writes: missingRoles().length } : null;
   };
-  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer, resumableBuyer: async () => null,
+  const capability = createDemDeliveryContext({ authority: 'TEST-context-wire', resolveSeller: async () => null, resolveBuyer, recoverBuyer, resumableBuyer,
     bindRetainedScope: () => ({ sellerBundlePresentedBy: sellerClaim }) });
   const provider = demDeliveryContextHost(capability);
 
   const tracked = new Set();
   const trackContextWork = (start) => {
-    const task = start();
+    const task = (async () => { await behaviour.beforeWork?.(); return start(); })();
     tracked.add(task);
     void task.then(() => tracked.delete(task), () => tracked.delete(task));
     return task;
@@ -123,14 +159,15 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   const route = createWireSellerContextRoute(routeOptions);
   // After the route's own tuple hook, so a failure here rolls the stored tuple back with the rest of the acceptance.
   admission.addAcceptanceHook(() => { if (behaviour.failAcceptance) throw new Error('TEST the acceptance failed'); });
-  const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: w.pin, store: w.store, now, requireDelegation });
-  const handler = createSellerHttpHandler(agent, { authentication, context: { ...w.route, ...route }, wire });
+  /** The host's HTTP handler over `overWire`, another wire context of the same store, agent and route. */
+  const handlerOver = (overWire) => createSellerHttpHandler(agent, { context: { ...w.route, ...route }, wire: overWire });
+  const handler = handlerOver(wire);
 
-  const post = async ({ url = SELLER_CONTEXT_PATH, header, text, chunks }) => {
+  const post = async ({ url = DACS_SELLER_HTTP_PATHS.context, header, text, chunks }) => {
     const res = await exchange(handler, { url, header, text, chunks });
     let body = null;
     try { body = JSON.parse(res.text); } catch { /* unsigned non-JSON answers */ }
-    return { status: res.status, text: res.text, body, signature: res.headers?.[SELLER_TRANSPORT_HEADER] };
+    return { status: res.status, text: res.text, body, signature: res.headers?.[DACS_SELLER_HTTP_HEADER] };
   };
   const issue = async ({ jobId = JOB, actor = buyer, delegation } = {}) => {
     const answer = await post({ url: CHALLENGE_PATH, ...(await w.sign({ jobId, actor, delegation })) });
@@ -158,8 +195,8 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     bundleTamper?.(bundle);
     const body = { scope, buyerIdentityBundle: bundle };
     bodyChange?.(body);
-    const signed = await w.sign({ jobId, actor, body, hash: sha256Hex(canonicalize(body.scope)), path: SELLER_CONTEXT_PATH, delegation, ...signOptions });
-    return { ...signed, url: SELLER_CONTEXT_PATH, body, scope, bundle, nonce: sessionNonce };
+    const signed = await w.sign({ jobId, actor, body, hash: sha256Hex(canonicalize(body.scope)), path: DACS_SELLER_HTTP_PATHS.context, delegation, ...signOptions });
+    return { ...signed, url: DACS_SELLER_HTTP_PATHS.context, body, scope, bundle, nonce: sessionNonce };
   };
   const rowOf = (jobId = JOB) => admission.admissionRecord(jobId);
   const challengeOf = (nonce) => w.store.challenges.retained(nonce);
@@ -180,6 +217,6 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
     return next;
   };
   return { ...w, restartHost, challenges: () => w.store.challenges, handler, route, admission, countingAdmission, coordinator, capacity, counts, behaviour, provider, post, issue, startContext, rowOf, privateRow, challengeOf, openHolds, internals,
-    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire, closedBootstrapGate,
+    operationOf, drain, settleJob, acquisitions, reserved, completions, presentAnswer, routeOptions, other, wire, handlerOver, closedBootstrapGate,
     tick: (ms) => { state.mono += ms; } };
 }

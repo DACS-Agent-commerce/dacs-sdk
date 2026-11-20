@@ -8,7 +8,7 @@ import {
 import { createSellerTransportClientAuth } from './helpers/legacy-seller-client-auth.mjs';
 import {
   sellerSessionDelegationSigningBytes, verifySellerSessionDelegation,
-} from '../../dacs-seller/src/dacs/seller-transport-auth.mjs';
+} from './helpers/old-seller-transport.mjs';
 import { verifyEmbeddedEd25519 } from '../src/public/portal/embedded-wallet/sdk-provider.mjs';
 
 globalThis.crypto ??= webcrypto;

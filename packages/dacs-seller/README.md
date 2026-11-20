@@ -2,7 +2,8 @@
 
 A self-hosted DACS seller: one seller agent for one signed fixed-price DEM
 Listing, behind the authenticated seller transport and its durable journal, on
-loopback. The agent runs negotiation (DACS-3), the finalized commitment,
+a public listener (a TLS-terminating reverse proxy in front of loopback, or its
+own TLS; see "Listener modes"). The agent runs negotiation (DACS-3), the finalized commitment,
 `pay-dem` payment intake and delivery through the core SDK
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
 evidence and native DEM delivery capabilities, which the host requires. This
@@ -61,8 +62,7 @@ Verified additive migration is forward-only: the unchanged format marker does no
 detect downgrade, so older code can open migrated data and ignore required metadata.
 Rollback requires restoring a coherent pre-upgrade backup.
 
-The host has two separate record limits. `maxRecords` (default 10,000) is the transport store's limit on live nonce records
-and retained accounting rows, and it also sets the store's challenge and context-record caps. `maxReservationUnits` is the purchase capacity's reservation budget; it defaults to `maxRecords`
+The host has two separate record limits. `maxRecords` (default 10,000) is the transport store's limit on retained accounting rows, and it also sets the store's challenge and context-record caps. `maxReservationUnits` is the purchase capacity's reservation budget; it defaults to `maxRecords`
 and is set on its own to give the budget a different size. A purchase allocation holds 17 units of that budget for each of the
 context, proposals, commitments and payments routes (68 units, or 85 when
 commitments/signature is enabled), and admission allots one only while the whole
@@ -75,10 +75,12 @@ passed), unless a crash left it still reserving. Charges that no longer count st
 and each admission still scans them; they are never pruned. The host
 composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
-accounting and recording the reservation result. Every signed effect route
-reserves through the coordinator. The other effect routes spend a unit of their
-purchase's slot, while the context route charges one general capacity unit.
-Signed reads and the signed challenge reserve nothing. The context route's admission allots a new purchase its
+accounting and recording the reservation result. Every effect route reserves
+through it; the context step does so under the job lease its admission holds.
+Admission and accounting accept capacity through their internal ports.
+A charge for a retained purchase stage spends a unit of its route's open slot
+while one is left; any other charge spends a general unit and is refused `peer_store_capacity` (503)
+when none is free. Signed reads and the signed challenge reserve nothing. The context route's admission allots a new purchase its
 allocation and refuses `seller_not_ready` (503) while the whole allotment is not
 free. While it is not, the host's readiness is false too: its discovery document says
 `ready: false` and new challenges are refused `seller_not_ready`, while purchases
@@ -90,11 +92,10 @@ step are given back once it reads as abandoned (above; one that retains commitme
 `contextSessionState` they stay allocated until that reader names a terminal state.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
-the old store's checks, startup cleanup and the coordinator) is kept as a durable,
-insert-only terminal closure for the job, together with the release of its open
-slots. It commits with the work that saw it or, when that work is refused, fails or
-is rolled back (the `classify` dry run included), in a transaction of its own before
-the answer leaves. A failed write keeps its error and the observation stays
+the store's reservation accounting, startup cleanup and the coordinator) is kept as
+a durable, insert-only terminal closure for the job, together with the release of
+its open slots. It commits with the work that saw it or, when that work is refused,
+fails or is rolled back, in a transaction of its own before the answer leaves. A failed write keeps its error and the observation stays
 pending, so no later transaction or request passes it. A closure answers terminal
 after a restart whatever the port then says; an unknown, nonterminal or
 asynchronous answer creates none. The coordinator refuses a request for a closed job
@@ -106,7 +107,10 @@ operation has no stored answer yet, so that payment is finished once. Neither
 writes a closure. After the terminal check, the coordinator runs the synchronous,
 read-only gates registered with `addPreAccountingGate` in registration order.
 Completed operations skip the gates too; a payment retry that finishes a recorded
-payment does not. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+payment does not. The host registers a gate that refuses a request with a fresh
+nonce under the binding of an operation whose unfinished attempt is still inside
+its lease `seller_effect_pending` (503), so that retry is not charged and its
+nonce is not published. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
 is the one synchronous check for other callers, and the purchase capacity must be
 built on a store before any reader runs. These observation writes are counted apart
 from the challenge, admission and reservation writes, which a refusal still leaves
@@ -131,11 +135,12 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
-  maxRecords: 10000,     // optional limit on the store's live nonce, challenge and context records and retained accounting rows
+  maxRecords: 10000,     // optional limit on the store's challenge and context records and retained accounting rows
   maxReservationUnits: 10000, // optional reservation budget, default maxRecords; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
-  host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
-  port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
+  listener,              // required: { mode: 'proxy', host: '127.0.0.1' | '::1', port, publicOrigin } or
+                         // { mode: 'tls', host: <IP address>, port, publicOrigin, tls: { cert, key } };
+                         // publicOrigin is the Listing's seller.publicEndpoint, byte for byte (see "Listener modes")
   now,                   // optional () -> epoch milliseconds; default Date.now
   observeDemosTransfer, // optional compatibility option; native intake uses nativePaymentEvidence's observer
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
@@ -176,7 +181,8 @@ const host = await startSellerHost({
 });
 // journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
 // deliveryJournal = createDeliverableWalletJournal(...) (below); the host refuses any other pair.
-// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state. A context step
+// host.url is the local listener (http://127.0.0.1:<port>, or https://<host>:<port> in tls mode) and host.publicOrigin
+// the origin the Listing advertises; host.close() drains requests and closes the state. A context step
 // already admitted runs to its own outcome (or its 240-second deadline) before the state closes; after a
 // crash during a step, the next start ends that step or marks it uncertain.
 // A buyer gets its challenge from the host's signed challenge route and presents it on the context route.
@@ -188,7 +194,11 @@ lease. `kit-format.json` (`{"format":"dacs-kit-data/tp1-1"}`) is written first, 
 a directory that holds none of them. A directory that holds any of them without
 that marker, or with another one, is from an older kit format and is refused
 with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
-or `unreadable`); nothing is migrated. A new transport store over a
+or `unreadable`); nothing is migrated. A transport store that still has the
+tables an earlier version created and the kit no longer uses (`peer_slots`,
+`peer_transactions`, `peer_nonces`, `peer_nonce_retention`) drops them when they are all
+empty, and is refused with `kit_store_format_unsupported` and left unchanged when any holds a
+row. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
 A store that already exists is checked against the journal on every start,
@@ -269,28 +279,31 @@ check of a party's Agreement contribution; `SellerAgentError` is the seller's
 refusal with its stable code and HTTP status. The other root exports are the
 parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
-`createSellerTransportServerAuth`, `createSellerContextRoute`,
+`createSellerContextRoute`,
 `createWireSellerContextRoute` (the context step on the wire) and the buyer
-side `createSellerAgentClient`, `createSellerContextClient`,
-`createSellerTransportClientAuth` and `createSellerWireClientAuth`. The host
-answers every route but the challenge and the context step through the wire,
-under the wire domain with a TP-1 profile in each request, and refuses a
-request signed by `createSellerTransportClientAuth` there
-(`tp1_profile_missing`). The buyer's `authentication` for
+side `createSellerAgentClient` and `createSellerWireClientAuth`. The host
+answers every route through the wire, under the wire domain with a TP-1
+profile in each request, and refuses a request signed under the transport's
+old domain. The buyer's `authentication` for
 `createSellerAgentClient` is `createSellerWireClientAuth({ signer, binding,
 connection, endpointProof, publicEndpoint, seller, resolveJob })`: it signs
-and verifies every route but the challenge and the context step through the
-wire, from the `binding` of `bindTp1Profile` and the `endpointProof` of
-`verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`, over the seller's
-signed discovery document), and `resolveJob(jobId)` gives the approved job's
-`{ listingPin, agreementHash }`. Pass a `createSellerTransportClientAuth` as its
-`fallback` to sign the challenge and the context step, which still use the old
-server auth; without a `fallback` they are refused before anything is signed. Signing (the
-`resolveJob` and `evidenceFor` lookups, the buyer's authority read and a
-`fallback`) must finish within `signingTimeoutMs` (default 10,000 ms), or the
+and verifies every route the host serves, the challenge and the context step
+included, through the wire, from the `binding` of `bindTp1Profile` and the
+`endpointProof` of `verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`,
+over the seller's signed discovery document), and `resolveJob(jobId)` gives the
+approved job's `{ listingPin, agreementHash, deadline? }`; a `deadline` it gives
+is passed to the check of the buyer's `delegation`. On the challenge and the
+context step there is no Agreement yet: the signed Agreement hash is the hash of
+the request's own `scope`, and only `listingPin` and `deadline` of `resolveJob`
+are used. Signing (the
+`resolveJob` and `evidenceFor` lookups and the buyer's authority read) must
+finish within `signingTimeoutMs` (default 10,000 ms), or the
 request ends as `wire_client_signing_timeout` before anything is sent. A host mounts the Vet and Agreement context
-route by passing `createSellerContextRoute({ ... })` as the `context` option of
-`createSellerHttpHandler(agent, { authentication, context })`. The handler's
+route on the wire by passing `{ ...createSellerContextRoute({ ... }), ...createWireSellerContextRoute({ ... }) }`
+as the `context` option of `createSellerHttpHandler(agent, { wire, context })`;
+`wire` is a `createWireContext` context made for the same agent, and the handler
+refuses the removed `authentication` option. Without `handleContext` from
+`createWireSellerContextRoute`, the context path is not found. The handler's
 `agent` comes only from `createSellerAgent`
 (`@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs`), the incomplete
 constructor that stays outside the root API, as required by
@@ -304,8 +317,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createWireSellerContextRoute`,
-`createSellerContextClient`, `createSellerTransportStore`, `createSellerTransportServerAuth`,
-`createSellerTransportClientAuth` and `createSellerWireClientAuth`. The kit's other modules are reachable by
+`createSellerTransportStore` and `createSellerWireClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -418,10 +430,35 @@ The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
 per-client limiter so one client cannot exhaust the shared request budget.
 
+## Listener modes
+
+`listener` is required and there is no default mode. No other option and no environment variable changes it.
+
+- `proxy`: the host listens on literal loopback (`127.0.0.1` or `::1`) over plain HTTP. A reverse proxy that
+  terminates TLS for the Listing's origin forwards requests to it. The host answers loopback sockets only.
+- `tls`: the host listens on an IP address with the operator's certificate and key (PEM text or a `Buffer`) and
+  serves HTTPS itself. `start` refuses a certificate and key that are not a usable pair. A client gets 10 s to finish
+  the TLS handshake.
+
+In both modes `publicOrigin` must be an endpoint the wire accepts (`https://` and an authority, nothing after it) and
+must equal the Listing's `seller.publicEndpoint` byte for byte; otherwise start refuses with
+`listener_origin_mismatch`. A malformed `listener` refuses with `listener_invalid`. Both refusals come before the
+state lock and before any socket is opened.
+
+The host serves a request only under the `Host` that `publicOrigin` names (its authority, compared without regard to
+letter case, and with `:443` added when the authority names no port). A missing, repeated or other `Host` is answered
+421 `host_not_served` before the body is read; `X-Forwarded-Host` and the other forwarding headers are never read. A
+repeated `content-type`, `content-encoding` or peer header is answered 400 `duplicate_header` before the body is read.
+A reverse proxy must therefore pass the public `Host` through.
+
+In `tls` mode the host has no per-client limiter, and the global limiter described above (120 requests a minute, eight at once) is all that
+protects it from one client. Put a proxy with a per-client limiter in front of the host (proxy mode) for a public deployment.
+
 ## What the host does and does not do
 
 - It fails closed on configuration: unknown options, a missing capability, a
-  non-loopback host, a relative, shared or symlinked data directory, or a
+  malformed `listener` (proxy mode on a non-loopback host, a `publicOrigin` that is not the
+  Listing's endpoint), a relative, shared or symlinked data directory, or a
   signer that does not control the Listing are refused before anything starts.
   Two private stores also check the ancestors of their own paths: the party
   Vet store requires each ancestor to be owned by root or by this user and not
@@ -444,24 +481,47 @@ per-client limiter so one client cannot exhaust the shared request budget.
   Holding that lock, the host recovers what a holder that is gone left before it
   serves: it releases every job lock row `releaseAbandonedLock` would release
   (never a live holder, nor one on this boot whose lease cannot be checked),
-  logging one `seller-state: released the lock on job ...` line per row, and
-  marks each context step still pending in the transport journal as uncertain,
-  so the route's own reconciliation decides whether it runs again. Saved
-  sessions, effects and settlements are not changed. A lock row the host
+  logging one `seller-state: released the lock on job ...` line per row, closes
+  the challenge validations it left as lost, and ends every context admission it
+  left running: a row whose outcome the wire journal holds is settled from it,
+  and any other is compensated, which releases its hold and slot unless a Vet
+  write cannot be ruled out. Saved sessions, effects and settlements are not
+  changed. A lock row the host
   cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
   and body, for this seller and Listing; unsigned or mismatched requests are
-  refused before the agent runs. Every route but the challenge and the context
-  step (the Agreement proposal, Agreement state, commitment (`commitments`, and
+  refused before the agent runs. Every route (the challenge, the context step,
+  the Agreement proposal, Agreement state, commitment (`commitments`, and
   `commitments/signature` when enabled), payment and bundle routes, including the
-  buyer-copy read) opens every request and signs every answer through the SDK's
-  `./wire` (domain `dacs-seller-http:v1`, the host's bound TP-1 profile and the
-  tuple kept for the job); a request signed under the old domain is refused, so
-  `createSellerTransportClientAuth` does not reach these routes. The
-  wire request journal is their journal; the two read routes reserve and store
-  nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
+  buyer-copy read) opens its requests through the SDK's `./wire` (domain
+  `dacs-seller-http:v1`, the host's bound TP-1 profile and the tuple kept for
+  the job); a request signed under the old domain is refused. Once a request
+  has opened, the handler signs its answer, a refusal included, under that
+  request. A refusal made before a request opens is sent unsigned: a
+  connection that is not loopback (403), the rate limit (429), an unknown path
+  (404), a method other than POST (405), a body that is not plain JSON (415),
+  is too large (413), is interrupted or too slow (408) or is not a JSON object
+  (400), and a request whose envelope or signature does not open. A request
+  that opens but names another seller is refused 401 `peer_audience_wrong`,
+  unsigned too: this seller signs no answer under it. If the signer fails, a
+  refusal raised before any effect started is sent unsigned with its own
+  status and code, and any other answer, a refusal of the context step
+  included, becomes an unsigned 503 `operation_uncertain`. The wire request journal is the journal of every
+  effect route, the context step included. The challenge route does not use
+  it: it keeps its challenges in the challenge ledger, and when that ledger is
+  full, issuing a new challenge first deletes just enough of the oldest
+  challenges that have expired, were issued at least an hour earlier and
+  belong to a job that has ended; if too few qualify, it refuses
+  `context_challenge_capacity` 503 and deletes nothing. The two read routes
+  reserve and store nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
   (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`
   first), and a delegated request for one is refused
+  `peer_delegation_agreement_required`. A state read of a job that has a completed
+  context but no proposal yet is admitted against the Agreement that context plans:
+  it is derived from the retained context input once the retained Vet records have
+  been read back, and its job, parties, Listing and deadline are checked like any
+  Agreement's. A direct state read whose records cannot be read back gets 503
+  `seller_source_unavailable`; a delegated one gets
   `peer_delegation_agreement_required`. A payment, bundle or buyer-copy request
   continues a committed purchase only on the job's durable commitment and
   Agreement, admitted by the wire anew for each request, under the host's own
@@ -1104,7 +1164,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   Expired unattempted challenges may be reclaimed; accepted presentations
   retain their exact admission checkpoint and their job binding for replay.
 - The signed challenge route is composed directly, not by the host:
-  `createSellerHttpHandler(agent, { authentication, context, wire })` serves
+  `createSellerHttpHandler(agent, { wire, context })` serves
   `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the
   `wire` context (`createWireContext`) carries the host's `stopped` predicate; without
   one the handler refuses construction. No Agreement exists yet and the wire journal is never

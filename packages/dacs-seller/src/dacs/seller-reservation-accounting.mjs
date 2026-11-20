@@ -3,7 +3,7 @@ import { DACS_SELLER_HTTP_PATHS as PATHS, isTp1WireProfile, wireOperationBinding
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
 import { assertAdmissionJobLease } from './seller-admission-transaction.mjs';
-import { SELLER_CONTEXT_PATH, SellerTransportError } from './seller-transport-auth.mjs';
+import { SellerTransportError } from './seller-transport-auth.mjs';
 
 // The wire journal's lease; accounting refuses a clock whose lease sum the journal could not take.
 const RESERVATION_LEASE_MS = 300000;
@@ -26,7 +26,7 @@ const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isI
 /**
  * Compose durable pre-reservation accounting over the owning store's synchronous SQL/transaction port and its
  * reservation ledger: the store's one definition of the records behind each limit, which its old reserve path reads too.
- * Returns an object with reserveAccounted; throws a TypeError on invalid limits.
+ * Returns an object with reserveAccounted and reservedRequest; throws a TypeError on invalid limits.
  * The store owns the schema and BEGIN IMMEDIATE; every check and hook runs within that same transaction.
  */
 export function createReservationAccounting({ store, now, limits, contextRecords }) {
@@ -61,11 +61,9 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     return Boolean(purchase);
   }
 
-  // The old reserve path's other refusals that read journal state, so a request is judged the same on either path:
-  // a read of an unknown job, a job and route whose effect the old path holds, and a fresh start for a terminal session.
+  // The refusals that read journal state: a read of an unknown job and a fresh start for a terminal session.
   function checkRouteWithin(payload, operationId) {
     if (ledger.unknownJobWithin(payload)) fail('peer_unknown_job', 404);
-    if (ledger.oldSlotWithin(payload)) fail('peer_operation_conflict', 409);
     if (ledger.terminalStartWithin(payload, operationId)) fail('context_session_terminal', 409);
   }
 
@@ -87,7 +85,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   // Steps 1 to 6 in one transaction: a refusal at any step, or a failed commit, leaves no hold, row, unit, claim or tuple.
   function chargeWithin(input, key, requestHash) {
     const { payload, route, operationId, paymentTx, keepProfile } = input;
-    const contextStart = route === SELLER_CONTEXT_PATH;
+    const contextStart = route === PATHS.context;
     const at = now();
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
     const replay = ledger.retiredReplayWithin(payload, operationId);
@@ -172,7 +170,24 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       saveResult(key, effect.state);
       return effect;
     },
+    /** Whether the request's nonce key already has its reservation row, which reserveAccounted refuses peer_request_replayed. Read-only. */
+    reservedRequest(payload) {
+      return get('SELECT key FROM kit_reservations WHERE key = ?', requestNonceKey(payload)) !== undefined;
+    },
   };
+}
+
+/**
+ * The pre-accounting gate for a retry that the wire journal would refuse as pending only after its charge and its nonce. A request under the
+ * binding of an operation whose latest attempt has no end and whose lease has not run out at `now()`, the journal's clock, is refused
+ * seller_effect_pending 503 before any row, unit or nonce key. A request whose nonce already has its reservation row is left to the accounting,
+ * which refuses it peer_request_replayed, and a lapsed lease to the journal's recovery. Throws a TypeError for a missing port.
+ */
+export function createLiveAttemptGate({ accounting, now }) {
+  if (typeof accounting?.reservedRequest !== 'function' || typeof now !== 'function') throw new TypeError('the live-attempt gate needs the accounting and the journal clock');
+  const pending = Object.freeze({ code: 'seller_effect_pending', status: 503 });
+  return ({ payload, inspection }) => inspection?.state === 'pending' && inspection.binding === wireOperationBinding(payload)
+    && now() < inspection.leaseUntil && !accounting.reservedRequest(payload) ? pending : null;
 }
 
 // One in-process first-come mutex per key. `acquire(key)` resolves to a release function (safe to call twice); a key nobody owns or
