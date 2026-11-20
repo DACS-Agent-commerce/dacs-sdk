@@ -565,7 +565,7 @@ export async function createFsAp2BindingStore(
   async function acquireLock(transactionId: string): Promise<() => Promise<void>> {
     const path = lockPath(transactionId);
     const owner = { token: randomUUID(), pid: process.pid };
-    const deadline = Date.now() + lockTimeoutMs;
+    const deadline = performance.now() + lockTimeoutMs;
     // Prepare one complete owner before waiting. Rebuilding and fsyncing a new
     // candidate on every occupied-lock poll can consume the entire bounded wait
     // under contention without improving the no-overwrite publication check.
@@ -589,7 +589,7 @@ export async function createFsAp2BindingStore(
       for (;;) {
         const availability = await lockAvailability(path);
         if (availability === "occupied") {
-          if (Date.now() >= deadline) {
+          if (performance.now() >= deadline) {
             throw new DacsError("timed out waiting for the AP2 settlement-store lock");
           }
           await new Promise((resolve) => setTimeout(resolve, lockPollMs));
@@ -619,7 +619,7 @@ export async function createFsAp2BindingStore(
             }
           };
         }
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           throw new DacsError("timed out waiting for the AP2 settlement-store lock");
         }
         await new Promise((resolve) => setTimeout(resolve, lockPollMs));

@@ -2,7 +2,8 @@
 
 A self-hosted DACS seller: one seller agent for one signed fixed-price DEM
 Listing, behind the authenticated seller transport and its durable journal, on
-loopback. The agent runs negotiation (DACS-3), the finalized commitment,
+a public listener (a TLS-terminating reverse proxy in front of loopback, or its
+own TLS; see "Listener modes"). The agent runs negotiation (DACS-3), the finalized commitment,
 `pay-dem` payment intake and delivery through the core SDK
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
 evidence and native DEM delivery capabilities, which the host requires. This
@@ -108,7 +109,10 @@ operation has no stored answer yet, so that payment is finished once. Neither
 writes a closure. After the terminal check, the coordinator runs the synchronous,
 read-only gates registered with `addPreAccountingGate` in registration order.
 Completed operations skip the gates too; a payment retry that finishes a recorded
-payment does not. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+payment does not. The host registers a gate that refuses a request with a fresh
+nonce under the binding of an operation whose unfinished attempt is still inside
+its lease `seller_effect_pending` (503), so that retry is not charged and its
+nonce is not published. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
 is the one synchronous check for other callers, and the purchase capacity must be
 built on a store before any reader runs. These observation writes are counted apart
 from the challenge, admission and reservation writes, which a refusal still leaves
@@ -136,8 +140,9 @@ const host = await startSellerHost({
   maxRecords: 10000,     // optional limit on the store's challenge and context records and retained accounting rows
   maxReservationUnits: 10000, // optional reservation budget, default maxRecords; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
-  host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
-  port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
+  listener,              // required: { mode: 'proxy', host: '127.0.0.1' | '::1', port, publicOrigin } or
+                         // { mode: 'tls', host: <IP address>, port, publicOrigin, tls: { cert, key } };
+                         // publicOrigin is the Listing's seller.publicEndpoint, byte for byte (see "Listener modes")
   now,                   // optional () -> epoch milliseconds; default Date.now
   observeDemosTransfer, // optional compatibility option; native intake uses nativePaymentEvidence's observer
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
@@ -178,7 +183,8 @@ const host = await startSellerHost({
 });
 // journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
 // deliveryJournal = createDeliverableWalletJournal(...) (below); the host refuses any other pair.
-// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state. A context step
+// host.url is the local listener (http://127.0.0.1:<port>, or https://<host>:<port> in tls mode) and host.publicOrigin
+// the origin the Listing advertises; host.close() drains requests and closes the state. A context step
 // already admitted runs to its own outcome (or its 240-second deadline) before the state closes; after a
 // crash during a step, the next start ends that step or marks it uncertain.
 // A buyer gets its challenge from the host's signed challenge route and presents it on the context route.
@@ -426,10 +432,35 @@ The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
 per-client limiter so one client cannot exhaust the shared request budget.
 
+## Listener modes
+
+`listener` is required and there is no default mode. No other option and no environment variable changes it.
+
+- `proxy`: the host listens on literal loopback (`127.0.0.1` or `::1`) over plain HTTP. A reverse proxy that
+  terminates TLS for the Listing's origin forwards requests to it. The host answers loopback sockets only.
+- `tls`: the host listens on an IP address with the operator's certificate and key (PEM text or a `Buffer`) and
+  serves HTTPS itself. `start` refuses a certificate and key that are not a usable pair. A client gets 10 s to finish
+  the TLS handshake.
+
+In both modes `publicOrigin` must be an endpoint the wire accepts (`https://` and an authority, nothing after it) and
+must equal the Listing's `seller.publicEndpoint` byte for byte; otherwise start refuses with
+`listener_origin_mismatch`. A malformed `listener` refuses with `listener_invalid`. Both refusals come before the
+state lock and before any socket is opened.
+
+The host serves a request only under the `Host` that `publicOrigin` names (its authority, compared without regard to
+letter case, and with `:443` added when the authority names no port). A missing, repeated or other `Host` is answered
+421 `host_not_served` before the body is read; `X-Forwarded-Host` and the other forwarding headers are never read. A
+repeated `content-type`, `content-encoding` or peer header is answered 400 `duplicate_header` before the body is read.
+A reverse proxy must therefore pass the public `Host` through.
+
+In `tls` mode the host has no per-client limiter, and the global limiter described above (120 requests a minute, eight at once) is all that
+protects it from one client. Put a proxy with a per-client limiter in front of the host (proxy mode) for a public deployment.
+
 ## What the host does and does not do
 
 - It fails closed on configuration: unknown options, a missing capability, a
-  non-loopback host, a relative, shared or symlinked data directory, or a
+  malformed `listener` (proxy mode on a non-loopback host, a `publicOrigin` that is not the
+  Listing's endpoint), a relative, shared or symlinked data directory, or a
   signer that does not control the Listing are refused before anything starts.
   Two private stores also check the ancestors of their own paths: the party
   Vet store requires each ancestor to be owned by root or by this user and not
@@ -472,10 +503,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   connection that is not loopback (403), the rate limit (429), an unknown path
   (404), a method other than POST (405), a body that is not plain JSON (415),
   is too large (413), is interrupted or too slow (408) or is not a JSON object
-  (400), and a request whose envelope or signature does not open. If the
-  signer fails, a refusal raised before any effect started is sent unsigned
-  with its own status and code, and any other answer becomes an unsigned 503
-  `operation_uncertain`. The wire request journal is the journal of every
+  (400), and a request whose envelope or signature does not open. A request
+  that opens but names another seller is refused 401 `peer_audience_wrong`,
+  unsigned too: this seller signs no answer under it. If the signer fails, a
+  refusal raised before any effect started is sent unsigned with its own
+  status and code, and any other answer, a refusal of the context step
+  included, becomes an unsigned 503 `operation_uncertain`. The wire request journal is the journal of every
   effect route, the context step included. The challenge route does not use
   it: it keeps its challenges in the challenge ledger, and when that ledger is
   full, issuing a new challenge first deletes just enough of the oldest

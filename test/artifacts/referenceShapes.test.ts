@@ -7,9 +7,6 @@ import { describe, expect, it } from "vitest";
 import {
   isAttestationRef,
   isChainTxRef,
-  isLegacyMvpAttestationRef,
-  isLegacyMvpSettlementEvidence,
-  isLegacyMvpTxRef,
 } from "../../src/index.js";
 
 const VECTOR = join(
@@ -46,7 +43,7 @@ describe.skipIf(!haveVector)(
       }
     });
 
-    it("keeps pre-#308 SDK records only behind the named compatibility layer", () => {
+    it("refuses the flat reference shapes of early SDK releases", () => {
       const legacyRef = {
         kind: "dacs-4-evidence",
         id: "settlement-job-5",
@@ -60,35 +57,6 @@ describe.skipIf(!haveVector)(
 
       expect(isAttestationRef(legacyRef)).toBe(false);
       expect(isChainTxRef(legacyTx)).toBe(false);
-      expect(isLegacyMvpAttestationRef(legacyRef)).toBe(true);
-      expect(isLegacyMvpTxRef(legacyTx)).toBe(true);
-
-      // A current event coordinate cannot be laundered through the old
-      // phaseIndex evidence envelope. Current producers use normative
-      // SettlementEvidence; only a transitional bundle summary may copy it.
-      expect(isLegacyMvpSettlementEvidence({
-        evidenceVersion: "1",
-        jobId: "job-5",
-        phase: "pay-x402",
-        phaseIndex: 3,
-        outcome: "success",
-        paymentTxRefs: [{
-          kind: "x402-event",
-          httpResource: "https://seller.example/deliver",
-          paymentReceiptHash: "b".repeat(64),
-          settlementTxHash: "c".repeat(64),
-          chainId: 84532,
-          logIndex: 0,
-          protocolVersion: "2",
-        }],
-        paymentAmount: { amount: "1", currency: "USDC" },
-        settlementFinality: {
-          model: "block-depth",
-          finalityBlocks: 1,
-          finalityObservedAt: 1,
-        },
-        observedAt: 1,
-      })).toBe(false);
     });
   },
 );

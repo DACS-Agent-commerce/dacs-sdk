@@ -19,6 +19,7 @@ import { createSellerTransportStore } from './helpers/bound-transport-store.mjs'
 import { transportOutcome } from '../src/dacs/seller-agent.mjs';
 const seller={...transport,...listingApi,agreementInput,listingPin,createSellerTransportStore};
 import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
+import { distinctHeaders } from './helpers/listener-host.mjs';
 
 let walletSequence=60;
 function key() { const w=testWallet(walletSequence++);return {...w,sign:w.signBytes,signWallet:message=>'0x'+w.signBytes(Buffer.from(message)).toString('hex')}; }
@@ -63,7 +64,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   const handle = seller.createSellerHttpHandler(facade, { wire });
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);
-    Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
+    Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, headersDistinct: distinctHeaders(init.headers ?? {}), socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
     const res = { destroyed: false, writableEnded: false, headersSent: false, status: 0, headers: {}, text: '',
       writeHead(status, headers) { this.status = status; this.headers = headers; this.headersSent = true; }, end(text) { this.text = String(text); this.writableEnded = true; } };
     await handle(req, res);
@@ -196,7 +197,7 @@ async function delegatedWorld(t, answers, publication = null) {
   let lastResponse;
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);
-    Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
+    Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, headersDistinct: distinctHeaders(init.headers ?? {}), socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
     const res = { destroyed: false, writableEnded: false, headersSent: false, status: 0, headers: {}, text: '',
       writeHead(status, headers) { this.status = status; this.headers = headers; this.headersSent = true; }, end(text) { this.text = String(text); this.writableEnded = true; } };
     await handle(req, res);

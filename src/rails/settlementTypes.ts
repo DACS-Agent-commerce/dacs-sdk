@@ -11,9 +11,8 @@ export interface SettleRequest {
   /**
    * Runtime rail destination selected by the buyer. This is separate from
    * `payee`: an EVM/x402 destination and a seller DID are different namespaces.
-   * On the legacy path it is retained in a buyer-signed extension, not negotiated
-   * with seller authority. A rail MUST pay this destination and return this exact
-   * identifier as `SettleResult.payee`.
+   * A rail MUST pay this destination and return this exact identifier as
+   * `SettleResult.payee`.
    */
   expectedPayee: string;
   jobId: string;

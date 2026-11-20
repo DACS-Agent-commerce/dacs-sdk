@@ -66,8 +66,10 @@ export interface DiscoverDeps {
   /** DACS-1 §6.3.4 reader step 3 clock; defaults to Date.now(). */
   nowMs?: () => number;
   /**
-   * DACS-1 §6.3.4 ordered reader result. Required once a Listing passes the
-   * signature checks; discovery returns only exact-hash `verified` records.
+   * DACS-1 §6.3.4 ordered reader result. `discoverListings` throws without it
+   * once a Listing passes the shape, validity-window and signer checks (and,
+   * with `verify`, the signature check), and returns only exact-hash
+   * `verified` records.
    */
   validateListing?: (
     raw: Record<string, unknown>,

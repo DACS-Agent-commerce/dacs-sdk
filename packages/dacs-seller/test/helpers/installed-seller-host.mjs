@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomBytes, sign, verify } from 'node:crypto';
 import { mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -73,7 +74,10 @@ const unsignedRail = { railVersion: 1, railId: 'demos-native:DEM', railType: 'de
   phaseHandler: 'pay-dem', parameters: {}, availability: 'live', governance: { proposedBy: stewardClaim, acceptedAt: 1, anchoring: 'in-code' } };
 const railAuthority = { rail: { ...unsignedRail, signature: { algorithm: 'ed25519', signer: stewardClaim,
   value: sign(null, Buffer.from(`dacs-rail:v1:${core.contentHash(unsignedRail)}`, 'ascii'), steward.privateKey).toString('base64url') } }, stewardClaim, stewardPublicKey, railRegistryVersion: 1, production: false };
-const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Installed seller', publicEndpoint: 'https://seller.invalid/agent',
+// The Listing's endpoint, the listener's public origin and the discovery document's origin are one origin.
+const wireEndpoint = 'https://seller.example.invalid';
+const listener = { mode: 'proxy', host: '127.0.0.1', port: 0, publicOrigin: wireEndpoint };
+const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Installed seller', publicEndpoint: wireEndpoint,
   listingId: 'installed-report', listingVersion: 1, title: 'Installed package report', description: 'A report served by the installed seller package.',
   expectedSizeBytes: 1024, category: 'services.market-report', tags: ['installed'], priceDem: '2.5', notBefore: now - 60000 });
 draft.offering.deliverable.expectedSizeBytes=1024;
@@ -164,6 +168,7 @@ const tp1Network = {
     participants: scope.participants.map((claim) => ({ claim, profile: approvedProfile, modules: wire.TESTNET_PROFILE_TP1.tuple })) }),
 };
 const capabilities = () => ({
+  listener,
   tp1Network,
   readCommitmentReceipt: Object.assign(refuse('readCommitmentReceipt'), { chainIdentity: approvedRecord.chainIdentity }),
   now:()=>now,
@@ -225,7 +230,7 @@ out.refusedConfigurations = {
   missingAgreementAnchor: await refusal({ signer, listing, dataDirectory, ...withoutReadback }),
   missingDelivery: await refusal({ signer, listing, dataDirectory, ...withoutDelivery }),
   missingRailAuthority: await refusal({ signer, listing, dataDirectory, ...withoutRail }),
-  publicInterface: await refusal({ signer, listing, dataDirectory, ...capabilities(), host: '0.0.0.0' }),
+  publicInterface: await refusal({ signer, listing, dataDirectory, ...capabilities(), listener: { ...listener, host: '0.0.0.0' } }),
   unknownOption: await refusal({ signer, listing, dataDirectory, ...capabilities(), anchors: { read: async () => null, write: async () => null } }),
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
   otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
@@ -251,7 +256,6 @@ let buyerBundle, plan, buyerContribution, proposal, transportIdentity, unvetted,
 // The wire buyer, inlined for the same reason as the authority above: it binds the approved profile, holds the
 // seller's signed discovery document and the buyer's endpoint proof of it, signs each request under the wire
 // domain and verifies each answer over its exact received bytes.
-const wireEndpoint = 'https://seller.example.invalid';
 const wireBuyerSession = async () => {
   const binding = await wire.bindTp1Profile({ record: approvedRecord, local: tp1Network.connection(), readAuthority: tp1Network.readAuthority });
   const document = await wire.signDiscoveryDocument({ format: wire.DACS_SELLER_DISCOVERY_FORMAT, profile: binding.profile, seller: sellerKey.claim, publicEndpoint: wireEndpoint, transport: [wire.DACS_SELLER_HTTP_V1],
@@ -263,7 +267,18 @@ const wireBuyerSession = async () => {
   return { binding, endpointProof };
 };
 let wireBuyerReady = null;
-const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: {
+// `fetch` cannot set `Host`; the host serves only the Host its Listing's endpoint names.
+const hostFetch = (input, init = {}) => new Promise((resolve, reject) => {
+  const request = httpRequest(new URL(input), { method: init.method ?? 'GET', headers: { host: new URL(wireEndpoint).host, ...init.headers }, signal: init.signal }, (res) => {
+    const chunks = [];
+    res.on('data', (chunk) => chunks.push(chunk));
+    res.on('error', reject);
+    res.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode, headers: Object.entries(res.headers).map(([name, value]) => [name, [value].flat().join(', ')]) })));
+  });
+  request.on('error', reject);
+  request.end(init.body);
+});
+const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, fetchImpl: hostFetch, authentication: {
   request: async (path, body, text) => {
     const { binding, endpointProof } = await (wireBuyerReady ??= wireBuyerSession());
     const jobId = body.transportIdentity?.jobId ?? body.jobId;
@@ -291,7 +306,7 @@ const postContextRoute = async (url, path, jobId, body) => {
   const text = JSON.stringify(body);
   const signed = await wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: tp1Network.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
     jobId, text, seller: sellerKey.claim, job: { listingPin: pin, agreementHash: core.sha256Hex(core.canonicalize(body.scope)), profile: binding.profile }, delegation: null, now, lifetimeMs: 30_000 });
-  const response = await fetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: signed.header }, body: text });
+  const response = await hostFetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: signed.header }, body: text });
   return { status: response.status, body: await response.json() };
 };
 const requestChallenge = (url, jobId) => postContextRoute(url, wire.DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: contextScopeFor(jobId) });
@@ -339,7 +354,7 @@ const state = await client.agreementState(transportIdentity);
 out.stateSameContribution = core.canonicalize(state.contribution) === core.canonicalize(first.contribution);
 out.refusals = {
   otherListingPin: await refusedCode(() => clientFor(host.url, { ...pin, contentHash: '0'.repeat(64) }).propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle })),
-  unsigned: await (async () => { const response = await fetch(`${host.url}/dacs/v1/agreements/proposals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) }); return { status: response.status, body: await response.json() }; })(),
+  unsigned: await (async () => { const response = await hostFetch(`${host.url}/dacs/v1/agreements/proposals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) }); return { status: response.status, body: await response.json() }; })(),
   unvettedProposal: await (async () => { try { const answer = await clientFor(host.url, pin, unvetted.plan.agreementHash).propose({ proposal: unvetted.proposal, transportIdentity: unvetted.transportIdentity, buyerIdentityBundle: bundleFor(unvettedJobId) });
     return { disposition: answer.disposition ?? null, contribution: answer.contribution ?? null }; } catch (error) { return { name: error.name, code: error.code ?? null, contribution: null }; } })(),
   fabricatedVetProposal: await (async () => { try { const answer = await clientFor(host.url, pin, fabricated.plan.agreementHash).propose({ proposal: fabricated.proposal, transportIdentity: fabricated.transportIdentity, buyerIdentityBundle: bundleFor(fabricatedJobId) });
@@ -347,7 +362,7 @@ out.refusals = {
   replayedPresentation: await refusedCode(() => clientFor(host.url, pin, replayed.plan.agreementHash).propose({ proposal: replayed.proposal, transportIdentity: replayed.transportIdentity, buyerIdentityBundle: bundleFor(replayedJobId) })),
   bareNoNonce: !Object.hasOwn(bundleFor(bareJobId), 'sessionNonce'),
   missingNonce: await requestContext(host.url, bareJobId),
-  contextChallenge: await (async () => { const response = await fetch(`${host.url}/dacs/v1/agreements/context/challenge`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); return { status: response.status, body: await response.json() }; })(),
+  contextChallenge: await (async () => { const response = await hostFetch(`${host.url}/dacs/v1/agreements/context/challenge`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); return { status: response.status, body: await response.json() }; })(),
   secondHostSameDirectory: await refusal({ signer, listing, dataDirectory, ...capabilities() }),
   secondProcessSameDirectory: JSON.parse(spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--second', dataDirectory], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: 60000 }).stdout.trim().split('\n').at(-1)).secondProcess,
 };
