@@ -1,0 +1,49 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF read a stabilised genesis on exact agreement of numeric block zero, the chain identity and block one",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "c4bed9cda06db25dbb9f1225570a258dc593fcc0",
+      "after": "e4b36ab0369a7f00f930e20e882d01b1b4af714a"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+      "before": "0f218e6e7a49859004e10cad557543279983aa9c",
+      "after": "2cb25a3a52ace45972663a1b8a15e7f6e83f616f"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/chain-identity-read.mjs",
+      "before": null,
+      "after": "a85c1d5dcd2a51000dbe9b9f09640f8e9e7ade8a"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "9e3226dde4459873227f8fd197c055626d964be5",
+      "after": "43b0340970ba30584072ae1bf6cae0bfaf74866d"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+      "before": "a647a27450c9260dc8bf62665878ded6a805a813",
+      "after": "f7f4b240ddc6c747cf0a789f78620fbca488d045"
+    },
+    {
+      "path": "packages/dacs-client/test/stabilised-genesis-binding.test.mjs",
+      "before": null,
+      "after": "17aa39e642fdb074d2be1cac4f78c3b61835bdb9"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-250b47b3b5f6.json",
+    "packages/dacs-client/src/dacs/network-binding.mjs",
+    "packages/dacs-client/src/wallet/chain-identity-read.mjs",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/test/helpers/chain-identity-fixture.mjs",
+    "packages/dacs-client/test/stabilised-genesis-binding.test.mjs",
+    "scripts/release-policy.json"
+  ],
+  "note": "A pin names one genesis representation: the literal-error `fallback`, or `stabilisedGenesis` (`representation: 'stabilised-genesis'`, `documentation`, `chainId` as text or null, `genesisHash` as the pinned chain identity, `genesisDataHash`, `blockOneHash`), never both. An unknown representation, a missing, extra or malformed value, or a reader without `getChainIdentity` refuses when the binder is built. Under a stabilised genesis every bind, recheck and fence reads numeric block zero (a confirmed block; the literal error refuses with `genesis_representation_mismatch`), the node's `getChainIdentity` answer (`{chainId, genesisHash, genesisDataHash}` in the exact RPC envelope) and confirmed block one. The three must agree with each other (`conflicting_identity`) and with every reviewed value (`identity_mismatch`); a malformed or unavailable read, a reconnect and a receipt from another connection each keep their own code, and the three reads share one deadline. A saved binding of the other representation is refused with `binding_mismatch`. The new `wallet/chain-identity-read.mjs` sends the `getChainIdentity` request for `sourceBlockReader` through the same bounded post as the block reads, so the 4 MiB reply bound applies. The native transport and `createSourceObserver` accept `stabilisedGenesis` and pass it to every binder they build; the literal-error path is unchanged, and no network or pin uses the new representation yet. `chain-identity-read.mjs` is in the package's `files`, and the release policy's manifest hash follows it. `test/stabilised-genesis-binding.test.mjs` covers the shared reader, the held client facade, the source observer and native strict recovery."
+}

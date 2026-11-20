@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged native transport",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "6e2b4e1fa06bbe9a252577bdd7a5f2db4c03d436",
+      "after": "6e2b4e1fa06bbe9a252577bdd7a5f2db4c03d436"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-b68843e0f095.json"
+  ],
+  "note": "Both sides of the merge recorded the native transport: one reads the signature domain from the node and checks fees before a send, the other passes a stabilised genesis to every binder. This record chooses the merged copy, which keeps every change of both sides."
+}
