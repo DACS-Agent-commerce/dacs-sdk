@@ -186,6 +186,26 @@ test('the production reader serves discovery and job checks from registered List
   for (const name of Object.keys(w.sources)) assert.throws(() => createAuthorityReader({ ...w.sources, [name]: undefined }), TypeError, name);
 });
 
+test("the reader refuses a job whose saved purchase belongs to another buyer wallet or names no valid buyer, and no delegation is signed for it", async t => {
+  const w = readerWorld(t), signer = countingSigner(BUYER), binding = await w.bind(), current = w.owner.currentLocal();
+  const foreign = '01M5YKPJG0248H248H248H248M', noBuyer = '01M5YKPJG0248H248H248H248N', badBuyer = '01M5YKPJG0248H248H248H248P', noSeller = '01M5YKPJG0248H248H248H248Q';
+  w.rows.set(foreign, purchaseRow(foreign, SELLER, OTHER_BUYER));
+  w.rows.set(noBuyer, { ...purchaseRow(noBuyer), terms: { ...purchaseRow(noBuyer).terms, buyer: undefined } });
+  w.rows.set(badBuyer, { ...purchaseRow(badBuyer), terms: { ...purchaseRow(badBuyer).terms, buyer: { accountId: 'TEST-account', wallet: 'not-an-address' } } });
+  // A row that names no seller: its Listing has none, and its terms name none either.
+  const { terms, state } = purchaseRow(noSeller);
+  w.rows.set(noSeller, { terms: { ...terms, seller: undefined }, state: { protocol: { ...state.protocol, listing: {} } } });
+  for (const jobId of [foreign, noBuyer, badBuyer, noSeller]) {
+    await assert.rejects(assertTp1Authority(binding, current, [BUYER, SELLER], jobId), mismatch, jobId);
+    await assert.rejects(assertTp1Authority(binding, current, [BUYER], jobId), mismatch, `${jobId}: the wallet alone is not vouched for either`);
+    // The wire asks a job scope with two participants, so the wallet alone is checked at the reader itself.
+    assert.deepEqual((await w.reader({ local: { ...current }, sessionId: jobId, participants: [BUYER] })).participants, [], `${jobId}: the reader answers no participants for the wallet alone`);
+    await assert.rejects(signSellerSessionDelegation(delegationPayload(BUYER, jobId), signer, binding, current), mismatch, jobId);
+  }
+  assert.equal(signer.signs, 0, 'no refused case reached the signer');
+  await assertTp1Authority(binding, current, [BUYER, SELLER], JOB);
+});
+
 test('a purchase as the purchase service saves it, with its Listing in the protocol state, authorizes its enrolled seller for its job', async t => {
   const { row, jobId, buyer, seller } = savedPurchase();
   const w = readerWorld(t);

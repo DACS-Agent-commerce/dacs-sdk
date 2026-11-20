@@ -465,3 +465,13 @@ test("a nested fence acquisition reuses only the pass's own fence: a caller outs
   (await outside).release();
   assert.equal(granted, true);
 });
+
+test('a seller host that imports only the package export makes a job pass and sends through the seller composition', async t => {
+  const exported = await import('@kynesyslabs/dacs-client/node-wallet');
+  assert.equal(typeof exported.passContext, 'function');
+  const w = await gateWorld(t);
+  const context = exported.passContext({ operationClass: 'job-create', currentAuthorization: () => true });
+  const result = await (await openPass(w, { pass: { context } })).run(() => w.send());
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(w.node.broadcasts.length, 1);
+});
