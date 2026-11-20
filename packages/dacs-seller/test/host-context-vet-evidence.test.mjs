@@ -8,24 +8,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { compositeVerificationAddress, contentHash } from '@kynesyslabs/dacs';
+import { contentHash } from '@kynesyslabs/dacs';
 import { deadRefusedCreate, provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
-import { contextCapability, contextHostFixture } from './helpers/host-context-client.mjs';
+import { contextHostFixture } from './helpers/host-context-client.mjs';
+import { ADDRESS, VET, vetHostProcess, vetProvider } from './helpers/host-context-vet-fixture.mjs';
 import { signAnchorWrite } from './helpers/local-anchor-fixture.mjs';
-import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
+import { JOB, NOW, seller } from './helpers/protocol-fixture.mjs';
 
-const VET = 'CompositeVerificationRecord';
 const SWEEP_INTERVAL_MS = 60_000, CONTEXT_DEADLINE_MS = 240_000;
 const DELEGATION_LIFETIME_MS = 3_600_000, DELEGATION_GRACE_MS = 30_000, DIRECT_LIFETIME_MS = 300_000;
-const ADDRESS = Object.freeze({ buyer: compositeVerificationAddress(JOB, buyer.claim), seller: compositeVerificationAddress(JOB, seller.claim) });
 // The last statement of a sweep pass: its slot retirement read.
 const SWEEP_END_SQL = /SELECT job FROM \(SELECT jobId AS job FROM kit_context_admissions WHERE state = 'settled'/;
 
-const deferred = () => {
-  let resolve, reject;
-  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
-  return { promise, resolve, reject };
-};
 const flush = async () => { for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve)); };
 // Waits for `entered`, and fails at once when the request ends first.
 const reached = (entered, request) => Promise.race([entered.promise, request.then((answer) => { throw new Error(`TEST the request ended before the work was reached: ${answer.status} ${answer.text}`); })]);
@@ -96,33 +90,18 @@ function vetAnchor(f, writes) {
   return { anchor: { ...f.native, readRetained, publish, verifyReceipt }, published };
 }
 
-/**
- * A context provider that publishes the Vet records `writes` names through `anchor`, each after asking the attempt's predicate, and then
- * fails by itself; with `stall` it first waits on `gate`, so that the host's deadline or close ends the attempt. `seen` counts the host's calls.
- */
-function vetProvider(anchor, writes, { stall }) {
-  const gate = deferred(), entered = deferred(), seen = { resolves: 0, recovers: 0, resumes: 0 };
-  const resolveBuyer = async (input, options) => {
-    seen.resolves++;
-    for (const party of Object.keys(writes)) {
-      if (options.writable() !== true) throw Object.assign(new Error('TEST the purchase is no longer pending'), { code: 'not-pending' });
-      await anchor.publish({ logicalAddress: ADDRESS[party], artifact: { TEST: 'vet-record', jobId: input.scope.jobId, party }, artifactKind: VET });
-    }
-    if (stall) { entered.resolve(); await gate.promise; }
-    throw new Error('TEST the provider failed after its Vet write');
-  };
-  const recoverBuyer = async () => { seen.recovers++; return null; };
-  const resumableBuyer = async () => { seen.resumes++; return null; };
-  return { gate, entered, seen, capability: contextCapability({ resolveBuyer, recoverBuyer, resumableBuyer }) };
+/** The host fixture with the stand-in anchor and provider; `start()` starts a host over them in this process. */
+async function vetWorld(t, writes, { stall }) {
+  const f = await contextHostFixture(t), sweeps = sweepDriver(t);
+  const vet = vetAnchor(f, writes), provider = vetProvider(vet.anchor, writes, { stall });
+  const start = () => f.start({ artifactAnchor: vet.anchor, demDeliveryContext: provider.capability });
+  return { f, sweeps, vet, provider, start };
 }
 
 /** A started host over the stand-in anchor and provider, and its buyer; `direct` makes the buyer sign its own requests. */
 async function vetHost(t, writes, { stall, direct = false }) {
-  const f = await contextHostFixture(t), sweeps = sweepDriver(t);
-  const vet = vetAnchor(f, writes), provider = vetProvider(vet.anchor, writes, { stall });
-  const start = () => f.start({ artifactAnchor: vet.anchor, demDeliveryContext: provider.capability });
-  const host = await start();
-  return { f, sweeps, vet, provider, start, host, buyer: await f.buyerFor(host, { direct }) };
+  const w = await vetWorld(t, writes, { stall }), host = await w.start();
+  return { ...w, host, buyer: await w.f.buyerFor(host, { direct }) };
 }
 
 /** A provider that fails by itself after its Vet writes: the route ends the accepted row (trigger a) before it answers. */
@@ -137,18 +116,24 @@ async function failedStart(t, writes) {
   return w;
 }
 
-/** A host stopped while its provider worked after its Vet writes leaves the row running; the next start's startup sweep fences it. */
+/**
+ * A host stopped abruptly (its process killed) while its provider worked after its Vet writes leaves the row running with its slot; the next
+ * start's startup sweep fences it. The killed host runs in a child process over this test's anchor, and the calls its provider took are
+ * added to `w.provider.seen`.
+ */
 async function stoppedHost(t, writes) {
-  const w = await vetHost(t, writes, { stall: true });
+  const w = await vetWorld(t, writes, { stall: true });
+  const stopped = await vetHostProcess(t, w.f, w.vet.anchor, writes);
+  w.buyer = await w.f.buyerFor(stopped.host);
   w.issued = await w.buyer.challenge();
   assert.equal(w.issued.status, 200, w.issued.text);
   const pending = w.buyer.context(JOB, w.issued.body.sessionNonce);
-  await reached(w.provider.entered, pending);
-  const closing = w.host.close();
+  const seen = await reached(stopped.entered, pending);
+  await stopped.kill();
+  await assert.rejects(pending, { name: 'TypeError', message: 'fetch failed' }, 'the killed host sends no answer');
+  for (const [call, count] of Object.entries(seen)) w.provider.seen[call] += count;
+  // The provider of the next starts does not hold: a call they should not make fails the test instead of stalling it.
   w.provider.gate.resolve();
-  const answer = await pending;
-  await closing;
-  assert.equal(answer.status, 503, answer.text);
   assert.deepEqual(held(w.f.dataDirectory), ['running', 'live'], 'the stopped host leaves the row running with its slot');
   w.host = await w.start();
   w.buyer = await w.f.buyerFor(w.host);
