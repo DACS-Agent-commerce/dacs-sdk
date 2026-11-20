@@ -1,3 +1,4 @@
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import {
   mkdir,
   mkdtemp,
@@ -450,3 +451,20 @@ describe("filesystem x402 paywall settlement store", () => {
     })).rejects.toThrow(/positive safe integer/);
   });
 });
+
+for (const jump of [-60_000, 60_000]) {
+  for (const held of ["lock", "reclaim"]) {
+    test(`paywall ${held} wait keeps its budget after a ${jump} ms wall jump`, async () => {
+      const dir = await temporaryStoreDirectory();
+      const store = await createFsX402PaywallSettlementStore({ dir, lockTimeoutMs: 10, lockPollMs: 2 });
+      const intent = intentFor();
+      const path = join(dir, "locks", held === "reclaim" ? ".reclaim" : `${sha256Hex(intent.settlementKey)}.lock`);
+      const owner = JSON.stringify({ pid: process.pid, token: "held" });
+      if (held === "lock") {
+        await mkdir(path, { mode: 0o700 });
+        await writeFile(join(path, "owner.json"), owner, { mode: 0o600 });
+      } else await writeFile(path, owner, { mode: 0o600 });
+      await expectMonotonicTimeout(() => store.claim(intent), 10, 2, jump, /timed out/);
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
+  }
+}

@@ -4,11 +4,11 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
-import { completeWireEffect, inspectWireOperation, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
+import { completeWireEffect, inspectWireOperation, wireOperationBinding, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
 import { RESERVATION_LEDGER, sellerStoreInternals, SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
-import { createReservationAccounting } from '../src/dacs/seller-reservation-accounting.mjs';
+import { createLiveAttemptGate, createReservationAccounting } from '../src/dacs/seller-reservation-accounting.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS } from '../src/dacs/session-admission.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
@@ -926,4 +926,25 @@ for (const restart of [false, true]) test(`completed retired replays respect the
   await assert.rejects(replay(), { code: 'peer_store_capacity', status: 503 });
   assert.deepEqual({ rows: f.rows(), holds: f.holds(), files: f.files() }, before);
   assert.equal(charges, 0); assert.equal(f.jobRows().length, 0);
+});
+
+test('the live-attempt gate refuses only a fresh nonce under the binding of an unfinished attempt still inside its lease', async t => {
+  const f = await accountingFixture(t), accounting = f.store().reservationAccounting;
+  const gate = createLiveAttemptGate({ accounting, now: f.now });
+  const first = f.payload();
+  assert.equal((await f.reserve(f.args(first))).state, 'new');
+  const fresh = f.payload(), binding = wireOperationBinding(fresh), requestHash = sha256Hex('request');
+  const pending = (leaseUntil, change = {}) => ({ state: 'pending', binding, attempt: 0, requestHash, leaseUntil, ...change });
+  const answer = (payload, inspection) => gate({ route: payload.path, jobId: payload.jobId, payload, inspection });
+  assert.deepEqual([accounting.reservedRequest(first), accounting.reservedRequest(fresh)], [true, false]);
+  assert.deepEqual(answer(fresh, pending(T0 + 1)), { code: 'seller_effect_pending', status: 503 });
+  assert.equal(answer(fresh, pending(T0)), null, 'a lease that has run out is left to the recovery');
+  assert.equal(answer(first, pending(T0 + 1)), null, 'a reserved nonce is left to peer_request_replayed');
+  assert.equal(answer(fresh, pending(T0 + 1, { binding: sha256Hex('another binding') })), null, 'another binding is left to the checks after the gates');
+  for (const inspection of [{ state: 'none' }, { state: 'ended', binding, attempt: 0, requestHash, superseded: 0 }, { state: 'completed', binding, outcome: { status: 200, text: '{}' } }]) {
+    assert.equal(answer(fresh, inspection), null, inspection.state);
+  }
+  assert.equal(f.rows().length, 1, 'the gate writes nothing');
+  assert.throws(() => createLiveAttemptGate({ accounting, now: null }), TypeError);
+  assert.throws(() => createLiveAttemptGate({ accounting: {}, now: f.now }), TypeError);
 });
