@@ -220,6 +220,12 @@ function stabilisedGenesisPolicy(value, expected) {
  * the literal error), the chain identity and numeric 1. The three reads must agree
  * with each other (`conflicting_identity`) and with every reviewed value
  * (`identity_mismatch`); nothing is admitted from the node's own claims.
+ * A block's `id`, when present, must equal its number, so a node that answers
+ * with its database row id (the number plus one) is refused with `wrong_block`.
+ * A reader that returns the literal `'error'` for block zero is refused with
+ * `genesis_representation_mismatch`. The SDK's own readers return the node's
+ * `{result: 400, response: 'error'}` envelope as it is under this pin, which has
+ * no fallback, so through them that answer is refused as `unavailable`.
  *
  * A pin with both options is invalid. A saved binding of the other representation
  * is refused with binding_mismatch.
