@@ -1,0 +1,13 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move the record anchor past the merged README choice with the withheld broadcast reopen",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-27b594d19ec1.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "Both sides of the merge changed the README, so neither parent of the merge holds the merged copy. The anchor moves to the commit after the merge, whose one parent holds every anchored file as the anchor names it; the anchored blobs are unchanged. The README change recorded after that commit starts from the anchored README, so the anchored README keeps a record after the anchor."
+}
