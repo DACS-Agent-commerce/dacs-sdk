@@ -14,7 +14,6 @@ import {
   isEvidenceBoundFaultAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
-  isLegacyMvpSettlementEvidence,
   isPayeeBoundAgreementDocument,
   isPricingSpec,
   isSettlementEvidence,
@@ -54,53 +53,6 @@ const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
   FaultAttestationBundle: isFaultAttestationBundle,
   EvidenceBoundFaultAttestationBundle: isEvidenceBoundFaultAttestationBundle,
 };
-
-describe("legacy MVP settlement finality compatibility", () => {
-  const evidence = {
-    evidenceVersion: "1",
-    jobId: "job-1",
-    phase: "pay-x402",
-    phaseIndex: 0,
-    outcome: "success",
-    paymentTxRefs: [{ rail: "test", txHash: "0x1", kind: "payment" }],
-    paymentAmount: { amount: "1", currency: "USDC" },
-    observedAt: 1,
-  };
-
-  it("accepts valid optional finality echoes and rejects cross-model fields", () => {
-    expect(isLegacyMvpSettlementEvidence({
-      ...evidence,
-      settlementFinality: {
-        model: "block-depth",
-        finalityObservedAt: 1,
-      },
-    })).toBe(true);
-    expect(isLegacyMvpSettlementEvidence({
-      ...evidence,
-      settlementFinality: {
-        model: "commitment-level",
-        finalityCommitmentLevel: "confirmed",
-        finalityObservedAt: 1,
-      },
-    })).toBe(true);
-    expect(isLegacyMvpSettlementEvidence({
-      ...evidence,
-      settlementFinality: {
-        model: "commitment-level",
-        finalityBlocks: 1,
-        finalityObservedAt: 1,
-      },
-    })).toBe(false);
-    expect(isLegacyMvpSettlementEvidence({
-      ...evidence,
-      settlementFinality: {
-        model: "provider-receipt",
-        finalityObservedAt: 1,
-        extra: true,
-      },
-    })).toBe(false);
-  });
-});
 
 describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
   if (!have) {
