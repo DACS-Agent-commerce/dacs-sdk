@@ -20,11 +20,12 @@ const sha = (value) => createHash('sha256').update(value).digest('hex');
 /**
  * Opens the world. `feeCeilingOs` and `gas` (the `gas_operation` the node confirms with) are fixed for its life.
  * `journalOptions` go to the durable journal, `wrap(journal)` gives the journal the transport and the history use (to
- * count its lane locks), and `events` is where the transport owner's fence acquisitions are logged.
+ * count its lane locks), and `events` is where the transport owner's fence acquisitions are logged. `now` and
+ * `networkInfoAnswer` go to the transport world: its clock and what getNetworkInfo answers.
  * Set `putFault(key, value)` to a function that returns true to make that journal write of the transport fail, and
  * `nodeHook(message, call)` to run before the node answers a call. `gate.hold()` holds the next getContext call.
  */
-export async function boundedCreateWorld(t, { feeCeilingOs = '50000000000', gas = null, journalOptions = {}, wrap = journal => journal, events = [] } = {}) {
+export async function boundedCreateWorld(t, { feeCeilingOs = '50000000000', gas = null, journalOptions = {}, wrap = journal => journal, events = [], now, networkInfoAnswer } = {}) {
   setPurchaseAdmission('testnet-tp1');
   const bound = await bindFixture();
   const directory = mkdtempSync(join(tmpdir(), 'native-create-boundary-')), path = join(directory, 'journal.sqlite');
@@ -41,7 +42,7 @@ export async function boundedCreateWorld(t, { feeCeilingOs = '50000000000', gas 
     const faulty = { get: (key) => journal.get(key), entries: () => journal.entries(), withWalletLock: (key, work) => journal.withWalletLock(key, work),
       put: (key, value) => { if (w.putFault?.(key, value)) throw new Error('TEST-journal-cut'); return journal.put(key, value); } };
     w.owner = owner;
-    w.world = createWorld({ journal: faulty, owner, boundary: w.boundary, pinVersion: bound.binding.profile.pinVersion, gas,
+    w.world = createWorld({ journal: faulty, owner, boundary: w.boundary, pinVersion: bound.binding.profile.pinVersion, gas, now, networkInfoAnswer,
       onNode: async (message, call) => { if (message in w.calls) w.calls[message]++; await w.nodeHook?.(message, call); } });
     return w.world;
   };
