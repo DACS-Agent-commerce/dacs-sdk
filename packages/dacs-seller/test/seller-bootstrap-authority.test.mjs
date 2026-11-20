@@ -9,7 +9,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { canonicalize, generateCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, assertTp1Authority } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, assertTp1Authority } from '@kynesyslabs/dacs/wire';
 import { createAuthorityReader } from '../../dacs-client/src/wallet/authority-reader.mjs';
 import { createNodeAuthorityCapability, createNodeTransportOwner } from '../../dacs-client/src/wallet/node-wallet-session.mjs';
 import { createBootstrapScopes } from '../src/dacs/bootstrap-scope.mjs';
@@ -370,6 +370,9 @@ test('from empty job and admission stores, with the buyer enrolled in the kit co
   assert.equal(handle.scope?.jobId, payload.jobId, 'a delegation signed over the pinned bytes opens its scope');
   handle.end();
   assert.throws(() => vectorScopes.enter(delegatedHeader(Buffer.from(`dacs-chatgpt-plugin:seller-session-delegation:v1:${canonicalize(payload)}`))), { code: 'peer_delegation_signature_invalid', status: 401 });
+  // A header over the wire's limit is neither decoded nor verified: a forged delegation that long registers nothing and is left to the wire.
+  const oversized = encode({ payload: {}, signature: 'A'.repeat(86), delegation: { payload: { ...payload, pad: 'x'.repeat(DACS_SELLER_HTTP_LIMITS.maxHeaderLength) }, signature: 'A'.repeat(86) } });
+  assert.equal(vectorScopes.enter(oversized).scope, undefined, 'a header over the limit opens no scope and is not refused here');
 
   // The process stop flag is set last: it cannot be cleared in this process.
   requestStop();
