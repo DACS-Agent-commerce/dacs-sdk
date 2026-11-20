@@ -14,9 +14,9 @@ mainnet keys, commit wallet material, paste it into an issue or log, or put it
 directly in shell history. Treat testnet mnemonics and private keys as secrets
 even when the balances are small.
 
-`docs/fixed-price-x402-walkthrough.md` walks through a generated live project on testnet. The run
-stops at Listing setup today; the steps after it, including the buy's doctor and its two blocked
-checks, are described from the code and not run. §1, §2 and the Base Sepolia
+`docs/fixed-price-x402-walkthrough.md` walks through a generated live project on testnet. The page
+marks each step script, manual or not run, and lists what does not work yet, including the buy's
+doctor and its blocked checks. §1, §2 and the Base Sepolia
 RPC list in §3 apply to it; the rest of this page describes this test's own harness.
 
 ## 1. Node version (required)

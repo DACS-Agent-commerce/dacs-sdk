@@ -85,7 +85,7 @@ Buyer:
 - `packages/dacs-client/src/index.mjs`: buyer purchase services and guidance helpers (`purchaseNext`, `protocolView`).
 - `docs/fixed-price-x402-coordinator.md` and `docs/fixed-price-offline-coordinator.md`: how the buyer and seller coordinators run.
 - `examples/hello-world.ts`: a small example.
-- `docs/fixed-price-x402-walkthrough.md`: walks through a generated live project on testnet. The run stops at Listing setup today; the steps after it, including the buy's doctor and its two blocked checks, are described from the code and not run.
+- `docs/fixed-price-x402-walkthrough.md`: walks through a generated live project on testnet. The page marks each step script, manual or not run, and lists what does not work yet, including the buy's doctor and its blocked checks.
 
 ## Rules
 
