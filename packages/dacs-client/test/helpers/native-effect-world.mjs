@@ -14,6 +14,7 @@ import { openDurableWalletJournal } from '../../src/wallet/durable-journal.mjs';
 import { createEffectFence } from '../../src/wallet/effect-fence.mjs';
 import { createEffectHistory } from '../../src/wallet/effect-history.mjs';
 import { contextGate } from './context-gate.mjs';
+import { networkInfo } from './network-info.mjs';
 import { controlledClock, createEffectBoundary, digest, setPurchaseAdmission } from './effect-boundary-fixture.mjs';
 
 const OWNER = 'TEST-native-owner', PAYEE = '0x' + '7'.repeat(64);
@@ -25,9 +26,10 @@ export const LANE_PREFIX = 'devnet/native-wallet/';
 const sha = value => createHash('sha256').update(value).digest('hex');
 const ok = response => ({ result: 200, response, require_reply: false, extra: null });
 
-/** Accepts every confirmation and broadcast and counts them. Set `gas` to answer confirmations with gas, `failConfirm` to make them throw, `confirmGate` to a promise to hold them, `invalid` to refuse them, `altered` to change the transaction in the answer. */
+/** Accepts every confirmation and broadcast and counts them. Set `gas` to answer confirmations with gas, `failConfirm` to make them throw, `confirmGate` to a promise to hold them, `invalid` to refuse them, `altered` to change the transaction in the answer.
+ * `networkInfo` is what getNetworkInfo answers (a function that returns it, or an Error to throw) and `networkInfoReads` counts those reads. */
 function testNode() {
-  const node = { nonce: 0, confirms: 0, broadcasts: [], genesisHash: IDENTITY, applied: new Map(), gas: null, failConfirm: null, confirmGate: null, invalid: false, altered: false };
+  const node = { nonce: 0, confirms: 0, broadcasts: [], genesisHash: IDENTITY, applied: new Map(), gas: null, failConfirm: null, confirmGate: null, invalid: false, altered: false, networkInfo: networkInfo(), networkInfoReads: 0 };
   node.fetch = async (url, init) => {
     const body = JSON.parse(init.body), call = body.params[0];
     let answer;
@@ -36,7 +38,12 @@ function testNode() {
       if (message === 'getBlockByNumber') answer = ok(data.blockNumber === 0 ? { number: 0, status: 'confirmed', hash: node.genesisHash, content: {} }
         : { number: data.blockNumber, status: 'confirmed', hash: 'b'.repeat(64), content: { ordered_transactions: [...node.applied.keys()] } });
       else if (message === 'getAddressNonce') answer = ok(node.nonce);
-      else if (message === 'getNetworkParameters') answer = ok({ networkFee: 1, rpcFee: 1, additionalFee: 0 });
+      else if (message === 'getNetworkInfo') {
+        node.networkInfoReads++;
+        const info = typeof node.networkInfo === 'function' ? node.networkInfo() : node.networkInfo;
+        if (info instanceof Error) throw info;
+        answer = info?.result === undefined ? ok(info) : info;
+      } else if (message === 'getNetworkParameters') answer = ok({ networkFee: 1, rpcFee: 1, additionalFee: 0 });
       else if (message === 'getTransactionStatus') answer = ok(node.applied.has(data.hash) ? { state: 'included', blockNumber: 1 } : { state: 'unknown' });
       else if (message === 'getTxByHash') answer = ok({ ...structuredClone(node.applied.get(data.hash)), status: 'confirmed', blockNumber: 1 });
       else throw new Error(`unexpected TEST node read ${message}`);
@@ -61,9 +68,10 @@ function testNode() {
 function firstComeOwner(fence, gate) {
   const waiters = [];
   let held = false;
+  const connection = () => ({ ...CONTEXT, ...(fence.connectionId ? { connectionId: fence.connectionId } : {}) });
   const grant = () => { if (!held && waiters.length) { held = true; waiters.shift()(); } };
-  const acquire = () => { fence.acquired++; fence.onAcquire?.(); return new Promise(resolve => { waiters.push(() => resolve({ context: { ...CONTEXT }, release() { held = false; fence.released++; grant(); } })); grant(); }); };
-  return { getContext: async () => { await gate.pass(); return { ...CONTEXT }; }, acquireConnectionFence: acquire };
+  const acquire = () => { fence.acquired++; fence.onAcquire?.(); return new Promise(resolve => { waiters.push(() => resolve({ context: connection(), release() { held = false; fence.released++; grant(); } })); grant(); }); };
+  return { getContext: async () => { await gate.pass(); return connection(); }, acquireConnectionFence: acquire };
 }
 
 export function nativeWorld(t, { bound } = {}) {
@@ -94,13 +102,14 @@ export function nativeWorld(t, { bound } = {}) {
     return transport;
   };
   t.after(async () => { await transport?.close(); journal.close(); rmSync(dir, { recursive: true, force: true }); if (bound) setPurchaseAdmission('held'); });
-  const signedTransfer = (nonce, amountOs = '2500000000') => {
+  // `signedOver` maps the hash to the text the signature covers: the hash itself unless a test signs another form.
+  const signedTransfer = (nonce, amountOs = '2500000000', signedOver = hash => hash) => {
     const payload = buildNativeTransferPayload({ from: address, to: PAYEE, amountOs, nonce, timestamp: Date.now(), encoding: 'os-string' });
     const content = structuredClone(payload.content), edit = (type, operation, account, amount) => ({ type, operation, isRollback: false, account, txhash: '', amount });
     Object.assign(content, { from: address, from_ed25519_address: address, nonce, transaction_fee: { network_fee: '1000000000', rpc_fee: '1000000000', additional_fee: '0', rpc_address: null },
       gcr_edits: [edit('balance', 'remove', address, content.amount), edit('balance', 'add', content.to, content.amount), edit('balance', 'remove', address, '1000000000'), edit('nonce', 'add', address, 1)] });
     const hash = sha(JSON.stringify(content));
-    return { content, signature: { type: 'ed25519', data: signText(hash) }, hash, status: '', blockNumber: null };
+    return { content, signature: { type: 'ed25519', data: signText(signedOver(hash)) }, hash, status: '', blockNumber: null };
   };
   Object.assign(world, { open, signedTransfer, authHeaders: auth,
     transport: () => transport,

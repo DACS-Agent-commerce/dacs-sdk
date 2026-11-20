@@ -132,7 +132,7 @@ test('the expected identity and block-one fallback come from TP1_APPROVED_IDENTI
 
 test('readNodeInfo admits only getNetworkInfo and getNetworkParameters, bounded the same way', async () => {
   const w = observerWorld();
-  assert.deepEqual(await w.observer.readNodeInfo('getNetworkInfo', {}), { forks: { osDenomination: { activated: true } } });
+  assert.deepEqual(await w.observer.readNodeInfo('getNetworkInfo', {}), { forks: { osDenomination: { activated: true }, signatureDomain: { activated: false } }, chainId: 1 });
   assert.deepEqual(await w.observer.readNodeInfo('getNetworkParameters'), { networkFee: 1, rpcFee: 0, additionalFee: 0 });
   const answered = w.node.calls.length;
   for (const message of ['getTxByHash', 'getAddressNonce', 'broadcastTx', 'constructor', undefined]) {
