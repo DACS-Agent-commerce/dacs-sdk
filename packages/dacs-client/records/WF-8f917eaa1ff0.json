@@ -1,0 +1,37 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record the monotonic clock commits and choose the merged blobs",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+      "before": "253c09a09307bc696dce25405ed73b7fb0dcb8e9",
+      "after": "253c09a09307bc696dce25405ed73b7fb0dcb8e9"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+      "before": "7a75e86fe07501b58946cef29b61d2af5f619a16",
+      "after": "7a75e86fe07501b58946cef29b61d2af5f619a16"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "7c221265462a3ccb76aa39f5267256dff72524a3",
+      "after": "7c221265462a3ccb76aa39f5267256dff72524a3"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/D24-eb4b4d0e6027.json",
+    "packages/dacs-client/records/D35-28a897e4c0f8.json",
+    "packages/dacs-client/records/D35-727f5bcd1e35.json",
+    "packages/dacs-client/records/D35-eaf48d02f784.json",
+    "packages/dacs-client/records/WF-8f917eaa1ff0.json",
+    "packages/dacs-client/records/WF-ad06b9870ed5.json",
+    "packages/dacs-client/records/WF-d0d1553d4fbf.json",
+    "packages/dacs-client/records/WF-daf5ce0c57de.json",
+    "packages/dacs-client/records/WF-efe063b60b01.json",
+    "packages/dacs-client/records/ids/D24.json",
+    "packages/dacs-client/records/ids/D35.json"
+  ],
+  "note": "Both sides of the merge recorded these files; this record chooses the merged copies. The commit also records the merged commits that changed the package as record files and declares their lanes."
+}

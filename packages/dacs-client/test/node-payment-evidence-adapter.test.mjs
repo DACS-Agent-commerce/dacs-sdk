@@ -1232,6 +1232,47 @@ test("a 55 KB evidence executes and the next 55 KB evidence signs at the next no
   assert.equal((await signIn(w, big('b'))).nonce, first.nonce + 1);
 });
 
+test("broadcast checks the node's chain identity before confirmTx: a node now serving another chain gets no confirmation, the approval sees nothing and nothing is broadcast", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  w.approval.confirmResult = true;
+  replyFor(w, 'getBlockByNumber', row => (row.body.params[0].data.blockNumber === 0 ? answerWith({ number: 0, status: 'confirmed', hash: 'd'.repeat(64), content: {} }) : undefined));
+  await assert.rejects(broadcastIn(w, signed), error => !codes(error).includes('outcome_unknown'));
+  assert.equal(w.node.confirms.length, 0, 'no confirmTx'); assert.equal(w.approval.confirmations.length, 0, 'the approval saw no confirmation');
+  assert.equal(w.node.broadcasts.length, 0, 'no broadcastTx');
+  assert.equal((await recordOf(w)).active.signed.txHash, signed.txHash, 'the bytes stay held');
+});
+
+test("a broadcast whose reservation ended while the approval checked its confirmation refuses retained_transaction_invalid and sends nothing", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  // The CREATE executes and a readback ends its reservation while the approval is still deciding.
+  w.approval.confirmResult = async () => {
+    applyWithoutBroadcast(w, signed);
+    assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied');
+    return true;
+  };
+  await assert.rejects(broadcastIn(w, signed), { code: 'retained_transaction_invalid' });
+  assert.equal(w.node.broadcasts.length, 0, 'no broadcastTx');
+});
+
+test("a broadcast that reaches its send while another holder has the signer lock waits for it, and sends nothing when that holder ended the reservation", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), key = signerReservationKey(TP1_APPROVED_IDENTITY_RECORD, signerOf(w));
+  let approved;
+  const approvalAnswered = new Promise(resolve => { approved = resolve; });
+  w.approval.confirmResult = () => { approved(); return true; };
+  // The holder stands for a native write's broadcast claim or a readback's consume: it takes the signer lock before the broadcast
+  // starts, and ends the reservation only some turns after the approval answered.
+  const holder = w.journal().withWalletLock(key, async () => {
+    await approvalAnswered;
+    for (let turn = 0; turn < 20; turn += 1) await settle();
+    const record = await recordOf(w);
+    await w.journal().put(key, { ...record, revision: record.revision + 1, floor: record.active.nonce + 1, active: null });
+  });
+  await settle();
+  await assert.rejects(broadcastIn(w, signed), { code: 'retained_transaction_invalid' });
+  await holder;
+  assert.equal(w.node.broadcasts.length, 0, 'no broadcastTx');
+});
+
 test("no socket or DNS lookup leaves the process in the adapter suite", () => {
   assert.deepEqual(egress.attempts, []);
 });

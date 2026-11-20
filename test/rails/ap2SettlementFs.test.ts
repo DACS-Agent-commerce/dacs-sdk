@@ -1,3 +1,4 @@
+import { expectMonotonicTimeout, WALL_JUMP_TEST_TIMEOUT_MS } from "../support/monotonicWait.js";
 import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -278,3 +279,20 @@ describe("filesystem AP2-7 binding store", () => {
     )).toEqual([]);
   });
 });
+
+for (const jump of [-60_000, 60_000]) {
+  for (const held of ["lock", "gate"]) {
+    test(`AP2 ${held} wait keeps its budget after a ${jump} ms wall jump`, async () => {
+      const dir = await directory();
+      const store = await createFsAp2BindingStore({ dir, lockTimeoutMs: 10, lockPollMs: 2 });
+      const path = join(dir, "locks", `${sha256Hex(TX)}.${held}`);
+      const owner = JSON.stringify({ token: "00000000-0000-4000-8000-000000000000", pid: process.pid });
+      if (held === "lock") {
+        await mkdir(path, { mode: 0o700 });
+        await writeFile(join(path, "owner"), owner, { mode: 0o600 });
+      } else await writeFile(path, owner, { mode: 0o600 });
+      await expectMonotonicTimeout(() => store.claim({ intent: intent(), owner: "waiting", now: 1, leaseDurationMs: 10 }),
+        10, 2, jump, /timed out/);
+    }, WALL_JUMP_TEST_TIMEOUT_MS);
+  }
+}

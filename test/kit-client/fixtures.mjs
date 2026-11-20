@@ -9,8 +9,9 @@ import { LOCAL } from '../../packages/dacs-client/test/fixtures/tp1-authority-re
 import { testWallet } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { fixtureListing } from '../../packages/dacs-seller/test/fixtures/listings.mjs';
 import { agreementInput } from '../../packages/dacs-seller/src/dacs/purchase-protocol.mjs';
-import { createSellerTransportServerAuth, createSellerTransportStore, sellerContextScopeHash } from '../../packages/dacs-seller/src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore, sellerContextScopeHash } from '../../packages/dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportClientAuth } from '../../packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs';
+import { sellerTransportSigningBytes } from '../../packages/dacs-client/test/helpers/old-seller-transport.mjs';
 
 export const T0 = Date.UTC(2026, 9, 27, 12);
 export const BUYER = testWallet(0x01);
@@ -84,16 +85,25 @@ export function bindWireProfile() {
 
 const REQUEST_NONCE = Buffer.alloc(24, 0x6e).toString('base64url');
 const STATE_PATH = '/dacs/v1/agreements/state';
+const ANSWER_LIFETIME_MS = 30_000;
+
+/** The header of SELLER's answer to the request whose header is `requestHeader`, signed under the old transport domain on the clock T0. */
+export function signedAnswerHeader(requestHeader, status, text) {
+  const { payload: request } = JSON.parse(Buffer.from(requestHeader, 'base64url'));
+  const payload = { ...request, kind: 'response', bodyHash: sha256Hex(text), expiresAt: T0 + ANSWER_LIFETIME_MS, requestHash: sha256Hex(canonicalize(request)), status };
+  const signature = SELLER.signBytes(sellerTransportSigningBytes(payload)).toString('base64url');
+  return Buffer.from(canonicalize({ payload, signature })).toString('base64url');
+}
 
 /**
- * The client's request signer (BUYER) and the kit's server-side auth (SELLER) over one Listing pin, on the fixed clock T0.
+ * The client's request signer (BUYER) over one Listing pin, on the fixed clock T0, and a transport store bound to SELLER and that pin.
  * The kit's transport store is a real one in a temporary directory, closed when the test ends.
  */
 export async function sellerTransportPair(t) {
   const directory = await mkdtemp(join(tmpdir(), 'TEST-kit-client-transport-'));
   const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite'), now: () => T0 });
   t.after(async () => { store.close(); await rm(directory, { recursive: true, force: true }); });
-  const serverAuth = createSellerTransportServerAuth({ sellerSigner: { claim: SELLER.claim, sign: SELLER.signBytes }, listingPin: LISTING_PIN, store, now: () => T0 });
+  store.bind({ seller: SELLER.claim, listingPin: LISTING_PIN });
   const clientAuth = createSellerTransportClientAuth({ buyerSigner: { claim: BUYER.claim, sign: BUYER.signBytes }, seller: SELLER.claim,
     resolveJob: () => ({ listingPin: LISTING_PIN, agreementHash: sha256Hex('kit-client-agreement') }), now: () => T0, nonce: () => REQUEST_NONCE });
   /** A legacy signed state fixture for the unflipped kit server cases. */
@@ -101,5 +111,5 @@ export async function sellerTransportPair(t) {
     const body = { transportIdentity: { jobId: JOB } };
     return clientAuth.request(STATE_PATH, body, JSON.stringify(body));
   };
-  return { store, serverAuth, clientAuth, stateRequest };
+  return { store, clientAuth, stateRequest };
 }

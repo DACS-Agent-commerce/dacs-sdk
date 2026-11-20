@@ -26,7 +26,6 @@
   "packages/dacs-node/src/walletSpendRemote.ts": 1516,
   "packages/dacs-node/src/x402Payment.ts": 930,
   "packages/dacs-seller/src/dacs/seller-agent.mjs": 2297,
-  "packages/dacs-seller/src/dacs/seller-transport-auth.mjs": 1027,
   "packages/dacs-seller/src/devnet-demo/agreement-context.mjs": 1166,
   "packages/dacs-seller/src/devnet-demo/operator-approval.mjs": 1398,
   "src/agent/Agent.ts": 2887,

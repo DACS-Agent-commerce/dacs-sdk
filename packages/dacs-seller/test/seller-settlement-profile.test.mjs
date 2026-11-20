@@ -22,6 +22,8 @@ import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { proxyListener } from './helpers/listener-host.mjs';
+import { distinctHeaders } from './helpers/listener-host.mjs';
 import { FIRST_ADMISSION_SCOPE, withFirstAdmission } from './helpers/first-admission.mjs';
 
 let nextWallet=90;
@@ -305,7 +307,7 @@ test('the standalone host refuses to start without the whole chain to delivery',
   const { now: _now, ...required } = rest;
   for (const missing of ['nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']) {
     const dataDirectory = w.dir({ empty: true });
-    const options = { ...required, artifactAnchor, dataDirectory, tp1Network: testNetwork(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() };
+    const options = { ...required, artifactAnchor, dataDirectory, listener: proxyListener(), tp1Network: testNetwork(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() };
     delete options[missing];
     await assert.rejects(seller.startSellerHost(options), { name: 'TypeError', message: new RegExp(`requires ${missing}$`) });
     assert.deepEqual(readdirSync(dataDirectory), [], `nothing is opened without ${missing}`);
@@ -406,7 +408,7 @@ test('a proposal the seller did not sign leaves no in-flight pin: its retry sele
 function inProcessFetch(handle, last) {
   return async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);
-    Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
+    Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, headersDistinct: distinctHeaders(init.headers ?? {}), socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
     const res = { destroyed: false, writableEnded: false, headersSent: false, status: 0, headers: {}, text: '',
       writeHead(status, headers) { this.status = status; this.headers = headers; this.headersSent = true; },
       end(text) { this.text = String(text); this.writableEnded = true; } };
@@ -432,7 +434,7 @@ async function httpSeller(t, w, { gate = {} } = {}) {
     retainsProposalWork: (jobId) => agent.retainsProposalWork(jobId), retainsPaymentClaim: (jobId, body) => agent.retainsPaymentClaim(jobId, body), retainsPaymentWork: (jobId) => agent.retainsPaymentWork(jobId), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target), revalidateCompletedAnswer: (input) => agent.revalidateCompletedAnswer(input), assertSettlementCredit: (jobId) => agent.assertSettlementCredit(jobId),
     receiveProposal: gated('receiveProposal'), commit: gated('commit'), submitPayment: gated('submitPayment') };
   const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.signer, store, now: () => w.now });
-  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });
+  const handle = seller.createSellerHttpHandler(facade, { wire });
   const proposal = await w.proposalFor(w.vetted);
   const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: inProcessFetch(handle, last),
     authentication: buyerWire.authentication(() => proposal.proposal.plan.agreementHash) });

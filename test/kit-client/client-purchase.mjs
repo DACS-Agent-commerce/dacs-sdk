@@ -13,6 +13,7 @@ import { bindFixture } from '../../packages/dacs-client/test/fixtures/tp1-author
 import { buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { createSellerAgentClient } from '../../packages/dacs-seller/src/dacs/seller-http.mjs';
 import { clientAuthFor } from './kit-host.mjs';
+import { fetchAsHost } from '../../packages/dacs-seller/test/helpers/listener-host.mjs';
 
 // The client's portal capability compares each purchase link's expiry with the real clock as well as its own, so the client's
 // clock must lie after real time (it is the client's own tests' clock). The kit fixture's clock cannot move: its Listing validity
@@ -45,7 +46,7 @@ export async function purchaseWorld(t, { host, listing }) {
   // Every request this client sends to the host, by path.
   const sellerRequests = [];
   const sellerClient = createSellerAgentClient({ url: host.url, authentication: clientAuthFor(host),
-    fetchImpl: (url, init) => { sellerRequests.push(new URL(url).pathname); return fetch(url, init); } });
+    fetchImpl: (url, init) => { sellerRequests.push(new URL(url).pathname); return fetchAsHost()(url, init); } });
   // What the seller client reported for each failed context exchange: its error class and transport cause label.
   const contextFailures = [];
   const agreementContext = { authority: CONTEXT_AUTHORITY, resolve: async (request) => {

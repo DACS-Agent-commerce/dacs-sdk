@@ -21,6 +21,7 @@ import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { BUYER, JOB, JOB2, OTHER, PIN, SELLER, T0, accountingFixture } from './helpers/reservation-accounting-fixture.mjs';
 import { testNetwork } from './helpers/wire-authority-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
+import { fetchAsHost, proxyListener } from './helpers/listener-host.mjs';
 
 const MISMATCH = 'kit_journal_accounting_mismatch';
 const CUTS = 17, PAST_LEASE_MS = 300001;
@@ -509,7 +510,7 @@ test('a host over an existing store stays not ready while a nonce key names no a
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-host-reconciliation-'));
   const { nativeArtifactAnchor, ...config } = f.config;
   for (const option of ['durableDirectory', 'commitOnSignature', 'vetMode', 'challengeLedger']) delete config[option];
-  const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() }, hosts = [];
+  const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), listener: proxyListener() }, hosts = [];
   t.after(async () => { for (const host of hosts) await host.close().catch(() => {}); await rm(dataDirectory, { recursive: true, force: true }); });
   const written = [], write = process.stderr.write;
   t.after(() => { process.stderr.write = write; });
@@ -517,7 +518,7 @@ test('a host over an existing store stays not ready while a nonce key names no a
     process.stderr.write = function (text, ...rest) { written.push(String(text)); return write.call(this, text, ...rest); };
     const host = await startSellerHost(options).finally(() => { process.stderr.write = write; }); hosts.push(host);
     const buyerWire = await wireBuyer({ buyer: { claim: buyer.claim, sign: buyer.signBytes }, seller: { claim: seller.claim, sign: seller.signBytes }, listingPin: host.listingPin, clock: () => NOW });
-    const served = await fetch(`${host.url}${DACS_SELLER_DISCOVERY_PATH}`), proof = await buyerWire.verifyDiscovery(Buffer.from(await served.arrayBuffer()));
+    const served = await fetchAsHost()(`${host.url}${DACS_SELLER_DISCOVERY_PATH}`), proof = await buyerWire.verifyDiscovery(Buffer.from(await served.arrayBuffer()));
     await host.close(); hosts.pop();
     return proof.ready;
   };

@@ -9,6 +9,13 @@ const LATE_MS = CLIENT_TIMEOUT_MS + 30;
 const ANSWER = '{"ok":true}';
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
+// The client's deadline runs on `performance.now()`, so the tests move that clock together with the mocked timers.
+let elapsedMs = 0;
+function advance(ms) {
+  mock.timers.tick(ms);
+  elapsedMs += ms;
+}
+
 /**
  * A client whose `fetchImpl` moves the mocked clock by `ticksMs` before it answers, and a verifier that counts its calls.
  * `body` supplies the response body; by default the whole answer arrives with the headers.
@@ -20,7 +27,7 @@ function clientAfter(ticksMs, { verify = () => ({}), body, timeoutMs = CLIENT_TI
     timeoutMs,
     fetchImpl: async () => {
       calls.fetch += 1;
-      if (body === undefined) mock.timers.tick(ticksMs);
+      if (body === undefined) advance(ticksMs);
       return new Response(body === undefined ? ANSWER : body(), { status: 200, headers: JSON_HEADERS });
     },
     authentication: {
@@ -34,7 +41,7 @@ function clientAfter(ticksMs, { verify = () => ({}), body, timeoutMs = CLIENT_TI
 /** A body whose bytes end only after the mocked clock has moved by `ticksMs`. */
 const bodyEndingAfter = (ticksMs) => () => new ReadableStream({
   pull(controller) {
-    mock.timers.tick(ticksMs);
+    advance(ticksMs);
     controller.enqueue(new TextEncoder().encode(ANSWER));
     controller.close();
   },
@@ -45,8 +52,10 @@ test('the client deadline: a response that arrives after the deadline, or exactl
   const onUnhandled = (reason) => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
   t.after(() => process.off('unhandledRejection', onUnhandled));
-  mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  mock.timers.enable({ apis: ['setTimeout'] });
   t.after(() => mock.timers.reset());
+  elapsedMs = 0;
+  t.mock.method(performance, 'now', () => elapsedMs);
   const timedOut = { code: 'seller_unavailable', causeCode: 'timeout' };
 
   const late = clientAfter(LATE_MS);
@@ -71,6 +80,20 @@ test('the client deadline: a response that arrives after the deadline, or exactl
 
   assert.deepEqual(unhandled, [], 'no rejection is left unhandled');
 });
+
+for (const jumpMs of [-60_000, 60_000]) {
+  test(`the client deadline ignores a ${jumpMs} ms wall clock step while the response is awaited`, async (t) => {
+    let wallMs = Date.now();
+    t.mock.method(Date, 'now', () => wallMs);
+    const client = createSellerAgentClient({
+      url: 'http://127.0.0.1:1',
+      timeoutMs: CLIENT_TIMEOUT_MS,
+      fetchImpl: async () => { wallMs += jumpMs; return new Response(ANSWER, { status: 200, headers: JSON_HEADERS }); },
+      authentication: { request: async () => ({ header: 'fixture', payload: {} }), verifyResponse: async () => ({}) },
+    });
+    assert.deepEqual(await client.propose({}), { ok: true });
+  });
+}
 
 test('the client deadline: a timeout that is not an integer from 1 to 2^31 - 1 is refused at construction', () => {
   for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31, '5000']) {

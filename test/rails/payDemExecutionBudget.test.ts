@@ -16,7 +16,7 @@ const record = { hash, status: "confirmed", blockNumber: 42, content: {
 describe("pay-dem execution record budget boundaries", () => {
 
   it("starts no read when the remaining budget is exactly zero", async () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValue(1_010);
+    const clock = vi.spyOn(performance, "now").mockReturnValueOnce(1_000).mockReturnValue(1_010);
     const read = vi.fn(async () => record);
     try {
       await expect(observeDemosExecutionByHash(hash, read, expected, options))
@@ -30,7 +30,8 @@ describe("pay-dem execution record budget boundaries", () => {
   it("returns the complete outcome without scheduling a poll at the deadline", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
-    const read = vi.fn(async () => { vi.setSystemTime(1_010); return null; });
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    const read = vi.fn(async () => { clock.mockReturnValue(1_010); return null; });
     try {
       let outcome: unknown;
       const pending = observeDemosExecutionByHash(hash, read, expected, options)
@@ -42,12 +43,13 @@ describe("pay-dem execution record budget boundaries", () => {
       expect(vi.getTimerCount()).toBe(0);
       await pending;
     } finally {
+      clock.mockRestore();
       vi.useRealTimers();
     }
   });
 
   it.each(["confirmed", "failed"])("does not report terminal %s after processing exceeds the budget", async (status) => {
-    const clock = vi.spyOn(Date, "now")
+    const clock = vi.spyOn(performance, "now")
       .mockReturnValueOnce(1_000).mockReturnValueOnce(1_000).mockReturnValue(1_010);
     try {
       await expect(observeDemosExecutionByHash(hash, async () => ({ ...record, status }), expected, options))
@@ -77,3 +79,24 @@ describe("pay-dem execution record budget boundaries", () => {
     }
   });
 });
+
+for (const jump of [-60_000, 60_000]) {
+  it(`execution polling keeps its original budget after a ${jump} ms wall jump`, async () => {
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(1_000);
+    let outcome: unknown;
+    const read = vi.fn(async () => null);
+    const pending = observeDemosExecutionByHash(hash, read, expected, options)
+      .then((value) => { outcome = value; });
+    try {
+      await vi.advanceTimersByTimeAsync(1);
+      vi.setSystemTime(1_001 + jump);
+      await vi.advanceTimersByTimeAsync(8);
+      expect(outcome).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(outcome).toMatchObject({ state: "indeterminate" });
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+    await pending;
+  });
+}

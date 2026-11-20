@@ -253,9 +253,9 @@ const UNSAFE_TEXTS = {
   'a terminal escape': '\u001b[31mred',
   'a delete character': 'before\u007fafter',
   'a C1 control character': 'before\u009bafter',
-  'a bidirectional override': 'before‮after',
-  'a zero-width character': 'before​after',
-  'a line separator': 'before after',
+  'a bidirectional override': 'before\u202eafter',
+  'a zero-width character': 'before\u200bafter',
+  'a line separator': 'before\u2028after',
 };
 
 for (const [kind, text] of Object.entries(UNSAFE_TEXTS)) {
