@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { networkInfo } from './helpers/network-info.mjs';
 import { createDevnetNativeTransport, DEVNET_NATIVE_BINDING_PATH } from '../src/wallet/devnet-native-transport.mjs';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
 import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
@@ -36,6 +37,7 @@ function testNode() {
    if(message==='getBlockByNumber')answer=ok(data.blockNumber===0?{number:0,status:'confirmed',hash:PINS.chainIdentity,content:{}}
     :node.view.block({number:data.blockNumber,status:'confirmed',hash:'b'.repeat(64),content:{ordered_transactions:[...node.applied.keys()]}}));
    else if(message==='getAddressNonce')answer=ok(node.nonce);
+   else if(message==='getNetworkInfo')answer=ok(networkInfo());
    else if(message==='getNetworkParameters')answer=ok({networkFee:1,rpcFee:1,additionalFee:0});
    else if(message==='getTransactionStatus')answer=ok(node.status??(node.applied.has(data.hash)?{state:'included',blockNumber:1}:{state:'unknown'}));
    else if(message==='getTxByHash')answer=node.applied.has(data.hash)?ok(node.view.tx({...structuredClone(node.applied.get(data.hash)),status:'confirmed',blockNumber:1})):{result:400,response:'error',require_reply:false,extra:null};
