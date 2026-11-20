@@ -21,10 +21,13 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { devNull } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 // Keep the gate self-contained: execute no package helper before its bytes match their pin.
-const GIT_ENV = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+// Drop inherited GIT_* variables and ignore the system and global Git config (GIT_CONFIG_GLOBAL needs Git 2.32 or newer), as source-git.mjs does;
+// the repository's own config still applies.
+const GIT_ENV = Object.freeze({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: devNull });
 const sourceGit = (args, options = {}) => execFileSync("git", ["--no-replace-objects", ...args], { ...options, env: GIT_ENV });
 
 const PACKAGE = "@kynesyslabs/dacs-client";
@@ -35,8 +38,8 @@ class UsageError extends Error {}
 export const DERIVED_RULE_MODULES = Object.freeze(["scripts/delta-freeze.mjs", "scripts/delta-assemble.mjs", "scripts/delta-map.mjs", "scripts/delta-record.mjs", "scripts/publication-text.mjs", "scripts/source-git.mjs"]);
 
 export const PINNED = Object.freeze({
-  holdSha256: "e2ee39a36d752db7efe57eddb52cf75703d85edf01452f8eaf6d93cf84030908",
-  holdBytesSha256: "03ccc4002a9e1ae0dc2cd433d6139fabce7ab36c59b11fd76010d17a95da2152",
+  holdSha256: "c101a2750b55b17c1f62454905d6dd3692572cd9800a571311044ced78589cc8",
+  holdBytesSha256: "2b84082e257f884e99618d0ed67569e3633adad402b65396849c3121db7e6d03",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
