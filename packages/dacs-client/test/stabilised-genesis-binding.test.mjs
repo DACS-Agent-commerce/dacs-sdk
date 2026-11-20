@@ -80,6 +80,7 @@ test('numeric block zero, the chain-identity read and confirmed block one bind o
     ['block zero answers the literal error', r => { r[0] = 'error'; }, 'genesis_representation_mismatch'],
     ['block zero is unconfirmed', r => { r[0].response.status = 'pending'; }, 'wrong_block'],
     ['block zero has another number', r => { r[0].response.number = 1; }, 'wrong_block'],
+    ['block zero has a string number instead of numeric zero', r => { r[0].response.number = '0'; }, 'wrong_block'],
     ['block zero has no hash', r => { delete r[0].response.hash; }, 'malformed_observation'],
     ['the chain-identity read is not result 200', r => { r.chainIdentity.result = 400; }, 'unavailable'],
     ['the chain-identity envelope has an extra field', r => { r.chainIdentity.extraField = 1; }, 'malformed_observation'],
