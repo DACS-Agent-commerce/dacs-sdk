@@ -45,10 +45,10 @@ submits again only once that read shows the payment authorization unused. See
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
 
 The exported `SignedArtifact`, `buildSignedArtifact()` and
-`verifySignedArtifact()` symbols are legacy raw-hex compatibility surfaces used
-by historical readers. New producers
+`verifySignedArtifact()` symbols are earlier raw-hex helpers; no SDK reader uses
+them. New producers
 and readers must use `ComponentSignedArtifact`,
-`buildComponentSignedArtifact()` and `verifyComponentSignature()`.
+`signComponentArtifact()` and `verifyComponentSignature()`.
 
 | Stage | API | Notes |
 | --- | --- | --- |
