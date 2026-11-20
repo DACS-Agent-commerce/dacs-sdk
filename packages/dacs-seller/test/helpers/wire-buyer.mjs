@@ -2,7 +2,6 @@
 // discovery document, and the `authentication` adapter `createSellerAgentClient` takes. Its `verifyResponse`
 // returns the Promise from `verifyWireResponse` over the exact received bytes.
 import { DACS_SELLER_DISCOVERY_FORMAT, DACS_SELLER_HTTP_V1, TP1_APPROVED_IDENTITY_RECORD, TP1_CAPABILITIES, TP1_COMMIT_PHASE, bindTp1Profile, signDiscoveryDocument, signWireRequest, verifyEndpointProof, verifyWireResponse } from '@kynesyslabs/dacs/wire';
-import { WIRE_ROUTE_PATHS } from '../../src/dacs/seller-wire-requests.mjs';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
 
 export const FIXTURE_ENDPOINT = 'https://seller.example.invalid';
@@ -56,22 +55,4 @@ export function wireAuthentication(options, jobFor) {
   let built = null;
   const adapter = () => (built ??= wireBuyer(options).then((buyer) => buyer.authentication(jobFor)));
   return { request: async (...args) => (await adapter()).request(...args), verifyResponse: async (...args) => (await adapter()).verifyResponse(...args) };
-}
-
-/**
- * The `authentication` adapter for a client of a host that still has routes on the old auth: the routes on the wire are signed and
- * verified by the wire buyer (`options`, `jobFor` as for `wireAuthentication`), every other route by `old`, a
- * `createSellerTransportClientAuth`.
- */
-export function mixedAuthentication(options, jobFor, old) {
-  const wire = wireAuthentication(options, jobFor);
-  const wired = new WeakSet();
-  return {
-    request: async (path, body, text) => {
-      const signed = await (WIRE_ROUTE_PATHS.includes(path) ? wire : old).request(path, body, text);
-      if (WIRE_ROUTE_PATHS.includes(path)) wired.add(signed.payload);
-      return signed;
-    },
-    verifyResponse: (request, received) => (wired.has(request) ? wire : old).verifyResponse(request, received),
-  };
 }

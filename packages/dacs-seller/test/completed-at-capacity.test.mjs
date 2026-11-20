@@ -89,15 +89,19 @@ test('at zero free capacity a replay of a completed proposals operation gets the
   assert.deepEqual(operationOf(w, job.jobId, PATHS.proposals), attempts);
 });
 
-/** Fills the nonce ledger with `count` live records of `buyer`, as other valid traffic would. */
-function fillNonceLedger(w, buyer, count) {
-  const { db } = sellerStoreInternals(w.handle.store), at = w.state.time;
-  for (let n = 0; n < count; n++) db.prepare('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)').run(`${buyer}:filler-${n}`, buyer, at, at + 60_000);
+/** Fills the accounting ledger with `count` live completed reservations of `buyer`, as other valid traffic would. */
+function fillReservationLedger(w, buyer, count) {
+  const { db } = sellerStoreInternals(w.handle.store), at = w.state.time, jobId = jobFor(`filler-of-${buyer}`);
+  db.prepare('INSERT INTO kit_job_holds VALUES (?, ?, ?, ?, 0)').run(jobId, buyer, SELLER.claim, JSON.stringify(PIN));
+  for (let n = 0; n < count; n++) {
+    db.prepare("INSERT INTO kit_reservations VALUES (?, ?, ?, ?, ?, NULL, 'general', ?, ?, 'completed', NULL, 1)")
+      .run(`${buyer}:filler-${n}`, buyer, jobId, `filler-operation-${n}`, PATHS.proposals, `filler-hash-${n}`, at);
+  }
 }
 
 test('at zero free capacity a replay of a completed operation is answered when the record limit is full, while a new job is refused', async (t) => {
   const { w, job, first } = await completedAtZeroFree(t, 'record-limit');
-  fillNonceLedger(w, 'filler-buyer', MAX_RECORDS);
+  fillReservationLedger(w, 'filler-buyer', MAX_RECORDS);
   const watch = watchRevalidation(w), before = snapshot(w);
   const answer = await job.post();
   assert.deepEqual({ status: answer.status, text: answer.text }, { status: 200, text: first.text });
@@ -109,7 +113,7 @@ test('at zero free capacity a replay of a completed operation is answered when t
 
 test('at zero free capacity a replay of a completed operation is answered when the buyer window is full', async (t) => {
   const { w, job, first } = await completedAtZeroFree(t, 'buyer-window', { maxNoncesPerBuyerPerWindow: 5 });
-  fillNonceLedger(w, BUYER.claim, 5);
+  fillReservationLedger(w, BUYER.claim, 5);
   const before = snapshot(w);
   const answer = await job.post();
   assert.deepEqual({ status: answer.status, text: answer.text }, { status: 200, text: first.text });

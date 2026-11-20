@@ -154,8 +154,9 @@ for (const [stall, where] of [['first', 'before the first Vet write'], ['between
         await flush();
         assert.equal(provider.seen.lateWrites, 0, 'no Vet write after the deadline');
         assert.deepEqual(unhandled, []);
-        assert.equal(admissionState(f.dataDirectory), 'compensating', 'the settled work completed nothing, and its row is ended for cleanup once the work has settled');
+        assert.equal(admissionState(f.dataDirectory), 'running', 'the settled work completed nothing, and its row stays running for the buyer\'s retry');
         await (await f.start()).close();
+        assert.equal(admissionState(f.dataDirectory), 'compensating', 'the startup sweep ends the row for cleanup');
         assert.notEqual(admissionState(f.dataDirectory), null, 'the retained admission survives the restart');
       });
     }
