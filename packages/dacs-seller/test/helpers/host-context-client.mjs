@@ -51,7 +51,8 @@ export async function contextHostFixture(t, { publicEndpoint = null } = {}) {
  * A buyer for `host`. `challenge(jobId)` posts the signed challenge request, `context(jobId, nonce)` the signed context request
  * over that challenge, and `requestContext(jobId)` both; each answers `{ status, text, body, signed }`. Requests are delegated to a session
  * key; `{ delegated: false }` signs the context request with the buyer's own key instead. `scopeFor(jobId)` is the challenge scope the
- * buyer sends, and `admit(jobId)` the first admission a proposal needs.
+ * buyer sends, and `admit(jobId)` the first admission a proposal needs. `send(path, jobId, body)` signs `body` under a new envelope at the
+ * buyer's clock and posts it.
  */
 export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyerKey = buyer, seller: sellerKey = seller, clock = () => NOW }) {
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
@@ -91,5 +92,5 @@ export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyer
     if (answered.status !== 200) throw refusal('context request', answered);
     return answered.bundle;
   };
-  return { challenge, context, requestContext, scopeFor, admit };
+  return { challenge, context, requestContext, scopeFor, admit, send };
 }

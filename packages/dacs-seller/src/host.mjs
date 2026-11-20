@@ -63,7 +63,7 @@ import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-capacity-defaults.mjs';
 import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute, createWireSellerContextRoute } from './dacs/seller-context-route.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
-import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
+import { createLiveAttemptGate, createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
@@ -375,6 +375,8 @@ export async function startSellerHost(options) {
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission,
       retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     reservations.addPreAccountingGate(closedBootstrapGate);
+    // A retry inside the lease of its operation's unfinished attempt is refused before it is charged or its nonce is published.
+    reservations.addPreAccountingGate(createLiveAttemptGate({ accounting: store.reservationAccounting, now }));
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     // The readiness the discovery document publishes and the challenge and stage routes read: also false while a new purchase's whole
     // allotment does not fit. The context route keeps `sellerReady`, so an accepted context request sent again is still answered.

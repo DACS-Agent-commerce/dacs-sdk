@@ -83,6 +83,10 @@ const PASSIVE_TRANSFER_TIMEOUT_MS = 10_000;
 // `maxBytes` (readRpc) can only lower it. The binder accepts a read up to a minute old.
 const SOURCE_READ_MAX_BYTES = 4 * 1024 * 1024;
 const IDENTITY_MAX_AGE_MS = 60000;
+// What a transaction signature covers once the node's signatureDomain fork is active: this prefix, the node's chain id and the hash.
+const SIGNATURE_DOMAIN_PREFIX = 'demos-tx:v1:';
+// An answer that the fork is not active is reused for this long; an active fork never goes back.
+const INACTIVE_SIGNATURE_DOMAIN_REUSE_MS = 60000;
 // The longest failure code or message from the node that a failed storage
 // write's result repeats; a longer one is left out as unknown.
 const NODE_FAILURE_TEXT_MAX_LENGTH = 512;
@@ -121,6 +125,7 @@ const LEASE_EXPIRY_MARGIN_MS = 1;
 // The fee members of a confirmation's gas operation, each a canonical decimal OS string.
 const FEE_MEMBERS = ['network_fee', 'rpc_fee', 'additional_fee'];
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
+const ONLY_ORIGINAL_SENDS = 'only the original signed native DEM send or explicitly admitted immutable CREATE is relayed';
 const envelope = (response, result = 200) => ({ result, response, require_reply: false, extra: null });
 // A node's reply without any top-level `writeProof`. Only this transport may add
 // one, after it has read the inclusion itself; a reply of any other shape is
@@ -281,7 +286,7 @@ export function createSourceObserver({ record, owner, blockZeroErrorEnvelope = n
   return Object.freeze({ bind, post });
 }
 function constructTransport({ expected, transportOwner, journal, fallback = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
-  fetchImpl = globalThis.fetch, now = () => Date.now(), stamps = { next: () => now() }, timeoutMs = 10000,
+  fetchImpl = globalThis.fetch, now = () => Date.now(), stamps = { next: () => now() }, monotonicNow = () => performance.now(), timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null, boundary, reopenGrants = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
   if (!BOUNDARY_METHODS.every((name) => typeof boundary?.[name] === 'function')) throw new TypeError(`the effect boundary needs ${BOUNDARY_METHODS.join(', ')}`);
@@ -296,7 +301,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const stepListeners = new Set(), resendListeners = new Set(), writeProofs = new Map();
   const step = (tx, name, phase, started) => {
     const op=tx?.content?.data?.[1], fields={timestampMs:now(),step:name,phase,hash:tx.hash,writer:tx.content.from,nonce:tx.content.nonce,jobId:op?.data?.jobId ?? op?.metadata?.artifactBinding?.jobId ?? null,artifactKind:op?.metadata?.artifactKind ?? 'native-transfer'};
-    if(started!==undefined) fields.durationMs=Math.max(0,fields.timestampMs-started);
+    if(started!==undefined) fields.durationMs=Math.max(0,monotonicNow()-started);
     for(const listener of stepListeners) { try { listener(fields); } catch { /* telemetry cannot authorize or interrupt a write */ } }
   };
   let closed = false;
@@ -726,6 +731,35 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     await journal.put(key,record);
     if (JSON.stringify(await journal.get(key)) !== JSON.stringify(record)) fail('journal_error','the public issued transfer was not retained exactly');
   }
+  // The node's signature domain for the connection a request runs on: null while the signatureDomain fork is inactive,
+  // else its chain id. The answer is evidence for that connection only. An active one is kept and never replaced by an
+  // inactive one, an inactive one is reused for a minute, and a read that fails or is malformed is never kept. Called only under a lease, so a request refused
+  // before it holds one reads nothing.
+  let signatureDomainEvidence = null;
+  const readSignatureDomain = async () => {
+    const connection = await context(), kept = signatureDomainEvidence;
+    if (kept && sameContext(kept.connection, connection) && (kept.chainId !== null || now() - kept.readAt < INACTIVE_SIGNATURE_DOMAIN_REUSE_MS)) return kept.chainId;
+    let info;
+    try { info = await node('getNetworkInfo', {}); } catch (cause) {
+      throw Object.assign(new Error('the node\'s signature domain could not be read', { cause }), { code:'signature_domain_unreadable' });
+    }
+    const active = info?.forks?.signatureDomain?.activated, chainId = info?.chainId;
+    if (typeof active !== 'boolean' || (active && !(Number.isSafeInteger(chainId) && chainId >= 0))) fail('signature_domain_malformed','the node\'s getNetworkInfo does not say whether the signature domain is active, or gives no chain id for it');
+    if (!sameContext(await context(), connection)) fail('connection_changed','the connection changed while the signature domain was read');
+    // Another request may have kept an active answer for this connection while this read was in flight. The fork does
+    // not deactivate, so a late inactive answer never replaces it: the kept active domain is the one that applies.
+    const current = signatureDomainEvidence;
+    if (!active && current && current.chainId !== null && sameContext(current.connection, connection)) return current.chainId;
+    signatureDomainEvidence = { connection, readAt:now(), chainId:active ? chainId : null };
+    return signatureDomainEvidence.chainId;
+  };
+  // Refuses unless the signature is the sender's over what the node's signature domain says it covers: the hash while the
+  // fork is inactive, `demos-tx:v1:<chain id>:<hash>` once it is active. No other form is accepted.
+  const verifyTransactionSignature = async (tx) => {
+    const chainId = await readSignatureDomain();
+    const message = chainId === null ? tx.hash : `${SIGNATURE_DOMAIN_PREFIX}${chainId}:${tx.hash}`;
+    if (!verifyDemosSignature({ address:tx.content.from, message, signature:tx.signature.data })) fail('native_only',ONLY_ORIGINAL_SENDS);
+  };
   function signedTransaction(body, headers) {
     const call=body.params?.[0], tx=call.extra === 'confirmTx' ? call.data : call.data?.response?.data?.transaction;
     const c=tx?.content;
@@ -769,8 +803,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       && op.storageAddress===c.to && op.salt==='' && op.encoding==='json' && op.acl?.mode==='public' && c.network===pinned.network && c.chainIdentity===pinned.chainIdentity
       && canonicalize(op.metadata.networkBinding)===canonicalize(declaration);
     if (!c || !ADDRESS.test(c.from ?? '') || (!native && !create)
-      || !HASH.test(tx.hash ?? '') || sha(JSON.stringify(c)) !== tx.hash || tx.signature?.type !== 'ed25519'
-      || !verifyDemosSignature({ address:c.from,message:tx.hash,signature:tx.signature.data })) fail('native_only','only the original signed native DEM send or explicitly admitted immutable CREATE is relayed');
+      || !HASH.test(tx.hash ?? '') || sha(JSON.stringify(c)) !== tx.hash || tx.signature?.type !== 'ed25519') fail('native_only',ONLY_ORIGINAL_SENDS);
     senderAuth(c.from, headers);
     return tx;
   }
@@ -976,7 +1009,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           if (latest?.hash === hash && latest.stage !== 'failed') await retain(lane(address),r);
           return { disposition:'failed',hash,nonce:r.nonce,noResend:true,resolved:true };
         }
-        const proofStarted=now(),cached=writeProofs.get(hash);
+        const proofStarted=monotonicNow(),cached=writeProofs.get(hash);
         writeProofs.delete(hash);
         const reused=cached && writeProof && canonicalize(writeProof)===canonicalize({disposition:'included',receipt:cached.receipt,noResend:true}) && sameContext(cached.context,await context()) && cached.signed===JSON.stringify(r.signedTransaction) && cached.receipt.blockNumber===status.blockNumber;
         const tx=reused?null:await node('getTxByHash',{hash});
@@ -1077,6 +1110,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           };
           const confirmBody={method:'execute',params:[{extra:'confirmTx',data:clone(tx)}]},auth=await headers();
           signedTransaction(confirmBody,auth);
+          await verifyTransactionSignature(tx);
           const confirms=(answer) => rpcEnvelope(answer,200,null) && storageWriteConfirmationMatches(answer.response)
             && answer.response.data.valid===true
             && storageConfirmationShapeMatches(answer.response.data)
@@ -1088,6 +1122,10 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           const broadcastAuth=await headers();
           if(!await absent() || !sameContext(originalContext,await context())) return pending;
           const resendOnce=async(bytes,final)=>{
+            // The domain may have changed since the confirmation or while the dispatch record was written: the signature
+            // is checked again here, on a fresh read once the kept answer is past its lifetime, with nothing awaited
+            // between that check and the reservation. A refusal reserves and sends nothing.
+            await verifyTransactionSignature(tx);
             // Reserve the sole attempt before dispatch. A crash consumes it too;
             // reopening the journal can never start another retransmission loop.
             r={...r,storageWriteResends:1,networkBinding:binding};
@@ -1154,7 +1192,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             const latest=await journal.get(lane(address));
             await refuseUnfinished(latest,'an issued native transfer appeared while acquiring the connection fence',reopen);
             if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
-            const lease={ id:leaseId,operationId,address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:now(),busy:0,transfer:null };
+            const lease={ id:leaseId,operationId,address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:monotonicNow(),busy:0,transfer:null };
             // Claimed durably before it is returned: a cancellation in any
             // process sees it (transferClaimed).
             if (transfer) await claimTransfer(lease,transfer);
@@ -1202,6 +1240,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       const pass=currentPassContext(), reopen=reopening.getStore();
       const tx=signedTransaction(body,headers), { l, release }=await claimLease(tx.content.from);
       try {
+      await verifyTransactionSignature(tx);
       if(call.extra === 'confirmTx') {
         l.confirmed=null;l.readyHash=null;
         const issuedBefore=await journal.get(intent(tx.hash));
@@ -1230,7 +1269,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           l.confirmed=clone(tx);
           return retained.confirmation;
         }
-        const started=now();
+        const started=monotonicNow();
         let accepted=false;
         const confirmOnce=async(bytes,final)=>{
           const answer=await transmitWithoutWriteProof(body,headers,{ final,pass });
@@ -1280,7 +1319,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
                 await retain(lane(tx.content.from),issued);
                 await retain(intent(tx.hash),issued);
               }
-              const started=now();
+              const started=monotonicNow();
               let answer,sending=false,withheld=false;
               // Notes a refusal by the last check, which comes before the request: then nothing was sent.
               const last=async(check,effect)=>{
@@ -1311,8 +1350,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           });
         });
         if (accepted?.result === 200) {
-          const started=now(),deadline=started+inclusionWaitMs;
-          for (let polls = Math.ceil(inclusionWaitMs / inclusionPollMs); !closed && polls > 0 && now()<deadline; polls--) {
+          const started=monotonicNow(),deadline=started+inclusionWaitMs;
+          for (let polls = Math.ceil(inclusionWaitMs / inclusionPollMs); !closed && polls > 0 && monotonicNow()<deadline; polls--) {
             let status;
             try {
               if (!sameContext(await context(),l.fence.context)) break;
@@ -1326,7 +1365,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
                 // keep the proof only if that connection is current after them.
                 const observedContext=await context();
                 if(!sameContext(observedContext,l.fence.context)) fail('connection_changed','the fenced connection changed before the inclusion proof');
-                const proofStarted=now(),issued=await journal.get(intent(tx.hash));
+                const proofStarted=monotonicNow(),issued=await journal.get(intent(tx.hash));
                 const binding=await binder.recover(issued.networkBinding);
                 const receipt=await inclusionReceipt(tx.content.from,tx.hash,issued,binding,status);
                 if(!sameContext(await context(),observedContext)) fail('connection_changed','the connection changed while the inclusion proof was read');
@@ -1337,7 +1376,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
               } catch { /* accepted hash remains readback-only if proof is unavailable */ }
               break;
             }
-            const remaining=deadline-now();
+            const remaining=deadline-monotonicNow();
             if(remaining>0)await sleep(Math.min(inclusionPollMs,remaining));
           }
         }
