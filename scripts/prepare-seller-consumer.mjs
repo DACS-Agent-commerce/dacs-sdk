@@ -42,7 +42,7 @@ export const sellerPackFiles = () => packFiles(SELLER);
  * manifest and lock, the Node host manifest, and the smoke runner: a setup is
  * current only while it matches. Throws if a file cannot be read.
  */
-export function sellerSourceFingerprint(sellerFiles, clientFiles = []) {
+export function sellerSourceFingerprint(sellerFiles, clientFiles) {
   const files = ["package.json", "package-lock.json", "packages/dacs-node/package.json", SMOKE_RUNNER, ...sellerFiles.map((file) => "packages/dacs-seller/" + file),
     ...clientFiles.map((file) => "packages/dacs-client/" + file)];
   const walk = (dir) => {

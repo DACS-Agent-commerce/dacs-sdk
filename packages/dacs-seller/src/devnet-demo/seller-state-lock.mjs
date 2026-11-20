@@ -123,8 +123,8 @@ function takeOver(directory, path, text) {
  * Rejects with code seller_state_locked and `reason` 'held' while another live
  * process (or this one) holds it, or 'doubt' when its holder can't be proven
  * gone. Returns `{ path, held(), release() }`; held() is true while the lock is
- * not released and the lock file still holds this holder's record (it throws
- * when the file cannot be read). release() is synchronous and idempotent,
+ * not released and the lock file still holds this holder's record (a missing
+ * file is false; any other read failure throws). release() is synchronous and idempotent,
  * removes the lock only while it is still this one, and throws if the lock
  * can't be removed or the directory can't be synced; after a throw, calling it
  * again retries. This process's lease is kept until it exits. Throws a

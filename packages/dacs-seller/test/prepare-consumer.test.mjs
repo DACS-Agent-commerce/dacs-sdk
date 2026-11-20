@@ -95,7 +95,7 @@ test('a new directory is created and prepared, with prepared.json binding runtim
   assert.ok(existsSync(join(directory, 'run.mjs')));
   const marker = JSON.parse(readFileSync(join(directory, 'prepared.json'), 'utf8'));
   assert.deepEqual(Object.keys(marker).sort(), ['clientPack', 'corePack', 'lockDigest', 'nodePack', 'runtime', 'sellerPack', 'sourceFingerprint']);
-  assert.equal(staleSetupReason(directory, sellerSourceFingerprint([])), null, 'the setup matches the files its seller pack contained');
+  assert.equal(staleSetupReason(directory, sellerSourceFingerprint([], [])), null, 'the setup matches the files its seller and client packs contained');
 });
 
 test('the consumer lock gives the seller the demosdk version its own manifest pins', (t) => {
@@ -196,7 +196,7 @@ test('two setups of separate directories at once both succeed', async (t) => {
   assert.equal(first.status, 0, first.stderr);
   assert.equal(second.status, 0, second.stderr);
   assert.equal(readdirSync(barrier).length, 2, 'both installs were running together');
-  for (const name of ['one', 'two']) assert.equal(staleSetupReason(join(probe.base, name), sellerSourceFingerprint([])), null);
+  for (const name of ['one', 'two']) assert.equal(staleSetupReason(join(probe.base, name), sellerSourceFingerprint([], [])), null);
 });
 
 test('two setups of one directory: the first wins, the second is refused and the winner is left intact', async (t) => {
@@ -212,7 +212,7 @@ test('two setups of one directory: the first wins, the second is refused and the
   writeFileSync(join(hold, 'release'), '');
   const finished = await winner;
   assert.equal(finished.status, 0, finished.stderr);
-  assert.equal(staleSetupReason(directory, sellerSourceFingerprint([])), null);
+  assert.equal(staleSetupReason(directory, sellerSourceFingerprint([], [])), null);
 });
 
 test('setup before the core build is refused with a clear message and creates nothing', (t) => {
@@ -245,7 +245,7 @@ async function fingerprintCheckout(t) {
   mkdirSync(join(checkout, 'scripts'));
   copyFileSync(script, join(checkout, 'scripts', 'prepare-seller-consumer.mjs'));
   const copy = await import(pathToFileURL(join(checkout, 'scripts', 'prepare-seller-consumer.mjs')).href);
-  return { checkout, fingerprint: () => copy.sellerSourceFingerprint(['package.json']) };
+  return { checkout, fingerprint: () => copy.sellerSourceFingerprint(['package.json'], []) };
 }
 
 test('a changed Node host manifest makes a prepared setup stale', async (t) => {
@@ -257,7 +257,7 @@ test('a changed Node host manifest makes a prepared setup stale', async (t) => {
 });
 
 test('a setup for another runtime, other sources, a changed lock or no marker is stale', (t) => {
-  const probe = fixture(t), directory = join(probe.base, 'consumer'), fingerprint = sellerSourceFingerprint([]);
+  const probe = fixture(t), directory = join(probe.base, 'consumer'), fingerprint = sellerSourceFingerprint([], []);
   assert.equal(probe.run(directory).status, 0);
   const markerPath = join(directory, 'prepared.json'), marker = readFileSync(markerPath, 'utf8'), lock = readFileSync(join(directory, 'package-lock.json'));
   const fresh = /; prepare a fresh directory with npm run seller:prepare -- <new directory>$/;
