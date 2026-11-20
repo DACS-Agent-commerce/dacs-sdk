@@ -113,7 +113,7 @@ test('the last status read turns a would-be exclusion into an inclusion, and the
   assert.equal(w.captured.length, 1);
 });
 
-test('after a recovery reconfirms the same bytes, exclusion is judged from the reconfirmation\'s reference block', async () => {
+test("after a recovery reconfirms the same bytes, exclusion is judged from the reconfirmation's reference block", async () => {
   const later = R + 100;
   const w = await lateWriteWorld({ onSleep: (count) => { if (count === 3) w.chain.included = true; },
     onRecovery: (chain) => { chain.reference = later; return { resent: true }; } });
@@ -199,7 +199,7 @@ test('a restart during the late-write wait resumes readback only, with no new wa
   assert.equal(w.recoveries.length, 1, 'no recovery send after the restart');
 });
 
-test('a late-write wait resumed after a restart still ends 30 minutes after the wallet\'s original answer', async () => {
+test("a late-write wait resumed after a restart still ends 30 minutes after the wallet's original answer", async () => {
   let stopped = false;
   const w = await lateWriteWorld({ blockMs: Infinity, onSleep: (count) => {
     if (count === 2 && !stopped) { stopped = true; throw new Error('TEST process stopped during the wait'); }
