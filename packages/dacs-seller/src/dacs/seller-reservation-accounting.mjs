@@ -26,7 +26,7 @@ const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isI
 /**
  * Compose durable pre-reservation accounting over the owning store's synchronous SQL/transaction port and its
  * reservation ledger: the store's one definition of the records behind each limit, which its old reserve path reads too.
- * Returns an object with reserveAccounted; throws a TypeError on invalid limits.
+ * Returns an object with reserveAccounted and reservedRequest; throws a TypeError on invalid limits.
  * The store owns the schema and BEGIN IMMEDIATE; every check and hook runs within that same transaction.
  */
 export function createReservationAccounting({ store, now, limits, contextRecords }) {
@@ -170,7 +170,24 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       saveResult(key, effect.state);
       return effect;
     },
+    /** Whether the request's nonce key already has its reservation row, which reserveAccounted refuses peer_request_replayed. Read-only. */
+    reservedRequest(payload) {
+      return get('SELECT key FROM kit_reservations WHERE key = ?', requestNonceKey(payload)) !== undefined;
+    },
   };
+}
+
+/**
+ * The pre-accounting gate for a retry that the wire journal would refuse as pending only after its charge and its nonce. A request under the
+ * binding of an operation whose latest attempt has no end and whose lease has not run out at `now()`, the journal's clock, is refused
+ * seller_effect_pending 503 before any row, unit or nonce key. A request whose nonce already has its reservation row is left to the accounting,
+ * which refuses it peer_request_replayed, and a lapsed lease to the journal's recovery. Throws a TypeError for a missing port.
+ */
+export function createLiveAttemptGate({ accounting, now }) {
+  if (typeof accounting?.reservedRequest !== 'function' || typeof now !== 'function') throw new TypeError('the live-attempt gate needs the accounting and the journal clock');
+  const pending = Object.freeze({ code: 'seller_effect_pending', status: 503 });
+  return ({ payload, inspection }) => inspection?.state === 'pending' && inspection.binding === wireOperationBinding(payload)
+    && now() < inspection.leaseUntil && !accounting.reservedRequest(payload) ? pending : null;
 }
 
 // One in-process first-come mutex per key. `acquire(key)` resolves to a release function (safe to call twice); a key nobody owns or

@@ -1018,7 +1018,11 @@ export interface BundleSignature {
 export type BundlePartyRole = "buyer" | "seller" | "orchestrator";
 export type FaultedParty = BundlePartyRole | "none";
 
-/** Fields shared by the legacy and v0.3 DACS-5 bundle types. */
+/**
+ * Fields of the three DACS-5 bundle types below. `AttestationBundle`
+ * (`bundleVersion: "1"`) and the v0.4 `EvidenceBoundFaultAttestationBundle`
+ * each replace `phaseSummary` with their own entry type.
+ */
 interface BundleFields {
   jobId: string;
   outcome:

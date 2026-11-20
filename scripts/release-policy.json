@@ -36,7 +36,7 @@
     {
       "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "1b011eb82017984bf828dfdb5735f47f0535d891609a24887779ebb01c48f86e",
+      "preparationManifestSha256": "2a30d20a056d88b3026bf24ca32daf3d09176fcdda44892ddd63f59012a66a0f",
       "preparationSnapshotBlockers": ["@kynesyslabs/dacs-seller: release identity or publish policy is invalid"],
       "requiredExports": ["."],
       "allow": ["package.json", "README.md", "LICENSE", "bin/**/*.mjs", "src/**/*.mjs", "PROFILE.json", "ADMISSION.md", "SOURCES.md"]

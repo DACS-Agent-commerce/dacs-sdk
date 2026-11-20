@@ -640,7 +640,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
   ): Promise<T> {
     const path = lockPath(role, jobId);
     const owner = { pid: process.pid, token: randomUUID() };
-    const deadline = Date.now() + captured.lockTimeoutMs;
+    const deadline = performance.now() + captured.lockTimeoutMs;
     for (;;) {
       try {
         await exclusiveWriteOwner(path, owner);
@@ -648,7 +648,7 @@ export async function createFsDurableRfqLifecycleStore<TSignature = unknown>(
       } catch (cause) {
         if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
         await reclaimLockIfSafe(path);
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           throw new DacsError("RFQ filesystem record lock timed out");
         }
         await sleep(captured.lockPollMs);

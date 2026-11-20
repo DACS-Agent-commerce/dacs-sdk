@@ -232,7 +232,12 @@ export function assignSealedEnvelopeRoles(input: {
   };
 }
 
-/** Context the injected agreement builder needs to construct the AgreementDocument. */
+/**
+ * Winning bid of a sealed-envelope selection and its job context.
+ * `SealedCommitContext` makes the resolved mode and roles required and adds
+ * the commit check; `runSealedEnvelopeCore` passes that context to
+ * `commitAgreement`.
+ */
 export interface SealedWinnerContext {
   jobId: string;
   /**
@@ -245,7 +250,7 @@ export interface SealedWinnerContext {
   winningBidderClaim: string;
   winningBid: SealedBid;
   losingBidderClaims: string[];
-  /** Defaults to the legacy demand phase when absent. */
+  /** Absent means the demand phase, as in `resolveSealedEnvelopeMode`. */
   phaseKind?: SealedEnvelopePhaseKind;
   /** Defaults to demand only for the demand phase; required for procurement. */
   auctionMode?: SealedEnvelopeAuctionMode;
@@ -403,9 +408,9 @@ export interface SealedEnvelopeDeps {
   /** Fetch an anchored/HTTPS rule by the listing-pinned SE-6 reference. */
   resolveRuleContent?: (ref: Readonly<RuleRef>) => Promise<unknown>;
   /**
-   * Deterministic interpreter capability for verified rule content. Unlike the
-   * old caller predicate, this can only be invoked by the core with branded,
-   * hash-checked content and the fixed authoritative bid set.
+   * Deterministic interpreter capability for verified rule content. The core
+   * calls it only with branded, hash-checked content and the fixed
+   * authoritative bid set.
    */
   evaluateVerifiedRule?: (input: SealedRuleEvaluationInput) => boolean;
 }

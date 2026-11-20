@@ -7,19 +7,20 @@ import { commitmentFixture } from '../../packages/dacs-seller/test/helpers/commi
 import { NOW, buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { testNetwork } from '../../packages/dacs-seller/test/helpers/wire-authority-fixture.mjs';
 import { KIT_TP1_VET_MODE, startSellerHost } from '../../packages/dacs-seller/src/host.mjs';
-import { wireBuyer } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
+import { FIXTURE_ENDPOINT, wireBuyer } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
+import { fetchAsHost, proxyListener } from '../../packages/dacs-seller/test/helpers/listener-host.mjs';
 import { createSellerTransportClientAuth } from '../../packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs';
 import { SELLER_TRANSPORT_HEADER } from '../../packages/dacs-client/test/helpers/old-seller-transport.mjs';
 
 /** Starts the kit's composed host over the kit's fixture capabilities, with `changes` replacing host options; both are released when the test ends, whether it passes or fails. */
 export async function composedKitHost(t, changes = {}) {
-  const fixture = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE });
+  const fixture = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE, publicEndpoint: FIXTURE_ENDPOINT });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-kit-client-host-'));
   // The fixture's agent options that the host does not take (it owns its directory and Vet mode, builds its own challenge ledger and has no early commit) are left out.
   const config = { ...fixture.config };
   const { nativeArtifactAnchor } = config;
   for (const key of ['durableDirectory', 'commitOnSignature', 'nativeArtifactAnchor', 'challengeLedger', 'vetMode']) delete config[key];
-  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), ...changes });
+  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), listener: proxyListener(), ...changes });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { fixture, host, dataDirectory };
 }
@@ -37,7 +38,7 @@ export async function postSigned(host, auth, path, body) {
 
 /** One POST of `text` to `host` under an already-built header: the status, the answer text and whether the answer carries a seller signature. */
 export async function postHeader(host, path, header, text) {
-  const response = await fetch(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: header }, body: text });
+  const response = await fetchAsHost()(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: header }, body: text });
   return { status: response.status, text: await response.text(), signed: response.headers.has(SELLER_TRANSPORT_HEADER) };
 }
 

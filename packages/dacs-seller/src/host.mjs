@@ -1,5 +1,13 @@
 // Standalone seller host: one seller agent for one signed Listing, behind the
-// authenticated seller transport and its durable journal, on loopback.
+// authenticated seller transport and its durable journal, on a public listener.
+//
+// The operator picks one of two listener modes (`listener`, admitListener below). In
+// `proxy` mode the host listens on literal loopback over plain HTTP and a reverse proxy
+// that terminates TLS forwards to it. In `tls` mode the host listens on an IP address
+// with the operator's certificate and key. Either way `listener.publicOrigin` is the
+// Listing's `seller.publicEndpoint` byte for byte, and a request is served only under
+// the `Host` that origin names. No option other than `listener` and no environment
+// variable changes the mode.
 //
 // The host only composes package modules. The operator supplies the signer
 // (a synchronous { claim, sign(bytes) } over its own custody; no key or key
@@ -42,10 +50,13 @@
 // only authenticator; the transport store journals the routes.
 import { existsSync, mkdirSync, opendirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { isIP } from 'node:net';
 import { isAbsolute, join } from 'node:path';
+import { createSecureContext } from 'node:tls';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, isPublicEndpoint, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { createAbandonedPurchaseState } from './dacs/abandoned-purchase.mjs';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { createAccountingReconciler } from './dacs/accounting-reconciliation.mjs';
@@ -63,7 +74,7 @@ import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-capacity-defaults.mjs';
 import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute, createWireSellerContextRoute } from './dacs/seller-context-route.mjs';
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
-import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
+import { createLiveAttemptGate, createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
@@ -77,9 +88,9 @@ import { isPrivateDirectory } from './private-directory.mjs';
  * in which the seller verifies and signs both Vet records. No option, environment
  * variable, Listing member or request field selects another. */
 export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
-const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
+const REQUIRED = Object.freeze(['signer', 'listing', 'listener', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network', 'readCommitmentReceipt']);
-const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'maxReservationUnits', 'host', 'port', 'now', 'contextSessionState']);
+const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'maxReservationUnits', 'now', 'contextSessionState']);
 const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 // The startup binding read is bounded; a later answer grants nothing.
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
@@ -95,6 +106,14 @@ const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
 const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000 });
 const MAX_HEADER_SIZE = 16384;
+const MAX_HEADERS_COUNT = 64;
+// Node checks connections for a stalled header every 30 s unless told otherwise, which would let one outlive `headersTimeout`.
+const CONNECTIONS_CHECKING_INTERVAL_MS = 1000;
+// Node waits 120 s for a TLS handshake unless told otherwise; a client gets the header deadline to finish it.
+const TLS_HANDSHAKE_TIMEOUT_MS = TIMEOUTS.headersTimeout;
+const MAX_PORT = 65535;
+const LISTENER_KEYS = Object.freeze({ proxy: Object.freeze(['mode', 'host', 'port', 'publicOrigin']), tls: Object.freeze(['mode', 'host', 'port', 'publicOrigin', 'tls']) });
+const TLS_KEYS = Object.freeze(['cert', 'key']);
 // The admission transaction bounds its policy call; the host takes no policy hold, so the call answers at once.
 const CONTEXT_POLICY_DEADLINE_MS = 10000;
 const NO_HOLD_POLICY = Object.freeze({ reserve: async () => null, release: async () => {} });
@@ -249,11 +268,38 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
   if (held !== null) throw journalAccountingMismatch(`${JOURNAL_DIRECTORY}/${held} exists but the kit store is new`);
 }
 
-// Resolves once the host listens: { url, listingPin, seller, timeouts, close() }.
+const listenerInvalid = (detail, cause) => Object.assign(new TypeError(`listener_invalid: ${detail}`, cause === undefined ? undefined : { cause }), { code: 'listener_invalid' });
+const listenerOriginMismatch = (detail) => Object.assign(new TypeError(`listener_origin_mismatch: ${detail}`), { code: 'listener_origin_mismatch' });
+const hasExactKeys = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+
+// The listener option, checked before the state lock or any socket: a closed set of members for the mode, a bind host the mode allows, a port,
+// a `publicOrigin` that the wire accepts as an endpoint and that is the Listing's own endpoint byte for byte, and for `tls` a certificate and
+// key that make a usable pair. Returns the mode's bind address, the `Host` the Listing's endpoint names, and the TLS options.
+function admitListener(listener, listing) {
+  const keys = typeof listener?.mode === 'string' && Object.hasOwn(LISTENER_KEYS, listener.mode) ? LISTENER_KEYS[listener.mode] : undefined;
+  if (keys === undefined || !hasExactKeys(listener, keys)) throw listenerInvalid('the listener is { mode: "proxy", host, port, publicOrigin } or { mode: "tls", host, port, publicOrigin, tls: { cert, key } }');
+  const { mode, host, port, publicOrigin } = listener;
+  if (mode === 'proxy' && !LOOPBACK.has(host)) throw listenerInvalid('a proxy listener binds only literal loopback (127.0.0.1 or ::1)');
+  if (mode === 'tls' && (typeof host !== 'string' || isIP(host) === 0)) throw listenerInvalid('a tls listener binds an IP address literal');
+  if (!Number.isSafeInteger(port) || port < 0 || port > MAX_PORT) throw listenerInvalid('port must be an integer from 0 to 65535');
+  if (!isPublicEndpoint(publicOrigin)) throw listenerOriginMismatch('publicOrigin is not a public endpoint: https, an authority and nothing after it');
+  if (publicOrigin !== listing.seller.publicEndpoint) throw listenerOriginMismatch('publicOrigin differs from the Listing\'s seller.publicEndpoint');
+  const admitted = { mode, host, port, publicOrigin, expectedHost: new URL(publicOrigin).host, tls: undefined };
+  if (mode === 'proxy') return admitted;
+  const pem = (value) => (typeof value === 'string' || Buffer.isBuffer(value)) && value.length > 0;
+  if (!hasExactKeys(listener.tls, TLS_KEYS) || !TLS_KEYS.every((key) => pem(listener.tls[key]))) throw listenerInvalid('a tls listener needs tls: { cert, key }');
+  try { createSecureContext(listener.tls); } catch (cause) { throw listenerInvalid('the certificate and key are not a usable pair', cause); }
+  return { ...admitted, tls: { cert: listener.tls.cert, key: listener.tls.key } };
+}
+
+// Resolves once the host listens: { url, publicOrigin, listingPin, seller, timeouts, close() }.
+// `url` is the local listener's address (http in proxy mode, https in tls mode) and
+// `publicOrigin` the origin the Listing advertises.
 // Rejects with KitOperationGuardError (kit_operation_guard_off) first of all,
 // before reading the options, while the kit's operation guard is off.
 // Rejects with a TypeError before opening anything when an option is missing,
-// unknown, malformed or not private, and with the startup error otherwise
+// unknown, malformed or not private (`listener_invalid` or `listener_origin_mismatch`
+// for the listener option), and with the startup error otherwise
 // (carrying `cleanupError` when cleanup fails; an AggregateError with the
 // startup error as `cause` when that error cannot carry the property).
 // The host runs in KIT_TP1_VET_MODE only: a `demDeliveryContext` made in another
@@ -280,13 +326,12 @@ export async function startSellerHost(options) {
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
-    maxReservationUnits = maxRecords, host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = null } = options;
+    maxReservationUnits = maxRecords, now = () => Date.now(), contextSessionState = null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
   if (contextSessionState !== null && typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
-  if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
-  if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
+  const listenerPolicy = admitListener(options.listener, listing);
   if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) throw new TypeError('maxRecords must be a positive integer');
   if (!Number.isSafeInteger(maxReservationUnits) || maxReservationUnits < 1) throw new TypeError('maxReservationUnits must be a positive integer');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
@@ -381,6 +426,8 @@ export async function startSellerHost(options) {
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target), admissionTransaction: admission,
       retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     reservations.addPreAccountingGate(closedBootstrapGate);
+    // A retry inside the lease of its operation's unfinished attempt is refused before it is charged or its nonce is published.
+    reservations.addPreAccountingGate(createLiveAttemptGate({ accounting: store.reservationAccounting, now }));
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     // The readiness the discovery document publishes and the challenge and stage routes read: also false while a new purchase's whole
     // allotment does not fit. The context route keeps `sellerReady`, so an accepted context request sent again is still answered.
@@ -412,28 +459,35 @@ export async function startSellerHost(options) {
     // parent entry has been synced yet.
     await DURABLE_SYNC.directory(transport);
     await DURABLE_SYNC.directory(dataDirectory);
-    const handler = createSellerHttpHandler(agent, { wire, context });
+    const handler = createSellerHttpHandler(agent, { wire, context, listener: { mode: listenerPolicy.mode, expectedHost: listenerPolicy.expectedHost }, now });
     const active = new Set();
     // Connections with no dispatched request cannot be drained: a buyer that
-    // stops after a partial request line would hold server.close() forever,
-    // because close() clears Node's connections-checking interval and
-    // closeIdleConnections() skips a socket with a partial request. Track the
-    // accepted sockets and the responses they still owe so shutdown can
-    // destroy only connections with nothing left to answer, and close a
-    // connection whose last response has been handed off.
-    const sockets = new Set();
+    // stops after a partial request line (or, in tls mode, never finishes its
+    // handshake) would hold server.close() forever, because close() clears
+    // Node's connections-checking interval and closeIdleConnections() skips a
+    // socket with a partial request. Track the accepted connections and the
+    // responses they still owe so shutdown can destroy only connections with
+    // nothing left to answer, and close a connection whose last response has
+    // been handed off. A tls connection is known to the server twice, as the
+    // accepted TCP socket and as the TLS socket a request arrives on; both
+    // name it by its remote address and port.
+    const sockets = new Map();
     const owed = new Map();
-    const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, (req, res) => {
+    const connectionOf = (socket) => `${socket.remoteAddress}|${socket.remotePort}`;
+    const serverOptions = { maxHeaderSize: MAX_HEADER_SIZE, connectionsCheckingInterval: CONNECTIONS_CHECKING_INTERVAL_MS,
+      ...(listenerPolicy.tls === undefined ? {} : { ...listenerPolicy.tls, handshakeTimeout: TLS_HANDSHAKE_TIMEOUT_MS }) };
+    const server = (listenerPolicy.mode === 'tls' ? createHttpsServer : createHttpServer)(serverOptions, (req, res) => {
       if (stopping) { res.writeHead(503, { connection: 'close' }); res.end(); return; }
       const socket = req.socket;
-      owed.set(socket, (owed.get(socket) ?? 0) + 1);
+      const connection = connectionOf(socket);
+      owed.set(connection, (owed.get(connection) ?? 0) + 1);
       let counted = true;
       const answered = () => {
         if (!counted) return;
         counted = false;
-        const remaining = (owed.get(socket) ?? 1) - 1;
-        if (remaining > 0) { owed.set(socket, remaining); return; }
-        owed.delete(socket);
+        const remaining = (owed.get(connection) ?? 1) - 1;
+        if (remaining > 0) { owed.set(connection, remaining); return; }
+        owed.delete(connection);
         // The response was handed to the operating system; during shutdown
         // no further request is served on this connection.
         if (stopping) socket.destroy();
@@ -445,16 +499,17 @@ export async function startSellerHost(options) {
       work.catch(() => res.destroy()).finally(() => active.delete(work));
     });
     server.on('connection', (socket) => {
-      sockets.add(socket);
-      socket.once('close', () => sockets.delete(socket));
+      const connection = connectionOf(socket);
+      sockets.set(connection, socket);
+      socket.once('close', () => sockets.delete(connection));
     });
     const destroyUndispatched = () => {
-      for (const socket of sockets) if (!(owed.get(socket) > 0)) socket.destroy();
+      for (const [connection, socket] of sockets) if (!(owed.get(connection) > 0)) socket.destroy();
     };
-    Object.assign(server, { headersTimeout: TIMEOUTS.headersTimeout, requestTimeout: TIMEOUTS.requestTimeout, keepAliveTimeout: TIMEOUTS.keepAliveTimeout });
+    Object.assign(server, { headersTimeout: TIMEOUTS.headersTimeout, requestTimeout: TIMEOUTS.requestTimeout, keepAliveTimeout: TIMEOUTS.keepAliveTimeout, maxHeadersCount: MAX_HEADERS_COUNT });
     await new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen({ host, port, exclusive: true }, () => { server.off('error', reject); resolve(); });
+      server.listen({ host: listenerPolicy.host, port: listenerPolicy.port, exclusive: true }, () => { server.off('error', reject); resolve(); });
     });
     // Unfinished context rows are swept again while the host runs, one sweep at a time, and the units of purchases whose session has ended
     // or been abandoned are given back. A sweep that cannot finish a row records its cause on that row and a later sweep tries again, so a
@@ -500,7 +555,8 @@ export async function startSellerHost(options) {
       await release();
     })();
     return Object.freeze({
-      url: `http://${host === '::1' ? '[::1]' : host}:${server.address().port}`,
+      url: `${listenerPolicy.mode === 'tls' ? 'https' : 'http'}://${listenerPolicy.host.includes(':') ? `[${listenerPolicy.host}]` : listenerPolicy.host}:${server.address().port}`,
+      publicOrigin: listenerPolicy.publicOrigin,
       listingPin: structuredClone(agent.listingPin),
       seller: agent.claim,
       timeouts: { ...TIMEOUTS },
