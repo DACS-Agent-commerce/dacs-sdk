@@ -473,10 +473,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   connection that is not loopback (403), the rate limit (429), an unknown path
   (404), a method other than POST (405), a body that is not plain JSON (415),
   is too large (413), is interrupted or too slow (408) or is not a JSON object
-  (400), and a request whose envelope or signature does not open. If the
-  signer fails, a refusal raised before any effect started is sent unsigned
-  with its own status and code, and any other answer becomes an unsigned 503
-  `operation_uncertain`. The wire request journal is the journal of every
+  (400), and a request whose envelope or signature does not open. A request
+  that opens but names another seller is refused 401 `peer_audience_wrong`,
+  unsigned too: this seller signs no answer under it. If the signer fails, a
+  refusal raised before any effect started is sent unsigned with its own
+  status and code, and any other answer, a refusal of the context step
+  included, becomes an unsigned 503 `operation_uncertain`. The wire request journal is the journal of every
   effect route, the context step included. The challenge route does not use
   it: it keeps its challenges in the challenge ledger, and when that ledger is
   full, issuing a new challenge first deletes just enough of the oldest
