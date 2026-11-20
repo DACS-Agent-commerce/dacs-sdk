@@ -215,6 +215,7 @@ import {
   createFsDemosWriteJournal,
   createInMemoryBindingStore,
   verifyCompositeVerificationRecord,
+  type ListingValidationDeps,
 } from "@kynesyslabs/dacs";
 import { join } from "node:path";
 
@@ -269,9 +270,25 @@ if (
   throw new Error(`listing binding was not published: ${published.status}`);
 }
 
-// A read-only Directory can omit both wallet and publisher. A buyer that takes
-// part in a purchase holds its own Demos wallet (the coordinator guide's buyer
-// process does) but still needs only the consumer index.
+// The application supplies the verifiers, revocation observations and readers
+// below; these names are application inputs, not additional SDK helpers.
+const listingValidationDeps: ListingValidationDeps = {
+  nowMs: Date.now,
+  verifyListingSignature,
+  revocation: {
+    surfaces: revocationSurfaces,
+    readMarker: readRevocationMarker,
+    verifyMarkerSignature,
+  },
+  verifyIdentityPresentation, // DACS-1 BP-1..BP-4 over the exact signed bytes
+  verifySellerControl, // prove signer control, beyond claim membership
+  loadRailResolution, // authenticated DACS-4 authority for pay phases
+  resolvePayloadVerificationCapability, // local attested-payload support
+};
+
+// A read-only Directory can omit both wallet and publisher, but still needs
+// the consumer index and validation dependencies. A buyer that takes part in a
+// purchase also holds its own Demos wallet (the coordinator guide's buyer does).
 const buyer = await createAgent({
   demosRpc,
   wallet: buyerWallet,
@@ -280,6 +297,7 @@ const buyer = await createAgent({
   }),
   identity: { agentId: buyerId },
   bindings: { index: bindings },
+  listingValidationDeps,
 });
 
 // buyer — resolve the stable logical address and authenticate its binding tuple,
@@ -699,9 +717,11 @@ anchor. These success statuses mean the publisher acknowledged the exact binding
 and the configured index read it back; they do not by themselves prove portable
 anchor finality, active-listing eligibility, or complete DACS conformance.
 
-`readListing(logicalAddress)` and `enumerateListings(sellerId)` need only
-`AgentConfig.bindings.index`; the Agent wallet and publisher are optional for a
-read-only consumer. A normative `verified` result has passed the SDK-owned
+Normative `readListing(logicalAddress)` and `enumerateListings(sellerId)` reads
+require both `AgentConfig.bindings.index` and `AgentConfig.listingValidationDeps`;
+the Agent wallet and publisher are optional for a read-only consumer. Without
+validation dependencies, a normative candidate is `indeterminate` at the
+validation stage. A normative `verified` result has passed the SDK-owned
 ordered DACS-1 reader through step 9 and carries its exact `listingPin`. It has
 also passed exact binding-tuple, hash, Listing-context, and authorship
 checks. The binding owner is an
