@@ -148,6 +148,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   const scope = canonicalize([base, expectedIdentity,...(sourceCapability?[sourceCapability.transportBinding.bindingId]:[])]);
   const ownRecords = async () => (await journal.records()).filter((r) => r.scope === scope);
   const retained = async (logicalAddress, writer) => (await ownRecords()).find((r) => r.logicalAddress === logicalAddress && r.writer === writer);
+  // One aggregate deadline per resolution: its signal and the moment it ends, which every read inside it shares.
   const readBudget = new AsyncLocalStorage();
   async function boundedRead(work) {
     if (readBudget.getStore()) return work();
@@ -157,18 +158,24 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     const deadline = new Promise((_, fail) => { timer = setTimeout(() => {
       controller.abort(cause); fail(new DemosSr2Error('indeterminate', cause.message, { cause }));
     }, timeoutMs); });
-    try { return await readBudget.run(controller.signal, () => Promise.race([work(), deadline])); }
+    const budget = { signal: controller.signal, endsAt: performance.now() + timeoutMs };
+    try { return await readBudget.run(budget, () => Promise.race([work(), deadline])); }
     finally { clearTimeout(timer); controller.abort(); }
   }
+  // The whole milliseconds left of the current resolution's deadline (at least 1), or the full deadline outside one.
+  const remainingMs = () => {
+    const budget = readBudget.getStore();
+    return budget ? Math.min(timeoutMs, Math.max(1, Math.ceil(budget.endsAt - performance.now()))) : timeoutMs;
+  };
 
   async function call(path, body) {
     try {
-      const signal = readBudget.getStore(); signal?.throwIfAborted();
-      if(sourceCapability) return await sourceCapability.readRpc(path,body,{signal,maxBytes:DEMOS_SR2_REPLY_BYTES,timeoutMs});
+      const signal = readBudget.getStore()?.signal; signal?.throwIfAborted();
+      if(sourceCapability) return await sourceCapability.readRpc(path,body,{signal,maxBytes:DEMOS_SR2_REPLY_BYTES,timeoutMs:remainingMs()});
       return await fetchBoundedJson(`${base}${path}`, {
         method: body === undefined ? 'GET' : 'POST', body, timeoutMs, maxBytes: DEMOS_SR2_REPLY_BYTES, expectedOrigin: base,
         fetchImpl: async (url, options) => {
-          const signal = readBudget.getStore(); signal?.throwIfAborted();
+          const signal = readBudget.getStore()?.signal; signal?.throwIfAborted();
           const response = await fetchImpl(url, { ...options, signal: signal ? AbortSignal.any([signal, options.signal]) : options.signal });
           signal?.throwIfAborted();
           if (response.headers.get('x-dacs-simulation') !== 'fixture') {
@@ -194,10 +201,10 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     catch (cause) { reject('indeterminate', cause.message, { cause }); }
   }
   async function chainIdentity() {
-    readBudget.getStore()?.throwIfAborted();
+    const signal = readBudget.getStore()?.signal; signal?.throwIfAborted();
     if(sourceCapability){
       let binding;
-      try{binding=await sourceCapability.observeBinding();}
+      try{binding=await sourceCapability.observeBinding({signal,timeoutMs:remainingMs()});}
       catch(error){reject('indeterminate',`source-bound chain identity observation unavailable: ${error?.message??'transport'}`,{cause:error,status:error?.status});}
       const keys=['bindingId','bindingVersion','chainIdentity','connectionId','endpoint','expiresAt','network','observedAt','pinVersion','source','transportAuthority'];
       if(!object(binding)||JSON.stringify(Object.keys(binding).sort())!==JSON.stringify(keys)

@@ -122,7 +122,9 @@ function takeOver(directory, path, text) {
  * Takes the lock on `directory`, or throws before anything else in it is read.
  * Rejects with code seller_state_locked and `reason` 'held' while another live
  * process (or this one) holds it, or 'doubt' when its holder can't be proven
- * gone. Returns `{ path, release() }`; release() is synchronous and idempotent,
+ * gone. Returns `{ path, held(), release() }`; held() is true while the lock is
+ * not released and the lock file still holds this holder's record (it throws
+ * when the file cannot be read). release() is synchronous and idempotent,
  * removes the lock only while it is still this one, and throws if the lock
  * can't be removed or the directory can't be synced; after a throw, calling it
  * again retries. This process's lease is kept until it exits. Throws a
@@ -149,7 +151,9 @@ function lockHandle(directory, path, text) {
   let removed = false, released = false;
   // Each step is marked done only after it returns, so a call that threw can be
   // repeated: a failed removal is tried again, a failed sync is synced again.
-  return Object.freeze({ path, release: () => {
+  // held() is the ownership proof a composition re-reads: true only while the
+  // lock is not released and its file still holds this holder's text.
+  return Object.freeze({ path, held: () => !removed && !released && readLock(path) === text, release: () => {
     if (released) return;
     if (!removed) removed = unlinkOwnLock(path, text);
     if (removed) syncDirectory(directory);
