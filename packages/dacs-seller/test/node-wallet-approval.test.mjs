@@ -554,6 +554,21 @@ test('a payment-evidence request approved at one OS debit and confirmed with a c
     await assert.rejects(world.approve.retained.confirm({ ledgerId: id, requestText: changed }, {}), { code: 'approval_reservation_unavailable' }, field);
     await assertHeld(world, id, `after a changed ${field}`);
   }
+
+  // A node confirmation of the signed CREATE with the same debit field changed on the wire is not the approved write either.
+  const [signed] = world.node.confirms;
+  const confirmed = transaction => ({ result: 200, response: { data: { valid: true, reference_block: 1, message: 'TEST-valid', gas_operation: null, transaction } } });
+  const bump = value => (typeof value === 'string' ? String(BigInt(value) + 1n) : value + 1);
+  const wire = { storageFeeOs: ['gcr_edits', 0, 'amount'], gasOs: ['gcr_edits', 2, 'amount'], networkFeeOs: ['transaction_fee', 'network_fee'], rpcFeeOs: ['transaction_fee', 'rpc_fee'],
+    additionalFeeOs: ['transaction_fee', 'additional_fee'] };
+  for (const [field, path] of Object.entries(wire)) {
+    const changed = structuredClone(signed), holder = path.slice(0, -1).reduce((value, key) => value[key], changed.content);
+    holder[path.at(-1)] = bump(holder[path.at(-1)]);
+    assert.equal(await world.approve.retained.confirm(binding, confirmed(changed)), false, field);
+    await assertHeld(world, id, `after a node confirmation with a changed ${field}`);
+  }
+  assert.equal(await world.approve.retained.confirm(binding, confirmed(signed)), true, 'the unchanged confirmation is accepted');
+  assert.equal((await world.ledger.linked(id)).length, 1);
   assert.equal(world.node.broadcasts.length, 0, 'zero broadcasts');
   await world.reopen();
   assertSent(await world.anchor(input));

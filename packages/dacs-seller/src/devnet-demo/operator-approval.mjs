@@ -344,8 +344,8 @@ const withinConfirmationBound=(validity)=>{try{return Buffer.byteLength(JSON.str
  * approve.retained = {prepare, open, reopen, confirm, settle} is the lifecycle of a payment-evidence SettlementEvidence
  * write whose exact bytes the caller retains for replay. The request is one of two kinds, each with exactly its own
  * members: devnet-settlement-evidence-storage-create, or the client payment-evidence adapter's
- * payment-evidence-storage-create (a debit in OS and its CREATE, no stored text). Its authorization is held until settle(binding, outcome) ends
- * it: a replacement, a mismatched or refused confirmation, or another write never releases it, and it never enters the
+ * payment-evidence-storage-create (a debit in OS and its CREATE, no stored text). Its authorization is held until
+ * settle(binding, outcome) ends it: a replacement, a mismatched or refused confirmation, or another write never releases it, and it never enters the
  * shared prepared slot. A binding is {ledgerId, requestText}, addressed only by its id and exact bytes. In policy
  * mode every authorization has a ledgerId, also one the operator waived: a refusal of a limit or the fee cap that the
  * operator answers yes is run through the policy's sign gate again after the answer, waiving only that reason, and
