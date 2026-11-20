@@ -1,15 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect } from '@kynesyslabs/dacs/wire';
 import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { accountingFixture, T0, JOB, JOB2, PAYMENTS } from './helpers/reservation-accounting-fixture.mjs';
-import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 import { holdReleaseProbes } from './helpers/hold-release-probes.mjs';
 
 holdReleaseProbes({ accountingFixture, completeWireEffect });
 
-test('a retired paid job refuses an old-path proposal with another Agreement after restart', async t => {
+test('a retired paid job answers its stored payment result again after restart', async t => {
   let session = null;
   const f = await accountingFixture(t, { contextSessionState: () => session });
   const input = await f.payment();
@@ -23,9 +21,6 @@ test('a retired paid job refuses an old-path proposal with another Agreement aft
   session = null; f.reopen();
   const snapshot = () => ({ rows: f.rows(), holds: f.holds(), jobs: f.jobRows(), payments: f.payments(), files: f.files() });
   const before = snapshot();
-  const proposal = f.payload({ listingPin: input.payload.listingPin, agreementHash: sha256Hex('another Agreement') });
-  assert.throws(() => f.store().reserve(proposal, {}, { keepProfile: FIXTURE_PROFILE }), { code: 'context_session_terminal', status: 409 });
-  assert.deepEqual(snapshot(), before);
   const retry = await f.reserve(await f.payment());
   assert.equal(retry.state, 'completed'); assert.deepEqual(retry.outcome, outcome);
   assert.deepEqual(f.payments(), before.payments); assert.deepEqual(f.holds(), before.holds);

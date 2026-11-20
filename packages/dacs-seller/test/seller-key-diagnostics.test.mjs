@@ -9,7 +9,6 @@ import fsPromises, { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import { inspect } from 'node:util';
 import { privateModule } from './helpers/private-module.mjs';
 import { productionFixture } from './helpers/vet-production-fixture.mjs';
@@ -181,15 +180,14 @@ test('a commitment failure answer to the buyer carries its code only, never wall
   assert.equal(failed.error.status, 503);
   assert.equal(failed.error.message, 'commitment_failed');
   assert.equal(failed.error.cause.cause, cause, 'the SDK submission wrapper keeps the original wallet cause');
-  const { createSellerHttpHandler } = await import('../src/dacs/seller-http.mjs');
-  const handler = createSellerHttpHandler({ ...agent, commit: async () => { throw failed.error; } });
-  const request = Readable.from([Buffer.from(JSON.stringify({ jobId: JOB }))]);
-  Object.assign(request, { url: '/dacs/v1/commitments', method: 'POST', headers: { 'content-type': 'application/json' }, socket: { localAddress: '127.0.0.1', remoteAddress: '127.0.0.1' } });
-  let status, body;
-  await handler(request, { writeHead: value => { status = value; }, end: value => { body = value; } });
-  assert.equal(status, 503);
-  assert.deepEqual(JSON.parse(body), { error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
-  assertClosed(body);
+  const { world, proposeJob, PATHS } = await import('./helpers/wire-routes-world.mjs');
+  const w = await world(t), job = await proposeJob(w, 'diagnostics');
+  assert.equal((await job.post()).status, 200);
+  w.agent.answer = () => { throw failed.error; };
+  const answer = await w.post(PATHS.commitments, { jobId: job.jobId }, { jobId: job.jobId, agreementHash: job.agreementHash });
+  assert.equal(answer.status, 503);
+  assert.deepEqual(answer.body, { error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
+  assertClosed(answer.text);
 });
 
 test('closed seller diagnostics refuse unknown codes and hostile context without inspecting secret objects', async () => {

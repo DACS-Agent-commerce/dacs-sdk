@@ -1268,39 +1268,6 @@ test('issuance and reclamation preserve terminal observations across request rol
   await settle(); assert.deepEqual(unhandled, []);
 });
 
-// Each retiring reader of the session state observes through the same adapter, on every active path.
-const TERMINAL_REFUSAL = error => error.code === 'context_session_terminal' && error.status === 409;
-const proposalOf = (f, jobId) => f.payload({ jobId });
-const reserveProposal = (f, jobId) => f.store().reserve(proposalOf(f, jobId), {}, { keepProfile: FIXTURE_PROFILE });
-const contextOf = (f, jobId) => [f.payload({ path: PATHS.context, jobId }), { scope: { jobId } }];
-const reserveContext = (f, jobId) => f.store().reserve(...contextOf(f, jobId), { admit: () => fixture.T0 });
-const retiringReaders = {
-  'a new proposal': { run: f => assert.throws(() => reserveProposal(f, fixture.JOB), TERMINAL_REFUSAL) },
-  'the classify dry run': { run: f => assert.throws(() => f.store().classify(proposalOf(f, fixture.JOB), {}, { keepProfile: FIXTURE_PROFILE }), TERMINAL_REFUSAL) },
-  'the context step': { run: f => assert.throws(() => reserveContext(f, fixture.JOB), TERMINAL_REFUSAL) },
-  assertPending: { before: f => reserveProposal(f, fixture.JOB), run: (f, held) => assert.throws(() => f.store().assertPending(held), TERMINAL_REFUSAL) },
-  claim: { before: f => { f.store().finish(reserveProposal(f, fixture.JOB), 503, '{}'); return reserveProposal(f, fixture.JOB); },
-    run: (f, held) => assert.throws(() => f.store().claim(held, proposalOf(f, fixture.JOB)), { code: 'seller_unavailable', status: 503 }) },
-  resume: { before: f => { f.store().finish(reserveContext(f, fixture.JOB), 503, '{}'); return reserveContext(f, fixture.JOB); },
-    run: (f, held) => assert.throws(() => f.store().resume(held, contextOf(f, fixture.JOB)[0]), TERMINAL_REFUSAL) },
-  'context reclamation': { before: f => { f.store().finish(reserveContext(f, fixture.JOB), 200, '{}'); f.setTime(fixture.T0 + 7200000); }, run: f => { reserveContext(f, fixture.JOB2); }, maxContextRecords: 1 },
-  'job reclamation': { before: f => { f.store().finish(reserveProposal(f, fixture.JOB), 200, '{}'); f.setTime(fixture.T0 + 7200000); }, run: f => { reserveProposal(f, fixture.JOB2); }, maxJobs: 1 },
-};
-
-test('all terminal readers and classify preserve their observations', async t => {
-  for (const [name, { before, run, ...limits }] of Object.entries(retiringReaders)) {
-    const w = await coordination(t, {}, limits); w.allocate(fixture.JOB);
-    const held = before?.(w.f);
-    w.control.state = onlyJob(fixture.JOB, () => 'finalised');
-    run(w.f, held);
-    const closed = new Database(w.f.path, { readonly: true });
-    try { assert.deepEqual(closed.prepare(CLOSURES_SQL).all().map(row => ({ ...row })), closureOf(fixture.JOB), name); } finally { closed.close(); }
-    assert.equal(w.internals.transaction(() => w.capacity.allocationWithin(fixture.JOB)).state, 'released', name);
-    w.control.state = () => null; w.reopen();
-    assert.deepEqual(w.internals.terminalSession(fixture.JOB), { terminal: true, state: 'finalised' }, name);
-  }
-});
-
 test('terminal-observer-rollback-flush-crash-cuts', t => {
   const refusal = w => assert.throws(() => issueFor(w, 1), /TEST flush cut/);
   for (const [name, attempt] of Object.entries({

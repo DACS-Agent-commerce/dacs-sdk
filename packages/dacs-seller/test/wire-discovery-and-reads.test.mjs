@@ -3,12 +3,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalize } from '@kynesyslabs/dacs';
-import { DACS_SELLER_DISCOVERY_PATH } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_HEADER } from '@kynesyslabs/dacs/wire';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { seller } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT } from './helpers/wire-buyer.mjs';
 import { CLAIM_PREFIX, MAX_BODY_BYTES, MAX_HEADER_CHARS, PATHS, SELLER, derive, identityBody, proposeJob, world } from './helpers/wire-routes-world.mjs';
-import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 
 const OLD_PIN_VERSION = 'dacs-demos-testnet-identity/2026-10-15';
 const fetchDiscovery = (w, options = {}) => exchange(w.handle.handler, { url: DACS_SELLER_DISCOVERY_PATH, method: 'GET', text: '', ...options });
@@ -27,7 +26,7 @@ test('discovery is served at its well-known path as signed bytes that the buyer\
   const answer = await fetchDiscovery(w);
   assert.equal(answer.status, 200);
   assert.equal(answer.headers['content-type'], 'application/json');
-  assert.equal(answer.headers[SELLER_TRANSPORT_HEADER], undefined, 'the document carries its own signature, not a response envelope');
+  assert.equal(answer.headers[DACS_SELLER_HTTP_HEADER], undefined, 'the document carries its own signature, not a response envelope');
   const proof = await w.buyerWire.verifyDiscovery(Buffer.from(answer.text));
   assert.deepEqual({ seller: proof.payload.seller, endpoint: proof.payload.publicEndpoint, ready: proof.ready }, { seller: seller.claim, endpoint: FIXTURE_ENDPOINT, ready: true });
   assert.deepEqual(proof.payload.listings, [w.agent.listingPin]);

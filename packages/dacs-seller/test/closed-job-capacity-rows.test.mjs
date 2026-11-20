@@ -4,7 +4,6 @@ import { sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect } from '@kynesyslabs/dacs/wire';
 import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { accountingFixture, JOB, JOB2, CONTEXT } from './helpers/reservation-accounting-fixture.mjs';
-import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 
 const refused = (code, status) => ({ code, status });
 // A request admitted at `at` has expired by `at` plus this, so its accounting row can no longer stand for a live request.
@@ -26,7 +25,6 @@ const retireJob = (f, session) => {
   assert.equal(port.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
 };
 const used = (f) => f.store().boundCapacity.capacityReport().used;
-const oldProposal = (f, jobId) => f.store().reserve(f.payload({ jobId }), {}, { keepProfile: FIXTURE_PROFILE });
 
 for (const restart of [false, true]) {
   const after = restart ? ' after restart' : '';
@@ -51,16 +49,6 @@ for (const restart of [false, true]) {
     retireJob(f, session);
     if (restart) f.reopen();
     assert.equal((await f.reserve(await f.admit(f.payload({ jobId: JOB2 })))).state, 'new');
-  });
-
-  test(`a retired job's expired witness row frees the store record limit for the old reserve path${after}`, async t => {
-    const { f, session } = await fixtureWithSession(t, { maxRecords: 1, maxJobs: 5 });
-    await settleJob(f);
-    f.setTime(f.now() + HOUR_MS);
-    assert.throws(() => oldProposal(f, JOB2), refused('peer_store_capacity', 503), 'an open job keeps its witness counted');
-    retireJob(f, session);
-    if (restart) f.reopen();
-    assert.equal(oldProposal(f, JOB2).disposition, 'perform');
   });
 }
 

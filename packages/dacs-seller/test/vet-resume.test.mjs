@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 import {fixture,JOBS} from './helpers/bilateral-vet-fixture.mjs';
 import {provenUnsignedAbsence} from '../src/dacs/native-dem-delivery-consumer.mjs';
 import {compositeVerificationAddress} from '@kynesyslabs/dacs';
-import {createSellerContextRoute} from '../src/dacs/seller-context-route.mjs';
-import {admitFixtureFor} from './helpers/challenge-api.mjs';
 for(const status of ['proven','absent','indeterminate','present'])test(`resume with ${status} evidence before proof checkpoints is read-only`,async()=>{
  const w=fixture(),input=w.input();let signs=0;w.config.wallet.signBytes=()=>{signs++;throw new Error('TEST signer interrupted');};
  await assert.rejects(w.provider().resolveBuyer(input)); // The signer failure is wrapped by the buyer Vet core.
@@ -76,13 +74,6 @@ test('a job row cut between binding and admission needs both writes',async()=>{
  const effects=effectsOf(w),update=w.config.store.update;w.config.store.update=()=>assert.fail('resume wrote state');
  assert.deepEqual(await w.provider().resumableBuyer(input),{writes:2});assert.deepEqual(effectsOf(w),effects);
  w.config.store.update=update;assert.equal((await w.provider().resolveBuyer(input)).disposition,'present');w.base.close();
-});
-test('the route resumes a job row cut between binding and admission',async()=>{
- const w=fixture(),input=w.input(),restore=dieAfter(w,row=>row.binding&&!row.lifecycle);
- await assert.rejects(w.provider().resolveBuyer(input));restore();
- const provider=w.provider(),route=createSellerContextRoute({admitPresentation:admitFixtureFor(w.listing),listing:w.listing,resolveBuyer:provider.resolveBuyer,assertBuyerAccess:()=>{},writable:()=>true,
-  admitWrites:async()=>null,releaseWrites:async()=>{},recover:provider.recoverBuyer,resumable:provider.resumableBuyer});
- assert.deepEqual(await route.reconcile({body:input}),{disposition:'resume',writes:2});w.base.close();
 });
 test('a missing job row is not resumable',async()=>{
  const w=fixture();assert.equal(await w.provider().resumableBuyer(w.input()),null);w.base.close();

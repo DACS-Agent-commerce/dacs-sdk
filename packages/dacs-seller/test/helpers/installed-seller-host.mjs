@@ -15,7 +15,7 @@ import * as core from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
 import * as seller from '@kynesyslabs/dacs-seller';
 import { createSellerAgent } from '@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportStore } from '@kynesyslabs/dacs-seller/src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from '@kynesyslabs/dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from '@kynesyslabs/dacs-seller/src/dacs/agreement-context-consumer.mjs';
 import { purchaseSupport } from '@kynesyslabs/dacs-seller/src/dacs/listing.mjs';
 import { createDemDeliveryContext } from '@kynesyslabs/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs';
@@ -291,7 +291,7 @@ const postContextRoute = async (url, path, jobId, body) => {
   const text = JSON.stringify(body);
   const signed = await wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: tp1Network.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
     jobId, text, seller: sellerKey.claim, job: { listingPin: pin, agreementHash: core.sha256Hex(core.canonicalize(body.scope)), profile: binding.profile }, delegation: null, now, lifetimeMs: 30_000 });
-  const response = await fetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: text });
+  const response = await fetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: signed.header }, body: text });
   return { status: response.status, body: await response.json() };
 };
 const requestChallenge = (url, jobId) => postContextRoute(url, wire.DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: contextScopeFor(jobId) });

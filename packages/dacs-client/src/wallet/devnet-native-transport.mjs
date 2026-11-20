@@ -1225,7 +1225,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
               return answer;
             };
             // The wallet's broadcast is a fresh request of its own: a dispatch an earlier lease withheld before its send goes on.
-            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:signedDebitOs(artifact.debitOs,tx.content.transaction_fee) }));
+            // The pass's authority is checked before the lane and intent are retained, so a job withdrawn by now leaves the lane free.
+            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:signedDebitOs(artifact.debitOs,tx.content.transaction_fee),authorize:() => assertCurrentAuthorization(pass) }));
           });
         });
         if (accepted?.result === 200) {

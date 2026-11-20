@@ -1,8 +1,8 @@
 // The private context of one effect pass: the job class the pass belongs to and the
-// synchronous check that its authority is still current. Only composition code that
-// imports this module creates one, and only the native transport reads it, once at the
-// start of each effectful call. A request field, a header, an operation field or a wallet
-// method never supplies a class or a check. Internal: not exported by the package.
+// synchronous check that its authority is still current. The host that owns the job creates
+// one with `passContext` (exported by `./node-wallet`), and only the native transport reads it,
+// once at the start of each effectful call. A request field, a header, an operation field or
+// a wallet method never supplies a class or a check.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { OperationError } from '../client-errors.mjs';
 

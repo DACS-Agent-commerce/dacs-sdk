@@ -12070,6 +12070,27 @@
           "after": "d7bf0812efbfb4d709fb075e328b1a27cb4d9b9e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF keep the old transport signing helpers in a client test module",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs",
+          "before": "5da731a690d6648591afd34a50ed0017d508b998",
+          "after": "8d54b1b94d6f83f52629c11c40c10e4d3d1a8e9c"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/old-seller-transport.mjs",
+          "before": null,
+          "after": "25030c8ee7f346d406fcf75cb91342e891978de3"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-transport-key-validation.test.mjs",
+          "before": "55dfd5c220077e110aa6d72115c236f5b8c68a79",
+          "after": "3ebabac4aa38f0b3107adcafcf7768ba3654f78d"
+        }
+      ]
     }
   ]
 }

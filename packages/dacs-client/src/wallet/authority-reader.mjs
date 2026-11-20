@@ -72,8 +72,9 @@ async function observeChainIdentity(authority, record) {
  *   `{claim, profile, modules, evidence, revoked}`.
  * The reader needs no completed binding. Its answer is the connection decision with the participants asked for, in order:
  * the wallet's own claim with its own profile, and a counterparty only when local evidence relates it to the scope (a registered
- * Listing for discovery, the seller of the wallet's own purchase row for a job) and exactly one current, unrevoked enrollment names it. Anything
- * else answers with no participants, which the wire refuses as a participant mismatch. A connection that cannot be authenticated
+ * Listing for discovery, the seller of the wallet's own purchase row for a job) and exactly one current, unrevoked enrollment names it. A job
+ * with no saved purchase of this wallet's, or whose purchase's Listing names no seller, answers no participants, the wallet's own claim
+ * included. Anything else answers with no participants, which the wire refuses as a participant mismatch. A connection that cannot be authenticated
  * (another chain, a conflicting identity, another endpoint) answers nothing. A transport failure rejects with its original error.
  * Throws TypeError at construction when an input is missing.
  */
@@ -106,7 +107,10 @@ export function createAuthorityReader(inputs) {
   async function participantsFor(scope) {
     if (scope.sessionId === null) return [];
     const own = claim();
-    const peers = await relatedPeers(scope, own) ?? [];
+    const related = await relatedPeers(scope, own);
+    // A job that is not this wallet's answers no participants, the wallet's own claim included.
+    if (related === null && scope.sessionId !== DACS_SELLER_DISCOVERY_FORMAT) return [];
+    const peers = related ?? [];
     const entries = await Promise.all(scope.participants.map(asked => {
       if (asked === own) return { claim: own, profile: ownProfile(identityRecord), modules: { ...TESTNET_PROFILE_TP1.tuple } };
       return peers.includes(asked) ? enrolledImplementation(asked) : null;
