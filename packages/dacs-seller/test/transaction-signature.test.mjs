@@ -1,51 +1,68 @@
-// The messages a Demos transaction signature may cover: the bare hash, or the hash behind the
-// domain prefix and the chain id the verifier is configured with.
+// The one message a Demos transaction signature may cover: the bare hash while the node's
+// signature-domain fork is inactive, the chain-bound form once it is active.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sign } from 'node:crypto';
 import { privateKeyFromSeed, publicKeyFromSeed, sha256Hex } from '@kynesyslabs/dacs';
-import { assertSignatureChainId, verifyTransactionSignature } from '../src/dacs/transaction-signature.mjs';
+import { verifyDemosSignature } from '../src/dacs/demos-claims.mjs';
+import { signatureDomainFromNetworkInfo } from '../src/dacs/signature-domain.mjs';
+import { verifyTransactionSignature } from '../src/dacs/transaction-signature.mjs';
 
 const seed = new Uint8Array(32).fill(7);
 const address = `0x${publicKeyFromSeed(seed).export({ format: 'der', type: 'spki' }).subarray(12).toString('hex')}`;
 const hash = sha256Hex('TEST transaction content');
 const signOver = (message) => `0x${sign(null, Buffer.from(message, 'utf8'), privateKeyFromSeed(seed)).toString('hex')}`;
-const verify = (message, signatureChainId) => verifyTransactionSignature({ address, hash, signature: signOver(message), signatureChainId });
+const networkInfo = (signatureDomain, chainId) => ({ forks: { osDenomination: { activated: true }, ...(signatureDomain ? { signatureDomain } : {}) }, chainId });
+const inactive = signatureDomainFromNetworkInfo(networkInfo({ activated: false }, 7));
+const active = signatureDomainFromNetworkInfo(networkInfo({ activated: true, activationHeight: 0 }, 7));
+const activeFrom100 = signatureDomainFromNetworkInfo(networkInfo({ activated: true, activationHeight: 100 }, 7));
+const verify = (domain, message, signedHash = hash, blockNumber) => verifyTransactionSignature({ address, hash: signedHash, signature: signOver(message), domain, blockNumber });
 
-test('a signature over the bare hash verifies with or without a chain id configured', () => {
-  assert.equal(verify(hash), true);
-  assert.equal(verify(hash, '7'), true);
+test('a transaction in a block before the activation height verifies over the bare hash only', () => {
+  assert.equal(verify(activeFrom100, hash, hash, 99), true);
+  assert.equal(verify(activeFrom100, `demos-tx:v1:7:${hash}`, hash, 99), false);
+  assert.equal(verify(activeFrom100, `demos-tx:v1:7:${hash}`, hash, 100), true);
+  assert.equal(verify(activeFrom100, hash, hash, 100), false);
+  assert.equal(verify(activeFrom100, hash, hash), false, 'not included yet: it will land after the activation');
 });
 
-test('a signature over the chain-bound form verifies only under the same configured chain id', () => {
-  assert.equal(verify(`demos-tx:v1:7:${hash}`, '7'), true);
-  assert.equal(verify(`demos-tx:v1:7:${hash}`, '8'), false);
-  assert.equal(verify(`demos-tx:v1:7:${hash}`), false);
+test('while the fork is inactive only a signature over the bare hash verifies', () => {
+  assert.equal(verify(inactive, hash), true);
+  assert.equal(verify(inactive, `demos-tx:v1:7:${hash}`), false);
 });
 
-test('a signature over one form never verifies as the other', () => {
-  const bound = `demos-tx:v1:7:${hash}`;
-  assert.equal(verifyTransactionSignature({ address, hash: bound, signature: signOver(hash) }), false, 'a bare-hash signature is not a signature over the bound message');
-  assert.equal(verifyTransactionSignature({ address, hash, signature: signOver(bound) }), false, 'a chain-bound signature is not a bare-hash signature');
+test('once the fork is active only a signature over the chain-bound message verifies', () => {
+  assert.equal(verify(active, `demos-tx:v1:7:${hash}`), true);
+  assert.equal(verify(active, hash), false);
 });
 
-test('any other message is refused', () => {
-  for (const message of [`demos-tx:v2:7:${hash}`, `other:v1:7:${hash}`, `demos-tx:v1::${hash}`, `demos-tx:v1:07:${hash}`, `demos-tx:v1:7:${hash}\n`, ` demos-tx:v1:7:${hash}`, `demos-tx:v1:7:${hash.toUpperCase()}`]) {
-    assert.equal(verify(message, '7'), false, message);
+test('a chain-bound signature for another chain id does not verify', () => {
+  assert.equal(verify(active, `demos-tx:v1:8:${hash}`), false);
+  assert.equal(verify(active, `demos-tx:v1:07:${hash}`), false);
+});
+
+test('any other message is refused under either domain', () => {
+  for (const message of [`demos-tx:v2:7:${hash}`, `other:v1:7:${hash}`, `demos-tx:v1::${hash}`, `demos-tx:v1:7:${hash}\n`, ` demos-tx:v1:7:${hash}`, `demos-tx:v1:7:${hash.toUpperCase()}`, `demos-tx:v1:7:7:${hash}`]) {
+    assert.equal(verify(active, message), false, message);
+    assert.equal(verify(inactive, message), false, message);
   }
 });
 
-test('a chain id that is not a canonical decimal string verifies nothing', () => {
-  for (const bad of ['07', 'x7', '', 7, null]) assert.equal(verify(hash, bad), false, String(bad));
+test('a signature never verifies without a domain read from a node answer', () => {
+  for (const domain of [undefined, null, '7', 7, {}, { chainId: '7' }, { chainId: null }]) {
+    assert.equal(verify(domain, hash), false, `bare hash with ${JSON.stringify(domain)}`);
+    assert.equal(verify(domain, `demos-tx:v1:7:${hash}`), false, `chain-bound with ${JSON.stringify(domain)}`);
+  }
+  assert.equal(verifyTransactionSignature({ address, hash, signature: signOver(hash), signatureChainId: '7' }), false, 'a caller-supplied chain id is not a domain');
 });
 
 test('a hash that is not 64 lower-case hex digits is refused before any message is built', () => {
-  for (const bad of ['', hash.toUpperCase(), hash.slice(1), `${hash}0`, 7, null]) {
-    assert.equal(verifyTransactionSignature({ address, hash: bad, signature: signOver(String(bad)), signatureChainId: '7' }), false, String(bad));
-  }
+  for (const bad of ['', hash.toUpperCase(), hash.slice(1), `${hash}0`, 7, null]) assert.equal(verify(inactive, String(bad), bad), false, String(bad));
 });
 
-test('a signature chain id must be a canonical decimal string', () => {
-  for (const good of [undefined, '0', '7', '1234567890123456789012']) assert.doesNotThrow(() => assertSignatureChainId(good), String(good));
-  for (const bad of ['', '07', '-1', '7.0', 'x7', ' 7', '7 ', '7:', 7, 7n, null, {}]) assert.throws(() => assertSignatureChainId(bad), { name: 'TypeError', message: /signatureChainId/ }, String(bad));
+test('raw message verification covers exactly the signed bytes, with no network domain applied', () => {
+  for (const message of ['login:TEST challenge', 'identity:TEST claim', `dacs-commitment:v1:${hash}`, hash, `demos-tx:v1:7:${hash}`]) {
+    assert.equal(verifyDemosSignature({ address, message, signature: signOver(message) }), true, message);
+    assert.equal(verifyDemosSignature({ address, message: `${message} `, signature: signOver(message) }), false, message);
+  }
 });

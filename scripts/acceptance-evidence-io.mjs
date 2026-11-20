@@ -13,8 +13,16 @@ export function boundedEvidenceText(text) {
   return text;
 }
 
+// Names the file in a read error and keeps the original error as its cause.
+function namingFile(path, error) {
+  return new Error(`${error.message}: ${path}`, { cause: error });
+}
+
 /** Reads a regular file of at most the evidence budget; `noFollow` refuses a link at its last
- * component (ELOOP). Returns its bytes and permission bits, or undefined only for a missing file. */
+ * component (ELOOP). Returns its bytes and permission bits, or undefined only for a missing file.
+ * A file refused after opening (not regular, over the budget) throws an error that names `path` and
+ * carries the original error as its cause; an open error other than ENOENT is thrown as the system
+ * reported it. */
 export function readBoundedFile(path, { noFollow = false } = {}) {
   let descriptor;
   try { descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (noFollow ? constants.O_NOFOLLOW : 0)); }
@@ -27,22 +35,23 @@ export function readBoundedFile(path, { noFollow = false } = {}) {
     while (length < bytes.length && (count = readSync(descriptor, bytes, length, bytes.length - length, null)) > 0) length += count;
     if (length > EVIDENCE_MAX_BYTES) throw new Error("evidence byte limit exceeded");
     return { bytes: bytes.subarray(0, length), mode: stat.mode & 0o777 };
-  } finally { closeSync(descriptor); }
+  } catch (error) { throw namingFile(path, error); }
+  finally { closeSync(descriptor); }
 }
 
 // A byte order mark stays in the text, as Buffer decoding kept it.
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
-// Decodes evidence bytes; throws for invalid UTF-8 rather than substituting characters.
-function decodeEvidence(bytes) {
-  try { return strictUtf8.decode(bytes); } catch { throw new Error("evidence is not valid UTF-8"); }
+// Decodes the bytes of the file at `path`; throws for invalid UTF-8 rather than substituting characters.
+function decodeEvidence(bytes, path) {
+  try { return strictUtf8.decode(bytes); } catch (error) { throw new Error(`evidence is not valid UTF-8: ${path}`, { cause: error }); }
 }
 
 /** Reads at most the evidence budget before decoding; returns undefined only for a missing file.
- * Throws for a file that is not regular, over the budget or not valid UTF-8. */
+ * Throws for a file that is not regular, over the budget or not valid UTF-8; the error names `path`. */
 export function readEvidence(path) {
   const file = readBoundedFile(path);
-  return file === undefined ? undefined : decodeEvidence(file.bytes);
+  return file === undefined ? undefined : decodeEvidence(file.bytes, path);
 }
 
 /** Reads evidence a step cannot go without, as readEvidence does; a missing file throws an
@@ -78,7 +87,11 @@ export function atomicWriteFile(path, contents, { write = writeFileSync } = {}) 
   } finally { rmSync(temporary, { force: true }); }
 }
 
-/** Replaces a JSON result by sibling rename, removing temporary files even on failure. */
+/** Replaces a JSON result by sibling rename, removing temporary files even on failure. Throws
+ * before writing, and keeps the existing file, when the result is over the evidence byte budget
+ * that a later read admits. */
 export function atomicWriteJson(path, value) {
-  atomicWriteFile(path, JSON.stringify(value, null, 2) + "\n");
+  const contents = JSON.stringify(value, null, 2) + "\n";
+  if (Buffer.byteLength(contents) > EVIDENCE_MAX_BYTES) throw new Error(`evidence byte limit exceeded: ${path}`);
+  atomicWriteFile(path, contents);
 }

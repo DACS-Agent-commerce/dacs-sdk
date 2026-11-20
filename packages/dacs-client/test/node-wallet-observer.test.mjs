@@ -27,7 +27,10 @@ function observerWorld(options = {}) {
   const observer = api.createNodeObserver({ owner, clock: { now: () => T0 }, ...options });
   return { node, owner, observer, signals };
 }
-const answerWith = (w, byHeight) => { w.node.intercept = row => byHeight[heightOf(row)]?.(row); };
+// Numeric 0 and string "0" share an object key, so string zero is answered with the recorded genesis projection before the table.
+const answerWith = (w, byHeight) => { w.node.intercept = row => heightOf(row) === '0'
+  ? jsonResponse(JSON.stringify({ result: 200, response: { number: 0, hash: CHAIN }, require_reply: false, extra: '' }))
+  : byHeight[heightOf(row)]?.(row); };
 
 test('the observer is built from an unopened transport owner and bindTp1Profile completes with it while custody, SQLite and journal opens stay 0', async t => {
   const child = runFreshChild(t, `
@@ -59,7 +62,7 @@ test('with a non-reentrant queued owner whose fence is held, a full observation 
   }
   assert.equal(w.owner.acquisitions(), acquired, 'the observer acquired the fence');
   assert.equal(w.owner.held(), true);
-  assert.equal(w.node.calls.length, 3, 'block zero, then block zero and the block-one fallback');
+  assert.deepEqual(w.node.calls.map(heightOf), [0, 0, '0', 1], 'numeric block zero, then numeric zero, string zero and block one');
 });
 
 test('a connection replacement during an observation refuses; provenance is stable across observations on one generation and changes with it', async () => {
@@ -90,7 +93,7 @@ test('one aggregate deadline covers every read of an observation; past it the ob
   assert.equal(error.cause.kind, 'timeout');
   blockOneStalled.resolve(jsonResponse(JSON.stringify(ok(blockOne(CHAIN)))));
   await flushLateWork();
-  assert.deepEqual(w.node.calls.map(heightOf), [0, 1], 'the late answer started nothing');
+  assert.deepEqual(w.node.calls.map(heightOf), [0, '0', 1], 'the late answer started nothing');
 });
 
 test('a cancelled observation aborts its in-flight read, starts no queued read and returns no late decision', async () => {
@@ -111,7 +114,7 @@ test('a cancelled observation aborts its in-flight read, starts no queued read a
 test('the expected identity and block-one fallback come from TP1_APPROVED_IDENTITY_RECORD; a node answering another chain or an oversized block is refused with its cause', async () => {
   const refusals = [
     [{ 0: () => jsonResponse(JSON.stringify(ok(blockZero(OTHER_CHAIN)))) }, error => error.code === 'identity_mismatch'],
-    [{ 0: literalError, 1: () => jsonResponse(JSON.stringify(ok(blockOne(OTHER_CHAIN)))) }, error => error.code === 'identity_mismatch'],
+    [{ 0: literalError, 1: () => jsonResponse(JSON.stringify(ok(blockOne(OTHER_CHAIN)))) }, error => error.code === 'conflicting_identity'],
     ...[true, false].map(declared => [{ 0: () => sizedReply(4 * MIB + 1, { declared }) }, error => error.code === 'unavailable' && error.cause.kind === 'invalid' && /exceeds byte limit/.test(error.cause.message)]),
   ];
   for (const [answers, refused] of refusals) {

@@ -1,8 +1,17 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
-import { discoverListings } from "../../src/agent/discover.js";
-import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
+import {
+  authenticateReadableListingArtifact,
+  discoverListings,
+} from "../../src/agent/discover.js";
+import {
+  validateListingArtifact,
+  type ListingValidationDeps,
+} from "../../src/agent/listingValidation.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
+import { signComponentArtifact } from "../../src/artifacts/signatures.js";
+import type { ListingDraft } from "../../src/artifacts/types.js";
+import { contentHash } from "../../src/canonical/index.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -10,9 +19,10 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
 
-const LISTING = {
+const EARLIER_SHAPE_SCOPE = {
   agentId: "did:demos:alice",
   serviceId: "svc",
   name: "Market Data",
@@ -21,8 +31,9 @@ const LISTING = {
   supportedNegotiation: ["negotiate-fixed-price"],
   supportedPaymentRails: ["pay-x402"],
   supportedDelivery: ["deliver-attested-payload"],
-  signature: "deadbeef",
 };
+
+const LISTING = { ...EARLIER_SHAPE_SCOPE, signature: "deadbeef" };
 
 const store: Record<string, Record<string, unknown>> = {
   "ref:1": LISTING,
@@ -31,21 +42,145 @@ const store: Record<string, Record<string, unknown>> = {
 };
 const read = async (ref: string) => store[ref] ?? null;
 
+const seller = (n: number) => {
+  const seed = Uint8Array.from(Buffer.alloc(32, n));
+  const priv = privateKeyFromSeed(seed);
+  const raw = rawPublicKey(publicKeyFromSeed(seed));
+  const hex = Buffer.from(raw).toString("hex");
+  return { priv, raw, hex, did: `did:demos:agent:${hex}` };
+};
+const ALICE = seller(7);
+const MALLORY = seller(9);
+const NOW = 1_780_000_000_000;
+
+/** A normative Listing presented by `presentedBy` and signed with `signer`. */
+async function normativeListing(
+  options: {
+    presentedBy?: string;
+    signer?: ReturnType<typeof seller>["priv"];
+  } = {},
+): Promise<Record<string, unknown>> {
+  const presentedBy = options.presentedBy ?? ALICE.did;
+  const draft: ListingDraft = {
+    dacsVersion: "1",
+    listingVersion: 1,
+    listingId: "discovered-listing",
+    seller: {
+      identity: {
+        bundleVersion: "1",
+        presentedBy,
+        presentedAt: 1_780_000_000_000,
+        claims: [{ ref: presentedBy }],
+        presentation: {
+          kind: "per-claim",
+          signatures: [{ ref: presentedBy, signature: "identity-presentation" }],
+        },
+      },
+      displayName: "Market Data",
+    },
+    offering: {
+      title: "Market Data",
+      description: "Caller-supplied discovery",
+      category: "data.finance",
+      tags: ["market-data"],
+      deliverable: {
+        kind: "attested-payload",
+        payloadFormat: "application/json",
+        verificationMethod: { kind: "self-signed" },
+      },
+    },
+    buyerRequirement: { requirementVersion: "1", required: [] },
+    pipeline: [
+      { kind: "negotiate-fixed-price" },
+      { kind: "commit-agreement" },
+      { kind: "pay-x402", parameters: { rail: "x402:default" } },
+      { kind: "deliver-attested-payload" },
+    ],
+    pricing: { kind: "fixed", price: { amount: "1", currency: "USDC" } },
+    acceptedRails: [{ railId: "x402:default" }],
+    terms: { deadlineSecAfterCommit: 3_600 },
+    validity: { notBefore: 1_700_000_000_000 },
+  };
+  return (await signComponentArtifact(draft, ARTIFACT_SEPARATORS.Listing, {
+    algorithm: "ed25519",
+    signer: presentedBy,
+    sign: (bytes) => ed25519Sign(bytes, options.signer ?? ALICE.priv),
+  })) as unknown as Record<string, unknown>;
+}
+
+/** An earlier-shape Listing: a hex string signature over its stripped scope. */
+function earlierShapeListing(
+  agentId: string,
+  priv: ReturnType<typeof seller>["priv"],
+): Record<string, unknown> {
+  const scope = { ...EARLIER_SHAPE_SCOPE, agentId };
+  const bytes = signedBytes(ARTIFACT_SEPARATORS.Listing, contentHash(scope));
+  const signature = Buffer.from(ed25519Sign(bytes, priv)).toString("hex");
+  return { ...scope, signature };
+}
+
+const listingValidationDeps: ListingValidationDeps = {
+  nowMs: () => NOW,
+  verifyListingSignature: ({ signedBytes: bytes, signature }) =>
+    signature.signer === ALICE.did &&
+    ed25519Verify(
+      bytes,
+      Uint8Array.from(Buffer.from(signature.value, "base64url")),
+      publicKeyFromRaw(ALICE.raw),
+    ),
+  revocation: {
+    surfaces: [{ kind: "well-known", status: "active", integrity: "verified" }],
+    readMarker: async () => null,
+    verifyMarkerSignature: () => false,
+  },
+  verifyIdentityPresentation: () => true,
+  loadRailResolution: () => ({
+    trustPhase: "PA-1",
+    trustPolicyAcceptsPA1: true,
+    registry: { state: "not-used", entries: [], definitions: [] },
+    inCodeDefinitions: [{
+      railId: "x402:default",
+      railVersion: 1,
+      phaseHandler: "pay-x402",
+      governanceAnchoring: "in-code",
+      signatureValid: true,
+    }],
+  }),
+  resolvePayloadVerificationCapability: () => ({ disposition: "supported" }),
+  verifySellerControl: ({ signer }) => signer === ALICE.did,
+};
+
+const validateListing = (raw: Record<string, unknown>) =>
+  validateListingArtifact(raw, listingValidationDeps);
+
 // Resolution/structural behaviour — signatures covered in their own block below.
 const TRUST = { trustListings: true } as const;
+const TRUSTED_VALIDATED = { ...TRUST, validateListing, nowMs: () => NOW };
 
 describe("discoverListings (resolve + validate caller-supplied refs)", () => {
-  test("returns only refs that resolve to valid listings, with the signature stripped", async () => {
-    const found = await discoverListings(["ref:1", "ref:2", "missing", "ref:3"], read, TRUST);
-    expect(found.map((f) => f.ref)).toEqual(["ref:1", "ref:3"]);
-    expect(found[0]!.compatibility).toBe("legacy-mvp");
-    expect(
-      found[0]!.compatibility === "legacy-mvp"
-        ? found[0]!.listing.agentId
-        : undefined,
-    ).toBe("did:demos:alice");
-    // returned listing is the signed scope (signature omitted)
-    expect("signature" in found[0]!.listing).toBe(false);
+  test("returns only refs that resolve to verified normative Listings", async () => {
+    const records: Record<string, Record<string, unknown>> = {
+      ...store,
+      "ref:n": await normativeListing(),
+    };
+    const found = await discoverListings(
+      ["ref:1", "ref:2", "missing", "ref:3", "ref:n"],
+      async (ref) => records[ref] ?? null,
+      TRUSTED_VALIDATED,
+    );
+    expect(found.map((f) => f.ref)).toEqual(["ref:n"]);
+    expect(found[0]!.compatibility).toBe("normative");
+    expect(found[0]!.listing.listingId).toBe("discovered-listing");
+  });
+
+  test("drops an earlier-shape Listing even when trustListings is set", async () => {
+    const validate = vi.fn(validateListing);
+    const found = await discoverListings(["ref:1", "ref:3"], read, {
+      ...TRUST,
+      validateListing: validate,
+    });
+    expect(found).toEqual([]);
+    expect(validate).not.toHaveBeenCalled();
   });
 
   test("skips missing refs without throwing", async () => {
@@ -61,7 +196,11 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
   });
 
   test("owns the requested ref list before the first asynchronous read", async () => {
-    const refs = ["ref:1"];
+    const records: Record<string, Record<string, unknown>> = {
+      "ref:n": await normativeListing(),
+      "ref:3": LISTING,
+    };
+    const refs = ["ref:n"];
     const seen: string[] = [];
     const found = await discoverListings(
       refs,
@@ -69,12 +208,12 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
         seen.push(ref);
         refs.push("ref:3");
         await Promise.resolve();
-        return store[ref] ?? null;
+        return records[ref] ?? null;
       },
-      TRUST,
+      TRUSTED_VALIDATED,
     );
-    expect(seen).toEqual(["ref:1"]);
-    expect(found.map((item) => item.ref)).toEqual(["ref:1"]);
+    expect(seen).toEqual(["ref:n"]);
+    expect(found.map((item) => item.ref)).toEqual(["ref:n"]);
   });
 
   test("rejects accessor-backed gates without invoking dependency getters", async () => {
@@ -175,45 +314,34 @@ describe("discoverListings (resolve + validate caller-supplied refs)", () => {
 });
 
 describe("discoverListings signature verification (#41)", () => {
-  const seller = (n: number) => {
-    const seed = Uint8Array.from(Buffer.alloc(32, n));
-    const priv = privateKeyFromSeed(seed);
-    const hex = Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString("hex");
-    return { priv, hex, did: `did:demos:agent:${hex}` };
-  };
-  const ALICE = seller(7);
-  const MALLORY = seller(9);
   const verify = (b: Uint8Array, s: Uint8Array, k: Uint8Array) =>
     ed25519Verify(b, s, publicKeyFromRaw(k));
-  const deps = { verify };
+  const validate = vi.fn(validateListing);
+  const deps = { verify, validateListing: validate, nowMs: () => NOW };
+  const discoverOne = (record: Record<string, unknown>) =>
+    discoverListings(["a"], async () => record, deps);
 
-  const signedBy = async (did: string, priv: ReturnType<typeof privateKeyFromSeed>) => {
-    const { signature: _drop, ...body } = { ...LISTING, agentId: did };
-    return (await buildSignedArtifact(body, ARTIFACT_SEPARATORS.Listing, (b) =>
-      ed25519Sign(b, priv),
-    )) as unknown as Record<string, unknown>;
-  };
-
-  test("a listing signed by its own agentId VERIFIES and is returned", async () => {
-    const ok = await signedBy(ALICE.did, ALICE.priv);
-    const found = await discoverListings(["a"], async () => ok, deps);
+  test("a normative Listing signed by its presenting seller VERIFIES and is returned", async () => {
+    const found = await discoverOne(await normativeListing());
     expect(found).toHaveLength(1);
-    expect(found[0]!.compatibility).toBe("legacy-mvp");
-    expect(
-      found[0]!.compatibility === "legacy-mvp"
-        ? found[0]!.listing.agentId
-        : undefined,
-    ).toBe(ALICE.did);
+    expect(found[0]!.compatibility).toBe("normative");
+    expect(found[0]!.listing.seller.identity.presentedBy).toBe(ALICE.did);
   });
 
-  test("the default resolver preserves canonical Demos parameters", async () => {
-    const parameterized = `${ALICE.did}?a=left%3Aright&unknown=value`;
-    const signed = await signedBy(parameterized, ALICE.priv);
-    const found = await discoverListings(["a"], async () => signed, deps);
-    expect(found).toHaveLength(1);
-    expect(found[0]?.compatibility === "legacy-mvp"
-      ? found[0].listing.agentId
-      : null).toBe(parameterized);
+  test("an earlier-shape Listing signed by its own canonical agentId is dropped", async () => {
+    const record = earlierShapeListing(ALICE.did, ALICE.priv);
+    const unvalidated = vi.fn(validateListing);
+    await expect(
+      discoverListings(["a"], async () => record, { ...deps, validateListing: unvalidated }),
+    ).resolves.toEqual([]);
+    expect(unvalidated).not.toHaveBeenCalled();
+  });
+
+  test("authenticateReadableListingArtifact refuses an earlier-shape Listing under every gate", async () => {
+    const record = earlierShapeListing(ALICE.did, ALICE.priv);
+    await expect(authenticateReadableListingArtifact(record, { verify })).resolves.toBeNull();
+    await expect(authenticateReadableListingArtifact(record, TRUST)).resolves.toBeNull();
+    await expect(authenticateReadableListingArtifact(record, {})).resolves.toBeNull();
   });
 
   test.each([
@@ -223,52 +351,76 @@ describe("discoverListings signature verification (#41)", () => {
     (key: string) => `demos:0x${key}`,
     (key: string) => `DID:demos:agent:${key}`,
   ])("the default resolver never suffix-decodes a non-canonical signer", async (alias) => {
-    const signed = await signedBy(alias(ALICE.hex), ALICE.priv);
-    await expect(discoverListings(["a"], async () => signed, deps))
-      .resolves.toEqual([]);
+    validate.mockClear();
+    const signed = await normativeListing({ presentedBy: alias(ALICE.hex) });
+    await expect(discoverOne(signed)).resolves.toEqual([]);
+    expect(validate).not.toHaveBeenCalled();
   });
 
-  test("WRONG KEY — signed by someone other than the advertised seller is dropped", async () => {
-    // Mallory signs a listing that advertises Alice as the seller.
-    const forged = await signedBy(ALICE.did, MALLORY.priv);
-    expect(await discoverListings(["a"], async () => forged, deps)).toEqual([]);
+  test("WRONG KEY — signed by someone other than the presenting seller is dropped", async () => {
+    validate.mockClear();
+    const forged = await normativeListing({ signer: MALLORY.priv });
+    expect(await discoverOne(forged)).toEqual([]);
+    expect(validate).not.toHaveBeenCalled();
+  });
+
+  test("a signer other than the presenting seller is dropped", async () => {
+    const ok = await normativeListing();
+    const swapped = {
+      ...ok,
+      signature: {
+        ...(ok["signature"] as Record<string, unknown>),
+        signer: MALLORY.did,
+      },
+    };
+    expect(await discoverOne(swapped)).toEqual([]);
   });
 
   test("TAMPERED — a field changed after signing is dropped", async () => {
-    const ok = await signedBy(ALICE.did, ALICE.priv);
-    const tampered = { ...ok, supportedPaymentRails: ["pay-attacker"] };
-    expect(await discoverListings(["a"], async () => tampered, deps)).toEqual([]);
+    validate.mockClear();
+    const ok = await normativeListing();
+    const tampered = {
+      ...ok,
+      acceptedRails: [{ railId: "x402:attacker" }],
+    };
+    expect(await discoverOne(tampered)).toEqual([]);
+    expect(validate).not.toHaveBeenCalled();
   });
 
   test("MISSING signature is dropped", async () => {
-    const { signature: _drop, ...unsigned } = await signedBy(ALICE.did, ALICE.priv);
-    expect(await discoverListings(["a"], async () => unsigned, deps)).toEqual([]);
+    const { signature: _drop, ...unsigned } = await normativeListing();
+    expect(await discoverOne(unsigned)).toEqual([]);
   });
 
   test("MALFORMED signature is dropped, not thrown", async () => {
-    const ok = await signedBy(ALICE.did, ALICE.priv);
-    const bad = { ...ok, signature: "zzzz-not-hex" };
-    expect(await discoverListings(["a"], async () => bad, deps)).toEqual([]);
+    const ok = await normativeListing();
+    const bad = {
+      ...ok,
+      signature: { ...(ok["signature"] as Record<string, unknown>), value: "zzzz-not-base64url" },
+    };
+    expect(await discoverOne(bad)).toEqual([]);
   });
 
   test("a seller claim with no resolvable key is dropped (signer can't be established)", async () => {
-    const ok = await signedBy(ALICE.did, ALICE.priv);
-    const aliasOnly = { ...ok, agentId: "did:example:alias-only" };
-    expect(await discoverListings(["a"], async () => aliasOnly, deps)).toEqual([]);
+    validate.mockClear();
+    const aliasOnly = await normativeListing({ presentedBy: "did:example:alias-only" });
+    expect(await discoverOne(aliasOnly)).toEqual([]);
+    expect(validate).not.toHaveBeenCalled();
   });
 
-  test("a THROWING key resolver drops only that listing, not the whole batch (#71)", async () => {
-    const bad = await signedBy(ALICE.did, ALICE.priv);
-    const good = await signedBy(ALICE.did, ALICE.priv);
-    const store: Record<string, Record<string, unknown>> = { bad, good };
+  test("a THROWING key resolver drops only that listing, not the whole batch", async () => {
+    const records: Record<string, Record<string, unknown>> = {
+      bad: await normativeListing(),
+      good: await normativeListing(),
+    };
     // The resolver throws for the FIRST listing but works for the second.
     let seen = 0;
-    const found = await discoverListings(["bad", "good"], async (r) => store[r] ?? null, {
-      verify,
+    const found = await discoverListings(["bad", "good"], async (r) => records[r] ?? null, {
+      ...deps,
       resolvePublicKey: () => {
         seen += 1;
         if (seen === 1) throw new Error("resolver blew up");
-        return Uint8Array.from(Buffer.from(ALICE.hex, "hex"));
+        return Uint8Array.from(ALICE.raw);
       },
     });
     // The throw dropped only "bad"; "good" is still discovered.
@@ -276,9 +428,11 @@ describe("discoverListings signature verification (#41)", () => {
   });
 
   test("copies resolver-owned key bytes before handing them to verification", async () => {
-    const ok = await signedBy(ALICE.did, ALICE.priv);
-    const retained = Uint8Array.from(Buffer.from(ALICE.hex, "hex"));
+    const ok = await normativeListing();
+    const retained = Uint8Array.from(ALICE.raw);
     const found = await discoverListings(["a"], async () => ok, {
+      validateListing,
+      nowMs: () => NOW,
       resolvePublicKey: () => retained,
       verify: (bytes, signature, publicKey) => {
         retained.fill(0);

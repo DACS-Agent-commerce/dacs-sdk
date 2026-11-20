@@ -4,18 +4,21 @@
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 
-/** Binds a purchase capacity to `store` on the clock `now`, kept as `store.boundCapacity` beside `store.boundStore`, and returns the store. */
-export function bindPurchaseCapacity(store, now = () => Date.now()) {
-  const capacity = createPurchaseCapacity({ store, now, sessionState: sellerStoreInternals(store).sessionState });
+/**
+ * Binds a purchase capacity of `maxRecords` units (the default when absent) to `store` on the clock `now`, kept as `store.boundCapacity` beside
+ * `store.boundStore`, and returns the store.
+ */
+export function bindPurchaseCapacity(store, now = () => Date.now(), maxRecords) {
+  const capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
   return Object.defineProperties(store, { boundCapacity: { value: capacity }, boundStore: { value: store } });
 }
 
 /** The `{ store, capacity }` pair `bindPurchaseCapacity` bound, also through a proxy of the store: the capacity is built on the raw store. */
 export const boundPurchaseOf = (store) => ({ store: store.boundStore, capacity: store.boundCapacity });
 
-/** `createSellerTransportStore(options)` with the purchase capacity bound; the options are the store's own. */
-export function createSellerTransportStore(options) {
-  return bindPurchaseCapacity(createUnboundStore(options), options.now);
+/** `createSellerTransportStore(options)` with the purchase capacity bound; the options are the store's own, except `capacityUnits`, the capacity's size. */
+export function createSellerTransportStore({ capacityUnits, ...options }) {
+  return bindPurchaseCapacity(createUnboundStore(options), options.now, capacityUnits);
 }
 
 /** Returns the purchase capacity bound by this fixture. */

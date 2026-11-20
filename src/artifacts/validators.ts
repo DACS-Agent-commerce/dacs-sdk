@@ -22,7 +22,6 @@ import type {
   FaultAttestationBundle,
   FinalityCommitmentRecord,
   IdentityBundle,
-  LegacyMvpListing,
   Listing,
   ListingDraft,
   ListingEnvelope,
@@ -36,7 +35,6 @@ import type {
   RatingRecord,
   SettlementEvidence,
   VerificationMethod,
-  LegacyCompositeVerificationRecord,
   ReadableCompositeVerificationRecord,
   SupplementarySignal,
   VerificationWarning,
@@ -48,7 +46,6 @@ import {
   assertPositiveAmount,
   legacyBundleAddress,
   canonicalize,
-  stripSignature,
 } from "../canonical/index.js";
 import { isSafeJsonString } from "../canonical/snapshot.js";
 import {
@@ -66,8 +63,6 @@ const isNum = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v);
 const isObj = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
-const isStrArray = (v: unknown): v is string[] =>
-  Array.isArray(v) && v.every(isStr);
 const isOneOf = (set: readonly string[], v: unknown): boolean =>
   typeof v === "string" && set.includes(v);
 const hasOnlyKeys = (v: Record<string, unknown>, allowed: readonly string[]): boolean =>
@@ -339,12 +334,6 @@ const isExactComponentSignature = (v: unknown): boolean =>
   hasExactWireKeys(v, ["algorithm", "signer", "value"]) &&
   isComponentSignature(v) &&
   isCanonicalClaimRef(v.signer);
-
-/** Historical envelopes predate the current ClaimReference signer gate. */
-const isExactLegacyComponentSignature = (v: unknown): boolean =>
-  isObj(v) &&
-  hasOnlyKeys(v, ["algorithm", "signer", "value"]) &&
-  isComponentSignature(v);
 
 const isCanonicalAmount = (value: unknown, allowZero = false): value is string => {
   if (!isStr(value)) return false;
@@ -998,42 +987,13 @@ export function isRevocationBinding(v: unknown): v is RevocationBinding {
   );
 }
 
-/** Historical reduced SDK shape, deliberately isolated to read compatibility. */
-export function isLegacyMvpListing(v: unknown): v is LegacyMvpListing {
-  if (!isObj(v)) return false;
-  return (
-    isStr(v.agentId) &&
-    isStr(v.serviceId) &&
-    isStr(v.name) &&
-    isStr(v.description) &&
-    Array.isArray(v.claimRequirements) &&
-    v.claimRequirements.every(
-      (claim) =>
-        isObj(claim) && isStr(claim.claimRef) && isBool(claim.required),
-    ) &&
-    isStrArray(v.supportedNegotiation) &&
-    isStrArray(v.supportedPaymentRails) &&
-    isStrArray(v.supportedDelivery) &&
-    (v.pricing === undefined ||
-      (isPricingSpec(v.pricing) &&
-        isObj(v.pricing) &&
-        v.pricing.kind !== "metered")) &&
-    (v.listingVersion === undefined || isPositiveSafeInt(v.listingVersion))
-  );
-}
-
-/** Parse a signed artifact through the explicit normative/legacy read boundary. */
+/** Read a signed normative Listing envelope; any other value returns null. */
 export function readListingArtifact(v: unknown): ReadableListing | null {
   // Ordered DACS-1 validation owns semantic steps 2..9. Keep a structurally
   // readable normative envelope readable here so unsupported versions,
   // missing conditional DPA-1 methods, and unknown phase discriminators reach
   // their required ordered disposition instead of disappearing at parse time.
-  if (isListingEnvelope(v)) return { compatibility: "normative", listing: v };
-  if (!isObj(v) || typeof v.signature !== "string") return null;
-  const scope = stripSignature(v);
-  return isLegacyMvpListing(scope)
-    ? { compatibility: "legacy-mvp", listing: scope }
-    : null;
+  return isListingEnvelope(v) ? { compatibility: "normative", listing: v } : null;
 }
 
 /** DACS-2 §7.5 exact current VerifyResult wire shape. */
@@ -1133,7 +1093,7 @@ export function isVerificationWarning(v: unknown): v is VerificationWarning {
   );
 }
 
-/** DACS-2 §7.7 exact current record; a legacy shape can never satisfy it. */
+/** DACS-2 §7.7 exact current record. */
 export function isCompositeVerificationRecord(
   v: unknown,
 ): v is CompositeVerificationRecord {
@@ -1172,70 +1132,13 @@ export function isCompositeVerificationRecord(
   );
 }
 
-/** Explicit historical guard for the obsolete pre-§7.7 SDK record. */
-export function isLegacyCompositeVerificationRecord(
-  v: unknown,
-): v is LegacyCompositeVerificationRecord {
-  if (
-    !isObj(v) ||
-    !hasExactWireKeys(v, [
-      "subject",
-      "recipeId",
-      "recipeVersion",
-      "results",
-      "decision",
-      "verifiedAt",
-    ], ["signature"])
-  ) {
-    return false;
-  }
-  return (
-    isNonEmptyStr(v.subject) &&
-    isNonEmptyStr(v.recipeId) &&
-    isNonEmptyStr(v.recipeVersion) &&
-    isExactWireArray(
-      v.results,
-      (result) =>
-        isObj(result) &&
-        hasExactWireKeys(result, [
-          "claimRef",
-          "method",
-          "status",
-        ], [
-          "authority",
-          "responseHash",
-          "proof",
-          "data",
-        ]) &&
-        isNonEmptyStr(result.claimRef) &&
-        isNonEmptyStr(result.method) &&
-        isOneOf(VERIFICATION_DECISIONS, result.status) &&
-        (result.authority === undefined || isNonEmptyStr(result.authority)) &&
-        (result.responseHash === undefined || isNonEmptyStr(result.responseHash)) &&
-        (result.proof === undefined ||
-          (isObj(result.proof) &&
-            hasExactWireKeys(result.proof, ["kind", "value"]) &&
-            isOneOf(["hash", "raw"], result.proof.kind) &&
-            isNonEmptyStr(result.proof.value))) &&
-        (result.data === undefined || isObj(result.data)),
-    ) &&
-    isOneOf(VERIFICATION_DECISIONS, v.decision) &&
-    isNonEmptyStr(v.verifiedAt) &&
-    (v.signature === undefined || isExactLegacyComponentSignature(v.signature))
-  );
-}
-
-/** Parse through the explicit current/legacy boundary without shape conflation. */
+/** Read a current composite verification record; any other value returns null. */
 export function readCompositeVerificationRecord(
   v: unknown,
 ): ReadableCompositeVerificationRecord | null {
-  if (isCompositeVerificationRecord(v)) {
-    return { compatibility: "current", record: v };
-  }
-  if (isLegacyCompositeVerificationRecord(v)) {
-    return { compatibility: "legacy", record: v };
-  }
-  return null;
+  return isCompositeVerificationRecord(v)
+    ? { compatibility: "current", record: v }
+    : null;
 }
 
 const isListingPin = (v: unknown): boolean =>

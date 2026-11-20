@@ -577,9 +577,11 @@ async function cutInsideProvider(w, writes) {
   w.behaviour.records ??= new Set();
   const crash = async () => { w.route.closeAttempts(DIED); };
   if (writes === 0) w.behaviour.provider = crash; else w.behaviour.afterFirstWrite = crash;
+  w.behaviour.processDied = true;
   assert.deepEqual(summary(await w.post(request)), [503, 'operation_uncertain']);
   w.behaviour.provider = null; w.behaviour.afterFirstWrite = null;
   await w.settleJob();
+  w.behaviour.processDied = false;
   assert.deepEqual([w.rowOf().state, w.operationOf(WIRE_JOB).state, w.counts.vetWrites], ['running', 'pending', writes]);
   return request;
 }
@@ -598,9 +600,11 @@ async function cutBeforeOutcome(w) {
   const request = await w.startContext();
   w.behaviour.records ??= new Set();
   w.behaviour.beforeAnswer = async () => { w.route.closeAttempts(DIED); };
+  w.behaviour.processDied = true;
   await w.post(request);
   w.behaviour.beforeAnswer = null;
   await w.settleJob();
+  w.behaviour.processDied = false;
   assert.deepEqual([w.rowOf().state, w.operationOf(WIRE_JOB).state], ['running', 'pending']);
   return request;
 }
@@ -694,10 +698,10 @@ test('a crash after the outcome was published and before the row settled is sett
   for (const [kind, nonPass] of [['present', null], ['first-Vet non-pass', 'first'], ['second-Vet non-pass', 'second']]) {
     await t.test(kind, async (t) => {
       const w = await contextWireWorld(t), request = await w.startContext();
-      w.behaviour.records = new Set(); w.behaviour.nonPass = nonPass; w.behaviour.cutAfterPublish = true;
+      w.behaviour.records = new Set(); w.behaviour.nonPass = nonPass; w.behaviour.cutAfterPublish = true; w.behaviour.processDied = true;
       await w.post(request);
       await w.settleJob();
-      w.behaviour.cutAfterPublish = false;
+      w.behaviour.cutAfterPublish = false; w.behaviour.processDied = false;
       assert.deepEqual([w.rowOf().state, w.operationOf(WIRE_JOB).state], ['running', 'completed']);
       for (let pass = 0; pass < 2; pass++) await w.admission.sweep({ startup: false });
       assert.deepEqual([w.rowOf().state, w.counts.releases.length, w.openHolds().length], ['settled', 1, 0]);
@@ -710,10 +714,11 @@ test('a crash after the outcome was published and before the row settled is sett
 
 // ---- the deadline, the lease and racing continuations ----------------------------------------------------------------------
 
-/** A first admission whose provider stalls at `stallAt` ('start', 'after-first-write' or 'before-answer') until `release()`. */
+/** A first admission whose provider stalls at `stallAt` ('start', 'after-first-write' or 'before-answer') until `release()`; the process then dies, so the row stays as the stalled work left it. */
 async function stalledAttempt(t, stallAt) {
   const w = await contextWireWorld(t), request = await w.startContext(), reached = deferred(), release = deferred();
   w.behaviour.records = new Set();
+  w.behaviour.processDied = true;
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const stall = async () => { reached.resolve(); await release.promise; };
   if (stallAt === 'start') w.behaviour.provider = stall;
@@ -734,6 +739,7 @@ test('after the deadline closed an attempt at each of three stall points, a succ
       assert.deepEqual([...summary(held), held.body.cause], [503, 'operation_uncertain', 'context_deadline']);
       release.resolve();
       await w.settleJob();
+      w.behaviour.processDied = false;
       w.behaviour.provider = null; w.behaviour.afterFirstWrite = null; w.behaviour.answer = null;
       const answer = await retryAfterLease(w, request);
       await w.settleJob();
@@ -749,6 +755,7 @@ test('a context worker that overruns its lease while a successor recovers writes
   release.resolve();
   const stale = await pending;
   await w.settleJob();
+  w.behaviour.processDied = false;
   assert.deepEqual([stale.body.error, w.counts.vetWrites], ['operation_uncertain', 1], 'the overrun worker is refused its second write');
   w.behaviour.afterFirstWrite = null;
   const answer = await w.post(await resign(w, request));

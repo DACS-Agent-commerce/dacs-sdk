@@ -2,6 +2,15 @@
   "name": "@kynesyslabs/dacs",
   "version": "0.1.0-alpha.0",
   "description": "TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents — the reusable runtime for the Identify → Vet → Negotiate → Settle → Verify lifecycle.",
+  "keywords": [
+    "dacs",
+    "ai-agents",
+    "agent-commerce",
+    "agent-payments",
+    "verified-data",
+    "procurement",
+    "demos"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -162,7 +171,7 @@
     "xpath": "^0.0.34"
   },
   "peerDependencies": {
-    "@kynesyslabs/demosdk": "^4.0.16",
+    "@kynesyslabs/demosdk": "^4.0.17",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
@@ -176,7 +185,7 @@
     "viem": { "optional": true }
   },
   "devDependencies": {
-    "@kynesyslabs/demosdk": "^4.0.16",
+    "@kynesyslabs/demosdk": "^4.0.17",
     "@types/node": "^20",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",

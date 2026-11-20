@@ -1,7 +1,8 @@
 import { types as nodeTypes } from "node:util";
 
 import { DacsError, SubstrateError } from "../errors.js";
-import { verifySignedArtifact, type Verifier } from "../agent/signedArtifact.js";
+import { verifySignedArtifact } from "../agent/signedArtifact.js";
+import type { Verifier } from "../crypto/byteSignerTypes.js";
 import {
   isComponentSignature,
   verifyComponentSignature,
