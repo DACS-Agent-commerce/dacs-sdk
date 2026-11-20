@@ -4,9 +4,11 @@ import * as wire from '@kynesyslabs/dacs/wire';
 import { world, purchase, JOB, PUBLIC_ENDPOINT, validReceipt } from './wire-client-fixture.mjs';
 import { committedPurchase } from './wire-committed-purchase.mjs';
 import { contextScope } from '../../../../test/kit-client/fixtures.mjs';
+import { fetchClient } from './seller-https-rig.mjs';
 const { createSellerRequestRecords } = await import('../../src/dacs/protocol-purchases.mjs');
 const { createSqlitePurchaseStore } = await import('../../src/seams/purchase-store-not-wired.mjs');
-const { createSellerAgentClient } = await import('../../src/dacs/seller-http.mjs');
+const { createSellerHttpsClient } = await import('../../src/dacs/seller-http.mjs');
+const clientOverFetch = fetchClient(createSellerHttpsClient);
 
 export const PATHS = wire.DACS_SELLER_HTTP_PATHS;
 const READS = new Set([PATHS.state, PATHS.bundleBuyerCopy]);
@@ -36,7 +38,7 @@ export async function storedWorld(t, { stage = 'agreement-signing', accepted = t
     const header = await wire.signWireResponse(payload, status, text, { signer: w.seller, binding: w.binding, local: w.local, purchaseProfile: w.binding.profile, now: w.state.time });
     return new Response(text, { status, headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: header } });
   };
-  const client = ({ respond = init => reply(init), requestRecords = records(), ...options } = {}) => createSellerAgentClient({
+  const client = ({ respond = init => reply(init), requestRecords = records(), ...options } = {}) => clientOverFetch({
     url: PUBLIC_ENDPOINT, authentication: auth, requestRecords, clock, commitOnSignature: true,
     fetchImpl: async (_url, init) => { fetches.push(init); return respond(init); }, ...options
   });
