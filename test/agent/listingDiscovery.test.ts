@@ -6,7 +6,6 @@ import {
   type ListingDiscoveryDeps,
 } from "../../src/agent/listingDiscovery.js";
 import type { ListingValidationDeps } from "../../src/agent/listingValidation.js";
-import { buildSignedArtifact } from "../../src/agent/signedArtifact.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { ListingDraft } from "../../src/artifacts/types.js";
@@ -18,6 +17,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  signedBytes,
 } from "../../src/crypto/index.js";
 import {
   createCatalogBindingIndex,
@@ -71,11 +71,11 @@ async function listingFixture(options: {
     supportedDelivery: ["deliver-attested-payload"],
     ...(version === 1 && options.omitV1 ? {} : { listingVersion: version }),
   };
-  const record = (await buildSignedArtifact(
-    body,
-    ARTIFACT_SEPARATORS.Listing,
-    (bytes) => ed25519Sign(bytes, options.signer ?? SELLER.privateKey),
-  )) as unknown as Record<string, unknown>;
+  const bytes = signedBytes(ARTIFACT_SEPARATORS.Listing, contentHash(body));
+  const signature = Buffer.from(
+    ed25519Sign(bytes, options.signer ?? SELLER.privateKey),
+  ).toString("hex");
+  const record: Record<string, unknown> = { ...body, signature };
   const logicalAddress = listingAddress(SELLER.did, serviceId, version);
   const nativeAddress = `stor-${serviceId}-${version}`;
   return {
