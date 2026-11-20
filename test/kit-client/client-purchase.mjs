@@ -13,6 +13,7 @@ import { bindFixture } from '../../packages/dacs-client/test/fixtures/tp1-author
 import { buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { createSellerAgentClient } from '../../packages/dacs-seller/src/dacs/seller-http.mjs';
 import { clientAuthFor } from './kit-host.mjs';
+import { FIXTURE_ENDPOINT } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
 import { fetchAsHost } from '../../packages/dacs-seller/test/helpers/listener-host.mjs';
 
 // The client's portal capability compares each purchase link's expiry with the real clock as well as its own, so the client's
@@ -55,7 +56,7 @@ export async function purchaseWorld(t, { host, listing }) {
   } };
   const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, now, buyerAccess: { assertWallet() {} },
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
-      nativeSellerCommitment: commitment, agreementContext, sellerEndpoint: () => host.url } });
+      nativeSellerCommitment: commitment, agreementContext, sellerEndpoint: () => FIXTURE_ENDPOINT } });
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: buyer.address }] }, verifier, chain, protocol,
     challenges: {}, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
   const prepare = () => service.prepare({ accountId: ACCOUNT_ID, listingId: listing.listingId, version: listing.listingVersion, seller: seller.claim,

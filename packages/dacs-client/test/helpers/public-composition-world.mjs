@@ -17,7 +17,7 @@ import { bindFixture } from '../fixtures/tp1-authority-reader.mjs';
 export { OFFLINE_AGREEMENT_MODE, NOW, SellerTlsUnusableError };
 export const ACCOUNT_ID = 'TEST-buyer';
 // The seller client accepts only a loopback endpoint; nothing here connects to it.
-export const SELLER_ENDPOINT = 'http://127.0.0.1:9';
+export const SELLER_ENDPOINT = 'https://seller.example.test';
 const AUTHORITY = 'TEST-RUN-composition0';
 const OPERATOR_CONTEXT_AUTHORITY = 'test:composition-operator';
 const THIRD_PARTY_SIGNER = 'did:demos:agent:' + 'd'.repeat(64);

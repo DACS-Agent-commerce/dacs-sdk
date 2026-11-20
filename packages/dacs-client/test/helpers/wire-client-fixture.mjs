@@ -25,7 +25,7 @@ export function party(seed) {
 }
 export const encode = (payload, signer, domain) => Buffer.from(canonicalize({ payload, signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString('base64url') })).toString('base64url');
 export const code = (expected) => (error) => error.code === expected;
-export const PUBLIC_ENDPOINT = 'https://127.0.0.1:19001';
+export const PUBLIC_ENDPOINT = 'https://seller.example.test';
 export const validReceipt =Object.assign(async () => 'valid', { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
 // pin, agreementHash, ready and readCommitmentReceipt (null: a proof without a receipt reader) let a test commit a real purchase.
 // publicEndpoint is the seller origin the discovery proof and the signed requests name.

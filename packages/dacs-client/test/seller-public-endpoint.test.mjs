@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import * as wire from '@kynesyslabs/dacs/wire';
 import { world, purchase, JOB, T0, setPurchaseAdmission } from './helpers/wire-client-fixture.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
-const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
+import { fetchClient } from './helpers/seller-https-rig.mjs';
+const { createSellerHttpsClient } = await import('../src/dacs/seller-http.mjs');
+const clientOverFetch = fetchClient(createSellerHttpsClient);
 const { SELLER_ANSWER_CLASS } = await import('../src/dacs/seller-response-class.mjs');
 
 const SELLER_ORIGIN = 'https://seller.example.com';
@@ -12,7 +14,7 @@ const failIfCalled = (calls) => async () => { calls.push('fetch'); throw new Err
 test('a signed request goes to the public https endpoint of the seller', async (t) => {
   const w = await world(t, { publicEndpoint: SELLER_ORIGIN });
   const sent = [];
-  const client = createSellerAgentClient({
+  const client = clientOverFetch({
     url: SELLER_ORIGIN, authentication: w.auth, fetchImpl: async (url, init) => { sent.push({ url, init }); throw new Error('seller unreachable'); }
   });
   await assert.rejects(client.agreementState({ jobId: JOB }));
@@ -25,7 +27,7 @@ test('a signed request goes to the public https endpoint of the seller', async (
 test('a public endpoint written with a trailing slash is reached at the same address', async (t) => {
   const w = await world(t, { publicEndpoint: SELLER_ORIGIN });
   const sent = [];
-  const client = createSellerAgentClient({
+  const client = clientOverFetch({
     url: `${SELLER_ORIGIN}/`, authentication: w.auth, fetchImpl: async (url) => { sent.push(url); throw new Error('seller unreachable'); }
   });
   await assert.rejects(client.agreementState({ jobId: JOB }));
@@ -42,17 +44,14 @@ test('preparing a purchase keeps the public https origin of a seller whose trans
 });
 
 test('a public endpoint without a wire authentication is refused', async () => {
-  assert.throws(() => createSellerAgentClient({ url: SELLER_ORIGIN, fetchImpl: failIfCalled([]) }), /seller agent endpoint/);
+  assert.throws(() => clientOverFetch({ url: SELLER_ORIGIN, fetchImpl: failIfCalled([]) }), { name: 'TypeError', message: /wire authentication/ });
 });
 
-test('a loopback endpoint without a wire authentication is still accepted', () => {
-  assert.doesNotThrow(() => createSellerAgentClient({ url: 'http://127.0.0.1:19001', fetchImpl: failIfCalled([]) }));
-});
-
-test('a loopback endpoint with a wire authentication is still accepted at its own origin', async (t) => {
+test('a loopback endpoint is refused even with a wire authentication', async (t) => {
   const w = await world(t);
-  const client = createSellerAgentClient({ url: 'http://127.0.0.1:19001/', authentication: w.auth, fetchImpl: failIfCalled([]) });
-  assert.equal(client.origin, 'http://127.0.0.1:19001');
+  for (const url of ['http://127.0.0.1:19001/', 'https://127.0.0.1:19001', 'https://[::1]', 'https://10.0.0.5']) {
+    assert.throws(() => clientOverFetch({ url, authentication: w.auth, fetchImpl: failIfCalled([]) }), { name: 'TypeError', message: /seller agent endpoint/ }, url);
+  }
 });
 
 for (const [name, endpoint] of [
@@ -67,7 +66,7 @@ for (const [name, endpoint] of [
   test(`an endpoint with ${name} is refused before anything is signed or sent`, async (t) => {
     const w = await world(t, { publicEndpoint: SELLER_ORIGIN });
     const calls = [];
-    assert.throws(() => createSellerAgentClient({ url: endpoint, authentication: w.auth, fetchImpl: failIfCalled(calls) }));
+    assert.throws(() => clientOverFetch({ url: endpoint, authentication: w.auth, fetchImpl: failIfCalled(calls) }));
     assert.equal(w.state.signs.length, 0);
     assert.deepEqual(calls, []);
   });
@@ -77,7 +76,7 @@ test('a public endpoint request is refused while purchase actions are held, befo
   const w = await world(t, { publicEndpoint: SELLER_ORIGIN });
   setPurchaseAdmission('held');
   const calls = [];
-  const client = createSellerAgentClient({ url: SELLER_ORIGIN, authentication: w.auth, fetchImpl: failIfCalled(calls) });
+  const client = clientOverFetch({ url: SELLER_ORIGIN, authentication: w.auth, fetchImpl: failIfCalled(calls) });
   await assert.rejects(client.agreementState({ jobId: JOB }), (error) => error.code === 'seller_unavailable' && error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT);
   assert.equal(w.state.signs.length, 0);
   assert.deepEqual(calls, []);
