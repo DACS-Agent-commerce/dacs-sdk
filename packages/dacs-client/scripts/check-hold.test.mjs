@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawnSync} from 'node:child_process';
-import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync} from 'node:fs';
+import {appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -33,8 +33,8 @@ function scratch(t, ...options) {
   git(repo, 'switch', '-qc', 'TEST-main');
   return {repo, dir: join(repo, 'packages/dacs-client')};
 }
-function gate({repo, dir}) {
-  const r = spawnSync(process.execPath, [GATE, '--repo-root', repo, '--package-dir', dir], {encoding:'utf8'});
+function gate({repo, dir}, env = process.env) {
+  const r = spawnSync(process.execPath, [GATE, '--repo-root', repo, '--package-dir', dir], {encoding:'utf8', env});
   return {status:r.status, text:r.stdout+r.stderr};
 }
 function passes(s) { const r=gate(s); assert.equal(r.status, 0, r.text); }
@@ -183,4 +183,20 @@ test('the derived rule is not loaded while one of its modules differs from its p
   assert.match(r.text, fail('scripts/delta-freeze.mjs', 'changed bytes; package is frozen'));
   assert.match(r.text, /^FAIL derived freeze rule not run: scripts\/delta-freeze\.mjs must match the freeze pins first$/m);
   assert.doesNotMatch(r.text, /TEST loaded an unverified module/);
+});
+test('the gate ignores the global Git config', {skip: process.platform === 'win32' && 'the fsmonitor hook is a POSIX shell script'}, t => {
+  const s = scratch(t);
+  const home = mkdtempSync(join(tmpdir(), 'client-hold-home-'));
+  t.after(() => rmSync(home, {recursive:true, force:true}));
+  const marker = join(home, 'fsmonitor-ran');
+  const hook = join(home, 'fsmonitor.sh');
+  writeFileSync(hook, `#!/bin/sh\ntouch '${marker.replaceAll("'", "'\\''")}'\nexit 1\n`, {mode: 0o755});
+  writeFileSync(join(home, '.gitconfig'), `[core]\n\tfsmonitor = ${hook}\n`);
+  const env = {...gitEnv, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, 'xdg'), GIT_CONFIG_NOSYSTEM: '1'};
+  execFileSync('git', ['-C', s.repo, 'ls-files', '--stage', '-z'], {env, stdio: 'pipe'});
+  assert.ok(existsSync(marker), 'ordinary Git must run the temporary global fsmonitor hook');
+  rmSync(marker);
+  const r = gate(s, env);
+  assert.equal(r.status, 0, r.text);
+  assert.equal(existsSync(marker), false, 'the gate must not run a hook from the global Git config');
 });
