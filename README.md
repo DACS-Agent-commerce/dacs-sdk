@@ -975,10 +975,8 @@ const resolveAttestationRef: VerifyBundleDeps["resolveAttestationRef"] = async (
 ```
 
 Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
-`{ rail, txHash, kind }` transaction refs are exposed only through the
-explicitly named `LegacyMvp*` read/resume compatibility types and validators.
-Normative producers, including `buildTwoSidedBundle`, reject those legacy
-shapes.
+`{ rail, txHash, kind }` transaction refs fail the current validators, and
+normative producers, including `buildTwoSidedBundle`, reject them.
 
 `verifyBundle` and `verifyBundleCore` no longer read artifacts of those early
 shapes: such an input is refused with `not an attestation bundle`, whether it
