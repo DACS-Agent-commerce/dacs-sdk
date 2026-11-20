@@ -24,6 +24,7 @@ import { startSellerHost } from '../src/host.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { createSellerAgentClient } from '../src/dacs/seller-http.mjs';
 import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
+import { fetchAsHost, proxyListener } from './helpers/listener-host.mjs';
 
 const PATHS = DACS_SELLER_HTTP_PATHS;
 const BUYER = { claim: buyer.claim, sign: buyer.signBytes };
@@ -200,14 +201,14 @@ test('a signing deadline that is not a timer-sized integer is refused at constru
 });
 
 async function runningHost(t) {
-  const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE });
+  const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE, publicEndpoint: FIXTURE_ENDPOINT });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-wire-client-auth-'));
   const { nativeArtifactAnchor, ...config } = f.config;
   delete config.challengeLedger; // the host builds its own ledger
   delete config.durableDirectory;
   delete config.commitOnSignature;
   delete config.vetMode;
-  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, ...hostAuthority() });
+  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, ...hostAuthority(), listener: proxyListener() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { f, host };
 }
@@ -216,7 +217,7 @@ test('a kit client with the shipped wire auth proposes to a running host and rea
   const { f, host } = await runningHost(t);
   const request = await f.proposal(host);
   const { auth } = await wireClient({ pin: host.listingPin, agreementHash: request.proposal.plan.agreementHash });
-  const client = createSellerAgentClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS });
+  const client = createSellerAgentClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: fetchAsHost() });
   assert.equal((await client.propose(request)).disposition, 'complete');
   assert.equal(typeof await client.agreementState(request.transportIdentity), 'object');
 });
@@ -226,7 +227,7 @@ test('an answer whose body was changed after the seller signed it is refused as 
   const request = await f.proposal(host);
   const { auth } = await wireClient({ pin: host.listingPin, agreementHash: request.proposal.plan.agreementHash });
   const tampering = async (url, init) => {
-    const response = await fetch(url, init);
+    const response = await fetchAsHost()(url, init);
     const text = (await response.text()).replace('"complete"', '"complet3"');
     return new Response(text, { status: response.status, headers: response.headers });
   };
@@ -245,7 +246,7 @@ test('a kit client with the shipped wire auth gets a challenge and the context a
     notBefore: NOW - SESSION_LEAD_MS, expiresAt: NOW + SESSION_LIFETIME_MS, profile: base.binding.profile };
   const delegation = { payload: delegationPayload, signature: BUYER.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(delegationPayload))).toString('base64url') };
   const authentication = createSellerWireClientAuth({ ...base.options, signer: { claim: session.claim, sign: session.signBytes }, delegation });
-  const client = createSellerAgentClient({ url: host.url, authentication, timeoutMs: CLIENT_TIMEOUT_MS });
+  const client = createSellerAgentClient({ url: host.url, authentication, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: fetchAsHost() });
   const scope = scopeFor(JOB);
   const { sessionNonce } = await client.contextChallenge({ scope });
   const bundle = presentationFor(buyer, sessionNonce, NOW);

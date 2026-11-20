@@ -28,7 +28,8 @@
 // its directory), never uses elapsed time, and never touches the rows of a live handle in this process.
 //
 // Lock order: the kit writer lock, then the signer lock; the signer lock is never re-entered. The native transport takes the signer
-// lock inside its own lane lock to issue a write, and nothing here takes a lane lock.
+// lock inside its own lane lock to issue a write, and nothing here takes a lane lock. The payment-evidence adapter takes the signer
+// lock alone to send the bytes a reservation holds.
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, sep } from 'node:path';
