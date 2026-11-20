@@ -4,11 +4,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, bindTp1Profile } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, bindTp1Profile } from '@kynesyslabs/dacs/wire';
 import { AGREEMENT_CONTEXT_SOURCE } from '../../src/dacs/agreement-context-consumer.mjs';
 import { createDemDeliveryContext } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { purchaseSupport } from '../../src/dacs/listing.mjs';
-import { SELLER_CONTEXT_PATH, SELLER_TRANSPORT_HEADER } from '../../src/dacs/seller-transport-auth.mjs';
 import { KIT_TP1_VET_MODE, startSellerHost } from '../../src/host.mjs';
 import { commitmentFixture } from './commitment-fixture.mjs';
 import { presentationFor } from './context-wire-world.mjs';
@@ -51,7 +50,9 @@ export async function contextHostFixture(t, { publicEndpoint = null } = {}) {
 /**
  * A buyer for `host`. `challenge(jobId)` posts the signed challenge request, `context(jobId, nonce)` the signed context request
  * over that challenge, and `requestContext(jobId)` both; each answers `{ status, text, body, signed }`. Requests are delegated to a session
- * key; `{ delegated: false }` signs the context request with the buyer's own key instead.
+ * key; `{ delegated: false }` signs the context request with the buyer's own key instead. `scopeFor(jobId)` is the challenge scope the
+ * buyer sends, and `admit(jobId)` the first admission a proposal needs. `send(path, jobId, body)` signs `body` under a new envelope at the
+ * buyer's clock and posts it.
  */
 export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyerKey = buyer, seller: sellerKey = seller, clock = () => NOW }) {
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
@@ -67,14 +68,14 @@ export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyer
   const send = async (path, jobId, body, { delegated = true } = {}) => {
     const signed = await wire.signRequest(path, body, { jobId, agreementHash: sha256Hex(canonicalize(body.scope)), delegation: delegated ? delegationFor(jobId) : null,
       signer: signerOf(delegated ? session : buyerKey), text: JSON.stringify(body) });
-    const response = await fetch(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.text });
+    const response = await fetch(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.text });
     const text = await response.text();
-    return { status: response.status, text, body: JSON.parse(text), signed: response.headers.has(SELLER_TRANSPORT_HEADER) };
+    return { status: response.status, text, body: JSON.parse(text), signed: response.headers.has(DACS_SELLER_HTTP_HEADER) };
   };
   const challenge = (jobId = defaultJob) => send(DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: scopeFor(jobId) });
   const context = async (jobId, nonce, options) => {
     const bundle = presentationFor(buyerKey, nonce, clock());
-    return { ...await send(SELLER_CONTEXT_PATH, jobId, { scope: { ...scopeFor(jobId), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle }, options), bundle };
+    return { ...await send(DACS_SELLER_HTTP_PATHS.context, jobId, { scope: { ...scopeFor(jobId), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle }, options), bundle };
   };
   const requestContext = async (jobId = defaultJob, options) => {
     const issued = await challenge(jobId);
@@ -91,5 +92,5 @@ export async function hostBuyer(host, listing, { jobId: defaultJob, buyer: buyer
     if (answered.status !== 200) throw refusal('context request', answered);
     return answered.bundle;
   };
-  return { challenge, context, requestContext, admit };
+  return { challenge, context, requestContext, scopeFor, admit, send };
 }

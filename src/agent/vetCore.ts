@@ -2834,8 +2834,8 @@ async function executeVetMethod(
 /**
  * Shared durable claim boundary. It owns method execution, result signing,
  * finalized anchoring and exact readback, but deliberately does not create a
- * composite record. The legacy producer and the party producer therefore use
- * the same crash-safe result semantics.
+ * composite record. `vetCore` and `partyVetCore` therefore use the same
+ * crash-safe result semantics.
  */
 async function produceDurableVetResult(
   req: VetRequest,
@@ -3030,8 +3030,8 @@ async function produceDurableVetResult(
 
 /**
  * Run one current DACS-2 method, sign and anchor its VerifyResult, aggregate the
- * exact §7.7 record, and sign that record. No legacy entry/record is emitted and
- * no VerifyResultRef is synthesised before an anchor callback succeeds.
+ * exact §7.7 record, and sign that record. No VerifyResultRef is synthesised
+ * before an anchor callback succeeds.
  */
 export async function vetCore(
   request: VetRequest,

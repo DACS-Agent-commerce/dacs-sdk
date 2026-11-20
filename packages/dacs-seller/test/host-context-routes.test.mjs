@@ -7,7 +7,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { Server } from 'node:http';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { DACS_SELLER_DISCOVERY_PATH } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
 import { provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import * as guard from '../src/kit-operation-guard.mjs';
 import { HOST_CONTEXT_CALLBACKS } from './helpers/host-context-callbacks.mjs';
@@ -154,8 +154,9 @@ for (const [stall, where] of [['first', 'before the first Vet write'], ['between
         await flush();
         assert.equal(provider.seen.lateWrites, 0, 'no Vet write after the deadline');
         assert.deepEqual(unhandled, []);
-        assert.equal(admissionState(f.dataDirectory), 'compensating', 'the settled work completed nothing, and its row is ended for cleanup once the work has settled');
+        assert.equal(admissionState(f.dataDirectory), 'running', 'the settled work completed nothing, and its row stays running for the buyer\'s retry');
         await (await f.start()).close();
+        assert.equal(admissionState(f.dataDirectory), 'compensating', 'the startup sweep ends the row for cleanup');
         assert.notEqual(admissionState(f.dataDirectory), null, 'the retained admission survives the restart');
       });
     }
@@ -399,4 +400,87 @@ test('a host given its own contextSessionState reads no purchase as abandoned', 
   assert.equal(allocationState(f.dataDirectory), 'live');
   const refused = await (await buyerFor(OTHER_JOB)).challenge();
   assert.deepEqual([refused.status, refused.body.error], [503, 'seller_not_ready']);
+});
+
+// ---- a retry while the attempt that a deadline answer left is still inside its lease ---------------------------------------
+
+const JOURNAL_LEASE_MS = 300_000;
+// What a request that is charged, or whose nonce the wire journal publishes, changes: the reservation rows and the journal's files.
+const charged = (directory) => {
+  const db = new Database(join(directory, 'transport', 'transport.sqlite'), { readonly: true });
+  try {
+    return { reservations: db.prepare('SELECT key, state, code FROM kit_reservations ORDER BY rowid').all().map((row) => ({ ...row })),
+      journal: readdirSync(join(directory, 'wire-journal')).sort() };
+  } finally { db.close(); }
+};
+
+/**
+ * A context step answered operation_uncertain at its 240 s deadline, whose provider work then settled with no Vet write: the job is free
+ * again and the journal's attempt is still pending inside its lease, which runs on the host's wall clock. `replay()` posts the first
+ * request's exact bytes again; `resend(at)` signs its body again under a new envelope, as a buyer whose clock reads `at`.
+ */
+async function pendingAfterDeadline(t) {
+  const clock = { monotonic: 0 };
+  t.mock.method(performance, 'now', () => clock.monotonic);
+  const posted = [], post = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', (url, init) => { posted.push({ url, init }); return post(url, init); });
+  const provider = stalledProvider('first'), f = await contextHostFixture(t);
+  const host = await f.start({ demDeliveryContext: provider.capability }), buyer = await f.buyerFor(host);
+  const issued = await buyer.challenge();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = buyer.context(JOB, issued.body.sessionNonce);
+  await reached(provider.seen.entered, pending);
+  const first = posted.at(-1);
+  clock.monotonic = CONTEXT_DEADLINE_MS;
+  t.mock.timers.tick(CONTEXT_DEADLINE_MS);
+  const answer = await pending;
+  t.mock.timers.reset();
+  assert.deepEqual([answer.status, answer.body.error, answer.body.cause], [503, 'operation_uncertain', 'context_deadline'], answer.text);
+  provider.gate.resolve();
+  await flush();
+  const before = charged(f.dataDirectory);
+  assert.deepEqual([before.reservations.map(({ state }) => state), before.journal.filter((name) => name.startsWith('k-')).length], [['new'], 1]);
+  const replay = async () => {
+    const response = await post(first.url, first.init);
+    return { status: response.status, body: JSON.parse(await response.text()) };
+  };
+  const resend = async (at) => (await hostBuyer(host, f.config.listing, { jobId: JOB, clock: () => at })).send(DACS_SELLER_HTTP_PATHS.context, JOB, JSON.parse(first.init.body));
+  return { f, host, buyer, provider, issued, before, replay, resend };
+}
+
+test('a fresh-nonce retry while the attempt a deadline answer left is still inside its lease is refused seller_effect_pending before any reservation row or nonce key', async (t) => {
+  const w = await pendingAfterDeadline(t);
+  const retry = await w.buyer.context(JOB, w.issued.body.sessionNonce);
+  assert.deepEqual([retry.status, retry.body.error], [503, 'seller_effect_pending'], retry.text);
+  assert.deepEqual(charged(w.f.dataDirectory), w.before, 'no reservation row, nonce key or attempt');
+  w.f.advance(JOURNAL_LEASE_MS - 1);
+  const last = await w.resend(NOW + JOURNAL_LEASE_MS - 1);
+  assert.deepEqual([last.status, last.body.error], [503, 'seller_effect_pending'], last.text);
+  assert.deepEqual(charged(w.f.dataDirectory), w.before, 'one millisecond before the lease runs out');
+  assert.deepEqual([w.provider.seen.resolves, w.provider.seen.writes], [1, 0], 'no second provider run and no Vet write');
+});
+
+test('the first request sent again byte for byte while its attempt is pending is still answered peer_request_replayed', async (t) => {
+  const w = await pendingAfterDeadline(t);
+  const again = await w.replay();
+  assert.deepEqual([again.status, again.body.error], [409, 'peer_request_replayed']);
+  assert.deepEqual(charged(w.f.dataDirectory), w.before);
+});
+
+test('a context request for the job under another scope while its attempt is pending is still refused peer_agreement_mismatch', async (t) => {
+  const w = await pendingAfterDeadline(t);
+  const other = await (await hostBuyer(w.host, w.f.config.listing, { jobId: JOB, clock: () => NOW - 1 })).context(JOB, w.issued.body.sessionNonce);
+  assert.deepEqual([other.status, other.body.error], [409, 'peer_agreement_mismatch'], other.text);
+  assert.deepEqual(charged(w.f.dataDirectory), w.before);
+});
+
+test('once the attempt\'s lease has run out, the same body under a new envelope still reaches recovery', async (t) => {
+  const w = await pendingAfterDeadline(t);
+  w.f.advance(JOURNAL_LEASE_MS);
+  const recovered = await w.resend(NOW + JOURNAL_LEASE_MS);
+  assert.deepEqual([recovered.status, recovered.body.error, recovered.body.cause], [503, 'operation_uncertain', 'context_recovery_held'], recovered.text);
+  const after = charged(w.f.dataDirectory);
+  assert.deepEqual(after.reservations.map(({ state }) => state), ['new', 'recover']);
+  assert.deepEqual(after.journal.filter((name) => name.startsWith('o-')).map((name) => name.slice(name.lastIndexOf('-'))), ['-0', '-0.end', '-1'],
+    'the lapsed attempt is ended and a recovery attempt is issued');
 });

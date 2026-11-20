@@ -95,20 +95,6 @@ export type {
 } from "./types.js";
 export {
   type LegacyMvpAgreementDocument,
-  type LegacyMvpAttestationRef,
-  type LegacyMvpTxRef,
-  type LegacyMvpSettlementEvidence,
-  type LegacyMvpPhaseSummaryEntry,
-  type LegacyMvpAttestationBundle,
-  type LegacyMvpFaultAttestationBundle,
-  type LegacyMvpAnyAttestationBundle,
-  isLegacyMvpAttestationRef,
-  isLegacyMvpAgreementDocument,
-  isLegacyMvpTxRef,
-  isLegacyMvpSettlementEvidence,
-  isLegacyMvpAttestationBundle,
-  isLegacyMvpFaultAttestationBundle,
-  isLegacyMvpAnyAttestationBundle,
 } from "./legacyMvp.js";
 export {
   COMPONENT_SIGNATURE_ALGORITHMS,
