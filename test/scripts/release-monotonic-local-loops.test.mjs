@@ -71,9 +71,13 @@ for (const jump of [-60_000, 60_000]) {
     let elapsed = 0;
     const create = loadFunction('packages/dacs-seller/src/dacs/seller-http.mjs', 'createSellerHttpHandler', {
       Date: { now: () => 1_000_000 + elapsed + (elapsed > 0 ? jump : 0) }, performance: { now: () => elapsed },
-      assertKitOperationAdmitted() {}, ROUTES: {}, SIGNATURE_ROUTES: {}, createSellerEffectRoutes: () => ({}), loopbackSocket: () => true, SELLER_TRANSPORT_MAX_RESPONSE: 10_000,
+      assertKitOperationAdmitted() {}, ROUTES: {}, SIGNATURE_ROUTES: {}, createSellerEffectRoutes: () => ({}), loopbackSocket: () => true,
+      DACS_SELLER_HTTP_LIMITS: { maxResponseBodyBytes: 10_000 }, wireAuthenticator: () => ({}),
     });
-    const handler = create({}, { maxRequestsPerWindow: 1, rateWindowMs: 10 });
+    const claim = 'seller';
+    const agent = { claim, retainsPaymentWork() {}, assertSettlementCredit() {} };
+    const wire = { signer: { claim }, requireDelegation: false, publicEndpoint: null };
+    const handler = create(agent, { wire, maxRequestsPerWindow: 1, rateWindowMs: 10 });
     let status;
     const request = () => handler({ socket: {}, url: '/missing' }, {
       writeHead(value) { status = value; }, end() {},
