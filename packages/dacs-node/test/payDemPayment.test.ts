@@ -444,6 +444,7 @@ describe("native DEM buyer payment track", () => {
       authority: PAYER_AUTHORITY,
       demosIdentity: secret,
       createAdapter: async (input) => {
+        if (input.writeJournal === undefined) throw new Error("expected a write journal");
         journal = input.writeJournal;
         instrumentJournal(journal, events);
         return adapter;
