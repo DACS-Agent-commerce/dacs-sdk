@@ -330,7 +330,9 @@ test("from empty job and admission stores, with the buyer enrolled in the kit co
   declared.purchase(declaredJob);
   assert.deepEqual(withoutAuthority(await w.refusedWith(() => declared.challenge(declaredJob))), refusal(500, MISMATCH), 'an unenrolled buyer\'s declaration');
   b.purchase(failing);
-  assert.equal((await b.requestContext(failing)).status >= 500, true);
+  // The request whose own context step failed keeps its scope while its row turns compensating, so its refusal is still signed.
+  const failed = await b.requestContext(failing);
+  assert.deepEqual([failed.status, failed.body.error, failed.signed], [503, 'operation_uncertain', true], failed.text);
   assert.equal(admissionState(w.f.dataDirectory, failing), 'compensating');
   assert.deepEqual(withoutAuthority(await w.refusedWith(() => b.challenge(failing))), refusal(500, MISMATCH), 'a compensating row');
   await assert.rejects(w.start({ participantImplementations: undefined }), { name: 'TypeError', message: 'the seller host requires participantImplementations' });
