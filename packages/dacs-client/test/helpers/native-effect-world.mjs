@@ -103,6 +103,8 @@ export function nativeWorld(t, { bound } = {}) {
     return { content, signature: { type: 'ed25519', data: signText(hash) }, hash, status: '', blockNumber: null };
   };
   Object.assign(world, { open, signedTransfer, authHeaders: auth,
+    /** Signs an RPC authentication message with the wallet's key, as the host's `signRpc` does. */
+    signRpc: async message => signText(message),
     transport: () => transport,
     journal: () => journal,
     /** The journal as the transport sees it with a write failing: pass it as `open(pins, { journal })`. `fails(key, value)` picks the write. */

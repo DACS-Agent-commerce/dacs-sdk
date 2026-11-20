@@ -28,7 +28,7 @@
     {
       "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "b2161d4d7d5414b44cd6d7dfa0a8e38aecdd919aae0fd4784760fb6eb6bbd593",
+      "preparationManifestSha256": "4dd1434936a1e36611b653e5c72b5089b7dd5a58bd66ba27476874f5d8f52e41",
       "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid"],
       "requiredExports": [".", "./wallet/durable-journal", "./substrate/demos"],
       "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
