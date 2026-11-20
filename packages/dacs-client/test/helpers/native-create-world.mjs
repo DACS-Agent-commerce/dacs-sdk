@@ -8,6 +8,7 @@ import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto
 import { contentHash, finalityCommitmentAddress, FINALITY_COMMITMENT_SEPARATOR, logicalToStorageProgramName, signComponentArtifact } from '@kynesyslabs/dacs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../../src/dacs/wallet-transactions.mjs';
 import { STORAGE_WRITE_SUBMISSION_PROFILE } from '../../src/devnet-demo/storage-write-recovery.mjs';
+import { networkInfo } from './network-info.mjs';
 import { createDevnetDemoTransport, DEVNET_DELIVERY_POLICY, DEVNET_DEMO_ARTIFACT_POLICY, DEVNET_DEMO_ARTIFACT_TYPES, DEVNET_SETTLEMENT_POLICY } from '../../src/wallet/devnet-native-transport.mjs';
 import { signerReservationKey } from '../../src/wallet/signer-reservation.mjs';
 
@@ -66,9 +67,10 @@ export function queuingFenceOwner(events = []) {
  * `identityAnswer(chainIdentity)` replaces the node's answer to every block read. `stamps` is the transport's RPC stamp source.
  * `answer(message, call)` replaces the node's whole answer to a call when it returns one. `timeoutMs` is the transport's read deadline.
  * `boundary` is the transport's effect boundary (by default a real one over `journal` and `owner`), `pinVersion` its pin version and `gas` the
- * `gas_operation` the node confirms with.
+ * `gas_operation` the node confirms with. `now` is the transport's clock and `networkInfoAnswer()` what getNetworkInfo answers.
  */
-export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, answer = () => undefined, stamps, timeoutMs, boundary = writingBoundary({ owner, journal }), pinVersion = PINS.pinVersion, gas = null }) {
+export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, answer = () => undefined, stamps, timeoutMs, boundary = writingBoundary({ owner, journal }), pinVersion = PINS.pinVersion, gas = null,
+  now = () => NOW, networkInfoAnswer = () => networkInfo() }) {
   const wallet = deterministicWallet();
   const sent = { confirms: [], broadcasts: [] };
   const answerNode = async (init) => {
@@ -79,6 +81,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     if (message === 'getBlockByNumber' && identityAnswer) return identityAnswer(PINS.chainIdentity);
     if (message === 'getBlockByNumber') return reply({ number: 0, status: 'confirmed', hash: PINS.chainIdentity }, '');
     if (message === 'getAddressNonce') return reply(0);
+    if (message === 'getNetworkInfo') return reply(networkInfoAnswer());
     if (message === 'getTransactionStatus') return reply({ state: 'unknown' }, '');
     if (message === 'getTxByHash') return { result: 400, response: 'error', require_reply: false, extra: null };
     if (message === 'confirmTx') {
@@ -94,7 +97,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     throw new Error(`unexpected TEST node call ${message}`);
   };
   const fetchImpl = async (url, init) => new Response(JSON.stringify(await answerNode(init)), { headers: { 'content-type': 'application/json' } });
-  const capability = createDevnetDemoTransport({ expected: { ...PINS, pinVersion }, transportOwner: owner, boundary, journal, fetchImpl, now: () => NOW, stamps, timeoutMs, inclusionWaitMs: 0,
+  const capability = createDevnetDemoTransport({ expected: { ...PINS, pinVersion }, transportOwner: owner, boundary, journal, fetchImpl, now, stamps, timeoutMs, inclusionWaitMs: 0,
     settlementPublication: { artifactKind: 'SettlementEvidence', authority: 'TEST-lock-order-settlement', phase: 'pay-dem', phaseIndex: 2, policy: DEVNET_SETTLEMENT_POLICY, railId: 'demos-native:DEM' },
     deliveryPublication: { artifactKind: 'Deliverable', authority: 'TEST-lock-order-delivery', phase: 'deliver-storage-program', phaseIndex: 3, policy: DEVNET_DELIVERY_POLICY },
     demoArtifactPublication: { policy: DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...DEVNET_DEMO_ARTIFACT_TYPES], authority: DEMO_AUTHORITY } });

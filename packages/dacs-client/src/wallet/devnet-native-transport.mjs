@@ -89,6 +89,10 @@ const PASSIVE_TRANSFER_TIMEOUT_MS = 10_000;
 // `maxBytes` (readRpc) can only lower it. The binder accepts a read up to a minute old.
 const SOURCE_READ_MAX_BYTES = 4 * 1024 * 1024;
 const IDENTITY_MAX_AGE_MS = 60000;
+// What a transaction signature covers once the node's signatureDomain fork is active: this prefix, the node's chain id and the hash.
+const SIGNATURE_DOMAIN_PREFIX = 'demos-tx:v1:';
+// An answer that the fork is not active is reused for this long; an active fork never goes back.
+const INACTIVE_SIGNATURE_DOMAIN_REUSE_MS = 60000;
 // The longest failure code or message from the node that a failed storage
 // write's result repeats; a longer one is left out as unknown.
 const NODE_FAILURE_TEXT_MAX_LENGTH = 512;
@@ -127,6 +131,7 @@ const LEASE_EXPIRY_MARGIN_MS = 1;
 // The fee members of a confirmation's gas operation, each a canonical decimal OS string.
 const FEE_MEMBERS = ['network_fee', 'rpc_fee', 'additional_fee'];
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
+const ONLY_ORIGINAL_SENDS = 'only the original signed native DEM send or explicitly admitted immutable CREATE is relayed';
 const envelope = (response, result = 200) => ({ result, response, require_reply: false, extra: null });
 // A node's reply without any top-level `writeProof`. Only this transport may add
 // one, after it has read the inclusion itself; a reply of any other shape is
@@ -685,6 +690,35 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     await journal.put(key,record);
     if (JSON.stringify(await journal.get(key)) !== JSON.stringify(record)) fail('journal_error','the public issued transfer was not retained exactly');
   }
+  // The node's signature domain for the connection a request runs on: null while the signatureDomain fork is inactive,
+  // else its chain id. The answer is evidence for that connection only. An active one is kept and never replaced by an
+  // inactive one, an inactive one is reused for a minute, and a read that fails or is malformed is never kept. Called only under a lease, so a request refused
+  // before it holds one reads nothing.
+  let signatureDomainEvidence = null;
+  const readSignatureDomain = async () => {
+    const connection = await context(), kept = signatureDomainEvidence;
+    if (kept && sameContext(kept.connection, connection) && (kept.chainId !== null || now() - kept.readAt < INACTIVE_SIGNATURE_DOMAIN_REUSE_MS)) return kept.chainId;
+    let info;
+    try { info = await node('getNetworkInfo', {}); } catch (cause) {
+      throw Object.assign(new Error('the node\'s signature domain could not be read', { cause }), { code:'signature_domain_unreadable' });
+    }
+    const active = info?.forks?.signatureDomain?.activated, chainId = info?.chainId;
+    if (typeof active !== 'boolean' || (active && !(Number.isSafeInteger(chainId) && chainId >= 0))) fail('signature_domain_malformed','the node\'s getNetworkInfo does not say whether the signature domain is active, or gives no chain id for it');
+    if (!sameContext(await context(), connection)) fail('connection_changed','the connection changed while the signature domain was read');
+    // Another request may have kept an active answer for this connection while this read was in flight. The fork does
+    // not deactivate, so a late inactive answer never replaces it: the kept active domain is the one that applies.
+    const current = signatureDomainEvidence;
+    if (!active && current && current.chainId !== null && sameContext(current.connection, connection)) return current.chainId;
+    signatureDomainEvidence = { connection, readAt:now(), chainId:active ? chainId : null };
+    return signatureDomainEvidence.chainId;
+  };
+  // Refuses unless the signature is the sender's over what the node's signature domain says it covers: the hash while the
+  // fork is inactive, `demos-tx:v1:<chain id>:<hash>` once it is active. No other form is accepted.
+  const verifyTransactionSignature = async (tx) => {
+    const chainId = await readSignatureDomain();
+    const message = chainId === null ? tx.hash : `${SIGNATURE_DOMAIN_PREFIX}${chainId}:${tx.hash}`;
+    if (!verifyDemosSignature({ address:tx.content.from, message, signature:tx.signature.data })) fail('native_only',ONLY_ORIGINAL_SENDS);
+  };
   function signedTransaction(body, headers) {
     const call=body.params?.[0], tx=call.extra === 'confirmTx' ? call.data : call.data?.response?.data?.transaction;
     const c=tx?.content;
@@ -728,8 +762,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       && op.storageAddress===c.to && op.salt==='' && op.encoding==='json' && op.acl?.mode==='public' && c.network===pinned.network && c.chainIdentity===pinned.chainIdentity
       && canonicalize(op.metadata.networkBinding)===canonicalize(declaration);
     if (!c || !ADDRESS.test(c.from ?? '') || (!native && !create)
-      || !HASH.test(tx.hash ?? '') || sha(JSON.stringify(c)) !== tx.hash || tx.signature?.type !== 'ed25519'
-      || !verifyDemosSignature({ address:c.from,message:tx.hash,signature:tx.signature.data })) fail('native_only','only the original signed native DEM send or explicitly admitted immutable CREATE is relayed');
+      || !HASH.test(tx.hash ?? '') || sha(JSON.stringify(c)) !== tx.hash || tx.signature?.type !== 'ed25519') fail('native_only',ONLY_ORIGINAL_SENDS);
     senderAuth(c.from, headers);
     return tx;
   }
@@ -1008,6 +1041,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           };
           const confirmBody={method:'execute',params:[{extra:'confirmTx',data:clone(tx)}]},auth=await headers();
           signedTransaction(confirmBody,auth);
+          await verifyTransactionSignature(tx);
           const confirms=(answer) => rpcEnvelope(answer,200,null) && storageWriteConfirmationMatches(answer.response)
             && answer.response.data.valid===true
             && storageConfirmationShapeMatches(answer.response.data)
@@ -1019,6 +1053,10 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           const broadcastAuth=await headers();
           if(!await absent() || !sameContext(originalContext,await context())) return pending;
           const resendOnce=async(bytes,final)=>{
+            // The domain may have changed since the confirmation or while the dispatch record was written: the signature
+            // is checked again here, on a fresh read once the kept answer is past its lifetime, with nothing awaited
+            // between that check and the reservation. A refusal reserves and sends nothing.
+            await verifyTransactionSignature(tx);
             // Reserve the sole attempt before dispatch. A crash consumes it too;
             // reopening the journal can never start another retransmission loop.
             r={...r,storageWriteResends:1,networkBinding:binding};
@@ -1132,6 +1170,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       const pass=currentPassContext();
       const tx=signedTransaction(body,headers), { l, release }=await claimLease(tx.content.from);
       try {
+      await verifyTransactionSignature(tx);
       if(call.extra === 'confirmTx') {
         l.confirmed=null;l.readyHash=null;
         const issuedBefore=await journal.get(intent(tx.hash));
