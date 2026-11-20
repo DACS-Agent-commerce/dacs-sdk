@@ -462,12 +462,25 @@ per-client limiter so one client cannot exhaust the shared request budget.
   refused before the agent runs. Every route (the challenge, the context step,
   the Agreement proposal, Agreement state, commitment (`commitments`, and
   `commitments/signature` when enabled), payment and bundle routes, including the
-  buyer-copy read) opens every request and signs every answer through the SDK's
-  `./wire` (domain `dacs-seller-http:v1`, the host's bound TP-1 profile and the
-  tuple kept for the job); a request signed under the old domain is refused. The
-  wire request journal is the journal of every effect route, the context step
-  included; the challenge writes only its challenge record, and the two read
-  routes reserve and store nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
+  buyer-copy read) opens its requests through the SDK's `./wire` (domain
+  `dacs-seller-http:v1`, the host's bound TP-1 profile and the tuple kept for
+  the job); a request signed under the old domain is refused. Once a request
+  has opened, the handler signs its answer, a refusal included, under that
+  request. A refusal made before a request opens is sent unsigned: a
+  connection that is not loopback (403), the rate limit (429), an unknown path
+  (404), a method other than POST (405), a body that is not plain JSON (415),
+  is too large (413), is interrupted or too slow (408) or is not a JSON object
+  (400), and a request whose envelope or signature does not open. If the
+  signer fails, a refusal raised before any effect started is sent unsigned
+  with its own status and code, and any other answer becomes an unsigned 503
+  `operation_uncertain`. The wire request journal is the journal of every
+  effect route, the context step included. The challenge route does not use
+  it: it keeps its challenges in the challenge ledger, and when that ledger is
+  full, issuing a new challenge first deletes just enough of the oldest
+  challenges that have expired, were issued at least an hour earlier and
+  belong to a job that has ended; if too few qualify, it refuses
+  `context_challenge_capacity` 503 and deletes nothing. The two read routes
+  reserve and store nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
   (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`
   first), and a delegated request for one is refused
   `peer_delegation_agreement_required`. A state read of a job that has a completed
