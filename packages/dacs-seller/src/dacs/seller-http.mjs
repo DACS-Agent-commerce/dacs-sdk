@@ -225,7 +225,7 @@ function readRequest(req, timeoutMs) {
 // one `Host` served (with `:443` added when it names no port), and `tls` mode serves non-loopback sockets. `now` reads the clock of the rate window.
 // A request is refused before its body is read, in this order: a non-loopback socket (no policy or proxy mode), the rate and concurrency
 // limits, a missing, repeated or other `Host` (421), a repeated content-type, content-encoding or peer header (400), then route and method.
-export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire, listener, now = () => Date.now() } = {}) {
+export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire, listener, now = () => performance.now() } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
   if (authentication !== undefined) throw new TypeError('createSellerHttpHandler no longer takes `authentication`: the `wire` context is its only authenticator');
   if (listener !== undefined && (!['proxy', 'tls'].includes(listener?.mode) || typeof listener.expectedHost !== 'string')) throw new TypeError('listener is { mode: "proxy" | "tls", expectedHost }');
@@ -496,14 +496,14 @@ export class SellerRefusedError extends Error {
 }
 
 /**
- * Waits for a response verification (an adapter's value or Promise) for at most `timeLeftMs` whole milliseconds, and returns its
+ * Waits for a response verification (an adapter's value or Promise) for at most `timeLeftMs` milliseconds (rounded up to a whole one), and returns its
  * result. Throws its rejection unchanged, or a `TimeoutError` at the deadline: a result that comes later releases nothing and is
  * never an unhandled rejection. With no time left (a response that arrived at or after the deadline) it throws that
  * `TimeoutError` without starting the verification. A synchronous adapter that throws is the same refusal as an asynchronous one.
  */
 function verifiedWithin(verify, timeLeftMs) {
   if (timeLeftMs <= 0) return Promise.reject(new DOMException('the response arrived after the client deadline', 'TimeoutError'));
-  return boundedCall(verify, { timeoutMs: timeLeftMs });
+  return boundedCall(verify, { timeoutMs: Math.ceil(timeLeftMs) });
 }
 
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false }) {
@@ -531,7 +531,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       const signed = authentication ? await authentication.request(path, body, text) : null;
       phase = 'other';
       signal = AbortSignal.timeout(timeoutMs);
-      const deadline = Date.now() + timeoutMs;
+      const deadline = performance.now() + timeoutMs;
       hasDispatched = true;
       const response = await fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal });
       phase = 'response-auth';
@@ -561,7 +561,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       // Unsigned 429/404/415/503 answers cannot authenticate their status.
       // Verify first: these failures stay response-auth, including signer fallback 503.
       // The verification is awaited, over the exact received bytes, within what is left of the client's deadline.
-      if (authentication) await verifiedWithin(() => authentication.verifyResponse(signed.payload, { header: response.headers.get(DACS_SELLER_HTTP_HEADER), status: response.status, text: answerText, responseBytes }), deadline - Date.now());
+      if (authentication) await verifiedWithin(() => authentication.verifyResponse(signed.payload, { header: response.headers.get(DACS_SELLER_HTTP_HEADER), status: response.status, text: answerText, responseBytes }), deadline - performance.now());
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');

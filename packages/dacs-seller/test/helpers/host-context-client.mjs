@@ -53,9 +53,10 @@ export async function contextHostFixture(t, { publicEndpoint = FIXTURE_ENDPOINT,
  * `context(jobId, nonce)` the signed context request over that challenge, and `requestContext(jobId)` both; each answers
  * `{ status, text, body, signed }`. Requests are delegated to a session key; `{ delegated: false }` signs the context request with the
  * buyer's own key instead. `signedChallenge(jobId)` signs the challenge request without sending it: `{ path, header, text }`.
- * `scopeFor(jobId)` is the challenge scope the buyer sends, and `admit(jobId)` the first admission a proposal needs.
+ * `scopeFor(jobId)` is the challenge scope the buyer sends, and `admit(jobId)` the first admission a proposal needs. `send(path, jobId, body)`
+ * signs `body` under a new envelope at the buyer's clock and posts it. Each request sent is also pushed, as `{ url, init }`, onto `requests` when given.
  */
-export async function hostBuyer(host, listing, { jobId: defaultJob, ca, buyer: buyerKey = buyer, seller: sellerKey = seller, clock = () => NOW }) {
+export async function hostBuyer(host, listing, { jobId: defaultJob, ca, buyer: buyerKey = buyer, seller: sellerKey = seller, clock = () => NOW, requests }) {
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
   const session = testWallet(99), support = purchaseSupport(listing);
   const wire = await wireBuyer({ buyer: signerOf(buyerKey), seller: signerOf(sellerKey), listingPin: host.listingPin, clock });
@@ -74,7 +75,9 @@ export async function hostBuyer(host, listing, { jobId: defaultJob, ca, buyer: b
   const hostFetch = fetchAsHost({ ca, ...(listing.seller.publicEndpoint ? { authority: new URL(listing.seller.publicEndpoint).host } : {}) });
   const send = async (path, jobId, body, options) => {
     const signed = await sign(path, jobId, body, options);
-    const response = await hostFetch(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.text });
+    const init = { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.text };
+    requests?.push({ url: host.url + path, init });
+    const response = await hostFetch(host.url + path, init);
     const text = await response.text();
     return { status: response.status, text, body: JSON.parse(text), signed: response.headers.has(DACS_SELLER_HTTP_HEADER) };
   };
@@ -99,5 +102,5 @@ export async function hostBuyer(host, listing, { jobId: defaultJob, ca, buyer: b
     if (answered.status !== 200) throw refusal('context request', answered);
     return answered.bundle;
   };
-  return { challenge, context, requestContext, signedChallenge, scopeFor, admit };
+  return { challenge, context, requestContext, signedChallenge, scopeFor, admit, send };
 }
