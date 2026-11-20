@@ -226,6 +226,86 @@ test('a sent storage CREATE recorded as failed whose named block omits the hash 
   assert.deepEqual(world.sent, { confirms: [tx.hash], broadcasts: [tx.hash] });
 });
 
+test('a failed storage CREATE body that names another hash is refused', async (t) => {
+  const answers = {};
+  const { world } = scriptedWorld(t, answers);
+  const tx = await retainedCreate(world);
+  answers.getTransactionStatus = () => reply({ state: 'failed' });
+  answers.getTxByHash = () => reply(failedBody(tx, { hash: 'c'.repeat(64) }));
+  answers.getBlockByNumber = confirmedBlock(tx.hash);
+  await assert.rejects(world.readback(tx.hash), { code: 'readback_unverified', message: 'the failed storage write differs from the retained signed transaction' });
+});
+
+for (const [label, blockNumber] of [['absent', undefined], ['negative', -1], ['fractional', 1.5], ['text', String(BLOCK)]]) {
+  test(`a failed storage CREATE body whose block number is ${label} is refused`, async (t) => {
+    const answers = {};
+    const { world } = scriptedWorld(t, answers);
+    const tx = await retainedCreate(world);
+    answers.getTransactionStatus = () => reply({ state: 'failed' });
+    answers.getTxByHash = () => reply(failedBody(tx, { blockNumber }));
+    answers.getBlockByNumber = confirmedBlock(tx.hash);
+    await assert.rejects(world.readback(tx.hash), { code: 'readback_unverified', message: 'the failed storage write differs from the retained signed transaction' });
+  });
+}
+
+const UNSAFE_TEXTS = {
+  'a line break': 'first line\nsecond line',
+  'a terminal escape': '\u001b[31mred',
+  'a delete character': 'before\u007fafter',
+  'a C1 control character': 'before\u009bafter',
+  'a bidirectional override': 'before‮after',
+  'a zero-width character': 'before​after',
+  'a line separator': 'before after',
+};
+
+for (const [kind, text] of Object.entries(UNSAFE_TEXTS)) {
+  test(`node failure message with ${kind} is left out of the failed result`, async (t) => {
+    const answers = {};
+    const { world } = scriptedWorld(t, answers);
+    const tx = await retainedCreate(world);
+    answers.getTransactionStatus = () => reply({ state: 'failed' });
+    answers.getTxByHash = () => reply(failedBody(tx, { attrs: { code: CODE, message: text, reference_block: REFERENCE_BLOCK } }));
+    answers.getBlockByNumber = confirmedBlock(tx.hash);
+    const read = await world.readback(tx.hash);
+    assert.deepEqual(read.failure, { blockNumber: BLOCK, code: CODE, message: null, referenceBlock: REFERENCE_BLOCK });
+    assert.equal(read.reason, `the node recorded storage write ${tx.hash} as failed in block ${BLOCK} (${CODE}); nothing was applied. It is never resent or re-made automatically.`);
+  });
+
+  test(`node failure code with ${kind} is left out of the failed result`, async (t) => {
+    const answers = {};
+    const { world } = scriptedWorld(t, answers);
+    const tx = await retainedCreate(world);
+    answers.getTransactionStatus = () => reply({ state: 'failed' });
+    answers.getTxByHash = () => reply(failedBody(tx, { attrs: { code: text, message: NODE_MESSAGE, reference_block: REFERENCE_BLOCK } }));
+    answers.getBlockByNumber = confirmedBlock(tx.hash);
+    const read = await world.readback(tx.hash);
+    assert.deepEqual(read.failure, { blockNumber: BLOCK, code: null, message: NODE_MESSAGE, referenceBlock: REFERENCE_BLOCK });
+    assert.equal(read.reason, `the node recorded storage write ${tx.hash} as failed in block ${BLOCK}; nothing was applied. It is never resent or re-made automatically.`);
+  });
+}
+
+test('a storage CREATE read back as failed keeps its lane row and refuses a new signing lease after the journal is reopened', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'failed-storage-write-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'journal.sqlite');
+  const created = openDurableWalletJournal({ path, mode: 'create' });
+  const tx = await retainedCreate(createWorld({ journal: created }));
+  created.close();
+  const journal = openDurableWalletJournal({ path, mode: 'open' });
+  t.after(() => journal.close());
+  const answers = {
+    getTransactionStatus: () => reply({ state: 'failed' }),
+    getTxByHash: () => reply(failedBody(tx)),
+    getBlockByNumber: confirmedBlock(tx.hash),
+  };
+  const world = createWorld({ journal, answer: (message, call) => answers[message]?.(call) });
+  const laneBefore = await journal.get(world.laneKey);
+  assert.deepEqual(await world.readback(tx.hash), expectedFailure(tx));
+  assert.deepEqual(await journal.get(world.laneKey), laneBefore, 'the lane row is kept as it was');
+  await assert.rejects(world.lease(), { code: 'outcome_unknown' });
+  assert.deepEqual(world.sent, { confirms: [], broadcasts: [] });
+});
+
 test('a payment nonce whose only retained write is a storage CREATE recorded as failed has no consumer in the source', async (t) => {
   const answers = {};
   const { world } = scriptedWorld(t, answers);
