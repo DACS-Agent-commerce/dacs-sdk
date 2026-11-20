@@ -23,23 +23,21 @@ function scratch(t) {
   };
   return { repo, git, check };
 }
-// Commits an edit of `file` (README.md unless given) with a record naming only
-// that file, whose before is `before`, and the regenerated map. Returns the commit.
-function recordReadme(s, subject, before, file = README) {
-  appendFileSync(join(s.repo, file), `\n${subject}\n`);
-  const after = s.git('hash-object', '--', file);
-  const record = { schema: 'dacs-client-delta-record/v1', delta: 'WF', subject, kind: 'change', files: [{ path: file, before, after }], commitFiles: [] };
+// Commits an anchored file edit with a record naming only that file.
+function recordAnchoredFile(s, subject, path, before) {
+  appendFileSync(join(s.repo, path), `\n// ${subject}\n`);
+  const after = s.git('hash-object', '--', path);
+  const record = { schema: 'dacs-client-delta-record/v1', delta: 'WF', subject, kind: 'change', files: [{ path, before, after }], commitFiles: [] };
   const name = `${P}records/${recordName(record)}`;
-  record.commitFiles = [`${P}DELTA-MAP.md`, file, name].sort();
+  record.commitFiles = [path, name].sort();
   writeFileSync(join(s.repo, name), JSON.stringify(record, null, 2) + '\n');
-  execFileSync(process.execPath, [`${P}scripts/delta-map.mjs`], { cwd: s.repo });
   s.git('add', '--', P); s.git('commit', '-qm', subject);
   return s.git('rev-parse', 'HEAD');
 }
 
-test('the first README record after the anchor starts from the anchor blob', t => {
-  const s = scratch(t);
-  recordReadme(s, 'delta(client): WF TEST first recorded README change', readAnchor(join(s.repo, P)).files[README]);
+test('the first record of an anchored script starts from the anchor blob', t => {
+  const s = scratch(t), path = `${P}scripts/generate-payload-helpers.mjs`;
+  recordAnchoredFile(s, 'delta(client): WF record an anchored script change', path, readAnchor(join(s.repo, P)).files[path]);
   const result = s.check();
   assert.equal(result.status, 0, result.text);
 });
@@ -49,7 +47,7 @@ test('unrecorded and staged changes to anchored files and a record that does not
   appendFileSync(join(s.repo, README), '\nTEST unrecorded line\n');
   s.git('add', '--', README); s.git('commit', '-qm', 'docs(client): TEST unrecorded README change');
   const unrecorded = s.git('rev-parse', 'HEAD');
-  const recorded = recordReadme(s, 'delta(client): WF TEST README record after an unrecorded change', s.git('rev-parse', `HEAD:${README}`));
+  const recorded = recordAnchoredFile(s, 'delta(client): WF TEST README record after an unrecorded change', README, s.git('rev-parse', `HEAD:${README}`));
   const bytes = readFileSync(join(s.repo, README));
   appendFileSync(join(s.repo, README), '\nTEST staged line\n'); s.git('add', '--', README); writeFileSync(join(s.repo, README), bytes);
   // An anchored script that no record names.
@@ -76,14 +74,14 @@ test('a record of a commit the anchor contains is skipped and the next record st
   const before = s.check();
   assert.equal(before.status, 0, before.text);
   assert.ok(before.text.split('\n').some(line => line.includes(`${BATCH}: delta D77 `) && line.endsWith('is contained in the anchor; skipped')), before.text);
-  recordReadme(s, 'delta(client): WF TEST first recorded batch test change', readAnchor(join(s.repo, P)).files[BATCH], BATCH);
+  recordAnchoredFile(s, 'delta(client): WF TEST first recorded batch test change', BATCH, readAnchor(join(s.repo, P)).files[BATCH]);
   const after = s.check();
   assert.equal(after.status, 0, after.text);
 });
 
 test('a record that starts from the blob of a skipped record is refused', t => {
   const s = scratch(t);
-  const commit = recordReadme(s, 'delta(client): WF TEST batch test change from a skipped blob', readRecord(s).files[0].after, BATCH);
+  const commit = recordAnchoredFile(s, 'delta(client): WF TEST batch test change from a skipped blob', BATCH, readRecord(s).files[0].after);
   const result = s.check();
   assert.equal(result.status, 1, result.text);
   assert.ok(result.failures.includes(`${BATCH}: delta parent is discontinuous at ${commit}`), result.text);

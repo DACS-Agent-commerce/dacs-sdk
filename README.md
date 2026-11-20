@@ -44,12 +44,6 @@ store. After a restart, the buyer's payment job, built on
 submits again only once that read shows the payment authorization unused. See
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
 
-The exported `SignedArtifact`, `buildSignedArtifact()` and
-`verifySignedArtifact()` symbols are legacy raw-hex compatibility surfaces used
-by historical readers. New producers
-and readers must use `ComponentSignedArtifact`,
-`buildComponentSignedArtifact()` and `verifyComponentSignature()`.
-
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
@@ -285,10 +279,7 @@ const buyer = await createAgent({
 // buyer — resolve the stable logical address and authenticate its binding tuple,
 // signed content, seller, service, version, and Listing-domain signature.
 const resolved = await buyer.readListing(published.logicalAddress);
-if (
-  resolved.status !== "verified" ||
-  resolved.compatibility !== "normative"
-) {
+if (resolved.status !== "verified") {
   throw new Error(`listing could not pass ordered admission: ${resolved.status}`);
 }
 
@@ -705,9 +696,8 @@ anchor finality, active-listing eligibility, or complete DACS conformance.
 `readListing(logicalAddress)` and `enumerateListings(sellerId)` need only
 `AgentConfig.bindings.index`; the Agent wallet and publisher are optional for a
 read-only consumer. A normative `verified` result has passed the SDK-owned
-ordered DACS-1 reader through step 9 and carries its exact `listingPin`; an
-`authenticated` result is restricted to the explicit historical legacy-read
-arm. Both have passed exact binding-tuple, hash, Listing-context, and authorship
+ordered DACS-1 reader through step 9 and carries its exact `listingPin`. It has
+also passed exact binding-tuple, hash, Listing-context, and authorship
 checks. The binding owner is an
 index assertion; direct lookup does not by itself prove that the seller deployed
 the native anchor. Keep physical provenance separate from signed-content and
@@ -871,18 +861,19 @@ Stripe, DAHR, the faucet, or Demos.
 
 ### Sealed-envelope procurement
 
-`runSealedEnvelopeCore` supports both the backwards-compatible
+`runSealedEnvelopeCore` supports both the default
 `negotiate-sealed-envelope` demand phase and the explicit
 `negotiate-sealed-envelope-procurement` phase. Demand makes the winning bidder
 the agreement buyer. Procurement requires `auctionMode: "procurement"` and
 makes the listing publisher the agreement buyer and the winning bidder the
 seller, so the bid price always flows from agreement buyer to agreement seller.
 
-Existing demand callbacks may still return only `agreementRef` and
-`agreementHash`. A procurement `commitAgreement` callback must verify both
+The SDK does not build the agreement for this pattern; the caller's
+`commitAgreement` callback does. In both phases the callback must verify both
 agreement-party signatures, call `ctx.validateAgreementForCommit(...)` before
 anchoring, and return the exact agreement plus `verifiedSignerClaims`; the core
-repeats the role/signature gate before returning an `ok` result.
+repeats the role/signature gate before returning an `ok` result. A result with
+only `agreementRef` and `agreementHash` fails the phase.
 
 ### Fault-aware bundle helper
 

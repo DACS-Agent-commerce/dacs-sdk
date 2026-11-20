@@ -22,8 +22,9 @@ const LAUNCHES = {
   'scripts/delta-assemble.test.mjs': ['scripts/delta-map.mjs'],
   'scripts/delta-continuity.test.mjs': ['scripts/delta-map.mjs', 'scripts/delta-map.mjs'],
   'scripts/delta-frontier.test.mjs': ['scripts/delta-map.mjs', 'scripts/check-provenance.mjs', 'scripts/check-provenance.mjs'],
-  'scripts/delta-anchor.test.mjs': ['scripts/check-provenance.mjs', 'scripts/delta-map.mjs'],
-  'scripts/delta-provenance.test.mjs': ['scripts/check-provenance.mjs', 'scripts/check-hold.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs'],
+  'scripts/delta-anchor.test.mjs': ['scripts/check-provenance.mjs'],
+  'scripts/delta-switch.test.mjs': [['scripts/check-hold.mjs', 'scripts/check-provenance.mjs', 'scripts/delta-map.mjs', 'scripts/pin-delta.mjs', 'scripts/check-provenance.test.mjs']],
+  'scripts/delta-provenance.test.mjs': ['scripts/check-provenance.mjs', 'scripts/check-hold.mjs', 'scripts/check-hold.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs'],
   'scripts/test-layout.test.mjs': ['scripts/test.mjs', 'scripts/test.mjs'],
   'test/delta-ledger-gate.test.mjs': ['scripts/check-provenance.mjs', ['scripts/delta-provenance.test.mjs', 'scripts/delta-frontier.test.mjs', 'scripts/delta-continuity.test.mjs']],
 };

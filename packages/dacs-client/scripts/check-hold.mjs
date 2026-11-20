@@ -3,12 +3,10 @@
 //
 //   node packages/dacs-client/scripts/check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]
 //
-// HOLD.json pins the complete package file set and the Git blob of every
-// ordinary file, including the exact reviewed package.json bytes; the gate
-// pins every package.json key except `files`.
-// Beside the pins, the gate runs the freeze rule derived from the delta
-// records (scripts/delta-freeze.mjs), after checking that the modules it loads
-// match their pins. That rule needs the Git history from the baseline to HEAD.
+// HOLD.json pins the core files. Other package files follow their delta
+// records, the anchor or the baseline. Every package.json key except `files`
+// is pinned by the gate. The derived rule loads only after its modules match
+// their pins, and needs the Git history from the baseline to HEAD.
 // HOLD.json and this gate are the reviewed control pair: changing a pin or
 // lifting the hold requires changing both in the same reviewed commit. The
 // gate pins both the canonical record and its exact bytes, with only its
@@ -37,8 +35,8 @@ class UsageError extends Error {}
 export const DERIVED_RULE_MODULES = Object.freeze(["scripts/delta-freeze.mjs", "scripts/delta-assemble.mjs", "scripts/delta-map.mjs", "scripts/delta-record.mjs", "scripts/publication-text.mjs", "scripts/source-git.mjs"]);
 
 export const PINNED = Object.freeze({
-  holdSha256: "17591b70242dc9ed6dd1c3e6fbb987685a7abf7e5e35cb4949fdcf544e4a9692",
-  holdBytesSha256: "b467ba63bfab7acc754cf6c4744e3870cac955b3ca0c8038be271c676b3f6c96",
+  holdSha256: "aa253f2110f628be70991c799be5107633f1835679049450e1aabda45e0d1a82",
+  holdBytesSha256: "abd2196868b438fd736f8b1f431d9f91826422294b1a52459751230fce553486",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -99,7 +97,7 @@ const show = (value) => (value === undefined ? "missing" : JSON.stringify(value)
 const sortKeys = (value) => (Array.isArray(value) ? value.map(sortKeys)
   : value !== null && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeys(value[key])])) : value);
 // The reciprocal gate blob is the only normalized value. All other record
-// content is pinned, including every package blob, field and text. The gate
+// content is pinned, including every core blob, field and text. The gate
 // blob itself is checked against this executable, below.
 function normalizedRecord(record) {
   const copy = structuredClone(record);
@@ -225,7 +223,6 @@ export function checkGitStates(repoRoot, frozen, failures) {
     const pin = pins.get(path);
     if (!committed) failures.push(`${path}: missing from HEAD; package is frozen`);
     else {
-      if (!pin) failures.push(`${path}: added in HEAD; package is frozen`);
       if (committed.type !== "blob" || !/^100(644|755)$/.test(committed.mode)) failures.push(`${path}: HEAD entry is not a regular file`);
       if (pin?.blob && committed.blob !== pin.blob) failures.push(`${path}: HEAD blob differs from the freeze pin`);
       // HOLD.json has a reciprocal record pin instead of an ordinary blob pin.
@@ -261,7 +258,6 @@ async function main() {
   if (frozen?.schema !== "dacs-client-freeze/v3" || !frozen.files) throw new Error("missing step-1 freeze record");
   const actual = new Set(packageFiles(args.packageDir));
   const verified = new Set();
-  for (const path of actual) if (!Object.hasOwn(frozen.files, path)) failures.push(`${PACKAGE_PREFIX}${path}: added file; package is frozen`);
   for (const [path, pin] of Object.entries(frozen.files)) {
     if (!actual.has(path)) { failures.push(`${PACKAGE_PREFIX}${path}: missing file; package is frozen`); continue; }
     if (path === "HOLD.json" && pin.control === "record") continue;

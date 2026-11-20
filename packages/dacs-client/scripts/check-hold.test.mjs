@@ -5,7 +5,8 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {test} from 'node:test';
-import {BASELINE} from './delta-map.mjs';
+import {BASELINE, blob} from './delta-map.mjs';
+import {recordName} from './delta-record.mjs';
 import {publicationJson} from './publication-text.mjs';
 const SDK_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const PACKAGE_DIR = join(SDK_ROOT, 'packages/dacs-client');
@@ -20,6 +21,8 @@ const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const fail = (path, reason) => new RegExp(`^FAIL ${escape(P + path)}: ${reason}$`, 'm');
 // Where the derived rule takes the expected blob of a source file from.
 const DERIVED = '(?:its newest record|the baseline) \\((?:[0-9a-f]{40}|no file)\\)';
+// Where it takes the expected blob of package.json from: its newest record, else the anchor.
+const ANCHORED = '(?:its newest record|the anchor) \\([0-9a-f]{40}\\)';
 function put(file, text) { mkdirSync(dirname(file), {recursive:true}); writeFileSync(file, text); }
 // A clone of this checkout's HEAD, with the history the derived freeze rule reads.
 function scratch(t, ...options) {
@@ -36,6 +39,14 @@ function gate({repo, dir}) {
 }
 function passes(s) { const r=gate(s); assert.equal(r.status, 0, r.text); }
 function refuses(s, ...patterns) {const r=gate(s); assert.equal(r.status, 1, r.text); for (const pattern of patterns) assert.match(r.text, pattern);}
+
+// The source rule accepts this manifest blob; only the manifest key pin may refuse it.
+function commitManifest(s) {
+  const subject='delta(client): WF record the manifest edit', path=P+'package.json';
+  const value={schema:'dacs-client-delta-record/v1',delta:'WF',subject,kind:'change',files:[{path,before:git(s.repo,'rev-parse',`HEAD:${path}`).trim(),after:blob(readFileSync(join(s.repo,path)))}],commitFiles:[]};
+  const name=P+'records/'+recordName(value);value.commitFiles=[path,name].sort();put(join(s.repo,name),JSON.stringify(value)+'\n');
+  git(s.repo,'add','--',path,name);commit(s.repo,subject);
+}
 
 test('launch review: unrelated working, staged and committed changes pass', t => {
   const s=scratch(t); passes(s);
@@ -56,31 +67,43 @@ test('launch review: a merge commit with unrelated main changes passes', t => {
   passes(s);
 });
 test('unchanged package and checkout pass', t => passes(scratch(t)));
-// Each case names the path and the reason from the pins and from the derived rule.
+// Each case names the path and the reason from the closed rule or derived blob.
 const PACKAGE_EDITS = {
-  add: [s => put(join(s.dir,'dist/live.mjs'), 'export {};\n'), fail('dist/live.mjs', 'added file; package is frozen'), fail('dist/live.mjs', 'not a core path, a record file or a record-named path')],
-  change: [s => appendFileSync(join(s.dir,'src/purchases.mjs'), '\n'), fail('src/purchases.mjs', 'changed bytes; package is frozen'), fail('src/purchases.mjs', 'working file differs from HEAD \\(bytes or mode\\)'), fail('src/purchases.mjs', `working file differs from ${DERIVED}`)],
-  delete: [s => unlinkSync(join(s.dir,'src/purchases.mjs')), fail('src/purchases.mjs', 'missing file; package is frozen'), fail('src/purchases.mjs', `working file differs from ${DERIVED}`)],
+  add: [s => put(join(s.dir,'dist/live.mjs'), 'export {};\n'), fail('dist/live.mjs', 'not a core path, a record file or a record-named path')],
+  change: [s => appendFileSync(join(s.dir,'src/purchases.mjs'), '\n'), fail('src/purchases.mjs', 'working file differs from HEAD \\(bytes or mode\\)'), fail('src/purchases.mjs', `working file differs from ${DERIVED}`)],
+  delete: [s => unlinkSync(join(s.dir,'src/purchases.mjs')), fail('src/purchases.mjs', `working file differs from ${DERIVED}`)],
   symlink: [s => symlinkSync(join(s.dir,'src/purchases.mjs'), join(s.dir,'linked')), /^\[check-hold\] packages\/dacs-client\/linked: not a regular file \(symlinks are refused\)$/m],
 };
 for (const [action, [edit, ...patterns]] of Object.entries(PACKAGE_EDITS)) test(`package ${action} is refused`, t => {
   const s=scratch(t); edit(s); refuses(s, ...patterns);
+  if (action === 'delete') {
+    unlinkSync(join(s.dir,'LICENSE'));
+    refuses(s, fail('LICENSE', 'missing file; package is frozen'));
+  }
 });
 for (const field of ['exports','main','bin','scripts']) test(`package manifest ${field} cannot bypass the hold`, t => {
   const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file);
   p[field]=field==='exports'?{'.':'./src/purchases.mjs'}:field==='scripts'?{test:'true'}:'./src/purchases.mjs';
-  writeFileSync(file, JSON.stringify(p));
-  refuses(s, fail('package.json', 'changed bytes; package is frozen'), new RegExp(`^FAIL package\\.json: key ${field} differs from the reviewed manifest$`, 'm'), fail('package.json', 'working file differs from the anchor .*'));
+  writeFileSync(file, JSON.stringify(p)); commitManifest(s);
+  refuses(s, new RegExp(`^FAIL package\\.json: key ${field} differs from the reviewed manifest$`, 'm'));
 });
 for (const [change, key, edit] of [['an added key', 'sideEffects', p => { p.sideEffects = false; }], ['a changed version', 'version', p => { p.version = '0.1.0'; }]]) test(`package manifest ${change} is refused by the manifest pin`, t => {
-  const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file); edit(p); writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
+  const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file); edit(p); writeFileSync(file, JSON.stringify(p, null, 2) + '\n'); commitManifest(s);
   refuses(s, new RegExp(`^FAIL package\\.json: key ${key} differs from the reviewed manifest$`, 'm'));
 });
 test('a package.json files edit is record-named, not pinned by the manifest', t => {
   const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file); p.files.push('scripts/check-hold.mjs'); writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
   const r=gate(s); assert.equal(r.status, 1, r.text);
-  assert.match(r.text, fail('package.json', 'working file differs from the anchor .*'));
+  assert.match(r.text, fail('package.json', 'working file differs from HEAD \\(bytes or mode\\)'));
   assert.doesNotMatch(r.text, /key files/);
+});
+// Uncommitted, with no record for the new bytes: the derived rule refuses the working file.
+for (const field of ['exports','main','bin','scripts','files']) test(`an uncommitted package.json ${field} edit differs from the blob its records name`, t => {
+  const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file);
+  if (field==='files') p.files.push('scripts/check-hold.mjs');
+  else p[field]=field==='exports'?{'.':'./src/purchases.mjs'}:field==='scripts'?{test:'true'}:'./src/purchases.mjs';
+  writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
+  refuses(s, fail('package.json', `working file differs from ${ANCHORED}`), ...(field==='files' ? [] : [new RegExp(`^FAIL package\\.json: key ${field} differs from the reviewed manifest$`, 'm')]));
 });
 test('package staged changes fail even with restored working bytes', t => {
   const s=scratch(t), file=join(s.dir,'src/purchases.mjs'), bytes=readFileSync(file);
@@ -91,15 +114,19 @@ test('package HEAD changes fail even with restored index and working bytes', t =
   const s=scratch(t), file=join(s.dir,'src/purchases.mjs'), bytes=readFileSync(file);
   appendFileSync(file,'\n');git(s.repo,'add','.');commit(s.repo,'unreviewed package change');
   writeFileSync(file,bytes);git(s.repo,'add','.');
-  refuses(s, fail('src/purchases.mjs', 'HEAD blob differs from the freeze pin'), fail('src/purchases.mjs', `HEAD differs from ${DERIVED}`));
+  refuses(s, fail('src/purchases.mjs', `HEAD differs from ${DERIVED}`));
+  const core=join(s.dir,'LICENSE'), original=readFileSync(core);
+  appendFileSync(core,'\n');git(s.repo,'add','--',P+'LICENSE');commit(s.repo,'unreviewed core change');
+  writeFileSync(core,original);git(s.repo,'add','--',P+'LICENSE');
+  refuses(s, fail('LICENSE', 'HEAD blob differs from the freeze pin'));
 });
 test('a committed package addition or deletion fails even with restored index and working files', t => {
   const added=scratch(t); put(join(added.dir,'dist/live.mjs'), 'export {};\n'); git(added.repo,'add','-f','--','packages/dacs-client/dist/live.mjs'); commit(added.repo,'unreviewed package addition');
   git(added.repo,'rm','-q','--cached','--','packages/dacs-client/dist/live.mjs'); rmSync(join(added.dir,'dist'),{recursive:true});
-  refuses(added, fail('dist/live.mjs', 'added in HEAD; package is frozen'), fail('dist/live.mjs', 'not a core path, a record file or a record-named path'));
+  refuses(added, fail('dist/live.mjs', 'not a core path, a record file or a record-named path'));
   const deleted=scratch(t); git(deleted.repo,'rm','-q','--','packages/dacs-client/src/purchases.mjs'); commit(deleted.repo,'unreviewed package deletion');
   git(deleted.repo,'checkout','HEAD^','--','packages/dacs-client/src/purchases.mjs');
-  refuses(deleted, fail('src/purchases.mjs', 'missing from HEAD; package is frozen'), fail('src/purchases.mjs', `HEAD differs from ${DERIVED}`));
+  refuses(deleted, fail('src/purchases.mjs', `HEAD differs from ${DERIVED}`));
 });
 test('package index mode changes are refused', t => {
   const s=scratch(t);git(s.repo,'update-index','--chmod=+x','packages/dacs-client/src/purchases.mjs');
@@ -117,10 +144,9 @@ for (const [action, [edit, pattern]] of Object.entries(CONTROL_EDITS)) test(`a $
   const s=scratch(t); edit(s); refuses(s, pattern);
 });
 test('new exports remain refused through the package command', t => {
-  const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file);p.exports={'.':'./src/purchases.mjs'};writeFileSync(file,JSON.stringify(p));
+  const s=scratch(t), file=join(s.dir,'package.json'), p=readJson(file);p.exports={'.':'./src/purchases.mjs'};writeFileSync(file,JSON.stringify(p));commitManifest(s);
   const r=spawnSync('npm',['test'],{cwd:s.dir,encoding:'utf8'});
   assert.equal(r.status,1,r.stdout+r.stderr);
-  assert.match(r.stderr,fail('package.json', 'changed bytes; package is frozen'));
   assert.match(r.stderr,/^FAIL package\.json: key exports differs from the reviewed manifest$/m);
   assert.doesNotMatch(r.stdout,/^# tests /m);
 });
@@ -128,18 +154,18 @@ test('missing HEAD and malformed record fail closed', t => {
   const s=scratch(t);rmSync(join(s.repo,'.git'),{recursive:true,force:true});refuses(s,/not a git repository|not the Git worktree root/);
   const other=scratch(t);writeFileSync(join(other.dir,'HOLD.json'),'{');refuses(other,/^FAIL HOLD\.json is not valid JSON: /m);
 });
-test('an unrecorded README change after the anchor is refused by both rules', t => {
+test('an unrecorded README change after its latest record is refused by the derived rule', t => {
   const s=scratch(t); appendFileSync(join(s.dir,'README.md'),'\nTEST unrecorded line\n');
-  refuses(s, fail('README.md', 'changed bytes; package is frozen'), fail('README.md', 'working file differs from the anchor \\([0-9a-f]{40}\\)'));
+  refuses(s, fail('README.md', 'working file differs from its newest record \\([0-9a-f]{40}\\)'));
 });
 test('a file the anchor does not name is refused, and a deleted baseline script cannot come back', t => {
   const s=scratch(t);
   for (const path of ['scripts/new-tool.mjs', 'scripts/stale-pointer.probe.test.mjs']) put(join(s.dir, path), 'export {};\n');
-  refuses(s, ...['scripts/new-tool.mjs', 'scripts/stale-pointer.probe.test.mjs'].flatMap(path => [fail(path, 'added file; package is frozen'), fail(path, 'working file differs from the anchor \\(no file\\)')]));
+  refuses(s, ...['scripts/new-tool.mjs', 'scripts/stale-pointer.probe.test.mjs'].flatMap(path => [fail(path, 'working file differs from the anchor \\(no file\\)')]));
 });
 test('an evidence file without a pin is refused as a core path', t => {
   const s=scratch(t); put(join(s.dir,'evidence/TEST-note.txt'),'unpinned\n');
-  refuses(s, fail('evidence/TEST-note.txt', 'added file; package is frozen'), fail('evidence/TEST-note.txt', 'core path without an exact pin'));
+  refuses(s, fail('evidence/TEST-note.txt', 'core path without an exact pin'));
 });
 test('without the history from the baseline the derived rule fails closed by name', t => {
   const shallow=scratch(t, '--depth', '1');

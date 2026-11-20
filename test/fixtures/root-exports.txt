@@ -592,18 +592,14 @@ type JobBoundResolutionContextEntry
 type LatestRecipeSelection
 type LatestRecipeSelector
 type LegacyBundlePhaseEntry
-type LegacyCompositeVerificationRecord
 type LegacyMvpAgreementDocument
 type LegacyMvpAnyAttestationBundle
 type LegacyMvpAttestationBundle
 type LegacyMvpAttestationRef
 type LegacyMvpFaultAttestationBundle
-type LegacyMvpListing
 type LegacyMvpPhaseSummaryEntry
 type LegacyMvpSettlementEvidence
 type LegacyMvpTxRef
-type LegacySealedAgreementCommitResult
-type LegacyVerifyResultEntry
 type Listing
 type ListingCatalogClientConfig
 type ListingCatalogPage
@@ -893,7 +889,6 @@ type ScanSeen
 type ScannedAnchor
 type SealedAgreementCommitResult
 type SealedAgreementCommitValidation
-type SealedAgreementContext
 type SealedAgreementParty
 type SealedAgreementRoleAssignment
 type SealedAgreementRoleValidation
@@ -1086,7 +1081,6 @@ type SettlementVerifiedReputationReplayResult
 type SignatureCheck
 type SignatureVerdict
 type SignatureVerifier
-type SignedArtifact
 type SignedSellerDeliveryEvidence
 type Signer
 type SigningSessionParty
@@ -1445,8 +1439,6 @@ value buildComponentSignature
 value buildEvidenceBoundTwoSidedBundle
 value buildPriorPaymentDisposition
 value buildRevealMessage
-value buildSealedAgreement
-value buildSignedArtifact
 value buildTwoSidedBundle
 value bundleAddress
 value bundleConsistency
@@ -1690,13 +1682,11 @@ value isFixedPriceAgreementSignatureContribution
 value isHistoricalRecipeResolution
 value isIdentityBundle
 value isLatestRecipeSelection
-value isLegacyCompositeVerificationRecord
 value isLegacyMvpAgreementDocument
 value isLegacyMvpAnyAttestationBundle
 value isLegacyMvpAttestationBundle
 value isLegacyMvpAttestationRef
 value isLegacyMvpFaultAttestationBundle
-value isLegacyMvpListing
 value isLegacyMvpSettlementEvidence
 value isLegacyMvpTxRef
 value isListing
@@ -1924,7 +1914,6 @@ value verifyRuleRefContent
 value verifySellerPaymentIntake
 value verifySessionBinding
 value verifySettlementEvidence
-value verifySignedArtifact
 value verifyX402ReceiptClaim
 value vetCore
 value vetPhaseFailureClass

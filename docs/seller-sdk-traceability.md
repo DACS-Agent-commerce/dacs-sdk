@@ -31,9 +31,6 @@ DPA-1 applicability is intentionally keyed to the signed pipeline containing
 `deliver-attested-payload`, exactly as DACS-4 §9.6.3 states. An
 `attested-payload` DeliverableSpec paired with another delivery phase is not a
 DPA-1 pass: the selected delivery handler must apply its own §9.6 type check.
-The explicit `LegacyMvpListing` branch has no normative signed DeliverableSpec
-or verification method and therefore never claims a DPA-1 disposition; it is a
-compatibility path, not a normative supplier Listing producer or verifier.
 
 ## Tracker disposition
 
@@ -70,7 +67,7 @@ The first PR implements only the DACS-1 artifact boundary:
 - structural validation of every normative field and closed action variant;
 - `seller.publicEndpoint` HTTPS validation without network access or probing;
 - structured Listing signatures under CORE §B.7 and DACS-1 §6.3.4;
-- an explicit `LegacyMvpListing` read path; publication rejects it;
+- a read path for the earlier SDK Listing shape (since removed); publication rejected that shape;
 - one exact `(listingId, listingVersion, contentHash)` session pin; and
 - Standard-backed positive and negative vector tests, including SIG-5
   preserve-unknown and unknown-phase refusal.

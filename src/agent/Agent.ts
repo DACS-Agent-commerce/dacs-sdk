@@ -96,7 +96,7 @@ import {
 import {
   type Signer,
   type Verifier,
-} from "./signedArtifact.js";
+} from "../crypto/byteSignerTypes.js";
 import {
   verifySettlementEvidence,
   type EvidenceContext,
@@ -862,9 +862,9 @@ export interface Agent {
   /** Seller: sign, immutably anchor, and publish a normative Listing binding. */
   publishListing(listing: ListingDraft): Promise<PublishResult>;
   /**
-   * Buyer/Directory: resolve and authenticate one historical Listing by its
-   * canonical logical address. This authenticates binding, content, context,
-   * and authorship; ordered active/revocation admission remains separate.
+   * Buyer/Directory: resolve one Listing by its canonical logical address. It
+   * is returned as `verified` only after the binding, content, context and
+   * SDK-owned ordered DACS-1 admission checks pass.
    */
   readListing(logicalAddress: string): Promise<ListingReadResult>;
   /**
@@ -1967,14 +1967,10 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           // through the configured index with the exact immutable tuple.
           for (const anchor of scan.anchors) {
             const stored = readListingArtifact(anchor.value);
-            if (stored === null) continue;
-            const storedPublisher = stored.compatibility === "normative"
-              ? stored.listing.seller.identity.presentedBy
-              : stored.listing.agentId;
-            const storedId = stored.compatibility === "normative"
-              ? stored.listing.listingId
-              : stored.listing.serviceId;
-            const priorVersion = stored.listing.listingVersion ?? 1;
+            if (stored?.compatibility !== "normative") continue;
+            const storedPublisher = stored.listing.seller.identity.presentedBy;
+            const storedId = stored.listing.listingId;
+            const priorVersion = stored.listing.listingVersion;
             if (
               !Number.isSafeInteger(priorVersion) ||
               (priorVersion as number) >= targetVersion ||
@@ -2101,7 +2097,6 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           }
           return publicReads.readAnchor(nativeAddress);
         },
-        verify: ed25519RawVerify,
         ...(configuredListingValidationDeps
           ? { listingValidationDeps: configuredListingValidationDeps }
           : {}),
@@ -2129,7 +2124,6 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
             }
             return publicReads.readAnchor(nativeAddress);
           },
-          verify: ed25519RawVerify,
           ...(configuredListingValidationDeps
             ? { listingValidationDeps: configuredListingValidationDeps }
             : {}),
@@ -2155,8 +2149,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     async discover(
       listingRefs: string[],
     ): Promise<DiscoveredListing[]> {
-      // DACS-1 §6.3.4: verify the structured signer through seller.identity;
-      // historical string signatures remain in the explicit legacy read arm.
+      // DACS-1 §6.3.4: verify the structured signer through seller.identity.
       return discoverListings(listingRefs, (r) => publicReads.readAnchor(r), {
         verify: ed25519RawVerify,
         resolvePublicKey: resolveCanonicalSigningKeyForRead,

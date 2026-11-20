@@ -144,6 +144,27 @@ test('a malformed or unknown history record gives an indeterminate result, never
   assert.equal((await classifyAddress(address, sourcesOf({ ...createWith(address, 'signed'), history: { [ARTIFACT]: { records: valid, complete: true, extra: 1 } } }))).kind, 'never-dispatched');
 });
 
+test('an artifact hash given as a one-element array is undetermined in an intent and in a history record, never proven-unsigned or never-dispatched', async () => {
+  const address = 'did:demos:agent:' + '7'.repeat(64), arrayHash = [ARTIFACT];
+  const unsignedArray = { lane: LANE, artifactHash: arrayHash, signed: false };
+  assert.equal((await classifyAddress(address, sourcesOf({ anchor: { [address]: held(unsignedArray) } }))).kind, 'undetermined', 'an anchor intent with an array hash');
+  assert.equal((await classifyAddress(address, sourcesOf({ wallet: { [address]: held(unsignedArray) } }))).kind, 'undetermined', 'a wallet intent with an array hash');
+  const valid = [record(1, 'signed'), record(2, 'dispatch-started'), record(3, 'dispatch-withheld', ARTIFACT, 2)];
+  const withArrayRecord = { ...createWith(address, 'signed'), history: { [ARTIFACT]: { records: [...valid, { ...record(4, 'dispatch-started'), artifactHash: arrayHash }], complete: true } } };
+  assert.equal((await classifyAddress(address, sourcesOf(withArrayRecord))).kind, 'undetermined', 'a history record with an array hash');
+});
+
+test('a complete history with a missing sequence number or a record of another lane is undetermined, never never-dispatched', async () => {
+  const address = 'did:demos:agent:' + '6'.repeat(64);
+  const kindOfRecords = async (...records) => (await classifyAddress(address, sourcesOf({ ...createWith(address, 'signed'), history: { [ARTIFACT]: { records, complete: true } } }))).kind;
+  const valid = [record(1, 'signed'), record(2, 'dispatch-started'), record(3, 'dispatch-withheld', ARTIFACT, 2)];
+  assert.equal(await kindOfRecords(...valid), 'never-dispatched', 'the control');
+  assert.equal(await kindOfRecords(record(1, 'signed'), record(3, 'dispatch-started'), record(4, 'dispatch-withheld', ARTIFACT, 3)), 'undetermined', 'record 2 is missing');
+  assert.equal(await kindOfRecords(record(1, 'signed'), record(2, 'signed', OTHER_ARTIFACT), record(2, 'dispatch-started'), record(3, 'dispatch-withheld', ARTIFACT, 2)), 'undetermined', 'a repeated sequence number');
+  assert.equal(await kindOfRecords(...valid, { ...record(4, 'signed'), lane: 'buyer-vet' }), 'undetermined', 'a record of another lane for the same artifact');
+  assert.equal(await kindOfRecords(...valid, { ...record(4, 'signed', OTHER_ARTIFACT), lane: 'buyer-vet' }), 'undetermined', 'a record of another lane and another artifact');
+});
+
 test('a returned reply over the one MiB limit is undetermined from every source, and one within it is read', async () => {
   const address = 'did:demos:agent:' + '7'.repeat(64), padding = 'x'.repeat(1048576), small = 'x'.repeat(1000);
   const retained = createWith(address, ...WITHHELD_PASS);

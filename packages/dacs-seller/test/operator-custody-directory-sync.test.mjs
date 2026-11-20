@@ -86,7 +86,7 @@ for (const [name, initialize] of initializers) {
         const failure = Object.assign(new Error(`TEST parent ${phase} refused`), { code: 'EIO' });
         custody.state.filesystemError = failure;
         custody.state[phase === 'open' ? 'failOpen' : 'failSync'] = path => path === failedParent;
-        await assert.rejects(initialize(custody, directory), error => error === failure);
+        await assert.rejects(initialize(custody, directory), error => error.cause === failure);
         assert.equal(custody.state.generated, 0);
         assert.deepEqual((await readdir(directory)).filter(name => name !== '.directory-sync-pending'), []);
         if (phase === 'sync') {
@@ -142,7 +142,7 @@ test('wallet opening propagates a parent sync failure before reading a retained 
   custody.state.events.length = 0;
   custody.state.filesystemError = failure;
   custody.state.failSync = path => path === root;
-  await assert.rejects(custody.openTestWalletCustody({ directory, role: 'buyer', publicOrigin: ORIGIN }), error => error === failure);
+  await assert.rejects(custody.openTestWalletCustody({ directory, role: 'buyer', publicOrigin: ORIGIN }), error => error.cause === failure);
   assert.equal(custody.state.events.some(event => event.startsWith('readFile ') && !markerEvent(event)), false);
 });
 

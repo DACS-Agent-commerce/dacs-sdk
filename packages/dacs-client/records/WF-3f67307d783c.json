@@ -1,0 +1,13 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF let only the existing commit-only records that name DELTA-MAP.md keep it",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/WF-3f67307d783c.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/delta-record.mjs",
+    "packages/dacs-client/scripts/delta-record.test.mjs"
+  ]
+}

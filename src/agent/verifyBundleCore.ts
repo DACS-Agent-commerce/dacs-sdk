@@ -39,7 +39,7 @@ import {
   isRatingRecord,
   isSettlementEvidence,
 } from "../artifacts/validators.js";
-import { type Verifier } from "./signedArtifact.js";
+import { type Verifier } from "../crypto/byteSignerTypes.js";
 import {
   isAbsoluteFaultBundle,
   faultedPartyIsPermitted,

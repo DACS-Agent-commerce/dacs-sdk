@@ -8,7 +8,7 @@ Historical source test paths are now archived as text under `evidence/source-tes
 
 ## Lifted: destination purchase decisions corrected (D15)
 
-Status: **lifted** (`HOLD.json`, id `inherited-stale-pointer`). The destination pointer, indeterminate-read and single-node transfer regressions pass. Empty exports, the converged freeze, real-store and DEC-16 prerequisites remain binding before any live wiring.
+Status: **lifted** (`HOLD.json`, id `inherited-stale-pointer`). The destination pointer, indeterminate-read and single-node transfer regressions pass. The reviewed public export boundary, package integrity freeze, real-store and DEC-16 prerequisites remain binding before any live wiring.
 
 | File:line | Source text at the source commit | What |
 |---|---|---|
@@ -21,7 +21,7 @@ Status: **lifted** (`HOLD.json`, id `inherited-stale-pointer`). The destination 
 
 Held blobs (git blob ids at `82bf8c4dabb2332a72f618f6cc29950e48d6feb6`): `src/purchases.mjs` `ee71c89fcfa2ef7fa44716084a810e546343452c`, `src/dacs/wallet-transactions.mjs` `948107e13dba08f162dd3f1b27968b2eae96d799`.
 
-Rule: The private client package is frozen: no package file may be added, removed or changed without a reviewed re-pin of HOLD.json and check-hold.mjs together. package.json retains exports: {} with no main or bin. Package HEAD blobs must match the freeze pins; package index and working files must match HEAD in path, blob bytes and regular-file mode. Package symlinks, gitlinks, unresolved index entries and a missing HEAD fail closed. Other SDK files and unrelated commits are unrestricted by this gate. The check does not establish absence of external callers. D11 must supply synchronous, re-entrant, serializing transactions and rerun destination regressions against its real PurchaseStore before live wiring. D2/D4 must consume the approved immutable DEC-16 identity record before effects. Independent programme review remains pending. Purchase actions remain unconditionally held until a coordinated Standard release and trusted session/participant profile admission are implemented; no caller profile record lifts this hold.
+Rule: The package remains frozen. Core files, the archive and these controls have exact reciprocal pins. Other package files must hold the blobs named by their delta records, the anchor or the baseline; record files and id declarations are immutable once added. Every manifest key except files is pinned by the gate. HEAD, index and working bytes and regular-file modes are checked for every package path. Re-pin only reviewed core changes or a hold lift. Other SDK files and unrelated commits are unrestricted. Independent programme review remains pending; these checks grant no live admission.
 
 Lifting the hold requires: A reviewed D15 delta commit in this package, with the listed regressions passing on the reviewed destination head, carrying pointer-retention's fence and the source change's inspected correction as the client package plan requires. A supplied, reviewed source fix copied with provenance is also acceptable; no supplied head carries pointer-retention's fence. Regressions:
 
@@ -39,9 +39,9 @@ Condition: Every regression above passes against the reviewed destination head c
 
 Historical source probe (archived as text): `packages/dacs-client/evidence/source-tests/scripts/stale-pointer.probe.test.mjs.txt` (requires the separate source repository to reproduce its historical run). The committed probe loads http-mcp from DACS_FRONTEND_REPO at a source commit; it never loads this package, and without that variable it skips both tests and exits 0. D15 must retarget it at this package's moved modules, or add equivalent package tests after D1. The lift requires # tests 2 and # pass 2 on the reviewed fixed destination head (or fixed source), not exit 0. At 82bf8c4 both fail. A pass is necessary, not sufficient: the other listed regressions must pass too. Destination delta record: 119/119 isolated destination cases pass: purchase-integrity 12, buyer-chain-indeterminate 4, commitment classifiers 17, review races 10, review decisions 63, native stage help 13. Original reviewer probes pass 3/3. Historical review baseline c55c2d9: races 0/10, decisions 6/42, stage help 1/10; only the already-deleted fixture continuation reference was removed in scratch to permit coordinator construction. Original pre-D15 baseline replay at rebased D1 head 0fad6e8: 0/33. Compact TAP evidence is retained in evidence/review-*.txt; D11 must rerun the store-dependent cases against its real adapter. An earlier review: six fresh transfer tuple fields stay indeterminate on first read and preserve delivered state on recheck; readback-review-decisions registers 63 tests and all pass. Reviewer transfer probe registers two and both pass.
 
-Gate: `packages/dacs-client/scripts/check-hold.mjs` runs from the package test script and provenance regressions. The record and gate pin the complete private package and change together for reviewed package updates. Package exports remain empty; package HEAD, index and working bytes and regular-file modes are checked. Other SDK files and unrelated commits are unrestricted, including PR merge commits after main advances. This check imports no package entry point and does not establish absence of external callers or grant live admission.
+Gate: `packages/dacs-client/scripts/check-hold.mjs` runs from the package test script and provenance regressions. Reciprocal pins cover the core; other package files follow their records, the anchor or the baseline. Record files and id declarations are immutable. Every manifest key except `files` is pinned; package HEAD, index and working bytes and regular-file modes are checked. Other SDK files and unrelated commits are unrestricted, including PR merge commits after main advances. This check imports no package entry point and grants no live admission.
 
-Planned re-pins: Only changes inside the client package require a reviewed re-pin of HOLD.json and check-hold.mjs together. Unrelated SDK changes and main merges need no re-pin. `client-package`: Changes to package source, tests, tools, documentation or hold controls. The package remains private with empty exports. D11, DEC-16 identity admission, independent programme review and coordinated release admission remain prerequisites before live wiring.
+Planned re-pins: Reviewed core changes and hold lifts require reciprocal re-pins. Source, test, documentation and manifest files-list changes use separate delta records; they do not change the controls. The delta map and record notes are rendered on demand to stdout. `client-package`: Changes to core files, record validators or hold controls. The package remains private with the gate-pinned manifest. D11, DEC-16 identity admission, independent programme review and coordinated release admission remain prerequisites before live wiring.
 
 Blocked prerequisites: Add the freeze gate and its negative tests (npm test --workspace @kynesyslabs/dacs-client) to the SDK CI workflow before any client delta PR. The gate reads files and Git metadata only; it imports no client entry point. The step-1 brief permits no CI change. Required before any dacs-client delta PR. D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls joining the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart. Earlier snapshots had a throwing production PurchaseStore seam and source-bound test-only helpers. These three suites now run against the package's concrete SQLite adapter, which covers the package store only; live wiring still needs the host's deployed store to pass them and the live-admission prerequisites, and purchase actions remain held. Before live wiring, D2/D4 must consume the approved immutable DEC-16 testnet identity record, reject missing or fixture pins and non-approved identities before effects, and rerun the instrumented zero-signature and zero-broadcast cases. The identity record is not supplied in this snapshot; source transport construction in isolated tests is test-only data, not live admission.
 
@@ -408,16 +408,19 @@ Copied lines that contain an absolute local home path. Step 1 does not edit the 
 - `test/helpers/agreement-context-integration.mjs:33`: the default of `DACS_SELLER_INTEROP_REFERENCE`, an external reference tree that is not provisioned.
 - `test/source-server-hosting.test.mjs:121`: a rejected `networkAdmissionPath` value in a preflight negative case.
 
-## 10. Current destination import audit (D1)
+## 10. Destination import audit when this map was generated (D1)
 
 Sections 1–9 record the original copy and source graph. This section scans the current destination source. Test harness cuts remain listed above.
 
-Relative source imports: 142; unresolved or forbidden source imports: 0.
+Relative source imports: 229; unresolved or forbidden source imports: 1.
+- FAIL src/wallet/node-wallet-session.mjs:16: forbidden import ../public/portal/embedded-wallet/sdk-provider.mjs
 
 | Current file:line | Specifier | Current target |
 |---|---|---|
-| `src/config.mjs:4` | `./switch-files.mjs` | `src/switch-files.mjs` |
-| `src/config.mjs:23` | `./purchase-limits.mjs` | `src/purchase-limits.mjs` |
+| `src/config.mjs:4` | `./purchase-limits.mjs` | `src/purchase-limits.mjs` |
+| `src/config.mjs:5` | `./switch-files.mjs` | `src/switch-files.mjs` |
+| `src/config.mjs:24` | `./purchase-limits.mjs` | `src/purchase-limits.mjs` |
+| `src/dacs/action-admission.mjs:1` | `../public-admission.mjs` | `src/public-admission.mjs` |
 | `src/dacs/agreement-context-consumer.mjs:18` | `./listing.mjs` | `src/dacs/listing.mjs` |
 | `src/dacs/agreement-context-consumer.mjs:19` | `../signatures.mjs` | `src/signatures.mjs` |
 | `src/dacs/agreement-context-consumer.mjs:20` | `./purchase-protocol.mjs` | `src/dacs/purchase-protocol.mjs` |
@@ -434,6 +437,7 @@ Relative source imports: 142; unresolved or forbidden source imports: 0.
 | `src/dacs/commit-on-signature.mjs:2` | `../signatures.mjs` | `src/signatures.mjs` |
 | `src/dacs/commit-on-signature.mjs:3` | `./wallet-transactions.mjs` | `src/dacs/wallet-transactions.mjs` |
 | `src/dacs/completion-readiness.mjs:6` | `../signatures.mjs` | `src/signatures.mjs` |
+| `src/dacs/continuation-evidence.mjs:4` | `../client-errors.mjs` | `src/client-errors.mjs` |
 | `src/dacs/delivery-deadline-watch.mjs:1` | `../seams/purchase-store-not-wired.mjs` | `src/seams/purchase-store-not-wired.mjs` |
 | `src/dacs/delivery-deadline-watch.mjs:2` | `./native-agreement-payment-consumer.mjs` | `src/dacs/native-agreement-payment-consumer.mjs` |
 | `src/dacs/delivery-evidence.mjs:2` | `../signatures.mjs` | `src/signatures.mjs` |
@@ -442,6 +446,7 @@ Relative source imports: 142; unresolved or forbidden source imports: 0.
 | `src/dacs/dem-delivery-consumer.mjs:7` | `../devnet-demo/deliverable.mjs` | `src/devnet-demo/deliverable.mjs` |
 | `src/dacs/dem-delivery-consumer.mjs:8` | `./demos-sr2-adapter.mjs` | `src/dacs/demos-sr2-adapter.mjs` |
 | `src/dacs/dem-delivery-consumer.mjs:9` | `./buyer-chain-readback.mjs` | `src/dacs/buyer-chain-readback.mjs` |
+| `src/dacs/dem-delivery-consumer.mjs:10` | `./listing.mjs` | `src/dacs/listing.mjs` |
 | `src/dacs/dem-delivery-context-consumer.mjs:10` | `../signatures.mjs` | `src/signatures.mjs` |
 | `src/dacs/dem-delivery-context-consumer.mjs:11` | `./listing.mjs` | `src/dacs/listing.mjs` |
 | `src/dacs/dem-delivery-context-consumer.mjs:12` | `./agreement-context-consumer.mjs` | `src/dacs/agreement-context-consumer.mjs` |
@@ -456,10 +461,10 @@ Relative source imports: 142; unresolved or forbidden source imports: 0.
 | `src/dacs/demos-sr2-wallet-bridge.mjs:20` | `../devnet-demo/operator-approval.mjs` | `src/devnet-demo/operator-approval.mjs` |
 | `src/dacs/demos-sr2-wallet-bridge.mjs:21` | `./demos-sr2-adapter.mjs` | `src/dacs/demos-sr2-adapter.mjs` |
 | `src/dacs/demos-sr2-wallet-bridge.mjs:22` | `../wallet/devnet-native-transport.mjs` | `src/wallet/devnet-native-transport.mjs` |
-| `src/dacs/directory.mjs:7` | `../util/http.mjs` | `src/util/http.mjs` |
-| `src/dacs/directory.mjs:8` | `./chain.mjs` | `src/dacs/chain.mjs` |
-| `src/dacs/listing.mjs:28` | `../signatures.mjs` | `src/signatures.mjs` |
-| `src/dacs/listing.mjs:29` | `./chain.mjs` | `src/dacs/chain.mjs` |
+| `src/dacs/directory.mjs:8` | `../util/http.mjs` | `src/util/http.mjs` |
+| `src/dacs/directory.mjs:9` | `./chain.mjs` | `src/dacs/chain.mjs` |
+| `src/dacs/listing.mjs:23` | `../signatures.mjs` | `src/signatures.mjs` |
+| `src/dacs/listing.mjs:24` | `./chain.mjs` | `src/dacs/chain.mjs` |
 | `src/dacs/native-agreement-payment-consumer.mjs:1` | `../util/purchase-readback-cache.mjs` | `src/util/purchase-readback-cache.mjs` |
 | `src/dacs/native-agreement-payment-consumer.mjs:2` | `../util/immutable-readbacks.mjs` | `src/util/immutable-readbacks.mjs` |
 | `src/dacs/native-agreement-payment-consumer.mjs:7` | `../wallet/devnet-native-transport.mjs` | `src/wallet/devnet-native-transport.mjs` |
@@ -467,62 +472,70 @@ Relative source imports: 142; unresolved or forbidden source imports: 0.
 | `src/dacs/native-agreement-payment-consumer.mjs:9` | `./seller-sr2-agreement-consumer.mjs` | `src/dacs/seller-sr2-agreement-consumer.mjs` |
 | `src/dacs/native-agreement-payment-consumer.mjs:10` | `../signatures.mjs` | `src/signatures.mjs` |
 | `src/dacs/native-agreement-payment-consumer.mjs:11` | `../client-errors.mjs` | `src/client-errors.mjs` |
-| `src/dacs/native-payment-evidence-consumer.mjs:4` | `./demos-sr2-adapter.mjs` | `src/dacs/demos-sr2-adapter.mjs` |
-| `src/dacs/native-payment-evidence-consumer.mjs:5` | `./purchase-protocol.mjs` | `src/dacs/purchase-protocol.mjs` |
-| `src/dacs/native-payment-evidence-consumer.mjs:6` | `../wallet/devnet-native-transport.mjs` | `src/wallet/devnet-native-transport.mjs` |
-| `src/dacs/protocol-purchases.mjs:1` | `./commit-on-signature.mjs` | `src/dacs/commit-on-signature.mjs` |
-| `src/dacs/protocol-purchases.mjs:2` | `../devnet-demo/issued-readback.mjs` | `src/devnet-demo/issued-readback.mjs` |
-| `src/dacs/protocol-purchases.mjs:3` | `./delivery-deadline-watch.mjs` | `src/dacs/delivery-deadline-watch.mjs` |
-| `src/dacs/protocol-purchases.mjs:4` | `../seams/purchase-store-not-wired.mjs` | `src/seams/purchase-store-not-wired.mjs` |
-| `src/dacs/protocol-purchases.mjs:22` | `../wallet/devnet-native-transport.mjs` | `src/wallet/devnet-native-transport.mjs` |
-| `src/dacs/protocol-purchases.mjs:23` | `../client-errors.mjs` | `src/client-errors.mjs` |
-| `src/dacs/protocol-purchases.mjs:24` | `../signatures.mjs` | `src/signatures.mjs` |
-| `src/dacs/protocol-purchases.mjs:25` | `./listing.mjs` | `src/dacs/listing.mjs` |
-| `src/dacs/protocol-purchases.mjs:26` | `./seller-http.mjs` | `src/dacs/seller-http.mjs` |
-| `src/dacs/protocol-purchases.mjs:27` | `./demos-sr2-wallet-bridge.mjs` | `src/dacs/demos-sr2-wallet-bridge.mjs` |
-| `src/dacs/protocol-purchases.mjs:28` | `./demos-sr2-adapter.mjs` | `src/dacs/demos-sr2-adapter.mjs` |
-| `src/dacs/protocol-purchases.mjs:29` | `./purchase-protocol.mjs` | `src/dacs/purchase-protocol.mjs` |
-| `src/dacs/protocol-purchases.mjs:45` | `./agreement-context-consumer.mjs` | `src/dacs/agreement-context-consumer.mjs` |
-| `src/dacs/protocol-purchases.mjs:46` | `./dem-delivery-context-consumer.mjs` | `src/dacs/dem-delivery-context-consumer.mjs` |
-| `src/dacs/protocol-purchases.mjs:47` | `./seller-sr2-agreement-consumer.mjs` | `src/dacs/seller-sr2-agreement-consumer.mjs` |
-| `src/dacs/protocol-purchases.mjs:48` | `./native-agreement-payment-consumer.mjs` | `src/dacs/native-agreement-payment-consumer.mjs` |
-| `src/dacs/protocol-purchases.mjs:49` | `./native-payment-evidence-consumer.mjs` | `src/dacs/native-payment-evidence-consumer.mjs` |
-| `src/dacs/protocol-purchases.mjs:50` | `./source-demo-seller-transport.mjs` | `src/dacs/source-demo-seller-transport.mjs` |
-| `src/dacs/protocol-purchases.mjs:51` | `../seams/buyer-access-not-wired.mjs` | `src/seams/buyer-access-not-wired.mjs` |
-| `src/dacs/protocol-purchases.mjs:52` | `./seller-transport-auth.mjs` | `src/dacs/seller-transport-auth.mjs` |
-| `src/dacs/protocol-purchases.mjs:53` | `./dem-delivery-consumer.mjs` | `src/dacs/dem-delivery-consumer.mjs` |
-| `src/dacs/protocol-purchases.mjs:54` | `./seller-session-lifecycle.mjs` | `src/dacs/seller-session-lifecycle.mjs` |
-| `src/dacs/protocol-purchases.mjs:55` | `./native-dem-delivery-consumer.mjs` | `src/dacs/native-dem-delivery-consumer.mjs` |
-| `src/dacs/protocol-purchases.mjs:56` | `../devnet-demo/commitment-consumer.mjs` | `src/devnet-demo/commitment-consumer.mjs` |
-| `src/dacs/protocol-purchases.mjs:57` | `./buyer-chain-readback.mjs` | `src/dacs/buyer-chain-readback.mjs` |
-| `src/dacs/protocol-purchases.mjs:58` | `../util/text.mjs` | `src/util/text.mjs` |
-| `src/dacs/purchase-protocol.mjs:1` | `./commit-on-signature.mjs` | `src/dacs/commit-on-signature.mjs` |
-| `src/dacs/purchase-protocol.mjs:52` | `./listing.mjs` | `src/dacs/listing.mjs` |
-| `src/dacs/purchase-protocol.mjs:53` | `../signatures.mjs` | `src/signatures.mjs` |
-| `src/dacs/purchase-protocol.mjs:54` | `../seams/seller-integration-not-wired.mjs` | `src/seams/seller-integration-not-wired.mjs` |
+| `src/dacs/native-payment-evidence-consumer.mjs:6` | `./demos-sr2-adapter.mjs` | `src/dacs/demos-sr2-adapter.mjs` |
+| `src/dacs/native-payment-evidence-consumer.mjs:7` | `./purchase-protocol.mjs` | `src/dacs/purchase-protocol.mjs` |
+| `src/dacs/native-payment-evidence-consumer.mjs:8` | `../wallet/devnet-native-transport.mjs` | `src/wallet/devnet-native-transport.mjs` |
+| `src/dacs/protocol-purchases.mjs:2` | `./action-admission.mjs` | `src/dacs/action-admission.mjs` |
+| `src/dacs/protocol-purchases.mjs:3` | `./commit-on-signature.mjs` | `src/dacs/commit-on-signature.mjs` |
+| `src/dacs/protocol-purchases.mjs:4` | `../devnet-demo/issued-readback.mjs` | `src/devnet-demo/issued-readback.mjs` |
+| `src/dacs/protocol-purchases.mjs:5` | `./delivery-deadline-watch.mjs` | `src/dacs/delivery-deadline-watch.mjs` |
+| `src/dacs/protocol-purchases.mjs:6` | `../seams/purchase-store-not-wired.mjs` | `src/seams/purchase-store-not-wired.mjs` |
+| `src/dacs/protocol-purchases.mjs:7` | `../diagnostic-projection.mjs` | `src/diagnostic-projection.mjs` |
+| `src/dacs/protocol-purchases.mjs:25` | `../wallet/devnet-native-transport.mjs` | `src/wallet/devnet-native-transport.mjs` |
+| `src/dacs/protocol-purchases.mjs:26` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/dacs/protocol-purchases.mjs:27` | `../signatures.mjs` | `src/signatures.mjs` |
+| `src/dacs/protocol-purchases.mjs:28` | `./listing.mjs` | `src/dacs/listing.mjs` |
+| `src/dacs/protocol-purchases.mjs:29` | `./seller-http.mjs` | `src/dacs/seller-http.mjs` |
+| `src/dacs/protocol-purchases.mjs:30` | `./demos-sr2-wallet-bridge.mjs` | `src/dacs/demos-sr2-wallet-bridge.mjs` |
+| `src/dacs/protocol-purchases.mjs:31` | `./demos-sr2-adapter.mjs` | `src/dacs/demos-sr2-adapter.mjs` |
+| `src/dacs/protocol-purchases.mjs:32` | `./purchase-protocol.mjs` | `src/dacs/purchase-protocol.mjs` |
+| `src/dacs/protocol-purchases.mjs:48` | `./agreement-context-consumer.mjs` | `src/dacs/agreement-context-consumer.mjs` |
+| `src/dacs/protocol-purchases.mjs:49` | `./dem-delivery-context-consumer.mjs` | `src/dacs/dem-delivery-context-consumer.mjs` |
+| `src/dacs/protocol-purchases.mjs:50` | `./seller-sr2-agreement-consumer.mjs` | `src/dacs/seller-sr2-agreement-consumer.mjs` |
+| `src/dacs/protocol-purchases.mjs:51` | `./native-agreement-payment-consumer.mjs` | `src/dacs/native-agreement-payment-consumer.mjs` |
+| `src/dacs/protocol-purchases.mjs:52` | `./native-payment-evidence-consumer.mjs` | `src/dacs/native-payment-evidence-consumer.mjs` |
+| `src/dacs/protocol-purchases.mjs:53` | `./source-demo-seller-transport.mjs` | `src/dacs/source-demo-seller-transport.mjs` |
+| `src/dacs/protocol-purchases.mjs:55` | `./seller-response-class.mjs` | `src/dacs/seller-response-class.mjs` |
+| `src/dacs/protocol-purchases.mjs:56` | `./seller-wire-authentication.mjs` | `src/dacs/seller-wire-authentication.mjs` |
+| `src/dacs/protocol-purchases.mjs:57` | `./continuation-evidence.mjs` | `src/dacs/continuation-evidence.mjs` |
+| `src/dacs/protocol-purchases.mjs:58` | `./dem-delivery-consumer.mjs` | `src/dacs/dem-delivery-consumer.mjs` |
+| `src/dacs/protocol-purchases.mjs:59` | `./seller-session-lifecycle.mjs` | `src/dacs/seller-session-lifecycle.mjs` |
+| `src/dacs/protocol-purchases.mjs:60` | `./native-dem-delivery-consumer.mjs` | `src/dacs/native-dem-delivery-consumer.mjs` |
+| `src/dacs/protocol-purchases.mjs:61` | `../devnet-demo/commitment-consumer.mjs` | `src/devnet-demo/commitment-consumer.mjs` |
+| `src/dacs/protocol-purchases.mjs:62` | `./buyer-chain-readback.mjs` | `src/dacs/buyer-chain-readback.mjs` |
+| `src/dacs/protocol-purchases.mjs:63` | `../util/text.mjs` | `src/util/text.mjs` |
+| `src/dacs/protocol-purchases.mjs:64` | `../util/http.mjs` | `src/util/http.mjs` |
+| `src/dacs/purchase-protocol.mjs:1` | `./action-admission.mjs` | `src/dacs/action-admission.mjs` |
+| `src/dacs/purchase-protocol.mjs:2` | `./commit-on-signature.mjs` | `src/dacs/commit-on-signature.mjs` |
+| `src/dacs/purchase-protocol.mjs:54` | `./listing.mjs` | `src/dacs/listing.mjs` |
 | `src/dacs/purchase-protocol.mjs:55` | `../signatures.mjs` | `src/signatures.mjs` |
-| `src/dacs/purchase-protocol.mjs:56` | `./artifact-reference.mjs` | `src/dacs/artifact-reference.mjs` |
-| `src/dacs/seller-agent.mjs:1` | `../seams/buyer-access-not-wired.mjs` | `src/seams/buyer-access-not-wired.mjs` |
-| `src/dacs/seller-agent.mjs:2` | `../signatures.mjs` | `src/signatures.mjs` |
-| `src/dacs/seller-agent.mjs:23` | `./commit-on-signature.mjs` | `src/dacs/commit-on-signature.mjs` |
-| `src/dacs/seller-agent.mjs:46` | `./delivery-evidence.mjs` | `src/dacs/delivery-evidence.mjs` |
-| `src/dacs/seller-agent.mjs:48` | `./listing.mjs` | `src/dacs/listing.mjs` |
-| `src/dacs/seller-agent.mjs:49` | `./artifact-reference.mjs` | `src/dacs/artifact-reference.mjs` |
-| `src/dacs/seller-agent.mjs:50` | `../seams/seller-integration-not-wired.mjs` | `src/seams/seller-integration-not-wired.mjs` |
-| `src/dacs/seller-agent.mjs:51` | `../signatures.mjs` | `src/signatures.mjs` |
-| `src/dacs/seller-agent.mjs:52` | `./seller-durable-state.mjs` | `src/dacs/seller-durable-state.mjs` |
-| `src/dacs/seller-agent.mjs:53` | `./native-payment-evidence-consumer.mjs` | `src/dacs/native-payment-evidence-consumer.mjs` |
-| `src/dacs/seller-agent.mjs:54` | `./dem-delivery-context-consumer.mjs` | `src/dacs/dem-delivery-context-consumer.mjs` |
-| `src/dacs/seller-agent.mjs:55` | `./native-dem-delivery-consumer.mjs` | `src/dacs/native-dem-delivery-consumer.mjs` |
-| `src/dacs/seller-agent.mjs:56` | `./purchase-protocol.mjs` | `src/dacs/purchase-protocol.mjs` |
+| `src/dacs/purchase-protocol.mjs:56` | `../seams/seller-integration-not-wired.mjs` | `src/seams/seller-integration-not-wired.mjs` |
+| `src/dacs/purchase-protocol.mjs:57` | `../signatures.mjs` | `src/signatures.mjs` |
+| `src/dacs/purchase-protocol.mjs:58` | `./artifact-reference.mjs` | `src/dacs/artifact-reference.mjs` |
+| `src/dacs/seller-agent.mjs:1` | `./action-admission.mjs` | `src/dacs/action-admission.mjs` |
+| `src/dacs/seller-agent.mjs:2` | `../seams/buyer-access-not-wired.mjs` | `src/seams/buyer-access-not-wired.mjs` |
+| `src/dacs/seller-agent.mjs:3` | `../signatures.mjs` | `src/signatures.mjs` |
+| `src/dacs/seller-agent.mjs:24` | `./commit-on-signature.mjs` | `src/dacs/commit-on-signature.mjs` |
+| `src/dacs/seller-agent.mjs:47` | `./delivery-evidence.mjs` | `src/dacs/delivery-evidence.mjs` |
+| `src/dacs/seller-agent.mjs:49` | `./listing.mjs` | `src/dacs/listing.mjs` |
+| `src/dacs/seller-agent.mjs:50` | `./artifact-reference.mjs` | `src/dacs/artifact-reference.mjs` |
+| `src/dacs/seller-agent.mjs:51` | `../seams/seller-integration-not-wired.mjs` | `src/seams/seller-integration-not-wired.mjs` |
+| `src/dacs/seller-agent.mjs:52` | `../signatures.mjs` | `src/signatures.mjs` |
+| `src/dacs/seller-agent.mjs:53` | `./seller-durable-state.mjs` | `src/dacs/seller-durable-state.mjs` |
+| `src/dacs/seller-agent.mjs:54` | `./native-payment-evidence-consumer.mjs` | `src/dacs/native-payment-evidence-consumer.mjs` |
+| `src/dacs/seller-agent.mjs:55` | `./dem-delivery-context-consumer.mjs` | `src/dacs/dem-delivery-context-consumer.mjs` |
+| `src/dacs/seller-agent.mjs:56` | `./native-dem-delivery-consumer.mjs` | `src/dacs/native-dem-delivery-consumer.mjs` |
+| `src/dacs/seller-agent.mjs:57` | `./purchase-protocol.mjs` | `src/dacs/purchase-protocol.mjs` |
+| `src/dacs/seller-agent.mjs:80` | `./seller-agent-error.mjs` | `src/dacs/seller-agent-error.mjs` |
+| `src/dacs/seller-agent.mjs:81` | `./seller-agent-error.mjs` | `src/dacs/seller-agent-error.mjs` |
 | `src/dacs/seller-durable-state.mjs:12` | `../seams/seller-integration-not-wired.mjs` | `src/seams/seller-integration-not-wired.mjs` |
-| `src/dacs/seller-http.mjs:9` | `./seller-agent.mjs` | `src/dacs/seller-agent.mjs` |
-| `src/dacs/seller-http.mjs:11` | `./seller-transport-auth.mjs` | `src/dacs/seller-transport-auth.mjs` |
+| `src/dacs/seller-http.mjs:14` | `../util/http.mjs` | `src/util/http.mjs` |
+| `src/dacs/seller-http.mjs:16` | `./seller-response-class.mjs` | `src/dacs/seller-response-class.mjs` |
 | `src/dacs/seller-session-lifecycle.mjs:2` | `./purchase-protocol.mjs` | `src/dacs/purchase-protocol.mjs` |
 | `src/dacs/seller-session-lifecycle.mjs:3` | `../signatures.mjs` | `src/signatures.mjs` |
 | `src/dacs/seller-sr2-agreement-consumer.mjs:16` | `./demos-sr2-adapter.mjs` | `src/dacs/demos-sr2-adapter.mjs` |
-| `src/dacs/seller-transport-auth.mjs:10` | `../signatures.mjs` | `src/signatures.mjs` |
-| `src/dacs/seller-transport-auth.mjs:11` | `./seller-session-limits.mjs` | `src/dacs/seller-session-limits.mjs` |
+| `src/dacs/seller-wire-authentication.mjs:4` | `./action-admission.mjs` | `src/dacs/action-admission.mjs` |
+| `src/dacs/seller-wire-authentication.mjs:5` | `../client-errors.mjs` | `src/client-errors.mjs` |
 | `src/dacs/verification.mjs:1` | `../util/immutable-readbacks.mjs` | `src/util/immutable-readbacks.mjs` |
 | `src/dacs/verification.mjs:5` | `./listing.mjs` | `src/dacs/listing.mjs` |
 | `src/dacs/verification.mjs:6` | `../signatures.mjs` | `src/signatures.mjs` |
@@ -534,27 +547,102 @@ Relative source imports: 142; unresolved or forbidden source imports: 0.
 | `src/devnet-demo/native-delivery.mjs:2` | `../dacs/native-dem-delivery-consumer.mjs` | `src/dacs/native-dem-delivery-consumer.mjs` |
 | `src/devnet-demo/native-delivery.mjs:3` | `./deliverable.mjs` | `src/devnet-demo/deliverable.mjs` |
 | `src/devnet-demo/operator-approval.mjs:7` | `./stop-request.mjs` | `src/devnet-demo/stop-request.mjs` |
+| `src/index.mjs:1` | `./dacs/protocol-purchases.mjs` | `src/dacs/protocol-purchases.mjs` |
+| `src/index.mjs:2` | `./purchases.mjs` | `src/purchases.mjs` |
+| `src/index.mjs:3` | `./public-admission.mjs` | `src/public-admission.mjs` |
+| `src/index.mjs:6` | `./public-guidance.mjs` | `src/public-guidance.mjs` |
+| `src/index.mjs:8` | `./purchases.mjs` | `src/purchases.mjs` |
+| `src/index.mjs:10` | `./dacs/protocol-purchases.mjs` | `src/dacs/protocol-purchases.mjs` |
+| `src/index.mjs:12` | `./dacs/delivery-deadline-watch.mjs` | `src/dacs/delivery-deadline-watch.mjs` |
+| `src/index.mjs:14` | `./dacs/wallet-transactions.mjs` | `src/dacs/wallet-transactions.mjs` |
+| `src/index.mjs:16` | `./dacs/directory.mjs` | `src/dacs/directory.mjs` |
+| `src/index.mjs:18` | `./public-verification.mjs` | `src/public-verification.mjs` |
+| `src/index.mjs:20` | `./dacs/chain.mjs` | `src/dacs/chain.mjs` |
+| `src/index.mjs:22` | `./dacs/purchase-protocol.mjs` | `src/dacs/purchase-protocol.mjs` |
+| `src/index.mjs:24` | `./dacs/seller-http.mjs` | `src/dacs/seller-http.mjs` |
+| `src/index.mjs:26` | `./dacs/native-payment-evidence-consumer.mjs` | `src/dacs/native-payment-evidence-consumer.mjs` |
+| `src/index.mjs:28` | `./dacs/agreement-context-consumer.mjs` | `src/dacs/agreement-context-consumer.mjs` |
+| `src/index.mjs:30` | `./dacs/dem-delivery-context-consumer.mjs` | `src/dacs/dem-delivery-context-consumer.mjs` |
+| `src/index.mjs:32` | `./dacs/dem-delivery-context-consumer.mjs` | `src/dacs/dem-delivery-context-consumer.mjs` |
+| `src/index.mjs:34` | `./dacs/native-dem-delivery-consumer.mjs` | `src/dacs/native-dem-delivery-consumer.mjs` |
+| `src/index.mjs:36` | `./dacs/native-payment-evidence-consumer.mjs` | `src/dacs/native-payment-evidence-consumer.mjs` |
+| `src/index.mjs:38` | `./dacs/source-demo-seller-transport.mjs` | `src/dacs/source-demo-seller-transport.mjs` |
+| `src/index.mjs:40` | `./devnet-demo/commitment-consumer.mjs` | `src/devnet-demo/commitment-consumer.mjs` |
+| `src/index.mjs:42` | `./dacs/protocol-purchases.mjs` | `src/dacs/protocol-purchases.mjs` |
+| `src/index.mjs:44` | `./dacs/wallet-transactions.mjs` | `src/dacs/wallet-transactions.mjs` |
+| `src/index.mjs:46` | `./dacs/demos-sr2-wallet-bridge.mjs` | `src/dacs/demos-sr2-wallet-bridge.mjs` |
+| `src/index.mjs:48` | `./wallet/devnet-native-transport.mjs` | `src/wallet/devnet-native-transport.mjs` |
+| `src/index.mjs:50` | `./dacs/seller-session-lifecycle.mjs` | `src/dacs/seller-session-lifecycle.mjs` |
+| `src/index.mjs:52` | `./util/purchase-readback-cache.mjs` | `src/util/purchase-readback-cache.mjs` |
+| `src/index.mjs:54` | `./util/http.mjs` | `src/util/http.mjs` |
+| `src/index.mjs:56` | `./client-errors.mjs` | `src/client-errors.mjs` |
+| `src/index.mjs:58` | `./dacs/protocol-purchases.mjs` | `src/dacs/protocol-purchases.mjs` |
+| `src/index.mjs:60` | `./dacs/seller-http.mjs` | `src/dacs/seller-http.mjs` |
+| `src/index.mjs:62` | `./dacs/demos-sr2-wallet-bridge.mjs` | `src/dacs/demos-sr2-wallet-bridge.mjs` |
+| `src/index.mjs:64` | `./dacs/demos-sr2-adapter.mjs` | `src/dacs/demos-sr2-adapter.mjs` |
+| `src/index.mjs:66` | `./dacs/network-binding.mjs` | `src/dacs/network-binding.mjs` |
+| `src/index.mjs:68` | `./dacs/buyer-chain-readback.mjs` | `src/dacs/buyer-chain-readback.mjs` |
+| `src/index.mjs:70` | `./signatures.mjs` | `src/signatures.mjs` |
+| `src/index.mjs:72` | `./dacs/listing.mjs` | `src/dacs/listing.mjs` |
+| `src/index.mjs:74` | `./buyer-funding.mjs` | `src/buyer-funding.mjs` |
+| `src/index.mjs:76` | `./seams/purchase-store-not-wired.mjs` | `src/seams/purchase-store-not-wired.mjs` |
+| `src/index.mjs:78` | `./purchase-state-schema.mjs` | `src/purchase-state-schema.mjs` |
+| `src/portal-capability.mjs:2` | `./client-errors.mjs` | `src/client-errors.mjs` |
 | `src/public/portal/seller-session-delegation.mjs:7` | `../../dacs/seller-session-limits.mjs` | `src/dacs/seller-session-limits.mjs` |
-| `src/purchases.mjs:32` | `./dacs/listing.mjs` | `src/dacs/listing.mjs` |
-| `src/purchases.mjs:33` | `./seams/wallet-actions-not-wired.mjs` | `src/seams/wallet-actions-not-wired.mjs` |
-| `src/purchases.mjs:34` | `./client-errors.mjs` | `src/client-errors.mjs` |
-| `src/purchases.mjs:35` | `./dacs/wallet-transactions.mjs` | `src/dacs/wallet-transactions.mjs` |
-| `src/purchases.mjs:36` | `./seams/purchase-store-not-wired.mjs` | `src/seams/purchase-store-not-wired.mjs` |
-| `src/purchases.mjs:37` | `./util/ids.mjs` | `src/util/ids.mjs` |
-| `src/purchases.mjs:38` | `./util/http.mjs` | `src/util/http.mjs` |
-| `src/purchases.mjs:39` | `./signatures.mjs` | `src/signatures.mjs` |
-| `src/purchases.mjs:40` | `./dacs/protocol-purchases.mjs` | `src/dacs/protocol-purchases.mjs` |
-| `src/purchases.mjs:41` | `./dacs/native-agreement-payment-consumer.mjs` | `src/dacs/native-agreement-payment-consumer.mjs` |
-| `src/purchases.mjs:42` | `./purchase-limits.mjs` | `src/purchase-limits.mjs` |
-| `src/purchases.mjs:43` | `./buyer-funding.mjs` | `src/buyer-funding.mjs` |
+| `src/public-admission.mjs:3` | `./client-errors.mjs` | `src/client-errors.mjs` |
+| `src/public-admission.mjs:4` | `./dacs/purchase-admission-state.mjs` | `src/dacs/purchase-admission-state.mjs` |
+| `src/public-guidance.mjs:1` | `./purchases.mjs` | `src/purchases.mjs` |
+| `src/public-guidance.mjs:2` | `./dacs/protocol-purchases.mjs` | `src/dacs/protocol-purchases.mjs` |
+| `src/public-guidance.mjs:3` | `./public-admission.mjs` | `src/public-admission.mjs` |
+| `src/public-verification.mjs:1` | `./dacs/verification.mjs` | `src/dacs/verification.mjs` |
+| `src/public-verification.mjs:2` | `./public-admission.mjs` | `src/public-admission.mjs` |
+| `src/public-verification.mjs:3` | `./dacs/verification.mjs` | `src/dacs/verification.mjs` |
+| `src/purchases.mjs:33` | `./portal-capability.mjs` | `src/portal-capability.mjs` |
+| `src/purchases.mjs:34` | `./dacs/listing.mjs` | `src/dacs/listing.mjs` |
+| `src/purchases.mjs:35` | `./seams/wallet-actions-not-wired.mjs` | `src/seams/wallet-actions-not-wired.mjs` |
+| `src/purchases.mjs:37` | `./client-errors.mjs` | `src/client-errors.mjs` |
+| `src/purchases.mjs:38` | `./dacs/wallet-transactions.mjs` | `src/dacs/wallet-transactions.mjs` |
+| `src/purchases.mjs:39` | `./seams/purchase-store-not-wired.mjs` | `src/seams/purchase-store-not-wired.mjs` |
+| `src/purchases.mjs:40` | `./util/ids.mjs` | `src/util/ids.mjs` |
+| `src/purchases.mjs:41` | `./util/http.mjs` | `src/util/http.mjs` |
+| `src/purchases.mjs:42` | `./dacs/chain.mjs` | `src/dacs/chain.mjs` |
+| `src/purchases.mjs:43` | `./signatures.mjs` | `src/signatures.mjs` |
+| `src/purchases.mjs:44` | `./diagnostic-projection.mjs` | `src/diagnostic-projection.mjs` |
+| `src/purchases.mjs:45` | `./dacs/protocol-purchases.mjs` | `src/dacs/protocol-purchases.mjs` |
+| `src/purchases.mjs:46` | `./dacs/native-agreement-payment-consumer.mjs` | `src/dacs/native-agreement-payment-consumer.mjs` |
+| `src/purchases.mjs:47` | `./purchase-limits.mjs` | `src/purchase-limits.mjs` |
+| `src/purchases.mjs:48` | `./buyer-funding.mjs` | `src/buyer-funding.mjs` |
+| `src/purchases.mjs:49` | `./dacs/action-admission.mjs` | `src/dacs/action-admission.mjs` |
+| `src/purchases.mjs:50` | `./public-admission.mjs` | `src/public-admission.mjs` |
 | `src/seams/buyer-access-not-wired.mjs:1` | `../client-errors.mjs` | `src/client-errors.mjs` |
-| `src/seams/purchase-store-not-wired.mjs:1` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/seams/purchase-store-not-wired.mjs:4` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/seams/purchase-store-not-wired.mjs:5` | `../util/sqlite-purchase-admission.mjs` | `src/util/sqlite-purchase-admission.mjs` |
+| `src/seams/purchase-store-not-wired.mjs:6` | `../util/sqlite-statement-boundary.mjs` | `src/util/sqlite-statement-boundary.mjs` |
+| `src/seams/purchase-store-not-wired.mjs:7` | `../util/sqlite-write-lease.mjs` | `src/util/sqlite-write-lease.mjs` |
 | `src/seams/seller-integration-not-wired.mjs:1` | `../client-errors.mjs` | `src/client-errors.mjs` |
 | `src/seams/wallet-actions-not-wired.mjs:1` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/substrate/demos.mjs:12` | `../dacs/chain.mjs` | `src/dacs/chain.mjs` |
+| `src/substrate/demos.mjs:13` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/util/sqlite-purchase-admission.mjs:2` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/util/sqlite-purchase-admission.mjs:3` | `./sqlite-write-lease.mjs` | `src/util/sqlite-write-lease.mjs` |
+| `src/util/sqlite-statement-boundary.mjs:3` | `./sqlite-write-lease.mjs` | `src/util/sqlite-write-lease.mjs` |
+| `src/util/sqlite-write-lease.mjs:2` | `../client-errors.mjs` | `src/client-errors.mjs` |
 | `src/wallet/devnet-native-transport.mjs:6` | `../dacs/delivery-evidence.mjs` | `src/dacs/delivery-evidence.mjs` |
 | `src/wallet/devnet-native-transport.mjs:7` | `../devnet-demo/storage-write-recovery.mjs` | `src/devnet-demo/storage-write-recovery.mjs` |
-| `src/wallet/devnet-native-transport.mjs:8` | `../seams/wallet-actions-not-wired.mjs` | `src/seams/wallet-actions-not-wired.mjs` |
+| `src/wallet/devnet-native-transport.mjs:8` | `./payload-helpers.mjs` | `src/wallet/payload-helpers.mjs` |
 | `src/wallet/devnet-native-transport.mjs:10` | `../dacs/network-binding.mjs` | `src/dacs/network-binding.mjs` |
 | `src/wallet/devnet-native-transport.mjs:11` | `../util/http.mjs` | `src/util/http.mjs` |
 | `src/wallet/devnet-native-transport.mjs:12` | `../signatures.mjs` | `src/signatures.mjs` |
 | `src/wallet/devnet-native-transport.mjs:13` | `../dacs/chain.mjs` | `src/dacs/chain.mjs` |
+| `src/wallet/durable-journal.mjs:23` | `./holder-incarnation.mjs` | `src/wallet/holder-incarnation.mjs` |
+| `src/wallet/effect-boundary.mjs:9` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/wallet/effect-boundary.mjs:10` | `../dacs/action-admission.mjs` | `src/dacs/action-admission.mjs` |
+| `src/wallet/effect-boundary.mjs:11` | `../public-admission.mjs` | `src/public-admission.mjs` |
+| `src/wallet/effect-fence.mjs:6` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/wallet/effect-history.mjs:10` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/wallet/node-demos-loading.mjs:15` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/wallet/node-wallet-session.mjs:12` | `../client-errors.mjs` | `src/client-errors.mjs` |
+| `src/wallet/node-wallet-session.mjs:13` | `../public-admission.mjs` | `src/public-admission.mjs` |
+| `src/wallet/node-wallet-session.mjs:14` | `./devnet-native-transport.mjs` | `src/wallet/devnet-native-transport.mjs` |
+| `src/wallet/node-wallet-session.mjs:15` | `./node-demos-loading.mjs` | `src/wallet/node-demos-loading.mjs` |
+| `src/wallet/node-wallet-session.mjs:16` | `../public/portal/embedded-wallet/sdk-provider.mjs` | `src/public/portal/embedded-wallet/sdk-provider.mjs` |

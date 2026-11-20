@@ -13,7 +13,9 @@ const OTHER_STATES = new Set(['signed', 'signed-held', 'observed']);
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const undetermined = (message) => Object.assign(new Error(message), { code: UNDETERMINED_CODE, status: 503 });
-const isIntent = (value) => isRecord(value) && typeof value.lane === 'string' && value.lane.length > 0 && HASH.test(value.artifactHash) && typeof value.signed === 'boolean';
+// `HASH.test` turns its argument into text, so an array holding one hash would pass without the type check.
+const isHash = (value) => typeof value === 'string' && HASH.test(value);
+const isIntent = (value) => isRecord(value) && typeof value.lane === 'string' && value.lane.length > 0 && isHash(value.artifactHash) && typeof value.signed === 'boolean';
 
 // A returned reply larger than the byte limit, or one that cannot be measured, proves nothing. This runs after the source has
 // returned, so it does not limit how much the source reads; a source limits its own read from the `maxBytes` it is given.
@@ -59,18 +61,21 @@ async function isExecuted(address, sources) {
 
 // A lane record the effect boundary could have written; one that is not cannot be read as saying anything about a dispatch.
 const isHistoryRecord = (record) => {
-  if (!isRecord(record) || !Number.isSafeInteger(record.seq) || !HASH.test(record.artifactHash) || typeof record.state !== 'string') return false;
+  if (!isRecord(record) || !Number.isSafeInteger(record.seq) || !isHash(record.artifactHash) || typeof record.state !== 'string') return false;
   if (!OTHER_STATES.has(record.state) && !STAGE_STATE.test(record.state)) return false;
   return !record.state.endsWith('-withheld') || Number.isSafeInteger(record.of);
 };
 
 // Whether the exact signed bytes may have reached the transport, from the whole history of their lane. A started record may have, unless a
 // withheld record of its stage names it (the effect boundary writes started first, and withheld after the started record's checks refuse);
-// an unknown, acknowledged or observed record may have whatever else the lane holds. A malformed or unknown record is undetermined.
+// an unknown, acknowledged or observed record may have whatever else the lane holds. A malformed or unknown record, a gap in the
+// sequence numbers, and a record that names another lane are undetermined.
 async function mayHaveReachedTransport({ lane, artifactHash }, sources) {
   const history = await readWithin((bounds) => sources.history(lane, artifactHash, bounds));
   if (history?.complete !== true || !Array.isArray(history.records) || history.records.length > READ_BOUNDS.maxItems) throw undetermined('the dispatch history is incomplete or too long to read whole');
   if (!history.records.every(isHistoryRecord)) throw undetermined('the dispatch history holds a malformed or unknown record');
+  if (!history.records.every((record, index) => record.seq === history.records[0].seq + index)) throw undetermined('the dispatch history has a gap or a repeated sequence number');
+  if (history.records.some((record) => record.lane !== undefined && record.lane !== lane)) throw undetermined('the dispatch history holds a record of another lane');
   const records = history.records.filter((record) => record.artifactHash === artifactHash);
   if (!records.some((record) => record.state === 'signed')) throw undetermined('the dispatch history holds no record of these signed bytes');
   const startedAt = new Set(records.filter((record) => record.state.endsWith('-started')).map((record) => `${record.state.replace('-started', '')}\n${record.seq}`));

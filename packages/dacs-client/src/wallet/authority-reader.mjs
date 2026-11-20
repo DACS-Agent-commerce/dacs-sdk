@@ -6,6 +6,7 @@ import { canonicalize } from '@kynesyslabs/dacs';
 import { DACS_SELLER_DISCOVERY_FORMAT, TESTNET_PROFILE_TP1, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
 import { createDemosNetworkBinder, NetworkBindingError } from '../dacs/network-binding.mjs';
 import { AUTHORITY_READ_DEADLINE_MS } from '../public-admission.mjs';
+import { claimForAddress } from '../signatures.mjs';
 import { DEVNET_NODE2_BLOCK_LAYOUT, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, sourceBlockReader, TP1_REVIEWED_BLOCK_TWO_HASH } from './devnet-native-transport.mjs';
 
 const PROVENANCE_PREFIX = 'dacs-client-authority:';
@@ -24,6 +25,11 @@ function requireInputs({ identityRecord, claim, ...sources } = {}) {
   }
   if (['network', 'chainIdentity', 'pinVersion'].some(member => typeof identityRecord?.[member] !== 'string')) throw new TypeError('identityRecord is required');
   if (typeof claim !== 'function') throw new TypeError('claim is required as a function');
+}
+
+// The claim of the buyer wallet a saved purchase names, or undefined when the row has no well-formed buyer wallet.
+function savedBuyerClaim(row) {
+  try { return claimForAddress(row.terms.buyer?.wallet); } catch { return undefined; }
 }
 
 // The actor's own profile, built from the record and the wire's constants as `bindTp1Profile` builds `binding.profile`.
@@ -60,13 +66,15 @@ async function observeChainIdentity(authority, record) {
  * - `identityRecord`: the SDK-approved identity record;
  * - `claim()`: the session wallet's current claim, read synchronously;
  * - `listings.isRegistered(seller)`: true for a seller whose Listing this composition chain-verified and registered;
- * - `purchases.findByJobId(jobId)`: the saved purchase row for that job, or null;
+ * - `purchases.findByJobId(jobId)`: the saved purchase row for that job, or null; a row counts only when its `terms.buyer.wallet`
+ *   is the wallet of `claim()`, and its seller is the one its Listing at `state.protocol.listing` names;
  * - `participantImplementations.entriesFor(claim)`: the independently approved enrollment for a claim, as entries
  *   `{claim, profile, modules, evidence, revoked}`.
  * The reader needs no completed binding. Its answer is the connection decision with the participants asked for, in order:
  * the wallet's own claim with its own profile, and a counterparty only when local evidence relates it to the scope (a registered
- * Listing for discovery, the purchase row's seller for a job) and exactly one current, unrevoked enrollment names it. Anything
- * else answers with no participants, which the wire refuses as a participant mismatch. A connection that cannot be authenticated
+ * Listing for discovery, the seller of the wallet's own purchase row for a job) and exactly one current, unrevoked enrollment names it. A job
+ * with no saved purchase of this wallet's, or whose purchase's Listing names no seller, answers no participants, the wallet's own claim
+ * included. Anything else answers with no participants, which the wire refuses as a participant mismatch. A connection that cannot be authenticated
  * (another chain, a conflicting identity, another endpoint) answers nothing. A transport failure rejects with its original error.
  * Throws TypeError at construction when an input is missing.
  */
@@ -74,14 +82,16 @@ export function createAuthorityReader(inputs) {
   requireInputs(inputs);
   const { authority, identityRecord, claim, listings, purchases, participantImplementations } = inputs;
 
-  // The counterparty claims local evidence relates to this scope, or null when it relates none.
-  async function relatedPeers({ sessionId, participants }) {
+  // The counterparty claims local evidence relates to this scope for the wallet `own`, or null when it relates none.
+  // A saved purchase belongs to the buyer wallet in its terms; another buyer's row relates nobody to this wallet.
+  async function relatedPeers({ sessionId, participants }, own) {
     if (sessionId === DACS_SELLER_DISCOVERY_FORMAT) {
       const registered = await Promise.all(participants.map(seller => listings.isRegistered(seller)));
       return registered.every(Boolean) ? participants : null;
     }
     const row = await purchases.findByJobId(sessionId);
-    const seller = row?.terms?.protocol?.jobId === sessionId ? row.state?.listing?.seller?.identity?.presentedBy : undefined;
+    if (row?.terms?.protocol?.jobId !== sessionId || savedBuyerClaim(row) !== own) return null;
+    const seller = row.state?.protocol?.listing?.seller?.identity?.presentedBy;
     return typeof seller === 'string' ? [seller] : null;
   }
 
@@ -97,7 +107,10 @@ export function createAuthorityReader(inputs) {
   async function participantsFor(scope) {
     if (scope.sessionId === null) return [];
     const own = claim();
-    const peers = await relatedPeers(scope) ?? [];
+    const related = await relatedPeers(scope, own);
+    // A job that is not this wallet's answers no participants, the wallet's own claim included.
+    if (related === null && scope.sessionId !== DACS_SELLER_DISCOVERY_FORMAT) return [];
+    const peers = related ?? [];
     const entries = await Promise.all(scope.participants.map(asked => {
       if (asked === own) return { claim: own, profile: ownProfile(identityRecord), modules: { ...TESTNET_PROFILE_TP1.tuple } };
       return peers.includes(asked) ? enrolledImplementation(asked) : null;

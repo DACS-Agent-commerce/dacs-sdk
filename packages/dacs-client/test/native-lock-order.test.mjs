@@ -99,7 +99,8 @@ function countingLanes(journal, events) {
 }
 
 // A leased CREATE through the effect boundary while `name` runs on the same address, as `overlap` does without one.
-// `change` runs when the other operation has started, before the leased broadcast.
+// `change` runs when the other operation has started, before the leased broadcast. Recovery arriving during the
+// leased broadcast finds the retained CREATE with a signed record and no lane row, so the leased broadcast goes out.
 async function boundedOverlap(t, { name, arrival, change = () => {} }) {
   const events = [], hooks = {};
   let lanes;
@@ -109,7 +110,7 @@ async function boundedOverlap(t, { name, arrival, change = () => {} }) {
   if (name === 'readback') await c.world.retain(retained, 'observed');
   if (name === 'recovery') { const first = await c.world.lease(); await c.world.confirm(retained); await c.world.release(first); }
   const lease = await c.world.lease();
-  if (name === 'recovery') await c.world.retain(retained, 'broadcast-accepted');
+  if (name === 'recovery' && arrival === 'confirmation') await c.world.retain(retained, 'broadcast-accepted');
   let other;
   const outsideLocks = AsyncLocalStorage.snapshot();
   const trigger = arrival === 'confirmation' ? 'confirmTx' : 'broadcastTx';
@@ -149,6 +150,12 @@ test('actual broadcast, confirmation and CREATE recovery with the real history a
   assert.deepEqual(recovery.lanes.reacquired, []);
   assert.deepEqual(recovery.events.filter((e) => e.op === 'recovery').map((e) => e.kind), ['fence', 'lane']);
   assert.deepEqual(recovery.c.calls, { confirmTx: 3, broadcastTx: 1 }, 'recovery confirmed, and its resend waited for the lease to end');
+  const duringBroadcast = await boundedOverlap(t, { name: 'recovery', arrival: 'broadcast' });
+  assert.equal(duringBroadcast.leasedOutcome, 'accepted');
+  assert.deepEqual(duringBroadcast.other, { disposition: 'pending', hash: duringBroadcast.retained.hash, noResend: true });
+  assert.deepEqual(duringBroadcast.lanes.reacquired, []);
+  assert.deepEqual(duringBroadcast.events.filter((e) => e.op === 'recovery').map((e) => e.kind).slice(0, 2), ['fence', 'lane']);
+  assert.deepEqual(duringBroadcast.c.calls, { confirmTx: 2, broadcastTx: 1 }, 'only the leased CREATE was broadcast');
 
   // A stop, a re-hold or a connection change that arrives while the other operation waits refuses the leased broadcast.
   for (const [code, change] of [['writes_stopped', (c) => { c.stopped = true; }], ['profile_not_admitted', () => setPurchaseAdmission('held')],
