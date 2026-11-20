@@ -92,7 +92,8 @@ async function sellerWorld(t, { capability = contextCapability(), publicEndpoint
   return { f, counts, kitEnrollment, start, buyerFor, refusedWith };
 }
 const refusal = (status, error, authorityRead = true) => ({ status, error, signed: false, signs: 0, ...(authorityRead ? {} : { authority: 0 }) });
-const withoutAuthority = ({ authority, ...rest }) => rest;
+// A refusal's record without its count of authority reads, for refusals that reach the wire's participant check.
+const withoutAuthority = (result) => Object.fromEntries(Object.entries(result).filter(([key]) => key !== 'authority'));
 
 test('with the buyer\'s valid signature, Listing and job scope kept: its enrollment removed, revoked, duplicated, or with one profile or module member changed each refuses tp1_participant_profile_mismatch with zero effect signatures; a signed buyer declaration alone never enrolls; a failed bootstrap signature refuses peer_delegation_signature_invalid or peer_signature_invalid with zero authority calls', { timeout: TEST_TIMEOUT_MS }, async (t) => {
   const w = await sellerWorld(t);

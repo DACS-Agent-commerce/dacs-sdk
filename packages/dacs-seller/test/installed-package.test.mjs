@@ -166,7 +166,7 @@ test('the import scan sees static, side-effect, re-export and literal dynamic im
   assert.deepEqual(relativeImports('src/probe.mjs', probe).sort(), ['c.mjs', 'src/dacs/a.mjs', 'src/dacs/b.mjs', 'src/util/d.mjs']);
 });
 
-test('P11a1-T22: the packed host test passes with the wire buyer helper; the packed seller installs outside the repository, refuses to start while its guard is off, and serves one Listing only under the unshipped fixture loader', { timeout: INSTALLED_TEST_TIMEOUT_MS }, () => {
+test('the packed host test passes with the wire buyer helper; the packed seller installs outside the repository, refuses to start while its guard is off, and serves one Listing only under the unshipped fixture loader', { timeout: INSTALLED_TEST_TIMEOUT_MS }, () => {
   const manifestPath = join(packageDirectory, 'package.json');
   assert.ok(existsSync(manifestPath), 'packages/dacs-seller/package.json is the package manifest');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
