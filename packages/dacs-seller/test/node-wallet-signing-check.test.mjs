@@ -5,8 +5,10 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPrivateKey, sign } from 'node:crypto';
 import { installNoEgress } from '../../dacs-client/test/helpers/no-egress.mjs';
-import { api, evidenceInput, finalization, FIXTURE_MNEMONIC, inWalletPass, jsonResponse, ok, outcomes, preparedWrite, replyTo, settlingApproval, settlingWorld,
-  spyTransactionSignatures, T0, writesOf } from './helpers/seller-node-wallet-world.mjs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { api, evidenceInput, finalization, FIXTURE_MNEMONIC, inWalletPass, jsonResponse, ok, outcomes, preparedWrite, privateDataDirectory, replayNode, replyTo,
+  restartedWorld, runWalletChild, settlingApproval, settlingWorld, spyTransactionSignatures, T0, writesOf } from './helpers/seller-node-wallet-world.mjs';
 
 const egress = installNoEgress();
 after(() => {
@@ -247,4 +249,30 @@ test('an artifact anchor over the composed wallet refuses a Listing publish whos
   for (const authorizeSigning of ['TEST', {}]) {
     await assertPublishRefused(world, signatures, () => anchor.publish({ logicalAddress: LISTING_ADDRESS, artifact: listing, artifactKind: 'Listing', authorizeSigning }), 'not-authorized');
   }
+});
+
+test('killed while a CREATE\'s authorize runs, at its approval answer or at its signature, the wallet sent nothing, and after a restart the same CREATE is signed, confirmed and broadcast once', async t => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  const nonceReadsAtKill = [];
+  for (const call of [1, 2]) {
+    const directory = privateDataDirectory(t), stateDirectory = privateDataDirectory(t);
+    const child = await runWalletChild(`guarded:${call}`, directory, stateDirectory);
+    assert.equal(child.signal, 'SIGKILL', `call ${call}: ${child.stderr}`);
+    const killed = JSON.parse(readFileSync(join(stateDirectory, 'killed.json'), 'utf8'));
+    assert.equal(killed.call, call);
+    assert.ok(!killed.reads.includes('confirmTx') && !killed.reads.includes('broadcastTx'), `call ${call}: nothing was sent before the kill`);
+    nonceReadsAtKill.push(countOf(killed.reads, 'getAddressNonce'));
+    const left = replayNode(join(stateDirectory, 'chain.json'));
+    assert.deepEqual({ confirms: left.confirms.length, broadcasts: left.broadcasts.length }, { confirms: 0, broadcasts: 0 }, `call ${call}: the killed process sent nothing`);
+
+    const world = await restartedWorld(t, directory, stateDirectory);
+    const before = signatures.length;
+    const { wallet, request } = await preparedWrite(world);
+    const answer = await inWalletPass(world, () => wallet.request(request, { authorize: () => true }), { context: jobCreate() });
+    assert.equal(answer.success, true, `call ${call}: ${JSON.stringify(answer)}`);
+    assert.equal(signatures.length - before, 1, `call ${call}: signed once after the restart`);
+    assert.deepEqual({ confirms: world.node.confirms.length, broadcasts: world.node.broadcasts.length }, { confirms: 1, broadcasts: 1 }, `call ${call}: sent once`);
+    await world.wallet.close();
+  }
+  assert.ok(nonceReadsAtKill[1] > nonceReadsAtKill[0], 'the second kill came after the wallet\'s post-approval nonce read');
 });
