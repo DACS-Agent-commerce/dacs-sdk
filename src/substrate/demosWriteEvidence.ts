@@ -312,7 +312,12 @@ export function assertDemosWriteEvidence(
     evidence.nativeRead.owner.toLowerCase() !== evidence.writer.toLowerCase() ||
     evidence.nativeRead.programName !== expectedProgramName
   ) {
-    throw new DacsError("Demos signed transaction does not bind its native write");
+    const unsupportedName = evidence.operation === "create" &&
+      typeof payload?.programName === "string" &&
+      payload.programName !== expectedProgramName;
+    throw new DacsError(unsupportedName
+      ? "Demos signed transaction does not bind its native write; only SDK-derived program names are supported"
+      : "Demos signed transaction does not bind its native write");
   }
   const metadataHash = payload.metadata === undefined
     ? undefined
