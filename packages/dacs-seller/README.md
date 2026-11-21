@@ -1177,7 +1177,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
 - The signed challenge route is composed directly, not by the host:
   `createSellerHttpHandler(agent, { wire, context })` serves
   `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the
-  `wire` context (`createWireContext`) carries the host's `stopped` predicate; without
+  `wire` context (`createWireContext`, from
+  `@kynesyslabs/dacs-seller/src/dacs/seller-wire-requests.mjs`) carries the host's
+  `stopped` predicate; without
   one the handler refuses construction. No Agreement exists yet and the wire journal is never
   written. The seller refuses in this order: the body (64 KiB, one JSON value, no duplicate
   members or lossy numbers: `body_too_large`, `bad_json`; unsigned, like the envelope's
