@@ -90,7 +90,7 @@ async function fixture(t, options = {}) {
     return owned;
   };
   return { rows, scope, challengeBody, request, issue, input, attempt, path, listing, pin,    get store() { return store; }, advance: ms => { time += ms; }, now: () => time,
-    reopen() { store.close(); open(); }, closeLost() { store.challenges.closeLostValidations(); store.recoverLostContextReservations(); } };
+    reopen() { store.close(); open(); }, closeLost() { store.challenges.closeLostValidations(); } };
 }
 
 

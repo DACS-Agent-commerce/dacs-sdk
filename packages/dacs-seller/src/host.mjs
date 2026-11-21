@@ -380,10 +380,9 @@ export async function startSellerHost(options) {
     opened.push(() => store.close());
     // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
     const capacity = createPurchaseCapacity({ store, now, maxRecords: maxReservationUnits, sessionState: sellerStoreInternals(store).sessionState });
-    // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
-    // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
+    // This host holds the state lock, so a validator left by an earlier process has no run left: it closes as lost.
+    // The admission transaction's startup sweep, below, ends the context steps an earlier process left running.
     store.challenges.closeLostValidations();
-    store.recoverLostContextReservations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     const sellerClaim = listing.seller.identity.presentedBy;
     // The agent asks which context requests were admitted through these records; the admission transaction and the journal they read are
