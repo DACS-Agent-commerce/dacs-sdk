@@ -91,6 +91,10 @@ const INACTIVE_SIGNATURE_DOMAIN_REUSE_MS = 60000;
 // The longest failure code or message from the node that a failed storage
 // write's result repeats; a longer one is left out as unknown.
 const NODE_FAILURE_TEXT_MAX_LENGTH = 512;
+// Characters a repeated failure code or message must not hold: control and
+// formatting characters (line breaks, terminal escapes, direction overrides),
+// and line and paragraph separators. Text with one is left out.
+const NODE_FAILURE_TEXT_UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 // A refused header set is the wallet's to fix, usually its clock. Relays answer
 // these codes with 409 (never a status the SDK resends) and this message only.
 const AUTH_REFUSALS = Object.freeze({
@@ -955,12 +959,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // names one, and match the retained signed bytes; otherwise it differs.
   // The named confirmed block is then read and must list the hash. A block that
   // cannot be read, or does not list it, leaves the write pending, not failed.
+  // The node's code and message are repeated only when short, printable text.
   async function failedStorageWrite(hash,r,binding,status,tx) {
     if(tx.hash!==hash || !Number.isSafeInteger(tx.blockNumber) || tx.blockNumber<0 || (status.blockNumber!==undefined && status.blockNumber!==tx.blockNumber)
       || !storageExecutionMatches(tx.content,r.signedTransaction.content,hash,binding)) fail('readback_unverified','the failed storage write differs from the retained signed transaction');
     const block=await node('getBlockByNumber',{ blockNumber:tx.blockNumber }).catch(() => null);
     if(!includedInBlock(block,hash,tx.blockNumber)) return { disposition:'pending',hash,nonce:r.nonce,noResend:true,...keptReferenceBlock(r) };
-    const attrs=tx.attrs ?? {},text=(value)=>typeof value==='string' && value.length<=NODE_FAILURE_TEXT_MAX_LENGTH ? value : null;
+    const attrs=tx.attrs ?? {},text=(value)=>typeof value==='string' && value.length<=NODE_FAILURE_TEXT_MAX_LENGTH && !NODE_FAILURE_TEXT_UNSAFE.test(value) ? value : null;
     const failure={ blockNumber:tx.blockNumber,code:text(attrs.code),message:text(attrs.message),
       referenceBlock:Number.isSafeInteger(attrs.reference_block) && attrs.reference_block>=0 ? attrs.reference_block : null };
     const cause=failure.code===null ? '' : ` (${failure.code}${failure.message===null ? '' : `: ${failure.message}`})`;
