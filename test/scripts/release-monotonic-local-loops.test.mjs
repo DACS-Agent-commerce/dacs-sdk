@@ -72,7 +72,7 @@ for (const jump of [-60_000, 60_000]) {
     const create = loadFunction('packages/dacs-seller/src/dacs/seller-http.mjs', 'createSellerHttpHandler', {
       Date: { now: () => 1_000_000 + elapsed + (elapsed > 0 ? jump : 0) }, performance: { now: () => elapsed },
       assertKitOperationAdmitted() {}, ROUTES: {}, SIGNATURE_ROUTES: {}, createSellerEffectRoutes: () => ({}), loopbackSocket: () => true,
-      DACS_SELLER_HTTP_LIMITS: { maxResponseBodyBytes: 10_000 }, wireAuthenticator: () => ({}),
+      DACS_SELLER_HTTP_LIMITS: { maxResponseBodyBytes: 10_000 }, SELLER_HTTP_MAX_CONCURRENT: 8, wireAuthenticator: () => ({}),
       SINGLE_VALUE_HEADERS: [], SellerTransportError: class extends Error {}, WireError: class extends Error {},
     });
     const claim = 'seller';
