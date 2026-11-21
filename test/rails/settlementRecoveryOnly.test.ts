@@ -5,11 +5,7 @@ import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
-  isSettlementBridge,
-  declareSettlementBridge,
-  inheritSettlementBridge,
   settlementBindingHash,
-  settlementBridgeTraits,
   settlementKey,
   type SettlementBinding,
   type SettlementIdempotencyStore,
@@ -586,38 +582,6 @@ describe("recovery guards against a log or store that breaks the protocol", () =
   });
 });
 
-describe("the resume registry", () => {
-  test("an SDK bridge is registered and a bare function is not", () => {
-    const x402Rail: X402Rail = { address: "0xme", finalityBlocks: 12, settle: vi.fn() };
-    const bridges = [
-      payDemSettle({ address: payer, settle: vi.fn() }, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
-      evmErc20Settle(countingEvmRail(), evmCfg, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
-      x402Settle(x402Rail, x402Cfg, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
-    ];
-    expect(bridges.map(isSettlementBridge)).toEqual([true, true, true]);
-    expect(isSettlementBridge(async () => ({}))).toBe(false);
-    expect(isSettlementBridge({})).toBe(false);
-  });
-
-  test("registering a bridge again keeps what it declared", () => {
-    const bridge = declareSettlementBridge(async () => evmPaid, { journaled: false });
-    expect(declareSettlementBridge(bridge)).toBe(bridge);
-    expect(settlementBridgeTraits(bridge)).toEqual({ journaled: false });
-  });
-
-  test("a bridge that declares nothing has empty traits and a bare function has none", () => {
-    expect(settlementBridgeTraits(declareSettlementBridge(async () => evmPaid))).toEqual({});
-    expect(settlementBridgeTraits(async () => evmPaid)).toBeUndefined();
-  });
-
-  test("a wrapper around a bridge carries what the bridge declared", () => {
-    const bridge = declareSettlementBridge(async () => evmPaid, { journaled: false });
-    const wrapper = inheritSettlementBridge(bridge, async () => evmPaid);
-    expect(settlementBridgeTraits(wrapper)).toEqual({ journaled: false });
-    expect(isSettlementBridge(inheritSettlementBridge(async () => evmPaid, async () => evmPaid))).toBe(false);
-  });
-});
-
 describe("withRecoveredAttempts", () => {
   const network = "demos";
   const stubBridge = () => {
@@ -633,17 +597,15 @@ describe("withRecoveredAttempts", () => {
     return { bridge, forwarding, seen };
   };
 
-  test("withRecoveredAttempts adds journal history to a recovery request and keeps the registration", async () => {
+  test("withRecoveredAttempts adds journal history to a recovery request", async () => {
     const { bridge, forwarding, seen } = stubBridge();
     const wrapped = withRecoveredAttempts(bridge, async () => [{ txHash: hash, chainId: network, ok: false }]);
-    expect(isSettlementBridge(wrapped)).toBe(true);
     expect(wrapped).not.toBe(bridge);
     await expect(wrapped({ ...demRequest, recoveryOnly: true })).rejects.toThrow(/proof of absence/);
 
     const forwarded = withRecoveredAttempts(forwarding, async () => [{ txHash: hash, chainId: network, ok: false }]);
     await expect(forwarded({ ...demRequest, recoveryOnly: true })).rejects.toThrow("stop");
     expect(seen[0]?.priorAttempts).toEqual([{ txHash: hash, chainId: network, ok: false }]);
-    expect(isSettlementBridge(forwarded)).toBe(false);
   });
 
   test("withRecoveredAttempts leaves a request that is not a recovery, or already has history, untouched", async () => {

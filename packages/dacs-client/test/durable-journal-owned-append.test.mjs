@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
+import { DurableWalletJournalError, openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
 
 const LANE = 'devnet/native-wallet/TEST-lane';
 
@@ -131,4 +131,37 @@ test('appendUnderLock refuses journal-fenced for a key another holder locks, as 
     await journal.appendUnderLock('history/self', 'history/self', { n: 3 });
   });
   assert.deepEqual(await journal.get('history/self'), { n: 3 });
+});
+
+test('withOwnedOrAcquiredLane passes the lane owner to work when it acquires, reuses the current frame, or reuses an explicit owner', async (t) => {
+  const { journal } = tempJournal(t);
+  const acquiredOwner = await journal.withOwnedOrAcquiredLane(LANE, async (owner) => owner);
+  assert.equal(typeof acquiredOwner, 'object');
+
+  let handOff;
+  const handedOut = new Promise((resolve) => { handOff = resolve; });
+  let finish;
+  const finished = new Promise((resolve) => { finish = resolve; });
+  const holding = journal.withWalletLock(LANE, async (owner) => {
+    assert.equal(await journal.withOwnedOrAcquiredLane(LANE, async (seen) => seen), owner, 'frame reuse passes the holding owner');
+    handOff(owner);
+    await finished;
+  });
+  const owner = await Promise.race([handedOut, holding]);
+  assert.equal(await journal.withOwnedOrAcquiredLane(LANE, async (seen) => seen, { owner }), owner, 'explicit reuse outside the frame passes the same owner');
+  finish();
+  await holding;
+  assert.notEqual(owner, acquiredOwner);
+});
+
+test('withOwnedOrAcquiredLane refuses null options with journal-invalid and runs no work', async (t) => {
+  const { journal } = tempJournal(t);
+  const invalid = (error) => error instanceof DurableWalletJournalError && error.code === 'journal-invalid';
+  let ran = 0;
+  await assert.rejects(journal.withOwnedOrAcquiredLane(LANE, async () => { ran += 1; }, null), invalid);
+  await journal.withWalletLock(LANE, async () => {
+    await assert.rejects(journal.withOwnedOrAcquiredLane(LANE, async () => { ran += 1; }, null), invalid);
+  });
+  assert.equal(ran, 0);
+  assert.deepEqual(journal.inspectLocks(), []);
 });
