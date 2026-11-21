@@ -147,6 +147,15 @@ test('an accepted native send is broadcast once; its lane stays readback-only ac
  assert.deepEqual(w.node.broadcasts,[hash]);assert.equal(w.count('sign'),1);
 });
 
+test('a native send keeps no reference block on its lane row, its result or its pending readback',async t=>{
+ const w=await world(t),sent=await w.send();
+ assert.equal(sent.success,true,JSON.stringify(sent));
+ w.node.status={state:'unknown'};
+ const read=await w.wallet.request({method:'readNativeTransfer',params:[{hash:sent.data.hash}]});
+ assert.equal(read.data.disposition,'pending',JSON.stringify(read));
+ for(const record of [await w.lane(),sent.data,read.data])assert.equal(Object.keys(record).some(key=>/reference/i.test(key)),false,JSON.stringify(record));
+});
+
 for(const [mode,code,stage] of [['drop-after-apply','outcome_unknown','broadcast-started'],['refuse','broadcast_rejected','broadcast-answered']]) {
  test(`a ${mode==='refuse'?'refused':'lost'} broadcast answer is never resent: ${code}, lane ${stage}`,async t=>{
   const w=await world(t);w.node.broadcast=mode;

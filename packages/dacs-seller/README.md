@@ -486,8 +486,10 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   logging one `seller-state: released the lock on job ...` line per row, closes
   the challenge validations it left as lost, and ends every context admission it
   left running: a row whose outcome the wire journal holds is settled from it,
-  and any other is compensated, which releases its hold and slot unless a Vet
-  write cannot be ruled out. Saved sessions, effects and settlements are not
+  and any other is compensated, which releases its hold and slot once each Vet
+  address shows no signed write, a Vet that landed (its receipt finalized and
+  verified), or a refused CREATE that can never land; a Vet write whose outcome
+  is still unknown keeps them. Saved sessions, effects and settlements are not
   changed. A lock row the host
   cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
