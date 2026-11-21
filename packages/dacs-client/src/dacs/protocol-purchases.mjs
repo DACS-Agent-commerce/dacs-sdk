@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
+import { bindHostStop, createHostStop, isHostStopRefusal } from '../host-stop.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
 import { deliveryDeadlineView, DELIVERY_TIME_SOURCE, verifiedDelivery } from './delivery-deadline-watch.mjs';
@@ -325,10 +326,12 @@ function storedRequestBody(record, path) {
  * `finish('suspended', cause)` records the suspension with the outcome in one write). Throws StaleProtocolCheck when
  * the row moved on, stored_request_mismatch when the body differs from the stored one, stored_request_corrupt when the
  * stored bytes fail their hash, and invalid_state when the purchase is ended, expired or suspended. A profile_not_admitted
- * refusal with queued work also records a suspension (K8). `suspendQueued(cause)` records one for a caller that saw the re-hold, `resume(id)` clears it.
+ * refusal, or a host stop refusal (writes_stopped, stop_check_failed, stop_check_invalid, stop_check_timeout), with queued work also records a suspension (K8).
+ * `hostStop` is the factory's stop gate: `start` and the pre-send `check()` read it after the hold, and `assertNotStopped(path)` reads it for the wire signer.
+ * `suspendQueued(cause)` records one for a caller that saw the re-hold, `resume(id)` clears it.
  * `failure(error)` records a swallowed failure for the operator, retaining its bounded class and cause.
  */
-export function createSellerRequestRecords({ db, ops, transaction, holder, now }) {
+export function createSellerRequestRecords({ db, ops, transaction, holder, now, hostStop = createHostStop() }) {
   // The stored row; changes made only by request records or kept pointers are adopted, any other change is stale.
   function reload() {
     const seen = holder.get(), stored = ops.get(seen.accountId, seen.id);
@@ -337,6 +340,7 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
   }
   function assertAuthorizes(row, path) {
     assertPurchaseActionsAdmitted();
+    hostStop.assert();
     const settled = row.status === 'settled_verified';
     if ((ENDED_STATUSES.has(row.status) && !settled) || (['agreement_pending', 'awaiting_approval'].includes(row.status) && !(Date.parse(row.expiresAt) > now()))
       || (row.state.protocol.sellerSuspension && SELLER_REQUEST_POLICY[path]?.durable)) throw new OperationError('invalid_state', 'the purchase no longer authorizes this seller request');
@@ -367,10 +371,10 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     });
     if (sameProgress(holder.get(), saved)) holder.set(saved);
   }
-  // An observed re-hold suspends queued work. The refusal keeps its own cause, and a failed suspension write does not replace it.
+  // An observed re-hold or host stop suspends queued work. The refusal keeps its own cause, and a failed suspension write does not replace it.
   function suspendOnHold(path, work) {
     try { return work(); } catch (error) {
-      if (error?.code === 'profile_not_admitted') { try { recordSuspension(error.code, path, { queuedOnly: true }); } catch (cause) { error.cause ??= cause; } }
+      if (error?.code === 'profile_not_admitted' || isHostStopRefusal(error)) { try { recordSuspension(error.code, path, { queuedOnly: true }); } catch (cause) { error.cause ??= cause; } }
       throw error;
     }
   }
@@ -405,6 +409,8 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     },
     /** Records a re-hold's suspension on the latest row, only when the purchase has queued work; throws StaleProtocolCheck when the row is gone. */
     suspendQueued: (cause) => recordSuspension(cause, null, { queuedOnly: true }),
+    /** Reads the host stop for the wire signer and records a suspension when it refuses; throws the stop's OperationError. */
+    assertNotStopped: (path) => suspendOnHold(path, () => hostStop.assert()),
     start(path, body) {
       const result = suspendOnHold(path, () => transaction(db, () => {
         const row = reload();
@@ -437,7 +443,11 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
 // already-resolved operator capability (null when it has none, so the paths
 // that need one refuse with buyer_access_closed).
-export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission }) {
+// `stopped` is the host's synchronous stop check (host-stop.mjs): every place that reads the hold also reads it, so
+// while it answers stopped no request is signed with the session key and none is sent.
+export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped }) {
+  const hostStop = createHostStop(stopped);
+  const assertPurchaseOpen = () => { assertPurchaseActionsAdmitted(); hostStop.assert(); };
   const { transaction } = purchaseStore(store);
   if (deliveryDeadlineWatch !== null) throw new TypeError('deliveryDeadlineWatch is not wired; invoke the separate watch.observe method explicitly');
   if (dacsProtocol?.buyerAccess !== undefined) throw new TypeError('buyerAccess moved to the top-level createProtocolPurchases option');
@@ -506,15 +516,16 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     const url = dacsProtocol.sellerEndpoint(operation.terms.seller.claim);
     if (!url) throw new OperationError('seller_agent_unavailable', 'no seller agent endpoint is known for this seller; nothing was signed or paid');
     let authentication;
+    const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now, hostStop });
     if (declared) {
       const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
       if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
       authentication = createSellerWireAuthentication({ admission, sessionSigner: sellerTransport.sessionSignerFor(operation), delegation: p.sessionDelegation,
         seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
+        assertNotStopped: requestRecords.assertNotStopped,
         job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
           deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
     }
-    const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now });
     const client = createSellerAgentClient({ url, fetchImpl, commitOnSignature, requestRecords, ...(declared ? { authentication, timeoutMs: sellerRequestTimeoutMs } : {}) });
     if (client.origin !== operation.terms.protocol.sellerAgent) throw new OperationError('seller_agent_changed', 'the seller agent endpoint changed since this purchase was prepared; nothing was signed or paid');
     return client;
@@ -542,7 +553,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   function prepareTerms({ verification, domain, sellerClaim, mode = OFFLINE_AGREEMENT_MODE }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     if (!supportsMode(mode)) throw unavailable();
     if(sourceCapability && (mode!==OFFLINE_AGREEMENT_MODE || domain.mode!=='public-chain-read' || domain.network!==sourceCapability.pins.network || domain.chainIdentity!==sourceCapability.pins.chainIdentity)) throw new OperationError('network_identity_mismatch','the separate source capability admits only newly bound native Agreement terms');
     if (!sourceCapability || domain.mode !== 'public-chain-read' || domain.chainIdentity !== sourceCapability.pins.chainIdentity || domain.network !== sourceCapability.pins.network) throw new OperationError('network_identity_mismatch', 'native purchase requires its source-bound chain domain');
@@ -697,7 +708,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
 
   // ---- DACS-1 identity presentation (wallet signature) ----
   async function identityRequest(operation, address) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     try {
       return await identityRequestOnce(operation, address);
@@ -743,7 +754,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   async function delegationWalletMessage(payload) {
     const local = admission.currentLocal(), localDigest = canonicalize(local);
     const bytes = await withinSellerDeadline(sellerSessionDelegationSigningBytes(payload, admission.binding, local));
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     if (canonicalize(admission.currentLocal()) !== localDigest) throw new OperationError('tp1_local_binding_changed', 'the actor connection changed before the wallet message');
     return Buffer.from(bytes).toString('utf8');
   }
@@ -788,7 +799,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // them like its admitted requests. Each settles when its step ends.
   const planFlightsRunning = () => [...planFlights.values()].map((running) => running.flight);
   async function planRequest(operation, presentationSignature, delegationSignature, intentGeneratedAt) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertSellerDeclaration(operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
@@ -924,7 +935,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   function signRequest(operation) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertSellerDeclaration(operation);
     const p = operation.state.protocol;
@@ -949,7 +960,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
 
   // ---- DACS-3 exchange, anchor, commitment readback ----
   async function submitAgreement(operation, { agreementSignature, anchorSignature } = {}) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertSellerDeclaration(operation);
     if (isOfflineWalletAgreement(operation)) {
@@ -1125,7 +1136,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // purchase readback cache on, its Agreement hit re-reads the current program
   // state only, reusing this purchase's authenticated transaction/block proof.
   async function recheckCommitment(operation, { reuseVerified = false } = {}) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertAgreementPaymentHeld(operation);
     if (!available) throw unavailable();
@@ -1372,7 +1383,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
 
   // A suspended purchase continues only on an explicit request naming its suspension, after admission and buyer access are checked again.
   async function recheck(operation, coords, { resumeSuspensionId } = {}) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     try{assertBuyerAccess(operation.terms.buyer.wallet, operation);}
     catch(error){
       if(error.code==='buyer_access_closed'&&!error.details?.buyerAccessMissing&&sourceCapability){
@@ -1381,7 +1392,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       }
       throw error;
     }
-    if (resumeSuspensionId) createSellerRequestRecords({ db, ops, transaction, holder: { get: () => operation, set: (row) => { operation = row; } }, now }).resume(resumeSuspensionId);
+    if (resumeSuspensionId) createSellerRequestRecords({ db, ops, transaction, holder: { get: () => operation, set: (row) => { operation = row; } }, now, hostStop }).resume(resumeSuspensionId);
     else {
       const stored = ops.get(operation.accountId, operation.id);
       if (stored?.state?.protocol?.sellerSuspension) return stored;
@@ -1576,13 +1587,13 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       }));
     },
     withNativePaymentLane: (operation, work) => {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
       if (!nativePayment) throw unavailable();
       return nativePayment.withWorkflow(operation, () => nativePayment.withPaymentLane(operation, async () => { await nativePayment.assertReady(operation); return work(); }));
     },
     readNativePaymentLane: (operation, key) => {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
       if (!nativePayment || !usesNativeAgreementPayment(operation)) throw unavailable();
       return nativePayment.withWorkflow(operation, () => nativePayment.withPaymentLane(operation, async () => {
@@ -1601,7 +1612,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     countersign: endIfStale(countersign),
   };
   flightReaders.set(purchases, planRunning);
-  return purchases;
+  return bindHostStop(purchases, stopped);
 }
 
 export function holdCompletedBundle(protocol) {

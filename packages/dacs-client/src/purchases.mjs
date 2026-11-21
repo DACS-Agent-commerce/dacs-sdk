@@ -48,6 +48,7 @@ import { PURCHASE_LIMITS } from './purchase-limits.mjs';
 import { buyerFundingError } from './buyer-funding.mjs';
 import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
 import { purchaseActionsAdmitted } from './public-admission.mjs';
+import { createHostStop, hostStopSourceOf, isHostStopRefusal } from './host-stop.mjs';
 
 // A wrapped protocol call that refuses admission never ran its original: it is no
 // protocol outcome, so the catches below neither record nor convert it.
@@ -246,7 +247,12 @@ function hasUniqueJobIdIndex(db) {
 // APPROVE_PURCHASE wallet-challenge purpose. Both are checked before any
 // statement is prepared. Every action that prepares, approves, hands off or
 // signs refuses first while purchase actions are held.
-export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes, chainReadTimeoutMs = 8000, generateJobId = generateCanonicalJobId }, diagnostic = () => false) {
+// `stopped` is the host's synchronous stop check (host-stop.mjs): those actions also refuse while it answers stopped.
+// A service given a `protocol` must carry the function that protocol was built with; a service with none may carry its own.
+export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes, chainReadTimeoutMs = 8000, generateJobId = generateCanonicalJobId, stopped }, diagnostic = () => false) {
+  const hostStop = createHostStop(stopped);
+  if (protocol !== null && hostStopSourceOf(protocol) !== hostStop.source) throw new TypeError('stop_seam_mismatch');
+  const assertPurchaseOpen = () => { assertPurchaseActionsAdmitted(); hostStop.assert(); };
   const { transaction, isUniqueViolation } = purchaseStore(store);
   const PURPOSES = walletPurposes(purposes);
   if (!Number.isSafeInteger(chainReadTimeoutMs) || chainReadTimeoutMs < 1 || chainReadTimeoutMs > 60000) {
@@ -410,7 +416,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function prepare({ accountId, listingId, version, seller, idempotencyKey, walletAddress, protocol: mode }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     const wallet = selectWallet(accountId, walletAddress);
     protocol?.assertBuyerAccess?.(wallet);
     // A legacy request hashes exactly as before; a DACS request adds its mode.
@@ -602,7 +608,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function issueApprovalChallenge({ operationId, token, address }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     let operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     if (operation.status !== 'awaiting_approval') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
@@ -648,7 +654,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function approve({ operationId, token, challengeId, signature }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     const operation = portalOperation(operationId, token);
     assertAgreementPaymentHeld(operation);
     if (operation.status !== 'awaiting_approval') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
@@ -667,7 +673,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // same payload only while the nonce fence proves nothing was consumed and
   // the configured RPC is still the bound network.
   async function prepareHandoff({ operationId, token }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     const operation = portalOperation(operationId, token);
     if (usesNativeAgreementPayment(operation)) return protocol.withNativePaymentLane(operation, () => prepareHandoffCore({ operationId, token }));
     return prepareHandoffCore({ operationId, token });
@@ -774,7 +780,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   // Wallet result from the portal. A hash is only a pointer for verification.
   async function nativePaymentLane({ operationId, token, key }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     const operation = portalOperation(operationId, token), approval = approvalFor.get(operation.id);
     if (!usesNativeAgreementPayment(operation) || operation.status !== 'payment_handoff' || !coordinates.get(operation.id)
       || !approval || approval.terms_hash !== operation.termsHash || approval.signer_address !== operation.terms.buyer.wallet) throw new OperationError('native_payment_lane_held', 'a normal approved, one-time native handoff is required; CREATE authority is not payment authority');
@@ -819,18 +825,27 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // claim, evidence and delivery checks. Every retry re-claims the same
   // observed transaction; no step here can send or re-send a payment.
   // A recorded suspension (K8) stops the continuation: the readback stands, and only an explicit request naming it resumes.
-  // A re-hold seen by the continuation suspends queued work; a binding failure while admitted is not a re-hold.
+  // A re-hold or a host stop seen by the continuation suspends queued work; a binding failure while admitted is not a re-hold.
+  // While the host is stopped a call that names no suspension suspends queued work, returns the readback and starts nothing;
+  // one that names a suspension is refused and leaves that suspension, with its id, as it was.
   async function continueProtocol(result, resumeSuspensionId) {
     const operation = result.operation;
     if (!operation.terms.protocol || !protocol?.available) return result;
     if (operation.status !== 'settled_verified' && operation.status !== 'agreement_pending') return result;
     const stored = ops.get(operation.accountId, operation.id);
     if (stored?.state?.protocol?.sellerSuspension && !resumeSuspensionId) return { ...result, operation: stored };
+    const suspendQueuedWork = (refusal) => {
+      if (!stored?.state?.protocol) return;
+      try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored ?? operation, set() {} }, now, hostStop }).suspendQueued(refusal.code); } catch (cause) { refusal.cause ??= cause; }
+    };
+    try { hostStop.assert(); } catch (refusal) {
+      if (resumeSuspensionId) throw refusal;
+      suspendQueuedWork(refusal);
+      return { ...result, operation: ops.get(operation.accountId, operation.id) ?? operation };
+    }
     let advanced;
     try { advanced = await protocol.recheck(operation, coordinates.get(operation.id), { resumeSuspensionId }); } catch (error) {
-      if (error?.code === 'profile_not_admitted' && stored?.state?.protocol && !purchaseActionsAdmitted()) {
-        try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored ?? operation, set() {} }, now }).suspendQueued(error.code); } catch (cause) { error.cause ??= cause; }
-      }
+      if ((error?.code === 'profile_not_admitted' && !purchaseActionsAdmitted()) || isHostStopRefusal(error)) suspendQueuedWork(error);
       throw error;
     }
     return { ...result, operation: advanced };
@@ -1433,7 +1448,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function agreementIdentity({ operationId, token, address }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     const operation = await admitProtocolStart(operationId, token);
     if (operation.status === 'agreement_pending' && operation.state.protocol.planned) await assertBoundDomain(operation);
     return protocol.identityRequest(operation, address);
@@ -1457,7 +1472,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // A plan step already running for this purchase answers before the domain,
   // balance and fee reads: its own signatures wait for it, others are told at once.
   async function agreementPlan({ operationId, token, signature, delegationSignature, intentGeneratedAt }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     const running = await protocol.runningPlan?.(protocolOperation(operationId, token), signature, delegationSignature, intentGeneratedAt);
     if (running) return running;
     return protocol.planRequest(await admitProtocolStart(operationId, token), signature, delegationSignature, intentGeneratedAt);
@@ -1466,21 +1481,21 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   const planRunning = (operation) => operation.status === 'agreement_pending' && !operation.state?.protocol?.planned && planRunningOf(protocol, operation);
 
   async function agreementSubmit({ operationId, token, agreementSignature, anchorSignature }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     const operation = protocolOperation(operationId, token);
     if (operation.status === 'agreement_pending') await assertBoundDomain(operation);
     return { operation: await protocol.submitAgreement(operation, { agreementSignature, anchorSignature }) };
   }
 
   async function completionRequest({ operationId, token }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     const operation = protocolOperation(operationId, token);
     if (operation.status !== 'settled_verified') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     return { operation, request: await protocol.countersignRequest(operation) };
   }
 
   async function completionCountersign({ operationId, token, bundleSignature, anchorSignature }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     const operation = protocolOperation(operationId, token);
     if (operation.status !== 'settled_verified') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     return { operation: await protocol.countersign(operation, { bundleSignature, anchorSignature }) };
