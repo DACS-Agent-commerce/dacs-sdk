@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test non-numeric block-zero height",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/stabilised-genesis-binding.test.mjs",
+      "before": "17aa39e642fdb074d2be1cac4f78c3b61835bdb9",
+      "after": "2414c4fcc621ca865938dc8f36888047bf3b14bf"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-1290672d4af0.json",
+    "packages/dacs-client/test/stabilised-genesis-binding.test.mjs"
+  ],
+  "note": "Adds the missing negative case for stabilised genesis: a block-zero response with number as the string '0' refuses with wrong_block. The existing matching-read case remains the numeric-zero positive control."
+}
