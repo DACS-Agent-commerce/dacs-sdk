@@ -198,7 +198,7 @@ that marker, or with another one, is from an older kit format and is refused
 with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A transport store that still has the
 tables an earlier version created and the kit no longer uses (`peer_slots`,
-`peer_transactions`, `peer_nonces`, `peer_nonce_retention`) drops them when they are all
+`peer_transactions`, `peer_nonces`, `peer_nonce_retention`, `kit_context_reservations`) drops them when they are all
 empty, and is refused with `kit_store_format_unsupported` and left unchanged when any holds a
 row. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
