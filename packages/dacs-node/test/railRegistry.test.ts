@@ -14,7 +14,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { contentHash } from "@kynesyslabs/dacs/canonical";
+import {
+  contentHash,
+  logicalToStorageProgramName,
+} from "@kynesyslabs/dacs/canonical";
 import { DemosAdapter } from "@kynesyslabs/dacs/substrate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -377,7 +380,14 @@ describe("read-only steward runtime", () => {
    * with its network calls stubbed. Each entry is a storage program that the
    * name index lists and that a read returns, keyed by storage address.
    */
-  async function readOnlySteward(programs: Readonly<Record<string, string>>) {
+  async function readOnlySteward(
+    programs: Readonly<
+      Record<string, string | { owner: string; programName: string }>
+    >,
+  ) {
+    const bindingProgramName = logicalToStorageProgramName(
+      DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+    );
     const directory = mkdtempSync(join(tmpdir(), "dacs-read-only-steward-"));
     roots.push(directory);
     const secretPath = join(directory, "demos.secret");
@@ -436,12 +446,19 @@ describe("read-only steward runtime", () => {
           source: "genesis-read",
         });
         vi.spyOn(created.raw.storagePrograms, "read").mockImplementation(
-          async (address: string) => ({
-            success: address in programs,
-            storageAddress: address,
-            owner: programs[address],
-            data: BINDING,
-          }) as never,
+          async (address: string) => {
+            const program = programs[address];
+            return {
+              success: address in programs,
+              storageAddress: address,
+              owner: typeof program === "string" ? program : program?.owner,
+              programName:
+                typeof program === "object"
+                  ? program.programName
+                  : bindingProgramName,
+              data: BINDING,
+            } as never;
+          },
         );
         return created as unknown as DacsDemosAdapterV1;
       },
@@ -479,6 +496,14 @@ describe("read-only steward runtime", () => {
       .resolves.toBeNull();
     await expect(resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", provider))
       .rejects.toThrow(/unresolved/);
+  });
+
+  it("refuses its own binding row when the program reads back under another name", async () => {
+    const { provider } = await readOnlySteward({
+      "stor:binding": { owner: OWNER, programName: "dacs4%3Apayment%3Aother" },
+    });
+    await expect(provider.resolveCurrentIndex(RAIL_REGISTRY_INDEX_ADDRESS))
+      .rejects.toMatchObject({ reasonCode: "rail-registry-currentness-indeterminate" });
   });
 
   it("refuses a binding name that two of its own programs claim", async () => {
