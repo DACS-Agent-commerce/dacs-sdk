@@ -274,6 +274,24 @@ test(`a WF record selected by its full commit hash may carry the subject "${subj
  r=check(dir);assert.equal(r.status,1,r.text);assert.ok(r.text.includes(`invalid delta ${subject}`),r.text);
 });
 
+test('a published fix that carried its own unqualified record is repaired by a record that names its hash',t=>{
+ const dir=scratch(t);useThisChecker(dir);
+ const subject='fix(client): TEST published fix with its own record',sha=recordedCommit(dir,subject,'TEST published fix','WF');
+ let r=check(dir);assert.equal(r.status,1,r.text);assert.ok(r.text.includes(`invalid delta ${subject}`),r.text);
+ const name=recordName({delta:'WF',subject}),earlier=JSON.parse(readFileSync(join(dir,'packages/dacs-client/records',name),'utf8'));
+ delete earlier.schema;
+ commitRecords(dir,'delta(client): WF record the published fix',[savedRecord(dir,{...earlier,sha,supersedes:[name]})]);
+ r=check(dir);assert.equal(r.status,0,r.text);
+});
+test('a record that names the hash but describes the commit differently leaves the unqualified record refused',t=>{
+ const dir=scratch(t);useThisChecker(dir);
+ const subject='fix(client): TEST published fix with its own record',sha=recordedCommit(dir,subject,'TEST published fix','WF');
+ const name=recordName({delta:'WF',subject}),earlier=JSON.parse(readFileSync(join(dir,'packages/dacs-client/records',name),'utf8'));
+ delete earlier.schema;earlier.kind='resolution';
+ commitRecords(dir,'delta(client): WF record the published fix',[savedRecord(dir,{...earlier,sha,supersedes:[name]})]);
+ const r=check(dir);assert.equal(r.status,1,r.text);assert.ok(r.text.includes(`invalid delta ${subject}`),r.text);
+});
+
 // Each fault edits archived records in a scratch clone of the checked head.
 const LEDGER_FAULTS=[
  {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,

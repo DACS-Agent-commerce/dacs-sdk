@@ -1,0 +1,15 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF let a record that names its commit hash replace the unqualified record of the same commit",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/WF-a87a8423ec3e.json",
+    "packages/dacs-client/records/WF-aa029393461f.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/delta-assemble.mjs",
+    "packages/dacs-client/scripts/delta-assemble.test.mjs",
+    "packages/dacs-client/scripts/delta-provenance.test.mjs"
+  ]
+}

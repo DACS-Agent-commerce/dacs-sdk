@@ -53,7 +53,13 @@ export function assemble(packageDir) {
   }
   const change = ({ record }) => ({ delta: record.delta, subject: record.subject, ...(record.sha ? { sha: record.sha } : {}), files: record.files });
   const row = ({ record }) => ({ sha: record.sha ?? null, subject: record.subject, files: record.commitFiles, ...(record.note ? { note: record.note } : {}) });
-  const current = records.filter(entry => !superseded.has(entry.name)), replaced = records.filter(entry => superseded.has(entry.name));
+  // A commit cannot name its own hash, so a record added with it carries none. A later record that names the hash
+  // and repeats the subject, kind, files and commit files replaces it outright; the commit has one description.
+  const restates = (earlier, later) => earlier.sha === undefined && later.sha !== undefined && earlier.delta === later.delta && earlier.subject === later.subject
+    && JSON.stringify([earlier.kind, earlier.files, earlier.commitFiles]) === JSON.stringify([later.kind, later.files, later.commitFiles]);
+  const restated = new Set(records.filter(({ name }) => superseded.has(name)).filter(({ name, record }) =>
+    records.some(other => other.record.supersedes?.includes(name) && restates(record, other.record))).map(({ name }) => name));
+  const current = records.filter(entry => !superseded.has(entry.name)), replaced = records.filter(entry => superseded.has(entry.name) && !restated.has(entry.name));
   const withFiles = entry => entry.record.files !== undefined;
   const ledger = { ...archive.ledger, changes: [...archive.ledger.changes, ...current.filter(withFiles).map(change)] };
   for (const [key, added] of [['supersededChanges', replaced.filter(withFiles).map(change)], ['supersededCommits', replaced.map(row)]]) {

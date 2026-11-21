@@ -106,6 +106,28 @@ test('a superseded record moves to the superseded lists; superseding a missing r
   assert.deepEqual(assemble(dir).failures, [`${prefix}records/${missing}: supersedes WF-000000000000.json, which is not a valid record file`]);
 });
 
+test('a record that names the commit hash replaces an unqualified record of the same commit; any other difference keeps both', t => {
+  const sha = 'c'.repeat(40), subject = 'fix(client): TEST published fix';
+  const dir = packageDir(t), earlier = put(dir, record(subject));
+  put(dir, record(subject, { sha, supersedes: [earlier] }));
+  let view = assemble(dir);
+  assert.deepEqual(view.failures, []);
+  assert.deepEqual(view.ledger.changes.map(change => change.sha), [sha]);
+  assert.equal(view.ledger.supersededChanges, undefined);
+  assert.equal(view.ledger.supersededCommits, undefined);
+  assert.deepEqual(view.commits.map(row => row.sha), [sha]);
+  for (const [name, edit] of [['files', { files: [{ path: prefix + 'src/purchases.mjs', before: blobB, after: blobA }] }], ['kind', { kind: 'resolution' }], ['commit files', { commitFiles: [prefix + 'README.md', prefix + 'src/purchases.mjs'] }], ['delta', { delta: 'D11' }]]) {
+    const other = packageDir(t), first = put(other, record(subject));
+    put(other, record(subject, { sha, supersedes: [first], ...edit }));
+    view = assemble(other);
+    assert.deepEqual(view.ledger.supersededChanges.map(change => change.subject), [subject], name);
+    assert.deepEqual(view.ledger.supersededCommits.map(row => row.subject), [subject], name);
+  }
+  const hashed = packageDir(t), first = put(hashed, record(subject, { sha }));
+  put(hashed, record(subject, { sha: 'd'.repeat(40), supersedes: [first] }));
+  assert.deepEqual(assemble(hashed).ledger.supersededChanges.map(change => change.sha), [sha], 'an earlier record that names a hash is kept');
+});
+
 test('a bad file name, invalid JSON, a directory or a record the schema refuses is reported and left out', t => {
   const dir = packageDir(t);
   const valid = put(dir, record('valid'));
