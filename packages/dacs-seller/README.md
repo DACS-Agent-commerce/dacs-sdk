@@ -294,7 +294,9 @@ included, through the wire, from the `binding` of `bindTp1Profile` and the
 `endpointProof` of `verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`,
 over the seller's signed discovery document), and `resolveJob(jobId)` gives the
 approved job's `{ listingPin, agreementHash, deadline? }`; a `deadline` it gives
-is passed to the check of the buyer's `delegation`. On the challenge and the
+is passed to the check of the buyer's `delegation`, which is refused with
+`peer_delegation_deadline` before signing if its `expiresAt` is later than that
+deadline. On the challenge and the
 context step there is no Agreement yet: the signed Agreement hash is the hash of
 the request's own `scope`, and only `listingPin` and `deadline` of `resolveJob`
 are used. Signing (the
