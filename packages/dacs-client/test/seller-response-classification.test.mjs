@@ -412,3 +412,10 @@ test('a signed bootstrap refusal keeps its bounded seller cause', async (t) => {
   assert.equal(outcome.error.cause, cause.slice(0, 240));
   assert.equal(outcome.fetches, 1);
 });
+
+test('a signed context rate limit without an error code keeps its failed-bootstrap code', async (t) => {
+  const s = await sellerWorld(t);
+  const client = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: answering(s.w, 429, { message: 'TEST the seller is busy' }, []) });
+  const error = await client.request(PATHS.context, { scope: { jobId: JOB } }).catch((failure) => failure);
+  refusedAs({ error }, CLASS.FAILED_BOOTSTRAP, 'seller_rate_limited', 429);
+});
