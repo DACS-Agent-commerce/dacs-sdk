@@ -1,0 +1,24 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "D76",
+  "subject": "delta(client): D76 add demosdk 4.0.23 to the reviewed loader table",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/demos-quiet-hooks.mjs",
+      "before": "91d06508f63df5308dece710ffb05aeae26a5bb8",
+      "after": "555739a53e5affb593e87b0cfdc00e9e25efc863"
+    },
+    {
+      "path": "packages/dacs-client/test/node-demos-loading.test.mjs",
+      "before": "e471ef9edf615b5ad88521496dc8ab4b0eb6fc43",
+      "after": "8db4994631655eff3014776c927f72a57e0d458f"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/D76-3116004bc928.json",
+    "packages/dacs-client/src/wallet/demos-quiet-hooks.mjs",
+    "packages/dacs-client/test/node-demos-loading.test.mjs"
+  ],
+  "note": "demosdk 4.0.23 ships a new GCRGeneration.js and a new demosclass.js; neither source digest was in the table, so each gets its own entry. The entries record the source digest, the diagnostic statements to empty (GCRGeneration.js lines 254, 378, 381, 382; demosclass.js lines 788, 2054, 2060, the same statements as in 4.0.18, each a standalone statement inside a braced block) and the digest of the transformed output, computed by this transform. The load test names the 4.0.23 line list and its plain-import expectation: like 4.0.17 and 4.0.18, its websdk has no extensionless directory import."
+}
