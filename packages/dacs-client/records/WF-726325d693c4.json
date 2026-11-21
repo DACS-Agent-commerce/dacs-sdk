@@ -1,0 +1,10 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF name the hash of the merged client README record",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/records/WF-40cd01d62eca.json",
+    "packages/dacs-client/records/WF-726325d693c4.json"
+  ]
+}

@@ -32,7 +32,8 @@ export function assertPurchaseRuntime(version) {
   if (!runtimeSupported(version)) throw new OperationError('runtime_unsupported', `purchases need Node ^22.22.2 || ^24.15.0; this is ${String(version)}`);
 }
 
-function readAdmission(options) {
+/** readAdmission(options) checks only the exact `admission: {binding, currentLocal}` shape and that no untrusted option is present; it calls neither member. Returns them, or throws TypeError(admission_required | admission_input_untrusted). */
+export function readAdmission(options) {
   const admission = options?.admission;
   if (admission === null || typeof admission !== 'object' || Object.keys(admission).sort().join() !== ADMISSION_MEMBERS
     || typeof admission.binding !== 'object' || admission.binding === null || typeof admission.currentLocal !== 'function') {
