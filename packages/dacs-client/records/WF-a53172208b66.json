@@ -1,0 +1,29 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record the guarded SQLite removal commits in the record layout and move the record anchor to the merge",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/DELTA-NOTES.md",
+      "before": "8b582646a7369d32ad7462fc9c88fb6519f6d5d6",
+      "after": "8b582646a7369d32ad7462fc9c88fb6519f6d5d6"
+    },
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "8ee29b64dda36cb64e35674b9384cf0e598478ee",
+      "after": "8ee29b64dda36cb64e35674b9384cf0e598478ee"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-47da48899f73.json",
+    "packages/dacs-client/records/WF-50b6a70a9f3e.json",
+    "packages/dacs-client/records/WF-514363f65fd0.json",
+    "packages/dacs-client/records/WF-56ff82533ea5.json",
+    "packages/dacs-client/records/WF-a53172208b66.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "This side's merged commits changed the notes from copies older than the base's, and the merge keeps the base's notes; this record chooses that merged copy. The README is unchanged by the merge and is named with its merged copy so the anchored README keeps a record after the anchor. The commit also records the four merged commits that changed the package as record files and moves the anchor to the merge, so the anchored files start from their merged copies."
+}
