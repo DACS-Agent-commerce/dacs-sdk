@@ -19,9 +19,10 @@ const REVIEWED_LINES = {
   '4.0.16': { 'GCRGeneration.js': [173, 246, 249, 250], 'demosclass.js': [719, 1547] },
   '4.0.17': { 'GCRGeneration.js': [178, 302, 305, 306], 'demosclass.js': [738, 1767, 1773] },
   '4.0.18': { 'GCRGeneration.js': [178, 302, 305, 306], 'demosclass.js': [738, 1775, 1781] },
+  '4.0.23': { 'GCRGeneration.js': [254, 378, 381, 382], 'demosclass.js': [788, 2054, 2060] },
 };
-// 4.0.16's websdk has an extensionless directory import that plain Node refuses; 4.0.17 and 4.0.18 have none.
-const PLAIN_IMPORT_NEEDS_LOADER = { '4.0.16': true, '4.0.17': false, '4.0.18': false };
+// 4.0.16's websdk has an extensionless directory import that plain Node refuses; 4.0.17, 4.0.18 and 4.0.23 have none.
+const PLAIN_IMPORT_NEEDS_LOADER = { '4.0.16': true, '4.0.17': false, '4.0.18': false, '4.0.23': false };
 
 const noEgress = installNoEgress();
 test.after(() => noEgress.restore());
