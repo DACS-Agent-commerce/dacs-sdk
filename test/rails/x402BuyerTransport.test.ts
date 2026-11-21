@@ -714,3 +714,20 @@ test("binds the authorization after selecting the challenge and before signing",
   await prepareX402BuyerSettlement({ authority: authority() }, deps);
   expect(createPaymentPayload.mock.calls[0]).toHaveLength(1);
 });
+
+test("a challenge carrying extensions is rejected before the authorization is bound", async () => {
+  const inner = client();
+  const createPaymentPayload = vi.fn(inner.createPaymentPayload);
+  const bindAuthorization = vi.fn(async () => ({ validBefore: 4_102_444_800 }));
+  for (const extensions of [{}, { bazaar: {} }]) {
+    const result = await prepareX402BuyerSettlement({ authority: authority(), bindAuthorization }, {
+      client: { ...inner, createPaymentPayload },
+      transportPolicy: { mode: "insecure-test" as const },
+      fetchImpl: async () => new Response(JSON.stringify({ x402Version: 2,
+        resource: { url: RESOURCE }, accepts: [requirements()], extensions }), { status: 402 }),
+    });
+    expect(result).toEqual({ disposition: "rejected", reason: "x402-payment-requirements-mismatch" });
+  }
+  expect(bindAuthorization).not.toHaveBeenCalled();
+  expect(createPaymentPayload).not.toHaveBeenCalled();
+});

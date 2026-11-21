@@ -488,7 +488,8 @@ export async function prepareX402BuyerSettlement(
     return { disposition: "rejected", reason: "x402-payment-required-response-invalid" };
   }
   const selected = chosenRequirements(paymentRequired, authority, client);
-  if (!selected) {
+  // The signer refuses a challenge with extensions, so none may reach a wallet hold.
+  if (!selected || (bindAuthorization !== undefined && selected.paymentRequired.extensions !== undefined)) {
     return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
   }
 

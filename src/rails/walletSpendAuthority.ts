@@ -236,7 +236,8 @@ export type WalletSpendReservationClaimV1 =
         | "concurrency-limit"
         | "retention-limit"
         | "operator-approval-required"
-        | "operator-approval-invalid";
+        | "operator-approval-invalid"
+        | "authorization-window-unsupported";
     };
 
 export interface WalletSpendAssetStatusV1 {
@@ -1518,6 +1519,11 @@ export function createWalletSpendAuthorityV1(
         } };
       });
       if (prior !== null) return prior;
+      if (capturedOptions.authorizationWindowSeconds !== undefined &&
+          bindAuthorizationValidBefore === undefined) {
+        // Without a binder no expiry can be fixed, so no hold is taken.
+        return { status: "denied", reason: "authorization-window-unsupported" };
+      }
 
       const maximumByAsset = aggregateDebits(reservation.debits);
       const balances = new Map<string, bigint>();

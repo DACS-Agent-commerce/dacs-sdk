@@ -1269,3 +1269,14 @@ test("binds the authorization validBefore once when a hold is reserved", async (
   });
   await expect(wallet.inspect()).rejects.toThrow("wallet spend state has an invalid reservation shape");
 });
+
+test("an authorization window without an expiry binder is denied before any hold is taken", async () => {
+  const wallet = authority({});
+  expect(await wallet.reserve(reservation("windowed"), { authorizationWindowSeconds: 120 }))
+    .toEqual({ status: "denied", reason: "authorization-window-unsupported" });
+  expect(await wallet.inspect()).toMatchObject({ activeEffects: 0 });
+  // The one concurrency slot is still free, and the same id can still be reserved without a window.
+  expect((await wallet.reserve(reservation("windowed"))).status).toBe("reserved");
+  // A window request for an id that already holds a row reports that row, not the missing binder.
+  expect((await wallet.reserve(reservation("windowed"), { authorizationWindowSeconds: 120 })).status).toBe("held");
+});

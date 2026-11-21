@@ -44,6 +44,7 @@ import {
   type DacsX402BuyerPaymentTrackOptionsV1,
   createDacsX402WalletSpendRecoveryAuthenticatorV1,
 } from "../src/index.js";
+import { DacsLiveEffectInputControlError } from "../src/liveEffects.js";
 import {
   openDacsNodeSqliteDatabase,
   type DacsNodeSqliteDatabase,
@@ -410,7 +411,7 @@ function constrainedWallet(
   retained: Readonly<X402BuyerSettlementIntent>,
   authenticateRecovery: WalletSpendAuthorityDependenciesV1["authenticateRecovery"],
   now: () => number = Date.now,
-  bindAuthorizationValidBefore = async () => 4_102_444_800,
+  bindAuthorizationValidBefore: (() => Promise<number>) | null = async () => 4_102_444_800,
 ) {
   const ceiling = "999999999999999999999999";
   return createWalletSpendAuthorityV1({
@@ -435,7 +436,7 @@ function constrainedWallet(
     store: createInMemoryWalletSpendStateStore(),
     readBalance: async () => ceiling,
     authenticateRecovery,
-    bindAuthorizationValidBefore,
+    ...(bindAuthorizationValidBefore === null ? {} : { bindAuthorizationValidBefore }),
     now,
     owner: "x402-wallet-recovery-test",
     leaseDurationMs: 10,
@@ -715,7 +716,7 @@ describe("coordinator x402 buyer payment track", () => {
     expiry = 4_102_444_800;
     await track(operationInput());
     expect(reconcile).toHaveBeenCalledWith(recoveryReservation(), {
-      disposition: "terminal-absent",
+      disposition: "not-invoked",
       evidenceHash: sha256Hex(`dacs-x402-unstored-hold:v1:${recoveryReservation().reservationId}`),
     });
     expect(reserve).toHaveBeenCalledTimes(4);
@@ -774,6 +775,74 @@ describe("coordinator x402 buyer payment track", () => {
       reasonCode: "x402-unstored-hold-awaiting-release" });
     expect(options.transport.submitRetained).not.toHaveBeenCalled();
     expect(prepareIntent).toHaveBeenCalledTimes(2);
+  });
+
+  it("frees the slot of a hold whose signing was refused through the SDK recovery authenticator", async () => {
+    const opened = await database();
+    const options = trackOptions(opened);
+    let now = 1_000;
+    const authenticate = createDacsX402WalletSpendRecoveryAuthenticatorV1({
+      settlementStore: options.settlementStore, owner: "x402-wallet-recovery-test", chainId: 84532,
+      minimumConfirmations: 5, authorizationSearchFromBlock: 1, client: recoveryReader(),
+      verifySignature: validSignature, confirmUnused: safeUnused,
+    });
+    const wallet = constrainedWallet(intent(), authenticate, () => now);
+    let refuse = true;
+    const track = createDacsX402BuyerPaymentTrackV1({ ...options, walletSpendAuthority: wallet,
+      prepareIntent: async (_input, bind) => {
+        await bind(unsignedScope(intent()));
+        if (refuse) throw new Error("signer refused");
+        return intent();
+      } });
+    expect(await track(operationInput())).toMatchObject({ status: "indeterminate",
+      reasonCode: "x402-signing-after-hold-failed" });
+    expect(await wallet.inspect()).toMatchObject({ activeEffects: 1 });
+    refuse = false;
+    now = 1_011;
+    await track(operationInput());
+    expect(options.transport.submitRetained).toHaveBeenCalledTimes(1);
+    expect(await wallet.inspect()).toMatchObject({ activeEffects: 1 });
+  });
+
+  it("the SDK recovery authenticator releases an unstored hold only with its own evidence and a never-begun disposition", async () => {
+    const reservation = recoveryReservation();
+    const evidenceHash = sha256Hex(`dacs-x402-unstored-hold:v1:${reservation.reservationId}`);
+    const authenticate = createDacsX402WalletSpendRecoveryAuthenticatorV1({
+      settlementStore: createInMemoryX402BuyerSettlementStore(), owner: "x402-wallet-recovery-test",
+      chainId: 84532, minimumConfirmations: 5, authorizationSearchFromBlock: 1,
+      client: recoveryReader(), verifySignature: validSignature, confirmUnused: safeUnused,
+    });
+    expect(await authenticate(reservation, { disposition: "not-invoked", evidenceHash })).toBe(true);
+    expect(await authenticate(reservation, { disposition: "not-invoked", evidenceHash: "0".repeat(64) })).toBe(false);
+    expect(await authenticate(reservation, { disposition: "terminal-absent", evidenceHash })).toBe(false);
+    expect(await authenticate({ ...reservation, reservationId: "not-x402" },
+      { disposition: "not-invoked", evidenceHash })).toBe(false);
+  });
+
+  it("keeps an operator-action refusal raised after the hold as operator-action", async () => {
+    const opened = await database();
+    const options = trackOptions(opened);
+    const track = createDacsX402BuyerPaymentTrackV1({ ...options,
+      prepareIntent: async (_input, bind) => {
+        await bind(unsignedScope(intent()));
+        throw new DacsLiveEffectInputControlError("operator-action", "x402-prepare-test-refusal");
+      } });
+    expect(await track(operationInput())).toMatchObject({ status: "operator-action",
+      reasonCode: "x402-prepare-test-refusal" });
+    expect(options.transport.submitRetained).not.toHaveBeenCalled();
+  });
+
+  it("takes no hold from an authority that cannot bind an expiry", async () => {
+    const opened = await database();
+    const options = trackOptions(opened);
+    const wallet = constrainedWallet(intent(), async () => true, () => 1_000, null);
+    const signs = vi.fn();
+    const track = createDacsX402BuyerPaymentTrackV1({ ...options, walletSpendAuthority: wallet,
+      prepareIntent: async (_input, bind) => { await bind(unsignedScope(intent())); signs(); return intent(); } });
+    expect(await track(operationInput())).toMatchObject({ status: "operator-action",
+      reasonCode: "wallet-spend-authorization-window-unsupported" });
+    expect(signs).not.toHaveBeenCalled();
+    expect(await wallet.inspect()).toMatchObject({ activeEffects: 0 });
   });
 
   it("rejects signed intents that differ from the reserved scope or expiry", async () => {

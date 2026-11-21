@@ -41,6 +41,11 @@ import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 
+/** Evidence for releasing a hold whose signed input was never stored. */
+function unstoredHoldEvidenceHash(reservationId: string): string {
+  return sha256Hex(`dacs-x402-unstored-hold:v1:${reservationId}`);
+}
+
 function exactOwnData(
   value: unknown,
   required: readonly string[],
@@ -378,7 +383,13 @@ export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
       if (settlementKey.length === 0) return false;
       let candidate: Readonly<X402BuyerSettlementDisclosure> | undefined;
       const loaded = await settlementStore.load(settlementKey);
-      if (loaded.status === "absent" || loaded.status === "unsupported" ||
+      // No stored input means nothing was signed for sending, so only a hold that never
+      // began can be released, and only with the evidence preparation computes.
+      if (loaded.status === "absent") {
+        return observation.disposition === "not-invoked" &&
+          observation.evidenceHash === unstoredHoldEvidenceHash(reservation.reservationId);
+      }
+      if (loaded.status === "unsupported" ||
           loaded.status === "corrupt") {
         return false;
       }
@@ -933,8 +944,8 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
           let released: Awaited<ReturnType<WalletSpendAuthorityV1["reconcile"]>>;
           try {
             released = await walletSpendAuthority.reconcile(reservation, {
-              disposition: "terminal-absent",
-              evidenceHash: sha256Hex(`dacs-x402-unstored-hold:v1:${reservation.reservationId}`),
+              disposition: "not-invoked",
+              evidenceHash: unstoredHoldEvidenceHash(reservation.reservationId),
             });
           } catch {
             throw new DacsLiveEffectInputControlError("indeterminate", "x402-unstored-hold-awaiting-release");
@@ -974,6 +985,7 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
           intent,
         };
       } catch (error) {
+        if (error instanceof DacsLiveEffectInputControlError) throw error;
         if (permit !== undefined || error instanceof DacsX402BuyerPaymentError) {
           throw new DacsLiveEffectInputControlError(permit === undefined ? "operator-action" : "indeterminate",
             error instanceof Error && "reasonCode" in error && typeof error.reasonCode === "string"

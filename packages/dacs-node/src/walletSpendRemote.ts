@@ -41,6 +41,7 @@ const DENIAL_REASONS = new Set([
   "network-fee-limit", "rolling-limit", "cumulative-limit",
   "counterparty-limit", "concurrency-limit", "retention-limit",
   "operator-approval-required", "operator-approval-invalid",
+  "authorization-window-unsupported",
 ]);
 
 type RemoteOperation = "reserve" | "current" | "begin" | "settle" |

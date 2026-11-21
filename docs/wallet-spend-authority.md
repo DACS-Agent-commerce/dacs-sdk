@@ -56,8 +56,11 @@ projected into an authenticated debit observation.
 
 For the x402 buyer track, `bindAuthorizationValidBefore` supplies the hold's
 expiry in Unix seconds from chain time. Preparation reserves the hold before
-signing and signs with that value. Authorities without this hook cannot authorize
-that track. The hold uses `x402BuyerUnsignedIntentHash()` to bind the selected
+signing and signs with that value. An authority without this hook denies the
+request with `authorization-window-unsupported` before taking a hold. A hold
+whose signed input was never stored is released on a later attempt, once its
+lease has expired, with evidence the SDK's x402 recovery authenticator accepts
+only while no input is stored. The hold uses `x402BuyerUnsignedIntentHash()` to bind the selected
 terms before signing; the stored settlement intent still binds the signed bytes.
 A retry with stored input and no carried permit reconciles without sending.
 

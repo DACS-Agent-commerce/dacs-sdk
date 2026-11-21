@@ -1734,3 +1734,16 @@ it("the V2 permit carries the bound validBefore to the buyer and back", async ()
   await expect(remote.reserve({ ...reservation(), reservationId: "remote-two" }))
     .rejects.toMatchObject({ reasonCode: "wallet-spend-authority-permit-invalid" });
 });
+
+it("a remote authority without an expiry binder denies a window request and keeps its slot free", async () => {
+  const local = await serverV2(() => 1_000, policy());
+  const remote = await createDacsRemoteWalletSpendAuthorityV2({
+    policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath: await tokenFile(),
+    authorityId: local.authorityId, epoch: local.epoch,
+    witnessVerificationKey: local.verificationKey, allowInsecureLoopback: true,
+    fetch: async (input, init) => local.handler(new Request(input, init)),
+  });
+  await expect(remote.reserve(reservation(), { authorizationWindowSeconds: 120 }))
+    .resolves.toEqual({ status: "denied", reason: "authorization-window-unsupported" });
+  expect((await remote.reserve(reservation())).status).toBe("reserved");
+});
