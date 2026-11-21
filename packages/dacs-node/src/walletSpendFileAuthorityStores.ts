@@ -83,19 +83,38 @@ function stateFilePort(directory: string): DacsWalletSpendContinuitySnapshotPort
   };
 }
 
-/** Removes every state file except the head's. A removal that fails is left for the next open. */
-async function removeSupersededStates(directory: string, headStateHash: string): Promise<void> {
-  const head = `${headStateHash}.json`;
+/** The revision a state file records, or undefined when the file cannot be read as a state. */
+async function stateFileRevision(path: string): Promise<number | undefined> {
+  const state = await readRecord(path, MAXIMUM_STATE_BYTES).catch(() => undefined);
+  const generation = typeof state === "object" && state !== null && "generation" in state
+    ? state.generation
+    : undefined;
+  return typeof generation === "number" && Number.isSafeInteger(generation) ? generation : undefined;
+}
+
+/**
+ * Removes the state files whose revision is below the head's. Another handle on the
+ * directory may have written a state at or above the head that the witness does not
+ * name yet, so those files stay, as do files that cannot be read. A removal that fails
+ * is left for the next open.
+ */
+async function removeSupersededStates(
+  directory: string,
+  head: Readonly<{ revision: number; stateHash: string }>,
+): Promise<void> {
   for (const name of await listRecordNames(directory)) {
-    if (name !== head) await removeRecord(join(directory, name)).catch(() => undefined);
+    if (name === `${head.stateHash}.json`) continue;
+    const path = join(directory, name);
+    const revision = await stateFileRevision(path);
+    if (revision !== undefined && revision < head.revision) await removeRecord(path).catch(() => undefined);
   }
 }
 
 /**
  * Opens the authority's data directory: `witness/` holds the continuity witness,
  * `states/` holds each state named by its hash. A directory with no witness head
- * and no states is provisioned with the empty state. At open, every state file
- * except the head's is removed.
+ * and no states is provisioned with the empty state. At open, the state files of
+ * revisions below the head's are removed.
  *
  * @returns The stores; the seed is copied, so the caller may zero its buffer.
  * @throws Error `wallet-spend-file-directory-unsafe`, `wallet-spend-file-witness-record-damaged`
@@ -136,7 +155,7 @@ export async function openDacsWalletSpendFileAuthorityStoresV1(input: Readonly<{
     snapshots: stateFilePort(statesDirectory),
   });
   const head = await views.bind().attestCurrent(headReadBinding("file-store-clean-up"));
-  await removeSupersededStates(statesDirectory, head.stateHash);
+  await removeSupersededStates(statesDirectory, head);
 
   let closed = false;
   return Object.freeze({

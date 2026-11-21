@@ -171,19 +171,57 @@ describe("file-backed authority stores", () => {
     const stores = await openTestStores(directory);
     const store = stores.stateStore();
     await bump(store);
+    const older = readFileSync(join(directory, "states", headStateName()), "utf8");
     await bump(store);
     await bump(store);
     expect(stateFileNames(directory)).toHaveLength(4);
     await stores.close();
-    const uncommitted = `${"f".repeat(64)}.json`;
-    writeFileSync(join(directory, "states", uncommitted),
-      readFileSync(join(directory, "states", headStateName()), "utf8"), { mode: 0o600 });
+    writeFileSync(join(directory, "states", `${"f".repeat(64)}.json`), older, { mode: 0o600 });
 
     const reopened = await openTestStores(directory);
     expect(stateFileNames(directory)).toEqual([headStateName()]);
     expect((await readState(reopened.stateStore())).generation).toBe(3);
     expect(witnessReceipts(directory)).toHaveLength(4);
     await reopened.close();
+  });
+
+  it("a second handle opening the directory keeps a state file another handle wrote but has not witnessed", async () => {
+    const twin = join(root, "twin");
+    const twinStores = await openTestStores(twin);
+    await bump(twinStores.stateStore());
+    await bump(twinStores.stateStore());
+    const pendingName = `${witnessReceipts(twin).at(-1)?.stateHash}.json`;
+    await twinStores.close();
+
+    const first = await openTestStores(directory);
+    await bump(first.stateStore());
+    // The file the first handle writes for its next commit, before its witness record.
+    writeFileSync(join(directory, "states", pendingName),
+      readFileSync(join(twin, "states", pendingName), "utf8"), { mode: 0o600 });
+    const second = await openTestStores(directory);
+    expect(stateFileNames(directory)).toEqual([headStateName(), pendingName].sort());
+
+    await bump(first.stateStore());
+    expect(headStateName()).toBe(pendingName);
+    const reopened = await openTestStores(directory);
+    expect((await readState(reopened.stateStore())).generation).toBe(2);
+    await Promise.all([first.close(), second.close(), reopened.close()]);
+  });
+
+  it("two handles on one directory with interleaved commits and opens leave the head naming an existing state file", async () => {
+    let active = await openTestStores(directory);
+    for (let step = 0; step < 24; step += 1) {
+      const [committed] = await Promise.allSettled([
+        bump(active.stateStore()),
+        openTestStores(directory).then((other) => other.close()),
+      ]);
+      expect(committed.status, `step ${step}`).toBe("fulfilled");
+      expect(stateFileNames(directory), `step ${step}`).toContain(headStateName());
+      await active.close();
+      active = await openTestStores(directory);
+    }
+    expect((await readState(active.stateStore())).generation).toBe(24);
+    await active.close();
   });
 
   it("refuses a state view after close", async () => {

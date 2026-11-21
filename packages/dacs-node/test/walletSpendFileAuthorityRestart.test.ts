@@ -313,17 +313,19 @@ describe("file-backed authority across restarts", () => {
 });
 
 describe("no crash point leads to a second authorization", () => {
-  it("a stop after the state file and before the witness record keeps the old head and removes the candidate", async () => {
+  it("a stop after the state file and before the witness record keeps the old head and the unwitnessed candidate", async () => {
     const authority = await client();
     stopAt("before-witness-record");
     await expect(authority.reserve(storesReservation())).rejects.toMatchObject({
       reasonCode: "wallet-spend-authority-outcome-unknown",
     });
-    expect(stateFileNames(directory)).toHaveLength(2);
+    const written = stateFileNames(directory);
+    expect(written).toHaveLength(2);
 
     await restart();
     expect(witnessReceipts(directory)).toHaveLength(1);
-    expect(stateFileNames(directory)).toEqual([`${witnessReceipts(directory)[0]?.stateHash}.json`]);
+    expect(stateFileNames(directory)).toEqual(written);
+    expect(written).toContain(`${witnessReceipts(directory)[0]?.stateHash}.json`);
     const first = await resend(lastSent("reserve"));
     expect(first.body.result).toMatchObject({ status: "reserved" });
     await expectOneAuthorization();
