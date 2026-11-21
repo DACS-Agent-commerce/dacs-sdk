@@ -74,8 +74,8 @@ test('inside both purchase factories no hold check stands without the host stop 
   assert.ok(protocol.length >= 2);
   assert.deepEqual(protocol.filter((call) => !withStop(call)), []);
   const wire = callsOfHold(readSource('dacs/seller-wire-authentication.mjs'));
-  assert.equal(wire.length, 2);
-  assert.deepEqual(wire.filter(({ next }) => !next.includes('assertNotStopped(path)')), []);
+  assert.equal(wire.length, 3);
+  assert.deepEqual(wire.filter(({ next }) => !next.includes('assertNotStopped(path)') && !next.includes('assertNotStopped(payload.path)')), []);
   const constructions = sourceFiles(sourceDirectory).flatMap((file) => readFileSync(file, 'utf8').split('\n').filter((line) => line.includes('createSellerRequestRecords({') && !line.startsWith('export function')));
   assert.equal(constructions.length, 3);
   assert.deepEqual(constructions.filter((line) => !line.includes('hostStop')), []);
