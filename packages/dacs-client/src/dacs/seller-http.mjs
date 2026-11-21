@@ -14,6 +14,7 @@ import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATH
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { classifySellerAnswer, SELLER_ANSWER_CLASS, SELLER_EFFECT_UNRESOLVED } from './seller-response-class.mjs';
+import { isHostStopRefusal } from '../host-stop.mjs';
 
 const MAX_BODY = 64 * 1024;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
@@ -246,6 +247,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       return { body: answer, answerClass: RESULT };
     } catch (error) {
       if (recordRefusals.has(error)) throw error;
+      if (!dispatched && isHostStopRefusal(error)) throw error;
       if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
       if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }

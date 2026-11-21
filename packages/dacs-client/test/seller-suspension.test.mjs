@@ -6,6 +6,8 @@ beforeEach(t => t.mock.method(Date, 'now', () => T0));
 const { createPurchaseService } = await import('../src/purchases.mjs');
 const { createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
 const { STAGE_HELP, protocolStageHelp } = await import('../src/dacs/protocol-purchases.mjs');
+const { OperationError } = await import('../src/client-errors.mjs');
+const { createHostStop } = await import('../src/host-stop.mjs');
 const P = PATHS.proposals;
 const suspension = s => s.p.get().state.protocol.sellerSuspension;
 const stopped = s => s.client({ respond: init => s.reply(init, 503, { error: 'seller_stopped' }) });
@@ -241,4 +243,145 @@ test('resumption validates retained buyer access before clearing the suspension'
     store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() { throw failure; } } });
   await assert.rejects(protocol.recheck(s.p.get(), null, { resumeSuspensionId: held.id }), error => error === failure);
   assert.deepEqual(suspension(s), held);
+});
+
+// Host stop: the purchase service and the protocol it drives are built with one stop check.
+const hostStopRefusal = code => error => error.code === code && error.message === `host stop refused: ${code}`;
+const queueWork = s => s.patch({ signatures: { agreement: 'TEST-queued-contribution' } });
+const events = (s, type) => s.p.ops.history(s.p.op.id).filter(event => event.type === type);
+
+// `publicService` builds the service through the public factory, whose admission wrapper reads the stop before each action.
+async function stoppedReader(s, stopped, { publicService = false } = {}) {
+  const { createProtocolPurchases, createPurchaseService: createPublicService } = await import('../src/index.mjs');
+  const createService = publicService ? options => createPublicService({ ...options, admission: s.w.admission }) : createPurchaseService;
+  const counters = { sellerLookups: 0 };
+  const dacsProtocol = { ...s.p.config, sellerEndpoint: (...args) => { counters.sellerLookups++; return s.p.config.sellerEndpoint(...args); } };
+  const protocol = createProtocolPurchases({ db: s.p.db, ops: s.p.ops, coordinates: { unresolvedForSender: () => [] }, dacsProtocol, admission: s.w.admission,
+    store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() {} }, stopped });
+  s.p.db.prepare('UPDATE operations SET handoff_expires_at = expires_at WHERE id = ?').run(s.p.op.id);
+  const service = createService({ db: s.p.db, ops: s.p.ops, coordinates: { get: () => null }, protocol, chain: { broadcastTransaction() { counters.broadcasts = (counters.broadcasts ?? 0) + 1; } },
+    config: {}, store: createSqlitePurchaseStore(), now: () => s.w.state.time, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped });
+  const request = { accountId: s.p.op.accountId, operationId: s.p.op.id, token: s.p.ops.handoffTokenFor(s.p.op.id) };
+  return { service, request, counters, protocol };
+}
+
+test('a host stop observed with queued work suspends it with cause writes_stopped, and lifting the stop alone resumes nothing', async t => {
+  const s = await storedWorld(t); const sleep = s.clock.sleep; let stopped = false;
+  s.clock.sleep = async ms => { await sleep(ms); stopped = true; };
+  await assert.rejects(s.client({ stopped: () => stopped, respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).propose(bodyFor(P)), hostStopRefusal('writes_stopped'));
+  assert.equal(suspension(s).cause, 'writes_stopped');
+  const held = suspension(s); stopped = false; s.restart();
+  await assert.rejects(s.client({ stopped: () => stopped }).propose(bodyFor(P)), errorCode('invalid_state'));
+  assert.deepEqual(suspension(s), held); assert.equal(s.fetches.length, 1);
+});
+
+test('a host stop seen when a request starts on a purchase with no queued work records no suspension, and a stop no check observed records none', async t => {
+  const s = await storedWorld(t);
+  await assert.rejects(s.client({ stopped: () => true }).propose(bodyFor(P)), hostStopRefusal('writes_stopped'));
+  assert.equal(suspension(s), undefined); assert.equal(s.record(P), undefined); assert.equal(s.fetches.length, 0);
+  let stopped = true; stopped = false;
+  await s.client({ stopped: () => stopped }).propose(bodyFor(P));
+  assert.equal(suspension(s), undefined); assert.equal(s.fetches.length, 1);
+});
+
+test('restart under a host stop with the client admitted: verifyDeal returns its readback with seller, session-signer and fetch counters at 0 and suspends queued work', async t => {
+  const s = await storedWorld(t, { paid: true }); queueWork(s); s.restart();
+  const { service, request, counters } = await stoppedReader(s, () => true);
+  const result = await service.verifyDeal(request);
+  assert.equal(result.operation.id, s.p.op.id);
+  assert.equal(counters.sellerLookups, 0); assert.equal(s.w.state.signs.length, 0); assert.equal(s.fetches.length, 0);
+  assert.equal(suspension(s).cause, 'writes_stopped'); assert.deepEqual(result.operation.state.protocol.sellerSuspension, suspension(s));
+});
+
+test('after the stop is lifted only protocolRecheck naming the suspension continues, once; the same request while still stopped is refused writes_stopped and keeps the suspension', async t => {
+  const s = await storedWorld(t, { paid: true }); const sleep = s.clock.sleep, stop = { now: false };
+  s.clock.sleep = async ms => { await sleep(ms); stop.now = true; };
+  await assert.rejects(s.client({ stopped: () => stop.now, respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).propose(bodyFor(P)), hostStopRefusal('writes_stopped'));
+  const held = suspension(s), record = s.record(P); s.restart();
+  const { service, request } = await stoppedReader(s, () => stop.now), named = { ...request, resumeSuspensionId: held.id };
+  await assert.rejects(service.protocolRecheck(named), hostStopRefusal('writes_stopped'));
+  assert.deepEqual(suspension(s), held);
+  stop.now = false;
+  await service.verifyDeal(request);
+  assert.deepEqual(suspension(s), held); assert.equal(events(s, 'seller_resumed').length, 0);
+  await service.protocolRecheck(named);
+  assert.equal(suspension(s), undefined); assert.equal(events(s, 'seller_resumed').length, 1);
+  assert.deepEqual(s.record(P), record); assert.equal(s.fetches.length, 1);
+});
+
+test('a stop check that throws or returns a non-boolean suspends queued work with cause stop_check_failed or stop_check_invalid', async t => {
+  for (const [stopped, cause] of [[() => { throw new Error('TEST-stop-check-failure'); }, 'stop_check_failed'], [() => 'yes', 'stop_check_invalid']]) {
+    const s = await storedWorld(t, { paid: true }); queueWork(s);
+    const { service, request } = await stoppedReader(s, stopped);
+    await service.verifyDeal(request);
+    assert.equal(suspension(s).cause, cause);
+  }
+});
+
+test('a stop check that throws mid-request while its suspension write fails keeps the stop error as cause and the write failure as details.suspensionWriteError', async t => {
+  const s = await storedWorld(t); const sleep = s.clock.sleep, stopError = new Error('TEST-stop-check-failure'), failure = new Error('TEST-store-write-failed');
+  let stopping = false; s.clock.sleep = async ms => { await sleep(ms); stopping = true; };
+  const { transaction } = createSqlitePurchaseStore(), stopped = () => { if (stopping) throw stopError; return false; };
+  const records = s.records(s.holder, (db, work) => transaction(db, () => { const result = work(); if (suspension(s)) throw failure; return result; }), createHostStop(stopped));
+  await assert.rejects(s.client({ requestRecords: records, stopped, respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).propose(bodyFor(P)),
+    error => hostStopRefusal('stop_check_failed')(error) && error.cause === stopError && error.details?.suspensionWriteError === failure);
+  assert.equal(suspension(s), undefined);
+});
+
+test('a stop refusal from the effect boundary of the wallet that reaches the continuation suspends queued work and is rethrown unchanged', async t => {
+  for (const code of ['writes_stopped', 'stop_check_failed', 'stop_check_invalid', 'stop_check_timeout']) {
+    const s = await storedWorld(t, { paid: true }); queueWork(s);
+    const failure = new OperationError(code, `effect refused: ${code}`);
+    const { service, request } = reader(s, { ...s.p.service, recheck() { throw failure; } });
+    await assert.rejects(service.verifyDeal(request), error => error === failure);
+    assert.equal(suspension(s).cause, code);
+  }
+});
+
+test('a stopped public protocolRecheck or agreementSubmit given {operationId, token} suspends queued work before it refuses, and lifting the stop alone starts none of it', async t => {
+  for (const method of ['protocolRecheck', 'agreementSubmit']) {
+    const s = await storedWorld(t, { paid: true }); queueWork(s);
+    // The queued agreement submit takes this lane first; without the suspension, verifyDeal would continue into it.
+    const journal = s.p.config.walletAgreement.journal, lock = journal.withWalletLock, agreementLanes = [];
+    journal.withWalletLock = (key, work) => { if (key.startsWith('plugin/agreement/')) agreementLanes.push(key); return lock(key, work); };
+    const stop = { now: true }, { service, request } = await stoppedReader(s, () => stop.now, { publicService: true });
+    const portal = { operationId: request.operationId, token: request.token };
+    await assert.rejects(service[method](portal), hostStopRefusal('writes_stopped'));
+    const held = suspension(s);
+    assert.equal(held?.cause, 'writes_stopped', method);
+    await assert.rejects(service.protocolRecheck({ ...portal, resumeSuspensionId: held.id }), hostStopRefusal('writes_stopped'));
+    assert.deepEqual(suspension(s), held, method);
+    stop.now = false;
+    const outcome = await service.verifyDeal(request).then(() => 'resolved', error => error);
+    assert.deepEqual(agreementLanes, [], method); assert.equal(outcome, 'resolved', method);
+    assert.deepEqual(suspension(s), held, method); assert.equal(s.fetches.length, 0, method);
+  }
+});
+
+test('a stopped token action whose token does not authenticate records nothing, even with the purchase\'s accountId; a stopped cancel suspends by account', async t => {
+  for (const method of ['protocolRecheck', 'agreementSubmit', 'cancel']) {
+    const s = await storedWorld(t, { paid: true }); queueWork(s);
+    const { service, request } = await stoppedReader(s, () => true, { publicService: true });
+    const before = s.p.get(), history = s.p.ops.history(s.p.op.id).length;
+    const call = method === 'cancel' ? { accountId: request.accountId, operationId: request.operationId } : { ...request, token: 'TEST-wrong-token' };
+    await assert.rejects(service[method](call), hostStopRefusal('writes_stopped'));
+    if (method === 'cancel') { assert.equal(suspension(s).cause, 'writes_stopped'); continue; }
+    assert.deepEqual(s.p.get(), before, method); assert.equal(s.p.ops.history(s.p.op.id).length, history, method);
+  }
+});
+
+test('a stop that turns on while agreementSubmit waits on its network check suspends queued work before the call rejects', async t => {
+  setPurchaseAdmission('testnet-tp1'); t.after(() => setPurchaseAdmission('held'));
+  const { compositionWorld, ACCOUNT_ID } = await import('./helpers/public-composition-world.mjs');
+  const { OFFLINE_AGREEMENT_PROFILE } = await import('../src/dacs/protocol-purchases.mjs');
+  const stop = { now: false }, w = await compositionWorld(t, { stopped: () => stop.now });
+  const p = w.seed({ status: 'agreement_pending', key: 'TEST-queued-mid-call', protocolTerms: { profile: OFFLINE_AGREEMENT_PROFILE },
+    state: { protocol: { stage: 'agreement-signing', signatures: { agreement: 'TEST-queued-contribution' } } } });
+  w.db.prepare('UPDATE operations SET handoff_expires_at = expires_at WHERE id = ?').run(p.operation.id);
+  const networkIdentity = w.chain.networkIdentity;
+  w.chain.networkIdentity = async (...args) => { stop.now = true; return networkIdentity(...args); };
+  await assert.rejects(w.service.agreementSubmit({ operationId: p.operation.id, token: p.token }), hostStopRefusal('writes_stopped'));
+  assert.equal(stop.now, true);
+  assert.equal(w.ops.get(ACCOUNT_ID, p.operation.id).state.protocol.sellerSuspension?.cause, 'writes_stopped');
+  assert.equal(w.counters.sellerLookups, 0);
 });
