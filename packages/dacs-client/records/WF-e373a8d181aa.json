@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "fix(client): choose the merged client README",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "9d1e8dbeeab20cce190d2b56208c01b5a020d0cc",
+      "after": "9d1e8dbeeab20cce190d2b56208c01b5a020d0cc"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-e373a8d181aa.json"
+  ],
+  "note": "Both sides of the merge recorded the README: the stop seam's suspension wording on the lower branch and the passive recorder on this one. This record chooses the merged copy, which keeps both edits."
+}
