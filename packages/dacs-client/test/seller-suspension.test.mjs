@@ -324,3 +324,24 @@ test('a stop refusal from the effect boundary of the wallet that reaches the con
     assert.equal(suspension(s).cause, code);
   }
 });
+
+test('a stopped public protocolRecheck or agreementSubmit suspends queued work before it refuses, and lifting the stop alone sends nothing', async t => {
+  setPurchaseAdmission('testnet-tp1'); t.after(() => setPurchaseAdmission('held'));
+  const { compositionWorld, ACCOUNT_ID } = await import('./helpers/public-composition-world.mjs');
+  const { OFFLINE_AGREEMENT_PROFILE } = await import('../src/dacs/protocol-purchases.mjs');
+  for (const method of ['protocolRecheck', 'agreementSubmit']) {
+    const stop = { now: true }, w = await compositionWorld(t, { stopped: () => stop.now });
+    const p = w.seed({ status: 'agreement_pending', key: `TEST-queued-${method}`, protocolTerms: { profile: OFFLINE_AGREEMENT_PROFILE },
+      state: { protocol: { stage: 'agreement-signing', signatures: { agreement: 'TEST-queued-contribution' } } } });
+    w.db.prepare('UPDATE operations SET handoff_expires_at = expires_at WHERE id = ?').run(p.operation.id);
+    const request = { accountId: ACCOUNT_ID, operationId: p.operation.id, token: p.token }, saved = () => w.ops.get(ACCOUNT_ID, p.operation.id).state.protocol.sellerSuspension;
+    await assert.rejects(w.service[method](request), hostStopRefusal('writes_stopped'));
+    const held = saved();
+    assert.equal(held?.cause, 'writes_stopped', method);
+    await assert.rejects(w.service.protocolRecheck({ ...request, resumeSuspensionId: held.id }), hostStopRefusal('writes_stopped'));
+    assert.deepEqual(saved(), held, method);
+    stop.now = false;
+    await w.service.verifyDeal(request);
+    assert.deepEqual(saved(), held, method); assert.equal(w.counters.sellerLookups, 0, method);
+  }
+});

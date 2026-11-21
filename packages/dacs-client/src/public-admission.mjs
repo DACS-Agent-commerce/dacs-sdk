@@ -80,27 +80,31 @@ function assertUnchangedSinceCheck(checkedText, currentLocal) {
   if (!unchanged) throw notAdmittedError(new OperationError('tp1_local_binding_changed', 'the actor\'s connection changed during the admission check'));
 }
 
-async function callAdmitted(original, receiver, args, admission, purchase, hostStop) {
+async function callAdmitted(original, receiver, args, admission, purchase, hostStop, onStopRefused) {
+  const assertNotStopped = () => {
+    try { hostStop.assert(); } catch (refusal) { onStopRefused?.(receiver, args, refusal); throw refusal; }
+  };
   if (!purchaseActionsAdmitted()) throw notAdmittedError();
   if (purchase) assertPurchaseRuntime(process.version);
-  hostStop.assert();
+  assertNotStopped();
   const checkedText = await checkBinding(admission);
   assertUnchangedSinceCheck(checkedText, admission.currentLocal);
-  hostStop.assert();
+  assertNotStopped();
   return original.apply(receiver, args);
 }
 
 /**
- * admitPublicFactory(factory, {passive, purchase, hostStop, onCreated}) returns a factory that requires `admission: {binding, currentLocal}` and returns a frozen object
+ * admitPublicFactory(factory, {passive, purchase, hostStop, onStopRefused, onCreated}) returns a factory that requires `admission: {binding, currentLocal}` and returns a frozen object
  * whose function members are Promise-returning, except the names in `passive`, which pass through unchanged. Each wrapped call, in order: refuses while the
  * hold is held, checks the Node floor when `purchase` is set, refuses while the host stop answers stopped (only when `hostStop` is set and the factory was given
  * `stopped`), awaits the wire's binding check under AUTHORITY_READ_DEADLINE_MS, re-checks the hold and `currentLocal()` synchronously, reads the host stop
- * again in the same synchronous step, then invokes the original once with its receiver and arguments. `actionsAdmitted` is a construction-time snapshot, never
+ * again in the same synchronous step, then invokes the original once with its receiver and arguments. When either stop read refuses,
+ * `onStopRefused(original, args, refusal)` runs before the refusal is thrown. `actionsAdmitted` is a construction-time snapshot, never
  * authority. `onCreated(publicObject, original)` runs once after construction.
  * Throws TypeError(admission_required | admission_input_untrusted | stop_seam_invalid) and, for purchase factories, OperationError(runtime_unsupported) before building anything.
  * Wrapped calls reject with OperationError(profile_not_admitted) carrying the cause, or with writes_stopped, stop_check_failed or stop_check_invalid, or runtime_unsupported or the original's own error.
  */
-export function admitPublicFactory(factory, { passive = [], purchase = false, hostStop = false, onCreated } = {}) {
+export function admitPublicFactory(factory, { passive = [], purchase = false, hostStop = false, onStopRefused, onCreated } = {}) {
   const passiveNames = new Set(passive);
   return function admittedFactory(options) {
     const admission = readAdmission(options);
@@ -110,7 +114,7 @@ export function admitPublicFactory(factory, { passive = [], purchase = false, ho
     factoryOptions.admission = admission;
     const original = factory(factoryOptions);
     const members = Object.entries(original).map(([name, value]) => [name,
-      typeof value !== 'function' || passiveNames.has(name) ? value : function admittedAction(...args) { return callAdmitted(value, original, args, admission, purchase, gate); }]);
+      typeof value !== 'function' || passiveNames.has(name) ? value : function admittedAction(...args) { return callAdmitted(value, original, args, admission, purchase, gate, onStopRefused); }]);
     const publicObject = Object.freeze({ ...Object.fromEntries(members), actionsAdmitted: purchaseActionsAdmitted() });
     if (hostStop) bindHostStop(publicObject, options.stopped);
     onCreated?.(publicObject, original);

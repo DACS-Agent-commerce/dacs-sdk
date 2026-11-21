@@ -834,21 +834,35 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (operation.status !== 'settled_verified' && operation.status !== 'agreement_pending') return result;
     const stored = ops.get(operation.accountId, operation.id);
     if (stored?.state?.protocol?.sellerSuspension && !resumeSuspensionId) return { ...result, operation: stored };
-    const suspendQueuedWork = (refusal) => {
-      if (!stored?.state?.protocol) return;
-      try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored ?? operation, set() {} }, now, hostStop }).suspendQueued(refusal.code); } catch (cause) { refusal.cause ??= cause; }
-    };
     try { hostStop.assert(); } catch (refusal) {
       if (resumeSuspensionId) throw refusal;
-      suspendQueuedWork(refusal);
+      suspendQueuedWork(stored, refusal);
       return { ...result, operation: ops.get(operation.accountId, operation.id) ?? operation };
     }
     let advanced;
     try { advanced = await protocol.recheck(operation, coordinates.get(operation.id), { resumeSuspensionId }); } catch (error) {
-      if ((error?.code === 'profile_not_admitted' && !purchaseActionsAdmitted()) || isHostStopRefusal(error)) suspendQueuedWork(error);
+      if ((error?.code === 'profile_not_admitted' && !purchaseActionsAdmitted()) || isHostStopRefusal(error)) suspendQueuedWork(stored, error);
       throw error;
     }
     return { ...result, operation: advanced };
+  }
+
+  // Records a refusal as a suspension of the stored purchase's queued work; a failed write becomes the refusal's cause.
+  function suspendQueuedWork(stored, refusal) {
+    if (!stored?.state?.protocol) return;
+    try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored, set() {} }, now, hostStop }).suspendQueued(refusal.code); } catch (cause) { refusal.cause ??= cause; }
+  }
+
+  // A host stop that refuses an action before it runs suspends the queued work of the purchase its request names, as the
+  // continuation does, so only protocolRecheck with resumeSuspensionId continues it. A request that names no purchase it
+  // may act on records nothing, and a purchase already suspended keeps its suspension and id.
+  function suspendOnStopRefusal(request, refusal) {
+    let stored;
+    try {
+      const found = request?.accountId === undefined ? handoffPurchase(request?.operationId, request?.token) : ownedPurchase(request.accountId, request.operationId, request.token);
+      stored = ops.get(found.accountId, found.id);
+    } catch { return; }
+    if (stored?.terms?.protocol && !stored.state?.protocol?.sellerSuspension) suspendQueuedWork(stored, refusal);
   }
 
   function canonicalHash(value) {
@@ -1652,8 +1666,18 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return { operation: next, cancelled: next.status === 'cancelled' };
   }
 
-  return {
+  const service = {
     prepare, status, issueApprovalChallenge, approve, prepareHandoff, nativePaymentLane, reportWalletResult, verifyDeal, cancel, portalOperation, portalEvidence,
     agreementIdentity, agreementPlan, planRunning, agreementSubmit, completionRequest, completionCountersign, protocolRecheck,
   };
+  stopRefusalRecorders.set(service, suspendOnStopRefusal);
+  return service;
+}
+
+// Each service's recorder for host stop refusals raised before one of its actions runs. Module-private.
+const stopRefusalRecorders = new WeakMap();
+
+/** recordStopRefusal(service, args, refusal) suspends the queued work of the purchase `args[0]` names when the host stop refused that call of a `service` action before it ran. Returns undefined; it never throws for an unknown object or request. */
+export function recordStopRefusal(service, args, refusal) {
+  stopRefusalRecorders.get(service)?.(args[0], refusal);
 }
