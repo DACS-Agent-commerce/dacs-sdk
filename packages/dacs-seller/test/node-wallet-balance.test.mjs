@@ -1,7 +1,8 @@
-// The seller's balance through its Node wallet: a bounded read of the node's getAddressInfo answer with its cause kept.
+// The seller's balance through its Node wallet: a bounded read of the node's getAddressInfo answer with its cause kept, and
+// a session write the node refuses for balance.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { jsonResponse, ok, replyTo, sellerWalletWorld } from './helpers/seller-node-wallet-world.mjs';
+import { artifactWrite, jsonResponse, ok, outcomes, refuseConfirmation, replyTo, sellerWalletWorld, settlingWorld, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 
 const BALANCE_READ_TIMEOUT_MS = 10_000;
 const BALANCE_READ_MAX_BYTES = 64 * 1024;
@@ -33,4 +34,22 @@ test('readBalance is a bounded read; a stall or malformed answer returns its cau
   assert.equal(stalled.details, 'timeout', 'a stall is a timeout');
   assert.equal(stalled.cause?.message, 'resolver-timeout', 'its cause is the deadline');
   assert.ok(stalledRequest.signal?.aborted, 'the stalled request is aborted');
+});
+
+test('a session write the node refuses for balance is a definite refusal; its approval is released and nothing more is signed', async t => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  const world = await settlingWorld(t);
+  refuseConfirmation(world);
+  const refused = (await artifactWrite(world)).answer;
+  assert.equal(refused.success, false);
+  assert.notEqual(refused.error?.code, 'outcome_unknown', 'a refusal the node states is not an unknown outcome');
+  assert.equal(world.node.broadcasts.length, 0, 'the refused write was never broadcast');
+  assert.deepEqual(outcomes(world), ['released'], 'its approval hold is released');
+  assert.equal(signatures.length, 1, 'only the refused write was signed');
+
+  world.node.reply = null;
+  const retried = (await artifactWrite(world)).answer;
+  assert.equal(retried.success, true, `the lane is free for the next write: ${JSON.stringify(retried)}`);
+  assert.equal(signatures.length, 2, 'the next write is the only further signature');
+  assert.deepEqual(outcomes(world), ['released', 'spent']);
 });
