@@ -12,6 +12,7 @@ import { installNoEgress } from '../../dacs-client/test/helpers/no-egress.mjs';
 import { agreementRequest } from '../../dacs-client/test/helpers/tp1-node-fixture.mjs';
 import { api, ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, createSellerNodeWallet, evidenceInput, FIXTURE_MNEMONIC, inWalletPass, keyRecordBytes, nodeConnection,
   privateDataDirectory, restartedWorld, runWalletChild, sellerWalletWorld, setPurchaseAdmission, walletOptions } from './helpers/seller-node-wallet-world.mjs';
+import { productionObserveIdentity } from './helpers/sr2-live-fixture.mjs';
 
 const egress = installNoEgress();
 const { acquireSellerStateLock } = await import('../src/devnet-demo/seller-state-lock.mjs');
@@ -72,13 +73,14 @@ test('an environment variable or seller.json key cannot turn the guard or the cl
 
 test('under the unshipped test loader, the artifact anchor, payment evidence and SR-2 source mode are built from the client\'s public entry only', async t => {
   const world = await sellerWalletWorld(t), { sourceCapability } = world.wallet;
-  const artifacts = createDevnetDemoArtifactAnchor({ sourceCapability, journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory,
+  const identity = { binding: world.admission.binding, observeIdentity: productionObserveIdentity(world) };
+  const artifacts = createDevnetDemoArtifactAnchor({ sourceCapability, ...identity, journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory,
     network: sourceCapability.pins.network, signer: { claim: `did:demos:agent:${world.wallet.address.slice(2)}` } });
   assert.equal(typeof artifacts.publish, 'function');
-  const evidence = createNativePaymentEvidenceConsumer({ rpcUrl: sourceCapability.pins.endpoint, sourceCapability, anchorEvidence: world.wallet.paymentEvidence.anchorEvidence,
+  const evidence = createNativePaymentEvidenceConsumer({ rpcUrl: sourceCapability.pins.endpoint, sourceCapability, ...identity, anchorEvidence: world.wallet.paymentEvidence.anchorEvidence,
     readSignedProjection: world.wallet.paymentEvidence.readSignedProjection });
   assert.equal(evidence.anchorEvidence, world.wallet.paymentEvidence.anchorEvidence, 'source mode takes the wallet journal\'s own anchor');
-  assert.equal(typeof createDemosSr2Adapter({ rpcUrl: sourceCapability.pins.endpoint, journal: createInMemoryDemosSr2Journal(), sourceCapability }).read, 'function');
+  assert.equal(typeof createDemosSr2Adapter({ rpcUrl: sourceCapability.pins.endpoint, journal: createInMemoryDemosSr2Journal(), sourceCapability, ...identity }).read, 'function');
   const clientExports = Object.keys(JSON.parse(readFileSync(join(packageDirectory, '../dacs-client/package.json'), 'utf8')).exports);
   const specifiers = [...readFileSync(WALLET_MODULE, 'utf8').matchAll(/from '(@kynesyslabs\/dacs-client[^']*)'/g)].map(match => match[1]);
   assert.ok(specifiers.length > 0 && specifiers.every(specifier => clientExports.includes(specifier.replace('@kynesyslabs/dacs-client', '.'))), `public entries only: ${specifiers}`);

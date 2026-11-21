@@ -22,14 +22,15 @@ const CONTEXT_FORMAT='dacs-node2-seller-context-admission/v1';
 export const SELLER_POLICY_MAX_WRITES=6;
 export const SELLER_POLICY_WINDOW_MS=3_600_000;
 // Policy-mode limits, all configurable. maxWriteTotalOs caps one write's
-// complete debit; its unchanged 4 DEM default is L4's declared Node2 debit
-// on 2026-10-07 (storage 1, SDK gas 1, network 1, RPC 1). Until measured live,
-// count the larger of that request declaration and confirmed sender removals.
+// complete debit at 50 DEM, the wallet journals' per-write ceiling. It is a
+// ceiling, not the expected debit. Count the larger of the request's declared
+// debit and the confirmed sender removals.
 // The hourly limits are a budget across all jobs in a rolling hour: 24
-// policy-approved writes and 96 DEM, about four complete six-write purchases
-// at the 4 DEM cap. Outstanding attempts hold their full debit; completed
-// attempts count for an hour after completion.
-export const SELLER_POLICY_DEFAULTS=Object.freeze({maxWriteTotalOs:'4000000000',maxWritesPerHour:24,maxTotalOsPerHour:'96000000000'});
+// policy-approved writes and 1,200 DEM, which is 24 writes at the 50 DEM cap.
+// Each context start holds two writes, 100 DEM, so twelve starts fill the
+// hour. Outstanding attempts hold their full debit; completed attempts count
+// for an hour after completion.
+export const SELLER_POLICY_DEFAULTS=Object.freeze({maxWriteTotalOs:'50000000000',maxWritesPerHour:24,maxTotalOsPerHour:'1200000000000'});
 const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&canonicalize(Object.keys(value).sort())===canonicalize([...keys].sort());
 // The seller kit has one purchase source. Reject stale app configuration.
 export function sellerPurchaseSource(value){
