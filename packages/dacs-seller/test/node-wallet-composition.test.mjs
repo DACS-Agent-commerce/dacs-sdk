@@ -235,6 +235,15 @@ test('a storage CREATE for an artifact and for payment evidence signs under the 
   }
 });
 
+test('SOURCES.md names the source path and commit of the approval helper this composition moves, and its diagnostics change', () => {
+  const sources = readFileSync(join(packageDirectory, 'SOURCES.md'), 'utf8');
+  const entry = sources.split('\n').find(line => line.includes('createOperatorApprovalAttempt'));
+  assert.ok(entry, 'the moved function has an entry');
+  assert.match(entry, /http-mcp\/src\/devnet-demo\/operator-custody\.mjs/, 'its source path');
+  assert.match(entry, /\b80e5162\b/, 'its source commit');
+  assert.match(entry, /sellerDiagnostic/, 'the diagnostics change');
+});
+
 test('no socket or DNS lookup leaves the process in the kit composition suite', () => {
   assert.deepEqual(egress.attempts, []);
   egress.restore();
