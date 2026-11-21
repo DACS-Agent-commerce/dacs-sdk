@@ -1724,6 +1724,7 @@ it("the V2 permit carries the bound validBefore to the buyer and back", async ()
   await claim.permit.beginEffect();
   expect(requests.find((request) => request.operation === "begin")?.payload.permit)
     .toMatchObject({ authorizationValidBefore: 1_900_000_000 });
+  if (local.bindingInput.store.read === undefined) throw new Error("expected readable store");
   const state = await local.bindingInput.store.read(dacsWalletSpendLineageKeyV1(policy().wallet, policy().chainId));
   expect(state?.reservations[0]?.stage).toBe("effect-pending");
   now = 61_001;
