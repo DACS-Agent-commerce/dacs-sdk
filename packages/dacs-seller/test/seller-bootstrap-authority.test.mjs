@@ -134,6 +134,37 @@ test("with the buyer's valid signature, Listing and job scope kept: its enrollme
   assert.deepEqual([issued.status, issued.signed], [200, true], 'the buyer\'s own signature is still served');
 });
 
+// The signed request with the scheme of its buyer and seller claims, in the payload and in the delegation, written as `scheme`.
+// The signatures cover the canonical `did:` copy, so they stay valid.
+function respelled(signed, scheme) {
+  const envelope = decode(signed.header);
+  const respell = (payload) => { for (const field of ['buyer', 'seller']) payload[field] = `${scheme}${payload[field].slice(3)}`; };
+  respell(envelope.payload);
+  if (envelope.delegation) respell(envelope.delegation.payload);
+  return { ...signed, header: encode(envelope) };
+}
+
+test('a buyer that writes the claim scheme as DID: or Did: is served as one that writes did:, delegated or direct; a bad signature under that spelling still refuses with the wire\'s code and zero authority calls', { timeout: TEST_TIMEOUT_MS }, async (t) => {
+  const w = await sellerWorld(t);
+  const host = await w.start();
+  const b = await w.buyerFor(host);
+  let tag = 70;
+  for (const scheme of ['DID', 'Did']) {
+    for (const [delegated, code] of [[true, 'peer_delegation_signature_invalid'], [false, 'peer_signature_invalid']]) {
+      const label = `${scheme} ${delegated ? 'delegated' : 'direct'}`;
+      const jobId = job(tag++);
+      b.purchase(jobId);
+      const signed = await b.signChallenge(jobId, { delegated });
+      const answer = await b.post(DACS_SELLER_HTTP_PATHS.contextChallenge, respelled(signed, scheme));
+      assert.deepEqual([answer.status, answer.signed], [200, true], `${label}: ${answer.text}`);
+      const forgedJob = job(tag++);
+      b.purchase(forgedJob);
+      const bad = respelled(forged(await b.signChallenge(forgedJob, { delegated }), testWallet(42)), scheme);
+      assert.deepEqual(await w.refusedWith(() => b.post(DACS_SELLER_HTTP_PATHS.contextChallenge, bad)), refusal(401, code, false), `${label}: forged`);
+    }
+  }
+});
+
 test('a bootstrap scope ends with its request: an exception, a cancelled request and a killed process leave no scope; two overlapping requests for one job each need their own signature; a restart needs a new signature and current enrollment', { timeout: TEST_TIMEOUT_MS }, async (t) => {
   // A context step of a job in `waiting` reports that it started (`entered`) and waits for `release`.
   const waiting = new Map();
