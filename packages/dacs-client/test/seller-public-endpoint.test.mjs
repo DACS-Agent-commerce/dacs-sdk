@@ -43,6 +43,22 @@ test('preparing a purchase keeps the public https origin of a seller whose trans
   assert.deepEqual(terms.sellerTransport, p.transport.declaration);
 });
 
+// The seller transport is declared only alongside native payment evidence, so a payable purchase lacking either cannot authenticate its seller requests.
+for (const missing of ['sellerTransport', 'nativePaymentEvidence']) {
+  test(`preparing a payable purchase at a public https seller without ${missing} is refused before anything is signed`, async (t) => {
+    const w = await world(t, { publicEndpoint: SELLER_ORIGIN });
+    const p = await purchase(t, w, { paid: true });
+    const listing = fixtureListing(w.seller, { now: T0 });
+    const prepare = () => p.service.prepareTerms({ verification: { listing }, domain: { mode: 'public-chain-read', network: 'testnet', chainIdentity: w.binding.profile.chainIdentity }, sellerClaim: w.seller.claim });
+    assert.equal((await prepare()).terms.sellerAgent, SELLER_ORIGIN);
+    delete p.config[missing];
+    p.reopen();
+    await assert.rejects(prepare(), (error) => error.name === 'OperationError' && error.code === 'seller_agent_unavailable' && /declared seller transport/.test(error.message));
+    assert.equal(w.state.signs.length, 0);
+    assert.equal(p.policies(), 0);
+  });
+}
+
 test('a public endpoint without a wire authentication is refused', async () => {
   assert.throws(() => clientOverFetch({ url: SELLER_ORIGIN, fetchImpl: failIfCalled([]) }), { name: 'TypeError', message: /wire authentication/ });
 });
