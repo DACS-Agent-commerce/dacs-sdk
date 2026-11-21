@@ -1056,6 +1056,118 @@ describe("DemosAdapter", () => {
     });
   });
 
+  describe("name-index lookup read-back name", () => {
+    const INDEXED = "dacs3%3Acommit%3A01M5Y3MEF9CHTJS67KDBTMB140";
+    const lookupAdapter = (
+      rows: Array<{ address: string; owner: string; readName?: string }>,
+    ) => {
+      const adapter = makeAdapter();
+      Object.assign(adapter, { connected: true });
+      vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(async () => searchReply(
+          rows.map((row) => ({
+            storageAddress: row.address,
+            programName: INDEXED,
+          })),
+        )),
+      );
+      vi.spyOn(adapter.raw.storagePrograms, "read").mockImplementation(
+        async (address: string) => {
+          const row = rows.find((item) => item.address === address)!;
+          return {
+            success: true,
+            owner: row.owner,
+            ...(row.readName === undefined ? {} : { programName: row.readName }),
+            data: { value: 1 },
+          } as never;
+        },
+      );
+      return adapter;
+    };
+    const NAME = "dacs3:commit:01M5Y3MEF9CHTJS67KDBTMB140";
+
+    it("resolves an owned row whose read-back name matches", async () => {
+      const adapter = lookupAdapter([
+        { address: "stor-mine", owner: "0xWriter", readName: INDEXED },
+      ]);
+      await expect(adapter.resolveAnchorByName(NAME, "0xWriter")).resolves
+        .toEqual({ status: "present", address: "stor-mine" });
+    });
+
+    it("is indeterminate when an owned row reads back under another name", async () => {
+      const adapter = lookupAdapter([
+        {
+          address: "stor-other",
+          owner: "0xWriter",
+          readName: "dacs4%3Apayment%3Aother",
+        },
+      ]);
+      await expect(adapter.resolveAnchorByName(NAME, "0xWriter")).resolves
+        .toEqual({
+          status: "indeterminate",
+          reason: expect.stringMatching(/read back a different program name/),
+        });
+    });
+
+    it("is indeterminate when an owned row reads back without a program name", async () => {
+      const adapter = lookupAdapter([
+        { address: "stor-mine", owner: "0xWriter" },
+      ]);
+      await expect(adapter.resolveAnchorByName(NAME, "0xWriter")).resolves
+        .toEqual({
+          status: "indeterminate",
+          reason: expect.stringMatching(/read back a different program name/),
+        });
+    });
+
+    it("is indeterminate when a foreign row reads back under another name", async () => {
+      const adapter = lookupAdapter([
+        { address: "stor-mine", owner: "0xWriter", readName: INDEXED },
+        {
+          address: "stor-foreign",
+          owner: "0xOther",
+          readName: "dacs4%3Apayment%3Aother",
+        },
+      ]);
+      await expect(adapter.resolveAnchorByName(NAME, "0xWriter")).resolves
+        .toEqual({
+          status: "indeterminate",
+          reason: expect.stringMatching(/read back a different program name/),
+        });
+    });
+
+    it("is absent when only foreign rows read back under the indexed name", async () => {
+      const adapter = lookupAdapter([
+        { address: "stor-a", owner: "0xOther", readName: INDEXED },
+        { address: "stor-b", owner: "0xThird", readName: INDEXED },
+      ]);
+      await expect(adapter.resolveAnchorByName(NAME, "0xWriter")).resolves
+        .toEqual({ status: "absent" });
+    });
+
+    it("does not sign or broadcast a mutable write to a program read back under another name", async () => {
+      const adapter = lookupAdapter([
+        {
+          address: "stor-other",
+          owner: "0xWriter",
+          readName: "dacs4%3Apayment%3Aother",
+        },
+      ]);
+      const sign = vi.spyOn(adapter.raw.storagePrograms, "sign");
+      const broadcast = vi.spyOn(adapter.raw.tx, "broadcast");
+
+      await expect(adapter.anchorAndWait(NAME, { value: 1 }, {
+        completion: "included",
+        timeoutMs: 1_000,
+        pollMs: 1,
+      })).rejects.toMatchObject({ code: "read-failed" });
+      expect(sign).not.toHaveBeenCalled();
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+  });
+
   it("scans the exact prefix and returns only readable anchors owned by this writer", async () => {
     const adapter = makeAdapter();
     Object.assign(adapter, { connected: true });
