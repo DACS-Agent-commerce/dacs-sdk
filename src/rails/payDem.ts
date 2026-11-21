@@ -19,8 +19,6 @@ import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
-  declareSettlementBridge,
-  inheritSettlementBridge,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -35,7 +33,10 @@ export const DEM_DECIMALS = 9;
 
 // Only this module owns the authority used by its factory and record reads.
 const executionAuthority = createPayDemExecutionAuthority();
-/** SDK-built rails: whether each was built with a prepared-transfer journal. A rail not in here declares nothing. */
+/**
+ * SDK-built rails: whether each was built with a prepared-transfer journal.
+ * `payDemSettle` refuses one built without it unless the caller opts out.
+ */
 const railJournals = new WeakMap<object, boolean>();
 
 // Executed nonce whose account read had not caught up when its payment
@@ -2813,8 +2814,7 @@ export function payDemSettle(
       if (operations.get(key) === operation) operations.delete(key);
     }
   };
-  const journaled = railJournals.get(rail);
-  return declareSettlementBridge(bridge, journaled === undefined ? {} : { journaled });
+  return bridge;
 }
 
 /**
@@ -2822,9 +2822,8 @@ export function payDemSettle(
  * prepared-transfer journal. For a recovery request that carries no history it
  * calls `attempts` and forwards the request with what it returns; a request that
  * already carries history, or is not a recovery, is forwarded unchanged. The
- * wrapper keeps `bridge`'s registration and declared traits. It only adds
- * history: the bridge still decides whether the payment landed, and still
- * never pays on a recovery request.
+ * wrapper only adds history: the bridge still decides whether the payment
+ * landed, and still never pays on a recovery request.
  *
  * @returns A function with the same shape as `bridge`.
  * @throws Whatever `attempts` or `bridge` throws; nothing is caught.
@@ -2838,5 +2837,5 @@ export function withRecoveredAttempts(
     const found = await attempts(req);
     return bridge(found.length === 0 ? req : { ...req, priorAttempts: found });
   };
-  return inheritSettlementBridge(bridge, recovering);
+  return recovering;
 }

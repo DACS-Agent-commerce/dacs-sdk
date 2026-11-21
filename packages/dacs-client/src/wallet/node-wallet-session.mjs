@@ -442,6 +442,9 @@ function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired }
   return { effectPass, runInEffectPass, pass };
 }
 
+// Each wrapper `guardedCrypto` made, mapped to the SDK crypto it wraps.
+const guardedInner = new WeakMap();
+
 // The SDK's crypto, except that a transaction signature made inside `sign` runs through the effect gate, its content check first;
 // outside `sign` (RPC authentication) every call passes through.
 function guardedCrypto(inner, signScope, gate) {
@@ -451,11 +454,31 @@ function guardedCrypto(inner, signScope, gate) {
     const checkContent = () => { try { return checkFinalContent(scope, message); } catch (cause) { throw cause instanceof EmbeddedWalletError ? cause : refuseContent(cause); } };
     return gate.pass({ phase: 'sign', checkContent }, () => inner.sign(algorithm, message));
   };
-  return new Proxy(inner, { get(target, key) {
+  const wrapper = new Proxy(inner, { get(target, key) {
     if (key === 'sign') return sign;
     const value = Reflect.get(target, key, target);
     return typeof value === 'function' ? value.bind(target) : value;
   } });
+  guardedInner.set(wrapper, inner);
+  return wrapper;
+}
+
+// Refuses `node_wallet_sdk_unguarded` unless `demos.crypto` is read through the class accessor and is a gate wrapper, so no signature
+// skips the gate. With `allowNone`, no crypto at all (a disconnected instance) passes, and the SDK refuses the signature itself.
+function assertCryptoGuarded(demos, allowNone = false) {
+  const crypto = Object.hasOwn(demos, 'crypto') ? undefined : demos.crypto;
+  if (crypto === undefined || !(guardedInner.has(crypto) || (allowNone && crypto === null))) {
+    fail('node_wallet_sdk_unguarded', new Error('the SDK crypto is not behind the effect gate; nothing was signed'));
+  }
+}
+
+// demosdk 4.0.23's constructor hides `crypto` as an own non-enumerable data property (hideSecretFields) and then assigns it, so the raw
+// crypto shadows the class accessor. The value moves back behind the accessor, which keeps it off the instance's own keys; any other shape
+// is refused by assertCryptoGuarded.
+function routeCryptoThroughAccessor(demos) {
+  const own = Object.getOwnPropertyDescriptor(demos, 'crypto');
+  if (own && 'value' in own && own.configurable && delete demos.crypto) demos.crypto = own.value;
+  assertCryptoGuarded(demos);
 }
 
 function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate }) {
@@ -463,15 +486,17 @@ function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate }) {
   return class NodeDemos extends Demos {
     constructor() {
       super();
+      routeCryptoThroughAccessor(this);
       this.storagePrograms.read = async () => fail('node_wallet_read_unsupported');
     }
 
     get crypto() { return guards.get(this) ?? null; }
-    set crypto(inner) { guards.set(this, inner && guardedCrypto(inner, signScope, gate)); }
+    // A wrapper handed back (an SDK that hides the field after assigning it reads it through this getter) is unwrapped, so the gate runs once.
+    set crypto(inner) { guards.set(this, inner && guardedCrypto(guardedInner.get(inner) ?? inner, signScope, gate)); }
 
     /** Signs like the SDK, but refuses before the inner signature unless `options.finalContent(content)` accepts the finalized content. */
     sign(transaction, { finalContent, ...sdkOptions } = {}) {
-      return signScope.run({ transaction, finalContent }, () => super.sign(transaction, sdkOptions));
+      return signScope.run({ transaction, finalContent }, async () => { assertCryptoGuarded(this, true); return super.sign(transaction, sdkOptions); });
     }
 
     /**
@@ -569,7 +594,8 @@ const checkConstruction = admitPublicFactory(options => ({ options }), { purchas
  * Options: `{admission, owner, journal, key, approve, clock, stopped, feeCeilingOs}`; `stopped()` is the host's stop check and `feeCeilingOs` its fee ceiling
  * (a positive decimal OS amount), both required with no default; `key` is the UTF-8 mnemonic as a Uint8Array, and it and every copy of it are zero-filled
  * on every outcome. Rejects with TypeError(admission_required | admission_input_untrusted | a missing or malformed `stopped` or `feeCeilingOs`), OperationError(runtime_unsupported | invalid_mnemonic | invalid_params (any `qualify`) |
- * node_wallet_sdk_unreviewed | node_wallet_sdk_preloaded | transport errors), or the SDK session's own refusal.
+ * node_wallet_sdk_unreviewed | node_wallet_sdk_preloaded | node_wallet_sdk_unguarded (the SDK's crypto cannot be put behind the effect gate) | transport errors),
+ * or the SDK session's own refusal.
  */
 export function createNodeWalletSession(options = {}) {
   return buildNodeComposition(options, false);

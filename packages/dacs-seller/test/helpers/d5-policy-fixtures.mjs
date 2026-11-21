@@ -37,7 +37,7 @@ const PAYMENT_TX_REF=Object.freeze({kind:'demos',txHash:'5'.repeat(64),blockNumb
 // overrides top-level artifact members (undefined deletes one); editArtifact,
 // editDeliveryBinding and editCreate change the artifact, the binding (in the
 // request and the CREATE) or the CREATE before the request is derived from them.
-function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='deliver-storage-program',artifact:override={},editArtifact=()=>{},editDeliveryBinding=()=>{},editCreate=()=>{},logicalAddress:addressOverride,rpcFeeDem='1',nonce=1,walletAddress=address,writer=seller}={}){
+function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='deliver-storage-program',artifact:override={},editArtifact=()=>{},editDeliveryBinding=()=>{},editCreate=()=>{},logicalAddress:addressOverride,rpcFeeDem='1',nonce=1,walletAddress=address,writer=seller,sourceBinding:bound=sourceBinding}={}){
   const address=walletAddress,seller=writer;
   const settlementKind=artifactKind==='SettlementEvidence'&&phase==='pay-dem';
   const artifact={...artifactFor(artifactKind,job,party,phase),...override};
@@ -51,7 +51,7 @@ function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='d
     deliveryBinding={version:'1',profile:'dacs-native-delivery-publication/v1',jobId:job,phase:'deliver-storage-program',phaseIndex:3,listing:{...pin},agreementHash,fulfilmentId:'TEST-fulfilment',purchaseAmount:{amount:'1',currency:'DEM'},payloadHash:contentHash(artifact)};
     editDeliveryBinding(deliveryBinding);
   }
-  const metadata={logicalAddress,contentHash:contentHash(artifact),envelopeHash:sha(stored),artifactKind,networkBinding:sourceBinding,
+  const metadata={logicalAddress,contentHash:contentHash(artifact),envelopeHash:sha(stored),artifactKind,networkBinding:bound,
     ...(settlementKind?{}:{artifactBinding:{version:'1',policy:'dacs-devnet-demo-artifacts/v1',authority:artifactAuthority,artifactKind,jobId:job,logicalAddress,writer:seller}}),
     ...(deliveryBinding?{deliveryBinding}:{})};
   const create={operation:'CREATE_STORAGE_PROGRAM',storageAddress,programName,encoding:'json',data:artifact,metadata,acl:{mode:'public'},salt:'',storageLocation:'onchain'};
@@ -62,7 +62,7 @@ function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='d
       owner:seller,wallet:address,logicalAddress,storageAddress,programName,contentHash:contentHash(artifact),contentHashProfile:'SDK CF-1 signed scope (top-level signature/signatures omitted)',
       envelopeHash:sha(stored),...(deliveryBinding?{deliveryBinding:structuredClone(deliveryBinding)}:{}),storageBytes:Buffer.byteLength(stored),exactStorageBytes:stored,exactCreate:canonicalize(create),
       nonce,timestamp:7,debit:{storageFeeDem:'1',sellerAmountDem:'0',sdkGasDem:'1',networkFeeDem:'1',rpcFeeDem,additionalFeeDem:'0',totalDem:demString(totalOs),totalOs:totalOs.toString(),note:'Complete debit'},
-      network:sourceBinding.network,chainIdentity:sourceBinding.chainIdentity,networkBinding:sourceBinding,evidence:'TEST source',sending:'Send once'}};
+      network:bound.network,chainIdentity:bound.chainIdentity,networkBinding:bound,evidence:'TEST source',sending:'Send once'}};
 }
 
 // The node's executed CREATE for the request (Node 61b8e75): the signed
