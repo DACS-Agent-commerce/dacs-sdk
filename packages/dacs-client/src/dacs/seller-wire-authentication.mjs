@@ -1,11 +1,14 @@
 // Buyer authentication uses the wire's profile, proof and byte admission.
+import { randomBytes } from 'node:crypto';
 import { canonicalize } from '@kynesyslabs/dacs';
-import { signWireRequest, verifyWireResponse, WireError, isPublicEndpoint, isReadRoute, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
+import { signWireRequest, signExplicitCreateResume, verifyWireResponse, wireRequestHash, WireError, isPublicEndpoint, isReadRoute, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
 import { OperationError } from '../client-errors.mjs';
 const CLAIM = /^did:demos:agent:[0-9a-f]{64}$/;
 // The wire's CONTINUING_PATHS (discovery.ts) is not a public export; the wire-continuation-evidence test compares this set with it.
 const CONTINUING_PATHS = new Set([DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature]);
+// 32 random bytes name one proof in the seller's one-use ledger.
+const PROOF_NONCE_BYTES = 32;
 const EVIDENCE_MEMBERS = ['commitment', 'agreement', 'signedListing'];
 const evidenceMembers = (kept) => Object.fromEntries(EVIDENCE_MEMBERS.filter((member) => kept?.[member] !== undefined).map((member) => [member, kept[member]]));
 
@@ -23,6 +26,19 @@ export function createSellerWireAuthentication({ admission, sessionSigner, deleg
     || !isPublicEndpoint(publicEndpoint) || !job?.jobId || !job.listingPin || !job.agreementHash || !job.profile || typeof now !== 'function') throw new TypeError('seller_wire_configuration_invalid');
   if (!delegation?.payload || typeof delegation.signature !== 'string') throw new OperationError('seller_delegation_unavailable', 'a retained wallet-signed session delegation is required');
   const { binding, currentLocal } = admission;
+  // The session signer for one route. The wire awaits its binding and proof checks before it calls sign, so admission, the connection
+  // and the delegation's expiry (readback routes excepted) are read again in the same step as the signature.
+  // A caller's deadline stops the signer from being called, and a signature that arrives after it is dropped.
+  const signerFor = (path, localDigest, retainedDelegation, { signal, checkDeadline }) => ({ claim: sessionSigner.claim, async sign(bytes) {
+    signal?.throwIfAborted(); checkDeadline();
+    assertPurchaseActionsAdmitted();
+    if (canonicalize(currentLocal()) !== localDigest) throw new OperationError('tp1_local_binding_changed', 'the actor connection changed before signing');
+    if (!isReadRoute(path) && now() >= retainedDelegation.payload.expiresAt) throw new WireError('peer_delegation_expired', 500);
+    signal?.throwIfAborted(); checkDeadline();
+    const signature = await sessionSigner.sign(bytes);
+    signal?.throwIfAborted(); checkDeadline();
+    return signature;
+  } });
   return Object.freeze({
     async request(path, body, text, { signal, checkDeadline = () => {} } = {}) {
       signal?.throwIfAborted(); checkDeadline();
@@ -33,26 +49,28 @@ export function createSellerWireAuthentication({ admission, sessionSigner, deleg
       // The wire treats a read with no commitment as a new purchase; evidence that is supplied but lacks its commitment never drops to that branch.
       if (kept && kept.commitment === undefined) throw new WireError('continuation_commitment_invalid', 500, 'CONTINUATION-EVIDENCE-REQUIRED');
       signal?.throwIfAborted(); checkDeadline();
-      const local = currentLocal(), localDigest = canonicalize(local);
-      const retainedDelegation = JSON.parse(JSON.stringify(delegation));
-      // The wire awaits its binding and proof checks before it calls sign, so admission, the connection
-      // and the delegation's expiry (readback routes excepted) are read again in the same step as the signature.
-      // A caller's deadline stops the signer from being called, and a signature that arrives after it is dropped.
-      const signer = { claim: sessionSigner.claim, async sign(bytes) {
-        signal?.throwIfAborted(); checkDeadline();
-        assertPurchaseActionsAdmitted();
-        if (canonicalize(currentLocal()) !== localDigest) throw new OperationError('tp1_local_binding_changed', 'the actor connection changed before signing');
-        if (!isReadRoute(path) && now() >= retainedDelegation.payload.expiresAt) throw new WireError('peer_delegation_expired', 500);
-        signal?.throwIfAborted(); checkDeadline();
-        const signature = await sessionSigner.sign(bytes);
-        signal?.throwIfAborted(); checkDeadline();
-        return signature;
-      } };
-      const signed = await signWireRequest({ binding, local, signer, delegation: retainedDelegation, endpointProof, publicEndpoint, path, jobId, text, seller, ...evidenceMembers(kept),
+      const local = currentLocal(), retainedDelegation = JSON.parse(JSON.stringify(delegation));
+      const signed = await signWireRequest({ binding, local, signer: signerFor(path, canonicalize(local), retainedDelegation, { signal, checkDeadline }), delegation: retainedDelegation, endpointProof, publicEndpoint, path, jobId, text, seller, ...evidenceMembers(kept),
         job: { listingPin: job.listingPin, agreementHash: job.agreementHash, profile: job.profile, ...(job.deadline === undefined ? {} : { deadline: job.deadline }) }, now: now() });
       // The wire builds the expiry from the clock read above, before its awaited authority reads; a slow read can leave the request already expired.
       if (signed.payload.expiresAt <= now()) throw new WireError('peer_expired', 500);
       return signed;
+    },
+    /**
+     * Signs the one-use proof of an explicit resume for `signed`, the request `request` just returned, and returns its
+     * `x-dacs-seller-resume` header. The proof names that request's hash and lives no longer than the request or the wire's
+     * signed lifetime. Rejects with the wire's `explicit_resume_invalid` for a route that is not an effect route, with
+     * `profile_not_admitted` while purchases are held, and with the signer's own refusals. It takes the same deadline guards as `request`.
+     */
+    async resumeProof({ payload }, { signal, checkDeadline = () => {} } = {}) {
+      signal?.throwIfAborted(); checkDeadline();
+      assertPurchaseActionsAdmitted();
+      const local = currentLocal(), time = now(), retainedDelegation = JSON.parse(JSON.stringify(delegation));
+      return signExplicitCreateResume({ version: '1', kind: 'explicit-create-resume', buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin,
+        jobId: payload.jobId, path: payload.path, agreementHash: payload.agreementHash, requestHash: wireRequestHash(payload), nonce: randomBytes(PROOF_NONCE_BYTES).toString('base64url'),
+        expiresAt: Math.min(payload.expiresAt, time + DACS_SELLER_HTTP_LIMITS.maxSignedLifetimeMs), profile: payload.profile },
+      // The session key signs for the buyer the request names; the wire checks the proof's signer is that buyer.
+      { signer: { ...signerFor(payload.path, canonicalize(local), retainedDelegation, { signal, checkDeadline }), claim: payload.buyer }, binding, local, now: time });
     },
     async verifyResponse(payload, { header, status, body }) {
       return verifyWireResponse(payload, { binding, local: currentLocal(), header, status, body, now: now() });

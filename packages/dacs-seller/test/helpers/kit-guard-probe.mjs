@@ -164,6 +164,8 @@ async function effectEntries() {
     history: { read: async () => { effects.sends++; return []; }, append: async () => { effects.sends++; } }, clock: { now: () => 0, after: () => () => {} } });
   await attempt('effectBoundary', () => probeBoundary.pass({}, () => { effects.signs++; }, () => { effects.sends++; }));
   await attempt('storageWriteRpcSigner', () => storageWriteRpcSigner({ claim: 'writer', sign: signBytes }, 'writer')('message'));
+  const { createSellerNodeWallet } = await import('../../src/devnet-demo/seller-node-wallet.mjs');
+  await attempt('createSellerNodeWallet', () => createSellerNodeWallet({ dataDirectory: directory, keyRecord: new Uint8Array(1) }));
 
   const delivery = { authority: 'TEST-native', writer: seller.claim, publish: async () => { effects.sends++; }, read: async () => ({ status: 'absent' }), readRetained: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
   await attempt('createDevnetDemoDeliveryCapability.submit', () => nativeDemDeliverySubmitsOf(createDevnetDemoDeliveryCapability({ authority: delivery.authority, anchor: delivery })).submit({}));

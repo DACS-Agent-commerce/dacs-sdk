@@ -10,13 +10,21 @@ import {
   type RailDefinition,
   type RailRegistryDefinitionRef,
 } from "@kynesyslabs/dacs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { contentHash } from "@kynesyslabs/dacs/canonical";
-import { describe, expect, it, vi } from "vitest";
+import { DemosAdapter } from "@kynesyslabs/dacs/substrate";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+  DACS_NODE_LIVE_PROFILE,
   bootstrapDacsDemosX402RailRegistryV1,
+  createDacsDemosActorRuntimeV1,
   createDacsDemosRailRegistryProviderV1,
+  loadDacsSecretV1,
   type DacsDemosAdapterV1,
   type DacsDemosActorRuntimeV1,
 } from "../src/index.js";
@@ -339,5 +347,153 @@ describe("authenticated Demos rail registry provider", () => {
       acceptedAt: 1_780_000_000_000,
     })).rejects.toThrow(/bootstrap options are invalid/);
     expect(anchorWriteOnce).not.toHaveBeenCalled();
+  });
+});
+
+describe("read-only steward runtime", () => {
+  const roots: string[] = [];
+  const OWNER = Buffer.from(PUBLIC_KEY).toString("hex");
+  const FOREIGN_OWNER = "ee".repeat(32);
+  const BINDING = {
+    registryVersion: 1,
+    indexRef: {
+      logicalAddress: RAIL_REGISTRY_INDEX_ADDRESS,
+      anchor: { kind: "storage-program", locator: "stor:index" },
+      contentHash: "00".repeat(32),
+    },
+    receipt: { receiptVersion: "1" },
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    for (const directory of roots.splice(0)) {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * A seller runtime in read-only mode whose adapter is a real DemosAdapter
+   * with its network calls stubbed. Each entry is a storage program that the
+   * name index lists and that a read returns, keyed by storage address.
+   */
+  async function readOnlySteward(programs: Readonly<Record<string, string>>) {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-read-only-steward-"));
+    roots.push(directory);
+    const secretPath = join(directory, "demos.secret");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    const demosIdentity = await loadDacsSecretV1({
+      name: "seller-demos-identity",
+      mode: "live-demos",
+      filePath: secretPath,
+    });
+    vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: { body?: unknown }) => {
+      const request = JSON.parse(String(init?.body)) as {
+        params: { data: { query: string } }[];
+      };
+      const programName = request.params[0]!.data.query;
+      return new Response(JSON.stringify({
+        result: 200,
+        response: Object.keys(programs).map((storageAddress) => ({
+          storageAddress,
+          programName,
+        })),
+      }));
+    }));
+    let created: DemosAdapter | undefined;
+    const runtime = await createDacsDemosActorRuntimeV1({
+      config: {
+        mode: "live-demos",
+        profile: DACS_NODE_LIVE_PROFILE,
+        role: "seller",
+        dataDirectory: directory,
+        demos: { rpcUrl: "http://127.0.0.1:5350" },
+        rail: {
+          registryIndexRef: "dacs4:registry:v0.1",
+          requestedNetwork: "eip155:84532",
+        },
+        limits: {
+          maxServiceAmount: { asset: "USDC", amount: "1" },
+          maxSetupSpendDem: "10",
+          maxDemosNetworkFeeDem: "2",
+          maxEvmNetworkFeeEth: "0.001",
+        },
+      },
+      role: "seller",
+      authority: STEWARD,
+      demosIdentity,
+      writePolicy: "read-only",
+      createAdapter: (input) => {
+        created = new DemosAdapter(input);
+        vi.spyOn(created.raw, "connect").mockResolvedValue(undefined as never);
+        vi.spyOn(created.raw, "connectWallet").mockResolvedValue(undefined as never);
+        vi.spyOn(created.raw, "getAddress").mockReturnValue(OWNER);
+        vi.spyOn(created, "getPublicKey").mockResolvedValue(Uint8Array.from(PUBLIC_KEY));
+        vi.spyOn(created, "getChainIdentityDetails").mockResolvedValue({
+          chainId: null,
+          genesisHash: "genesis-test",
+          genesisDataHash: null,
+          source: "genesis-read",
+        });
+        vi.spyOn(created.raw.storagePrograms, "read").mockImplementation(
+          async (address: string) => ({
+            success: address in programs,
+            storageAddress: address,
+            owner: programs[address],
+            data: BINDING,
+          }) as never,
+        );
+        return created as unknown as DacsDemosAdapterV1;
+      },
+    });
+    const provider = createDacsDemosRailRegistryProviderV1({
+      runtime,
+      stewardAuthority: runtime.authority,
+      stewardPublicKey: runtime.publicKey,
+    });
+    return {
+      runtime,
+      provider,
+      sign: vi.spyOn(created!.raw.storagePrograms, "sign"),
+      broadcast: vi.spyOn(created!.raw.tx, "broadcast"),
+    };
+  }
+
+  it("resolves its own registry binding through the owner-checked name index", async () => {
+    const { runtime, provider, sign, broadcast } = await readOnlySteward({
+      "stor:binding": OWNER,
+    });
+    await expect(provider.resolveCurrentIndex(RAIL_REGISTRY_INDEX_ADDRESS))
+      .resolves.toEqual(BINDING);
+    await expect(runtime.adapter.anchorWriteOnce(
+      DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+      { registryVersion: 2 },
+    )).rejects.toThrow(/durable writeJournal/);
+    expect(sign).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve a binding owned by another wallet", async () => {
+    const { provider } = await readOnlySteward({ "stor:binding": FOREIGN_OWNER });
+    await expect(provider.resolveCurrentIndex(RAIL_REGISTRY_INDEX_ADDRESS))
+      .resolves.toBeNull();
+    await expect(resolveRail(RAIL_REGISTRY_INDEX_ADDRESS, "x402:default", provider))
+      .rejects.toThrow(/unresolved/);
+  });
+
+  it("refuses a binding name that two of its own programs claim", async () => {
+    const { runtime, provider } = await readOnlySteward({
+      "stor:binding-a": OWNER,
+      "stor:binding-b": OWNER,
+    });
+    await expect(provider.resolveCurrentIndex(RAIL_REGISTRY_INDEX_ADDRESS))
+      .rejects.toMatchObject({ reasonCode: "rail-registry-currentness-indeterminate" });
+    await expect(runtime.adapter.resolveAnchorByName(
+      DACS_DEMOS_RAIL_REGISTRY_CURRENT_BINDING_ADDRESS_V1,
+      OWNER,
+    )).resolves.toMatchObject({
+      status: "indeterminate",
+      reason: expect.stringMatching(/multiple programs/),
+    });
   });
 });
