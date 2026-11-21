@@ -19,6 +19,7 @@ import { createDevnetAgreementTransport, createDevnetDemoTransport, createSource
 import { createEffectBoundary } from './effect-boundary.mjs';
 import { createEffectFence } from './effect-fence.mjs';
 import { createEffectHistory } from './effect-history.mjs';
+import { createReopenGrants } from './withheld-reopen-grants.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createPaymentEvidenceCreateAdapter } from './node-payment-evidence-adapter.mjs';
 import { assertCurrentAuthorization, isPassContext, passContext, runInPassContext } from './pass-context.mjs';
@@ -97,7 +98,8 @@ export { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDemoTr
  */
 export function createHeldTransportFacade({ admission, transport } = {}) {
   const wrapped = admitPublicFactory(() => transport, { passive: PASSIVE_TRANSPORT_METHODS, purchase: true })({ admission });
-  const members = Object.fromEntries(Object.entries(wrapped).filter(([name]) => name !== 'actionsAdmitted'));
+  // The reopen entry is the composition's own (`withheldReopen`), never a member a host or a relay holds.
+  const members = Object.fromEntries(Object.entries(wrapped).filter(([name]) => !['actionsAdmitted', 'reopenWithheldBroadcast'].includes(name)));
   const facade = Object.freeze({ ...members, binding(request, ...args) {
     try {
       return request?.phase === READBACK_PHASE ? transport.binding({ ...request, phase: READBACK_PHASE }, ...args) : wrapped.binding(request, ...args);
@@ -550,7 +552,11 @@ function createBindingRelay(transport) {
 const checkConstruction = admitPublicFactory(options => ({ options }), { purchase: true });
 
 /**
- * Returns a Promise for `{wallet, walletFactory({anchorJournal}), internalCauseOf(envelope), effectPass(pass), runInEffectPass(handle, work), effectBoundary, transport, close()}`.
+ * Returns a Promise for `{wallet, walletFactory({anchorJournal}), internalCauseOf(envelope), effectPass(pass), runInEffectPass(handle, work), effectBoundary, transport, withheldReopen, close()}`.
+ * `withheldReopen` is `{register(scope), reopen({capability, signRpc})}`, for the trusted composition only: `register({operationId, lane, hash, operationClass, currentAuthorization})`
+ * returns a one-use capability for the retained native transaction `hash` of that operation on wallet lane `lane` (`reopen_scope_invalid` for a malformed scope), and
+ * `reopen` sends that transaction once, when its whole dispatch history shows no possible transmission (otherwise `outcome_unknown`; `reopen_capability_invalid` for an
+ * unknown or used capability). A seller composition runs `reopen` inside its effect pass.
  * `effectBoundary` is the client's effect boundary, built here from `stopped` and `feeCeilingOs` and held by the native transport; `transport` is the held facade of
  * `createHeldTransportFacade`.
  * `effectPass` and `runInEffectPass` are the effect gate's host contract (see `createEffectGate`); a buyer may sign and send without a pass. `wallet.request` is wrapped by the admission wrapper and the four
@@ -587,7 +593,7 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
 }
 
 /**
- * Returns a Promise for `{wallet, walletFactory, transport, observer, paymentEvidenceAdapter, internalCauseOf, effectPass, runInEffectPass, effectBoundary, close}`: the session
+ * Returns a Promise for `{wallet, walletFactory, transport, observer, paymentEvidenceAdapter, internalCauseOf, effectPass, runInEffectPass, effectBoundary, withheldReopen, close}`: the session
  * of `createNodeWalletSession` over a seller transport.
  * `transport` is the registered held facade of `createHeldTransportFacade`; `observer` is `createNodeObserver({owner, clock})` over the same owner, with no fence.
  * `paymentEvidenceAdapter` is `{signCreate, broadcast, readAccountNonce, readTransactionState}`: the first two are active members under the hold and run in the caller's
@@ -676,7 +682,8 @@ async function buildNodeComposition(options, seller) {
       return gate.pass({ phase: stage, signal: init.signal }, () => { if (attempt) attempt.effectSent = true; return send(); });
     };
     const stamps = createRpcStampSource(clock);
-    const transportOptions = { expected, transportOwner: owner, journal, fetchImpl, boundary: effectBoundary, now: () => clock.now(), stamps,
+    const reopenGrants = createReopenGrants();
+    const transportOptions = { expected, transportOwner: owner, journal, fetchImpl, boundary: effectBoundary, now: () => clock.now(), stamps, reopenGrants: { consume: reopenGrants.consume },
       fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation },
       blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
       blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH };
@@ -712,6 +719,7 @@ async function buildNodeComposition(options, seller) {
       owner, fetchImpl, stamps, recordCause })) : null;
     const composition = Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass, effectBoundary,
       transport: createHeldTransportFacade({ admission, transport }), ...(seller ? { observer, paymentEvidenceAdapter } : {}),
+      withheldReopen: Object.freeze({ register: scope => reopenGrants.register(scope), reopen: request => transport.reopenWithheldBroadcast(request) }),
       async close() { session.lock(); evidenceDemos?.disconnect(); await transport.close(); } });
     if (seller) sellerReservations.set(composition, reservations);
     return composition;

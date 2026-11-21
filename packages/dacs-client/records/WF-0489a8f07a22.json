@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF narrow when the README says a reopen sends and name a never-sent transfer that readback marked failed",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "a39e7444c1bc43f2a3149bdeba44d3bcbd2c50e6",
+      "after": "73d0105200cb8ccc9991eb7748d1a192034e49c0"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-0489a8f07a22.json"
+  ],
+  "note": "The README's withheldReopen paragraph now matches the reopen rules exactly. A transaction with no intent row is sent on its history alone only when the lane row is absent or holds another, finished transfer; a lane row holding another unfinished transfer is refused. A transaction that was never sent but that a readback later marked failed because another transfer used its nonce stays readback-only, as its rows hold a failure other than withheld. The refusal sentence names the refusals listed before it, which are outcome_unknown. No code changes."
+}
