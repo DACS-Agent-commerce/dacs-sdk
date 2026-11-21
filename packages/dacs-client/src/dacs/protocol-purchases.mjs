@@ -445,6 +445,7 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now, 
         const finish = (answerClass, cause) => {
           if (answerClass === SELLER_ANSWER_CLASS.SUSPENDED) return recordSuspension(cause ?? answerClass, path, { attemptId });
           if (STOP_REFUSAL_CODES.has(cause)) recordSuspension(cause, path);
+          else if (cause === 'profile_not_admitted') recordSuspension(cause, path, { queuedOnly: true });
           return finishAttempt(path, attemptId, answerClass);
         };
         return { row: saved, attempt: attemptFor(path, text, newPurchase, finish) };

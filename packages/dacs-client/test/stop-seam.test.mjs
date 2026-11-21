@@ -2,12 +2,13 @@
 // the read-only `passiveOnly` composition. The hold is flipped through the test resolve hook; timers use mock.timers.
 import test, { beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { storedWorld, PATHS, bodyFor, errorCode } from './helpers/stored-request-fixture.mjs';
-import { setPurchaseAdmission, T0 } from './helpers/wire-client-fixture.mjs';
+import { setPurchaseAdmission, T0, PUBLIC_ENDPOINT } from './helpers/wire-client-fixture.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { spawnJournalChild } from './helpers/journal-child-process.mjs';
 
@@ -20,6 +21,8 @@ const { StaleProtocolCheck } = await import('../src/dacs/protocol-purchases.mjs'
 const { OperationError } = await import('../src/client-errors.mjs');
 const client = await import('../src/index.mjs');
 const { createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
+const { createSellerHttpsClient } = await import('../src/dacs/seller-http.mjs');
+const { createSellerHttpsConnector } = await import('../src/dacs/seller-https-connector.mjs');
 
 const P = PATHS.proposals;
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -231,6 +234,55 @@ test('a signature returning after a stop is retained and never sent by automatic
   assert.equal(s.w.state.signs.length, 1, 'no second signature');
   assert.equal(s.fetches.length, 0);
   assert.ok((await s.w.requests.records()).length > 0, 'the retained signature survives the restart');
+});
+
+// The real connector over a request that completes its TLS handshake and writes nothing else; `change` runs once the request is opened, which is after signing.
+function handshakeOnlyConnector(change) {
+  const writes = [];
+  const request = () => {
+    const req = Object.assign(new EventEmitter(), { destroy() {}, end(body) { writes.push(body); setImmediate(() => req.emit('error', new Error('TEST nothing answers'))); } });
+    const socket = Object.assign(new EventEmitter(), { destroy() {} });
+    change();
+    setImmediate(() => { req.emit('socket', socket); socket.emit('connect'); socket.emit('secureConnect'); });
+    return req;
+  };
+  return { writes, connector: createSellerHttpsConnector({ resolveHost: async () => ['8.8.8.8'], request }) };
+}
+
+test('a stop caught by the connector before the first byte suspends the purchase, and nothing is sent after the stop lifts', async (t) => {
+  const s = await storedWorld(t);
+  const { control } = s.w.requests;
+  const { writes, connector } = handshakeOnlyConnector(() => { control.stopped = true; });
+  const client = () => createSellerHttpsClient({ publicEndpoint: PUBLIC_ENDPOINT, connector, authentication: s.auth, requestRecords: s.records(), clock: s.clock, commitOnSignature: true });
+  await assert.rejects(client().propose(bodyFor(P)), (error) => error.answerClass === 'not-sent' && error.answerCode === 'writes_stopped' && error.cause?.code === 'writes_stopped');
+  assert.equal(s.w.state.signs.length, 1);
+  assert.equal(writes.length, 0);
+  assert.equal(suspension(s).cause, 'writes_stopped');
+  control.stopped = false;
+  await assert.rejects(client().propose(bodyFor(P)), errorCode('invalid_state'));
+  assert.equal(s.w.state.signs.length, 1, 'no second signature');
+  assert.equal(writes.length, 0);
+});
+
+test('a re-hold caught while signing or by the connector before the first byte suspends the purchase, and nothing is sent after the hold lifts', async (t) => {
+  t.after(() => setPurchaseAdmission('held'));
+  const hold = () => setPurchaseAdmission('held');
+  const holds = [['while signing', (s) => { s.w.requests.control.onStop = () => { if (s.w.state.signs.length > 0) hold(); }; return () => {}; }],
+    ['in the connector', () => hold]];
+  for (const [name, arrange] of holds) {
+    setPurchaseAdmission('testnet-tp1');
+    const s = await storedWorld(t);
+    const { control } = s.w.requests;
+    const { writes, connector } = handshakeOnlyConnector(arrange(s));
+    const client = () => createSellerHttpsClient({ publicEndpoint: PUBLIC_ENDPOINT, connector, authentication: s.auth, requestRecords: s.records(), clock: s.clock, commitOnSignature: true });
+    await assert.rejects(client().propose(bodyFor(P)), (error) => error.answerClass === 'not-sent' && error.answerCode === 'profile_not_admitted' && error.cause?.code === 'profile_not_admitted', name);
+    assert.equal(suspension(s).cause, 'profile_not_admitted', name);
+    control.onStop = null;
+    setPurchaseAdmission('testnet-tp1');
+    await assert.rejects(client().propose(bodyFor(P)), errorCode('invalid_state'), name);
+    assert.equal(s.w.state.signs.length, 1, `${name}: no second signature`);
+    assert.equal(writes.length, 0, name);
+  }
 });
 
 test('a signed seller_stopped answer to a dispatched payment keeps the outcome unknown and suspends', async (t) => {

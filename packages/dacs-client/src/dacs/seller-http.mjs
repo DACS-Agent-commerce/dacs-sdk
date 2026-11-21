@@ -262,10 +262,10 @@ export function createSellerHttpsClient(options) {
       if (error instanceof SellerRefusedError) throw error;
       if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }
       lastFailureCause = error instanceof SellerHttpsConnectorError ? error.causeCode : failureCause(error, phase, signal);
-      // A stop refusal keeps its code for the attempt's record and its error as the cause.
-      const stopRefusal = isStopRefusal(error);
-      const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause, { answerClass: dispatched ? SELLER_ANSWER_CLASS.UNKNOWN : SELLER_ANSWER_CLASS.NOT_SENT, ...(stopRefusal ? { code: error.code } : {}) });
-      if (stopRefusal) unavailable.cause = error;
+      // A stop or re-hold refusal keeps its code for the attempt's record and its error as the cause. The connector wraps a refusal raised in its transmit step, so the wrapped cause is checked too.
+      const refusal = [error, error?.cause].find((candidate) => isStopRefusal(candidate) || candidate?.code === 'profile_not_admitted');
+      const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause, { answerClass: dispatched ? SELLER_ANSWER_CLASS.UNKNOWN : SELLER_ANSWER_CLASS.NOT_SENT, ...(refusal ? { code: refusal.code } : {}) });
+      if (refusal) unavailable.cause = refusal;
       if (!dispatched) { preDispatchFailures.add(unavailable); lastFailureDispatched = false; }
       if (error instanceof RawJsonAdmissionError) { unavailable.admissionCode = error.code; unavailable.admissionStage = error.stage; }
       throw unavailable;

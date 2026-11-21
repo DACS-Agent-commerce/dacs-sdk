@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client README",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "6f83accf9f8c59e95bb53f700b1d92be7c5aa98d",
+      "after": "6f83accf9f8c59e95bb53f700b1d92be7c5aa98d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-839fc9a1be2b.json"
+  ],
+  "note": "Both sides of the merge recorded the README: the signature change on the lower branch and the stop seam on this one. This record chooses the merged copy, which keeps both edits."
+}
