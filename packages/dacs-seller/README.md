@@ -2,12 +2,15 @@
 
 A self-hosted DACS seller: one seller agent for one signed fixed-price DEM
 Listing, behind the authenticated seller transport and its durable journal, on
-loopback. The agent runs negotiation (DACS-3), the finalized commitment,
+a public listener (a TLS-terminating reverse proxy in front of loopback, or its
+own TLS; see "Listener modes"). The agent runs negotiation (DACS-3), the finalized commitment,
 `pay-dem` payment intake and delivery through the core SDK
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
 evidence and native DEM delivery capabilities, which the host requires. This
 is the devnet-demo seller kit, ported from the plugin seller kit (see
-[SOURCES.md](SOURCES.md)). Its packaged native readers are **fixture-only**:
+[SOURCES.md](SOURCES.md)). It builds its Node wallet through the client's held
+Node composition, which the kit guard and the client hold keep off. Its
+packaged native readers are **fixture-only**:
 the native DEM delivery capability and the DEM delivery context accept only a
 `TEST-` authority (`src/dacs/native-dem-delivery-consumer.mjs`,
 `src/dacs/dem-delivery-context-consumer.mjs`), and
@@ -137,8 +140,9 @@ const host = await startSellerHost({
   maxRecords: 10000,     // optional limit on the store's challenge and context records and retained accounting rows
   maxReservationUnits: 10000, // optional reservation budget, default maxRecords; a purchase allocation is 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
-  host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
-  port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)
+  listener,              // required: { mode: 'proxy', host: '127.0.0.1' | '::1', port, publicOrigin } or
+                         // { mode: 'tls', host: <IP address>, port, publicOrigin, tls: { cert, key } };
+                         // publicOrigin is the Listing's seller.publicEndpoint, byte for byte (see "Listener modes")
   now,                   // optional () -> epoch milliseconds; default Date.now
   observeDemosTransfer, // optional compatibility option; native intake uses nativePaymentEvidence's observer
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
@@ -179,7 +183,8 @@ const host = await startSellerHost({
 });
 // journal = createPaymentEvidenceWalletJournal(...) (below); the host refuses any other pair.
 // deliveryJournal = createDeliverableWalletJournal(...) (below); the host refuses any other pair.
-// host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state. A context step
+// host.url is the local listener (http://127.0.0.1:<port>, or https://<host>:<port> in tls mode) and host.publicOrigin
+// the origin the Listing advertises; host.close() drains requests and closes the state. A context step
 // already admitted runs to its own outcome (or its 240-second deadline) before the state closes; after a
 // crash during a step, the next start ends that step or marks it uncertain.
 // A buyer gets its challenge from the host's signed challenge route and presents it on the context route.
@@ -346,15 +351,20 @@ Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
 the signed transaction before sending it. The party Vet provider also passes
 `awaitInclusion: true`: a CREATE that call sends and that still reads back as
-pending is read again every five seconds for a bounded time while `authorize()`
-still answers `true`. The additional polls never send the CREATE again; the
-first pending read can still run the existing one-time recovery send
+pending is read again every five seconds while `authorize()` still answers
+`true`. The additional polls never sign, ask the wallet or send the CREATE
+again; the first pending read can still run the existing one-time recovery send
 (`recoverStorageWrite`) of the retained CREATE, as without `awaitInclusion`. In
-the reference anchor the bound is six minutes after the wallet's answer, and the
-wallet answers only after the transport's own inclusion wait (120 seconds by
-default), so the bound ends about eight minutes after the broadcast. Meanwhile
-the seller's other writes wait behind the pending write, up to that bound,
-instead of failing at once with a retryable error. `readBackRecords({ jobId,
+the reference anchor the wait ends 30 minutes after the wallet's answer, or
+earlier once the node can no longer include the CREATE. That is decided only
+from the reference block R the transport hands back on the pending readback:
+blocks R+1 and R+2 are confirmed and do not list the CREATE, the seller's account
+nonce has not reached its nonce, and a last status read no longer knows it. The
+answer is then `indeterminate`, with a reason that says the CREATE is excluded.
+A readback with no reference block never proves exclusion. A `publish` after a
+restart within those 30 minutes resumes the wait with reads only. Meanwhile the
+seller's other writes wait behind the pending write, up to that bound, instead
+of failing at once with a retryable error. `readBackRecords({ jobId,
 buyer })` reads a job's two retained Vet records back without signing or
 sending anything; it answers `present` only when both records read back as
 included, and `indeterminate` when one is not written yet or does not read
@@ -427,10 +437,35 @@ The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
 per-client limiter so one client cannot exhaust the shared request budget.
 
+## Listener modes
+
+`listener` is required and there is no default mode. No other option and no environment variable changes it.
+
+- `proxy`: the host listens on literal loopback (`127.0.0.1` or `::1`) over plain HTTP. A reverse proxy that
+  terminates TLS for the Listing's origin forwards requests to it. The host answers loopback sockets only.
+- `tls`: the host listens on an IP address with the operator's certificate and key (PEM text or a `Buffer`) and
+  serves HTTPS itself. `start` refuses a certificate and key that are not a usable pair. A client gets 10 s to finish
+  the TLS handshake.
+
+In both modes `publicOrigin` must be an endpoint the wire accepts (`https://` and an authority, nothing after it) and
+must equal the Listing's `seller.publicEndpoint` byte for byte; otherwise start refuses with
+`listener_origin_mismatch`. A malformed `listener` refuses with `listener_invalid`. Both refusals come before the
+state lock and before any socket is opened.
+
+The host serves a request only under the `Host` that `publicOrigin` names (its authority, compared without regard to
+letter case, and with `:443` added when the authority names no port). A missing, repeated or other `Host` is answered
+421 `host_not_served` before the body is read; `X-Forwarded-Host` and the other forwarding headers are never read. A
+repeated `content-type`, `content-encoding` or peer header is answered 400 `duplicate_header` before the body is read.
+A reverse proxy must therefore pass the public `Host` through.
+
+In `tls` mode the host has no per-client limiter, and the global limiter described above (120 requests a minute, eight at once) is all that
+protects it from one client. Put a proxy with a per-client limiter in front of the host (proxy mode) for a public deployment.
+
 ## What the host does and does not do
 
 - It fails closed on configuration: unknown options, a missing capability, a
-  non-loopback host, a relative, shared or symlinked data directory, or a
+  malformed `listener` (proxy mode on a non-loopback host, a `publicOrigin` that is not the
+  Listing's endpoint), a relative, shared or symlinked data directory, or a
   signer that does not control the Listing are refused before anything starts.
   Two private stores also check the ancestors of their own paths: the party
   Vet store requires each ancestor to be owned by root or by this user and not
@@ -456,8 +491,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   logging one `seller-state: released the lock on job ...` line per row, closes
   the challenge validations it left as lost, and ends every context admission it
   left running: a row whose outcome the wire journal holds is settled from it,
-  and any other is compensated, which releases its hold and slot unless a Vet
-  write cannot be ruled out. Saved sessions, effects and settlements are not
+  and any other is compensated, which releases its hold and slot once each Vet
+  address shows no signed write, a Vet that landed (its receipt finalized and
+  verified), or a refused CREATE that can never land; a Vet write whose outcome
+  is still unknown keeps them. Saved sessions, effects and settlements are not
   changed. A lock row the host
   cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
@@ -591,10 +628,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   after a Deliverable landed reads as never asked, and the order is submitted
   again (an operator-induced limit). The package's reference implementation,
   `createDevnetDemoArtifactAnchor` (`src/devnet-demo/artifact-anchor.mjs`),
-  cannot be constructed in this snapshot: its constructor requires the opaque
-  devnet-demo source capability, and `isDevnetDemoTransport` always returns
-  `false` (`src/dacs/devnet-source.mjs`), so it refuses every input. Supply an
-  anchor that enforces the contract.
+  is constructed only with the source capability of the seller's Node wallet
+  (`createSellerNodeWallet`, below); `isDevnetDemoTransport`
+  (`src/dacs/devnet-source.mjs`, the client's own check) refuses any other
+  value. Every write it makes is still held by the kit operation guard and the
+  client's purchase hold. An operator-supplied anchor must enforce the contract
+  itself.
 - Without the next option, a Deliverable CREATE the capability signed but did
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
@@ -1157,13 +1196,22 @@ per-client limiter so one client cannot exhaust the shared request budget.
   the envelope is signed. The answer is `{ sessionNonce, expiresAt }`, signed; the same job,
   buyer and scope get the same nonce back, also after a restart. The context step, and the
   challenge of a handler composed without `wire`, stay on the old auth.
-- The devnet source transport and wallet custody are not part of this
-  package (the payment-evidence journal composes the operator's own wallet
-  primitives). The kit builders that need them (the devnet artifact
-  anchor, issued-write readback and the source mode of native payment
-  evidence) refuse every value here; the operator supplies its own
-  capabilities. Native DEM delivery and the DEM delivery context accept only
-  `TEST-` authorities, as in the source kit. Native writes also need a
+- The kit builds its Node wallet through the client
+  (`@kynesyslabs/dacs-client/node-wallet`): `createSellerNodeWallet`
+  (`src/devnet-demo/seller-node-wallet.mjs`) takes the seller state lock it
+  must hold, the opened seller key and the key record, the composed seller
+  approval and a node connection, and returns the wallet factory, the held
+  source capability, the read-only observer, the payment-evidence journal
+  over the client's payment-evidence adapter, and a bounded balance read.
+  Before any effect it removes the lock rows a dead holder left in the client
+  journals it opens. The source capability is the only value the devnet
+  artifact anchor, issued-write readback and the source mode of native
+  payment evidence accept. Each signature and send needs an effect pass made
+  through the composition's `effectPass`, and is refused while the kit
+  operation guard is off or the client's purchase hold is held, which is how
+  both ship. `start` does not build the wallet. Native DEM delivery and the
+  DEM delivery context accept only `TEST-` authorities, as in the source kit.
+  Native writes also need a
   qualified node deployment (`QUALIFIED_NODE_COMMITS`).
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch

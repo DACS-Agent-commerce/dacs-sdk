@@ -202,7 +202,7 @@ function providerOutcome(answer, scope) {
  * admission, the nonce attempt, the presentation's validation, the admission transaction's intent, hold and acceptance, the reservation, the
  * provider's work under the job's effect mutex, and the completion. A refusal before the attempt consumes nothing; a failure after it fails the
  * challenge it owns. A reservation refused after the acceptance, and a provider that fails by itself, end the accepted row (compensation
- * trigger a), which releases its hold and slot unless an effect cannot be ruled out; a provider stopped at the deadline or by `closeAttempts`
+ * trigger a), which releases its hold and slot unless the effect evidence is undetermined; a provider stopped at the deadline or by `closeAttempts`
  * keeps the attempt open. Any other error after the reservation leaves the attempt open and answers `operation_uncertain`, or the 503
  * refusal it carries. The provider's work runs inside `trackContextWork`, which keeps the job's mutex until the work has settled, also
  * after a deadline has answered. A presentation that was already accepted continues: the presented bundle must be the kept one, the kept admission
@@ -343,7 +343,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
     return outcome;
   }
 
-  // A start that failed ends its accepted row (trigger a): the hold and the capacity slot are released unless an effect cannot be ruled out,
+  // A start that failed ends its accepted row (trigger a): the hold and the capacity slot are released unless the effect evidence is undetermined,
   // and then the row stays compensating for the sweep. A failure to end it never changes the refusal being answered.
   const endFailedStart = (jobId) => admissionTransaction.compensate(jobId, 'a').catch(() => {});
 
