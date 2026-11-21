@@ -776,13 +776,14 @@ jobs:
           import { DatabaseSync } from 'node:sqlite';
           const c = await import('@kynesyslabs/dacs-client');
           const admission = { binding: {}, currentLocal: () => ({}) };
+          const stopped = () => false;
           const db = new DatabaseSync(':memory:');
           db.exec('PRAGMA foreign_keys=ON');
           db.exec(c.PURCHASE_STATE_SCHEMA);
           const store = c.createSqlitePurchaseStore(), coordinates = c.createCoordinateStore({ db });
           // Each factory gets past the runtime check and finishes construction at the floor.
-          c.createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, admission });
-          c.createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain: {}, challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, admission });
+          c.createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, admission, stopped });
+          c.createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain: {}, challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, admission, stopped });
           c.createListingVerifier({ directory: {}, chain: {}, admission });
           NODE
       # The public API, the SQLite write lease, transaction nesting and the SQLite iterator tests run here on each leg,

@@ -102,4 +102,7 @@ test('CI asserts the packed refusal on Node 20.19.0 and 22.13.0 and constructs e
   assert.match(step("Use this leg's Node again after the refusal checks"), /node-version: \$\{\{ matrix\.node-version \}\}/);
   const floor = step('Check both packed JavaScript entry points at the engine floor');
   for (const name of Object.keys(FACTORIES)) assert.match(floor, new RegExp(`c\\.${name}\\(`), name);
+  for (const name of ['createProtocolPurchases', 'createPurchaseService']) {
+    assert.match(floor, new RegExp(`c\\.${name}\\([^\\n]*admission, stopped \\}\\)`), `${name} is given the stop check it requires`);
+  }
 });
