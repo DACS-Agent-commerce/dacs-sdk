@@ -22,7 +22,7 @@ import { createEffectHistory } from './effect-history.mjs';
 import { createReopenGrants } from './withheld-reopen-grants.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createPaymentEvidenceCreateAdapter } from './node-payment-evidence-adapter.mjs';
-import { assertCurrentAuthorization, isPassContext, passContext, runInPassContext } from './pass-context.mjs';
+import { assertCurrentAuthorization, currentPassContext, isPassContext, passContext, relayPassContext, runInPassContext } from './pass-context.mjs';
 import { createSignerReservations } from './signer-reservation.mjs';
 import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError, normalizeMnemonic } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
@@ -95,6 +95,13 @@ export { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDemoTr
  * the passive members listed in the README keep their signatures. `readback` is read once, before the call, so a request changed afterwards cannot move it
  * between the two classes. Options: `{admission, transport}`. Throws TypeError(admission_required | admission_input_untrusted | an unregistered transport) and
  * OperationError(runtime_unsupported); active calls reject with `profile_not_admitted`, `runtime_unsupported` or the transport's own error.
+ *
+ * `rpc(body, headers, { currentAuthorization }?)` takes an optional relay check: a synchronous function that returns `true` while the relay's authority
+ * is current and throws its cause otherwise. The transport runs it as the last check before each node send of that call, after every wait, and sends
+ * only when it answered `true`; a throw refuses with the thrown error and any other answer with `context_authorization_refused`. A refusal sends nothing.
+ * `rpc` rejects `relay_authorization_invalid` (TypeError) for any other option and `relay_authorization_nested` inside another pass. The check is not run for
+ * preparation reads or for a confirmation the retained record answers, and it can run twice for one broadcast. Without the option `rpc` runs no relay check,
+ * and the other members (`walletBinding`, `recoverStorageWrite`, `cancelNativeTransfer`) never take one.
  */
 export function createHeldTransportFacade({ admission, transport } = {}) {
   const wrapped = admitPublicFactory(() => transport, { passive: PASSIVE_TRANSPORT_METHODS, purchase: true })({ admission });
@@ -103,6 +110,13 @@ export function createHeldTransportFacade({ admission, transport } = {}) {
   const facade = Object.freeze({ ...members, binding(request, ...args) {
     try {
       return request?.phase === READBACK_PHASE ? transport.binding({ ...request, phase: READBACK_PHASE }, ...args) : wrapped.binding(request, ...args);
+    } catch (error) { return Promise.reject(error); }
+  }, rpc(body, headers, relayOptions) {
+    try {
+      if (relayOptions === undefined) return wrapped.rpc(body, headers);
+      const relay = relayPassContext(relayOptions);
+      if (currentPassContext().operationClass !== null) fail('relay_authorization_nested');
+      return runInPassContext(relay, () => wrapped.rpc(body, headers));
     } catch (error) { return Promise.reject(error); }
   } });
   registerHeldTransportFacade(facade, transport);
