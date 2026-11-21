@@ -1,7 +1,7 @@
 [
   {
     "id": "K12-H1",
-    "today": "the kit agent's proposal refuses a presentation carrying the client's self-derived nonce: context_admission_closed, \"the job has no accepted context presentation\"",
+    "today": "the kit agent's proposal refuses a client-built presentation carrying a nonce the kit never issued: context_admission_closed, \"the job has no accepted context presentation\"",
     "target": "the client presents the seller-issued nonce; accepted",
     "owner": "P14a",
     "flippedBy": null
@@ -62,12 +62,12 @@
     "owner": "P14a",
     "flippedBy": null,
     "current": {
-      "step": "plan",
-      "code": "agreement_context_held",
-      "failureClass": "SellerUnavailableError",
-      "layer": "response-auth",
+      "step": "identity",
+      "code": "seller_challenge_unavailable",
+      "failureClass": "OperationError",
+      "layer": "client",
       "counters": {
-        "context": 1,
+        "context": 0,
         "proposals": 0,
         "commitments": 0,
         "commitmentSignature": 0,
@@ -75,7 +75,7 @@
         "sellerSignatures": 0,
         "walletEffects": 0
       },
-      "updatedBy": "P06"
+      "updatedBy": "P14a"
     }
   }
 ]

@@ -27,6 +27,15 @@ export const encode = (payload, signer, domain) => Buffer.from(canonicalize({ pa
 export const code = (expected) => (error) => error.code === expected;
 export const PUBLIC_ENDPOINT = 'https://127.0.0.1:19001';
 export const validReceipt =Object.assign(async () => 'valid', { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
+/** A transport that reaches no seller: every request fails before an answer. */
+export const unreachableSeller = async () => { throw new TypeError('TEST no seller is reachable'); };
+/** A transport where `w`'s seller answers every challenge with a fixed nonce, signed by the wire over the request it received. */
+export const challengeSeller = (w) => async (_url, init) => {
+  const { payload } = JSON.parse(Buffer.from(init.headers[wire.DACS_SELLER_HTTP_HEADER], 'base64url'));
+  const text = JSON.stringify({ sessionNonce: 'c'.repeat(64), expiresAt: w.state.time + 600000 });
+  const header = await wire.signWireResponse(payload, 200, text, { signer: w.seller, binding: w.binding, local: w.local, purchaseProfile: w.binding.profile, now: w.state.time });
+  return new Response(text, { status: 200, headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: header } });
+};
 // pin, agreementHash, ready and readCommitmentReceipt (null: a proof without a receipt reader) let a test commit a real purchase.
 // publicEndpoint is the seller origin the discovery proof and the signed requests name.
 export async function world(t, { pin: committedPin, agreementHash = sha256Hex('agreement'), ready = true, readCommitmentReceipt = validReceipt, publicEndpoint = PUBLIC_ENDPOINT } = {}) {
@@ -75,8 +84,13 @@ export async function world(t, { pin: committedPin, agreementHash = sha256Hex('a
   const auth = createSellerWireAuthentication(options);
   return { buyer, seller, session, other, local, state, binding, admission, pin, endpointProof, publicEndpoint, payload, delegation, job, options, auth, createSellerWireAuthentication };
 }
-export const request = (w, path = wire.DACS_SELLER_HTTP_PATHS.state) => w.auth.request(path, { transportIdentity: { jobId: JOB } }, JSON.stringify({ transportIdentity: { jobId: JOB } }));
-export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {} } = {}) {
+const BOOTSTRAP_PATHS = new Set([wire.DACS_SELLER_HTTP_PATHS.contextChallenge, wire.DACS_SELLER_HTTP_PATHS.context]);
+export const request = (w, path = wire.DACS_SELLER_HTTP_PATHS.state) => {
+  const body = BOOTSTRAP_PATHS.has(path) ? { scope: { jobId: JOB } } : { transportIdentity: { jobId: JOB } };
+  return w.auth.request(path, body, JSON.stringify(body));
+};
+// fetchImpl: the protocol service's transport (default: the global fetch).
+export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {}, fetchImpl } = {}) {
   const { createSourceDemoSellerTransport } = await import('../../src/dacs/source-demo-seller-transport.mjs');
   const { createProtocolPurchases } = await import('../../src/index.mjs');
   let policies = 0;
@@ -145,7 +159,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
     db = openDatabase(path);
     ops = createOperationStore({ db, handoffSecret: 'TEST-wire-fixture-'.repeat(3), now: () => w.state.time });
     service = createProtocolPurchases({
-      db, ops, admission: w.admission, now: () => w.state.time, store: createSqlitePurchaseStore(), coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {
+      db, ops, admission: w.admission, now: () => w.state.time, store: createSqlitePurchaseStore(), ...(fetchImpl ? { fetchImpl } : {}), coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {
         } }, dacsProtocol: config
     });
   };

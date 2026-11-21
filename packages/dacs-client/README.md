@@ -48,15 +48,17 @@ The admission option: `admission: { binding, currentLocal }` is required by the 
 
 ### createProtocolPurchases
 
-Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
+Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `agreementDelegation`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
 
 `prepareTerms` does not return `terms.jobId`; the create path adds it.
+
+The Agreement starts in three wallet steps, each message saved before it is returned. `identityRequest` returns the seller session delegation message. `agreementDelegation` accepts its signature, has the session key ask the seller for its challenge, and returns the identity presentation message over the seller's nonce. `planRequest` accepts the presentation and plans the Agreement. A purchase without a declared seller transport cannot ask for a challenge and is refused `seller_challenge_unavailable`. An unused challenge that expires before the presentation is accepted stops the start (`context_challenge_expired`).
 
 Passive: `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`
 
 ### createPurchaseService
 
-Active: `prepare`, `issueApprovalChallenge`, `approve`, `prepareHandoff`, `nativePaymentLane`, `reportWalletResult`, `cancel`, `agreementIdentity`, `agreementPlan`, `agreementSubmit`, `completionRequest`, `completionCountersign`, `protocolRecheck`
+Active: `prepare`, `issueApprovalChallenge`, `approve`, `prepareHandoff`, `nativePaymentLane`, `reportWalletResult`, `cancel`, `agreementIdentity`, `agreementDelegation`, `agreementPlan`, `agreementSubmit`, `completionRequest`, `completionCountersign`, `protocolRecheck`
 
 Passive: `status`, `portalOperation`, `portalEvidence`, `verifyDeal`, `planRunning` (synchronous)
 

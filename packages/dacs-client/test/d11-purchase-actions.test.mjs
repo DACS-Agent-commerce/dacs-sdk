@@ -13,7 +13,7 @@ import { createOperationStore } from './helpers/purchase-integrity-operations.mj
 // actions only read, record observations or reach protocol steps through the
 // held protocol recheck.
 const SERVICE_HELD = ['prepare', 'issueApprovalChallenge', 'approve', 'prepareHandoff', 'nativePaymentLane',
-  'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign'];
+  'agreementIdentity', 'agreementDelegation', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign'];
 const SERVICE_OPEN = ['status', 'reportWalletResult', 'verifyDeal', 'cancel', 'portalOperation', 'portalEvidence', 'planRunning', 'protocolRecheck'];
 const PROTOCOL_HELD = ['prepareTerms', 'identityRequest', 'planRequest', 'signRequest', 'submitAgreement',
   'recheckCommitment', 'recheck', 'withNativePaymentLane', 'readNativePaymentLane'];
@@ -98,7 +98,7 @@ for (const mode of [undefined, OFFLINE_AGREEMENT_MODE]) {
     assert.equal(w.db.prepare('SELECT count(*) n FROM operations').get().n, 0);
   });
 }
-for (const method of ['nativePaymentLane', 'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign']) {
+for (const method of ['nativePaymentLane', 'agreementIdentity', 'agreementDelegation', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign']) {
   test(`${method} refuses before state, network and protocol calls`, async t => {
     const w = world(t);
     await assert.rejects(async () => w.service[method]({}), { code: 'profile_not_admitted' });

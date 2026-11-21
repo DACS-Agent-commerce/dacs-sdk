@@ -18,7 +18,6 @@ import { fetchAsHost } from '../../packages/dacs-seller/test/helpers/listener-ho
 // The client's portal capability compares each purchase link's expiry with the real clock as well as its own, so the client's
 // clock must lie after real time (it is the client's own tests' clock). The kit fixture's clock cannot move: its Listing validity
 // is fixed around the kit's NOW. A later change that needs one shared clock for both sides must re-base the kit fixture first.
-export { CLIENT_NOW };
 const ACCOUNT_ID = 'TEST-buyer';
 const COMMITMENT_AUTHORITY = 'TEST-RUN-kitclient0';
 const CONTEXT_AUTHORITY = 'test:kit-client-operator';
@@ -64,16 +63,13 @@ export async function purchaseWorld(t, { host, listing }) {
 }
 
 /**
- * Drives one purchase through the public service until a step fails: prepare, the identity presentation, then the Agreement plan
- * (whose context read is the first call to the seller). Returns the retained identity state and the first failure, or null.
+ * Drives one purchase through the public service until a step fails: prepare, then the start's first wallet step (the seller
+ * session delegation, which needs a declared seller transport). Returns the retained state and the first failure, or null.
  * A change that moves the first failure later adds the next step here, with its counters, in the same change (K12, OP-11).
  */
 export async function drivePurchase(world) {
   const { operation } = await world.prepare();
   const token = world.ops.handoffTokenFor(operation.id);
-  const identity = await world.service.agreementIdentity({ operationId: operation.id, token, address: buyer.address });
-  const retained = world.ops.get(ACCOUNT_ID, operation.id);
-  const signature = `0x${buyer.signBytes(Buffer.from(identity.message, 'utf8')).toString('hex')}`;
-  const failure = await world.service.agreementPlan({ operationId: operation.id, token, signature }).then(() => null, (error) => ({ step: 'plan', error }));
-  return { operation, identity, retained, failure };
+  const failure = await world.service.agreementIdentity({ operationId: operation.id, token, address: buyer.address }).then(() => null, (error) => ({ step: 'identity', error }));
+  return { operation, retained: world.ops.get(ACCOUNT_ID, operation.id), failure };
 }

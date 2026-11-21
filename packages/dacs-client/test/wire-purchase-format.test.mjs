@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { TP1_CAPABILITIES } from '@kynesyslabs/dacs/wire';
 import { world, purchase, code, T0 } from './helpers/wire-client-fixture.mjs';
 const old = {
@@ -35,7 +34,6 @@ test("labels outside D6 are unchanged", async () => {
     for (const [name, value] of Object.entries(names))
       assert.equal(module[name], value, name);
   }
-  assert.ok(readFileSync(new URL('../src/dacs/listing.mjs', import.meta.url), 'utf8').includes('`dacs-chatgpt-plugin:${sessionSeed}:${claim}:${presentedAt}`'));
   assert.equal(TP1_CAPABILITIES.output.envelope, 'dacs-chatgpt-plugin/devnet-purchased-report');
 });
 test('an old-declaration row with a verified on-chain payment stays held with seller_transport_changed after restart, no status moves, nothing signed', async (t) => {

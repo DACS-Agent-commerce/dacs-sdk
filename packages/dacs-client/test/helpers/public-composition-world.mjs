@@ -7,6 +7,7 @@ import { compositeVerificationAddress, contentHash } from '@kynesyslabs/dacs';
 import { createCoordinateStore, createSqlitePurchaseStore, createProtocolPurchases, createPurchaseService, SellerTlsUnusableError } from '../../src/index.mjs';
 import { createDevnetNativeCommitmentCapability } from '../../src/devnet-demo/commitment-consumer.mjs';
 import { OFFLINE_AGREEMENT_MODE } from '../../src/dacs/protocol-purchases.mjs';
+import { buildUnsignedIdentityBundle } from '../../src/dacs/listing.mjs';
 import { openDatabase } from './purchase-integrity-database.mjs';
 import { createOperationStore } from './purchase-integrity-operations.mjs';
 import { passiveNativeWorld, IDENTITY, NOW } from './passive-native-world.mjs';
@@ -22,6 +23,7 @@ const AUTHORITY = 'TEST-RUN-composition0';
 const OPERATOR_CONTEXT_AUTHORITY = 'test:composition-operator';
 const THIRD_PARTY_SIGNER = 'did:demos:agent:' + 'd'.repeat(64);
 const HANDOFF_NONCE_FENCE = 6;
+const SELLER_NONCE = 'e'.repeat(64);
 
 const vetRef = (jobId, party) => ({ anchor: { kind: 'storage-program', locator: compositeVerificationAddress(jobId, party) }, contentHash: 'c'.repeat(64), signer: THIRD_PARTY_SIGNER });
 
@@ -69,12 +71,15 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
     challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
   const prepare = (idempotencyKey = 'TEST-key') => service.prepare({ accountId: ACCOUNT_ID, listingId: 'TEST-listing', version: 1, seller: seller.claim,
     idempotencyKey, walletAddress: wallet.address, protocol: OFFLINE_AGREEMENT_MODE });
-  // Prepares a purchase and has the buyer present their identity; returns what agreementPlan needs.
+  // Prepares a purchase and saves the presentation request the bootstrap leaves over a seller challenge (this world declares no
+  // seller transport, so it asks no seller); returns what agreementPlan needs, with the buyer's presentation signature.
   const preparedWithIdentity = async () => {
     const { operation } = await prepare();
-    const token = ops.handoffTokenFor(operation.id);
-    const { message } = await service.agreementIdentity({ operationId: operation.id, token, address: wallet.address });
-    return { operationId: operation.id, token, signature: wallet.signHex(message) };
+    const identity = buildUnsignedIdentityBundle({ address: wallet.address, presentedAt: NOW, sessionNonce: SELLER_NONCE });
+    const protocol = operation.state.protocol;
+    ops.transition(operation.id, operation.status, operation.status, { state: { ...operation.state, protocol: { ...protocol, identity, revision: (protocol.revision ?? 0) + 1,
+      progressGeneration: (protocol.progressGeneration ?? protocol.revision ?? 0) + 1 } }, event: 'TEST-identity-requested', data: {} });
+    return { operationId: operation.id, token: ops.handoffTokenFor(operation.id), signature: wallet.signHex(identity.message) };
   };
   const tableCounts = () => Object.fromEntries(['operations', 'operation_events', 'write_coordinates'].map((name) => [name, db.prepare(`SELECT count(*) n FROM ${name}`).get().n]));
   // Seeds a saved purchase row directly, as a host database would hold it after earlier work.

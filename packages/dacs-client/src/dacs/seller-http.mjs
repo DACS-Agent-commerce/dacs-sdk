@@ -253,14 +253,18 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause, { answerClass: dispatched ? SELLER_ANSWER_CLASS.UNKNOWN : SELLER_ANSWER_CLASS.NOT_SENT });
       if (!dispatched) { preDispatchFailures.add(unavailable); lastFailureDispatched = false; }
       if (error instanceof RawJsonAdmissionError) { unavailable.admissionCode = error.code; unavailable.admissionStage = error.stage; }
+      // A refusal while signing (the wire's own, such as seller_not_ready) happened before dispatch; it stays the cause.
+      if (lastFailureCause === 'client-sign') unavailable.cause = error;
       throw unavailable;
     }
   }
 
   return {
     origin,
-    // The route adapter for callers without a named method yet (the context and challenge routes belong to the bootstrap callers).
+    // The route adapter for callers without a named method (the context route belongs to the bootstrap's context step).
     request: post,
+    // The seller's challenge for a `{scope}` body: `{sessionNonce, expiresAt}` once the wire verified it; the caller checks its members.
+    contextChallenge: (body) => post(DACS_SELLER_HTTP_PATHS.contextChallenge, body),
     // Records the bounded outcome of a failure that the caller otherwise swallows.
     recordFailure: (error) => requestRecords?.failure(error),
     // The durable Agreement coordinator retains only disposition/reason.

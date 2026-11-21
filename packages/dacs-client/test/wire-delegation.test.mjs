@@ -1,11 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, contentHash, sha256Hex } from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
-import { world, purchase, request, code, OLD_DELEGATION, T0, JOB } from './helpers/wire-client-fixture.mjs';
+import { world, party, purchase as purchaseOf, request, code, challengeSeller, unreachableSeller, OLD_DELEGATION, T0, JOB } from './helpers/wire-client-fixture.mjs';
+import { fixtureListing } from './fixtures/listings.mjs';
 const bytes = p => Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(p));
+// The seller is unreachable unless a test names one: the delegation is accepted and saved before the challenge is sent.
+const purchase = (t, w, options = {}) => purchaseOf(t, w, { fetchImpl: unreachableSeller, ...options });
 const identity = async (p) => p.service.identityRequest(p.get(), p.op.terms.buyer.wallet);
-const plan = (p, w, result, signature) => p.service.planRequest(result.operation, w.buyer.sign(Buffer.from(result.message)).toString('base64url'), signature);
+const delegate = (p, signature) => p.service.agreementDelegation(p.get(), signature);
+// A world whose endpoint proof names the purchase's own Listing, so its seller requests can be signed.
+const sellerWorld = (t) => {
+  const listing = fixtureListing(party(2), { now: T0 });
+  return world(t, { pin: { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) } });
+};
+// The delegation, then the seller's challenge, then the wallet's presentation over it.
+const plan = async (p, w, signature) => {
+  const { message } = await delegate(p, signature);
+  return p.service.planRequest(p.get(), w.buyer.sign(Buffer.from(message)).toString('base64url'));
+};
 test("the delegation payload carries the binding's profile and notBefore 30 s before the client clock, and the wallet message is the wire's signing bytes (K2-DEL-1)", async (t) => {
   const w = await world(t), p = await purchase(t, w), r = await identity(p);
   assert.deepEqual(r.delegation.payload.profile, w.binding.profile);
@@ -20,14 +33,14 @@ test("wallet signatures in hex, 0x-prefixed hex and base64url are accepted and s
   for (const encoding of ['hex', 'prefixed', 'base64url']) {
     const w = await world(t), p = await purchase(t, w), r = await identity(p), sig = w.buyer.sign(bytes(r.delegation.payload));
     const supplied = encoding === 'prefixed' ? '0x' + sig.toString('hex') : sig.toString(encoding);
-    await plan(p, w, r, supplied);
+    await assert.rejects(delegate(p, supplied), code('seller_unavailable'));
     assert.equal(p.get().state.protocol.sessionDelegation.signature, sig.toString('base64url'));
   }
 });
 test("a delegation signed under dacs-chatgpt-plugin:seller-session-delegation:v1: is refused peer_delegation_signature_invalid (K2-DEL-11)", async (t) => {
   const w = await world(t), p = await purchase(t, w), r = await identity(p);
   const signature = w.buyer.sign(Buffer.from(OLD_DELEGATION + canonicalize(r.delegation.payload))).toString('base64url');
-  await assert.rejects(plan(p, w, r, signature), code('peer_delegation_signature_invalid'));
+  await assert.rejects(delegate(p, signature), code('peer_delegation_signature_invalid'));
   assert.equal(w.state.signs.length, 0);
 });
 test("every member of the delegation payload and its signature is mutated once, and each mutation is refused before any request is signed, with zero signer calls: job (another job); buyer (another buyer); seller (another seller); Listing pin (another pin); profile (absent, or revision TP-1.1); notBefore (not yet valid); expiresAt (expired, or over 24 h); sessionPublicKey (the buyer's key, the seller's own key, and the delegation's signing key); the signature (signed by the session key, or altered) (K2-DEL-3, 5, 6, 7, 9, 12, 13, 14, 15, 17). The mutation list is generated from the payload's own members, so a new member with no mutation fails the test. The seller's-own-key row refuses `peer_delegation_invalid` (K2-DEL-17; the wire's check is P03b's)", async (t) => {
@@ -55,8 +68,8 @@ test("every member of the delegation payload and its signature is mutated once, 
   assert.equal(w.state.signs.length, 0);
 });
 test("a derived Agreement deadline earlier than the delegation's expiry is refused seller_delegation_invalid (K2-DEL-8)", async (t) => {
-  const w = await world(t), p = await purchase(t, w, { policy: () => ({ expiresAt: T0 + 7200000 }) }), r = await identity(p);
-  await assert.rejects(plan(p, w, r, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url')), code('seller_delegation_invalid'));
+  const w = await sellerWorld(t), p = await purchase(t, w, { policy: () => ({ expiresAt: T0 + 7200000 }), fetchImpl: challengeSeller(w) }), r = await identity(p);
+  await assert.rejects(plan(p, w, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url')), code('seller_delegation_invalid'));
   assert.equal(p.get().state.protocol.planned, undefined);
 });
 test("an expired delegation still signs readback requests and no new effect starts under it", async (t) => {
@@ -165,13 +178,13 @@ test('a failed signature save reuses the retained delegation and wallet signatur
   p.db.exec(`CREATE TRIGGER refuse_signature BEFORE UPDATE ON operations
   WHEN json_extract(NEW.state,'$.protocol.sessionDelegation.signature') IS NOT NULL
   BEGIN SELECT RAISE(ABORT,'TEST-signature-save-failure'); END`);
-  await assert.rejects(plan(p, w, r, signature), /TEST-signature-save-failure/);
+  await assert.rejects(delegate(p, signature), /TEST-signature-save-failure/);
   assert.equal(p.get().state.protocol.sessionDelegation.signature, undefined);
   p.reopen();
   p.db.exec('DROP TRIGGER refuse_signature');
   const retained = await identity(p);
   assert.deepEqual(retained.delegation, r.delegation);
-  await plan(p, w, retained, signature);
+  await assert.rejects(delegate(p, signature), code('seller_unavailable'));
   assert.equal(p.get().state.protocol.sessionDelegation.signature, signature);
   assert.equal(p.policies(), 1);
 });
@@ -206,19 +219,18 @@ test('an authority read that never answers ends the wallet message at the seller
 test('an authority read that never answers while the wallet delegation is accepted ends at the seller deadline and saves no signature', async (t) => {
   const w = await world(t), p = await purchase(t, w), expire = deadline(t), r = await identity(p);
   silentAfterEntry(w);
-  const call = plan(p, w, r, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url'));
+  const call = delegate(p, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url'));
   await turn();
   expire();
   assert.equal((await outcome(call)).code, 'seller_authority_timeout');
   assert.equal(p.get().state.protocol.sessionDelegation.signature, undefined);
 });
 test('an authority read that never answers while the Agreement plan is saved ends at the seller deadline with its own cause', async (t) => {
-  const w = await world(t), p = await purchase(t, w), expire = deadline(t), r = await identity(p);
-  w.state.gate = async () => {
-    if (p.get().state.protocol.sessionDelegation.signature)
-      await new Promise(() => {});
-  };
-  const call = plan(p, w, r, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url'));
+  const w = await sellerWorld(t), p = await purchase(t, w, { fetchImpl: challengeSeller(w) }), r = await identity(p);
+  const { message } = await delegate(p, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url'));
+  const expire = deadline(t);
+  silentAfterEntry(w);
+  const call = p.service.planRequest(p.get(), w.buyer.sign(Buffer.from(message)).toString('base64url'));
   await turn();
   expire();
   assert.equal((await outcome(call)).code, 'seller_authority_timeout');
