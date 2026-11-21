@@ -1246,7 +1246,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   own connection and binds the handle to the artifact anchor composed over
   it. That anchor's readback compares the chain identity the port's
   connection reader observes (within the readback's remaining time, at most
-  10,000 ms, else `tp1_authority_timeout`) with the binding. The finalized session has `effectPass`, `runInEffectPass`,
+  10,000 ms, else `tp1_authority_timeout`) with the binding. The finalized
+  session has `effectPass`, `runInEffectPass`,
   `walletFactory`, `transport` (with `recoverStorageWrite`),
   `acquireConnectionFence` (the fence its passes need), `address`,
   `observer`, `artifactJournal`, `paymentEvidence`, `readBalance` and
