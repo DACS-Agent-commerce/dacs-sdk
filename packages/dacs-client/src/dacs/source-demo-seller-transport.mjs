@@ -6,13 +6,14 @@ const capabilities = new WeakSet();
 /** The signed seller HTTP transport declaration retained in purchase terms. */
 export const SOURCE_DEMO_SELLER_TRANSPORT = DACS_SELLER_HTTP_V1;
 
-/** Returns an opaque wire capability with session signer, expiry policy and verified endpoint-proof resolvers. Throws TypeError for missing resolvers or a non-TEST authority. Construction sends nothing. */
-export function createSourceDemoSellerTransport({ authority, sessionSignerFor, sessionPolicyFor, endpointProofFor }) {
+/** Returns an opaque wire capability with session signer, expiry policy and verified endpoint-proof resolvers, and the client's effect boundary through which every request signature passes. Throws TypeError for missing resolvers, a missing effect boundary or a non-TEST authority. Construction sends nothing. */
+export function createSourceDemoSellerTransport({ authority, sessionSignerFor, sessionPolicyFor, endpointProofFor, effectBoundary }) {
   if (typeof authority !== 'string' || !authority.startsWith('TEST-')) throw new TypeError('source demo seller transport requires explicit TEST authority');
   if (![sessionSignerFor, sessionPolicyFor, endpointProofFor].every(member => typeof member === 'function')) throw new TypeError('seller transport requires session signer, policy and endpoint proof resolvers');
+  if (typeof effectBoundary?.signerFor !== 'function') throw new TypeError('seller transport requires the client effect boundary');
   const declaration = Object.freeze({ profile: SOURCE_DEMO_SELLER_TRANSPORT, authority,
     request: DACS_SELLER_HTTP_DOMAINS.request, delegation: DACS_SELLER_HTTP_DOMAINS.delegation, response: DACS_SELLER_HTTP_DOMAINS.response, durability: 'seller-intent-journal' });
-  const capability = Object.freeze({ declaration, sessionSignerFor, sessionPolicyFor, endpointProofFor });
+  const capability = Object.freeze({ declaration, sessionSignerFor, sessionPolicyFor, endpointProofFor, effectBoundary });
   capabilities.add(capability);
   return capability;
 }

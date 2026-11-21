@@ -198,7 +198,16 @@ function createKeyedQueue() {
  * - `signerFor(operation, signer)`: a wire signer whose `sign` signs the operation once
  *   and releases the signature like a send: it is recorded as `dispatch-started`, so the
  *   artifact is never sent again by a later `dispatchPass`. Calls the underlying
- *   `signer.sign(bytes, { signal })` with the signing pass's abort signal.
+ *   `signer.sign(bytes, { signal })` with the signing pass's abort signal. A signature is a string
+ *   or bytes. `guardTransmit()` (after `sign` resolved; a TypeError before) returns the last checks of
+ *   the request that carries that signature, `{ prepareTransmit, beforeTransmit }`, for a transport to
+ *   run before its first byte: `prepareTransmit()` awaits the final stop check and `beforeTransmit()`
+ *   synchronously rechecks admission and the connection the signature was made under. A refusal
+ *   rejects with its code and records `dispatch-withheld` for the signature.
+ * - `signAuthentication(sign)`: calls `sign()` for the header of an RPC request. Inside a pass of an
+ *   operation (`holdFence(...).run`, `withOperation`) it first refreshes authority and the stop check
+ *   and rechecks admission and the connection under that pass's fence capability, takes no second
+ *   fence and records nothing. Outside a pass (a read) it calls `sign()` unchanged.
  * - `replaceConnection(replace)`: the fence's connection replacement; rejects the
  *   fence's own release error if release fails after a successful replacement.
  */
@@ -407,6 +416,36 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     };
   }
 
+  // The last checks of a request that carries a released signature, run by the transport before its
+  // first byte: `prepareTransmit` awaits the final stop check, then `beforeTransmit` rechecks admission
+  // and the connection the signature was made under, in the transport's own synchronous turn. A refusal
+  // records `dispatch-withheld` for the signature and leaves the request unsent.
+  function guardTransmission(signing) {
+    if (!signing) throw new TypeError('a transmit guard needs a signature this signer has released');
+    const { artifact, capability } = signing;
+    const withhold = (cause) => persist({ ...artifact, passId: FIRST_PASS, state: 'dispatch-withheld', cause: failureCode(cause) }).catch(() => {});
+    return {
+      async prepareTransmit() {
+        try { await checkStop(createReadBudget(clock)); } catch (cause) { await withhold(cause); throw cause; }
+      },
+      beforeTransmit() {
+        try { gate({ capability }, artifact); } catch (cause) { void withhold(cause); throw cause; }
+      },
+    };
+  }
+
+  // Signs the header of an RPC request for the operation whose pass is running: the same refresh and
+  // synchronous checks as a signature, under that pass's own fence capability, with nothing recorded.
+  // Outside a pass there is no operation to check against: a read's header is signed as it is.
+  async function signAuthentication(sign) {
+    const frame = operations.getStore();
+    if (!frame) return sign();
+    const operation = { operationId: frame.operationId, lane: 'rpc-authentication', kind: 'signature', paidWrite: false, pinVersion: binding.profile?.pinVersion };
+    await refresh(createReadBudget(clock), operation);
+    gate(frame, operation);
+    return sign();
+  }
+
   async function dispatchPass(input, send, { explicit = false, stage = 'dispatch', material, confirmedDebitOs, authorize } = {}) {
     if (typeof send !== 'function') throw new TypeError('the effect boundary needs a callable send');
     if (!STAGES.includes(stage)) throw new TypeError(`an effect stage is one of ${STAGES.join(', ')}`);
@@ -445,18 +484,23 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     withOperation: async (input, work) => runPass(snapshotOperation(input), () => work()),
     signerFor(input, signer) {
       const operation = snapshotOperation(input);
+      let signing;
       return {
         claim: signer.claim,
-        sign: (bytes) => runPass(operation, async () => {
+        sign: (bytes) => runPass(operation, async (frame) => {
           let signature;
           const artifact = await signPass(operation, async ({ signal }) => {
             signature = await signer.sign(bytes, { signal });
             return typeof signature === 'string' ? Buffer.from(signature) : signature;
           });
-          return runPass(artifact, (frame, read) => dispatchRetained(frame, read, artifact, { explicit: false, stage: 'dispatch' }, () => signature));
+          const released = await runPass(artifact, (inner, read) => dispatchRetained(inner, read, artifact, { explicit: false, stage: 'dispatch' }, () => signature));
+          signing = { artifact, capability: frame.capability };
+          return released;
         }),
+        guardTransmit: () => guardTransmission(signing),
       };
     },
+    signAuthentication,
     replaceConnection: (replace) => fence.replaceConnection(replace),
   };
 }

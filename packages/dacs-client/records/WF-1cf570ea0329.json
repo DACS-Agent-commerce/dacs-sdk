@@ -1,0 +1,113 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF route the client's signature paths through the effect boundary",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "187694fede3b225aae5c29cbd073e99192bdece8",
+      "after": "14524a051f629bef134075604bbfa214fffc0970"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "b8968a06cd2be040a0bb53885b8f270548b5121e",
+      "after": "e8a540bc2308ce63a74393c4cd410607cb54be73"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+      "before": "327dc144db799e27dc04384dc6bf57c4a1cbe244",
+      "after": "43b0f735e6c83d4c4b9656afc749d715d39e0875"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+      "before": "c3b84747cf7ccce2ef05712faf388a7645628fae",
+      "after": "dcfd73a1d154c393ee34a2d55061dcdc3bbc142f"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/source-demo-seller-transport.mjs",
+      "before": "14350d302f2efcecf790150cd2fcaec4244982d0",
+      "after": "37eb97dfe7c0922e353a7fcb1908e25066efd4e9"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "1ca575ef44dda389254fcf9e544383b015466fb0",
+      "after": "8a26ddc25c99670efffd8dfa5008ca965d8ad228"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "9407ac41dab35f1f0110a5bca792fdc1245e0c52",
+      "after": "db63daeea72b36490c046b2e7d9fd57713a4f144"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+      "before": "ad9da7787180b298cbea4d0e98c2f44f734b9e37",
+      "after": "5abf97778662ac66ccd0078d2a92536ec7e4cfd4"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "d1e00ac07a97361371da334d633faed9718b51d5",
+      "after": "c2ecd0dd44e3939b45081134ab0adadbe60956d3"
+    },
+    {
+      "path": "packages/dacs-client/test/fetch-abort-settle.test.mjs",
+      "before": "333b05056e00f71a37724907f376444fa5c601e5",
+      "after": "29be7b15f9bc154289e661d6c2e81e423cfd9eb8"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/read-only-boundary.mjs",
+      "before": "9e0c8597b7ef4837fa3de4ba3179ddd28197c214",
+      "after": "ed3e87de2e33f3d511b8c87cfd92d4cbb453e712"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/request-boundary.mjs",
+      "before": null,
+      "after": "185f912b2f4500513c45205462331a0d38a36a76"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/seller-https-rig.mjs",
+      "before": "ec64c6ddd0e94a7536b9c3df156a22f04808a7cb",
+      "after": "cb217d2aa7d06a4fd15e5532086c8156659450b6"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+      "before": "91fd1a8fc6cd1f6b39a852d395fe38c393c44bb9",
+      "after": "cf5b59a252c8ff8822e4e78090ca2ddbc396f64d"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-https-client.test.mjs",
+      "before": "59b5608ff27649cbda905f2ece83f11085f57446",
+      "after": "8f4c98650bf1c4381af22a329493a60ead8416a6"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-retry-deadline.test.mjs",
+      "before": "5b241e100f8f1a6c6c654a7b9ef4ef498d5cebc3",
+      "after": "380f3425caabf246e56e9938b9165d6cc8f9ede1"
+    },
+    {
+      "path": "packages/dacs-client/test/signature-effect-paths.test.mjs",
+      "before": null,
+      "after": "c3f82d09faf80a9b7a57942153c3144c7909e77d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-1cf570ea0329.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/dacs/seller-http.mjs",
+    "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+    "packages/dacs-client/src/dacs/source-demo-seller-transport.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/src/wallet/effect-boundary.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/fetch-abort-settle.test.mjs",
+    "packages/dacs-client/test/helpers/read-only-boundary.mjs",
+    "packages/dacs-client/test/helpers/request-boundary.mjs",
+    "packages/dacs-client/test/helpers/seller-https-rig.mjs",
+    "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+    "packages/dacs-client/test/seller-https-client.test.mjs",
+    "packages/dacs-client/test/seller-retry-deadline.test.mjs",
+    "packages/dacs-client/test/signature-effect-paths.test.mjs"
+  ]
+}
