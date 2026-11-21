@@ -1,0 +1,36 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): D39 remove the unused guarded SQLite module",
+  "sha": "47da48899f73d1ed7f33b4f7197c431e71d93c21",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/DELTA-NOTES.md",
+      "before": "7a3ff95339f2c23bc5ba504020f18055d5a6a759",
+      "after": "30345db23ce3569cc5a7e773d707002816bb137c"
+    },
+    {
+      "path": "packages/dacs-client/src/util/guarded-sqlite.mjs",
+      "before": "631654f861dddd1f1b3cbce70da004c96933d5f4",
+      "after": null
+    },
+    {
+      "path": "packages/dacs-client/test/guarded-sqlite.test.mjs",
+      "before": "900af80069850c3942204a858d8989e8e11a3adc",
+      "after": null
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/DELTA-COMMITS.json",
+    "packages/dacs-client/DELTA-LEDGER.json",
+    "packages/dacs-client/DELTA-MAP.md",
+    "packages/dacs-client/DELTA-NOTES.md",
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/delta-map.mjs",
+    "packages/dacs-client/src/util/guarded-sqlite.mjs",
+    "packages/dacs-client/test/guarded-sqlite.test.mjs"
+  ],
+  "note": "The guarded SQLite module and its test are deleted; nothing in the package imported the module. Each file is recorded with after null, and its earlier records stay as history. The commit recorded its change in the archive the package kept before the record files; this record states it in the record layout."
+}
