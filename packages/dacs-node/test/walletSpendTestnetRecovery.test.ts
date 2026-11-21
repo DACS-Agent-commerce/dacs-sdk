@@ -79,12 +79,16 @@ function blockIn(blocks: readonly StubBlock[], number: number): StubBlock {
 const [DEBIT] = RESERVATION.debits;
 if (DEBIT === undefined) throw new Error("the fixture hold has one debit");
 
-function rule(stub: Readonly<{ url: string }>, state: WalletSpendStateV1 = stateWithHold(RESERVATION, VALID_BEFORE)) {
+function rule(
+  stub: Readonly<{ url: string }>,
+  state: WalletSpendStateV1 = stateWithHold(RESERVATION, VALID_BEFORE),
+  searchFloor = SEARCH_FLOOR,
+) {
   const reports: Record<string, string>[] = [];
   const recovery = createDacsWalletSpendTestnetRecoveryV1({
     policy: POLICY,
     reader: createDacsWalletSpendEvmReaderV1({
-      rpcUrl: stub.url, policy: POLICY, authorizationSearchFromBlock: SEARCH_FLOOR,
+      rpcUrl: stub.url, policy: POLICY, authorizationSearchFromBlock: searchFloor,
     }),
     readState: async () => state,
     report: (line) => reports.push(line),
@@ -244,6 +248,22 @@ describe("testnet wallet-spend recovery rule", () => {
         await expect(rule({ url: failure.url ?? stub.url }).check(RESERVATION, claim))
           .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-unavailable" });
       }
+    }
+  });
+
+  it("refuses every claim when the final head is below the log search floor", async () => {
+    const expired = await chainStub(defaultChain(VALID_BEFORE + 1));
+    await expect(rule(expired, undefined, FINAL_NUMBER + 1).check(RESERVATION, absentClaim))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-unavailable" });
+    expect(callsOf(expired, "eth_getLogs")).toEqual([]);
+
+    for (const [claim, event] of [[settledClaim(), "used"], [absentClaim, "canceled"]] as const) {
+      const state = defaultChain();
+      payment(state, { event });
+      const stub = await chainStub(state);
+      await expect(rule(stub, undefined, FINAL_NUMBER + 1).check(RESERVATION, claim))
+        .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-unavailable" });
+      expect(callsOf(stub, "eth_getLogs")).toEqual([]);
     }
   });
 
