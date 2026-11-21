@@ -48,7 +48,7 @@ The admission option: `admission: { binding, currentLocal }` is required by the 
 
 ### createProtocolPurchases
 
-Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
+Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `sessionRenewal`, `sessionRenewalAccept`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
 
 `prepareTerms` does not return `terms.jobId`; the create path adds it.
 
@@ -56,7 +56,7 @@ Passive: `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`,
 
 ### createPurchaseService
 
-Active: `prepare`, `issueApprovalChallenge`, `approve`, `prepareHandoff`, `nativePaymentLane`, `reportWalletResult`, `cancel`, `agreementIdentity`, `agreementPlan`, `agreementSubmit`, `completionRequest`, `completionCountersign`, `protocolRecheck`
+Active: `prepare`, `issueApprovalChallenge`, `approve`, `prepareHandoff`, `nativePaymentLane`, `reportWalletResult`, `cancel`, `agreementIdentity`, `sessionRenewal`, `sessionRenewalAccept`, `agreementPlan`, `agreementSubmit`, `completionRequest`, `completionCountersign`, `protocolRecheck`
 
 Passive: `status`, `portalOperation`, `portalEvidence`, `verifyDeal`, `planRunning` (synchronous)
 
@@ -142,6 +142,21 @@ The entry also re-exports the boolean capability checks `isDevnetAgreementTransp
 `createSellerAgentClient({url, authentication, ...})` reaches a loopback endpoint, or, when it is given a wire authentication, a public HTTPS origin: `https://` and an authority, with no credentials, path prefix, query or fragment (the wire's `isPublicEndpoint`). Any other `url` throws before anything is signed or sent. Purchase actions are still refused while the release gate holds them.
 Requests, delegation bytes and received response bytes go through `@kynesyslabs/dacs/wire` under the purchase's kept TP-1 profile. The client saves the delegation payload before it returns the wallet message, stores the wallet signature as canonical base64url, and refuses a purchase prepared under the old transport declaration with `seller_transport_changed`. The seller request timeout also bounds the wire's authority reads and the session signer: a seller call that has not finished signing by then sends nothing and fails with cause `timeout`, and a wallet message or delegation check that is still waiting for the authority fails with `seller_authority_timeout`.
 Payment and bundle requests (the wire's continuing routes) and the two ordinary read routes (`agreements/state`, `bundles/buyer-copy`) of a committed purchase are signed with the job's finalized commitment, its two-party Agreement and the signed Listing, as canonical bytes rebuilt from the purchase row. The commitment's anchored tuple is kept with its SHA-256 when the commitment verifies. A verified row with no usable kept bytes keeps them once from a fresh authenticated readback that matches the stored summary, and otherwise nothing is signed (`commitment_unverified`). The proof's receipt reader authenticates the commitment at every signing, so these requests sign under a `ready: false` proof and after the Listing's window ends, with no continuation capability. Challenge, context, proposals and commitment requests carry no commitment evidence, and a read before commitment keeps the wire's live Listing checks. `bundles/buyer-copy` has no such read before commitment, so the wire refuses it without evidence.
+
+### Seller session keys
+
+`createSellerSessionKeys()` returns `{start, stop, stopAll, state, signerFor}`, a registry of random ed25519 session keys for the seller transport. Pass `signerFor` as `sessionSignerFor` to `createSourceDemoSellerTransport`, and call `start(operationId)` before the purchase's identity request. `start` returns only the key's `claim`.
+
+The keys live in process memory and nowhere else. No key is written to a file, a database, a journal, an event or a log, and none is derived from the wallet's recovery phrase. Memory hygiene is partial: the registry zero-fills its own seed on `stop`, but Node keeps a copy inside each private-key object it builds to sign, which the registry cannot clear.
+
+After a restart the registry is empty, and a purchase whose saved delegation names a key from before the restart answers `session_gone_reapprove` before anything is signed, sent or recorded. Passive readers and chain readback keep working. To continue, the buyer approves a new key for the same authority:
+
+1. `start(operationId)` makes a key in the new process.
+2. `sessionRenewal` returns `{operation, delegation: {payload, message}}`. The payload keeps the buyer, seller, Listing pin, job, profile and `expiresAt` of the saved delegation, and changes only `sessionPublicKey` and `notBefore`. The buyer's wallet signs `message`.
+3. `sessionRenewalAccept` takes that signature, verifies it against the purchase's own scope, and replaces the saved delegation. It never accepts an unsigned or unverified delegation.
+4. The host then continues through the existing entries, passing no `delegationSignature` to `agreementPlan`.
+
+`sessionRenewal` answers `session_live` while the saved key is still held, `session_not_started` before `start`, `seller_session_ended` after the seller session ended, `invalid_state` when the purchase has no saved delegation, and `seller_delegation_expiring` when the delegation is inside its safety margin of its expiry. `sessionRenewalAccept` answers `session_gone_reapprove` when there is no pending renewal or its key is no longer the live key. `signerFor` answers `session_gone_reapprove` or `session_not_started` for a purchase with or without a saved delegation. `start` throws `TypeError('session_operation_invalid')` for an id that is not a non-empty string.
 
 ### Seller answer classification
 
