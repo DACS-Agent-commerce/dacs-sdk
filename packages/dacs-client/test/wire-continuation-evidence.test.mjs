@@ -40,7 +40,9 @@ const rowAuth = (s, readCommitment) => {
   const evidence = evidenceFor(s.p, readCommitment);
   return authFor(s, () => evidence(s.p.get()));
 };
-const sign = (auth, path) => auth.request(path, BODY, TEXT);
+// The challenge and context routes name their job in the body's scope.
+const SCOPE_BODY = { scope: { jobId: JOB } }, SCOPE_TEXT = JSON.stringify(SCOPE_BODY);
+const sign = (auth, path) => [PATHS.contextChallenge, PATHS.context].includes(path) ? auth.request(path, SCOPE_BODY, SCOPE_TEXT) : auth.request(path, BODY, TEXT);
 const verifiedReadback = (s, anchored = s.anchored) => async () => ({ status: 'verified', contentHash: s.summary.contentHash, signer: s.summary.signer, committedAt: s.summary.committedAt, anchored });
 const refuses = (s, work, expectedCode, detail) => {
   const signed = s.w.state.signs.length;

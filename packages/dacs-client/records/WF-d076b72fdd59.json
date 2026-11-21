@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF sign the continuation evidence test challenge and context requests with a scope body",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/wire-continuation-evidence.test.mjs",
+      "before": "ca19616de38519c9ca54fc58b30378a71aec291e",
+      "after": "af3ef3e038753154de2ac2fb6351cdab4b747292"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-d076b72fdd59.json",
+    "packages/dacs-client/test/wire-continuation-evidence.test.mjs"
+  ]
+}
