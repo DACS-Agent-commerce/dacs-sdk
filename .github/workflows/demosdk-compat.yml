@@ -1,11 +1,11 @@
 name: demosdk compatibility
 
-# This daily workflow typechecks and tests demosdk 4.0.18 (the demosdk-pinned-tests job; ci.yml no longer does),
+# This daily workflow typechecks and tests demosdk 4.0.23 (the demosdk-pinned-tests job; ci.yml no longer does),
 # detects new in-range releases before another PR arrives
 # (the demosdk-pin-drift job, scheduled runs only, so it never blocks a PR)
-# and adds build/declaration emit at 4.0.18 and the newest in-range release.
+# and adds build/declaration emit at 4.0.23 and the newest in-range release.
 # Its PR runs cover changes to this workflow or dependency configuration only;
-# source changes get the 4.0.18 checks on the next daily run after they reach the default branch
+# source changes get the 4.0.23 checks on the next daily run after they reach the default branch
 # (scheduled runs use the default branch only).
 # When bumping the pinned demosdk, update demosdk-pinned-tests; update the matrix entry here too.
 # The demosdk-pin-drift job also passes the pinned version to scripts/demosdk-pin-drift.mjs.
@@ -38,9 +38,9 @@ jobs:
         with:
           node-version: "22.22.2"
 
-      # Keep 4.0.18 equal to the version pinned in demosdk-pinned-tests below.
+      # Keep 4.0.23 equal to the version pinned in demosdk-pinned-tests below.
       - name: Compare the pinned version with the newest in-range release
-        run: node scripts/demosdk-pin-drift.mjs 4.0.18 "$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
+        run: node scripts/demosdk-pin-drift.mjs 4.0.23 "$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
 
   demosdk-compat:
     runs-on: ubuntu-24.04
@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        demosdk: ["locked", "4.0.18", "newest-in-range"]
+        demosdk: ["locked", "4.0.23", "newest-in-range"]
     name: typecheck + build (demosdk ${{ matrix.demosdk }})
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -131,17 +131,17 @@ jobs:
       - name: Build
         run: npm run build
 
-  # This job typechecks and runs the demosdk-related tests against exactly 4.0.18, the newest version the client's
+  # This job typechecks and runs the demosdk-related tests against exactly 4.0.23, the newest version the client's
   # reviewed loading table covers; the lockfile holds the range floor, 4.0.17. It never looks up the newest release (the pinned
   # install itself still needs the registry). It runs daily, on manual runs and on pull requests that change this workflow or the dependency
-  # files, so a break against 4.0.18 shows up to a day after it reaches the default branch (scheduled runs use the
+  # files, so a break against 4.0.23 shows up to a day after it reaches the default branch (scheduled runs use the
   # default branch only). The demosdk-pin-drift job above reports newer
-  # releases in ^4.0.17 (scripts/demosdk-pin-drift.mjs); the PR that acts on that report replaces every 4.0.18 in this
+  # releases in ^4.0.17 (scripts/demosdk-pin-drift.mjs); the PR that acts on that report replaces every 4.0.23 in this
   # file with the new version and fixes what then fails.
   demosdk-pinned-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    name: typecheck + tests (demosdk 4.0.18)
+    name: typecheck + tests (demosdk 4.0.23)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -166,13 +166,13 @@ jobs:
         run: npm run host:build
 
       # Last step: it replaces the installed SDK for the rest of this job.
-      - name: Typecheck and test against demosdk 4.0.18
+      - name: Typecheck and test against demosdk 4.0.23
         run: |
-          npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
-          test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
+          npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.23
+          test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.23"
           npm run typecheck
           npm run host:typecheck
           npx vitest run test/substrate/demos-adapter.test.ts test/rails/payDem-adapter.test.ts test/rails/payDem.test.ts test/agent/settlementFailure.test.ts
-          # Every client file this area promises under 4.0.18, named one by one; later changes append theirs. No glob selects one.
+          # Every client file this area promises under 4.0.23, named one by one; later changes append theirs. No glob selects one.
           node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs packages/dacs-client/test/node-wallet-demosdk.test.mjs packages/dacs-client/test/node-wallet-final-content.test.mjs packages/dacs-client/test/node-wallet-fresh-child.test.mjs packages/dacs-client/test/node-wallet-observer.test.mjs packages/dacs-client/test/node-wallet-source-reads.test.mjs packages/dacs-client/test/node-wallet-effect-gate.test.mjs packages/dacs-client/test/node-signer-reservation.test.mjs packages/dacs-client/test/node-payment-evidence-adapter.test.mjs packages/dacs-client/test/node-wallet-packed.test.mjs
           node --test packages/dacs-client/test/delta-ledger-gate.test.mjs
