@@ -19,10 +19,10 @@ export const errorCode = code => error => error.code === code;
  * A purchase row with a retained Agreement plan, the real wire authentication and an in-process seller that
  * signs with the wire's `signWireResponse`. `clock` is injected: `sleep` advances it and the purchase clock.
  */
-export async function storedWorld(t, { stage = 'agreement-signing', accepted = true, status = 'agreement_pending', paid = false, configureTerms } = {}) {
+export async function storedWorld(t, { stage = 'agreement-signing', accepted = true, status = 'agreement_pending', paid = false, configureTerms, sessionSignerFor } = {}) {
   const made = await committedPurchase({ jobId: JOB, publicEndpoint: PUBLIC_ENDPOINT });
   const w = await world(t, { pin: made.pin, agreementHash: made.agreementHash, readCommitmentReceipt: validReceipt });
-  const p = await purchase(t, w, { status, paid, configureTerms, signedListing: paid ? made.listing : undefined, protocolPatch: { stage, ...(accepted ? { planned: { draft: made.agreement } } : {}), paymentEvidence: { retained: true } } });
+  const p = await purchase(t, w, { status, paid, configureTerms, ...(sessionSignerFor ? { sessionSignerFor } : {}), signedListing: paid ? made.listing : undefined, protocolPatch: { stage, ...(accepted ? { planned: { draft: made.agreement } } : {}), paymentEvidence: { retained: true } } });
   const bytes = value => Buffer.from(canonicalize(value));
   const evidence = async () => ({ commitment: bytes(made.anchored), agreement: bytes(made.agreement), signedListing: bytes(made.listing) });
   const auth = w.createSellerWireAuthentication({ ...w.options, evidence });

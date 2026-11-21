@@ -1495,6 +1495,17 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return operation;
   }
 
+  // The buyer re-approves the seller session key after a restart: the first call returns the wallet message, the second takes the buyer's signature.
+  async function sessionRenewal({ operationId, token }) {
+    assertPurchaseActionsAdmitted();
+    return protocol.sessionRenewal(protocolOperation(operationId, token));
+  }
+
+  async function sessionRenewalAccept({ operationId, token, delegationSignature }) {
+    assertPurchaseActionsAdmitted();
+    return protocol.sessionRenewalAccept(protocolOperation(operationId, token), delegationSignature);
+  }
+
   // A plan step already running for this purchase answers before the domain,
   // balance and fee reads: its own signatures wait for it, others are told at once.
   async function agreementPlan({ operationId, token, signature, delegationSignature, intentGeneratedAt }) {
@@ -1680,7 +1691,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   const service = {
     prepare, status, issueApprovalChallenge, approve, prepareHandoff, nativePaymentLane, reportWalletResult, verifyDeal, cancel, portalOperation, portalEvidence,
-    agreementIdentity, agreementPlan, planRunning, agreementSubmit, completionRequest, completionCountersign, protocolRecheck,
+    agreementIdentity, sessionRenewal, sessionRenewalAccept, agreementPlan, planRunning, agreementSubmit, completionRequest, completionCountersign, protocolRecheck,
   };
   stopRefusalRecorders.set(service, suspendOnStopRefusal);
   return service;

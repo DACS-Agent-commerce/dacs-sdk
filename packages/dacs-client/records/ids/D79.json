@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D79",
+  "registration": "D79: seller session keys held in memory, and the buyer's keystore wallet entry",
+  "subject": "delta(client): D79 hold seller session keys in memory and renew a session key after a restart"
+}

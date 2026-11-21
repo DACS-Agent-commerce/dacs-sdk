@@ -1,7 +1,7 @@
 // The seller package as a stranger gets it: pack the core and the seller,
 // install both tarballs into a temporary application outside this repository,
 // then import and host it from a clean `node` process with no test hooks.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import {sellerPackFiles,staleSetupReason}from'../../../scripts/prepare-seller-consumer.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -25,7 +25,7 @@ const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/se
 const SELLER_BIN = 'bin/dacs-seller.mjs';
 const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
-  'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerContextRoute', 'createSellerHttpHandler',
+  'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerAuthorityReader', 'createSellerContextRoute', 'createSellerHttpHandler',
   'createSellerTransportStore', 'createSellerWireClientAuth', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
 // The seller's Node wallet suites.
 const NODE_WALLET_TESTS = ['node-wallet-approval.test.mjs', 'node-wallet-balance.test.mjs', 'node-wallet-composition.test.mjs', 'node-wallet-payment-evidence.test.mjs', 'node-wallet-sr2-bounds.test.mjs'];
@@ -215,7 +215,7 @@ test('the import scan sees static, side-effect, re-export and literal dynamic im
   assert.deepEqual(relativeImports('src/probe.mjs', probe).sort(), ['c.mjs', 'src/dacs/a.mjs', 'src/dacs/b.mjs', 'src/util/d.mjs']);
 });
 
-test('P11a1-T22: the packed host test passes with the wire buyer helper; the packed seller installs outside the repository, refuses to start while its guard is off, and serves one Listing only under the unshipped fixture loader', { timeout: INSTALLED_TEST_TIMEOUT_MS }, async (t) => {
+test('the packed host test passes with the wire buyer helper; the packed seller installs outside the repository, refuses to start while its guard is off, and serves one Listing only under the unshipped fixture loader', { timeout: INSTALLED_TEST_TIMEOUT_MS }, () => {
   const manifestPath = join(packageDirectory, 'package.json');
   assert.ok(existsSync(manifestPath), 'packages/dacs-seller/package.json is the package manifest');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -228,9 +228,29 @@ test('P11a1-T22: the packed host test passes with the wire buyer helper; the pac
   assert.equal(manifest.engines.node,core.engines.node);
   assert.equal(manifest.peerDependencies['@kynesyslabs/dacs'], core.version);
   assert.ok(existsSync(join(root, 'dist', 'index.js')), 'the core is built (npm run build) before it is packed');
+  assert.equal(manifest.exports['./PROFILE.json'], './PROFILE.json');
+  const { app, sellerPack, refused, out, loaderOptions } = packedHostRun();
 
-  const work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-installed-')));
-  t.after(() => rmSync(work, { recursive: true, force: true }));
+  // Exactly the shipped modules, the bin, the governing documents, the manifest, README and LICENSE.
+  const packed = sellerPack.files.map((entry) => entry.path).sort();
+  assert.deepEqual(packed, [...shippedModules(), SELLER_BIN, ...DOCUMENTS].sort());
+  for (const file of ENTRY_MODULES) assert.ok(packed.includes(file), `${file} is shipped`);
+
+  assert.ok(!existsSync(join(app,'node_modules','@kynesyslabs','dacs-seller','test')),'test files are not shipped');
+  assert.deepEqual(refused.environment, { execArgv: [], nodeOptions: null });
+  assert.deepEqual(refused.guardOff, { guard: 'off', start: { name: 'KitOperationGuardError', code: 'kit_operation_guard_off', entry: 'startSellerHost' } }, 'the packed host refuses to start while its guard is off');
+  assert.equal(refused.imports, undefined, 'a refused start goes no further');
+  assertInstalledRun(out, loaderOptions);
+});
+
+// The packed host test, run once in the prepared consumer outside the repository and shared by the tests that read it: first
+// in a clean child with the kit guard off, then the same install under the unshipped fixture loader. Returns
+// `{ app, sellerPack, refused, out, loaderOptions }`, `refused` and `out` being the two runs' reports.
+let packedHostResult = null, packedHostWork = null;
+after(() => { if (packedHostWork !== null) rmSync(packedHostWork, { recursive: true, force: true }); });
+function packedHostRun() {
+  if (packedHostResult !== null) return packedHostResult;
+  const work = packedHostWork = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-installed-')));
   const preparedPath = process.env.DACS_SELLER_SMOKE_DIR;
   assert.ok(preparedPath, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
   const app = realpathSync(preparedPath);
@@ -240,14 +260,6 @@ test('P11a1-T22: the packed host test passes with the wire buyer helper; the pac
     writeFileSync(join(app, helper), readFileSync(new URL(`./helpers/${helper}`, import.meta.url)));
   }
   const { sellerPack } = JSON.parse(readFileSync(join(app, 'prepared.json'), 'utf8'));
-  assert.equal(manifest.exports['./PROFILE.json'], './PROFILE.json');
-
-  // Exactly the shipped modules, the bin, the governing documents, the manifest, README and LICENSE.
-  const packed = sellerPack.files.map((entry) => entry.path).sort();
-  assert.deepEqual(packed, [...shippedModules(), SELLER_BIN, ...DOCUMENTS].sort());
-  for (const file of ENTRY_MODULES) assert.ok(packed.includes(file), `${file} is shipped`);
-
-  assert.ok(!existsSync(join(app,'node_modules','@kynesyslabs','dacs-seller','test')),'test files are not shipped');
   // A clean child: no inherited flags, loaders, hooks or NODE_OPTIONS.
   const env={PATH:process.env.PATH,TMPDIR:work,NPM_CONFIG_OFFLINE:'true',NPM_CONFIG_CACHE:join(work,'empty-npm-cache')};mkdirSync(env.NPM_CONFIG_CACHE);
   const runInstalled = (environment) => {
@@ -256,13 +268,15 @@ test('P11a1-T22: the packed host test passes with the wire buyer helper; the pac
     return JSON.parse(result.stdout.trim().split('\n').at(-1));
   };
   const refused = runInstalled(env);
-  assert.deepEqual(refused.environment, { execArgv: [], nodeOptions: null });
-  assert.deepEqual(refused.guardOff, { guard: 'off', start: { name: 'KitOperationGuardError', code: 'kit_operation_guard_off', entry: 'startSellerHost' } }, 'the packed host refuses to start while its guard is off');
-  assert.equal(refused.imports, undefined, 'a refused start goes no further');
   // The same install under the unshipped loader, told where the installed guard module is.
   const loaderOptions = kitGuardLoaderOptions(app, work);
   const out = runInstalled({ ...env, NODE_OPTIONS: loaderOptions });
+  packedHostResult = { app, sellerPack, refused, out, loaderOptions };
+  return packedHostResult;
+}
 
+// What the packed host run under the fixture loader reported, checked as the packed host test always has.
+function assertInstalledRun(out, loaderOptions) {
   assert.deepEqual(out.environment, { execArgv: [], nodeOptions: loaderOptions });
   assert.equal(out.guardOff, undefined, 'under the loader the installed guard admits');
   assert.equal(out.packageRoot, join('node_modules', '@kynesyslabs', 'dacs-seller'));
@@ -295,7 +309,8 @@ test('P11a1-T22: the packed host test passes with the wire buyer helper; the pac
   assert.deepEqual(out.agreement.listingRef, out.host.listingPin, 'the Agreement names the served Listing');
   assert.equal(out.repeatSameContribution, true);
   assert.equal(out.stateSameContribution, true);
-  assert.deepEqual(out.refusals.otherListingPin, { name: 'SellerRefusedError', code: 'peer_listing_mismatch', status: 409 });
+  // A request for another Listing opens no bootstrap scope, so the wire refuses it at its participant check, unsigned.
+  assert.deepEqual(out.refusals.otherListingPin, { name: 'SellerUnavailableError', code: 'seller_unavailable', status: null });
   assert.deepEqual(out.refusals.unsigned, { status: 401, body: { error: 'peer_envelope_invalid', message: 'peer_envelope_invalid' } });
   assert.notEqual(out.refusals.unvettedProposal.disposition, 'complete', 'a proposal over synthetic Vet references is not signed');
   assert.equal(out.refusals.unvettedProposal.contribution, null);
@@ -314,6 +329,27 @@ test('P11a1-T22: the packed host test passes with the wire buyer helper; the pac
   assert.deepEqual(out.reached, [], 'negotiation reached no operator capability but the Vet context');
   assert.deepEqual(out.vetContextJobs, ['vetted', 'unvetted', 'fabricated'], 'every admitted proposal takes its Agreement input from the Vet context');
   assert.deepEqual(out.admittedJobs, ['vetted', 'unvetted', 'fabricated'], 'every context request over an issued challenge asks the session admission; the replayed job has none, so the seller refuses its proposal before asking');
+}
+
+test('packed and installed outside the checkout, the kit contains src/dacs/authority-reader.mjs and every helper it imports, ships no enrollment fixture or test loader, and its installed host composition runs the installed reader against a bounded offline transport', { timeout: INSTALLED_TEST_TIMEOUT_MS }, () => {
+  const packed = sellerPackFiles();
+  // The reader, the stages that compose it and every module either reaches, followed through relative imports.
+  const reached = new Set(), pending = ['src/dacs/authority-reader.mjs', 'src/dacs/host-stages.mjs'];
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (reached.has(file)) continue;
+    reached.add(file);
+    pending.push(...relativeImports(file));
+  }
+  for (const file of ['src/dacs/authority-reader.mjs', 'src/dacs/bootstrap-scope.mjs', 'src/dacs/host-stages.mjs']) assert.ok(reached.has(file), `${file} is reached`);
+  for (const file of reached) assert.ok(packed.includes(file), `${file} ships`);
+  assert.deepEqual(packed.filter((path) => /kit-wallet-session|authority-fixture|kit-guard-fixture|(?:^|\/)test\//.test(path)), [], 'no enrollment fixture, authority fixture or test loader ships');
+  const { app, out } = packedHostRun();
+  const installed = join(app, 'node_modules', '@kynesyslabs', 'dacs-seller');
+  for (const file of reached) assert.ok(existsSync(join(installed, file)), `${file} is installed`);
+  assert.equal(out.hostError, undefined, JSON.stringify(out.hostError));
+  assert.deepEqual(out.authority, { readBuyer: true, withdrawn: { status: 500, body: { error: 'tp1_participant_profile_mismatch', message: 'tp1_participant_profile_mismatch' } } },
+    'the installed host read the buyer\'s enrollment, and refuses its signed request once that enrollment is withdrawn');
 });
 
 test('from the packed archive with no hooks, a key opened while off yields its claim, and its returned sign refuses kit_operation_guard_off with zero cryptographic signer calls. (Round 4.) Its read-only role, given no current binding, signs nothing', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {

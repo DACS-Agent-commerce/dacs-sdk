@@ -11,6 +11,7 @@ import type {
   DacsNodeSqliteDatabase,
   DacsNodeSqliteEffectKind,
   DacsNodeSqliteEffectLease,
+  DacsNodeSqliteEffectRecord,
 } from "./sqlite.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -68,9 +69,22 @@ export type DacsLiveEffectExecutionControlV1 = Readonly<
  * must use the supplied idempotency key at the external provider whenever the
  * provider supports it. `reconcile` must be authoritative for the same exact
  * effect identity; an indeterminate result never authorizes another execute.
+ *
+ * `reauthenticate` is optional. An adapter whose completed effect can be read
+ * back from its authority (a chain node, for example) supplies it, and the
+ * track calls it each time a completed record is replayed, before reporting
+ * completion. It must only read: the fence it receives refuses checkpoints.
+ * It returns `completed` with the result it found; the track reports
+ * completion only when that result projects to the same reference and
+ * authentication hash as the stored one. Any other answer, or a throw, leaves
+ * the stored record untouched and is not reported as complete.
  */
 export interface DacsLiveEffectAdapterV1<Input, Result> {
   reconcile(
+    invocation: Readonly<DacsLiveEffectInvocationV1<Input>>,
+  ): Promise<Readonly<DacsLiveEffectReconciliationV1<Result>>> |
+    Readonly<DacsLiveEffectReconciliationV1<Result>>;
+  reauthenticate?(
     invocation: Readonly<DacsLiveEffectInvocationV1<Input>>,
   ): Promise<Readonly<DacsLiveEffectReconciliationV1<Result>>> |
     Readonly<DacsLiveEffectReconciliationV1<Result>>;
@@ -285,6 +299,75 @@ function effectFence(
   });
 }
 
+/**
+ * The fence handed to a replay re-read. It can confirm the coordinator
+ * generation is current but cannot write: a completed record is never changed.
+ */
+function replayFence(
+  input: Readonly<DacsLiveEffectTrackOperationInputV1>,
+  record: Readonly<DacsNodeSqliteEffectRecord>,
+): Readonly<DacsLiveEffectFenceV1> {
+  const coordinatorFence = input.fence;
+  return Object.freeze({
+    role: coordinatorFence.role,
+    track: coordinatorFence.track,
+    jobId: coordinatorFence.jobId,
+    effectId: coordinatorFence.idempotencyKey,
+    idempotencyKey: coordinatorFence.idempotencyKey,
+    bindingHash: coordinatorFence.localBindingHash,
+    generation: record.generation,
+    assertCurrent: () => coordinatorFence.assertCurrent(),
+    async checkpoint() {
+      throw new DacsLiveEffectError("effect-replay-read-only");
+    },
+  });
+}
+
+function operatorAction(code: string): Readonly<FixedPriceX402TrackOperationResult> {
+  return Object.freeze({ status: "operator-action" as const, reasonCode: code });
+}
+
+/**
+ * Decide what to report for a completed record. Without a re-read the stored
+ * projection is reported. With one, completion is reported only when the
+ * authority's answer projects to the same reference and authentication hash.
+ */
+async function replayCompleted<Result>(
+  stored: Readonly<DacsLiveEffectResultProjectionV1>,
+  reread: (() => unknown) | undefined,
+  project: (result: Readonly<Result>) => Readonly<DacsLiveEffectResultProjectionV1>,
+  unavailableAt: () => number,
+): Promise<Readonly<FixedPriceX402TrackOperationResult>> {
+  if (reread === undefined) return finalResult(stored);
+  let resolution: Readonly<DacsLiveEffectReconciliationV1<Result>>;
+  try {
+    resolution = capturedReconciliation<Result>(await reread());
+  } catch {
+    return pending("indeterminate", "effect-reauthentication-unavailable", unavailableAt());
+  }
+  switch (resolution.status) {
+    case "completed": {
+      try {
+        const found = captureProjection(project(resolution.result));
+        if (found.reference === stored.reference &&
+            found.authenticationHash === stored.authenticationHash) {
+          return finalResult(stored);
+        }
+      } catch {
+        return operatorAction("effect-result-invalid");
+      }
+      return operatorAction("effect-replay-result-mismatch");
+    }
+    case "absent":
+      return operatorAction("effect-replay-record-absent");
+    case "operator-action":
+      return operatorAction(resolution.reasonCode);
+    default:
+      return pending("indeterminate", resolution.reasonCode,
+        resolution.retryAt ?? unavailableAt());
+  }
+}
+
 function capturedReconciliation<Result>(
   value: unknown,
 ): Readonly<DacsLiveEffectReconciliationV1<Result>> {
@@ -380,6 +463,8 @@ export function createDacsLiveEffectTrackV1<
       !plainDataObject(options.adapter) ||
       typeof options.adapter.execute !== "function" ||
       typeof options.adapter.reconcile !== "function" ||
+      (options.adapter.reauthenticate !== undefined &&
+        typeof options.adapter.reauthenticate !== "function") ||
       options.database === null || typeof options.database !== "object") {
     throw new TypeError("live effect track options are invalid");
   }
@@ -402,6 +487,7 @@ export function createDacsLiveEffectTrackV1<
   const projectResult = options.projectResult.bind(options);
   const execute = options.adapter.execute.bind(options.adapter);
   const reconcile = options.adapter.reconcile.bind(options.adapter);
+  const reauthenticate = options.adapter.reauthenticate?.bind(options.adapter);
 
   return async (operationInput) => {
     if (operationInput.fence.role !== role || operationInput.fence.track !== track ||
@@ -463,14 +549,26 @@ export function createDacsLiveEffectTrackV1<
       leaseDurationMs,
     });
     if (claim.status === "completed") {
+      let stored: Readonly<DacsLiveEffectResultProjectionV1>;
       try {
-        return finalResult(captureProjection(projectResult(claim.record.result as Result)));
+        stored = captureProjection(projectResult(claim.record.result as Result));
       } catch {
-        return Object.freeze({
-          status: "operator-action" as const,
-          reasonCode: "effect-result-invalid",
-        });
+        return operatorAction("effect-result-invalid");
       }
+      return replayCompleted(
+        stored,
+        reauthenticate === undefined
+          ? undefined
+          : () => reauthenticate(Object.freeze({
+              input: effectInput,
+              fence: replayFence(operationInput, claim.record),
+              ...(operationInput.signal === undefined
+                ? {}
+                : { signal: operationInput.signal }),
+            })),
+        projectResult,
+        () => retryAt(database, retryDelayMs),
+      );
     }
     if (claim.status === "waiting") {
       return pending("pending-retry", "effect-worker-active", claim.lease.expiresAt);
