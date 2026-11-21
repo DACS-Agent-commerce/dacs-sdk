@@ -47,6 +47,7 @@ import {
   protocolSupport,
 } from './purchase-protocol.mjs';
 import { AGREEMENT_CONTEXT_SOURCE, agreementChallengeScope, agreementContextConfig, resolveAgreementContext } from './agreement-context-consumer.mjs';
+import { bootstrapEndPatch, bootstrapOutcomeOf } from './bootstrap-outcome.mjs';
 import { DEM_DELIVERY_CONTEXT_SOURCE, demDeliveryContextConfig, readBackDemDeliveryContext, releaseDemDeliveryContext, resolveDemDeliveryBuyerContext } from './dem-delivery-context-consumer.mjs';
 import { SELLER_SR2_PUBLIC_PROJECTION } from './seller-sr2-agreement-consumer.mjs';
 import { NATIVE_AGREEMENT_PAYMENT, usesNativeAgreementPayment, nativeAgreementPaymentConfig } from './native-agreement-payment-consumer.mjs';
@@ -145,6 +146,7 @@ export const STAGE_HELP = {
   delivered: 'Payment evidence and the delivered test report verify. The completed bundle is not signed yet; call verify_deal to request it.',
   'awaiting-countersignature': 'Payment evidence and delivery verify. Review and counter-sign the completed DACS-5 bundle in your wallet (approval link). Your signature records protocol completion, not satisfaction with the service.',
   completed: 'DACS purchase evidenced, test report delivered, and both completed DACS-5 copies verified. Explicit source-pinned observations only; Vet not performed, finality not independently established, and no human acceptance is recorded.',
+  'bootstrap-failed': 'The purchase bootstrap ended. Start a new purchase to try again, with a new job, seller challenge and wallet delegation. The earlier attempt may have done seller work.',
   'agreement-rejected': 'The DACS Agreement was refused or could not be bound to these terms. Nothing was paid.',
   'claim-rejected': 'Your transfer was observed, but the seller refused the payment claim. Do not pay again; keep the transaction hash.',
   'evidence-rejected': 'The seller\'s DACS-4 payment evidence does not verify for your transaction. Do not pay again; this is recorded as a failed DACS purchase step.',
@@ -696,14 +698,19 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   const SIGNING_STEP_RETRIES = 3;
   async function fromStoredOnStale(operation, step) {
     for (let retries = 0; ; retries++) {
-      try { return await step(operation); }
+      try { requireBootstrapOpen(ops.get(operation.accountId, operation.id)); return await step(operation); }
       catch (error) {
+        if (error instanceof OperationError && error.code === 'invalid_state') requireBootstrapOpen(ops.get(operation.accountId, operation.id));
         if (!(error instanceof StaleProtocolCheck) || retries === SIGNING_STEP_RETRIES) throw error;
         operation = ops.get(operation.accountId, operation.id);
       }
     }
   }
 
+  const requireBootstrapOpen = (operation) => {
+    const end = operation?.state?.protocol?.bootstrapEnd;
+    if (end) throw new OperationError(end.code, STAGE_HELP[operation.state.protocol.stage]);
+  };
   const requireStage = (operation, ...stages) => {
     const stage = operation.state?.protocol?.stage;
     if (!stages.includes(stage)) throw new OperationError('invalid_state', `DACS purchase step is ${stage ?? 'unset'}`);
@@ -730,6 +737,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   async function identityRequestOnce(operation, address) {
+    requireBootstrapOpen(operation);
     assertSellerDeclaration(operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     if (address !== operation.terms.buyer.wallet) throw new OperationError('wrong_wallet', 'connect the wallet bound to this purchase');
@@ -766,6 +774,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   async function agreementDelegationOnce(operation, delegationSignature) {
+    requireBootstrapOpen(operation);
     assertSellerDeclaration(operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     requireStage(operation, 'identity');
@@ -816,7 +825,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   function requireLiveChallenge(operation) {
     const p = operation.state.protocol;
     if (p.buyerBundle || !p.challenge || now() < p.challenge.expiresAt) return;
-    throw new OperationError('context_challenge_expired', 'the seller challenge expired before the identity presentation was accepted; nothing was signed or sent, and no new challenge is asked for this purchase');
+    rejectBootstrap(operation, { kind: 'failed-bootstrap', code: 'context_challenge_expired', local: true }, 'the seller challenge expired before the identity presentation was accepted');
   }
 
   // The delegation payload the wallet will be asked to sign. The expiry comes from the host's policy and is
@@ -884,6 +893,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     assertPurchaseActionsAdmitted();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertSellerDeclaration(operation);
+    requireBootstrapOpen(operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     if (operation.state?.protocol?.planned) return planRequestStep(operation, presentationSignature, intentGeneratedAt);
     const joined = runningPlan(operation, presentationSignature, intentGeneratedAt);
@@ -926,8 +936,16 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (ENDED_STATUSES.has(ops.get(changed.accountId, changed.id)?.status)) releaseDemDeliveryContext(demDeliveryContext, { jobId: changed.terms.protocol.jobId });
   });
 
+  function rejectBootstrap(operation, outcome, reason) {
+    const end = bootstrapEndPatch(outcome);
+    if (!end) return;
+    note(operation, 'agreement-context', 'rejected', reason, end, { toStatus: 'agreement_rejected' });
+    throw new OperationError(end.bootstrapEnd.code, reason);
+  }
+
   // Step 3: the wallet's presentation is accepted and saved before the context read, then the Agreement is planned.
   async function planRequestOnce(operation, presentationSignature, intentGeneratedAt) {
+    requireBootstrapOpen(operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     requireStage(operation, 'identity', 'agreement-signing');
     const p = operation.state.protocol;
@@ -982,6 +1000,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     // The context read may have signed and sent Vet records; only the
     // Agreement is known to be neither planned nor signed here.
     if (resolved.disposition !== 'present') {
+      rejectBootstrap(current, bootstrapOutcomeOf(resolved), resolved.reason);
       note(current, 'agreement-context', resolved.disposition, resolved.reason, {}, { written: resolved.written });
       if (resolved.code === 'legacy_party_vet_state_missing') throw new OperationError(resolved.code, 'this purchase was started by an earlier server version; nothing was signed or sent; start a new purchase');
       throw new OperationError('agreement_context_held', `the operator Agreement context is ${resolved.disposition} (${resolved.reason}); no Agreement was planned or signed`);

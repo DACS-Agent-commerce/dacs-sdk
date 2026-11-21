@@ -403,3 +403,12 @@ test('a restart with a re-ordered or changed caller scope sends the stored bytes
     assert.equal(effects.size, 1); assert.equal(new Set(s.fetches.map(init => init.body)).size, 1); assert.equal(s.record(path).bodyHash, sha256Hex(original));
   }
 });
+
+
+test('a signed bootstrap refusal keeps its bounded seller cause', async (t) => {
+  const s = await sellerWorld(t), cause = 'TEST-seller-cause-'.repeat(20);
+  const outcome = await viaPost(s, PATHS.state, 409, { error: 'context_challenge_failed', message: 'TEST seller validation failed', cause });
+  refusedAs(outcome, CLASS.FAILED_BOOTSTRAP, 'context_challenge_failed', 409);
+  assert.equal(outcome.error.cause, cause.slice(0, 240));
+  assert.equal(outcome.fetches, 1);
+});

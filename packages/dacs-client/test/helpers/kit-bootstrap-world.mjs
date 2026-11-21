@@ -48,11 +48,12 @@ async function endpointProof({ binding, listingPin, ready }) {
  * Starts the kit host and returns the world: `purchase(jobId)` seeds a prepared purchase, `sent(path)` the requests the client sent on
  * that path, `answers` the challenge answers it received (`{ text, header }`), `signs` the session key's signatures, and `clock.time` the client clock.
  * `intercept(path, init, forward)`, when set, answers a request instead of the host (`forward()` sends it on).
+ * `demDeliveryContext`, when given, is the DEM delivery context capability every service is built with.
  */
-export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = DELEGATION_LIFETIME_MS } = {}) {
+export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = DELEGATION_LIFETIME_MS, demDeliveryContext = null, startHost } = {}) {
   setPurchaseAdmission('testnet-tp1');
   t.after(() => setPurchaseAdmission('held'));
-  const f = await contextHostFixture(t);
+  const f = await contextHostFixture(t, { startHost });
   const host = await f.start();
   const binding = await wire.bindTp1Profile({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
   const admission = { binding, currentLocal: () => ({ ...TEST_CONNECTION }) };
@@ -63,7 +64,7 @@ export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = D
   const transport = createSourceDemoSellerTransport({ authority: 'TEST-wire', sessionSignerFor: () => sessionSigner, endpointProofFor: () => proof,
     sessionPolicyFor: () => { world.policies++; return { expiresAt: world.clock.time + delegationLifetimeMs }; } });
   const forwardToHost = async (url, init) => {
-    const response = await fetchAsHost()(url.replace(FIXTURE_ENDPOINT, host.url), init);
+    const response = await (host.fetch ?? fetchAsHost())(url.replace(FIXTURE_ENDPOINT, host.url), init);
     if (new URL(url).pathname === CHALLENGE) world.answers.push({ text: await response.clone().text(), header: response.headers.get(wire.DACS_SELLER_HTTP_HEADER) });
     return response;
   };
@@ -81,7 +82,7 @@ export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = D
     connections.push(db);
     const ops = createOperationStore({ db, handoffSecret: 'TEST-wire-bootstrap-'.repeat(3), now: () => world.clock.time });
     const service = createProtocolPurchases({ db, ops, admission, now: () => world.clock.time, store: createSqlitePurchaseStore(), fetchImpl,
-      coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, dacsProtocol: { sellerTransport: transport, sellerEndpoint: () => FIXTURE_ENDPOINT, sellerRequestTimeoutMs: SELLER_DEADLINE_MS } });
+      coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, dacsProtocol: { sellerTransport: transport, sellerEndpoint: () => FIXTURE_ENDPOINT, sellerRequestTimeoutMs: SELLER_DEADLINE_MS, demDeliveryContext } });
     return { db, ops, service };
   };
   let current = open();
@@ -91,10 +92,14 @@ export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = D
   });
   current.db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('TEST-buyer', 'TEST', 'TEST-buyer', new Date(NOW).toISOString());
 
-  /** Seeds a prepared purchase for `jobId` (with `declared: false`, one whose terms name no seller transport). */
-  world.purchase = (jobId = JOB, { declared = true } = {}) => {
+  /**
+   * Seeds a prepared purchase for `jobId` (with `declared: false`, one whose terms name no seller transport; with `agreementContext`,
+   * one whose terms bind that Agreement context source).
+   */
+  world.purchase = (jobId = JOB, { declared = true, agreementContext = null } = {}) => {
     const terms = { buyer: { wallet: buyer.address }, seller: { claim: seller.claim, payee: support.payee }, listing: { ...host.listingPin }, price: { ...support.price }, rail: 'demos-native:DEM',
-      protocol: { jobId, profile: 'dacs-chatgpt-plugin/sr2-wallet-agreement/v1', sellerAgent: FIXTURE_ENDPOINT, wireProfile: binding.profile, ...(declared ? { sellerTransport: transport.declaration } : {}) } };
+      protocol: { jobId, profile: 'dacs-chatgpt-plugin/sr2-wallet-agreement/v1', sellerAgent: FIXTURE_ENDPOINT, wireProfile: binding.profile, ...(declared ? { sellerTransport: transport.declaration } : {}),
+        ...(agreementContext ? { agreementContext } : {}) } };
     const { operation } = current.ops.createIdempotent({ accountId: 'TEST-buyer', kind: 'purchase', idempotencyKey: `TEST-${jobId}`, request: {}, status: 'agreement_pending', terms, termsHash: contentHash(terms),
       state: { protocol: { stage: 'identity', listing: f.config.listing, attempts: [] } }, expiresAt: new Date(NOW + PURCHASE_WINDOW_MS).toISOString() });
     return { id: operation.id, get: () => current.ops.get('TEST-buyer', operation.id) };

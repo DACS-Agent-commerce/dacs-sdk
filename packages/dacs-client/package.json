@@ -15,7 +15,7 @@
   "files": [
     "src/buyer-funding.mjs", "src/client-errors.mjs",
     "src/dacs/action-admission.mjs", "src/dacs/agreement-context-consumer.mjs",
-    "src/dacs/artifact-reference.mjs", "src/dacs/buyer-chain-readback.mjs",
+    "src/dacs/bootstrap-outcome.mjs", "src/dacs/artifact-reference.mjs", "src/dacs/buyer-chain-readback.mjs",
     "src/dacs/chain.mjs", "src/dacs/commit-on-signature.mjs", "src/dacs/continuation-evidence.mjs",
     "src/dacs/delivery-deadline-watch.mjs", "src/dacs/delivery-evidence.mjs",
     "src/dacs/dem-delivery-consumer.mjs", "src/dacs/dem-delivery-context-consumer.mjs",

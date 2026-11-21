@@ -107,8 +107,10 @@ function answerOrError(verdict, answer, status) {
   const { answerClass, code } = verdict;
   if (answerClass === RESULT || answerClass === PROGRESS) return answer;
   if (answerClass === DEFINITE || answerClass === FAILED_BOOTSTRAP) {
-    const refusalCode = code ?? `http_${status}`;
-    throw new SellerRefusedError(refusalCode, typeof answer.message === 'string' ? answer.message.slice(0, 200) : refusalCode, status, answerClass);
+    const refusalCode = code ?? (answerClass === FAILED_BOOTSTRAP && status === 429 ? 'seller_rate_limited' : `http_${status}`);
+    const refusal = new SellerRefusedError(refusalCode, typeof answer.message === 'string' ? answer.message.slice(0, 200) : refusalCode, status, answerClass);
+    if (typeof answer.cause === 'string') refusal.cause = answer.cause.slice(0, 240);
+    throw refusal;
   }
   throw new SellerUnavailableError(code === SELLER_EFFECT_UNRESOLVED ? SELLER_OPERATOR_MESSAGE : UNAVAILABLE_ANSWER_MESSAGE, statusCause(status), verdict);
 }
