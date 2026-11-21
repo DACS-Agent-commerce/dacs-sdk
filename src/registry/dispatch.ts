@@ -13,10 +13,7 @@ import {
   type PayDemPreparedTransfer,
   type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
-import {
-  inheritSettlementBridge,
-  type SettlementIdempotencyStore,
-} from "../rails/idempotency.js";
+import type { SettlementIdempotencyStore } from "../rails/idempotency.js";
 import {
   isAuthenticatedRailDefinition,
   type AuthenticatedRailDefinition,
@@ -138,7 +135,7 @@ function bindDescriptorRequest(
       phase: requestPhase,
     });
   };
-  return inheritSettlementBridge(executor, bound);
+  return bound;
 }
 
 async function enforceAvailability(

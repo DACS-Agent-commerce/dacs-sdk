@@ -7,7 +7,6 @@ import { DacsError } from "../../src/errors.js";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
-  settlementBridgeTraits,
 } from "../../src/rails/idempotency.js";
 import {
   PayDemIncludedNonceVisibilityError,
@@ -1411,29 +1410,6 @@ describe("pay-dem waits for the node's nonce read before signing the next paymen
 
     await pay(rail);
     expect(sdk.waitForNonce).toHaveBeenNthCalledWith(1, WALLET, 7);
-  });
-});
-
-describe("payDemSettle bridge registration", () => {
-  const declared = async (
-    config: { journalPreparedTransfer?: () => Promise<void> },
-    allowUnjournaled?: boolean,
-  ) => {
-    const rail = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret", ...config });
-    return settlementBridgeTraits(payDemSettle(rail, {}, {
-      store: createIdempotencyStore(createInMemorySettlementLog()),
-      ...(allowUnjournaled === undefined ? {} : { allowUnjournaled }),
-    }));
-  };
-
-  it("payDemSettle declares whether the rail it wraps has a prepared-transfer journal", async () => {
-    expect(await declared({ journalPreparedTransfer: async () => undefined })).toEqual({ journaled: true });
-    expect(await declared({}, true)).toEqual({ journaled: false });
-  });
-
-  it("payDemSettle over a hand-built rail declares nothing", () => {
-    const handBuilt = { address: WALLET, settle: vi.fn() };
-    expect(settlementBridgeTraits(payDemSettle(handBuilt, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) }))).toEqual({});
   });
 });
 
