@@ -22,7 +22,7 @@ test('K12-H7 / A37 today: a purchase through the public entries on the fixture n
   assert.equal(retained.id, operation.id);
   assert.equal(retained.state.protocol.stage, 'identity');
   assert.equal(retained.state.protocol.sessionDelegation, undefined);
-  assert.equal(retained.state.protocol.identity, undefined, 'the client derived no presentation of its own (K12-H1)');
+  assert.equal(retained.state.protocol.identity, undefined, 'the client derived no presentation of its own');
 
   // The first failing step, exactly as the index records it.
   assert.ok(failure, 'the purchase failed at its first wallet step');
