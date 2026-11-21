@@ -36,9 +36,10 @@ function presentAnswer({ scope, buyerIdentityBundle }, listing) {
 
 /**
  * Builds the composed world. `sellerEndpoint(claim, options)` answers the protocol's seller lookups; `contextGate` (a Promise) holds the
- * operator's context read; `demDeliveryContext` (a capability) replaces the operator context.
+ * operator's context read; `demDeliveryContext` (a capability) replaces the operator context. `stopped` is the host's stop check and
+ * `passiveOnly` composes both factories in their read-only mode, and `native` replaces the native source world.
  */
-export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null } = {}) {
+export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, stopped = () => false, passiveOnly = false, native = passiveNativeWorld() } = {}) {
   const { binding, currentLocal, authority, current } = await bindFixture();
   const admission = { binding, currentLocal };
   const wallet = createEphemeralWallet(), seller = createEphemeralWallet();
@@ -47,7 +48,6 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => NOW });
   const coordinates = createCoordinateStore({ db, now: () => NOW });
   db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run(ACCOUNT_ID, 'TEST', ACCOUNT_ID, new Date(NOW).toISOString());
-  const native = passiveNativeWorld();
   const commitment = createDevnetNativeCommitmentCapability({ authority: AUTHORITY,
     anchor: { authority: AUTHORITY, readRetained() { throw new Error('not used'); }, verifyReceipt() { throw new Error('not used'); } } });
   // `observation` answers the passive transfer read; broadcast and signer counts stay at 0 in held tests.
@@ -62,11 +62,11 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   // Every protocol call that reaches a seller or the buyer-access seam is counted.
   const counters = { sellerLookups: 0, buyerAccess: 0, challengesIssued: 0 };
   const challenges = { issue: () => { counters.challengesIssued++; return { challengeId: 'TEST-challenge' }; } };
-  const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
+  const protocol = createProtocolPurchases({ db, ops, coordinates, store, stopped, ...(passiveOnly ? { passiveOnly } : {}), admission, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
       nativeSellerCommitment: commitment, ...(demDeliveryContext ? { demDeliveryContext } : { agreementContext }), sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: wallet.address }] }, verifier, chain, protocol,
-    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped, ...(passiveOnly ? { passiveOnly } : {}), admission });
   const prepare = (idempotencyKey = 'TEST-key') => service.prepare({ accountId: ACCOUNT_ID, listingId: 'TEST-listing', version: 1, seller: seller.claim,
     idempotencyKey, walletAddress: wallet.address, protocol: OFFLINE_AGREEMENT_MODE });
   // Prepares a purchase and has the buyer present their identity; returns what agreementPlan needs.

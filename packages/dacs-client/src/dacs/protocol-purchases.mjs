@@ -23,7 +23,7 @@ import { projectDiagnostic } from '../diagnostic-projection.mjs';
 // complete simulated profiles have no admission or continuation path.
 import { admitRawJson, canonicalize, contentHash, bundleAddress, decodeDemosAnchorReceiptProof, demosSignedTransactionProofHash, finalityCommitmentAddress, sha256Hex } from '@kynesyslabs/dacs';
 import { isDevnetAgreementTransport, DEVNET_AGREEMENT_KIND } from '../wallet/devnet-native-transport.mjs';
-import { NotWiredError, OperationError } from '../client-errors.mjs';
+import { NotWiredError, OperationError, STOP_REFUSAL_CODES, isStopRefusal } from '../client-errors.mjs';
 import { verifyDemosSignature, claimForAddress, decodeSignature } from '../signatures.mjs';
 import { attachIdentityPresentation, buildUnsignedIdentityBundle, verifyComponent } from './listing.mjs';
 import { createSellerHttpsClient, sellerEndpointOrigin, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
@@ -326,10 +326,12 @@ function storedRequestBody(record, path) {
  * `finish('suspended', cause)` records the suspension with the outcome in one write). Throws StaleProtocolCheck when
  * the row moved on, stored_request_mismatch when the body differs from the stored one, stored_request_corrupt when the
  * stored bytes fail their hash, and invalid_state when the purchase is ended, expired or suspended. A profile_not_admitted
- * refusal with queued work also records a suspension (K8). `suspendQueued(cause)` records one for a caller that saw the re-hold, `resume(id)` clears it.
+ * refusal with queued work also records a suspension (K8). `suspendQueued(cause)` records one for a caller that saw the re-hold, `suspend(cause)` records
+ * one for a caller that saw a stop, and `resume(id)` clears it. `beforeAttempt(path)` awaits `checkStopped()`, the host's stop check, before an attempt is
+ * taken off the queue; without `checkStopped` it resolves at once.
  * `failure(error)` records a swallowed failure for the operator, retaining its bounded class and cause.
  */
-export function createSellerRequestRecords({ db, ops, transaction, holder, now }) {
+export function createSellerRequestRecords({ db, ops, transaction, holder, now, checkStopped }) {
   // The stored row; changes made only by request records or kept pointers are adopted, any other change is stale.
   function reload() {
     const seen = holder.get(), stored = ops.get(seen.accountId, seen.id);
@@ -406,6 +408,20 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     },
     /** Records a re-hold's suspension on the latest row, only when the purchase has queued work; throws StaleProtocolCheck when the row is gone. */
     suspendQueued: (cause) => recordSuspension(cause, null, { queuedOnly: true }),
+    /** Records a stop's suspension on the latest row, with or without queued work or a signature; throws StaleProtocolCheck when the row is gone. */
+    suspend: (cause) => recordSuspension(cause, null),
+    /**
+     * Awaits the host's stop check before an attempt on `path` is taken off the queue, and resolves when it says go. A stop refusal on a durable route
+     * first records the suspension, then rejects with the refusal itself; a failed suspension write is kept as its cause and never acknowledged.
+     * Reads and records made without a stop check resolve at once.
+     */
+    async beforeAttempt(path) {
+      if (!checkStopped || !SELLER_REQUEST_POLICY[path]?.durable) return;
+      try { await checkStopped(); } catch (error) {
+        if (isStopRefusal(error)) { try { recordSuspension(error.code, path); } catch (cause) { error.cause ??= cause; } }
+        throw error;
+      }
+    },
     start(path, body) {
       const result = suspendOnHold(path, () => transaction(db, () => {
         const row = reload();
@@ -425,7 +441,12 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
         const newPurchase = policy.bootstrap && protocol.planned === undefined && attempts === clearAttempts;
         const saved = write(row, path, { path, stage: prior?.stage ?? protocol.stage, bodyB64: Buffer.from(text).toString('base64url'), bodyHash: sha256Hex(text),
           attemptId, attempts: attempts + 1, clearAttempts, lastClass: SELLER_ANSWER_CLASS.UNKNOWN });
-        const finish = (answerClass, cause) => (answerClass === SELLER_ANSWER_CLASS.SUSPENDED ? recordSuspension(cause ?? answerClass, path, { attemptId }) : finishAttempt(path, attemptId, answerClass));
+        // A stop refusal records its suspension before the attempt's outcome, so a crash between the two leaves the purchase suspended.
+        const finish = (answerClass, cause) => {
+          if (answerClass === SELLER_ANSWER_CLASS.SUSPENDED) return recordSuspension(cause ?? answerClass, path, { attemptId });
+          if (STOP_REFUSAL_CODES.has(cause)) recordSuspension(cause, path);
+          return finishAttempt(path, attemptId, answerClass);
+        };
         return { row: saved, attempt: attemptFor(path, text, newPurchase, finish) };
       }));
       holder.set(result.row);
@@ -438,7 +459,7 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
 // already-resolved operator capability (null when it has none, so the paths
 // that need one refuse with buyer_access_closed).
-export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission }) {
+export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, checkStopped }) {
   const { transaction } = purchaseStore(store);
   if (deliveryDeadlineWatch !== null) throw new TypeError('deliveryDeadlineWatch is not wired; invoke the separate watch.observe method explicitly');
   if (dacsProtocol?.buyerAccess !== undefined) throw new TypeError('buyerAccess moved to the top-level createProtocolPurchases option');
@@ -516,7 +537,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
         job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
           deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
     }
-    const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now });
+    const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now, checkStopped });
     const client = createSellerHttpsClient({ publicEndpoint: url, connector: sellerConnector, commitOnSignature, requestRecords, authentication, timeoutMs: sellerRequestTimeoutMs });
     if (client.origin !== operation.terms.protocol.sellerAgent) throw new OperationError('seller_agent_changed', 'the seller agent endpoint changed since this purchase was prepared; nothing was signed or paid');
     return client;

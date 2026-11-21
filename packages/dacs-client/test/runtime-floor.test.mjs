@@ -29,10 +29,10 @@ function countingStandIns() {
 
 function realOptions(t, name) {
   if (name === 'createListingVerifier') return { directory: {}, chain: {} };
-  if (name === 'createProtocolPurchases') return { store: createSqlitePurchaseStore() };
+  if (name === 'createProtocolPurchases') return { store: createSqlitePurchaseStore(), stopped: () => false };
   const db = openDatabase(':memory:'); t.after(() => db.close());
   return { db, ops: createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => 1 }), coordinates: createCoordinateStore({ db }),
-    chain: {}, config: {}, store: createSqlitePurchaseStore(), purposes: { APPROVE_PURCHASE: 'TEST-approve' } };
+    chain: {}, config: {}, store: createSqlitePurchaseStore(), purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false };
 }
 
 const FACTORIES = { createProtocolPurchases, createPurchaseService, createListingVerifier };

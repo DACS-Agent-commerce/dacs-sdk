@@ -54,11 +54,11 @@ export async function purchaseWorld(t, { host, listing }) {
     try { return await sellerClient.agreementContext({ jobId: request.scope.jobId, ...request }); }
     catch (error) { contextFailures.push({ failureClass: error.constructor.name, layer: sellerClient.failureCause }); throw error; }
   } };
-  const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, now, buyerAccess: { assertWallet() {} },
+  const protocol = createProtocolPurchases({ db, ops, coordinates, store, stopped: () => false, admission, now, buyerAccess: { assertWallet() {} },
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
       nativeSellerCommitment: commitment, agreementContext, sellerEndpoint: () => FIXTURE_ENDPOINT } });
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: buyer.address }] }, verifier, chain, protocol,
-    challenges: {}, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+    challenges: {}, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false, admission });
   const prepare = () => service.prepare({ accountId: ACCOUNT_ID, listingId: listing.listingId, version: listing.listingVersion, seller: seller.claim,
     idempotencyKey: IDEMPOTENCY_KEY, walletAddress: buyer.address, protocol: OFFLINE_AGREEMENT_MODE });
   return { service, ops, prepare, sellerRequests, contextFailures, native, chain };

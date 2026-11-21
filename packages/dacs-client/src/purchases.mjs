@@ -34,7 +34,7 @@ import { createPortalCapability } from './portal-capability.mjs';
 import { contentHash, canonicalize } from './dacs/listing.mjs';
 import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
 import { generateCanonicalJobId, isCanonicalJobId } from '@kynesyslabs/dacs';
-import { OperationError, requestHashOf } from './client-errors.mjs';
+import { OperationError, requestHashOf, isStopRefusal } from './client-errors.mjs';
 import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
 import { purchaseStore } from './seams/purchase-store-not-wired.mjs';
 import { newId } from './util/ids.mjs';
@@ -217,8 +217,9 @@ export function approvalBinding(operation) {
 // readback chooses its projection on each call. Host diagnostics are not
 // artifact verification or the archival path described in §11.1.2(4).
 // verifyDeal accepts an optional signal to cancel its passive chain reads.
-export function createPublicPurchaseService(options) {
-  return createPurchaseService(options, () => !purchaseActionsAdmitted());
+// `passiveOnly` keeps the diagnostic projection on after the hold lifts, so no reader saves or sends anything.
+export function createPublicPurchaseService({ passiveOnly, ...options }) {
+  return createPurchaseService(options, () => passiveOnly === true || !purchaseActionsAdmitted());
 }
 
 // Schema rows as plain objects with numbers, whatever the host's connection
@@ -820,6 +821,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // observed transaction; no step here can send or re-send a payment.
   // A recorded suspension (K8) stops the continuation: the readback stands, and only an explicit request naming it resumes.
   // A re-hold seen by the continuation suspends queued work; a binding failure while admitted is not a re-hold.
+  // A stop refusal suspends the purchase whether or not it has queued work, so no timer or later continuation runs it.
   async function continueProtocol(result, resumeSuspensionId) {
     const operation = result.operation;
     if (!operation.terms.protocol || !protocol?.available) return result;
@@ -828,8 +830,10 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (stored?.state?.protocol?.sellerSuspension && !resumeSuspensionId) return { ...result, operation: stored };
     let advanced;
     try { advanced = await protocol.recheck(operation, coordinates.get(operation.id), { resumeSuspensionId }); } catch (error) {
-      if (error?.code === 'profile_not_admitted' && stored?.state?.protocol && !purchaseActionsAdmitted()) {
-        try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored ?? operation, set() {} }, now }).suspendQueued(error.code); } catch (cause) { error.cause ??= cause; }
+      const reHold = error?.code === 'profile_not_admitted' && !purchaseActionsAdmitted();
+      if ((reHold || isStopRefusal(error)) && stored?.state?.protocol) {
+        const records = createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored ?? operation, set() {} }, now });
+        try { if (reHold) records.suspendQueued(error.code); else records.suspend(error.code); } catch (cause) { error.cause ??= cause; }
       }
       throw error;
     }
@@ -1365,12 +1369,12 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // attachOnly: see attachHashAndVerify. Replacing a recorded pointer stays
   // the explicit verify_deal correction.
   // A re-hold while the continuation runs turns its profile_not_admitted
-  // refusal into the diagnostic readback; any other refusal keeps its cause.
+  // refusal, and a stop refusal, into the diagnostic readback; any other refusal keeps its cause.
   async function verifyDeal(request) {
     try {
       return await verifyDealOnce(request);
     } catch (error) {
-      if (error?.code !== 'profile_not_admitted' || !diagnostic()) throw error;
+      if (!isStopRefusal(error) && (error?.code !== 'profile_not_admitted' || !diagnostic())) throw error;
       return diagnosticReadback(ownedPurchase(request.accountId, request.operationId, request.token), request.txHash, request.signal);
     }
   }

@@ -34,7 +34,7 @@ export async function world(t, { pin: committedPin, agreementHash = sha256Hex('a
   setPurchaseAdmission('testnet-tp1');
   t.after(() => setPurchaseAdmission('held'));
   const buyer = party(1), seller = party(2), session = party(3), other = party(4), local = { ...LOCAL };
-  const state = { time: T0, gate: null, failure: null, signs: [], listingReaderFailure: null, listingExpiresAt: Number.MAX_SAFE_INTEGER };
+  const state = { time: T0, gate: null, failure: null, stopSeam: () => false, signs: [], listingReaderFailure: null, listingExpiresAt: Number.MAX_SAFE_INTEGER };
   const binding = await wire.bindTp1Profile({
     record: wire.TP1_APPROVED_IDENTITY_RECORD, local, readAuthority: async (scope) => {
       if (state.gate)
@@ -147,7 +147,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
     db = openDatabase(path);
     ops = createOperationStore({ db, handoffSecret: 'TEST-wire-fixture-'.repeat(3), now: () => w.state.time });
     service = createProtocolPurchases({
-      db, ops, admission: w.admission, now: () => w.state.time, store: createSqlitePurchaseStore(), coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {
+      db, ops, admission: w.admission, stopped: () => w.state.stopSeam(), now: () => w.state.time, store: createSqlitePurchaseStore(), coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {
         } }, dacsProtocol: config
     });
   };
