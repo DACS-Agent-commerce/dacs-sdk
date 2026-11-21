@@ -853,13 +853,22 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored, set() {} }, now, hostStop }).suspendQueued(refusal.code); } catch (cause) { refusal.cause ??= cause; }
   }
 
-  // A host stop that refuses an action before it runs suspends the queued work of the purchase its request names, as the
-  // continuation does, so only protocolRecheck with resumeSuspensionId continues it. A request that names no purchase it
-  // may act on records nothing, and a purchase already suspended keeps its suspension and id.
-  function suspendOnStopRefusal(request, refusal) {
+  // Finds the purchase a service action's request names, authenticated as that action authenticates it: the handoff token
+  // for the portal actions, the account for cancel. prepare and any other action name no stored purchase.
+  function requestedPurchase(action, request) {
+    if (TOKEN_ACTIONS.has(action)) return handoffPurchase(request?.operationId, request?.token);
+    if (action === 'cancel') return ownedPurchase(request?.accountId, request?.operationId);
+    return undefined;
+  }
+
+  // A host stop that refuses a service action suspends the queued work of the purchase its request names, as the
+  // continuation does, so only protocolRecheck with resumeSuspensionId continues it. A request that does not
+  // authenticate for that action records nothing, and a purchase already suspended keeps its suspension and id.
+  function suspendOnStopRefusal(action, request, refusal) {
     let stored;
     try {
-      const found = request?.accountId === undefined ? handoffPurchase(request?.operationId, request?.token) : ownedPurchase(request.accountId, request.operationId, request.token);
+      const found = requestedPurchase(action, request);
+      if (!found) return;
       stored = ops.get(found.accountId, found.id);
     } catch { return; }
     if (stored?.terms?.protocol && !stored.state?.protocol?.sellerSuspension) suspendQueuedWork(stored, refusal);
@@ -1674,10 +1683,14 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   return service;
 }
 
-// Each service's recorder for host stop refusals raised before one of its actions runs. Module-private.
+// The service actions that authenticate their request with the purchase's handoff token.
+const TOKEN_ACTIONS = new Set(['issueApprovalChallenge', 'approve', 'prepareHandoff', 'nativePaymentLane', 'reportWalletResult',
+  'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign', 'protocolRecheck']);
+
+// Each service's recorder for host stop refusals of its actions. Module-private.
 const stopRefusalRecorders = new WeakMap();
 
-/** recordStopRefusal(service, args, refusal) suspends the queued work of the purchase `args[0]` names when the host stop refused that call of a `service` action before it ran. Returns undefined; it never throws for an unknown object or request. */
-export function recordStopRefusal(service, args, refusal) {
-  stopRefusalRecorders.get(service)?.(args[0], refusal);
+/** recordStopRefusal(service, action, args, refusal) suspends the queued work of the purchase `args[0]` names when the host stop refused that call of the `service` action `action`, before or while it ran. The request must authenticate as that action authenticates it. Returns undefined; it never throws for an unknown object, action or request. */
+export function recordStopRefusal(service, action, args, refusal) {
+  stopRefusalRecorders.get(service)?.(action, args[0], refusal);
 }
