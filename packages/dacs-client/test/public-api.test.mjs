@@ -362,7 +362,9 @@ test('createPublicSellerClient refuses a timeoutMs outside 1000 through 300000 a
 });
 
 test('an archive installed outside the checkout exports createPublicSellerClient, constructs the held client and loads without SQLite, with no checkout-relative import', (t) => {
-  const { app, run } = installPackedPair(t);
+  // This file also runs on the Node 24 leg, whose npm checks the app lock against the app manifest: the lock is
+  // recomputed for this app, as the other packed test on that leg does, rather than copied from the workspace.
+  const { app, run } = installPackedPair(t, { installedDependencyGraph: true });
   writeFileSync(join(app, 'seller-client.mjs'), `
     import assert from 'node:assert/strict';
     import { existsSync } from 'node:fs';

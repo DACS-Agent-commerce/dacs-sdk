@@ -571,9 +571,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (mode === OFFLINE_AGREEMENT_MODE && domain.network !== walletConfig.network) throw new OperationError('network_identity_mismatch', 'the injected wallet bridge is not bound to the prepared fixture network');
     if (!nativeSellerCommitment) throw new OperationError('seller_commitment_unavailable', 'native seller commitment capability required');
     // A seller endpoint is always a public https origin, and the seller client sends only with the wire authentication
-    // that the declared seller transport below provides. A purchase that can pay but declares no seller transport would
-    // fail at its first Agreement submit, after the buyer signed.
-    if (mode === OFFLINE_AGREEMENT_MODE && nativePayment && !(nativeEvidence && sellerTransport)) throw new OperationError('seller_agent_unavailable', 'the seller agent endpoint needs a declared seller transport to authenticate requests; nothing was prepared');
+    // that the declared seller transport below provides. The terms declare one only with native payment and its evidence;
+    // terms without one would fail at their first Agreement submit, after the buyer signed, so they are refused here.
+    if (!(nativePayment && nativeEvidence && sellerTransport)) throw new OperationError('seller_agent_unavailable', 'the seller agent endpoint needs a declared seller transport to authenticate requests; nothing was prepared');
     return {
       terms: { wireProfile: admission.binding.profile, profile: OFFLINE_AGREEMENT_PROFILE, orchestration: ORCHESTRATION, sellerAgent: sellerEndpointOrigin(url), substrate: 'source-pinned-native-fixed-price-demo; finality-held',
         ...(mode === OFFLINE_AGREEMENT_MODE && sourceCapability ? {transportBinding:sourceCapability.transportBinding} : {}),

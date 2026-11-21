@@ -5,6 +5,7 @@ import { world, purchase, JOB, T0, setPurchaseAdmission } from './helpers/wire-c
 import { fixtureListing } from './fixtures/listings.mjs';
 import { fetchClient } from './helpers/seller-https-rig.mjs';
 const { createSellerHttpsClient } = await import('../src/dacs/seller-http.mjs');
+const { compositionWorld } = await import('./helpers/public-composition-world.mjs');
 const clientOverFetch = fetchClient(createSellerHttpsClient);
 const { SELLER_ANSWER_CLASS } = await import('../src/dacs/seller-response-class.mjs');
 
@@ -58,6 +59,19 @@ for (const missing of ['sellerTransport', 'nativePaymentEvidence']) {
     assert.equal(p.policies(), 0);
   });
 }
+
+// Without native payment the terms declare no seller transport, so its seller requests could never be authenticated.
+test('the default unpaid configuration with a public https seller is refused at prepare, with no purchase row and nothing to sign', async (t) => {
+  setPurchaseAdmission('testnet-tp1');
+  t.after(() => setPurchaseAdmission('held'));
+  const paid = await compositionWorld(t);
+  assert.ok((await paid.prepare()).operation.terms.protocol.sellerTransport, 'the same setup with a declared seller transport prepares');
+  const unpaid = await compositionWorld(t, { unpaid: true });
+  const before = unpaid.rows();
+  await assert.rejects(unpaid.prepare(), (error) => error.name === 'OperationError' && error.code === 'seller_agent_unavailable' && /declared seller transport/.test(error.message));
+  assert.equal(unpaid.rows(), before, 'no purchase row, event, coordinate, approval or nonce record');
+  assert.equal(unpaid.counters.challengesIssued, 0);
+});
 
 test('a public endpoint without a wire authentication is refused', async () => {
   assert.throws(() => clientOverFetch({ url: SELLER_ORIGIN, fetchImpl: failIfCalled([]) }), { name: 'TypeError', message: /wire authentication/ });

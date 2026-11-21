@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import * as wire from '@kynesyslabs/dacs/wire';
 import { code, T0, world as buyerWorld } from './helpers/wire-client-fixture.mjs';
 import { storedWorld, PATHS, bodyFor } from './helpers/stored-request-fixture.mjs';
-import { fetchClient } from './helpers/seller-https-rig.mjs';
+import { fetchClient, startHttpsSeller } from './helpers/seller-https-rig.mjs';
 
 const { createSellerHttpsClient } = await import('../src/dacs/seller-http.mjs');
 const clientOverFetch = fetchClient(createSellerHttpsClient);
@@ -72,6 +72,42 @@ test('automatic retries omit the resume proof; the explicit public resume alone 
       assert.equal(s.fetches.filter(carriesProof).length, carried('explicit'), 'a later ordinary recheck finds no proof either');
     });
   }
+  await t.test('through the real HTTPS connector, a signed seller_stopped answer suspends the payment and the explicit recheck carries its proof to the seller and the purchase continues', async t => {
+    // The loopback seller's certificate is issued against the real clock, so it starts before the purchase clock is pinned.
+    let flow, stopped = true;
+    const seller = await startHttpsSeller(t, (_req, res, record) => {
+      const text = JSON.stringify(stopped ? { error: 'seller_stopped' } : { status: 'complete' }), status = stopped ? 503 : 200;
+      const { payload } = JSON.parse(Buffer.from(record.headers[wire.DACS_SELLER_HTTP_HEADER], 'base64url'));
+      wire.signWireResponse(payload, status, text, { signer: flow.w.seller, binding: flow.w.binding, local: flow.w.local, purchaseProfile: flow.w.binding.profile, now: flow.w.state.time })
+        .then(header => { res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text), [wire.DACS_SELLER_HTTP_HEADER]: header }); res.end(text); }, () => res.destroy());
+    });
+    t.mock.method(Date, 'now', () => T0);
+    const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
+    const coordinates = { verifiedAt: 'TEST-verified', reportedTxHash: 'a'.repeat(64), observation: { observation: { blockNumber: 1 } } };
+    // The real connector with the loopback rig's resolver and CA; only the purchase's port-less origin is pointed at the rig's port.
+    const { s, service } = await sellerFlow(t, 'payment', (world, state) => {
+      flow = world;
+      state.connector = { send: options => seller.connector.send({ ...options, origin: seller.origin }) };
+    });
+    const received = () => seller.seen.requests.map(record => [record.path, wire.DACS_SELLER_RESUME_HEADER in record.headers]);
+    const held = s.p.get().state.protocol.sellerSuspension;
+    assert.equal(held?.cause, 'seller_stopped', 'the signed seller_stopped answer is recorded as a suspension');
+    assert.deepEqual(received(), [[PATHS.payments, false]]);
+    await service.recheck(s.p.get(), coordinates);
+    assert.deepEqual(received(), [[PATHS.payments, false]], 'an ordinary recheck stays suspended and sends nothing');
+    stopped = false;
+    await service.recheck(s.p.get(), coordinates, { resumeSuspensionId: held.id });
+    assert.deepEqual(received(), [[PATHS.payments, false], [PATHS.payments, true]], 'the explicit recheck reaches the seller with the proof');
+    const resumed = seller.seen.requests[1], { payload } = JSON.parse(Buffer.from(resumed.headers[wire.DACS_SELLER_HTTP_HEADER], 'base64url'));
+    const scope = { binding: s.w.binding, local: s.w.local, delegation: s.p.get().state.protocol.sessionDelegation.payload, time: s.w.state.time, ledger: wire.createExplicitResumeLedger() };
+    const opened = await wire.verifyExplicitCreateResume(resumed.headers[wire.DACS_SELLER_RESUME_HEADER], { ...scope, request: payload });
+    assert.equal(opened.requestHash, wire.wireRequestHash(payload), 'the seller can verify the proof against the request that carried it');
+    const after = s.p.get().state.protocol;
+    assert.equal(after.sellerSuspension, undefined, 'the suspension is cleared');
+    assert.deepEqual([after.sellerRequests[PATHS.payments].attempts, after.sellerRequests[PATHS.payments].lastClass], [2, 'result'], 'the seller accepted the resumed payment');
+    // The purchase moves on to the payment evidence readback, which this flow's source leaves pending.
+    assert.equal(after.stage, 'native-payment-evidence-held');
+  });
   await t.test('two explicit rechecks naming one suspension send one proof between them', async t => {
     t.mock.method(Date, 'now', () => T0);
     const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');

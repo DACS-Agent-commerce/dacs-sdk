@@ -1,4 +1,5 @@
-// Replace unrelated coordinator/source boundaries only for the isolated protocol entry.
+// Replace unrelated coordinator/source boundaries only for the isolated protocol entry. The seller client
+// reaches the flow's `connector` when one is set, and otherwise a stand-in that answers from the flow's `fetch`.
 const source = name => new URL('../../src/dacs/' + name + '.mjs', import.meta.url).href;
 const parent = source('protocol-purchases') + '?stored-flow';
 const state = "globalThis[Symbol.for('TEST-stored-request-flows')]";
@@ -13,7 +14,7 @@ export function resolve(specifier, context, next) {
     ['seller-http', `import { createSellerHttpsClient as actual } from ${JSON.stringify(source('seller-http'))};
       import { connectorFromFetch } from ${JSON.stringify(new URL('./seller-https-rig.mjs', import.meta.url).href)};
       export const createSellerHttpsClient = options => {
-        const client = actual({ ...options, connector: connectorFromFetch(${state}.fetch) });
+        const client = actual({ ...options, connector: ${state}.connector ?? connectorFromFetch(${state}.fetch) });
         if (client.commitOnSignature) {
           const send = client.commitOnSignature;
           client.commitOnSignature = (...args) => (${state}.signature = send(...args));

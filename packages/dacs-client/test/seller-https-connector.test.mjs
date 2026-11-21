@@ -448,12 +448,13 @@ test('each early response refusal, a parser failure and a throwing callback remo
 test('only allowlisted headers are sent with no cookie, authorization or proxy header', async (t) => {
   const seller = await startSeller(t, leaves.valid, (socket) => reply(socket, 200));
   const { connector, seen } = rig();
-  await send(connector, originOf(seller), { headers: { ...HEADERS, 'x-dacs-seller-peer': 'peer-value' } });
+  await send(connector, originOf(seller), { headers: { ...HEADERS, 'x-dacs-seller-peer': 'peer-value', 'x-dacs-seller-resume': 'resume-value' } });
   const names = seller.seen.requests[0].toString('latin1').split('\r\n\r\n')[0].split('\r\n').slice(1).map((line) => line.split(':')[0].toLowerCase());
-  const allowed = ['host', 'accept', 'content-type', 'x-dacs-seller-peer', 'accept-encoding', 'user-agent', 'connection', 'content-length'];
+  const allowed = ['host', 'accept', 'content-type', 'x-dacs-seller-peer', 'x-dacs-seller-resume', 'accept-encoding', 'user-agent', 'connection', 'content-length'];
   assert.deepEqual(names.filter((name) => !allowed.includes(name)), []);
   assert.match(seller.seen.requests[0].toString('latin1'), /^accept-encoding: identity\r$/im);
-  for (const header of ['cookie', 'authorization', 'proxy-authorization', 'accept-encoding', 'host', 'Accept-Encoding']) {
+  assert.match(seller.seen.requests[0].toString('latin1'), /^x-dacs-seller-resume: resume-value\r$/im);
+  for (const header of ['cookie', 'authorization', 'proxy-authorization', 'accept-encoding', 'host', 'Accept-Encoding', 'x-dacs-seller-other']) {
     await failure(send(connector, originOf(seller), { headers: { ...HEADERS, [header]: 'x' } }), refused('admit', 'other'));
   }
   assert.equal(seen.traces.length, 1);

@@ -1,18 +1,21 @@
 // The public protocol factory composed into the public purchase service, both
 // admitted through a real binding. Only the verifier, chain reads, seller
-// endpoint, native source and operator context are stand-ins; no protocol
-// stand-in is used. Self-contained so a packed consumer can run it: it reaches
+// endpoint, the seller transport's resolvers, native source and operator context
+// are stand-ins; no protocol stand-in is used. Self-contained so a packed consumer can run it: it reaches
 // the package only through ../../src (a symlink to the installed package there).
 import { compositeVerificationAddress, contentHash } from '@kynesyslabs/dacs';
-import { createCoordinateStore, createSqlitePurchaseStore, createProtocolPurchases, createPurchaseService, SellerTlsUnusableError } from '../../src/index.mjs';
+import { TESTNET_PROFILE_TP1 } from '@kynesyslabs/dacs/wire';
+import { createCoordinateStore, createSqlitePurchaseStore, createProtocolPurchases, createPurchaseService, SellerTlsUnusableError, createNativePaymentEvidenceConsumer, createSourceDemoSellerTransport } from '../../src/index.mjs';
 import { createDevnetNativeCommitmentCapability } from '../../src/devnet-demo/commitment-consumer.mjs';
 import { OFFLINE_AGREEMENT_MODE } from '../../src/dacs/protocol-purchases.mjs';
+import { createDevnetSettlementTransport, DEVNET_SETTLEMENT_POLICY } from '../../src/wallet/devnet-native-transport.mjs';
+import { readOnlyBoundary } from './read-only-boundary.mjs';
 import { openDatabase } from './purchase-integrity-database.mjs';
 import { createOperationStore } from './purchase-integrity-operations.mjs';
 import { passiveNativeWorld, IDENTITY, NOW } from './passive-native-world.mjs';
 import { fixtureListing } from '../fixtures/listings.mjs';
 import { createEphemeralWallet } from '../fixtures/wallet.mjs';
-import { bindFixture } from '../fixtures/tp1-authority-reader.mjs';
+import { bindFixture, createAuthorityFixture } from '../fixtures/tp1-authority-reader.mjs';
 
 export { OFFLINE_AGREEMENT_MODE, NOW, SellerTlsUnusableError };
 export const ACCOUNT_ID = 'TEST-buyer';
@@ -36,10 +39,15 @@ function presentAnswer({ scope, buyerIdentityBundle }, listing) {
 
 /**
  * Builds the composed world. `sellerEndpoint(claim, options)` answers the protocol's seller lookups; `contextGate` (a Promise) holds the
- * operator's context read; `demDeliveryContext` (a capability) replaces the operator context.
+ * operator's context read; `demDeliveryContext` (a capability) replaces the operator context. `unpaid` composes the default
+ * configuration instead: no native payment, no payment evidence and no seller transport.
  */
-export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null } = {}) {
-  const { binding, currentLocal, authority, current } = await bindFixture();
+export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, unpaid = false } = {}) {
+  // The fixture authority's answer, with every participant it was asked about (the buyer and seller of the session
+  // delegation) on the bound profile; its gate, failure and call count still apply.
+  const authority = createAuthorityFixture();
+  const { binding, currentLocal, current } = await bindFixture({ readAuthority: async (scope) => ({ ...await authority.read(scope),
+    participants: scope.participants.map((claim) => ({ claim, profile: binding.profile, modules: TESTNET_PROFILE_TP1.tuple })) }) });
   const admission = { binding, currentLocal };
   const wallet = createEphemeralWallet(), seller = createEphemeralWallet();
   const db = openDatabase(':memory:'), store = createSqlitePurchaseStore();
@@ -62,19 +70,33 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   // Every protocol call that reaches a seller or the buyer-access seam is counted.
   const counters = { sellerLookups: 0, buyerAccess: 0, challengesIssued: 0 };
   const challenges = { issue: () => { counters.challengesIssued++; return { challengeId: 'TEST-challenge' }; } };
+  // Prepare admits only terms that declare a seller transport, which needs native payment and its evidence. The buyer's
+  // identity step names the session key and its expiry; no test here reaches a seller or reads payment evidence, so the
+  // session never signs and the endpoint proof and evidence source never run.
+  const unused = (what) => () => { throw new Error(`TEST ${what} not in scope`); };
+  const session = createEphemeralWallet();
+  const sellerTransport = createSourceDemoSellerTransport({ authority: AUTHORITY, sessionSignerFor: () => ({ claim: session.claim, sign: unused('session signing') }),
+    sessionPolicyFor: () => ({ expiresAt: NOW + 1_800_000 }), endpointProofFor: unused('endpoint proof') });
+  const evidenceSource = createDevnetSettlementTransport({ boundary: readOnlyBoundary, journal: native.journal,
+    settlementPublication: { policy: DEVNET_SETTLEMENT_POLICY, artifactKind: 'SettlementEvidence', phase: 'pay-dem', railId: 'demos-native:DEM', phaseIndex: 2, authority: AUTHORITY },
+    expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },
+    transportOwner: { getContext: unused('evidence context'), acquireConnectionFence: unused('evidence fence') } });
   const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
-      nativeSellerCommitment: commitment, ...(demDeliveryContext ? { demDeliveryContext } : { agreementContext }), sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
+      nativeSellerCommitment: commitment,
+      ...(unpaid ? {} : { nativeAgreementPayment: native.source, sellerTransport,
+        nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: native.source.pins.endpoint, sourceCapability: evidenceSource }) }),
+      ...(demDeliveryContext ? { demDeliveryContext } : { agreementContext }), sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: wallet.address }] }, verifier, chain, protocol,
     challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
   const prepare = (idempotencyKey = 'TEST-key') => service.prepare({ accountId: ACCOUNT_ID, listingId: 'TEST-listing', version: 1, seller: seller.claim,
     idempotencyKey, walletAddress: wallet.address, protocol: OFFLINE_AGREEMENT_MODE });
-  // Prepares a purchase and has the buyer present their identity; returns what agreementPlan needs.
+  // Prepares a purchase and has the buyer present their identity and sign the seller session delegation; returns what agreementPlan needs.
   const preparedWithIdentity = async () => {
     const { operation } = await prepare();
     const token = ops.handoffTokenFor(operation.id);
-    const { message } = await service.agreementIdentity({ operationId: operation.id, token, address: wallet.address });
-    return { operationId: operation.id, token, signature: wallet.signHex(message) };
+    const { message, delegation } = await service.agreementIdentity({ operationId: operation.id, token, address: wallet.address });
+    return { operationId: operation.id, token, signature: wallet.signHex(message), delegationSignature: wallet.signHex(delegation.message) };
   };
   const tableCounts = () => Object.fromEntries(['operations', 'operation_events', 'write_coordinates'].map((name) => [name, db.prepare(`SELECT count(*) n FROM ${name}`).get().n]));
   // Seeds a saved purchase row directly, as a host database would hold it after earlier work.
