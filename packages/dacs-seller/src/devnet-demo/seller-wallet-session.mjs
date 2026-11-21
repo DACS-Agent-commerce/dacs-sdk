@@ -86,10 +86,13 @@ export function createSellerWalletSession(options) {
   } });
   const connectionAuthority = createAuthorityReader({ authority, identityRecord: TP1_APPROVED_IDENTITY_RECORD, claim: authority.claim, listings: { isRegistered: () => false },
     purchases: { findByJobId: () => null }, participantImplementations: { entriesFor: () => [] } });
-  // The chain identity of the connection decision, as the anchor's readback compares it with the binding; undefined for a connection
-  // the reader cannot authenticate.
-  const observeConnectionIdentity = async () => {
-    const decision = await boundedCall(() => connectionAuthority({ local: owner.currentLocal(), sessionId: null, participants: [] }), { timeoutMs: AUTHORITY_READ_TIMEOUT_MS })
+  // The anchor readback's observeIdentity({ signal, timeoutMs }): the chain identity of the connection decision, which the readback
+  // compares with the binding, or undefined for a connection the reader cannot authenticate. An aborted signal refuses before the read;
+  // the wait ends at the readback's remaining time, at most AUTHORITY_READ_TIMEOUT_MS. Any other read error is the reader's own.
+  const observeConnectionIdentity = async ({ signal, timeoutMs } = {}) => {
+    signal?.throwIfAborted();
+    const bound = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? Math.min(timeoutMs, AUTHORITY_READ_TIMEOUT_MS) : AUTHORITY_READ_TIMEOUT_MS;
+    const decision = await boundedCall(() => connectionAuthority({ local: owner.currentLocal(), sessionId: null, participants: [] }), { timeoutMs: bound })
       .catch((error) => { throw isBoundedCallTimeout(error) ? new WireError('tp1_authority_timeout', 500, undefined, error) : error; });
     return decision?.chainIdentity;
   };

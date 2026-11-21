@@ -54,11 +54,12 @@ export async function portOptions(node, loadKeyRecord, overrides = {}) {
  * - `issuanceJournals()`: the issuance journals present in the directory; `executeStages()`: the node's execute stages so far.
  * Seams: `keyBytes()` is what `loadKeyRecord` returns (or throws); with `gateKeyLoad` it waits for `world.releaseKeyLoad()` and
  * `world.keyLoadStarted` resolves when it is called; with `closeInsideWalletBuild` the lock's `held()` closes the port on its first
- * call after `loadKeyRecord` returned, then answers the real value; `nodeScript(row)` answers the node's requests after the binding.
+ * call after `loadKeyRecord` returned, then answers the real value; `nodeScript(row)` answers the node's requests after the binding;
+ * `createPort(options)` builds the port (`createSellerWalletSession` by default).
  * `t.after` closes the stages and releases the lock.
  */
 export async function walletSessionWorld(t, { directory = privateDataDirectory(t), node = replayNode(), keyBytes = () => keyRecordBytes(), gateKeyLoad = false,
-  closeInsideWalletBuild = false, nodeScript = null, options = {} } = {}) {
+  closeInsideWalletBuild = false, nodeScript = null, options = {}, createPort = createSellerWalletSession } = {}) {
   setPurchaseAdmission('testnet-tp1');
   const world = { node, directory, returnedKeys: [], keyLoads: 0 };
   let keyReturned = false, closedInBuild = false, started;
@@ -75,7 +76,7 @@ export async function walletSessionWorld(t, { directory = privateDataDirectory(t
   };
   world.options = await portOptions(node, loadKeyRecord, options);
   world.signer = world.options.signer;
-  world.port = createSellerWalletSession(world.options);
+  world.port = createPort(world.options);
   world.stages = await openSellerStages({ walletSession: world.port, participantImplementations: enrollment(), sellerClaim: world.signer.claim, listingPin: LISTING_PIN,
     retainedJob: () => null, maxConcurrent: 1 });
   if (nodeScript) node.reply = nodeScript;

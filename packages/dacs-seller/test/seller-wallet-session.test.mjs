@@ -3,13 +3,16 @@
 // the key bytes on every outcome, and binds the one artifact anchor handle the operator gives the host.
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync } from 'node:fs';
+import { fork } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { entropyToMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { agreementRequest } from '../../dacs-client/test/helpers/tp1-node-fixture.mjs';
-import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, T0, api, finalization, jsonResponse, keyRecordBytes, ok, replayNode, sellerPublications, setPurchaseAdmission,
-  spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
+import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, T0, api, finalization, jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, sellerPublications,
+  setPurchaseAdmission, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { allZero, createSellerWalletSession, portOptions, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 
 const guard = await import('../src/kit-operation-guard.mjs');
@@ -19,6 +22,8 @@ const { isBoundedCallTimeout } = await import('../src/dacs/bounded-call.mjs');
 const { acquireSellerStateLock } = await import('../src/devnet-demo/seller-state-lock.mjs');
 const { fixtureListing } = await import('./fixtures/listings.mjs');
 const { contextHostFixture } = await import('./helpers/host-context-client.mjs');
+const { anchorOptions, importSpiedWalletSession } = await import('./helpers/artifact-anchor-spy.mjs');
+const CRASH_CHILD = new URL('./helpers/seller-wallet-session-crash-child.mjs', import.meta.url);
 
 const PORT_MEMBERS = ['authority', 'connectionAuthority', 'artifactAnchor', 'finalize', 'close'];
 const SESSION_MEMBERS = ['effectPass', 'runInEffectPass', 'walletFactory', 'transport', 'acquireConnectionFence', 'address', 'observer', 'artifactJournal',
@@ -34,6 +39,9 @@ const BOUNDARY_CLOCK = Object.freeze({ now: () => 0, after: () => () => {} });
 const AUTHORITY_READS = Object.freeze(['getBlockByNumber', 'getNetworkInfo']);
 
 const refusalOf = (promise) => promise.then(() => assert.fail('expected a refusal'), (error) => error);
+// The node answers each block read as another chain's node.
+const otherChain = (row) => (row.body?.params[0].message === 'getBlockByNumber'
+  ? jsonResponse(ok({ number: row.body.params[0].data.blockNumber, status: 'confirmed', hash: OTHER_CHAIN, content: { previousHash: OTHER_CHAIN } })) : undefined);
 const flush = async () => { for (let turn = 0; turn < 50; turn++) await new Promise((resolve) => setImmediate(resolve)); };
 const staticsOf = ({ source, authority, writer, vetMode }) => ({ source, authority, writer, vetMode });
 const jobCreate = () => api.passContext({ operationClass: 'job-create', currentAuthorization: () => true });
@@ -329,8 +337,6 @@ test('createSellerWalletSession refuses an endpoint that is not a canonical HTTP
 
 test('finalize refuses a binding whose authority is no longer current with tp1_connection_unverified, and one whose authority read stalls with tp1_authority_timeout at 10,000 ms but not at 9,999 ms, each before the key is loaded or an issuance journal opens', async (t) => {
   const signatures = await spyTransactionSignatures(t.mock);
-  const otherChain = (row) => (row.body?.params[0].message === 'getBlockByNumber'
-    ? jsonResponse(ok({ number: row.body.params[0].data.blockNumber, status: 'confirmed', hash: OTHER_CHAIN, content: { previousHash: OTHER_CHAIN } })) : undefined);
   const stale = await walletSessionWorld(t, { nodeScript: otherChain });
   await assert.rejects(stale.finalize(), { code: 'tp1_connection_unverified' });
   assert.deepEqual({ keyLoads: stale.keyLoads, journals: stale.issuanceJournals(), stages: stale.executeStages() }, { keyLoads: 0, journals: [], stages: 0 });
@@ -389,4 +395,69 @@ test('finalize passes journalMode, approvalMode and approve through unchanged an
 
   for (const world of [opened, created, omitted, noApproval]) assert.ok(world.returnedKeys.length === 1 && world.returnedKeys.every(allZero), 'the key bytes are zero-filled');
   assert.equal(signatures.length, 0, 'nothing was signed');
+});
+
+// The identity observer the port composed its anchor with at finalize, read from a copy of the module whose anchor is spied.
+async function composedObserver(t) {
+  const { createSellerWalletSession: createSpiedPort } = await importSpiedWalletSession();
+  const world = await walletSessionWorld(t, { createPort: createSpiedPort });
+  const composed = anchorOptions.length;
+  await world.finalize();
+  assert.equal(anchorOptions.length, composed + 1, 'finalize composed one anchor');
+  const { binding, observeIdentity } = anchorOptions.at(-1);
+  assert.equal(binding, world.stages.binding, 'the anchor reads back against the host\'s binding');
+  return { world, observeIdentity };
+}
+
+test('the anchor composed at finalize observes the chain identity of the port\'s connection decision, and observes undefined when the connection reader returns no decision', async (t) => {
+  const { world, observeIdentity } = await composedObserver(t);
+  assert.equal(await observeIdentity({ timeoutMs: AUTHORITY_DEADLINE_MS }), world.stages.binding.profile.chainIdentity);
+  world.node.reply = otherChain;
+  assert.equal(await world.port.connectionAuthority({ local: world.stages.binding.local, sessionId: null, participants: [] }), undefined, 'the reader has no decision');
+  assert.equal(await observeIdentity({ timeoutMs: AUTHORITY_DEADLINE_MS }), undefined);
+});
+
+test('the anchor\'s identity observer stops waiting at the readback\'s remaining time, at most 10,000 ms, with tp1_authority_timeout, and an aborted signal refuses before any node read', async (t) => {
+  const { world, observeIdentity } = await composedObserver(t);
+  const reads = world.node.calls.length;
+  const aborted = new Error('TEST-readback-aborted');
+  assert.equal(await refusalOf(observeIdentity({ signal: AbortSignal.abort(aborted), timeoutMs: 50 })), aborted, 'the signal\'s reason');
+  assert.equal(world.node.calls.length, reads, 'an aborted readback asks the node nothing');
+
+  world.node.reply = () => new Promise(() => {});
+  // The client's own read deadlines are computed from performance.now(); held still, only the mocked timers move time.
+  const frozenNow = performance.now();
+  const heldClock = t.mock.method(performance, 'now', () => frozenNow);
+  mock.timers.enable({ apis: ['setTimeout'] });
+  t.after(() => { mock.timers.reset(); heldClock.mock.restore(); });
+  for (const [timeoutMs, waitedMs] of [[50, 50], [60_000, AUTHORITY_DEADLINE_MS]]) {
+    let outcome = 'pending';
+    observeIdentity({ timeoutMs }).then(() => { outcome = 'resolved'; }, (error) => { outcome = error; });
+    mock.timers.tick(waitedMs - 1);
+    await flush();
+    assert.equal(outcome, 'pending', `asked for ${timeoutMs} ms: still waiting at ${waitedMs - 1} ms`);
+    mock.timers.tick(1);
+    await flush();
+    assert.deepEqual({ code: outcome.code, deadline: isBoundedCallTimeout(outcome.cause) }, { code: 'tp1_authority_timeout', deadline: true }, `asked for ${timeoutMs} ms`);
+  }
+});
+
+test('a seller process killed after finalize opens the issuance journals and before the anchor handle binds has confirmed and broadcast nothing, and a restart in open mode over the same directory finalizes, binds the handle and confirms and broadcasts a CREATE once', async (t) => {
+  const directory = privateDataDirectory(t), stateFile = join(privateDataDirectory(t), 'node-state.json');
+  const child = fork(CRASH_CHILD, [directory, stateFile], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  assert.deepEqual(await once(child, 'exit'), [null, 'SIGKILL'], `the child died inside finalize: ${stderr}`);
+  assert.deepEqual([COMPOSITION_JOURNAL, ARTIFACT_JOURNAL].filter((name) => existsSync(join(directory, name))), [COMPOSITION_JOURNAL, ARTIFACT_JOURNAL], 'the journals were open');
+  assert.equal(existsSync(stateFile), false, 'the killed process confirmed and broadcast nothing');
+
+  const signatures = await spyTransactionSignatures(t.mock);
+  const restarted = await walletSessionWorld(t, { directory, node: replayNode(stateFile), options: { journalMode: 'open' } });
+  const { session } = await restarted.finalize();
+  assert.equal(await restarted.port.artifactAnchor.hasIntent('dacs1:listing:fixture-report:1'), false, 'the restarted port bound its anchor handle');
+  const wallet = session.walletFactory({ anchorJournal: session.artifactJournal });
+  const answer = await inSessionPass(session, wallet, await agreementRequest({ session: { wallet }, node: restarted.node }));
+  assert.equal(answer.success, true, JSON.stringify(answer));
+  assert.deepEqual({ confirms: restarted.node.confirms.length, broadcasts: restarted.node.broadcasts.length, signatures: signatures.length }, { confirms: 1, broadcasts: 1, signatures: 1 });
 });

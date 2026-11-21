@@ -1244,7 +1244,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   refusals). Only then does it call `loadKeyRecord` once; the port zero-fills
   the bytes it returns on every outcome. It builds the wallet over the port's
   own connection and binds the handle to the artifact anchor composed over
-  it. The finalized session has `effectPass`, `runInEffectPass`,
+  it. That anchor's readback compares the chain identity the port's
+  connection reader observes (within the readback's remaining time, at most
+  10,000 ms, else `tp1_authority_timeout`) with the binding. The finalized session has `effectPass`, `runInEffectPass`,
   `walletFactory`, `transport` (with `recoverStorageWrite`),
   `acquireConnectionFence` (the fence its passes need), `address`,
   `observer`, `artifactJournal`, `paymentEvidence`, `readBalance` and
