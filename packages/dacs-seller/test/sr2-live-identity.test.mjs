@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES } from '@kynesyslabs/dacs/wire';
-import { buyer, NOW, seller } from './helpers/protocol-fixture.mjs';
+import { buyer, seller } from './helpers/protocol-fixture.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
 import { journalScope, liveAdapter, liveReadbackFixture, productionObserveIdentity, registeredSource, resign, sellerWalletWorld } from './helpers/sr2-live-fixture.mjs';
 
