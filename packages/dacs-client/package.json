@@ -6,7 +6,8 @@
     ".": "./src/index.mjs",
     "./wallet/durable-journal": "./src/wallet/durable-journal.mjs",
     "./node-wallet": "./src/wallet/node-wallet-session.mjs",
-    "./substrate/demos": "./src/substrate/demos.mjs"
+    "./substrate/demos": "./src/substrate/demos.mjs",
+    "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs"
   },
   "scripts": {
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
@@ -32,7 +33,7 @@
     "src/devnet-demo/deliverable.mjs", "src/devnet-demo/issued-readback.mjs",
     "src/devnet-demo/operator-approval.mjs", "src/devnet-demo/stop-request.mjs",
     "src/devnet-demo/storage-write-recovery.mjs", "src/diagnostic-projection.mjs",
-    "src/index.mjs", "src/portal-capability.mjs", "src/purchase-limits.mjs",
+    "src/index.mjs", "src/passive-evidence-recorder.mjs", "src/portal-capability.mjs", "src/purchase-limits.mjs",
     "src/purchase-state-schema.mjs", "src/purchases.mjs",
     "src/seams/purchase-store-not-wired.mjs", "src/seams/seller-integration-not-wired.mjs",
     "src/seams/wallet-actions-not-wired.mjs", "src/signatures.mjs",

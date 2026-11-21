@@ -1,0 +1,67 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add a passive recorder for unverified wallet result pointers",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "a92ffc9136d559aad6653f43dd2c1e45afd85387",
+      "after": "9ee575e77052e95f7d6ecb23ed850c581ce49de4"
+    },
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "c4bed9cda06db25dbb9f1225570a258dc593fcc0",
+      "after": "a76d6037feec3b2ca360e7e4160c0b7b33374f97"
+    },
+    {
+      "path": "packages/dacs-client/src/passive-evidence-recorder.mjs",
+      "before": null,
+      "after": "7614ddd34946d59d55489bf936885bc9bd25eecb"
+    },
+    {
+      "path": "packages/dacs-client/src/public-admission.mjs",
+      "before": "6f4326b95504b72471ceba81acb56fdf31e52cb2",
+      "after": "76964fd4e9a2e63f93b3bfb7e8c7f02afc3c5b7f"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+      "before": "cb45766caa937eac592966d1719e218c394eeaef",
+      "after": "550b2c66fd73f887224d7559e2b38ea48e0ab5e5"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/evidence-recorder-child.mjs",
+      "before": null,
+      "after": "c83e4dfc9bb2323aadbf43421e2ac9efbfe40d71"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "2e3226a86d024864f2870a4c887e484cd8c43278",
+      "after": "5ea82183316c83b1e9f761a5ef409d11438565d6"
+    },
+    {
+      "path": "packages/dacs-client/test/passive-evidence-recorder.test.mjs",
+      "before": null,
+      "after": "c86b11451cf02489469707e104311ab47d9711f6"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "9ad48172a05d9322dbcf428d4346a0d4f6c3051c",
+      "after": "913c8ee2a0459002e2e55fd1234a7a71375c2319"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-befe8205a0d9.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/src/passive-evidence-recorder.mjs",
+    "packages/dacs-client/src/public-admission.mjs",
+    "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+    "packages/dacs-client/test/helpers/evidence-recorder-child.mjs",
+    "packages/dacs-client/test/package-contents.test.mjs",
+    "packages/dacs-client/test/passive-evidence-recorder.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ]
+}
