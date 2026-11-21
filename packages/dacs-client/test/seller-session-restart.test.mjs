@@ -79,14 +79,27 @@ test('an identity request after a restart whose saved payload names a gone key r
   await assert.rejects(identity(s.p), code('session_gone_reapprove'));
 });
 
-test('session_gone_reapprove from the commit, replayed-commit and native-evidence paths is rethrown unchanged and records no note, attempt or seller_request_failed row', async (t) => {
-  for (const kind of ['commit', 'replay', 'payment']) {
+test('session_gone_reapprove from the commit and replayed-commit paths, which precede payment, is rethrown unchanged and records no note, attempt or seller_request_failed row', async (t) => {
+  for (const kind of ['commit', 'replay']) {
     const { run, seen } = await sellerRun(t, kind, createSellerSessionKeys());
     await assert.rejects(run, (error) => error.code === 'session_gone_reapprove' && error.name === 'OperationError');
     noSellerTraffic(seen.s);
   }
   const source = readFileSync(new URL('../src/dacs/protocol-purchases.mjs', import.meta.url), 'utf8');
   assert.equal(source.match(/\bsellerFor\(/g).length, 5, 'a new sellerFor call site needs its catch reviewed for session_gone_reapprove');
+});
+
+test('after a restart, the payment evidence step of a paid purchase returns the purchase with a held attempt naming session_gone_reapprove, and sends and signs nothing', async (t) => {
+  const { run, seen } = await sellerRun(t, 'payment', createSellerSessionKeys());
+  const { result } = await run;
+  assert.equal(result.status, 'settled_verified');
+  const protocol = seen.s.p.get().state.protocol;
+  assert.equal(protocol.attempts.length, 1);
+  assert.deepEqual([protocol.attempts[0].step, protocol.attempts[0].outcome], ['native-evidence', 'held']);
+  assert.match(protocol.attempts[0].reason, /new session key/);
+  assert.equal(seen.s.p.get().status, 'settled_verified');
+  assert.equal(seen.s.fetches.length, 0);
+  assert.equal(seen.s.w.state.signs.length, 0);
 });
 
 test('sessionRenewal after a restart returns the retained scope with the live key, a fresh notBefore and the original expiresAt, saves it as pending, and signs or sends nothing', async (t) => {

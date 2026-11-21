@@ -1385,10 +1385,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       answer = retained ?? await seller.submitPayment({ jobId: operation.terms.protocol.jobId, txHash: coords.reportedTxHash,
         payerPayingKey: buyerClaim(operation), nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
     } catch (error) {
-      if (isSessionGone(error)) throw error;
-      // A deleted session key never ends the readback: re-read the retained
+      // A deleted or lost session key never ends the readback: re-read the retained
       // pointer instead, so delivery stays current only on a fresh read.
-      const pointer = !retained && error?.code === 'seller_session_retired' ? retainedSellerAnswer(operation) : null;
+      const pointer = !retained && (error?.code === 'seller_session_retired' || isSessionGone(error)) ? retainedSellerAnswer(operation) : null;
       if (pointer) return advanceNativeEvidence(operation, coords, { retained: pointer, ...({ pointerAsk, sellerProblem: 'the seller session key is retired', sellerGone: true }) });
       if (holding && asking) return withoutSeller(`the seller ${error instanceof SellerRefusedError ? 'refused' : 'could not be asked'} (${String(error?.message ?? error).slice(0, 120)})`);
       // An Agreement readback that is not a definite rejection is indeterminate.
