@@ -1,9 +1,9 @@
 {
   "schema": "dacs-client-anchor/v1",
-  "commit": "96dcb41bfbc38fe03adc2a1f96abe12264e0535f",
+  "commit": "dfda16b93b588f5d424053e4fe84a8019c2c1e06",
   "files": {
     "packages/dacs-client/DELTA-NOTES.md": "8b582646a7369d32ad7462fc9c88fb6519f6d5d6",
-    "packages/dacs-client/README.md": "73d0105200cb8ccc9991eb7748d1a192034e49c0",
+    "packages/dacs-client/README.md": "bb0e67ebc977237a0091e0a7c54ac7c72f4f5f74",
     "packages/dacs-client/package.json": "4f0b105f73bcbe642866b8c01b9e73a3ff0796e2",
     "packages/dacs-client/scripts/check-imports.test.mjs": "8ab39a389c6714a7eebdc46204dada4415cff793",
     "packages/dacs-client/scripts/delta-batch-git.test.mjs": "6b8a3f1df542ae318192787310bacd75bc349a1f",
