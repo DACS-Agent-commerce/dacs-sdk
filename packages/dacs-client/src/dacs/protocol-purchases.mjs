@@ -511,7 +511,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (declared) {
       const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
       if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
-      authentication = createSellerWireAuthentication({ admission, sessionSigner: sellerTransport.sessionSignerFor(operation), delegation: p.sessionDelegation,
+      authentication = createSellerWireAuthentication({ admission, effectBoundary: sellerTransport.effectBoundary, sessionSigner: sellerTransport.sessionSignerFor(operation), delegation: p.sessionDelegation,
         seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
         job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
           deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });

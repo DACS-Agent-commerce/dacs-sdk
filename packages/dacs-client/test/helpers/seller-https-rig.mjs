@@ -41,6 +41,9 @@ export async function startHttpsSeller(t, respond) {
   return { origin: `https://${SELLER_HOST}:${server.address().port}`, connector, seen };
 }
 
+/** The last checks a stand-in authentication hands the client with its signed request: none refuse. */
+export const NO_TRANSMIT_GUARDS = Object.freeze({ prepareTransmit: async () => {}, beforeTransmit: () => {} });
+
 /**
  * A stand-in connector that answers each send from `fetchImpl(url, {method, headers, body})`, where `body` is the
  * request text. A fetch Response becomes `{status, headers, body}` the way the real connector returns it.

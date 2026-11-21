@@ -8,7 +8,7 @@ import * as wire from '@kynesyslabs/dacs/wire';
 import { world, validReceipt, JOB } from './helpers/wire-client-fixture.mjs';
 import { committedPurchase } from './helpers/wire-committed-purchase.mjs';
 import { bodyFor } from './helpers/stored-request-fixture.mjs';
-import { startHttpsSeller, SELLER_HOST } from './helpers/seller-https-rig.mjs';
+import { startHttpsSeller, SELLER_HOST, NO_TRANSMIT_GUARDS } from './helpers/seller-https-rig.mjs';
 import { createSellerHttpsConnector } from '../src/dacs/seller-https-connector.mjs';
 // The fixture installs the admission double, so the modules that read admission state load after it.
 const { createSellerHttpsClient, SellerRefusedError, SellerUnavailableError } = await import('../src/dacs/seller-http.mjs');
@@ -84,7 +84,7 @@ test('every CF-5 corpus vector on the HTTPS path is refused with its admission c
   const seller = await startHttpsSeller(t, (_req, res) => { res.writeHead(200, { ...JSON_TYPE, 'content-length': current.length }); res.end(current); });
   const received = [];
   let admitted;
-  const authentication = { request: async () => ({ header: 'TEST-header', payload: {} }),
+  const authentication = { request: async () => ({ header: 'TEST-header', payload: {}, transmitGuards: NO_TRANSMIT_GUARDS }),
     verifyResponse: async (_payload, { body }) => { received.push(Buffer.from(body)); admitted = { body: admitRawJson(body, { maxBytes: MAX_BYTES }) }; return admitted; } };
   const client = createSellerHttpsClient({ publicEndpoint: seller.origin, authentication, connector: seller.connector, timeoutMs: 5000 });
   for (const vector of corpus.vectors) {
@@ -185,17 +185,16 @@ test('an endless 503 body is refused as oversized or timeout with zero response-
   assert.equal(verifications.length, 0);
 });
 
-test("each POST hands the caller's prepareTransmit and beforeTransmit to the connector unchanged and no option or public method accepts them", async (t) => {
+test("each POST runs the caller's prepareTransmit and beforeTransmit after the signature's own checks and no option or public method accepts them", async (t) => {
   const { client, sends, seller } = await sellerRig(t, (res, record, answer) => answer(200, '{"status":"held"}'));
   const calls = [];
   const prepareTransmit = async () => { calls.push('prepare'); };
   const beforeTransmit = () => { calls.push('before'); };
   await client.request(PATHS.state, bodyFor(PATHS.state), { prepareTransmit, beforeTransmit });
-  assert.equal(sends[0].prepareTransmit, prepareTransmit);
-  assert.equal(sends[0].beforeTransmit, beforeTransmit);
   assert.deepEqual(calls, ['prepare', 'before']);
   await client.agreementState(bodyFor(PATHS.state).transportIdentity, { prepareTransmit, beforeTransmit });
-  assert.deepEqual([sends[1].prepareTransmit, sends[1].beforeTransmit], [undefined, undefined]);
+  assert.deepEqual(calls, ['prepare', 'before'], 'a named method hands the connector no callback of the caller');
+  assert.equal(sends.length, 2);
   assert.equal(seller.seen.requests.length, 2);
   for (const option of ['prepareTransmit', 'beforeTransmit']) {
     assert.throws(() => createSellerHttpsClient({ publicEndpoint: seller.origin, authentication: {}, connector: seller.connector, [option]: () => {} }), TypeError);

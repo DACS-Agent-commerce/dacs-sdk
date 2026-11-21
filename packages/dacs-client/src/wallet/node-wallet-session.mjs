@@ -456,7 +456,7 @@ function guardedCrypto(inner, signScope, gate) {
   } });
 }
 
-function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate }) {
+function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate, boundary, pinVersion }) {
   const signScope = new AsyncLocalStorage(), guards = new WeakMap();
   return class NodeDemos extends Demos {
     constructor() {
@@ -474,13 +474,21 @@ function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate }) {
 
     /**
      * Signs like the SDK. Only the session's own RPC authentication passes `raw`; a call without it is a general signing request, which
-     * rejects `payload_mismatch` before any signature when the message has the shape of a transaction hash.
+     * rejects `payload_mismatch` before any signature when the message has the shape of a transaction hash. A general signature is an
+     * effect of its own (an identity presentation, a delegation, an Agreement or its anchor authorization): it is made and released
+     * through the effect boundary, which records it and refuses without a signature when a stop, a re-hold or a reconnect came first.
      */
     async signMessage(message, options) {
-      if (options?.raw !== true && hasTransactionHashShape(message)) {
+      if (options?.raw === true) return super.signMessage(message, options);
+      if (hasTransactionHashShape(message)) {
         throw new EmbeddedWalletError('payload_mismatch', 'a general signing request may not sign a transaction hash; nothing was signed');
       }
-      return super.signMessage(message, options);
+      let answer;
+      // One lane per signature: Ed25519 signs the same message to the same bytes, and the history keys a record by its lane and bytes.
+      const operationId = `wallet-message:${randomUUID()}`;
+      const operation = { operationId, lane: operationId, kind: 'signature', paidWrite: false, pinVersion };
+      await boundary.signerFor(operation, { sign: async () => { answer = await super.signMessage(message, options); return answer.data; } }).sign(Buffer.from(message));
+      return answer;
     }
 
     async connect(url) {
@@ -687,7 +695,7 @@ async function buildNodeComposition(options, seller) {
       : createDevnetAgreementTransport(transportOptions);
     const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));
-    const NodeDemos = nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate });
+    const NodeDemos = nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate, boundary: effectBoundary, pinVersion: expected.pinVersion });
     session = createSdkWalletSession({ DemosCtor: NodeDemos, approve, transactionTransport,
       validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
     const mnemonic = decodeMnemonic(keyCopy);
