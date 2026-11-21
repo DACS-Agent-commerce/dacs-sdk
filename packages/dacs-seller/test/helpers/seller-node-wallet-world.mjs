@@ -143,11 +143,12 @@ export async function spyTransactionSignatures(mocker, onSigned = () => {}) {
 export const replyTo = (node, message, respond) => { node.reply = row => ((row.body?.params[0].message || row.body?.params[0].extra) === message ? respond(row) : undefined); };
 export const jsonResponse = answer;
 
-/** Connects an owner to `node` and binds the TP-1 admission through the authority fixture. */
+/** Connects an owner to `node` and binds the TP-1 admission through the authority fixture, returned as `authority`. */
 export async function nodeConnection(node = replayNode()) {
   const owner = api.createNodeTransportOwner({ endpoint: ENDPOINT, transportAuthority: 'vector-authority', fetchImpl: node.fetch });
-  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: owner.currentLocal(), readAuthority: createAuthorityFixture().read });
-  return { node, owner, admission: { binding, currentLocal: owner.currentLocal } };
+  const authority = createAuthorityFixture();
+  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: owner.currentLocal(), readAuthority: authority.read });
+  return { node, owner, authority, admission: { binding, currentLocal: owner.currentLocal } };
 }
 
 /** The composed seller approval double: `retained` is the ledger (the recording one by default); `confirm` records each confirmed write and approves it. */
