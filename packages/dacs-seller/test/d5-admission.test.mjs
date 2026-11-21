@@ -69,7 +69,7 @@ test('A7 paid-job policy refusal remains held for exact seller approval, which c
  assert.deepEqual([confirmed.decision,confirmed.approvalMode,confirmed.policyHold],['approved','policy','write-fee-cap']);
 });
 test('L1 policy count and amount limits refuse context capacity before any ledger line',async t=>{
- for(const limits of [{maxWritesPerHour:1},{maxTotalOsPerHour:'4000000000'}]){
+ for(const limits of [{maxWritesPerHour:1},{maxWriteTotalOs:'4000000000',maxTotalOsPerHour:'4000000000'}]){
   const path=join(await directory(t),'ledger');const a=createSellerContextAdmission({evidencePath:path,sellerApproval:{mode:'policy',...limits},now:()=>T0});
   assert.match(await a.reserve({jobId:JOBS[0],effect:'a'.repeat(64),writes:2,hold:'x'}),/hourly/);await assert.rejects(readFile(path),{code:'ENOENT'});
  }
@@ -111,8 +111,8 @@ test('S3 a second seller-state owner refuses before any file is changed',async t
  await assert.rejects(acquireSellerStateLock(dir),{message:SELLER_STATE_LOCK_REFUSALS.held});assert.deepEqual(await readFile(join(dir,'seller-state.lock')),before);
 });
 test('L5 both pre-payment manual Vets convert their capacity at the exact two-write budget; a third cannot get sign authority',async t=>{
- const {p,evidencePath}=await policy(t,{limits:{maxWritesPerHour:2,maxTotalOsPerHour:'8000000000'}});
- const admission=createSellerContextAdmission({evidencePath,sellerApproval:{mode:'policy',maxWritesPerHour:2,maxTotalOsPerHour:'8000000000'},now:()=>T0});
+ const {p,evidencePath}=await policy(t,{limits:{maxWriteTotalOs:'4000000000',maxWritesPerHour:2,maxTotalOsPerHour:'8000000000'}});
+ const admission=createSellerContextAdmission({evidencePath,sellerApproval:{mode:'policy',maxWriteTotalOs:'4000000000',maxWritesPerHour:2,maxTotalOsPerHour:'8000000000'},now:()=>T0});
  assert.equal(await admission.reserve({jobId:JOBS[0],effect:'a'.repeat(64),writes:2,hold:'two'}),null);
  let prompts=0;const a=composeSellerApproval({mode:'policy',policy:p,manual:()=>{prompts++;return true;}});
  for(const party of [buyer,seller]){const r=requestFor({artifactKind:'CompositeVerificationRecord',party});assert.equal(await a(r),true);assert.equal(await a.confirm(confirmationFor(r)),true);await a.settle(r,'spent');}
@@ -167,8 +167,8 @@ for(const change of [{jobId:JOBS[1]},{phase:'pay-dem'},{phaseIndex:-1},{listing:
  assert.equal(JSON.parse((await readFile(evidencePath,'utf8')).trim().split('\n').at(-1)).policyReason,'delivery-binding');assert.equal(rows.some(row=>row.signAuthorized),false);
 });
 test('L7 a sign-authorized preparation already holds budget against another context admission',async t=>{
- const {p,evidencePath}=await policy(t,{resolvePurchase:purchase,limits:{maxWritesPerHour:2,maxTotalOsPerHour:'8000000000'}}),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});assert.equal(await p.prepare(r),true);
- const before=await readFile(evidencePath,'utf8'),a=createSellerContextAdmission({evidencePath,sellerApproval:{mode:'policy',maxWritesPerHour:2,maxTotalOsPerHour:'8000000000'},now:()=>T0});
+ const {p,evidencePath}=await policy(t,{resolvePurchase:purchase,limits:{maxWriteTotalOs:'4000000000',maxWritesPerHour:2,maxTotalOsPerHour:'8000000000'}}),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});assert.equal(await p.prepare(r),true);
+ const before=await readFile(evidencePath,'utf8'),a=createSellerContextAdmission({evidencePath,sellerApproval:{mode:'policy',maxWriteTotalOs:'4000000000',maxWritesPerHour:2,maxTotalOsPerHour:'8000000000'},now:()=>T0});
  assert.equal(await a.reserve({jobId:JOBS[1],effect:'b'.repeat(64),writes:2,hold:'blocked'}),'hourly-write-limit');assert.equal(await readFile(evidencePath,'utf8'),before);
 });
 test('L8 context refusal ledger lines must retain their exact key and integer-time shape',()=>{
