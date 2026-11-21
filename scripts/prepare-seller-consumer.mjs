@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const SELLER = "@kynesyslabs/dacs-seller";
+const CLIENT = "@kynesyslabs/dacs-client";
 const NODE_HOST = "@kynesyslabs/dacs-node";
 const SMOKE_RUNNER = "packages/dacs-seller/test/helpers/installed-seller-host.mjs";
 // The consumer installs the seller under node_modules; the root lock records what the seller nests
@@ -26,20 +27,24 @@ const npm = (args, cwd, env = process.env) =>
 /** The native SQLite binding is built for one Node ABI, platform and architecture: returns that key for this process. */
 export const runtimeKey = () => process.versions.modules + "-" + process.platform + "-" + process.arch;
 
-/** Returns the package-relative paths npm packs for the seller now (a dry run); throws if npm fails. */
-export function sellerPackFiles() {
-  const [pack] = JSON.parse(npm(["pack", "--dry-run", "--json", "--ignore-scripts", "--workspace", SELLER], root));
+// The package-relative paths npm packs for a workspace now (a dry run); throws if npm fails.
+function packFiles(workspace) {
+  const [pack] = JSON.parse(npm(["pack", "--dry-run", "--json", "--ignore-scripts", "--workspace", workspace], root));
   return pack.files.map((entry) => entry.path);
 }
 
+/** Returns the package-relative paths npm packs for the seller now (a dry run); throws if npm fails. */
+export const sellerPackFiles = () => packFiles(SELLER);
+
 /**
- * Returns the digest of the given packed seller files, the built core and Node
- * host kit (`dist/`, `packages/dacs-node/dist`), the root manifest and lock,
- * the Node host manifest, and the smoke runner: a setup is current only
- * while it matches. Throws if a file cannot be read.
+ * Returns the digest of the given packed seller and client files, the built
+ * core and Node host kit (`dist/`, `packages/dacs-node/dist`), the root
+ * manifest and lock, the Node host manifest, and the smoke runner: a setup is
+ * current only while it matches. Throws if a file cannot be read.
  */
-export function sellerSourceFingerprint(sellerFiles) {
-  const files = ["package.json", "package-lock.json", "packages/dacs-node/package.json", SMOKE_RUNNER, ...sellerFiles.map((file) => "packages/dacs-seller/" + file)];
+export function sellerSourceFingerprint(sellerFiles, clientFiles) {
+  const files = ["package.json", "package-lock.json", "packages/dacs-node/package.json", SMOKE_RUNNER, ...sellerFiles.map((file) => "packages/dacs-seller/" + file),
+    ...clientFiles.map((file) => "packages/dacs-client/" + file)];
   const walk = (dir) => {
     for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
       if (entry.isDirectory()) walk(dir + "/" + entry.name);
@@ -55,9 +60,9 @@ export function sellerSourceFingerprint(sellerFiles) {
 
 /**
  * Returns why `directory` is not a completed setup of these sources for this
- * runtime, or null when it is. The default fingerprint packs the seller now.
+ * runtime, or null when it is. The default fingerprint packs the seller and the client now.
  */
-export function staleSetupReason(directory, fingerprint = sellerSourceFingerprint(sellerPackFiles())) {
+export function staleSetupReason(directory, fingerprint = sellerSourceFingerprint(sellerPackFiles(), packFiles(CLIENT))) {
   const fresh = "; prepare a fresh directory with npm run seller:prepare -- <new directory>";
   let marker, lock;
   try {
@@ -89,13 +94,11 @@ function rootLockKey(consumerKey) {
   return consumerKey.startsWith(SELLER_CONSUMER_PATH + "/") ? SELLER_WORKSPACE_PATH + consumerKey.slice(SELLER_CONSUMER_PATH.length) : consumerKey;
 }
 
-// Preserve exact versions, locations and integrity; never resolve a fresh range.
-function consumerLock(lock, manifest, core, seller, node, corePack, sellerPack, nodePack) {
+// Preserve exact versions, locations and integrity; never resolve a fresh range. `packed` lists each {manifest, pack} installed from a tarball.
+function consumerLock(lock, manifest, packed) {
   const selected = {
     "": { name: manifest.name, version: manifest.version, dependencies: manifest.dependencies },
-    "node_modules/@kynesyslabs/dacs": packageEntry(core, corePack),
-    "node_modules/@kynesyslabs/dacs-node": packageEntry(node, nodePack),
-    "node_modules/@kynesyslabs/dacs-seller": packageEntry(seller, sellerPack),
+    ...Object.fromEntries(packed.map(({ manifest: packedManifest, pack }) => ["node_modules/" + packedManifest.name, packageEntry(packedManifest, pack)])),
   };
   const queue = Object.keys(selected).filter(Boolean);
   for (let index = 0; index < queue.length; index++) {
@@ -127,22 +130,23 @@ function consumerLock(lock, manifest, core, seller, node, corePack, sellerPack, 
 // Fills the new directory; prepared.json is written last, so only a complete setup has one.
 function install(app) {
   const cache = join(app, ".npm-cache"), env = { ...process.env, NPM_CONFIG_CACHE: cache, npm_config_cache: cache };
-  const core = json(join(root, "package.json")), seller = json(join(root, "packages/dacs-seller/package.json")), node = json(join(root, "packages/dacs-node/package.json"));
-  const [corePack] = JSON.parse(npm(["pack", "--json", "--ignore-scripts", "--pack-destination", app], root, env));
-  const [sellerPack] = JSON.parse(npm(["pack", "--json", "--ignore-scripts", "--pack-destination", app, "--workspace", SELLER], root, env));
-  const [nodePack] = JSON.parse(npm(["pack", "--json", "--ignore-scripts", "--pack-destination", app, "--workspace", NODE_HOST], root, env));
-  const dependencies = { [core.name]: "file:" + corePack.filename, [seller.name]: "file:" + sellerPack.filename, [node.name]: "file:" + nodePack.filename };
+  const pack = (workspace, directory) => ({ manifest: json(join(root, directory, "package.json")),
+    pack: JSON.parse(npm(["pack", "--json", "--ignore-scripts", "--pack-destination", app, ...(workspace ? ["--workspace", workspace] : [])], root, env))[0] });
+  const core = pack(null, "."), seller = pack(SELLER, "packages/dacs-seller"), client = pack(CLIENT, "packages/dacs-client"), node = pack(NODE_HOST, "packages/dacs-node");
+  const packed = [core, seller, client, node];
+  const dependencies = Object.fromEntries(packed.map((entry) => [entry.manifest.name, "file:" + entry.pack.filename]));
   const manifest = { name: "dacs-seller-locked-smoke", version: "1.0.0", private: true, type: "module", dependencies };
   writeFileSync(join(app, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
-  const lock = consumerLock(json(join(root, "package-lock.json")), manifest, core, seller, node, corePack, sellerPack, nodePack);
+  const lock = consumerLock(json(join(root, "package-lock.json")), manifest, packed);
   const text = JSON.stringify(lock, null, 2) + "\n";
   writeFileSync(join(app, "package-lock.json"), text);
   // Native dependency installation belongs to setup; scripts must run here.
   npm(["ci", "--no-audit", "--no-fund", "--omit=optional", "--foreground-scripts"], app, env);
   if (digest(readFileSync(join(app, "package-lock.json"))) !== digest(text)) throw new Error("consumer install changed the pinned graph");
   copyFileSync(join(root, SMOKE_RUNNER), join(app, "run.mjs"));
-  const sourceFingerprint = sellerSourceFingerprint(sellerPack.files.map((entry) => entry.path));
-  const marker = { runtime: runtimeKey(), sourceFingerprint, lockDigest: digest(text), corePack, sellerPack, nodePack };
+  const paths = ({ pack: { files } }) => files.map((entry) => entry.path);
+  const sourceFingerprint = sellerSourceFingerprint(paths(seller), paths(client));
+  const marker = { runtime: runtimeKey(), sourceFingerprint, lockDigest: digest(text), corePack: core.pack, sellerPack: seller.pack, clientPack: client.pack, nodePack: node.pack };
   writeFileSync(join(app, "prepared.json"), JSON.stringify(marker, null, 2) + "\n");
 }
 

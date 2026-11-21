@@ -17,6 +17,7 @@ import { openSellerStages } from '../src/dacs/host-stages.mjs';
 import { provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { requestStop } from '../src/devnet-demo/stop-request.mjs';
 import { contextCapability, contextHostFixture, hostBuyer, presentContextAnswer } from './helpers/host-context-client.mjs';
+import { fetchAsHost } from './helpers/listener-host.mjs';
 import { TP1_PROFILE, enrolled, enrollment, purchaseRow, scriptedNode, testWalletSession } from './helpers/kit-wallet-session.mjs';
 import { NOW, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT } from './helpers/wire-buyer.mjs';
@@ -69,7 +70,7 @@ function clientBuyerAuthority(buyerKey) {
 
 // A seller host world: the kit composition with a counting signer and connection reader, the protocol buyer enrolled in
 // `kitEnrollment`, and buyers that sign over the client's reader. `start(changes)` starts a host on one data directory.
-async function sellerWorld(t, { capability = contextCapability(), publicEndpoint = null } = {}) {
+async function sellerWorld(t, { capability = contextCapability(), publicEndpoint = FIXTURE_ENDPOINT } = {}) {
   const f = await contextHostFixture(t, { publicEndpoint });
   const counts = { signs: 0, authority: 0 };
   const signer = { claim: seller.claim, sign: (bytes) => { counts.signs++; return seller.signBytes(bytes); } };
@@ -237,7 +238,7 @@ test('from an unopened transport and no binding, the host builds in five stages 
   assert.equal(finalized.input.binding.recordDigest, RECORD_DIGEST, 'the binding is the approved record\'s, made by the production reader');
   assert.deepEqual(['withFence', 'signPass', 'dispatchPass', 'pass', 'signerFor', 'recordObserved'].filter((name) => typeof finalized.input.effectBoundary[name] !== 'function'), [], 'finalization receives the kit boundary');
   assert.deepEqual([finalized.lockHeld, finalized.effects], [true, true], 'stages four and five run under the lock, over effects/');
-  assert.deepEqual(Object.keys(host).sort(), ['close', 'listingPin', 'seller', 'timeouts', 'url'], 'the host hands out no effect capability');
+  assert.deepEqual(Object.keys(host).sort(), ['close', 'listingPin', 'publicOrigin', 'seller', 'timeouts', 'url'], 'the host hands out no effect capability');
   await host.close();
   assert.deepEqual(p.events.slice(-2), ['session-close', 'close'], 'on shutdown the finalized session closes, then the port');
 
@@ -312,11 +313,11 @@ test("from empty job and admission stores, with the buyer enrolled in the kit co
     if (input.scope.jobId === failing) { options.writable(); throw new Error('TEST the Vet readback failed'); }
     return presentContextAnswer(input);
   } });
-  const w = await sellerWorld(t, { capability, publicEndpoint: FIXTURE_ENDPOINT });
+  const w = await sellerWorld(t, { capability });
   let host = await w.start();
   const b = await w.buyerFor(host);
   const discovery = async () => {
-    const response = await fetch(host.url + DACS_SELLER_DISCOVERY_PATH);
+    const response = await fetchAsHost()(host.url + DACS_SELLER_DISCOVERY_PATH);
     assert.equal(response.status, 200);
     return b.verifyDiscovery(Buffer.from(await response.arrayBuffer()));
   };

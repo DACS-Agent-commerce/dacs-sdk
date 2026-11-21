@@ -1,13 +1,14 @@
-// The devnet source transport (the operator wallet's pinned node connection)
-// is not part of this package. The native adapters accept it only as an
-// opaque object that its own constructor registered, so here no value is
-// one: every branch that needs that transport refuses instead of running.
-// The labels are the publication policy those adapters compare with.
-export const DEVNET_AGREEMENT_PROFILE = 'devnet-agreement';
-export const DEVNET_DEMO_ARTIFACT_KIND = 'devnet-demo-artifact-storage-create';
-export const DEVNET_DEMO_ARTIFACT_POLICY = 'dacs-devnet-demo-artifacts/v1';
-export const DEVNET_DEMO_ARTIFACT_TYPES = Object.freeze(['CompositeVerificationRecord', 'Deliverable', 'FinalityCommitmentRecord', 'Listing']);
-
-export const isDevnetAgreementTransport = () => false;
-export const isDevnetSettlementTransport = () => false;
-export const isDevnetDemoTransport = () => false;
+// The devnet source transport is the client's: the held facade of its Node seller
+// composition (`@kynesyslabs/dacs-client/node-wallet`), which the seller's Node
+// wallet builds (src/devnet-demo/seller-node-wallet.mjs). The native adapters
+// accept only an object the client registered, so these are the client's own
+// checks and publication labels, re-exported so the kit has one source for them.
+export {
+  DEVNET_AGREEMENT_PROFILE,
+  DEVNET_DEMO_ARTIFACT_KIND,
+  DEVNET_DEMO_ARTIFACT_POLICY,
+  DEVNET_DEMO_ARTIFACT_TYPES,
+  isDevnetAgreementTransport,
+  isDevnetDemoTransport,
+  isDevnetSettlementTransport,
+} from '@kynesyslabs/dacs-client/node-wallet';

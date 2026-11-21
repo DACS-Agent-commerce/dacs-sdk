@@ -5,7 +5,8 @@ import test, { after } from 'node:test';
 import {sellerPackFiles,staleSetupReason}from'../../../scripts/prepare-seller-consumer.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,6 +27,8 @@ const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOUR
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerAuthorityReader', 'createSellerContextRoute', 'createSellerHttpHandler',
   'createSellerTransportStore', 'createSellerWireClientAuth', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
+// The seller's Node wallet suites.
+const NODE_WALLET_TESTS = ['node-wallet-balance.test.mjs', 'node-wallet-composition.test.mjs', 'node-wallet-payment-evidence.test.mjs', 'node-wallet-sr2-bounds.test.mjs'];
 const INSTALLED_RUN_TIMEOUT_MS = 120000;
 const INSTALLED_TEST_TIMEOUT_MS = 600000;
 
@@ -37,10 +40,35 @@ function sourceModules() {
   return found.sort();
 }
 const shippedModules = () => sourceModules().filter((file) => !NOT_SHIPPED.includes(file));
-// Relative specifiers a module loads: static, side-effect, re-export and literal dynamic imports.
+// Specifiers a module loads: static, side-effect, re-export and literal dynamic imports.
+function importSpecifiers(source) {
+  const patterns = [/(?:^|[\s;}])(?:import|export)\b[^'";]*?\bfrom\s*['"]([^'"\s]+)['"]/g, /(?:^|[\s;])import\s*['"]([^'"\s]+)['"]/g, /\bimport\s*\(\s*['"]([^'"\s]+)['"]\s*\)/g];
+  return patterns.flatMap((pattern) => [...source.matchAll(pattern)].map((match) => match[1]));
+}
+// Relative specifiers a module loads, package-relative.
 function relativeImports(file, source = readFileSync(join(packageDirectory, file), 'utf8')) {
-  const patterns = [/\bfrom\s*['"](\.{1,2}\/[^'"]+)['"]/g, /\bimport\s*['"](\.{1,2}\/[^'"]+)['"]/g, /\bimport\s*\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g];
-  return patterns.flatMap((pattern) => [...source.matchAll(pattern)].map((match) => join(dirname(file), match[1])));
+  return importSpecifiers(source).filter((specifier) => /^\.{1,2}\//.test(specifier)).map((specifier) => join(dirname(file), specifier));
+}
+// The packages a module loads by bare specifier (Node builtins excluded).
+function bareImportPackages(file) {
+  return importSpecifiers(readFileSync(join(packageDirectory, file), 'utf8')).filter((specifier) => !specifier.startsWith('.') && !isBuiltin(specifier))
+    .map((specifier) => specifier.split('/').slice(0, specifier.startsWith('@') ? 2 : 1).join('/'));
+}
+// The prepared seller consumer (npm run seller:prepare), outside the repository and current for these sources.
+function preparedConsumer() {
+  const preparedPath = process.env.DACS_SELLER_SMOKE_DIR;
+  assert.ok(preparedPath, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
+  const app = realpathSync(preparedPath);
+  assert.ok(relative(root, app).startsWith('..') && isAbsolute(app), 'prepared consumer is outside the repository');
+  assert.equal(staleSetupReason(app), null, 'setup must provision these exact sources, lock and runtime');
+  return app;
+}
+// NODE_OPTIONS that load the unshipped guard loader, told where the installed guard module of `app` is; the register file goes in `work`.
+function kitGuardLoaderOptions(app, work) {
+  const installedGuard = pathToFileURL(realpathSync(join(app, 'node_modules', '@kynesyslabs', 'dacs-seller', 'src', 'kit-operation-guard.mjs'))).href;
+  const registerLoader = join(work, 'register-kit-guard-fixture.mjs');
+  writeFileSync(registerLoader, `import { registerKitGuardFixture } from ${JSON.stringify(KIT_GUARD_FIXTURE_URL)};\nregisterKitGuardFixture([${JSON.stringify(installedGuard)}]);\n`);
+  return `--import=${pathToFileURL(registerLoader).href}`;
 }
 
 test('every executable seller test has one complete CLI and CI entry',()=>{
@@ -56,6 +84,27 @@ test('seller manifest declares its pinned native dependency', () => {
   const manifest = JSON.parse(readFileSync(join(packageDirectory, 'package.json'), 'utf8')), lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
   assert.equal(manifest.dependencies?.['better-sqlite3'], lock.packages['node_modules/better-sqlite3'].version);
   assert.equal(lock.packages['packages/dacs-seller'].dependencies?.['better-sqlite3'], manifest.dependencies['better-sqlite3']);
+});
+
+test('seller manifest declares @kynesyslabs/dacs-client and every bare runtime import of its shipped files', () => {
+  const manifest = JSON.parse(readFileSync(join(packageDirectory, 'package.json'), 'utf8')), lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+  const { version } = JSON.parse(readFileSync(join(root, 'packages', 'dacs-client', 'package.json'), 'utf8'));
+  assert.equal(manifest.dependencies['@kynesyslabs/dacs-client'], version, 'the client at its exact release version');
+  assert.equal(lock.packages['packages/dacs-seller'].dependencies['@kynesyslabs/dacs-client'], version);
+  const declared = [...Object.keys(manifest.dependencies), ...Object.keys(manifest.peerDependencies)];
+  for (const file of sellerPackFiles().filter((path) => path.endsWith('.mjs'))) {
+    for (const name of bareImportPackages(file)) assert.ok(declared.includes(name), `${file} imports ${name}, which the manifest declares`);
+  }
+});
+
+test('the Node wallet test files are in the seller:test list and in exactly one CI shard each', async () => {
+  const listed = JSON.parse(execFileSync(process.execPath, ['scripts/run-seller-tests.mjs', '--list'], { cwd: root, encoding: 'utf8' }));
+  const { assign } = await import('../../../scripts/ci-shards.mjs');
+  const sharded = assign('seller', listed).flat();
+  for (const file of NODE_WALLET_TESTS) {
+    assert.ok(listed.includes(file), `${file} is in the seller:test list`);
+    assert.equal(sharded.filter((name) => name === file).length, 1, `${file} runs in one CI shard`);
+  }
 });
 
 test('seller manifest and lock depend on dacs-node at the release version, for the key loader', () => {
@@ -220,10 +269,7 @@ function packedHostRun() {
   };
   const refused = runInstalled(env);
   // The same install under the unshipped loader, told where the installed guard module is.
-  const installedGuard = pathToFileURL(realpathSync(join(app, 'node_modules', '@kynesyslabs', 'dacs-seller', 'src', 'kit-operation-guard.mjs'))).href;
-  const registerLoader = join(work, 'register-kit-guard-fixture.mjs');
-  writeFileSync(registerLoader, `import { registerKitGuardFixture } from ${JSON.stringify(KIT_GUARD_FIXTURE_URL)};\nregisterKitGuardFixture([${JSON.stringify(installedGuard)}]);\n`);
-  const loaderOptions = `--import=${pathToFileURL(registerLoader).href}`;
+  const loaderOptions = kitGuardLoaderOptions(app, work);
   const out = runInstalled({ ...env, NODE_OPTIONS: loaderOptions });
   packedHostResult = { app, sellerPack, refused, out, loaderOptions };
   return packedHostResult;
@@ -368,4 +414,147 @@ test('importing every ./src/* path from the packed archive yields no guard bypas
   assert.equal(child.status, 0, `importing the packed modules failed\n${child.stdout}\n${child.stderr}`);
   const answer = JSON.parse(child.stdout.trim().split('\n').at(-1));
   assert.deepEqual(answer, { bypasses: [], exports: ['KIT_OPERATION_GUARD', 'KitOperationGuardError', 'assertKitOperationAdmitted', 'kitOperationAdmitted'], guard: 'off', admitted: false, nodeOptions: null });
+});
+
+// Runs `script` as a module in a child in `app` with only PATH, TMPDIR and `nodeOptions`, and returns the JSON of its last stdout line.
+function runInConsumer(app, work, script, { nodeOptions, args = [] } = {}) {
+  const env = { PATH: process.env.PATH, TMPDIR: work, ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}) };
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script, ...args], { cwd: app, env, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
+  assert.equal(child.status, 0, `the consumer child failed\n${child.stdout}\n${child.stderr}`);
+  return JSON.parse(child.stdout.trim().split('\n').at(-1));
+}
+
+// The start of a consumer child's script: the client's documented hold seam (its hook and double, copied beside the child) lifts
+// the hold, the client is imported where the installed seller resolves it, and the client fixture's own scripted node (its source
+// copied in) answers an owner bound through the installed wire.
+function consumerWalletPrelude(app) {
+  for (const name of ['purchase-admission-hook.mjs', 'purchase-admission-double.mjs', 'payment-evidence-approval-double.mjs']) {
+    cpSync(new URL(`../../dacs-client/test/helpers/${name}`, import.meta.url), join(app, name));
+  }
+  const fixture = readFileSync(new URL('../../dacs-client/test/helpers/tp1-node-fixture.mjs', import.meta.url), 'utf8');
+  const scriptedNode = fixture.slice(fixture.indexOf('export function scriptedNode()'), fixture.indexOf('export async function world')).replace('export ', '');
+  return `import assert from 'node:assert/strict';
+    import { createRequire } from 'node:module';
+    import { realpathSync } from 'node:fs';
+    import { pathToFileURL } from 'node:url';
+    import { installPurchaseAdmissionHook, loadAdmissionDouble } from './purchase-admission-hook.mjs';
+    installPurchaseAdmissionHook(); (await loadAdmissionDouble()).setPurchaseAdmission('testnet-tp1');
+    const fromSeller = createRequire(realpathSync('node_modules/@kynesyslabs/dacs-seller/package.json'));
+    const clientEntry = realpathSync(fromSeller.resolve('@kynesyslabs/dacs-client/node-wallet'));
+    const client = await import(pathToFileURL(clientEntry).href);
+    const { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } = await import('@kynesyslabs/dacs/wire');
+    const T0 = 1793102400000, ok = response => ({ result: 200, response, require_reply: false, extra: null });
+    ${scriptedNode}
+    const node = scriptedNode(), owner = client.createNodeTransportOwner({ endpoint: 'https://rpc.example.invalid/', transportAuthority: 'vector-authority', fetchImpl: node.fetch });
+    const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: owner.currentLocal(), readAuthority: async scope => ({ local: scope.local,
+      chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, provenance: 'TEST-installed-authority', sessionId: scope.sessionId, participants: [] }) });
+    const admission = { binding, currentLocal: owner.currentLocal };
+  `;
+}
+
+test('the packed seller, client and dacs-node install outside the repository and import the Node composition without test hooks', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
+  const app = preparedConsumer(), work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-wallet-import-')));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const { clientPack } = JSON.parse(readFileSync(join(app, 'prepared.json'), 'utf8'));
+  assert.ok(clientPack.files.some((entry) => entry.path === 'src/wallet/node-wallet-session.mjs'), 'the packed client holds the Node composition');
+  for (const name of ['dacs-seller', 'dacs-client', 'dacs-node']) {
+    assert.ok(realpathSync(join(app, 'node_modules', '@kynesyslabs', name)).startsWith(join(app, 'node_modules') + '/'), `${name} is installed in the consumer, not linked to the repository`);
+  }
+  const answer = runInConsumer(app, work, `import { createRequire } from 'node:module';
+    import { realpathSync } from 'node:fs';
+    import { pathToFileURL } from 'node:url';
+    const wallet = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-node-wallet.mjs');
+    const clientEntry = realpathSync(createRequire(realpathSync('node_modules/@kynesyslabs/dacs-seller/package.json')).resolve('@kynesyslabs/dacs-client/node-wallet'));
+    const client = await import(pathToFileURL(clientEntry).href);
+    console.log(JSON.stringify({ factory: typeof wallet.createSellerNodeWallet, composition: typeof client.createNodeSellerComposition, clientEntry,
+      hooks: process.execArgv.filter(arg => /^--(?:import|loader|experimental-loader|require)\\b/.test(arg)), nodeOptions: process.env.NODE_OPTIONS ?? null }));`);
+  assert.deepEqual({ ...answer, clientEntry: relative(app, answer.clientEntry) }, { factory: 'function', composition: 'function',
+    clientEntry: join('node_modules', '@kynesyslabs', 'dacs-client', 'src', 'wallet', 'node-wallet-session.mjs'), hooks: [], nodeOptions: null });
+});
+
+test('in a fresh child in the seller consumer, the client entry resolved through the kit\'s dependency graph completes the offline control, and the kit factory refuses kit_operation_guard_off before importing demosdk', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
+  const app = preparedConsumer(), work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-wallet-control-')));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const answer = runInConsumer(app, work, `import { registerHooks } from 'node:module';
+    const loaded = [];
+    registerHooks({ load(url, context, next) { loaded.push(url); return next(url, context); } });
+    const demosdkModules = () => loaded.filter(url => url.includes('/@kynesyslabs/demosdk/')).length;
+    ${consumerWalletPrelude(app)}
+    const { createSellerNodeWallet } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-node-wallet.mjs');
+    const factory = await createSellerNodeWallet({}).then(() => 'built', error => error.code);
+    const demosdkAtRefusal = demosdkModules();
+    // The offline native-send control of the client's own packed test, through the client the seller resolves.
+    const { generateWalletMnemonic } = await import('@kynesyslabs/dacs-seller/src/cli/node-identity.mjs');
+    const rows = new Map(), journal = { get: async key => rows.get(key) ?? null, put: async (key, value) => rows.set(key, structuredClone(value)), entries: async () => [...rows],
+      withWalletLock: async (key, work) => work(), withOwnedOrAcquiredLane: async (key, work) => work(),
+      appendUnderLock: async (lane, key, value) => { if (rows.has(key)) throw Object.assign(new Error('exists'), { code: 'journal-key-exists' }); rows.set(key, structuredClone(value)); } };
+    const session = await client.createNodeWalletSession({ admission, owner, journal, key: new TextEncoder().encode(await generateWalletMnemonic()), approve: async () => true,
+      clock: { now: () => T0 }, stopped: async () => false, feeCeilingOs: '50000000000' });
+    const from = session.wallet.getPublicAccount().address, to = '0x' + '2'.repeat(64), amount = '2500000000';
+    const content = { type: 'native', from, to, amount, data: ['native', { nativeOperation: 'send', args: [to, amount] }], nonce: 1, timestamp: T0,
+      transaction_fee: { network_fee: '0', rpc_fee: '0', additional_fee: '0', rpc_address: null } };
+    const sent = await session.wallet.request({ method: 'sendTransaction', params: [{ content, signature: null, hash: '', status: '', blockNumber: null }] });
+    await session.close(); owner.close();
+    console.log(JSON.stringify({ factory, demosdkAtRefusal, demosdkAfterControl: demosdkModules() > 0, sent: sent.success, broadcasts: node.broadcasts.length,
+      clientEntry: clientEntry.startsWith(realpathSync('node_modules') + '/') }));`);
+  assert.deepEqual(answer, { factory: 'kit_operation_guard_off', demosdkAtRefusal: 0, demosdkAfterControl: true, sent: true, broadcasts: 1, clientEntry: true });
+});
+
+test('in the installed consumer, through the documented test seams, a payment-evidence signCreate inside a pass made with composition.effectPass reaches the inner gate through public entries only: the pass\'s fresh authority callback, stop check and each synchronous check run in order and the inner signature once; a stopped pass signs 0; no pass refuses effect_pass_required', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
+  const app = preparedConsumer(), work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-wallet-pass-')));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const dataDirectory = join(work, 'seller'), loaderOptions = kitGuardLoaderOptions(app, work);
+  mkdirSync(dataDirectory);
+  chmodSync(dataDirectory, 0o700);
+  const answer = runInConsumer(app, work, `${consumerWalletPrelude(app)}
+    const { createSellerNodeWallet } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-node-wallet.mjs');
+    const { acquireSellerStateLock } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-state-lock.mjs');
+    const { generateWalletMnemonic, deriveWalletIdentity } = await import('@kynesyslabs/dacs-seller/src/cli/node-identity.mjs');
+    const { recordingApproval } = await import('./payment-evidence-approval-double.mjs');
+    // The serving node's signed answer to a valid confirmTx, and a broadcast it applies.
+    const reply = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
+    node.intercept = async row => {
+      const call = row.body?.params[0];
+      if (call?.extra === 'confirmTx') { node.confirms.push(structuredClone(call.data)); return reply(ok({ data: { valid: true, reference_block: 1, message: 'TEST-valid', gas_operation: null,
+        transaction: call.data }, signature: { type: 'ed25519', data: '0x' + '5'.repeat(128) }, rpc_public_key: { type: 'ed25519', data: '0x' + '6'.repeat(64) } })); }
+      if (call?.extra === 'broadcastTx') { const tx = call.data.response.data.transaction; node.broadcasts.push(structuredClone(tx)); node.applied.set(tx.hash, structuredClone(tx)); return reply(ok({ hash: tx.hash })); }
+      return undefined;
+    };
+    const dataDirectory = process.argv[1], mnemonic = await generateWalletMnemonic(), identity = await deriveWalletIdentity(mnemonic);
+    identity.privateKey.fill(0);
+    const stateLock = await acquireSellerStateLock(dataDirectory);
+    const approve = Object.assign(async () => true, { confirm: async () => true, retained: recordingApproval() });
+    const publications = {
+      settlementPublication: { artifactKind: 'SettlementEvidence', authority: 'TEST-seller-settlement', phase: 'pay-dem', phaseIndex: 2, policy: client.DEVNET_SETTLEMENT_POLICY, railId: 'demos-native:DEM' },
+      deliveryPublication: { artifactKind: 'Deliverable', authority: 'TEST-seller-delivery', phase: 'deliver-storage-program', phaseIndex: 3, policy: client.DEVNET_DELIVERY_POLICY },
+      demoArtifactPublication: { authority: 'TEST-RUN-installed-wallet-0001', policy: client.DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...client.DEVNET_DEMO_ARTIFACT_TYPES] } };
+    const wallet = await createSellerNodeWallet({ admission, owner, dataDirectory, journalMode: 'create', stateLock, signer: { claim: identity.claim },
+      keyRecord: new TextEncoder().encode(JSON.stringify({ format: 'dacs-seller-key/v1', algorithm: 'ed25519', mnemonic })), approve, approvalMode: 'policy',
+      clock: { now: () => T0 }, publications, stopped: async () => false, feeCeilingOs: '50000000000' });
+    const steps = [], codes = error => { const found = []; for (let link = error; link instanceof Error; link = link.cause) found.push(link.code); return found; };
+    const evidence = label => ({ logicalAddress: 'dacs4:payment:TEST-job-' + label + ':demos-native:DEM:2', artifact: { TEST: label }, writer: 'did:demos:agent:' + wallet.address.slice(2),
+      artifactKind: 'SettlementEvidence', jobId: 'TEST-job-' + label, receiptContentHash: 'e1'.repeat(32) });
+    async function inPass(work, stop = false) {
+      const fence = await owner.acquireConnectionFence();
+      try {
+        const pass = wallet.effectPass({ fence, deadline: T0 + 10000, feeCeilingOs: '50000000000',
+          refreshAuthority: ({ phase }) => { steps.push('authority:' + phase); },
+          finalStop: ({ phase }) => { steps.push('stop:' + phase); if (stop) throw Object.assign(new Error('TEST-stopped'), { code: 'TEST-stopped' }); },
+          synchronousChecks: [({ phase }) => { steps.push('check-1:' + phase); }, ({ phase }) => { steps.push('check-2:' + phase); }],
+          context: client.passContext({ operationClass: 'payment-evidence', currentAuthorization: () => true }) });
+        return await wallet.runInEffectPass(pass, work);
+      } finally { fence.release(); }
+    }
+    const sent = await inPass(() => wallet.paymentEvidence.anchorEvidence(evidence('a')));
+    const passed = steps.splice(0);
+    const stopped = await inPass(() => wallet.paymentEvidence.anchorEvidence(evidence('b')), true).then(() => [], codes);
+    const stoppedSteps = steps.splice(0);
+    const unpassed = await wallet.paymentEvidence.anchorEvidence(evidence('c')).then(() => [], codes);
+    const kept = await Promise.all(['a', 'b', 'c'].map(label => wallet.paymentEvidence.readSignedProjection({ logicalAddress: evidence(label).logicalAddress })));
+    await wallet.close(); owner.close(); stateLock.release();
+    console.log(JSON.stringify({ sent: sent.status, signPhase: passed.filter(step => step.endsWith(':sign')), stopped: stopped.includes('TEST-stopped'), stoppedSteps,
+      unpassed: unpassed.includes('effect_pass_required'), kept: kept.map(row => row !== null), confirms: node.confirms.length, broadcasts: node.broadcasts.length,
+      nodeOptions: process.env.NODE_OPTIONS ?? null }));`, { nodeOptions: loaderOptions, args: [dataDirectory] });
+  assert.deepEqual(answer, { sent: 'submitted', signPhase: ['authority:sign', 'stop:sign', 'check-1:sign', 'check-2:sign'], stopped: true, stoppedSteps: ['authority:sign', 'stop:sign'],
+    unpassed: true, kept: [true, false, false], confirms: 1, broadcasts: 1, nodeOptions: loaderOptions });
 });
