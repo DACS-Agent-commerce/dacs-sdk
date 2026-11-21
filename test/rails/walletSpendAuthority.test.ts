@@ -1206,7 +1206,12 @@ test("binds the authorization validBefore once when a hold is reserved", async (
   expect((await wallet.reserve(item)).status).toBe("held");
   expect(calls).toHaveLength(1);
   expect(await snapshot()).toEqual(original);
-  const { beginEffect: _begin, settle: _settle, assertCurrent: _current, ...permit } = claim.permit;
+  const permit = {
+    reservationId: claim.permit.reservationId, bindingHash: claim.permit.bindingHash,
+    settlementBindingHash: claim.permit.settlementBindingHash, reservation: item,
+    owner: claim.permit.owner, generation: claim.permit.generation,
+    authorizationValidBefore: claim.permit.authorizationValidBefore,
+  };
   await expect(resumeWalletSpendAuthorityOperationV1(wallet, {
     operation: "begin", permit: { ...permit, authorizationValidBefore: 1_900_000_001 },
   })).rejects.toThrow("wallet spend claimed operation replay is stale");

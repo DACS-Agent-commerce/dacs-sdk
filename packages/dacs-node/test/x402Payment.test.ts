@@ -584,8 +584,8 @@ describe("coordinator x402 buyer payment track", () => {
   });
 
   function unsignedScope(retained: Readonly<X402BuyerSettlementIntent>): X402BuyerUnsignedIntentScope {
-    const { bindingHash: _hash, signedPaymentPayload: _payload, paymentHeader: _header, ...scope } = retained;
-    return scope;
+    return Object.fromEntries(Object.entries(retained).filter(([key]) =>
+      !["bindingHash", "signedPaymentPayload", "paymentHeader"].includes(key))) as X402BuyerUnsignedIntentScope;
   }
 
   function trackOptions(opened: DacsNodeSqliteDatabase, retained = intent()): DacsX402BuyerPaymentTrackOptionsV1 {
@@ -653,7 +653,8 @@ describe("coordinator x402 buyer payment track", () => {
         if (failure === "unavailable") throw new Error("reserve failed");
         const claim = await base.reserve(reservation);
         if (claim.status !== "reserved") throw new Error("expected reservation");
-        const { authorizationValidBefore: _value, ...permit } = claim.permit;
+        const permit = { ...claim.permit };
+        delete permit.authorizationValidBefore;
         return { ...claim, permit };
       });
       const track = createDacsX402BuyerPaymentTrackV1({ ...options,
