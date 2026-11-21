@@ -1,6 +1,6 @@
 {
   "schema": "dacs-client-anchor/v1",
-  "commit": "dfda16b93b588f5d424053e4fe84a8019c2c1e06",
+  "commit": "27e690635242103bde2091343de9c2a82e78bf7a",
   "files": {
     "packages/dacs-client/DELTA-NOTES.md": "8b582646a7369d32ad7462fc9c88fb6519f6d5d6",
     "packages/dacs-client/README.md": "bb0e67ebc977237a0091e0a7c54ac7c72f4f5f74",
