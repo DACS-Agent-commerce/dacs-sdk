@@ -133,6 +133,18 @@ The complete facade inventory is below. Active calls return Promises and run the
 | Facade passive | `pins`, `transportBinding`, `journal`, `settlementPublication`, `deliveryPublication`, `demoArtifactPublication`, `readRpc`, `observeBinding`, `chainReader`, `nativeTransferClaimed`, `nativeTransferCancelled`, `nativeTransferRefused`, `nativeNonceConsumer`, `isWalletIdle`, `profile`, `onPurchaseStep`, `onStorageWriteResend`, `reserveRpcAuth`, `close` |
 | Facade phase dependent | `binding` |
 
+A host that forwards a wallet relay's sends passes the relay's own last check as a third argument: `facade.rpc(body, headers, { currentAuthorization })`. `currentAuthorization` is a synchronous function. It returns `true` while the relay's authority is current and throws its own error when it is not, for example when a capability has expired, a handoff has closed or the wallet binding has changed.
+
+The transport runs the check as the last step before each node request of that call, after every wait the call makes (the lease, the wallet-lane lock, the binding reads and the history writes). It sends only when the check returned `true`. A throw refuses with the thrown error, and any other answer, including a promise, refuses with `context_authorization_refused`. A refusal sends nothing and leaves the client's usual withheld record for that stage. A broadcast that is refused leaves its lane free for a later call.
+
+The option is refused with `relay_authorization_invalid` (a `TypeError`) unless it is a plain object with exactly one member, the function `currentAuthorization`. It is refused with `relay_authorization_nested` inside another pass, a job pass or another relayed call, whose own check it never replaces. Both refusals come before the hold check and before any transport call.
+
+What the option does not cover:
+- It is opt-in. A call without it runs no relay check, so a relay host must pass it on every forwarded `rpc`.
+- It does not run for preparation reads, or for a confirmation the retained record already answers, because neither sends a transaction.
+- It does not apply to `walletBinding`, `binding`, `recoverStorageWrite` or `cancelNativeTransfer`. `walletBinding` sends no transaction, and a lease it grants is useless until a relayed `rpc` send, which runs the check.
+- It can run twice for one broadcast: once before the lane and intent records are written and once right before the request. Keep it cheap and free of side effects.
+
 The entry also re-exports the boolean capability checks `isDevnetAgreementTransport`, `isDevnetSettlementTransport` and `isDevnetDemoTransport`, and the declarations `DEVNET_AGREEMENT_PROFILE`, `DEVNET_AGREEMENT_KIND`, `DEVNET_AGREEMENT_SOURCE`, `DEVNET_SETTLEMENT_KIND`, `DEVNET_SETTLEMENT_POLICY`, `DEVNET_DELIVERY_KIND`, `DEVNET_DELIVERY_POLICY`, `DEVNET_DEMO_ARTIFACT_KIND`, `DEVNET_DEMO_ARTIFACT_POLICY` and `DEVNET_DEMO_ARTIFACT_TYPES`. No raw transport constructor is exported.
 
 ## Seller transport composition
