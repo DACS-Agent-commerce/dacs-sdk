@@ -1498,11 +1498,13 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // The buyer re-approves the seller session key after a restart: the first call returns the wallet message, the second takes the buyer's signature.
   async function sessionRenewal({ operationId, token }) {
     assertPurchaseActionsAdmitted();
+    hostStop.assert();
     return protocol.sessionRenewal(protocolOperation(operationId, token));
   }
 
   async function sessionRenewalAccept({ operationId, token, delegationSignature }) {
     assertPurchaseActionsAdmitted();
+    hostStop.assert();
     return protocol.sessionRenewalAccept(protocolOperation(operationId, token), delegationSignature);
   }
 
