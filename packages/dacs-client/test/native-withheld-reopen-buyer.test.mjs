@@ -6,8 +6,10 @@ import { test } from 'node:test';
 import * as wire from '@kynesyslabs/dacs/wire';
 import { code, T0, world as buyerWorld } from './helpers/wire-client-fixture.mjs';
 import { storedWorld, PATHS, bodyFor } from './helpers/stored-request-fixture.mjs';
+import { fetchClient } from './helpers/seller-https-rig.mjs';
 
-const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
+const { createSellerHttpsClient } = await import('../src/dacs/seller-http.mjs');
+const clientOverFetch = fetchClient(createSellerHttpsClient);
 const carriesProof = init => wire.DACS_SELLER_RESUME_HEADER in init.headers;
 // A seller suspension on `path`, written as the suspension tests write one: a request-only change to the purchase row.
 function suspend(s, path) {
@@ -84,10 +86,10 @@ test('automatic retries omit the resume proof; the explicit public resume alone 
     const path = wire.DACS_SELLER_HTTP_PATHS.commitments, fetchImpl = async (_url, init) => { seen.push(init.headers); throw Error('TEST-response-lost'); };
     let armed = true;
     const explicitResume = requested => armed && requested === path && !(armed = false);
-    const client = createSellerAgentClient({ url: w.publicEndpoint, authentication: w.auth, explicitResume, fetchImpl });
+    const client = clientOverFetch({ url: w.publicEndpoint, authentication: w.auth, explicitResume, fetchImpl });
     await assert.rejects(client.request(path, { jobId: w.payload.jobId }));
     await assert.rejects(client.request(path, { jobId: w.payload.jobId }));
-    await assert.rejects(createSellerAgentClient({ url: w.publicEndpoint, authentication: w.auth, fetchImpl }).request(path, { jobId: w.payload.jobId }));
+    await assert.rejects(clientOverFetch({ url: w.publicEndpoint, authentication: w.auth, fetchImpl }).request(path, { jobId: w.payload.jobId }));
     assert.deepEqual(seen.map(headers => wire.DACS_SELLER_RESUME_HEADER in headers), [true, false, false], 'only the one-shot first call carries a proof');
     const header = seen[0][wire.DACS_SELLER_RESUME_HEADER];
     assert.ok(header.length <= wire.DACS_SELLER_HTTP_LIMITS.maxHeaderLength);
