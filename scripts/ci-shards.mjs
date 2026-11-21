@@ -252,7 +252,6 @@ export const WEIGHTS = {
     "test/durable-journal-rejections.test.mjs": 1,
     "test/engine-floor-portability.test.mjs": 1,
     "test/fetch-abort-settle.test.mjs": 1,
-    "test/guarded-sqlite.test.mjs": 1,
     "test/host-observations.test.mjs": 29,
     "test/ingress-admission.test.mjs": 1,
     "test/intent-canonical-depth.test.mjs": 1,
@@ -328,7 +327,7 @@ export const WEIGHTS = {
 export const TEST_WEIGHTS = {
   "scripts/delta-provenance.test.mjs": {
     "committed delta history and generated per-file table agree": 106,
-    "callback history explains the superseded guard and preserves the write-lease tree": 1,
+    "callback history explains the superseded guard and matches the recorded write-lease files": 1,
     "callback history check needs no ancestry beyond the checked-out commit": 1,
     "SQLite split history distinguishes the lease from the later transaction adapter": 1,
     "the publication inventory cannot omit an outside-only commit or name an absent hash": 210,
@@ -352,7 +351,8 @@ export const TEST_WEIGHTS = {
     "a hashed inventory row must carry its commit subject, and one commit has one row": 214,
     "a record that names its full commit hash needs no delta prefix in the subject, an unqualified one does": 113,
     "a WF delta record is accepted and an unlisted delta id is still refused": 118,
-    "a WF record selected by its full commit hash may carry a fix(client) subject; the same subject without the hash is refused": 112,
+    "a WF record selected by its full commit hash may carry the subject \"fix(client): TEST published fix without a delta id\"; the same subject without the hash is refused": 112,
+    "a WF record selected by its full commit hash may carry the subject \"TEST published fix with a plain subject\"; the same subject without the hash is refused": 112,
     "the ledger gate refuses each fault in a PR's own delta records, one table row per fault, each run in a scratch clone of the checked head, and the committed head passes with every WF record listing the files its PR changed at their committed blobs": 543,
   },
   // Mean duration_ms of each test over two node 22 seller jobs on normal runners, in registration order.

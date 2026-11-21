@@ -4264,7 +4264,9 @@ export class DemosAdapter implements SubstrateAdapter {
     }
     // Confirm ownership of each exact-name candidate (the index rows carry no
     // owner, so this is one read per candidate). Read failures become
-    // `error: true` so classification can fail closed to `indeterminate`.
+    // `error: true` so classification can fail closed to `indeterminate`. Each
+    // successful read must also carry the indexed name; a read that names another
+    // program (or none) is not confirmed, so the lookup is `indeterminate`.
     const outcomes: CandidateOutcome[] = [];
     for (const c of candidates) {
       if (c.programName !== programName) continue; // exactMatch is the node's contract, not ours to assume
@@ -4274,7 +4276,14 @@ export class DemosAdapter implements SubstrateAdapter {
         )) as {
           success?: boolean;
           owner?: string;
+          programName?: unknown;
         };
+        if (res?.success === true && res.programName !== programName) {
+          return {
+            status: "indeterminate",
+            reason: `candidate ${c.storageAddress} read back a different program name`,
+          };
+        }
         outcomes.push({
           address: c.storageAddress,
           owner:
