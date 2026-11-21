@@ -1223,7 +1223,12 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   journals it opens. The source capability is the only value the devnet
   artifact anchor, issued-write readback and the source mode of native
   payment evidence accept. Each signature and send needs an effect pass made
-  through the composition's `effectPass`, and is refused while the kit
+  through the composition's `effectPass`. The wallet's views say
+  `guardsSigning: true`: a request's `authorize` check is asked as its
+  approval answer returns and again in the effect gate right before the
+  transaction signature, and any answer but an immediate `true` refuses
+  `not-authorized` with nothing signed or sent. A signature or send is also
+  refused while the kit
   operation guard is off or the client's purchase hold is held, which is how
   both ship. `start` does not build the wallet. Native DEM delivery and the
   DEM delivery context accept only `TEST-` authorities, as in the source kit.
