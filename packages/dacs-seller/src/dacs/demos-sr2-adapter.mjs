@@ -142,7 +142,7 @@ export function demosSr2TxRef(receipt) {
  * Throws TypeError for a `signatureChainId` option, or for a live adapter without `binding` or `observeIdentity`, and an error with
  * code `tp1_identity_fixture` or `invalid-chain` when the source's pin is a fixture chain or disagrees with `binding`.
  */
-export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, binding, observeIdentity, ownWriter, signatureChainId }) {
+export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, binding: boundProfile, observeIdentity, ownWriter, signatureChainId }) {
   assertNoCallerSignatureDomain({ signatureChainId });
   if(sourceCapability !== null && (!isDevnetAgreementTransport(sourceCapability)||typeof sourceCapability.observeBinding!=='function')) reject('source-held','an opaque independently supplied Agreement transport is required');
   if(sourceCapability !== null && typeof observeIdentity !== 'function') throw new TypeError('a live adapter needs observeIdentity');
@@ -152,7 +152,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   }
   if (!journal || ['records'].some((k) => typeof journal[k] !== 'function')) reject('journal-required', 'an explicit readback journal is required');
   const base = endpoint.origin;
-  const expectedIdentity=sourceCapability ? liveExpectedIdentity({ binding, sourceCapability }) : DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
+  const expectedIdentity=sourceCapability ? liveExpectedIdentity({ binding: boundProfile, sourceCapability }) : DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
   const mode=sourceCapability ? 'explicit-pinned-transport-single-node' : DEMOS_SR2_EVIDENCE_MODE;
   const receiptLabels = sourceCapability ? DEMOS_FINALITY_RECEIPT : DEMOS_SR2_FIXTURE_RECEIPT;
   const scope = canonicalize([base, expectedIdentity,...(sourceCapability?[sourceCapability.transportBinding.bindingId]:[])]);
@@ -224,17 +224,17 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   async function chainIdentity() {
     const signal = readBudget.getStore()?.signal; signal?.throwIfAborted();
     if(sourceCapability){
-      let observed;
-      try{observed=await sourceCapability.observeBinding({signal,timeoutMs:remainingMs()});}
+      let binding;
+      try{binding=await sourceCapability.observeBinding({signal,timeoutMs:remainingMs()});}
       catch(error){reject('indeterminate',`source-bound chain identity observation unavailable: ${error?.message??'transport'}`,{cause:error,status:error?.status});}
       const keys=['bindingId','bindingVersion','chainIdentity','connectionId','endpoint','expiresAt','network','observedAt','pinVersion','source','transportAuthority'];
-      if(!object(observed)||JSON.stringify(Object.keys(observed).sort())!==JSON.stringify(keys)
-        ||typeof observed.connectionId!=='string'||!observed.connectionId||!object(observed.source)||!integer(observed.observedAt)||!integer(observed.expiresAt)||observed.expiresAt<=observed.observedAt) reject('indeterminate','source-bound chain identity observation is malformed');
+      if(!object(binding)||JSON.stringify(Object.keys(binding).sort())!==JSON.stringify(keys)
+        ||typeof binding.connectionId!=='string'||!binding.connectionId||!object(binding.source)||!integer(binding.observedAt)||!integer(binding.expiresAt)||binding.expiresAt<=binding.observedAt) reject('indeterminate','source-bound chain identity observation is malformed');
       const declaration=sourceCapability.transportBinding;
-      if(['bindingVersion','bindingId','network','chainIdentity','pinVersion','endpoint','transportAuthority'].some((key)=>observed[key]!==declaration[key])
-        ||observed.chainIdentity!==expectedIdentity) reject('invalid-chain','source-bound chain identity differs');
+      if(['bindingVersion','bindingId','network','chainIdentity','pinVersion','endpoint','transportAuthority'].some((key)=>binding[key]!==declaration[key])
+        ||binding.chainIdentity!==expectedIdentity) reject('invalid-chain','source-bound chain identity differs');
       await observedIdentityMatches(signal);
-      return observed.chainIdentity;
+      return binding.chainIdentity;
     }
     const genesis = await nodeCall('getBlockByNumber', { blockNumber: 0 });
     if (genesis?.number !== 0 || genesis.status !== 'confirmed' || genesis.hash !== expectedIdentity) reject('invalid-chain', 'source-bound chain identity differs');
