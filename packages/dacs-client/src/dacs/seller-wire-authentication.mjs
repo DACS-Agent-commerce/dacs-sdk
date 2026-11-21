@@ -16,7 +16,7 @@ function requestOperation(binding) {
 
 /**
  * Returns a wire request signer and async response verifier using the kept job and current admission.
- * `effectBoundary` (required) is the client's effect boundary: every request signature is made and released through its `signerFor`, and the returned signed request carries `transmitGuards`, the boundary's last checks for the transport to run before the first byte.
+ * `effectBoundary` (required) is the client's effect boundary: every request signature is made and released through its `signerFor` (transient: a request that goes out leaves no record, and one a stop, re-hold or reconnect refuses after it was signed is kept unreleased), and the returned signed request carries `transmitGuards`, the boundary's last checks for the transport to run before the first byte.
  * `evidence` (optional) is an async function returning `{commitment, agreement, signedListing}` bytes for a committed purchase, or undefined before commitment.
  * It is asked only for the continuing routes and the two ordinary read routes; every other route is signed with none, and the wire refuses a continuing route without it.
  * Without `evidence` it signs only the routes up to the commitment (proposals, state, context, context challenge, commitments and commitment signature); the payment routes, the bundle routes and the buyer's bundle copy are refused with continuation_commitment_invalid before the signer is called, and a read of an already committed purchase is signed as a read of a new one.
@@ -52,7 +52,7 @@ export function createSellerWireAuthentication({ admission, sessionSigner, deleg
         const signature = await sessionSigner.sign(bytes);
         signal?.throwIfAborted(); checkDeadline();
         return signature;
-      } });
+      } }, { transient: true });
       const signed = await signWireRequest({ binding, local, signer, delegation: retainedDelegation, endpointProof, publicEndpoint, path, jobId, text, seller, ...evidenceMembers(kept),
         job: { listingPin: job.listingPin, agreementHash: job.agreementHash, profile: job.profile, ...(job.deadline === undefined ? {} : { deadline: job.deadline }) }, now: now() });
       // The wire builds the expiry from the clock read above, before its awaited authority reads; a slow read can leave the request already expired.

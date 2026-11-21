@@ -115,7 +115,7 @@ test('the approved record signs once on each signature path', async t => {
   await assert.rejects(r.post());
   assert.equal(r.w.state.signs.length, 1);
   assert.equal(r.seller.seen.requests.length, 1);
-  assert.deepEqual(await r.states(), ['signed', 'dispatch-started']);
+  assert.deepEqual(await r.states(), [], 'a request that goes out is signed again when it is sent, so it leaves no record');
 
   const m = await messageWorld(t);
   const answer = await m.sign();
@@ -252,24 +252,32 @@ test('with the signing of a session-key request held pending, or the request hel
     await assert.rejects(waiting.post(), error => error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT);
     assert.equal(waiting.seller.seen.requests.length, 0, `${name}: the request was written after the last check refused`);
     await flush();
-    const withheld = (await waiting.w.requests.records()).filter(record => record.state === 'dispatch-withheld');
-    assert.equal(withheld.length, 1, `${name}: the refused transmission is recorded`);
-    assert.equal(withheld[0].cause.code, expected);
+    const kept = await waiting.w.requests.records();
+    assert.deepEqual(kept.map(record => record.state), ['signed', 'signed-held'], `${name}: the refused transmission keeps its signature, unreleased`);
+    assert.equal(kept[1].cause.code, expected);
   }
 });
 
-test('a refused last check whose withheld record cannot be saved still writes nothing and leaves the signature recorded as released', async t => {
+test('a refused last check whose record cannot be saved still writes nothing', async t => {
   const control = await requestWorld(t);
   await assert.rejects(control.post());
   const lastStop = control.control.stopCalls;
 
   const r = await requestWorld(t);
-  const append = r.w.requests.history.append;
-  r.w.requests.history.append = async record => { if (record.state === 'dispatch-withheld') throw new Error('TEST-journal-cut'); return append(record); };
+  r.w.requests.history.append = async () => { throw new Error('TEST-journal-cut'); };
   r.control.onStop = call => { if (call === lastStop) r.change.stop(); };
   await assert.rejects(r.post(), error => error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT);
   assert.equal(r.seller.seen.requests.length, 0);
-  assert.deepEqual(await r.states(), ['signed', 'dispatch-started'], 'a restart reads the signature as possibly sent and never sends it again');
+  assert.deepEqual(await r.states(), []);
+});
+
+test('many session-key requests leave the wallet journal as it was, so it never fills with them', async t => {
+  const r = await requestWorld(t);
+  await assert.rejects(r.post());
+  const rows = (await r.w.requests.journal.entries()).length;
+  for (let sent = 0; sent < 25; sent++) await assert.rejects(r.post());
+  assert.equal(r.seller.seen.requests.length, 26);
+  assert.equal((await r.w.requests.journal.entries()).length, rows, 'a request that goes out writes no journal row');
 });
 
 test('a wallet message signature whose record is not saved is not released, and a restart finds no release', async t => {
@@ -305,8 +313,7 @@ test('a signed request whose answer is lost is retried with the saved body and a
   assert.equal(s.fetches[0].body, s.fetches[1].body, 'the saved body is sent again');
   assert.notEqual(nonce(s.fetches[0]).nonce, nonce(s.fetches[1]).nonce);
   assert.equal(s.w.state.signs.length, 2, 'each send is signed again');
-  const operations = new Set((await s.w.requests.records()).map(record => record.operationId));
-  assert.equal(operations.size, 2, 'the first signature is not reused');
+  assert.equal(await s.w.requests.records().then(records => records.length), 0, 'a request that goes out leaves no record');
 });
 
 test('a session-key request authentication and a seller transport are refused without an effect boundary', async t => {
