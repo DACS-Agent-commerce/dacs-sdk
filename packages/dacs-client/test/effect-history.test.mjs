@@ -216,3 +216,68 @@ test('a history append committed before its lane owner was killed is kept, the l
   assert.deepEqual(await history.append(entry('pass-1', 'dispatch-started')), { status: 'existing' }, 'the crashed pass\'s record is never appended twice');
   assert.deepEqual((await history.read(ARTIFACT_ID)).map((r) => [r.passId, r.state]), [['pass-1', 'dispatch-started'], ['pass-2', 'signed']]);
 });
+
+
+test('history refuses a caller-supplied sequence number', async (t) => {
+  const { journal } = tempJournal(t);
+  const history = createEffectHistory({ journal });
+  await assert.rejects(history.append(entry('pass-1', 'signed', { seq: 999 })), TypeError);
+  assert.deepEqual(await journal.entries(), []);
+  await history.append(entry('pass-2', 'signed'));
+  await history.append(entry('pass-1', 'signed'));
+  assert.deepEqual((await history.read(ARTIFACT_ID)).map((row) => row.passId), ['pass-2', 'pass-1']);
+});
+
+test('sustained history leaves the native record budget available', async (t) => {
+  const { journal, reopen } = tempJournal(t);
+  const history = createEffectHistory({ journal });
+  for (let i = 0; i < 4096; i += 1) await history.append(entry(`pass-${i}`, 'signed'));
+  await refusal(history.append(entry('overflow', 'signed')), 'eb_persist_failed', 'journal-capacity');
+  assert.deepEqual(await history.append(entry('pass-0', 'signed')), { status: 'existing' });
+  await journal.put(LANE, { stage: 'issued' });
+  await journal.put('intent/native', { hash: ARTIFACT });
+  journal.close();
+  const opened = reopen();
+  await refusal(createEffectHistory({ journal: opened }).append(entry('after-reopen', 'signed')), 'eb_persist_failed', 'journal-capacity');
+  assert.equal((await opened.entries()).length, 4098);
+  assert.deepEqual(await opened.get(LANE), { stage: 'issued' });
+});
+
+test('history byte capacity leaves native byte capacity available', async (t) => {
+  const { journal } = tempJournal(t, { maxValueBytes: 256, maxTotalBytes: 256 });
+  const history = createEffectHistory({ journal });
+  await history.append(entry('pass-1', 'signed', { text: 'x'.repeat(80) }));
+  await refusal(history.append(entry('pass-2', 'signed')), 'eb_persist_failed', 'journal-capacity');
+  await journal.put(LANE, { stage: 'issued', text: 'x'.repeat(200) });
+  await assert.rejects(journal.put('intent/native', { hash: ARTIFACT }), { code: 'journal-capacity' });
+  assert.equal((await journal.entries()).length, 2);
+});
+
+test('an explicit lane owner permits an append from an outside async resource', async (t) => {
+  const { journal } = tempJournal(t, { lockTimeoutMs: 0 });
+  const outside = new AsyncResource('outside-lane');
+  t.after(() => outside.emitDestroy());
+  const history = createEffectHistory({ journal });
+  await journal.withWalletLock(LANE, async (owner) => {
+    const locks = journal.inspectLocks();
+    assert.deepEqual(await outside.runInAsyncScope(() => history.append(entry('pass-1', 'signed'), { owner })), { status: 'appended' });
+    assert.deepEqual(journal.inspectLocks(), locks);
+  });
+  assert.deepEqual(await history.read(ARTIFACT_ID), [entry('pass-1', 'signed')]);
+});
+
+test('explicit lane owners refuse foreign, wrong-lane and released capabilities', async (t) => {
+  const { journal, reopen } = tempJournal(t, { lockTimeoutMs: 0 });
+  const other = reopen({ lockTimeoutMs: 0 });
+  const outside = new AsyncResource('outside-owner');
+  t.after(() => outside.emitDestroy());
+  const history = createEffectHistory({ journal });
+  let retained;
+  await journal.withWalletLock(LANE, async (owner) => {
+    retained = owner;
+    await refusal(outside.runInAsyncScope(() => createEffectHistory({ journal: other }).append(entry('foreign', 'signed'), { owner })), 'eb_persist_failed', 'journal-fenced');
+    await refusal(outside.runInAsyncScope(() => history.append({ ...entry('wrong-lane', 'signed'), lane: 'other-lane' }, { owner })), 'eb_persist_failed', 'journal-fenced');
+  });
+  await refusal(history.append(entry('expired', 'signed'), { owner: retained }), 'eb_persist_failed', 'journal-fenced');
+  assert.deepEqual(await journal.entries(), []);
+});
