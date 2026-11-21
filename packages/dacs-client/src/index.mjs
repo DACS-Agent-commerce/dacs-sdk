@@ -80,6 +80,14 @@ export { fundingHelpSentence } from './buyer-funding.mjs';
 export { createSqlitePurchaseStore } from './seams/purchase-store-not-wired.mjs';
 /** PURCHASE_STATE_SCHEMA is the host SQLite DDL string required by the buyer factories; db.exec(PURCHASE_STATE_SCHEMA) creates persistent schema objects and may throw SQLite errors. Reading the constant has no effect. */
 export { PURCHASE_STATE_SCHEMA } from './purchase-state-schema.mjs';
+/** createPurchaseOperations({db,store,handoffSecret,handoffTtlMs,now}) returns the frozen operations store the purchase factories take as `ops`. Writes run in the store's transaction; handoff tokens are HMAC(handoffSecret, id), never stored or extended. Construction throws TypeError(handoff_secret_required|handoff_ttl_invalid) or NotWiredError for another store; createIdempotent throws TypeError(operation_kind_unsupported) and OperationError(idempotency_conflict|job_id_collision), transition OperationError(not_found|invalid_state). */
+export { createPurchaseOperations } from './host/purchase-ops.mjs';
+/** isPurchaseOperationId(value) returns true exactly for `pur_` and 16 base64url characters, the id createPurchaseOperations mints. It reads nothing and never throws. */
+export { isPurchaseOperationId } from './util/ids.mjs';
+/** createPurchaseChallenges({db,store,origin,purpose,ttlMs,now}) returns the frozen {issue,verifyAndConsume} the purchase service takes as `challenges`, for one purpose signed under one origin fixed at construction. issue stores one challenge; verifyAndConsume consumes it once for a valid wallet signature. Construction throws TypeError(challenge_origin_invalid|challenge_purpose_invalid|challenge_ttl_invalid) or NotWiredError; issue and verifyAndConsume throw OperationError with their refusal code, or WalletFormatError, and then store and consume nothing. purchaseApprovalChallengeText(fields) returns the exact signed text, writes nothing, and throws OperationError(challenge_binding_invalid) for a binding member that is not one line of text. */
+export { createPurchaseChallenges, purchaseApprovalChallengeText } from './host/purchase-challenges.mjs';
+/** createLocalPurchaseAccount({db,store,wallet,now}) returns the frozen {accountId,listWallets} the purchase service takes as `accounts`: one account `local:<normalized address>` for one wallet. Construction writes its accounts row unless it exists, and throws WalletFormatError, OperationError(local_account_mismatch) or NotWiredError before any write. */
+export { createLocalPurchaseAccount } from './host/local-account.mjs';
 
 const PASSIVE_PROTOCOL_METHODS = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment'];
 const PASSIVE_SERVICE_METHODS = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning'];
