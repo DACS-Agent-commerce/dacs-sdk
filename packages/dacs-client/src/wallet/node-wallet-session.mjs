@@ -11,6 +11,8 @@ import { canonicalize } from '@kynesyslabs/dacs';
 import { assertTp1Binding, bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
 import { isTp1AuthorityLabel } from '../dacs/tp1-authority-label.mjs';
+import { assertPurchaseActionsAdmitted } from '../dacs/action-admission.mjs';
+import { isTp1AuthorityToken, registerTp1Token } from '../dacs/tp1-authority-token.mjs';
 import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { claimForAddress } from '../signatures.mjs';
 import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
@@ -67,8 +69,6 @@ const refuseContent = cause => new EmbeddedWalletError('payload_mismatch', 'the 
 const liveLeases = new WeakSet();
 // The fence of the effect pass whose work is running: a fence acquisition inside it reuses that fence instead of queueing behind it.
 const passFence = new AsyncLocalStorage();
-// Every token `admitTp1Authority` has made; a copy of one is not in it.
-const tokens = new WeakSet();
 // Each seller composition's signer reservations, over its own journal; never a member of the composition.
 const sellerReservations = new WeakMap();
 
@@ -290,7 +290,7 @@ export function tp1AuthorityLabel(binding) {
 }
 
 /**
- * Resolves a frozen, registered token {label} once the wire's binding check passes for `binding` on `currentLocal()` within 10 s and the
+ * Resolves a frozen token {label}, registered for `binding`, once the wire's binding check passes for `binding` on `currentLocal()` within 10 s and the
  * connection is unchanged afterwards. Rejects tp1_binding_required (a missing binding or reader), the wire's binding refusal codes, tp1_local_binding_changed or
  * tp1_authority_timeout (cause kept). A token is not current authority: every effect still runs its own checks.
  */
@@ -300,16 +300,15 @@ export async function admitTp1Authority({ binding, currentLocal } = {}) {
   await withinAuthorityDeadline(({ signal }) => settleOnAbort(assertTp1Binding(binding, local), signal));
   if (canonicalize(currentLocal()) !== canonicalize(local)) fail('tp1_local_binding_changed');
   const token = Object.freeze({ label: tp1AuthorityLabel(binding) });
-  tokens.add(token);
+  registerTp1Token(token, { binding, assertAdmitted: assertPurchaseActionsAdmitted });
   return token;
 }
 
-/** Returns true only for a token made by `admitTp1Authority`; a label string, a copy or any other value is false. Never throws. */
-export const isTp1AuthorityToken = value => tokens.has(value);
+export { isTp1AuthorityToken };
 
 /** Returns the label string of a token, or a canonical `TP1-` or `TEST-` label unchanged. Throws authority_unbound for anything else. */
 export function authorityLabelOf(value) {
-  if (tokens.has(value)) return value.label;
+  if (isTp1AuthorityToken(value)) return value.label;
   if (typeof value === 'string' && (isTp1AuthorityLabel(value) || value.startsWith('TEST-'))) return value;
   return fail('authority_unbound');
 }
@@ -712,7 +711,7 @@ async function buildNodeComposition(options, seller) {
     const transportOptions = { expected, transportOwner: owner, journal, fetchImpl, boundary: effectBoundary, now: () => clock.now(), stamps, reopenGrants: { consume: reopenGrants.consume },
       fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation },
       blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
-      blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH };
+      blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH, authorityBinding: admission.binding };
     transport = seller
       ? createDevnetDemoTransport({ ...transportOptions, settlementPublication: publications?.settlementPublication, deliveryPublication: publications?.deliveryPublication,
         demoArtifactPublication: publications?.demoArtifactPublication,
