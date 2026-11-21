@@ -372,10 +372,13 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now, 
     });
     if (sameProgress(holder.get(), saved)) holder.set(saved);
   }
-  // An observed re-hold or host stop suspends queued work. The refusal keeps its own cause, and a failed suspension write does not replace it.
+  // An observed re-hold or host stop suspends queued work. The refusal keeps its own cause; a failed suspension write
+  // is kept as `error.details.suspensionWriteError`.
   function suspendOnHold(path, work) {
     try { return work(); } catch (error) {
-      if (error?.code === 'profile_not_admitted' || isHostStopRefusal(error)) { try { recordSuspension(error.code, path, { queuedOnly: true }); } catch (cause) { error.cause ??= cause; } }
+      if (error?.code === 'profile_not_admitted' || isHostStopRefusal(error)) {
+        try { recordSuspension(error.code, path, { queuedOnly: true }); } catch (cause) { error.details = { ...error.details, suspensionWriteError: cause }; }
+      }
       throw error;
     }
   }

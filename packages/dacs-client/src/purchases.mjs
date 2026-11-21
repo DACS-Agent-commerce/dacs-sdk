@@ -847,10 +847,13 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return { ...result, operation: advanced };
   }
 
-  // Records a refusal as a suspension of the stored purchase's queued work; a failed write becomes the refusal's cause.
+  // Records a refusal as a suspension of the stored purchase's queued work. A failed write does not replace the refusal:
+  // its error is kept as `refusal.details.suspensionWriteError`, and the refusal's own cause is left as it was.
   function suspendQueuedWork(stored, refusal) {
     if (!stored?.state?.protocol) return;
-    try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored, set() {} }, now, hostStop }).suspendQueued(refusal.code); } catch (cause) { refusal.cause ??= cause; }
+    try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored, set() {} }, now, hostStop }).suspendQueued(refusal.code); } catch (cause) {
+      refusal.details = { ...refusal.details, suspensionWriteError: cause };
+    }
   }
 
   // Finds the purchase a service action's request names, authenticated as that action authenticates it: the handoff token

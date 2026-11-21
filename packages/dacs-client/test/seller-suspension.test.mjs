@@ -7,6 +7,7 @@ const { createPurchaseService } = await import('../src/purchases.mjs');
 const { createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
 const { STAGE_HELP, protocolStageHelp } = await import('../src/dacs/protocol-purchases.mjs');
 const { OperationError } = await import('../src/client-errors.mjs');
+const { createHostStop } = await import('../src/host-stop.mjs');
 const P = PATHS.proposals;
 const suspension = s => s.p.get().state.protocol.sellerSuspension;
 const stopped = s => s.client({ respond: init => s.reply(init, 503, { error: 'seller_stopped' }) });
@@ -315,6 +316,16 @@ test('a stop check that throws or returns a non-boolean suspends queued work wit
     await service.verifyDeal(request);
     assert.equal(suspension(s).cause, cause);
   }
+});
+
+test('a stop check that throws mid-request while its suspension write fails keeps the stop error as cause and the write failure as details.suspensionWriteError', async t => {
+  const s = await storedWorld(t); const sleep = s.clock.sleep, stopError = new Error('TEST-stop-check-failure'), failure = new Error('TEST-store-write-failed');
+  let stopping = false; s.clock.sleep = async ms => { await sleep(ms); stopping = true; };
+  const { transaction } = createSqlitePurchaseStore(), stopped = () => { if (stopping) throw stopError; return false; };
+  const records = s.records(s.holder, (db, work) => transaction(db, () => { const result = work(); if (suspension(s)) throw failure; return result; }), createHostStop(stopped));
+  await assert.rejects(s.client({ requestRecords: records, stopped, respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).propose(bodyFor(P)),
+    error => hostStopRefusal('stop_check_failed')(error) && error.cause === stopError && error.details?.suspensionWriteError === failure);
+  assert.equal(suspension(s), undefined);
 });
 
 test('a stop refusal from the effect boundary of the wallet that reaches the continuation suspends queued work and is rethrown unchanged', async t => {
