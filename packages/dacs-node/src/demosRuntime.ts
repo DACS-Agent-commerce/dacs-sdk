@@ -76,6 +76,7 @@ export interface DacsDemosAdapterV1 {
   sign(bytes: Uint8Array): Promise<Uint8Array>;
   resolveIdentity(ref: string): Promise<ResolvedIdentity>;
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
+  /** `expectedOwner` is the bare native owner (hex), not a DID. */
   resolveAnchorByName(
     name: string,
     expectedOwner: string,
