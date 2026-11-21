@@ -24,6 +24,7 @@ import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createPaymentEvidenceCreateAdapter } from './node-payment-evidence-adapter.mjs';
 import { assertCurrentAuthorization, isPassContext, passContext, runInPassContext } from './pass-context.mjs';
 import { createSignerReservations } from './signer-reservation.mjs';
+import { createKeystoreWalletOpener, JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
 import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError, normalizeMnemonic } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
 // A comparison value inside the descriptor only: `_doPost` checks the URL it is given equals the
@@ -375,13 +376,14 @@ const executeStageOf = body => {
  * The composition's one effect gate: `{effectPass, runInEffectPass, pass}`. `pass({phase, signal, checkContent}, inner)` finds the current pass and, after
  * SDK preparation, awaits `qualify`, the pass's refreshAuthority and its finalStop on the pass's remaining deadline. Then, in the same synchronous run, it
  * checks the hold, the connection, the lease, the pass's synchronous checks and (when given) the final content against the fee ceiling, and invokes
- * `inner()`. Any refusal throws before `inner`. With no pass the awaits are skipped, and `passRequired` refuses that case.
+ * `inner()`. Any refusal throws before `inner`. With no pass the awaits are skipped, and `passRequired` (the seller's composition and the keystore
+ * entry's) refuses that case `effect_pass_required`.
  * A pass may carry a `context` made by `passContext`: `runInEffectPass` runs its work in that context, which is where the native transport reads the
- * job class and the pass's current-authorization check, and the gate's synchronous run asks the same check last. With `passRequired` (the seller's
- * composition) a pass needs a job context; otherwise a pass with no context runs as a plain pass. Any other context, and one `passContext` did not make,
+ * job class and the pass's current-authorization check, and the gate's synchronous run asks the same check last. With `jobContextRequired` (the seller's
+ * composition only) a pass needs a job context; otherwise a pass with no context runs as a plain pass. Any other context, and one `passContext` did not make,
  * is refused `effect_pass_invalid`.
  */
-function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired }) {
+function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired, jobContextRequired }) {
   const scope = new AsyncLocalStorage(), passes = new WeakMap();
   const liveFence = fence => { try { return liveLeases.has(fence) && fence.context === owner.getContext(); } catch { return false; } };
   const effectPass = options => {
@@ -391,7 +393,7 @@ function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired }
     const remainingMs = typeof deadline === 'number' ? deadline - clock.now() : NaN;
     if (!liveFence(fence) || ![refreshAuthority, finalStop, ...checks].every(step => typeof step === 'function')
       || !(remainingMs > 0 && remainingMs <= AUTHORITY_READ_DEADLINE_MS) || typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs)
-      || !isPassContext(context) || (passRequired && context.operationClass === null)) fail('effect_pass_invalid');
+      || !isPassContext(context) || (jobContextRequired && context.operationClass === null)) fail('effect_pass_invalid');
     const handle = Object.freeze({});
     passes.set(handle, Object.freeze({ fence, deadline, refreshAuthority, finalStop, synchronousChecks: Object.freeze(checks), feeCeilingOs, context }));
     return handle;
@@ -559,7 +561,8 @@ const checkConstruction = admitPublicFactory(options => ({ options }), { purchas
  * unknown or used capability). A seller composition runs `reopen` inside its effect pass.
  * `effectBoundary` is the client's effect boundary, built here from `stopped` and `feeCeilingOs` and held by the native transport; `transport` is the held facade of
  * `createHeldTransportFacade`.
- * `effectPass` and `runInEffectPass` are the effect gate's host contract (see `createEffectGate`); a buyer may sign and send without a pass. `wallet.request` is wrapped by the admission wrapper and the four
+ * `effectPass` and `runInEffectPass` are the effect gate's host contract (see `createEffectGate`); a buyer may sign and send without a pass, except in the
+ * session `openKeystoreWalletSession` composes. `wallet.request` is wrapped by the admission wrapper and the four
  * passive methods keep their signatures. `walletFactory` is synchronous and returns another view of the same wallet that records anchors in the
  * selected caller-owned journal. `internalCauseOf` returns the error a failed request's envelope was closed over (its `cause` chain holds the original
  * failure, which the public envelope never carries), or undefined. Before the SDK's inner transaction signature the session checks that the signed message
@@ -628,13 +631,33 @@ const localDigestOf = local => createHash('sha256').update(canonicalize(local)).
  * with the failing stage's own error (TypeError for a missing input, the wire's tp1_* refusal with the reader's cause, a transport error, or
  * the session's); a failed stage leaves no composition. The host's `owner` and `journal` stay open.
  */
-export async function composeNodeWalletSession({ owner, journal, key, identityRecord, listings, purchases, participantImplementations, ...session } = {}) {
+export function composeNodeWalletSession(options) {
+  return composeStages(options, false);
+}
+
+// The buyer composition the keystore entry binds: composeNodeWalletSession's, with the effect gate's no-pass refusal on (a plain pass is enough).
+const composeBuyerWithRequiredPass = options => composeStages(options, true);
+
+/**
+ * Returns a Promise for the composition of `composeNodeWalletSession`, built from the recovery phrase in the plugin's version-1 keystore file
+ * (`{version: 1, kdf: 'scrypt', kdfparams: {N, r: 8, p: 1, salt}, cipher: 'aes-256-gcm', iv, tag, ciphertext}`, base64 members, read only).
+ * Options: `keystorePath` (absolute), `passphrase`, `expectedAddress` (the Demos address the host bound) and the options of
+ * `composeNodeWalletSession` except `key`. Every transaction signature and every confirmTx and broadcastTx body of the session needs a
+ * current effect pass (`effect_pass_required`); a plain `passContext()` pass is enough, and no option turns the rule off. Before the file is
+ * opened it rejects TypeError naming a bad option (including `key`, `passRequired`, `jobContextRequired` and `requirePass`),
+ * OperationError(runtime_unsupported) and the stop codes (writes_stopped | stop_check_failed | stop_check_invalid; `stopped()` must answer a boolean
+ * synchronously); then OperationError(keystore_unreadable | keystore_unlock_failed | invalid_mnemonic), a composition stage's own error, or
+ * keystore_address_mismatch after the composition is closed. It writes and caches nothing, and zero-fills every phrase copy it makes.
+ */
+export const openKeystoreWalletSession = createKeystoreWalletOpener({ compose: composeBuyerWithRequiredPass });
+
+async function composeStages({ owner, journal, key, identityRecord, listings, purchases, participantImplementations, ...session } = {}, requirePass) {
   let walletClaim;
   try {
     const authority = createNodeAuthorityCapability({ owner, claim: () => walletClaim ?? fail('session_not_finalized') });
     const readAuthority = createAuthorityReader({ authority, identityRecord, claim: authority.claim, listings, purchases, participantImplementations });
     const binding = await bindTp1Profile({ record: identityRecord, local: owner.currentLocal(), readAuthority });
-    const composition = await createNodeWalletSession({ ...session, owner, journal, key, admission: { binding, currentLocal: owner.currentLocal } });
+    const composition = await buildNodeComposition({ ...session, owner, journal, key, admission: { binding, currentLocal: owner.currentLocal } }, false, requirePass);
     try { walletClaim = claimForAddress(composition.wallet.getPublicAccount().address); }
     catch (error) { await composition.close(); throw error; }
     return Object.freeze({ ...composition, binding });
@@ -642,9 +665,6 @@ export async function composeNodeWalletSession({ owner, journal, key, identityRe
     if (key instanceof Uint8Array) key.fill(0);
   }
 }
-
-// What the native transport and the effect history call on the journal.
-const JOURNAL_METHODS = ['get', 'put', 'entries', 'withWalletLock', 'appendUnderLock', 'withOwnedOrAcquiredLane'];
 
 // The session's finalization step: the host's stop check and fee ceiling are required (no defaults), and the client's effect boundary is built
 // over the admitted binding, the journal and the owner's connection fence. Nothing is opened yet, so a TypeError here leaves nothing to close.
@@ -655,7 +675,8 @@ function finalizeEffectBoundary({ owner, journal, admission, stopped, feeCeiling
   return createEffectBoundary({ binding: admission.binding, currentLocal: owner.currentLocal, stopped, feeCeilingOs, history: createEffectHistory({ journal }), fence });
 }
 
-async function buildNodeComposition(options, seller) {
+// `requirePass` is set only by the keystore entry's composition; no option reaches it.
+async function buildNodeComposition(options, seller, requirePass = false) {
   const key = options?.key;
   let keyCopy, transport, session, sellerAddress, evidenceDemos;
   try {
@@ -671,7 +692,7 @@ async function buildNodeComposition(options, seller) {
     const expected = readExpectedPins(admission.binding, owner);
     const effectBoundary = finalizeEffectBoundary({ owner, journal, admission, stopped, feeCeilingOs });
     const attempts = new AsyncLocalStorage(), selectedJournal = new AsyncLocalStorage();
-    const gate = createEffectGate({ owner, expectedLocal: admission.binding.local, clock, qualify, passRequired: seller });
+    const gate = createEffectGate({ owner, expectedLocal: admission.binding.local, clock, qualify, passRequired: seller || requirePass, jobContextRequired: seller });
     // A confirmTx or broadcastTx body is gated and the real fetch runs synchronously after the gate. A refused body is not dispatched, although
     // this attempt's earlier reads (the nonce check) were; an effect body this attempt already sent stays dispatched.
     const fetchImpl = (input, init) => {
