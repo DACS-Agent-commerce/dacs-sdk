@@ -99,7 +99,9 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   // The wire times an admission with `performance.now`, which moves forward with the world's clock.
   const monotonicNow = performance.now.bind(performance);
   mock.method(performance, 'now', () => monotonicNow() + advancedMs);
-  t.after(() => mock.restoreAll());
+  // A mock that stays installed or listed keeps every call it records, and with it each caller's stack. So the world forgets
+  // the tracker's mocks and hands back the process clock, also when another world of the same test mocked it on top of this one.
+  t.after(() => { mock.reset(); delete performance.now; });
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: clock });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, T0 - 1000), displayName: 'Native payment seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'native-payment-wire', listingVersion: 1, title: 'Native payment report', description: 'A paid report delivered through the wire handler.',
