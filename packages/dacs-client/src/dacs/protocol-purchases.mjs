@@ -795,6 +795,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // and `notBefore` change, so approving restores the authority approved before and never a longer or wider one. Nothing is signed or sent here.
   async function sessionRenewal(operation) {
     assertPurchaseActionsAdmitted();
+    hostStop.assert();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     try {
       return await sessionRenewalOnce(operation);
@@ -826,6 +827,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // The buyer's signature over the pending payload is verified against the purchase's own scope before it is saved; nothing else grants a renewed key.
   async function sessionRenewalAccept(operation, delegationSignature) {
     assertPurchaseActionsAdmitted();
+    hostStop.assert();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     try {
       return await sessionRenewalAcceptOnce(operation, delegationSignature);
