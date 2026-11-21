@@ -72,7 +72,7 @@ function world(t, { native = false, expired = false, reader = 'present', disposi
     }) }),
   }, { get(target, key) { chainTouched.add(key); return target[key]; } });
   const service = client.createPurchaseService({ db, ops, coordinates, chain, store, now: () => NOW,
-    config: {}, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+    config: {}, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false, admission });
   const token = savedOps.handoffTokenFor(op.id);
   return { db, op, coordinates, touched, chainTouched, service,
     activeCalls: () => activeCalls,
@@ -225,7 +225,7 @@ probe('README protocol pass-through behavior and every held method', passive.con
   const { db } = database(t), store = client.createSqlitePurchaseStore();
   let hostCalls = 0;
   const protocol = client.createProtocolPurchases({ db, store, ops: {}, coordinates: client.createCoordinateStore({ db }),
-    dacsProtocol: {}, buyerAccess: { assertWallet(wallet) { assert.equal(wallet, PAYER); hostCalls++; } }, admission });
+    dacsProtocol: {}, buyerAccess: { assertWallet(wallet) { assert.equal(wallet, PAYER); hostCalls++; } }, stopped: () => false, admission });
   assert.deepEqual([...section('Protocol').matchAll(/`([^`]+)`/g)].map(m => m[1]), [...passive, 'profile_not_admitted']);
   assert.equal(protocol.assertBuyerAccess(PAYER), undefined);
   assert.equal(hostCalls, 1);

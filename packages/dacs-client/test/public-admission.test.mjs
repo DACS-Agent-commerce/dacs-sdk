@@ -274,8 +274,8 @@ test('admitted: each public factory built with a live currentLocal object that c
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => 1 });
   const coordinates = client.createCoordinateStore({ db });
   const store = client.createSqlitePurchaseStore();
-  const protocol = client.createProtocolPurchases({ db, ops, coordinates, store, admission });
-  const service = client.createPurchaseService({ db, ops, coordinates, chain: {}, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+  const protocol = client.createProtocolPurchases({ db, ops, coordinates, store, stopped: () => false, admission });
+  const service = client.createPurchaseService({ db, ops, coordinates, chain: {}, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false, admission });
   const verifier = client.createListingVerifier({ directory: {}, chain: {}, admission });
   authority.state.gate = async () => { current.connectionId = 'vector-conn-2'; };
   for (const [name, member] of [['protocol.holdChainReadback', protocol.holdChainReadback], ['service.prepare', service.prepare], ['verifier.verify', verifier.verify]]) {

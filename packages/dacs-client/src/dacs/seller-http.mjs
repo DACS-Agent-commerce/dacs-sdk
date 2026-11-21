@@ -11,6 +11,7 @@
 import { isIP } from 'node:net';
 import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
 import { settleOnAbort } from '../util/http.mjs';
+import { isStopRefusal } from '../client-errors.mjs';
 import { isDacsPublicAddressV1, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { classifySellerAnswer, SELLER_ANSWER_CLASS, SELLER_EFFECT_UNRESOLVED } from './seller-response-class.mjs';
 import { createSellerHttpsConnector, SellerHttpsConnectorError } from './seller-https-connector.mjs';
@@ -131,7 +132,7 @@ export const sellerEndpointOrigin = (publicEndpoint) => parsePublicEndpoint(publ
 
 /**
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
- * requestRecords is the adapter's durable record store (`start(path, body)` returns
+ * requestRecords is the adapter's durable record store (`beforeAttempt(path)` awaits the host's stop check before each attempt and rejects with its refusal; `start(path, body)` returns
  * `{text, stored, continuation, newPurchase, check(), finish(answerClass, answerCode)}`; `stored: true` identifies a durably
  * recorded effect attempt, while reads use false, and `failure(error)` records a refusal). Authenticated calls with
  * stored attempts retry unknown dispatches twice; all other calls send once. A suspended answer is recorded and never retried.
@@ -173,6 +174,12 @@ export function createSellerHttpsClient(options) {
         const unsent = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, 'timeout', { answerClass: SELLER_ANSWER_CLASS.NOT_SENT });
         preDispatchFailures.add(unsent);
         throw unsent;
+      }
+      // The host's stop check comes before each attempt is taken off the queue. A refusal owes the earlier send's unknown outcome, if there is one.
+      try { await requestRecords?.beforeAttempt(path); } catch (refusal) {
+        if (!unknown) throw refusal;
+        unknown.cause ??= refusal;
+        throw unknown;
       }
       const attempt = requestRecords?.start(path, body);
       try {
@@ -255,7 +262,10 @@ export function createSellerHttpsClient(options) {
       if (error instanceof SellerRefusedError) throw error;
       if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }
       lastFailureCause = error instanceof SellerHttpsConnectorError ? error.causeCode : failureCause(error, phase, signal);
-      const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause, { answerClass: dispatched ? SELLER_ANSWER_CLASS.UNKNOWN : SELLER_ANSWER_CLASS.NOT_SENT });
+      // A stop or re-hold refusal keeps its code for the attempt's record and its error as the cause. The connector wraps a refusal raised in its transmit step, so the wrapped cause is checked too.
+      const refusal = [error, error?.cause].find((candidate) => isStopRefusal(candidate) || candidate?.code === 'profile_not_admitted');
+      const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause, { answerClass: dispatched ? SELLER_ANSWER_CLASS.UNKNOWN : SELLER_ANSWER_CLASS.NOT_SENT, ...(refusal ? { code: refusal.code } : {}) });
+      if (refusal) unavailable.cause = refusal;
       if (!dispatched) { preDispatchFailures.add(unavailable); lastFailureDispatched = false; }
       if (error instanceof RawJsonAdmissionError) { unavailable.admissionCode = error.code; unavailable.admissionStage = error.stage; }
       throw unavailable;

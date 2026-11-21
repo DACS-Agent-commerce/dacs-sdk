@@ -11,8 +11,8 @@ const clientOverFetch = fetchClient(createSellerHttpsClient);
 const PEER_HEADER = 'x-dacs-seller-peer';
 const NO_DELAY = { now: () => 0, sleep: async () => {} };
 
-/** Stored-request records that keep nothing: the exact text is fixed once and handed to every attempt. */
-const fixedRecords = () => ({ start: (_path, body) => ({ text: JSON.stringify(body), stored: true, continuation: false, newPurchase: false, check() {}, finish() {} }), failure() {} });
+/** Stored-request records that keep nothing: the exact text is fixed once and handed to every attempt, and no stop check stands in front of an attempt. */
+const fixedRecords = () => ({ beforeAttempt: async () => {}, start: (_path, body) => ({ text: JSON.stringify(body), stored: true, continuation: false, newPurchase: false, check() {}, finish() {} }), failure() {} });
 
 /** A client whose exchanges are answered, signed by the seller, with each `[status, answer]` in turn. */
 async function clientAnswered(t, answers) {

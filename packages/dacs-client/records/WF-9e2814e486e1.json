@@ -1,0 +1,35 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "fix(client): suspend on a stop or re-hold that the connector wraps or that arrives while signing",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "6f83accf9f8c59e95bb53f700b1d92be7c5aa98d",
+      "after": "ae4026cd86ae9162adbef2ccee5736fa50b702dc"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "ec66ab16cad46786dab85597d0b85f2848dcdd34",
+      "after": "61b0f933e06cd10dfc3df7e6324e55407a0a8ae6"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+      "before": "ba1e29111708eec7359a66038c0398b60cfb20b5",
+      "after": "ee4db189cbaa42a4b24c69588e99f224afd9fbcb"
+    },
+    {
+      "path": "packages/dacs-client/test/stop-seam.test.mjs",
+      "before": "c3bfa15c6e45df89b724e924a7ec1ab0c7d417c0",
+      "after": "4b48d9383e5bcb13b5803ae4e04dcbb69c2e4b39"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-9e2814e486e1.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/dacs/seller-http.mjs",
+    "packages/dacs-client/test/stop-seam.test.mjs"
+  ]
+}

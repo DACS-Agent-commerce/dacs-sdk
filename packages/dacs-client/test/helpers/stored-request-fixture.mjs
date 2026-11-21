@@ -29,7 +29,9 @@ export async function storedWorld(t, { stage = 'agreement-signing', accepted = t
   const { transaction } = createSqlitePurchaseStore();
   let current = p.get(), time = 0;
   const holder = { get: () => current, set: next => { current = next; } };
-  const records = (target = holder, recordTransaction = transaction) => createSellerRequestRecords({ db: p.db, ops: p.ops, transaction: recordTransaction, holder: target, now: () => w.state.time });
+  // `stop.check` is the host's bounded stop check as the records see it: it resolves to go on or rejects with a stop refusal.
+  const stop = { check: async () => {} };
+  const records = (target = holder, recordTransaction = transaction) => createSellerRequestRecords({ db: p.db, ops: p.ops, transaction: recordTransaction, holder: target, now: () => w.state.time, checkStopped: () => stop.check() });
   const fetches = [], delays = [];
   const clock = { now: () => time, async sleep(ms) { delays.push(ms); time += ms; w.state.time += ms; } };
   const reply = async (init, status = 200, body = { status: 'complete' }) => {
@@ -46,7 +48,7 @@ export async function storedWorld(t, { stage = 'agreement-signing', accepted = t
     const saved = p.get();
     return p.ops.transition(saved.id, saved.status, nextStatus, { state: { protocol: { ...saved.state.protocol, ...protocol, revision: (saved.state.protocol.revision ?? 0) + 1, progressGeneration: (saved.state.protocol.progressGeneration ?? saved.state.protocol.revision ?? 0) + 1 } }, event: 'test_progress', data: {} });
   };
-  return { w, p, made, holder, records, client, auth, reply, fetches, delays, clock, patch,
+  return { w, p, made, holder, records, stop, client, auth, reply, fetches, delays, clock, patch,
     advance(ms) { time += ms; w.state.time += ms; },
     restart() { p.reopen(); current = p.get(); },
     record(path) { return p.get().state.protocol.sellerRequests?.[path]; } };

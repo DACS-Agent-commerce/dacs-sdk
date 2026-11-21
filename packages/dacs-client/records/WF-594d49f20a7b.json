@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF give the engine-floor smoke the stop check the purchase factories require",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/runtime-floor.test.mjs",
+      "before": "671304044784da2dc6fc3882f8f99c6a1e446c2c",
+      "after": "1db1986ca25e654d199cddc17963915b5cc59f5b"
+    }
+  ],
+  "commitFiles": [
+    ".github/workflows/ci.yml",
+    "packages/dacs-client/records/WF-594d49f20a7b.json",
+    "packages/dacs-client/test/runtime-floor.test.mjs"
+  ]
+}

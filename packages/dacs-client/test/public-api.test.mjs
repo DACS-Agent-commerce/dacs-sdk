@@ -175,7 +175,7 @@ test('public refusals retain the exported error identity', async () => {
   const client = await import('@kynesyslabs/dacs-client');
   assert.throws(() => client.createProtocolPurchases({}), error => error instanceof TypeError && error.message === 'admission_required');
   const { binding, currentLocal } = await bindFixture();
-  const buyer = client.createProtocolPurchases({ store: client.createSqlitePurchaseStore(), admission: { binding, currentLocal } });
+  const buyer = client.createProtocolPurchases({ store: client.createSqlitePurchaseStore(), stopped: () => false, admission: { binding, currentLocal } });
   await assert.rejects(buyer.prepareTerms({}), error => error instanceof client.OperationError && error.code === 'profile_not_admitted');
 });
 
@@ -218,7 +218,7 @@ test('the complete public protocol method set refuses actions before host effect
   const effect = () => { effects++; throw new Error('TEST-host-effect'); };
   const options = { store: client.createSqlitePurchaseStore(), ops: { transition: effect, record: effect } };
   const { binding, currentLocal } = await bindFixture();
-  const internal = internalFactory(options), publicProtocol = client.createProtocolPurchases({ ...options, admission: { binding, currentLocal } });
+  const internal = internalFactory(options), publicProtocol = client.createProtocolPurchases({ ...options, stopped: () => false, admission: { binding, currentLocal } });
   assert.deepEqual(Object.keys(publicProtocol).sort(), Object.keys(internal).sort());
   for (const [name, method] of Object.entries(publicProtocol)) {
     if (typeof method !== 'function' || PASSIVE_PROTOCOL_METHODS.has(name)) continue;
@@ -248,8 +248,8 @@ async function heldPublicObjects() {
     .map(([name, method]) => [name, (...args) => { writes.count++; return method(...args); }]));
   const coordinates = client.createCoordinateStore({ db });
   const store = client.createSqlitePurchaseStore();
-  const protocol = client.createProtocolPurchases({ db, ops: counted, coordinates, store, admission });
-  const service = client.createPurchaseService({ db, ops: counted, coordinates, chain: {}, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+  const protocol = client.createProtocolPurchases({ db, ops: counted, coordinates, store, stopped: () => false, admission });
+  const service = client.createPurchaseService({ db, ops: counted, coordinates, chain: {}, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false, admission });
   const verifier = client.createListingVerifier({ directory: {}, chain: {}, admission });
   const rows = () => JSON.stringify(db.prepare('SELECT name FROM sqlite_master WHERE type = ?').all('table').map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}"`).all()]));
   return { service, protocol, verifier, writes, rows, close: () => db.close() };

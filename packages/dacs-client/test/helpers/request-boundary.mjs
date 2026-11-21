@@ -30,7 +30,7 @@ export function requestBoundary(t, { binding, currentLocal }) {
   };
   build();
   t.after(() => { state.journal.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { control, get boundary() { return state.boundary; }, get history() { return state.history; }, get journal() { return state.journal; },
+  return { control, path, get boundary() { return state.boundary; }, get history() { return state.history; }, get journal() { return state.journal; },
     reopen() { state.journal.close(); state.journal = openDurableWalletJournal({ path, mode: 'open' }); build(); },
     records: async () => (await state.journal.entries()).filter(([key]) => key.startsWith('eb/')).map(([, record]) => record) };
 }

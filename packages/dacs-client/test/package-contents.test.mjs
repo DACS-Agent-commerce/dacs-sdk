@@ -127,7 +127,7 @@ test('paired packed artifacts with dacs-node supply the schema needed by every b
       let connection, diagnosed = false;
       globalThis.host = {
         accountId, token, config: {}, accounts: {}, verifier: {}, chain: {}, challenges: {}, dacsProtocol: {},
-        admission: { binding, currentLocal: () => ({ ...local }) },
+        admission: { binding, currentLocal: () => ({ ...local }) }, stopped: () => false,
         coordinate: { operationId: id, kind: 'dem-transfer', network: 'testnet', from: 'TEST-buyer',
           nonceFence: 0, expectedNonce: 1, target: 'TEST-seller', amountOs: '1', payload: {} },
         createOperations(db) {
@@ -202,8 +202,8 @@ test('paired packed artifacts with dacs-node supply the schema needed by every b
       db.exec(PURCHASE_STATE_SCHEMA);
       const store = createSqlitePurchaseStore(), coordinates = createCoordinateStore({ db });
       assert.equal(typeof createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain: {},
-        challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, admission }).verifyDeal, 'function');
-      assert.equal(createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, admission }).actionsAdmitted, false);
+        challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, stopped: () => false, admission }).verifyDeal, 'function');
+      assert.equal(createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, stopped: () => false, admission }).actionsAdmitted, false);
       assert.equal(typeof createDeliveryDeadlineWatch({ db, coordinates, ops: {}, store, enabled: true }).observe, 'function');
       db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('buyer','TEST','buyer','TEST');
       const operation = db.prepare('INSERT INTO operations (id,account_id,kind,idempotency_key,request_hash,status,terms,terms_hash,handoff_token_hash,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
@@ -232,7 +232,7 @@ test('paired packed artifacts with dacs-node supply the schema needed by every b
         getByHandoff: (id, _token) => id === 'first' ? saved : null,
         history: () => { secondaryReads++; return []; }, handoffTokenFor: forbidden,
         transition: forbidden, record: forbidden };
-      const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store, admission,
+      const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store, stopped: () => false, admission,
         settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' } });
       db.prepare('UPDATE operations SET handoff_token_hash=?, handoff_expires_at=? WHERE id=?')
         .run((await import('node:crypto')).createHash('sha256').update('dacs-handoff-hash:TEST-token').digest('hex'), '2099-01-01T00:00:00.000Z', 'first');
