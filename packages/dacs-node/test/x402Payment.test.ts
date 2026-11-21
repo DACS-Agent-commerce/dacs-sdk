@@ -775,6 +775,29 @@ describe("coordinator x402 buyer payment track", () => {
     expect(prepareIntent).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects signed intents that differ from the reserved scope or expiry", async () => {
+    for (const changed of ["scope", "expiry"] as const) {
+      const opened = await database();
+      const options = trackOptions(opened);
+      const retained = intent();
+      const track = createDacsX402BuyerPaymentTrackV1({ ...options,
+        prepareIntent: async (_input, bind) => {
+          const scope = unsignedScope(retained);
+          await bind(changed === "scope" ? { ...scope, chosenRequirements: {
+            ...scope.chosenRequirements, maxTimeoutSeconds: 121,
+          } } : scope);
+          return changed === "expiry" ? intent(4_102_444_801) : retained;
+        },
+      });
+      expect(await track(operationInput())).toMatchObject({ status: "indeterminate",
+        reasonCode: changed === "scope" ? "x402-signed-intent-reservation-mismatch"
+          : "x402-authorization-valid-before-mismatch" });
+      expect(opened.loadEffectInput("payment", operationInput().fence.idempotencyKey)).toBeUndefined();
+      expect(options.transport.submitRetained).not.toHaveBeenCalled();
+      expect(await options.walletSpendAuthority.inspect()).toMatchObject({ activeEffects: 1 });
+    }
+  });
+
   it("persists the bearer before one paid request and replays the authenticated result", async () => {
     const opened = await database();
     const retained = intent();
