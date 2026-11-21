@@ -265,11 +265,15 @@ function serializeClaim(claim: WalletSpendReservationClaimV1): unknown {
       owner: claim.permit.owner,
       generation: claim.permit.generation,
       reservation: claim.permit.reservation,
+      ...(claim.permit.authorizationValidBefore === undefined ? {} : {
+        authorizationValidBefore: claim.permit.authorizationValidBefore,
+      }),
     },
   };
 }
 
 interface RemotePermitDataV1 {
+  authorizationValidBefore?: number;
   reservationId: string;
   bindingHash: string;
   settlementBindingHash: string;
@@ -281,8 +285,10 @@ interface RemotePermitDataV1 {
 function permitData(value: unknown): RemotePermitDataV1 {
   if (!plainObject(value) || !exact(value, [
     "reservationId", "bindingHash", "settlementBindingHash", "owner", "generation",
-    "reservation",
-  ]) || typeof value.reservationId !== "string" ||
+    "reservation", ...(Object.hasOwn(value, "authorizationValidBefore") ? ["authorizationValidBefore"] : []),
+  ]) || (Object.hasOwn(value, "authorizationValidBefore") &&
+      (!Number.isSafeInteger(value.authorizationValidBefore) ||
+        (value.authorizationValidBefore as number) <= 0)) || typeof value.reservationId !== "string" ||
       typeof value.bindingHash !== "string" || !HASH_RE.test(value.bindingHash) ||
       typeof value.settlementBindingHash !== "string" ||
       !HASH_RE.test(value.settlementBindingHash) || typeof value.owner !== "string" ||

@@ -120,9 +120,9 @@ export class DacsLiveEffectError extends Error {
 }
 
 /**
- * A safe pre-intent outcome. It may be used only while resolving read-only
- * prerequisites or preparing deterministic bytes, before an effect intent is
- * admitted. Once submission might have happened, adapters must use the normal
+ * An outcome before effect input is stored, including a hold reserved for bytes
+ * not yet stored when nothing has been sent. Once submission might have
+ * happened, adapters must use the normal
  * reconciliation path instead.
  */
 export class DacsLiveEffectInputControlError extends Error {

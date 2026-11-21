@@ -6,9 +6,9 @@ import {
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { authorizationTypes } from "@x402/evm";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
-import { keccak256, recoverTypedDataAddress, stringToHex } from "viem";
+import { keccak256, recoverTypedDataAddress, stringToHex, verifyTypedData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { canonicalize } from "../../src/canonical/jcs.js";
 import {
@@ -400,4 +400,75 @@ describe("createDacsX402BuyerEvmChallengeClient", () => {
       .rejects.toThrow(/plain data record/);
     expect(proxyTraps).toBe(0);
   });
+});
+
+
+test("a hold-bound client signs exactly the bound validBefore", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1_900_000_000_000);
+  try {
+    const client = await createDacsX402BuyerEvmChallengeClient({
+      evmPrivateKey: PRIVATE_KEY, authority: authority(),
+      expectedRequirements: requirements(), requireHoldValidBefore: true,
+    });
+    const result = await prepareX402BuyerSettlement({
+      authority: authority(), bindAuthorization: async () => ({ validBefore: 1_800_000_000 }),
+    }, { client, fetchImpl: challengeFetch(challenge()).fetchImpl,
+      transportPolicy: { mode: "insecure-test" } });
+    expect(result.disposition).toBe("prepared");
+    if (result.disposition !== "prepared") throw new Error("expected prepared intent");
+    const payload = decodePaymentSignatureHeader(result.intent.paymentHeader.value).payload as {
+      authorization: { from: `0x${string}`; to: `0x${string}`; value: string;
+        validAfter: string; validBefore: string; nonce: `0x${string}` };
+      signature: `0x${string}`;
+    };
+    expect(payload.authorization.validBefore).toBe("1800000000");
+    expect(await verifyTypedData({
+      address: ACCOUNT.address,
+      domain: { name: "USD Coin", version: "2", chainId: 84532, verifyingContract: ASSET },
+      types: authorizationTypes, primaryType: "TransferWithAuthorization",
+      message: { ...payload.authorization, value: BigInt(payload.authorization.value),
+        validAfter: BigInt(payload.authorization.validAfter),
+        validBefore: BigInt(payload.authorization.validBefore) },
+      signature: payload.signature,
+    })).toBe(true);
+  } finally { clock.mockRestore(); }
+});
+
+test("refuses to sign with a validBefore that differs from the hold's", async () => {
+  const makeClient = () => createDacsX402BuyerEvmChallengeClient({
+    evmPrivateKey: PRIVATE_KEY, authority: authority(),
+    expectedRequirements: requirements(), requireHoldValidBefore: true,
+  });
+  const client = await makeClient();
+  const validBefore = 4_102_444_800;
+  await client.createPaymentPayload(challenge(), { validBefore });
+  await expect(client.createPaymentPayload(challenge(), { validBefore: validBefore + 1 }))
+    .rejects.toMatchObject({ name: "X402BuyerAuthorizationBindingError",
+      reasonCode: "x402-authorization-valid-before-mismatch" });
+  for (const binding of [undefined, { validBefore: 0 }, { validBefore: 1.5 },
+    { validBefore: "1" }, { validBefore: 2 ** 53 }, { validBefore, extra: true }]) {
+    const fresh = await makeClient();
+    // Exercise malformed input at the public boundary.
+    await expect(fresh.createPaymentPayload(challenge(), binding as never))
+      .rejects.toMatchObject({ reasonCode: "x402-authorization-valid-before-unbound" });
+  }
+  const unbound = await createDacsX402BuyerEvmChallengeClient({
+    evmPrivateKey: PRIVATE_KEY, authority: authority(), expectedRequirements: requirements(),
+  });
+  const createPaymentPayload = vi.fn(() => unbound.createPaymentPayload(challenge(), {
+    validBefore: validBefore + 1,
+  }));
+  const deps = { client: { ...unbound, createPaymentPayload },
+    fetchImpl: challengeFetch(challenge()).fetchImpl,
+    transportPolicy: { mode: "insecure-test" as const } };
+  await expect(prepareX402BuyerSettlement({ authority: authority(),
+    bindAuthorization: async () => ({ validBefore }) }, deps)).resolves.toEqual({
+    disposition: "rejected", reason: "x402-authorization-valid-before-mismatch",
+  });
+  createPaymentPayload.mockClear();
+  await expect(prepareX402BuyerSettlement({ authority: authority(),
+    bindAuthorization: async () => ({ validBefore: 0 }) }, deps)).resolves.toEqual({
+    disposition: "rejected", reason: "x402-authorization-valid-before-unbound",
+  });
+  expect(createPaymentPayload).not.toHaveBeenCalled();
 });

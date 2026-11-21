@@ -16,6 +16,8 @@ import {
   createX402BuyerEvmAuthorizationProvider,
   createX402BuyerSettlementIntent,
   x402BuyerSettlementAuthenticationHash,
+  x402BuyerUnsignedIntentHash,
+  type X402BuyerUnsignedIntentScope,
   type FixedPriceX402EffectFence,
   type FixedPriceX402OrderRecord,
   type FixedPriceX402TrackOperationInput,
@@ -39,6 +41,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DACS_NODE_LIVE_PROFILE,
   createDacsX402BuyerPaymentTrackV1,
+  type DacsX402BuyerPaymentTrackOptionsV1,
   createDacsX402WalletSpendRecoveryAuthenticatorV1,
 } from "../src/index.js";
 import {
@@ -68,7 +71,7 @@ function nonce(): `0x${string}` {
   return `0x${sha256Hex(`dacs-sb3:v1:${JOB_ID}:${PHASE_INDEX}`)}`;
 }
 
-function intent(): Readonly<X402BuyerSettlementIntent> {
+function intent(validBefore = 4_102_444_800): Readonly<X402BuyerSettlementIntent> {
   const chosenRequirements = {
     scheme: "exact",
     network: "eip155:84532" as const,
@@ -88,7 +91,7 @@ function intent(): Readonly<X402BuyerSettlementIntent> {
         to: PAYEE,
         value: "1000",
         validAfter: "0",
-        validBefore: "4102444800",
+        validBefore: String(validBefore),
         nonce: nonce(),
       },
       signature: `0x${"44".repeat(65)}`,
@@ -283,7 +286,7 @@ function recoveryReservation(
     phaseIndex: retained.phaseIndex,
     phase: "pay-x402",
     agreementHash: retained.agreementHash,
-    settlementBindingHash: retained.bindingHash,
+    settlementBindingHash: x402BuyerUnsignedIntentHash(retained),
     railId: retained.railId,
     railDefinitionHash: retained.railDescriptorHash,
     wallet: retained.payer.toLowerCase(),
@@ -407,6 +410,7 @@ function constrainedWallet(
   retained: Readonly<X402BuyerSettlementIntent>,
   authenticateRecovery: WalletSpendAuthorityDependenciesV1["authenticateRecovery"],
   now: () => number = Date.now,
+  bindAuthorizationValidBefore = async () => 4_102_444_800,
 ) {
   const ceiling = "999999999999999999999999";
   return createWalletSpendAuthorityV1({
@@ -431,6 +435,7 @@ function constrainedWallet(
     store: createInMemoryWalletSpendStateStore(),
     readBalance: async () => ceiling,
     authenticateRecovery,
+    bindAuthorizationValidBefore,
     now,
     owner: "x402-wallet-recovery-test",
     leaseDurationMs: 10,
@@ -578,11 +583,205 @@ describe("coordinator x402 buyer payment track", () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
+  function unsignedScope(retained: Readonly<X402BuyerSettlementIntent>): X402BuyerUnsignedIntentScope {
+    const { bindingHash: _hash, signedPaymentPayload: _payload, paymentHeader: _header, ...scope } = retained;
+    return scope;
+  }
+
+  function trackOptions(opened: DacsNodeSqliteDatabase, retained = intent()): DacsX402BuyerPaymentTrackOptionsV1 {
+    return {
+      database: opened, workerId: "hold-worker", finalityBlocks: 5,
+      settlementStore: createInMemoryX402BuyerSettlementStore(),
+      authorizationProvider: provider(retained, []),
+      transport: { submitRetained: vi.fn(async () => ({ disposition: "indeterminate" as const,
+        reason: "response-lost" })) },
+      walletSpendAuthority: constrainedWallet(retained, async () => true, () => 1_000),
+      prepareIntent: async (_input, bind) => { await bind(unsignedScope(retained)); return retained; },
+      authorizePreparedIntent: async () => true,
+    };
+  }
+
+  it("reserves the hold before signing and signs with the returned validBefore", async () => {
+    const opened = await database();
+    const retained = intent();
+    const options = trackOptions(opened, retained);
+    const events: string[] = [];
+    const authority = options.walletSpendAuthority;
+    const reserve = vi.fn(async (...args: Parameters<WalletSpendAuthorityV1["reserve"]>) => {
+      events.push("reserve");
+      const claim = await authority.reserve(...args);
+      if (claim.status !== "reserved") return claim;
+      return { ...claim, permit: { ...claim.permit, beginEffect: async () => {
+        events.push("begin-effect"); await claim.permit.beginEffect();
+      } } };
+    });
+    const put = opened.putEffectIntent.bind(opened);
+    vi.spyOn(opened, "putEffectIntent").mockImplementation((input) => {
+      events.push("put-effect-intent"); return put(input);
+    });
+    const track = createDacsX402BuyerPaymentTrackV1({ ...options,
+      walletSpendAuthority: { ...authority, reserve },
+      authorizePreparedIntent: async () => { events.push("authorize-prepared"); return true; },
+      prepareIntent: async (_input, bind) => {
+        const binding = await bind(unsignedScope(retained));
+        events.push("sign");
+        return intent(binding.validBefore);
+      },
+      transport: { submitRetained: async () => {
+        events.push("paid-request"); throw new Error("response lost");
+      } },
+    });
+    expect(await track(operationInput())).toMatchObject({ status: "indeterminate", reasonCode: "x402-paid-request-response-indeterminate" });
+    expect(events).toEqual(["authorize-prepared", "reserve", "sign", "put-effect-intent", "begin-effect", "paid-request"]);
+    expect(reserve).toHaveBeenCalledTimes(1);
+    expect(reserve.mock.calls[0]?.[0].settlementBindingHash).toBe(x402BuyerUnsignedIntentHash(retained));
+    expect(reserve.mock.calls[0]?.[1]).toEqual({ authorizationWindowSeconds: 120 });
+    expect(opened.loadEffectInput("payment", operationInput().fence.idempotencyKey))
+      .toMatchObject({ intent: { signedPaymentPayload: { payload: {
+        authorization: { validBefore: "4102444800" },
+      } } } });
+  });
+
+  it("never signs without a reserved hold that carries a bound validBefore", async () => {
+    for (const failure of ["unauthorized", "denied", "unavailable", "unbound", "skipped"] as const) {
+      const opened = await database();
+      const options = trackOptions(opened);
+      const signs = vi.fn();
+      const base = createPermissiveTestWalletSpendAuthorityV1();
+      const reserve = vi.fn(async (reservation: Readonly<WalletSpendReservationV1>) => {
+        if (failure === "denied") return { status: "denied" as const, reason: "per-order-limit" as const };
+        if (failure === "unavailable") throw new Error("reserve failed");
+        const claim = await base.reserve(reservation);
+        if (claim.status !== "reserved") throw new Error("expected reservation");
+        const { authorizationValidBefore: _value, ...permit } = claim.permit;
+        return { ...claim, permit };
+      });
+      const track = createDacsX402BuyerPaymentTrackV1({ ...options,
+        walletSpendAuthority: { ...base, reserve },
+        authorizePreparedIntent: async () => failure !== "unauthorized",
+        prepareIntent: async (_input, bind) => {
+          if (failure !== "skipped") { await bind(unsignedScope(intent())); signs(); }
+          return intent();
+        },
+      });
+      const expected = {
+        unauthorized: ["operator-action", "x402-prepared-intent-unauthorized"],
+        denied: ["operator-action", "wallet-spend-per-order-limit"],
+        unavailable: ["pending-retry", "wallet-spend-authority-unavailable"],
+        unbound: ["operator-action", "x402-authorization-valid-before-unbound"],
+        skipped: ["operator-action", "x402-authorization-valid-before-unbound"],
+      }[failure];
+      expect(await track(operationInput())).toMatchObject({ status: expected[0], reasonCode: expected[1] });
+      expect(signs).not.toHaveBeenCalled();
+      expect(options.transport.submitRetained).not.toHaveBeenCalled();
+      expect(opened.loadEffectInput("payment", operationInput().fence.idempotencyKey)).toBeUndefined();
+      if (failure === "unauthorized" || failure === "skipped") expect(reserve).not.toHaveBeenCalled();
+    }
+  });
+
+  it("releases a hold left by an attempt that stopped before storing, then reserves again", async () => {
+    const opened = await database();
+    const options = trackOptions(opened);
+    let now = 1_000;
+    let acceptRelease = false;
+    let expiry = 4_102_444_700;
+    const held = constrainedWallet(intent(), async () => acceptRelease, () => now,
+      async () => expiry);
+    const reserve = vi.fn(held.reserve);
+    const reconcile = vi.fn(held.reconcile);
+    let failSigning = true;
+    const signs = vi.fn();
+    const track = createDacsX402BuyerPaymentTrackV1({ ...options,
+      walletSpendAuthority: { ...held, reserve, reconcile },
+      prepareIntent: async (_input, bind) => {
+        const binding = await bind(unsignedScope(intent()));
+        signs(binding.validBefore);
+        if (failSigning) throw new Error("signer unavailable");
+        return intent();
+      },
+    });
+    expect(await track(operationInput())).toMatchObject({ status: "indeterminate",
+      reasonCode: "x402-signing-after-hold-failed" });
+    expect(opened.loadEffectInput("payment", operationInput().fence.idempotencyKey)).toBeUndefined();
+    expect(await held.reserve(recoveryReservation())).toMatchObject({ status: "held", stage: "reserved" });
+    failSigning = false;
+    expect(await track(operationInput())).toMatchObject({ status: "indeterminate",
+      reasonCode: "x402-unstored-hold-awaiting-release" });
+    expect(signs).toHaveBeenCalledTimes(1);
+    now = 1_011;
+    acceptRelease = true;
+    // The first attempt never produced bytes; a fresh hold gets the fixture expiry.
+    expiry = 4_102_444_800;
+    await track(operationInput());
+    expect(reconcile).toHaveBeenCalledWith(recoveryReservation(), {
+      disposition: "terminal-absent",
+      evidenceHash: sha256Hex(`dacs-x402-unstored-hold:v1:${recoveryReservation().reservationId}`),
+    });
+    expect(reserve).toHaveBeenCalledTimes(4);
+    expect(signs.mock.calls).toEqual([[4_102_444_700], [4_102_444_800]]);
+    expect(options.transport.submitRetained).toHaveBeenCalledTimes(1);
+  });
+
+  it("a retry without the carried permit sends nothing", async () => {
+    for (const begun of [false, true]) {
+      const opened = await database();
+      const options = trackOptions(opened);
+      const claim = await options.walletSpendAuthority.reserve(recoveryReservation());
+      if (claim.status !== "reserved") throw new Error("expected reservation");
+      if (begun) {
+        await claim.permit.beginEffect();
+        await options.transport.submitRetained(intent(), {
+          owner: "earlier-process", generation: 1, settlementKey: intent().settlementKey,
+          bindingHash: intent().bindingHash, idempotencyKey: intent().settlementKey,
+          assertCurrent: async () => undefined,
+        });
+        vi.mocked(options.transport.submitRetained).mockClear();
+      }
+      const before = await options.walletSpendAuthority.inspect();
+      const reserve = vi.fn(options.walletSpendAuthority.reserve);
+      const prepareIntent = vi.fn(options.prepareIntent);
+      const invocation = operationInput();
+      opened.putEffectIntent({ kind: "payment", effectId: invocation.fence.idempotencyKey,
+        bindingHash: invocation.fence.localBindingHash, idempotencyKey: invocation.fence.idempotencyKey,
+        jobId: JOB_ID, input: { paymentInputVersion: "1", orderBindingHash: BINDING_HASH,
+          orderLocalBindingHash: LOCAL_BINDING_HASH, intent: intent() } });
+      const track = createDacsX402BuyerPaymentTrackV1({ ...options, prepareIntent,
+        walletSpendAuthority: { ...options.walletSpendAuthority, reserve } });
+      expect(await track(invocation)).toMatchObject({ status: "indeterminate",
+        reasonCode: "x402-wallet-hold-not-carried" });
+      expect(prepareIntent).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+      expect(await options.walletSpendAuthority.inspect()).toEqual(before);
+      expect(options.transport.submitRetained).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a failed input write leaves the hold reserved and sends nothing", async () => {
+    const opened = await database();
+    const options = trackOptions(opened);
+    const held = constrainedWallet(intent(), async () => false, () => 1_000);
+    const prepareIntent = vi.fn(options.prepareIntent);
+    const originalPut = opened.putEffectIntent.bind(opened);
+    const failure = new Error("input write failed");
+    const write = vi.spyOn(opened, "putEffectIntent").mockImplementationOnce(() => { throw failure; });
+    const track = createDacsX402BuyerPaymentTrackV1({ ...options, prepareIntent, walletSpendAuthority: held });
+    await expect(track(operationInput())).rejects.toBe(failure);
+    expect(await held.reserve(recoveryReservation())).toMatchObject({ status: "held", stage: "reserved" });
+    expect(opened.loadEffectInput("payment", operationInput().fence.idempotencyKey)).toBeUndefined();
+    write.mockImplementation(originalPut);
+    expect(await track(operationInput())).toMatchObject({ status: "indeterminate",
+      reasonCode: "x402-unstored-hold-awaiting-release" });
+    expect(options.transport.submitRetained).not.toHaveBeenCalled();
+    expect(prepareIntent).toHaveBeenCalledTimes(2);
+  });
+
   it("persists the bearer before one paid request and replays the authenticated result", async () => {
     const opened = await database();
     const retained = intent();
     const settlementStore = createInMemoryX402BuyerSettlementStore();
-    const prepareIntent = vi.fn(async () => retained);
+    const prepareIntent = vi.fn(async (_input, bind) => {
+      await bind(unsignedScope(retained)); return retained;
+    });
     const submitRetained = vi.fn(async () => ({
       disposition: "response" as const,
       disclosure: disclosure(),
@@ -710,7 +909,7 @@ describe("coordinator x402 buyer payment track", () => {
           { disposition: "settled-same", settlement: captured(retained) },
         ]),
         transport,
-        prepareIntent: async () => retained,
+        prepareIntent: async (_input, bind) => { await bind(unsignedScope(retained)); return retained; },
         authorizePreparedIntent: async () => true,
         retryDelayMs: 1,
       });
@@ -750,7 +949,7 @@ describe("coordinator x402 buyer payment track", () => {
       settlementStore,
       authorizationProvider,
       transport: { submitRetained },
-      prepareIntent: async () => retained,
+      prepareIntent: async (_input, bind) => { await bind(unsignedScope(retained)); return retained; },
       authorizePreparedIntent: () => true,
       settlementLeaseDurationMs: 30_000,
       retryDelayMs: 1,
@@ -809,7 +1008,7 @@ describe("coordinator x402 buyer payment track", () => {
           disclosure: disclosure(),
         })),
       },
-      prepareIntent: async () => retained,
+      prepareIntent: async (_input, bind) => { await bind(unsignedScope(retained)); return retained; },
       authorizePreparedIntent: () => true,
       effectLeaseDurationMs: 1_000,
       settlementLeaseDurationMs: 30_000,
@@ -869,7 +1068,7 @@ describe("coordinator x402 buyer payment track", () => {
         { disposition: "indeterminate", reason: "chain-read-unavailable" },
       ]),
       transport: { submitRetained },
-      prepareIntent: async () => retained,
+      prepareIntent: async (_input, bind) => { await bind(unsignedScope(retained)); return retained; },
       authorizePreparedIntent: () => true,
       retryDelayMs: 1,
     });
@@ -1192,7 +1391,7 @@ describe("coordinator x402 buyer payment track", () => {
         transport: { submitRetained },
         walletSpendAuthority: wallet,
         finalityBlocks: 5,
-        prepareIntent: async () => retained,
+        prepareIntent: async (_input, bind) => { await bind(unsignedScope(retained)); return retained; },
         authorizePreparedIntent: () => true,
         settlementLeaseDurationMs: 10,
         retryDelayMs: 1,
@@ -1291,7 +1490,7 @@ describe("coordinator x402 buyer payment track", () => {
       transport: { submitRetained },
       walletSpendAuthority: wallet,
       finalityBlocks: 5,
-      prepareIntent: async () => retained,
+      prepareIntent: async (_input, bind) => { await bind(unsignedScope(retained)); return retained; },
       authorizePreparedIntent: () => true,
       settlementLeaseDurationMs: 10,
       retryDelayMs: 1,
@@ -1426,7 +1625,7 @@ describe("coordinator x402 buyer payment track", () => {
         transport: { submitRetained },
         walletSpendAuthority: wallet,
         finalityBlocks: 5,
-        prepareIntent: async () => retained,
+        prepareIntent: async (_input, bind) => { await bind(unsignedScope(retained)); return retained; },
         authorizePreparedIntent: () => true,
         settlementLeaseDurationMs: 10,
         retryDelayMs: 1,

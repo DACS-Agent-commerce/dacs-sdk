@@ -3,6 +3,9 @@ import { types as nodeTypes } from "node:util";
 import {
   advanceX402BuyerSettlement,
   assertX402BuyerSettlementIntent,
+  x402BuyerUnsignedIntentHash,
+  type X402BuyerUnsignedIntentScope,
+  type X402BuyerAuthorizationBindingV1,
   createX402BuyerEvmAuthorizationProvider,
   createX402BuyerRetainedDisclosureRecovery,
   type WalletSpendAuthorityDependenciesV1,
@@ -25,10 +28,11 @@ import {
   type X402BuyerSettlementIntent,
   type X402BuyerSettlementStore,
 } from "@kynesyslabs/dacs";
-import { canonicalize } from "@kynesyslabs/dacs/canonical";
+import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 
 import {
   createDacsLiveEffectTrackV1,
+  DacsLiveEffectInputControlError,
   type DacsLiveEffectExecutionControlV1,
   type DacsLiveEffectFenceV1,
   type DacsLiveEffectReconciliationV1,
@@ -117,12 +121,14 @@ export interface DacsX402BuyerPaymentTrackOptionsV1<TObservation = unknown> {
    */
   prepareIntent(
     input: Readonly<FixedPriceX402TrackOperationInput>,
+    bindAuthorization: (scope: Readonly<X402BuyerUnsignedIntentScope>) =>
+      Promise<Readonly<X402BuyerAuthorizationBindingV1>>,
   ): Promise<Readonly<X402BuyerSettlementIntent>> |
     Readonly<X402BuyerSettlementIntent>;
   /** Application-owned agreement/rail/session authority for the prepared intent. */
   authorizePreparedIntent(input: Readonly<{
     order: Readonly<FixedPriceX402TrackOperationInput["order"]>;
-    intent: Readonly<X402BuyerSettlementIntent>;
+    intent: Readonly<X402BuyerUnsignedIntentScope>;
   }>): Promise<boolean> | boolean;
   effectLeaseDurationMs?: number;
   settlementLeaseDurationMs?: number;
@@ -216,7 +222,7 @@ function walletReservation(
 }
 
 function walletReservationForIntent(
-  intent: Readonly<X402BuyerSettlementIntent>,
+  intent: Readonly<X402BuyerUnsignedIntentScope>,
   finalityBlocks: number,
 ): Readonly<WalletSpendReservationV1> {
   return Object.freeze({
@@ -226,7 +232,7 @@ function walletReservationForIntent(
     phaseIndex: intent.phaseIndex,
     phase: "pay-x402",
     agreementHash: intent.agreementHash,
-    settlementBindingHash: intent.bindingHash,
+    settlementBindingHash: x402BuyerUnsignedIntentHash(intent),
     railId: intent.railId,
     railDefinitionHash: intent.railDescriptorHash,
     wallet: intent.payer.toLowerCase(),
@@ -240,6 +246,14 @@ function walletReservationForIntent(
       maximumAmount: intent.amount,
     })]),
   });
+}
+
+function signedValidBefore(intent: Readonly<X402BuyerSettlementIntent>): string | undefined {
+  const payload = intent.signedPaymentPayload.payload;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const authorization = payload.authorization;
+  if (authorization === null || typeof authorization !== "object" || Array.isArray(authorization)) return undefined;
+  return typeof authorization.validBefore === "string" ? authorization.validBefore : undefined;
 }
 
 function walletSettlement(
@@ -775,6 +789,7 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
     }
   }
 
+  const carried = new Map<string, Readonly<WalletSpendPermitV1>>();
   const adapter = {
     async execute(invocation: Readonly<{
       input: Readonly<DacsX402BuyerPaymentInputV1>;
@@ -785,19 +800,11 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
           paymentInput.intent.jobId !== invocation.fence.jobId) {
         return control("operator-action", "x402-payment-binding-mismatch");
       }
-      const reservation = walletReservation(paymentInput, finalityBlocks);
-      const claim = await walletSpendAuthority.reserve(reservation);
-      if (claim.status !== "reserved") {
-        return control(
-          claim.status === "held" || claim.status === "settled"
-            ? "indeterminate" : "operator-action",
-          claim.status === "denied"
-            ? `wallet-spend-${claim.reason}`
-            : `wallet-spend-${claim.status}`,
-        );
-      }
+      const permit = carried.get(paymentInput.intent.settlementKey);
+      carried.delete(paymentInput.intent.settlementKey);
+      if (permit === undefined) return control("indeterminate", "x402-wallet-hold-not-carried");
       const wrap = (fence: Readonly<X402BuyerEffectFence>) =>
-        combinedFence(fence, invocation.fence, claim.permit);
+        combinedFence(fence, invocation.fence, permit);
       const progress = await advanceX402BuyerSettlement({
         intent: paymentInput.intent,
         owner: `${workerId}-${invocation.fence.generation}`,
@@ -812,7 +819,7 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
         },
         transport: {
           submitRetained: async (intent, fence) => {
-            await claim.permit.beginEffect();
+            await permit.beginEffect();
             return transport.submitRetained(intent, wrap(fence));
           },
         },
@@ -905,21 +912,75 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
     ...(options.retryDelayMs === undefined
       ? {} : { retryDelayMs: options.retryDelayMs }),
     async buildInput(operationInput) {
-      const intent = await options.prepareIntent(operationInput);
-      assertX402BuyerSettlementIntent(intent);
-      if (intent.jobId !== operationInput.order.jobId ||
-          await options.authorizePreparedIntent({
-            order: operationInput.order,
-            intent,
-          }) !== true) {
-        throw new DacsX402BuyerPaymentError("x402-prepared-intent-unauthorized");
-      }
-      return {
-        paymentInputVersion: "1" as const,
-        orderBindingHash: operationInput.order.bindingHash,
-        orderLocalBindingHash: operationInput.order.localBindingHash,
-        intent,
+      let permit: Readonly<WalletSpendPermitV1> | undefined;
+      const bindAuthorization = async (scope: Readonly<X402BuyerUnsignedIntentScope>) => {
+        if (scope.jobId !== operationInput.order.jobId ||
+            await options.authorizePreparedIntent({ order: operationInput.order, intent: scope }) !== true) {
+          throw new DacsX402BuyerPaymentError("x402-prepared-intent-unauthorized");
+        }
+        const reservation = walletReservationForIntent(scope, finalityBlocks);
+        const reserve = async () => {
+          try {
+            return await walletSpendAuthority.reserve(reservation, {
+              authorizationWindowSeconds: scope.chosenRequirements.maxTimeoutSeconds,
+            });
+          } catch {
+            throw new DacsLiveEffectInputControlError("pending-retry", "wallet-spend-authority-unavailable");
+          }
+        };
+        let claim = await reserve();
+        if (claim.status === "held" && claim.stage === "reserved") {
+          let released: Awaited<ReturnType<WalletSpendAuthorityV1["reconcile"]>>;
+          try {
+            released = await walletSpendAuthority.reconcile(reservation, {
+              disposition: "terminal-absent",
+              evidenceHash: sha256Hex(`dacs-x402-unstored-hold:v1:${reservation.reservationId}`),
+            });
+          } catch {
+            throw new DacsLiveEffectInputControlError("indeterminate", "x402-unstored-hold-awaiting-release");
+          }
+          if (released === "released" || released === "existing") claim = await reserve();
+        }
+        if (claim.status !== "reserved") {
+          throw new DacsLiveEffectInputControlError(
+            claim.status === "held" || claim.status === "settled" ? "indeterminate" : "operator-action",
+            claim.status === "denied" ? `wallet-spend-${claim.reason}` : `wallet-spend-${claim.status}`,
+          );
+        }
+        const validBefore = claim.permit.authorizationValidBefore;
+        if (validBefore === undefined || !Number.isSafeInteger(validBefore) || validBefore <= 0) {
+          throw new DacsLiveEffectInputControlError("operator-action", "x402-authorization-valid-before-unbound");
+        }
+        permit = claim.permit;
+        return { validBefore };
       };
+      try {
+        const intent = await options.prepareIntent(operationInput, bindAuthorization);
+        assertX402BuyerSettlementIntent(intent);
+        if (permit === undefined) {
+          throw new DacsLiveEffectInputControlError("operator-action", "x402-authorization-valid-before-unbound");
+        }
+        if (canonicalize(walletReservationForIntent(intent, finalityBlocks)) !== canonicalize(permit.reservation)) {
+          throw new DacsX402BuyerPaymentError("x402-signed-intent-reservation-mismatch");
+        }
+        if (signedValidBefore(intent) !== String(permit.authorizationValidBefore)) {
+          throw new DacsX402BuyerPaymentError("x402-authorization-valid-before-mismatch");
+        }
+        carried.set(intent.settlementKey, permit);
+        return {
+          paymentInputVersion: "1" as const,
+          orderBindingHash: operationInput.order.bindingHash,
+          orderLocalBindingHash: operationInput.order.localBindingHash,
+          intent,
+        };
+      } catch (error) {
+        if (permit !== undefined || error instanceof DacsX402BuyerPaymentError) {
+          throw new DacsLiveEffectInputControlError(permit === undefined ? "operator-action" : "indeterminate",
+            error instanceof Error && "reasonCode" in error && typeof error.reasonCode === "string"
+              ? error.reasonCode : "x402-signing-after-hold-failed");
+        }
+        throw error;
+      }
     },
     adapter,
     projectResult: (result) => ({
