@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "D76",
+  "subject": "delta(client): D76 keep the Node wallet signature gate on demosdk 4.0.23 and pin the compatibility checks to it",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "73d0105200cb8ccc9991eb7748d1a192034e49c0",
+      "after": "bbd5fd99cecdc2b5bac41401316259844c14a8d6"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "8818616150a76a7c84d90cddd1e023a441e7f9b5",
+      "after": "42d70e20baad4fb5eb6e5790d4928367cf4bacc8"
+    },
+    {
+      "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+      "before": "ad49c47e224e203ea0c0ecb16c8feb5a1af48079",
+      "after": "db2870c8b3cdc590f1b5ab5d0d4bf19f47742fe1"
+    }
+  ],
+  "commitFiles": [
+    ".github/workflows/demosdk-compat.yml",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/D76-b90918bebf41.json",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+    "test/scripts/demosdk-pin-drift.test.ts"
+  ],
+  "note": "demosdk 4.0.23's Demos constructor runs hideSecretFields(this, ['crypto']), which makes crypto an own non-enumerable data property, and then assigns this.crypto. The own property shadowed NodeDemos's crypto accessor, so the raw SDK crypto was stored unwrapped and transaction signatures skipped the effect gate and the finalized-content check. NodeDemos now moves an own configurable crypto data property back behind its accessor after super() returns, and refuses node_wallet_sdk_unguarded at construction unless crypto is read through the accessor and is a gate wrapper; sign checks the same before the SDK signs (a disconnected instance's null crypto still reaches the SDK). The setter unwraps a gate wrapper handed back to it, so the gate runs once. The instance gains no enumerable own crypto; on 4.0.23 the SDK's toJSON and inspect hooks still apply. No other member NodeDemos overrides is an own property of a 4.0.23 instance. The README lists the 4.0.23 statement lines; the compatibility workflow pins its tests, matrix entry and drift check to 4.0.23, and the drift test follows. Package ranges, the peer floor, the seller pin and the lockfile are unchanged."
+}
