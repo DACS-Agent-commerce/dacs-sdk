@@ -38,30 +38,61 @@ export function shared({ answers, getContext = () => ({ ...local }), getBlock, t
   return { binder, heights };
 }
 
+// A synthetic stabilised-genesis node: numeric block zero is a real block, `getChainIdentity` answers, and block
+// one chains to block zero with its own number. Every reviewed value here is a test value, not node evidence.
+export const stabilisedGenesis = Object.freeze({
+  representation: 'stabilised-genesis', documentation: 'TEST reviewed stabilised-genesis reference', chainId: 'TEST-stabilised-chain',
+  genesisHash: record.chainIdentity, genesisDataHash: hash('TEST-genesis-data'), blockOneHash: hash('TEST-stabilised-block-one'),
+});
+/** Fresh replies of that node, keyed by the request: numeric height 0, 'chainIdentity' and numeric height 1. */
+export const stabilisedReplies = () => ({
+  0: envelope({ number: 0, status: 'confirmed', hash: stabilisedGenesis.genesisHash }),
+  chainIdentity: envelope({ chainId: stabilisedGenesis.chainId, genesisHash: stabilisedGenesis.genesisHash, genesisDataHash: stabilisedGenesis.genesisDataHash }),
+  1: envelope({ id: 1, number: 1, hash: stabilisedGenesis.blockOneHash, content: { previousHash: stabilisedGenesis.genesisHash }, status: 'confirmed', proposer: 'TEST-proposer', next_proposer: 'TEST-next', validation_data: {}, attrs: {} }),
+});
+/** The shared reader over `replies`; `reads` traces the request keys in order. `receiptContext` and `getContext` steer the reconnect cases. */
+export function stabilisedShared({ replies = stabilisedReplies(), policy = stabilisedGenesis, getContext = () => ({ ...local }), receiptContext = () => ({ ...local }), getReply, timeoutMs = 10_000 } = {}) {
+  const reads = [];
+  const read = async key => {
+    reads.push(key);
+    const value = getReply ? await getReply(key) : replies[key];
+    return { value: structuredClone(value), context: receiptContext(key), observedAt: NOW, fromCache: false, redirected: false };
+  };
+  const binder = createDemosNetworkBinder({ expected, stabilisedGenesis: policy, now: () => NOW, timeoutMs, reader: {
+    getContext, getBlockByNumber: height => read(height), getChainIdentity: () => read('chainIdentity'),
+  } });
+  return { binder, reads };
+}
+
 // Synthetic nine-field block two with the ten reviewed content fields, chained to the unchanged dated block one.
 // Its hash is a test pin, not captured evidence from a node.
 const syntheticTwoContent = { ordered_transactions: [], encrypted_transactions_hashes: {}, per_address_transactions: {}, web2data: {}, previousHash: captured.one.response.hash,
   timestamp: 1_792_496_207, peerlist: [], l2ps_partecipating_nodes: {}, l2ps_banned_nodes: {}, native_tables_hashes: {} };
 export const syntheticTwo = envelope({ id: 3, number: 2, hash: hash('TEST-synthetic-reviewed-block-two'), content: syntheticTwoContent, status: 'confirmed', proposer: 'TEST-proposer', next_proposer: 'TEST-next', validation_data: {}, attrs: {} });
-export function native(t) {
-  const replies = new Map([[0, structuredClone(captured.zero)], ['0', structuredClone(captured.genesis)], [1, structuredClone(captured.one)], [2, structuredClone(syntheticTwo)]]);
+/** The native transport over scripted replies: the literal-error chain by default, the synthetic stabilised-genesis chain with `stabilised`. */
+export function native(t, { stabilised = false } = {}) {
+  const replies = new Map(stabilised
+    ? Object.entries(stabilisedReplies()).map(([key, value]) => [key === 'chainIdentity' ? key : Number(key), value])
+    : [[0, structuredClone(captured.zero)], ['0', structuredClone(captured.genesis)], [1, structuredClone(captured.one)], [2, structuredClone(syntheticTwo)]]);
+  const identityOptions = stabilised ? { stabilisedGenesis }
+    : { fallback, blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: syntheticTwo.response.hash };
   const heights = [], messages = [];
   let effects = 0;
   const directory = mkdtempSync(join(tmpdir(), 'chain-identity-')), stored = openDurableWalletJournal({ path: join(directory, 'journal.sqlite'), mode: 'create' });
   const journal = { ...stored, put: async () => { effects++; throw Error('TEST-write-forbidden'); } };
   const transportOwner = { getContext: () => ({ ...local }), acquireConnectionFence: () => ({ context: { ...local }, release() {} }) };
   const boundary = writingBoundary({ owner: transportOwner, journal: stored });
-  const transport = createDevnetSettlementTransport({ boundary, expected, fallback, journal, now: () => NOW,
-    blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: syntheticTwo.response.hash,
+  const transport = createDevnetSettlementTransport({ boundary, expected, ...identityOptions, journal, now: () => NOW,
     settlementPublication: { policy: 'dacs-native-settlement-publication/v1', artifactKind: 'SettlementEvidence', phase: 'pay-dem', phaseIndex: 2, railId: 'demos-native:DEM', authority: 'TEST-identity-read' },
     transportOwner,
     fetchImpl: async (_url, options) => {
       const body = JSON.parse(options.body), call = body.params[0];
       assert.equal(body.method, 'nodeCall', 'identity tests must never execute');
       messages.push(call.message);
-      if (call.message !== 'getBlockByNumber') return new Response(JSON.stringify(envelope({ state: 'included' })), { headers: { 'content-type': 'application/json' } });
-      heights.push(call.data.blockNumber);
-      const answer = replies.get(call.data.blockNumber);
+      const key = call.message === 'getChainIdentity' ? 'chainIdentity' : call.data?.blockNumber;
+      if (call.message !== 'getBlockByNumber' && key !== 'chainIdentity') return new Response(JSON.stringify(envelope({ state: 'included' })), { headers: { 'content-type': 'application/json' } });
+      heights.push(key);
+      const answer = replies.get(key);
       if (answer instanceof Error) throw answer;
       return new Response(typeof answer === 'string' ? answer : JSON.stringify(answer), { headers: { 'content-type': 'application/json' } });
     },

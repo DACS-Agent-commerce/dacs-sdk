@@ -9,11 +9,8 @@ import { fixtureIdentityBundle, fixtureListing } from './fixtures/listings.mjs';
 import { testWallet } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
-import { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { createSellerHttpsClient } from '../../dacs-client/src/dacs/seller-http.mjs';
 import { fetchClient } from '../../dacs-client/test/helpers/seller-https-rig.mjs';
-import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
-import { createWireContext } from '../src/dacs/seller-wire-requests.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { boundPurchaseOf, createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from '../../dacs-client/test/helpers/purchase-admission-hook.mjs';
@@ -22,6 +19,10 @@ installPurchaseAdmissionHook();
 const { setPurchaseAdmission } = await loadAdmissionDouble();
 setPurchaseAdmission('testnet-tp1');
 const { exchangeAgreement, planAgreement, listingPin } = await import('../../dacs-client/src/dacs/purchase-protocol.mjs');
+// These seller modules reach the client (through the devnet source checks), so they load after the hold double is installed.
+const { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } = await import('../src/dacs/seller-http.mjs');
+const { createSellerWireClientAuth } = await import('../src/dacs/seller-wire-client-auth.mjs');
+const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs');
 const T0 = Date.UTC(2026, 9, 27, 12);
 const JOURNAL_LEASE_MS = 300_000;
 

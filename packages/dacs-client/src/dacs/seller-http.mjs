@@ -9,7 +9,7 @@
 // SellerRefusedError; unsigned, malformed, interrupted, ambiguous, held, suspended or
 // readback-only answers are unavailable, with their class and cause kept.
 import { isIP } from 'node:net';
-import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_RESUME_HEADER, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
 import { settleOnAbort } from '../util/http.mjs';
 import { isDacsPublicAddressV1, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { classifySellerAnswer, SELLER_ANSWER_CLASS, SELLER_EFFECT_UNRESOLVED } from './seller-response-class.mjs';
@@ -19,7 +19,7 @@ import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 const MAX_BODY = 64 * 1024;
 /** The most response header bytes the connector reads from a seller. */
 const SELLER_RESPONSE_HEADER_BYTES = 16 * 1024;
-const CLIENT_OPTIONS = new Set(['publicEndpoint', 'timeoutMs', 'commitOnSignature', 'authentication', 'connector', 'requestRecords', 'clock']);
+const CLIENT_OPTIONS = new Set(['publicEndpoint', 'timeoutMs', 'commitOnSignature', 'authentication', 'connector', 'requestRecords', 'clock', 'explicitResume']);
 const PUBLIC_CLIENT_OPTIONS = new Set(['admission', 'publicEndpoint', 'timeoutMs', 'commitOnSignature', 'authentication']);
 
 // The third argument is the classifier's {answerClass, code}: the class of the seller's answer and its error code.
@@ -137,6 +137,9 @@ export const sellerEndpointOrigin = (publicEndpoint) => parsePublicEndpoint(publ
  * recorded effect attempt, while reads use false, and `failure(error)` records a refusal). Authenticated calls with
  * stored attempts retry unknown dispatches twice; all other calls send once. A suspended answer is recorded and never retried.
  * clock supplies `now()` and `sleep(ms)` so a test injects time. connector is `{send(options)}` from createSellerHttpsConnector.
+ * `explicitResume(path)` (optional) is the caller's one-shot taker: it answers true at most once, for the route a buyer's explicit
+ * resume named. The first attempt of that call then carries a fresh proof of the resume (see `authentication.resumeProof`) in the `x-dacs-seller-resume` header.
+ * No automatic retry of the call, and no other call, sends one; the proof is never kept.
  * `request(path, body, {prepareTransmit, beforeTransmit})` hands the effect boundary's two callbacks to the connector unchanged;
  * neither the construction options nor the named methods accept them. Throws TypeError for an option it does not take, an
  * endpoint that is not a public https origin, or a missing authentication or connector.
@@ -144,7 +147,7 @@ export const sellerEndpointOrigin = (publicEndpoint) => parsePublicEndpoint(publ
 export function createSellerHttpsClient(options) {
   const unaccepted = Object.keys(options).find((name) => !CLIENT_OPTIONS.has(name));
   if (unaccepted !== undefined) throw new TypeError(`seller client option is not accepted: ${unaccepted}`);
-  const { publicEndpoint, timeoutMs, authentication, commitOnSignature = false, requestRecords, clock = SELLER_CLOCK, connector } = options;
+  const { publicEndpoint, timeoutMs, authentication, commitOnSignature = false, requestRecords, clock = SELLER_CLOCK, connector, explicitResume = null } = options;
   if (typeof authentication?.request !== 'function' || typeof authentication.verifyResponse !== 'function') throw new TypeError('seller client requires a wire authentication');
   if (typeof connector?.send !== 'function') throw new TypeError('seller client requires a connector');
   const origin = parsePublicEndpoint(publicEndpoint).origin;
@@ -163,6 +166,7 @@ export function createSellerHttpsClient(options) {
 
   // One absolute deadline includes storage, authority reads, signing, delays and transport.
   async function post(path, body, transmit = {}) {
+    const resumeProof = explicitResume?.(path) === true;
     const deadline = clock.now() + routeDeadlineMs(path);
     let unknown, unknownCause;
     for (let retry = 0; ; retry++) {
@@ -175,7 +179,7 @@ export function createSellerHttpsClient(options) {
       }
       const attempt = requestRecords?.start(path, body);
       try {
-        const answer = await send(path, body, attempt, deadline, transmit);
+        const answer = await send(path, body, attempt, deadline, transmit, resumeProof && retry === 0);
         attempt?.finish(answer.answerClass);
         return answer.body;
       } catch (error) {
@@ -194,7 +198,7 @@ export function createSellerHttpsClient(options) {
     }
   }
 
-  async function send(path, requestBody, attempt, deadline, { prepareTransmit, beforeTransmit }) {
+  async function send(path, requestBody, attempt, deadline, { prepareTransmit, beforeTransmit }, withResumeProof) {
     lastFailureCause = undefined;
     lastFailureDispatched = undefined;
     let phase = 'other', signal, dispatched = false;
@@ -211,6 +215,7 @@ export function createSellerHttpsClient(options) {
       signal = AbortSignal.timeout(Math.ceil(deadline - clock.now()));
       phase = 'client-sign';
       const signed = await settleOnAbort(authentication.request(path, body, text, { signal, checkDeadline }), signal);
+      const resumeHeader = withResumeProof ? await settleOnAbort(authentication.resumeProof(signed, { signal, checkDeadline }), signal) : null;
       checkDeadline();
       try { attempt?.check(); } catch (refusal) { recordRefusals.add(refusal); throw refusal; }
       checkDeadline();
@@ -219,7 +224,7 @@ export function createSellerHttpsClient(options) {
       let response;
       try {
         response = await connector.send({ origin, path: pathname, method: 'POST', body: Buffer.from(text),
-          headers: { accept: 'application/json', 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header },
+          headers: { accept: 'application/json', 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header, ...(resumeHeader ? { [DACS_SELLER_RESUME_HEADER]: resumeHeader } : {}) },
           deadlineMs: Math.max(1, Math.ceil(deadline - clock.now())), maxResponseBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes,
           maxResponseHeaderBytes: SELLER_RESPONSE_HEADER_BYTES, prepareTransmit, beforeTransmit });
         dispatched = true;
