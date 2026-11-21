@@ -60,9 +60,9 @@
 //    with clearHeldWrite once the chain shows it applied or unable to execute;
 //  - broadcast({ signedTransaction, txHash }, { signal }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
-//  - readAccountNonce() -> a non-negative safe integer, or an authenticated
+//  - readAccountNonce({ signal }) -> a non-negative safe integer, or an authenticated
 //    { nonce, blockHeight } snapshot from the qualified wallet reader;
-//  - readTransactionState({ txHash, signedTransaction, nonce }) -> 'applied', 'pending', or 'absent'.
+//  - readTransactionState({ txHash, signedTransaction, nonce }, { signal }) -> 'applied', 'pending', or 'absent'.
 //    The journal passes the signed bytes and nonce it keeps for that hash, so a
 //    reader can compare the chain with them after its own record of the write ended.
 //    An ordinary absent/unknown answer is indeterminate and cannot supersede.
@@ -416,10 +416,10 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       return await Promise.race([Promise.resolve().then(() => call(controller.signal)), new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(timedOut()); }, readTimeoutMs); })]);
     } finally { clearTimeout(timer); }
   };
-  // A wallet read with a deadline: a throw, a timeout or an answer of another shape is null.
+  // A wallet read with a deadline, given its signal: a throw, a timeout or an answer of another shape is null.
   const read = async (call, accept) => {
     try {
-      const value = accept(await withDeadline(() => call(), () => new Error('timed out')));
+      const value = accept(await withDeadline((signal) => call(signal), () => new Error('timed out')));
       return value === null ? { cause: 'answered no valid value' } : { value };
     } catch (error) { return { cause: reason(error) }; }
   };
@@ -430,11 +430,11 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   // Read the nonce snapshot before the transaction index. The latter must
   // have indexed at least that snapshot, closing the nonce-before-tx-row race.
   async function fate(signed) {
-    const account = await read(() => readAccountNonce(), (value) => {
+    const account = await read((signal) => readAccountNonce({ signal }), (value) => {
       const nonce = nonceOf(object(value) ? value.nonce : value, 0);
       return nonce === null ? null : { nonce, blockHeight: object(value) ? nonceOf(value.blockHeight, 0) : null };
     });
-    const state = await read(() => readTransactionState({ txHash: signed.txHash, signedTransaction: signed.signedTransaction, nonce: signed.nonce }), (value) => {
+    const state = await read((signal) => readTransactionState({ txHash: signed.txHash, signedTransaction: signed.signedTransaction, nonce: signed.nonce }, { signal }), (value) => {
       if (TX_STATES.has(value)) return { state: value, checkedThroughBlock: null };
       return object(value) && TX_STATES.has(value.state) ? { state: value.state, checkedThroughBlock: nonceOf(value.checkedThroughBlock, 0) } : null;
     });

@@ -1,0 +1,25 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged README and native transport with the withheld broadcast reopen and move the record anchor to the merge",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "a39e7444c1bc43f2a3149bdeba44d3bcbd2c50e6",
+      "after": "a39e7444c1bc43f2a3149bdeba44d3bcbd2c50e6"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "8f7d820090163c5144884f6cf2fa3e1bf4f0adb4",
+      "after": "8f7d820090163c5144884f6cf2fa3e1bf4f0adb4"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-15a145843b4d.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "Both sides of the merge recorded the README and the native transport; this record chooses the merged copies. The README keeps the base's storage CREATE reference block text and this change's withheldReopen paragraph. The native transport keeps every line of the base that reads the chain before a storage CREATE is confirmed and keeps and hands back its confirmation's reference block, and every line of this change's explicit reopen of a withheld broadcast. In the one decision both sides changed, the storage CREATE's broadcast-started row takes the base's gas and reference block from its confirmation, and a reopened hash's rows, which already name these bytes, are still not written again before the send. The commit also moves the anchor to the merge, so the anchored files start from their merged copies."
+}
