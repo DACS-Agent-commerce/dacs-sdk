@@ -784,7 +784,10 @@ In the repository, `examples/hello-world.ts` (not shipped in the package) publis
 it from its logical address. For the purchase itself, see
 [docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md). In a checkout of the repository,
 `npm run test:live` runs the funded two-agent flow end to end when funded testnet credentials are set, and
-skips it otherwise; `docs/live-e2e.md` in the repository lists what it needs.
+skips it otherwise; `docs/live-e2e.md` in the repository lists what it needs. In the repository,
+`docs/fixed-price-x402-walkthrough.md` walks through a generated live project on testnet. The page
+marks each step script, manual or not run, and lists what does not work yet, including the buy's
+doctor and its blocked checks.
 
 ### AP2 reference integration (optional)
 
