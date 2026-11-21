@@ -14,11 +14,6 @@
       "count": 1
     }
   },
-  "packages/dacs-client/scripts/delta-map.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "packages/dacs-client/src/dacs/buyer-chain-readback.mjs": {
     "no-unused-vars": {
       "count": 4
@@ -120,11 +115,6 @@
       "count": 2
     }
   },
-  "packages/dacs-client/test/helpers/commitment-node-junk.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "packages/dacs-client/test/helpers/devnet-live-composition-app.mjs": {
     "no-unused-vars": {
       "count": 1
@@ -191,6 +181,21 @@
       "count": 1
     }
   },
+  "packages/dacs-node/src/agreementTransportRuntime.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/auditRuntime.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-node/src/bundleTransportRuntime.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "packages/dacs-node/src/demosRuntime.ts": {
     "no-useless-assignment": {
       "count": 2
@@ -201,14 +206,82 @@
       "count": 1
     }
   },
+  "packages/dacs-node/src/fixedPricePayDemBuyerCommerce.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/fixedPriceX402BuyerAudit.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-node/src/fixedPriceX402Profile.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-node/src/fixedPriceX402SellerAuthority.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/messageRouter.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/offlineLifecycle.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-node/src/payDemPayment.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-node/src/publicFetch.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "packages/dacs-node/src/publicJson.ts": {
     "no-useless-assignment": {
       "count": 1
     }
   },
   "packages/dacs-node/src/readiness.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    },
     "no-useless-assignment": {
       "count": 2
+    }
+  },
+  "packages/dacs-node/src/roleRuntime.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/service.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/sessionBootstrapTransportRuntime.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-node/src/sessionIdentityVetRuntime.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/sqlite.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
     }
   },
   "packages/dacs-node/src/sqliteTransport.ts": {
@@ -216,22 +289,89 @@
       "count": 1
     }
   },
+  "packages/dacs-node/src/transport/envelope.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/transport/http.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/walletSpendPostgres.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 6
+    }
+  },
+  "packages/dacs-node/src/walletSpendRemote.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/test-postgres/walletSpendPostgres.integration.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/test/demosPublication.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-node/test/fixedPricePayDemBuyerCommerce.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
   "packages/dacs-node/test/fixedPricePayDemProfile.test.ts": {
     "@typescript-eslint/await-thenable": {
       "count": 3
     }
   },
+  "packages/dacs-node/test/fixedPriceX402BuyerAudit.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-node/test/fixedPriceX402BuyerCommerce.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/test/fixedPriceX402Profile.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/test/httpRuntime.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/test/paymentEvidenceRuntime.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/test/publicFetch.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/test/railRegistry.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-node/test/sqlite.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "packages/dacs-seller/src/dacs/seller-agent.mjs": {
     "no-unused-vars": {
       "count": 14
-    }
-  },
-  "packages/dacs-seller/src/dacs/seller-context-route.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    },
-    "no-useless-assignment": {
-      "count": 3
     }
   },
   "packages/dacs-seller/src/dacs/seller-durable-state.mjs": {
@@ -244,7 +384,7 @@
   },
   "packages/dacs-seller/src/dacs/seller-transport-auth.mjs": {
     "no-unused-vars": {
-      "count": 5
+      "count": 1
     }
   },
   "packages/dacs-seller/src/dacs/session-admission.mjs": {
@@ -297,27 +437,9 @@
       "count": 1
     }
   },
-  "packages/dacs-seller/test/context-compensation.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "packages/dacs-seller/test/d5-admission.test.mjs": {
     "no-unused-vars": {
       "count": 3
-    }
-  },
-  "packages/dacs-seller/test/d5-challenge-retention.test.mjs": {
-    "getter-return": {
-      "count": 2
-    },
-    "no-unused-vars": {
-      "count": 5
-    }
-  },
-  "packages/dacs-seller/test/d5-limits-before-effects.test.mjs": {
-    "no-unused-vars": {
-      "count": 6
     }
   },
   "packages/dacs-seller/test/deliverable-wallet-journal.test.mjs": {
@@ -328,11 +450,6 @@
   "packages/dacs-seller/test/devnet-storage-write-recovery.test.mjs": {
     "no-unused-vars": {
       "count": 2
-    }
-  },
-  "packages/dacs-seller/test/helpers/d5-http-fixture.mjs": {
-    "no-unused-vars": {
-      "count": 7
     }
   },
   "packages/dacs-seller/test/helpers/finalized-commitment-reader.mjs": {
@@ -365,11 +482,6 @@
       "count": 1
     }
   },
-  "packages/dacs-seller/test/rail-session-admission.test.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "packages/dacs-seller/test/seller-agent-contracts.test.mjs": {
     "no-unused-vars": {
       "count": 2
@@ -391,11 +503,6 @@
     }
   },
   "packages/dacs-seller/test/seller-substrate-profile.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
-  "packages/dacs-seller/test/seller-transport-auth.test.mjs": {
     "no-unused-vars": {
       "count": 1
     }
@@ -445,9 +552,34 @@
       "count": 5
     }
   },
+  "src/agent/bundleSemantics.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/agent/buyerBundleFinalization.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
   "src/agent/compositeVerification.ts": {
     "no-useless-assignment": {
       "count": 3
+    }
+  },
+  "src/agent/durableBuyerBundleFinalization.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
+  "src/agent/durableRatingPhaseHandoff.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/agent/durableRatingPublication.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
     }
   },
   "src/agent/fencedSessionStoreFs.ts": {
@@ -455,9 +587,22 @@
       "count": 1
     }
   },
+  "src/agent/ratingPhase.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "src/agent/runDurableFulfilmentCore.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 5
+    },
     "no-useless-assignment": {
       "count": 2
+    }
+  },
+  "src/agent/runFulfilmentCore.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 4
     }
   },
   "src/agent/sessionSettlement.ts": {
@@ -465,9 +610,37 @@
       "count": 1
     }
   },
+  "src/agent/settlementFailure.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/agent/settlementIdentity.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/agent/verifySettlementEvidence.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "src/agent/vetCore.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    },
     "no-useless-assignment": {
       "count": 2
+    }
+  },
+  "src/artifacts/signatures.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/identity/bundle.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
     }
   },
   "src/identity/demosCci.ts": {
@@ -485,9 +658,34 @@
       "count": 1
     }
   },
+  "src/negotiate/durableRfqLifecycle.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "src/negotiate/rfqTranscript.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "src/rails/payAlternative.ts": {
     "no-useless-assignment": {
       "count": 1
+    }
+  },
+  "src/rails/payD402.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/rails/payDem.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/rails/walletSpendAuthority.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 4
     }
   },
   "src/rails/walletSpendAuthorityFs.ts": {
@@ -495,9 +693,44 @@
       "count": 1
     }
   },
+  "src/rails/x402BuyerDacsEvm.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/rails/x402BuyerSettlement.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/rails/x402BuyerSettlementFs.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "src/rails/x402PaywallSettlementFs.ts": {
     "no-unsafe-finally": {
       "count": 1
+    }
+  },
+  "src/registry/resolve.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "src/seller/bundleFinalization.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "src/seller/durableBundleFinalization.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 10
+    }
+  },
+  "src/seller/x402Spine.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
     }
   },
   "src/substrate/DemosAdapter.ts": {
@@ -510,18 +743,108 @@
       "count": 1
     }
   },
+  "test/agent/agentBindingPublication.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/agent/agentPublicSurface.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/agent/buyerBundleFinalization.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/agent/counterpartyBundleFinalization.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/agent/discover.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/agent/durableBuyerBundleFinalization.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
   "test/agent/fencedSessionStore.test.ts": {
     "no-useless-assignment": {
       "count": 1
     }
   },
-  "test/agent/sessionStore.test.ts": {
-    "no-useless-assignment": {
+  "test/agent/partyVet.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
       "count": 1
+    }
+  },
+  "test/agent/partyVetFs.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/agent/reputationDerivation.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/agent/runDurableFulfilment.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 6
+    }
+  },
+  "test/agent/runFulfilment.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/agent/sessionSettlement.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/agent/settlementFailure.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/agent/settlementVerifiedReputation.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
+  "test/agent/verifyBundle.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 5
     }
   },
   "test/canonical/jcs.test.ts": {
     "no-loss-of-precision": {
+      "count": 1
+    }
+  },
+  "test/commerce/fixedPriceX402AuditCompletion.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/conformance/conformance.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 4
+    }
+  },
+  "test/discovery/scanner.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/discovery/verifiedRead.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
       "count": 1
     }
   },
@@ -530,14 +853,102 @@
       "count": 1
     }
   },
+  "test/e2e/normativePublicTwoAgent.e2e.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
   "test/identity/domainClaimVerification.test.ts": {
     "no-useless-assignment": {
       "count": 1
     }
   },
   "test/integration/funded-two-agent.e2e.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 15
+    },
     "no-useless-assignment": {
       "count": 2
+    }
+  },
+  "test/internal/schema.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/negotiate/commitment.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 13
+    }
+  },
+  "test/negotiate/durableFixedPriceExchange.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/negotiate/durableRfqLifecycle.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/negotiate/fixedPrice.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/rails/ap2Stripe.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/rails/evmErc20.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/rails/idempotency.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/rails/payAlternative.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 4
+    }
+  },
+  "test/rails/payDem.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/rails/payDemConflict.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 5
+    }
+  },
+  "test/rails/payDemRecovery.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 4
+    }
+  },
+  "test/rails/settlementRecoveryOnly.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/rails/x402.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/rails/x402BuyerDacsEvm.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/rails/x402BuyerSettlement.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
     }
   },
   "test/rails/x402Paywall.test.ts": {
@@ -550,7 +961,15 @@
       "count": 3
     }
   },
+  "test/scripts/publish-gated-workflow.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "test/scripts/registry-container-disposition.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    },
     "no-regex-spaces": {
       "count": 5
     }
@@ -560,14 +979,52 @@
       "count": 1
     }
   },
+  "test/scripts/registry-container-shell-evidence.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "test/scripts/transport-rebuild.test.ts": {
     "@typescript-eslint/no-misused-promises": {
       "count": 1
     }
   },
+  "test/seller/bundleFinalization.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 5
+    }
+  },
   "test/seller/durableBundleFinalization.test.ts": {
     "@typescript-eslint/no-misused-promises": {
       "count": 1
+    },
+    "@typescript-eslint/no-unused-vars": {
+      "count": 11
+    }
+  },
+  "test/seller/sessionSettlementPublication.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/seller/vetRequirementInvocations.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/seller/x402Spine.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/substrate/anchor-and-wait.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/two-sided-bundle.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 12
     }
   },
   "test/version.test.ts": {
@@ -575,19 +1032,63 @@
       "count": 1
     }
   },
+  "test/wire/approvedIdentity.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/wire/authority.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
   "test/wire/continuation.test.ts": {
     "@typescript-eslint/await-thenable": {
       "count": 58
+    },
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
+  "test/wire/explicitResume.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
     }
   },
   "test/wire/launchReview.test.ts": {
     "@typescript-eslint/await-thenable": {
       "count": 27
+    },
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/wire/networkIdentity.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 3
+    }
+  },
+  "test/wire/originalFixture.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
     }
   },
   "test/wire/requestJournal.test.ts": {
     "@typescript-eslint/await-thenable": {
       "count": 7
+    },
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
+    }
+  },
+  "test/wire/tp1RoundTrip.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 2
+    }
+  },
+  "test/wire/vectors.test.ts": {
+    "@typescript-eslint/no-unused-vars": {
+      "count": 1
     }
   }
 }

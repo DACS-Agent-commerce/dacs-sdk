@@ -1,6 +1,18 @@
 # client package deltas
 
-Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. The package exports two entries: the root and `./wallet/durable-journal`.
+The package records each change in its own immutable file under `records/`.
+Per-change notes belong in that record's `note`. Render the map and notes with
+`node packages/dacs-client/scripts/delta-map.mjs`; output goes to stdout.
+Do not store the rendered map in the package. Core changes require a reciprocal
+re-pin; other changes keep the controls unchanged. Declare a new lane once in
+`records/ids/`, including its register line and the subject of one of its records.
+A later record may supersede an earlier record; both remain immutable and
+continue to supply history and inventory evidence.
+
+The historical notes below describe the frozen archive. They are retained as
+reference text; new per-change notes are rendered from records. Public entry
+points are listed in `package.json`.
+
 Commit subjects below are exact Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. Where two reachable commits share a subject, as when a rebuilt part keeps its earlier published history, each record also names its full commit hash, and the subject must still match. PROVENANCE.json remains the immutable original copy inventory.
 
 ## D10 — Strip unused modes
@@ -186,11 +198,11 @@ This delta records two historical statement-guard commits and their reciprocal h
 - `fix(client): D11 refuse SQL callbacks under the statement guard`: superseded by `fix(client): D11 enforce the write lease in SQLite instead of patching statements`.
 - `fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard`: superseded by `fix(client): D11 enforce the write lease in SQLite instead of patching statements`.
 
-These records add no runtime behavior. `src/util/guarded-sqlite.mjs` and `test/guarded-sqlite.test.mjs` were removed because nothing used them. The historical callback-refusal blobs in the commit register describe those named commits, rather than a callback-refusal feature in the current tree.
+These records add no runtime behavior. SQL callbacks remain allowed inside a leased transaction; SQLite's write lock prevents a rival worker from claiming the lease while that transaction is active. The module and its 28 lease tests come from the preceding core change. The historical callback-refusal blobs in the commit register describe those named commits, rather than a callback-refusal feature in the current tree.
 
 D11 transaction adapter dependency split:
 
-The purchase transaction adapter requires the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs` for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
+The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
 
 D11 SQLite transaction split:
 
@@ -292,7 +304,3 @@ Client commits that move the buyer client onto the new wire and its public API u
 - `P21a3ba` — gives the seller composition a payment-evidence CREATE adapter, `composition.paymentEvidenceAdapter`, whose `signCreate` signs one storage CREATE on the signer reservation and sends nothing. It acts only through the reservation's own steps (`reserve`, `bindApprovalIntent`, `bindApproval`, `bindSigned`, `retireUnsigned`) on its one record per signer. It refuses a busy signer (another reservation, or an issued native write on the transport's own lane key, now exported as `nativeWalletLaneKey`). It returns the same evidence's stored signed bytes for the same input with no new signature or write, and refuses `signer_lane_busy` for a changed input, since signed bytes are never retired. For a fresh claim it stores the exact approval request before `prepare`, binds the returned id before signing, compares the SDK's finalized content, fee and edits with the approved CREATE at the effect gate (where a locked wallet also refuses), and stores the signed bytes before returning. Every other failure before the bytes are stored retires the reservation and releases the authorization. An abort while `prepare` has not settled, or a store of the signed bytes that cannot be read back, keeps the reservation as `signer_reservation_uncertain` for startup recovery. The adapter signs with its own Demos instance over the seller's phrase (`normalizeMnemonic` is now exported so both open the same address). `createNodeSellerComposition` now requires `paymentEvidenceApproval` (`prepare`, `open`, `reopen`, `confirm`, `settle`). The adapter's `broadcast` and reads are the next entry.
 
 - `P21a3bb` — gives the payment-evidence adapter `broadcast`, `readAccountNonce` and `readTransactionState`. `broadcast` acts only on the signed bytes the signer reservation holds: it reopens the stored authorization by id (or links a replacement through the new `renewApproval` step before sending), confirms the exact three-member projection with fresh authentication headers, runs the ledger's `confirm` on every replay, and dispatches once through the effect gate. An invalid confirmation is unknown and sends nothing; a failure after the dispatch starts is `outcome_unknown`. `readTransactionState` answers `applied` only when an authenticated block lists the hash and the executed transaction has the original's signature and complete content, then ends the reservation and settles its authorization spent; everything else is `pending` with its cause kept, and it never answers `absent`. Every reply is limited to 4 MiB and 10 seconds. The composition passes the adapter its owner, gated fetch, stamp source and cause recorder. The transport now stamps its own storage-write recovery calls from the session's stamp source, so a recovery stamp cannot collide with or fall below one the session used.
-
-## D39 — Remove the unused guarded SQLite module
-
-`src/util/guarded-sqlite.mjs` and `test/guarded-sqlite.test.mjs` are deleted. Nothing in the package imports the module. The ledger records each deletion with `after: null`, and the earlier records of both files stay as history.

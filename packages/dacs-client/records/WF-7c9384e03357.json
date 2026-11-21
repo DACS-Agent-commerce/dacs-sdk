@@ -1,0 +1,30 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF refuse a reopen whose lane and intent rows are at different stages and narrow the README's missing-row refusal",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "24c3b18a124193882cf5c983df4dc32ba2fdaa88",
+      "after": "2f0f656f8af2763c8b79fb6498be29c67a56a8ad"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "58226f8edb85b0d4cf30b652493e574aab368d72",
+      "after": "1af2cac8dc761abee755faaeecce1b9b2a681502"
+    },
+    {
+      "path": "packages/dacs-client/test/native-withheld-reopen.test.mjs",
+      "before": "b861cbe0149c2ce15ebab4133f63835900e5b629",
+      "after": "4ffdf1104a861f8445f918846089f4614e02ae2b"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-7c9384e03357.json",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/test/native-withheld-reopen.test.mjs"
+  ],
+  "note": "A reopen whose lane and intent rows both name the retained transaction but are at different stages, one at broadcast-started and the other finished as withheld, now refuses outcome_unknown before any send. Such rows are left when only the lane's write that finishes a withheld broadcast fails; a reopen keeps rows at broadcast-started as they are, so it would have sent while the intent row still said withheld, and a readback before inclusion would have reported the transfer failed and freed the lane. Rows that agree are unchanged: both at broadcast-started are sent without being written again, and both finished as withheld are written at broadcast-started before the send. A readback still finishes a lane left at broadcast-started next to a withheld intent row as withheld, after which a reopen can send. The README's refusal list now names this case, and says exactly when a transaction with neither row is sent: when the history alone shows no possible transmission."
+}

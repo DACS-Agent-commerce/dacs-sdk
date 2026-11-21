@@ -21,7 +21,7 @@ DACS here means Demos Agent Commerce Standards. It is not related to other softw
 | `conformance/`, `vectors/` | Declared conformance register (`conformance/`) and the seller HTTP vector (`vectors/`). `npm run conformance:sync` clones the Standard's vectors into `vendor/DACS-Standard`. |
 | `docs/` | Design and operation notes. Start with `docs/about-the-testnet-release.md` and `docs/testnet-profile-tp1.md`. |
 | `tools/lint/` | Separate lint tool (own `package.json`, never shipped). |
-| `scripts/` | Build, release-check and test-runner scripts used by the npm scripts. |
+| `scripts/` | Build, release-check and test-runner scripts used by the npm scripts, and `fixed-price-x402-walkthrough.mjs`, a testnet walkthrough script run by hand. |
 
 The packages are not yet published to npm, so install from source.
 
@@ -85,6 +85,7 @@ Buyer:
 - `packages/dacs-client/src/index.mjs`: buyer purchase services and guidance helpers (`purchaseNext`, `protocolView`).
 - `docs/fixed-price-x402-coordinator.md` and `docs/fixed-price-offline-coordinator.md`: how the buyer and seller coordinators run.
 - `examples/hello-world.ts`: a small example.
+- `docs/fixed-price-x402-walkthrough.md`: walks through a generated live project on testnet. The page marks each step script, manual or not run, and lists what does not work yet, including the buy's doctor and its blocked checks.
 
 ## Rules
 

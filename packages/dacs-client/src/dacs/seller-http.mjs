@@ -10,7 +10,7 @@
 // bootstrap becomes SellerRefusedError; unsigned, malformed, interrupted,
 // ambiguous, held, suspended or readback-only answers are unavailable, with
 // their class and cause kept.
-import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_RESUME_HEADER, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { classifySellerAnswer, SELLER_ANSWER_CLASS, SELLER_EFFECT_UNRESOLVED } from './seller-response-class.mjs';
@@ -46,7 +46,7 @@ export class SellerTlsUnusableError extends SellerUnavailableError {
   }
 }
 
-const FAILURE_CAUSES = new Set(['tls', 'network', 'response-auth', 'status-4xx', 'status-5xx', 'client-sign', 'timeout', 'other']);
+const FAILURE_CAUSES = new Set(['tls', 'network', 'response-auth', 'status-4xx', 'status-5xx', 'client-sign', 'timeout', 'address', 'redirect', 'oversized', 'other']);
 export const sellerFailureCause = (value) => FAILURE_CAUSES.has(value) ? value : undefined;
 const TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CERT_REVOKED', 'CERT_SIGNATURE_FAILURE', 'CERT_UNTRUSTED', 'CERT_REJECTED', 'CERT_CHAIN_TOO_LONG', 'PATH_LENGTH_EXCEEDED', 'INVALID_PURPOSE', 'UNABLE_TO_DECRYPT_CERT_SIGNATURE', 'UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY', 'ERROR_IN_CERT_NOT_BEFORE_FIELD', 'ERROR_IN_CERT_NOT_AFTER_FIELD', 'UNHANDLED_CRITICAL_EXTENSION', 'INVALID_CA']);
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET']);
@@ -134,8 +134,11 @@ export const sellerEndpointOrigin = (url, authenticated = false) => parseSellerE
  * recorded effect attempt, while reads use false, and `failure(error)` records a refusal). Authenticated calls with
  * stored attempts retry unknown dispatches twice; all other calls send once. A suspended answer is recorded and never retried.
  * clock supplies `now()` and `sleep(ms)` so a test injects time.
+ * `explicitResume(path)` (optional, authenticated calls only) is the caller's one-shot taker: it answers true at most once, for the route a buyer's explicit
+ * resume named. The first attempt of that call then carries a fresh proof of the resume (see `authentication.resumeProof`) in the `x-dacs-seller-resume` header.
+ * No automatic retry of the call, and no other call, sends one; the proof is never kept.
  */
-export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, requestRecords, clock = SELLER_CLOCK }) {
+export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, requestRecords, clock = SELLER_CLOCK, explicitResume = null }) {
   const base = parseSellerEndpoint(url, Boolean(authentication));
   const origin = base.origin;
   const prefix = base.pathname.replace(/\/$/, '');
@@ -150,6 +153,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
 
   // One absolute deadline includes storage, authority reads, signing, delays and transport.
   async function post(path, body) {
+    const resumeProof = explicitResume?.(path) === true;
     const deadline = clock.now() + routeDeadlineMs(path);
     let unknown, unknownCause;
     for (let retry = 0; ; retry++) {
@@ -162,7 +166,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       }
       const attempt = requestRecords?.start(path, body);
       try {
-        const answer = await send(path, body, attempt, deadline);
+        const answer = await send(path, body, attempt, deadline, resumeProof && retry === 0);
         attempt?.finish(answer.answerClass);
         return answer.body;
       } catch (error) {
@@ -181,7 +185,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     }
   }
 
-  async function send(path, requestBody, attempt, deadline) {
+  async function send(path, requestBody, attempt, deadline, withResumeProof) {
     lastFailureCause = undefined;
     lastFailureDispatched = undefined;
     let phase = 'other', signal, dispatched = false;
@@ -198,12 +202,13 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       signal = AbortSignal.timeout(Math.ceil(deadline - clock.now()));
       phase = 'client-sign';
       const signed = authentication ? await settleOnAbort(authentication.request(path, body, text, { signal, checkDeadline }), signal) : null;
+      const resumeHeader = withResumeProof && signed ? await settleOnAbort(authentication.resumeProof(signed, { signal, checkDeadline }), signal) : null;
       checkDeadline();
       try { attempt?.check(); } catch (refusal) { recordRefusals.add(refusal); throw refusal; }
       checkDeadline();
       phase = 'other';
       hasDispatched = true; dispatched = true;
-      const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
+      const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}), ...(resumeHeader ? { [DACS_SELLER_RESUME_HEADER]: resumeHeader } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
       phase = 'response-auth';
       const declared = response.headers.get('content-length');
       if (declared !== null && Number(declared) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) { cancelResponseBody(response); throw new Error('response exceeds byte limit'); }

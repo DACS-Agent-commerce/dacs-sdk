@@ -214,7 +214,6 @@ type ChannelMessageSignatureVerificationInput
 type ChannelMessageSignatureVerifier
 type ChannelMessageSigningInput
 type ChannelMessageType
-type CheckpointValue
 type ClaimQualificationAuthentication
 type ClaimQualificationAuthority
 type ClaimQualificationBundleRequirement
@@ -593,18 +592,7 @@ type JobBoundResolutionContextEntry
 type LatestRecipeSelection
 type LatestRecipeSelector
 type LegacyBundlePhaseEntry
-type LegacyCompositeVerificationRecord
 type LegacyMvpAgreementDocument
-type LegacyMvpAnyAttestationBundle
-type LegacyMvpAttestationBundle
-type LegacyMvpAttestationRef
-type LegacyMvpFaultAttestationBundle
-type LegacyMvpListing
-type LegacyMvpPhaseSummaryEntry
-type LegacyMvpSettlementEvidence
-type LegacyMvpTxRef
-type LegacySealedAgreementCommitResult
-type LegacyVerifyResultEntry
 type Listing
 type ListingCatalogClientConfig
 type ListingCatalogPage
@@ -894,7 +882,6 @@ type ScanSeen
 type ScannedAnchor
 type SealedAgreementCommitResult
 type SealedAgreementCommitValidation
-type SealedAgreementContext
 type SealedAgreementParty
 type SealedAgreementRoleAssignment
 type SealedAgreementRoleValidation
@@ -1037,14 +1024,8 @@ type SellerVerificationResult
 type SellerX402EventTxRef
 type SellerX402RailDefinition
 type SellerX402TxRef
-type SessionCheckpoint
-type SessionLease
-type SessionLoad
 type SessionOutcome
 type SessionParty
-type SessionPhase
-type SessionReceipt
-type SessionRecord
 type SessionSettlementContext
 type SessionSettlementDisposition
 type SessionSettlementFinalityPolicy
@@ -1058,7 +1039,6 @@ type SessionSettlementRevalidation
 type SessionSettlementVerification
 type SessionSettlementVerificationProvider
 type SessionSigner
-type SessionStore
 type SettleRequest
 type SettleResult
 type SettlementBinding
@@ -1094,7 +1074,6 @@ type SettlementVerifiedReputationReplayResult
 type SignatureCheck
 type SignatureVerdict
 type SignatureVerifier
-type SignedArtifact
 type SignedSellerDeliveryEvidence
 type Signer
 type SigningSessionParty
@@ -1155,8 +1134,6 @@ type TerminalBundleTransportIdentity
 type TerminalBundleVerification
 type TerminalIrreversibleEffectObservation
 type TerminalPhaseAuthority
-type TransitionInput
-type TransitionResult
 type TrustedRailOperatorContext
 type TwoSidedBundles
 type TwoSidedSession
@@ -1403,7 +1380,6 @@ value SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR
 value SELLER_FULFILMENT_VET_MODES
 value SELLER_RECEIPT_STORE_VERSION
 value SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY
-value SESSION_STORE_VERSION
 value SIGNATURE_DOMAIN_SEPARATORS
 value SubstrateError
 value TIER1_SCHEMES
@@ -1431,7 +1407,6 @@ value aggregatePresenceAwareCompositeVerification
 value ap2CheckoutSignaturePolicy
 value ap2RegistrationEligibility
 value assembleTerminalBundleForOwnRole
-value assertCheckpointPayloadShape
 value assertDacsPublicHttpsUrlV1
 value assertDemosCciResponseBounds
 value assertDemosWriteEvidence
@@ -1457,8 +1432,6 @@ value buildComponentSignature
 value buildEvidenceBoundTwoSidedBundle
 value buildPriorPaymentDisposition
 value buildRevealMessage
-value buildSealedAgreement
-value buildSignedArtifact
 value buildTwoSidedBundle
 value bundleAddress
 value bundleConsistency
@@ -1547,7 +1520,6 @@ value createInMemoryFixedPriceX402CoordinatorStore
 value createInMemoryPaymentEvidenceHandshakeStore
 value createInMemoryRfqLifecycleNetwork
 value createInMemorySellerReceiptStore
-value createInMemorySessionStore
 value createInMemorySettlementLog
 value createInMemorySolanaSplSettlementStore
 value createInMemoryWalletSpendStateStore
@@ -1703,15 +1675,6 @@ value isFixedPriceAgreementSignatureContribution
 value isHistoricalRecipeResolution
 value isIdentityBundle
 value isLatestRecipeSelection
-value isLegacyCompositeVerificationRecord
-value isLegacyMvpAgreementDocument
-value isLegacyMvpAnyAttestationBundle
-value isLegacyMvpAttestationBundle
-value isLegacyMvpAttestationRef
-value isLegacyMvpFaultAttestationBundle
-value isLegacyMvpListing
-value isLegacyMvpSettlementEvidence
-value isLegacyMvpTxRef
 value isListing
 value isListingDraft
 value isListingEnvelope
@@ -1937,7 +1900,6 @@ value verifyRuleRefContent
 value verifySellerPaymentIntake
 value verifySessionBinding
 value verifySettlementEvidence
-value verifySignedArtifact
 value verifyX402ReceiptClaim
 value vetCore
 value vetPhaseFailureClass

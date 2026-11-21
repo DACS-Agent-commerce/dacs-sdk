@@ -6,9 +6,12 @@ import { readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, admitPreAgreementRequest, checkWireRequest, openWireEnvelope, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { LOCAL } from '../../packages/dacs-client/test/fixtures/tp1-authority-reader.mjs';
+import { contextCapability, hostBuyer, presentContextAnswer } from '../../packages/dacs-seller/test/helpers/host-context-client.mjs';
+import { JOB as HOST_JOB } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { BUYER, JOB, LISTING_PIN, SELLER, SESSION, T0, bindWireProfile, contextScope, contextScopeHash, publicKeyHex } from './fixtures.mjs';
 import { clientAuthFor, composedKitHost, postHeader, postSigned, wireSignedRequest } from './kit-host.mjs';
 
@@ -73,11 +76,27 @@ test('K12-H4-wire control: the same delegated request on proposals with a host-o
   assert.equal(reservationFiles(directory).filter((name) => name.startsWith('k-')).length, 1, 'the admitted request is reserved once');
 });
 
-test('K12-H4-host today: the composed kit host has no mounted wire context handler (unsigned 404 not_found)', async (t) => {
+test('K12-H4-host target: a real authenticated delegated context request to the composed host completes the challenge, admission and reservation with no Agreement', async (t) => {
+  const seen = { resolves: 0, writes: 0 };
+  const { fixture, host, dataDirectory } = await composedKitHost(t, { demDeliveryContext: contextCapability({ resolveBuyer: async (input, options) => {
+    seen.resolves++;
+    for (let write = 0; write < 2; write++) { assert.equal(options.writable(), true); seen.writes++; }
+    return presentContextAnswer(input);
+  } }) });
+  const answer = await (await hostBuyer(host, fixture.config.listing, { jobId: HOST_JOB })).requestContext();
+  assert.equal(answer.status, 200, answer.text);
+  assert.equal(answer.signed, true, 'the answer carries the seller signature');
+  assert.equal(answer.body.disposition, 'present');
+  assert.deepEqual([seen.resolves, seen.writes], [1, 2], 'one provider run with its two Vet writes');
+  const db = new Database(join(dataDirectory, 'transport', 'transport.sqlite'), { readonly: true });
+  try { assert.equal(db.prepare('SELECT state FROM kit_context_admissions WHERE jobId = ?').get(HOST_JOB).state, 'settled'); } finally { db.close(); }
+});
+
+test('the mounted context handler refuses a request that is not a wire envelope before any admission read or signature', async (t) => {
   const { fixture, host } = await composedKitHost(t);
   const agentCallsBefore = fixture.admission.calls.length + fixture.signed.length;
   const answer = await postSigned(host, clientAuthFor(host), DACS_SELLER_HTTP_PATHS.context, { jobId: JOB, scope: contextScope, buyerIdentityBundle: { presentedBy: BUYER.claim } });
-  assert.deepEqual({ status: answer.status, body: JSON.parse(answer.text), signed: answer.signed }, { status: 404, body: { error: 'not_found' }, signed: false });
+  assert.deepEqual({ status: answer.status, body: JSON.parse(answer.text).error, signed: answer.signed }, { status: 409, body: 'tp1_profile_missing', signed: false });
   assert.equal(fixture.admission.calls.length + fixture.signed.length, agentCallsBefore, 'the request reached no admission read and no signature');
 });
 

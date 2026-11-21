@@ -6,6 +6,7 @@ import {
   createDacsDemosIdentityResolverV1,
   type DacsDemosActorRuntimeV1,
 } from "./demosRuntime.js";
+import { diagnosticCauseCode } from "./diagnosticCause.js";
 import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 import {
   DACS_HTTP_MAX_ENVELOPE_LIFETIME_MS,
@@ -23,9 +24,13 @@ export interface DacsTransportDiagnosticResultV1 {
 
 export class DacsTransportDiagnosticError extends Error {
   override readonly name = "DacsTransportDiagnosticError";
+  readonly causeCode?: string;
 
-  constructor(readonly reasonCode: string) {
-    super(reasonCode);
+  constructor(readonly reasonCode: string, options?: ErrorOptions) {
+    super(reasonCode, options);
+    if (options !== undefined && Object.hasOwn(options, "cause")) {
+      this.causeCode = diagnosticCauseCode(options.cause);
+    }
   }
 }
 
@@ -115,6 +120,6 @@ export async function runDacsRoleTransportDiagnosticV1(options: Readonly<{
     });
   } catch (error) {
     if (error instanceof DacsTransportDiagnosticError) throw error;
-    throw new DacsTransportDiagnosticError("transport-diagnostic-unavailable");
+    throw new DacsTransportDiagnosticError("transport-diagnostic-unavailable", { cause: error });
   }
 }

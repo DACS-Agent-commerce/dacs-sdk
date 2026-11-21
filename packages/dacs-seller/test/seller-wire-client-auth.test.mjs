@@ -1,7 +1,7 @@
 // The kit's buyer-side wire signer, `createSellerWireClientAuth`: it signs the routes the host answers through `./wire`
-// (a TP-1 profile in every request) and verifies their answers, where `createSellerTransportClientAuth` signs under the
-// old domain with no profile. The unit cases sign against the fixture binding (helpers/wire-buyer.mjs supplies the
-// binding and the verified endpoint proof only); the running-host cases go through `createSellerAgentClient`.
+// (a TP-1 profile in every request) and verifies their answers. The unit cases sign against the fixture binding
+// (helpers/wire-buyer.mjs supplies the binding and the verified endpoint proof only); the running-host cases go through
+// `createSellerAgentClient`.
 //
 // The running-host cases need a runner where `/` is root-owned (K5-J0).
 import test from 'node:test';
@@ -9,10 +9,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, openWireEnvelope } from '@kynesyslabs/dacs/wire';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
+import { presentationFor } from './helpers/context-wire-world.mjs';
+import { contextHostFixture } from './helpers/host-context-client.mjs';
 import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
 import { NOW, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
 import { authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
@@ -20,8 +22,8 @@ import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { startSellerHost } from '../src/host.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { createSellerAgentClient } from '../src/dacs/seller-http.mjs';
-import { SELLER_CONTEXT_PATH } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
+import { fetchAsHost, proxyListener } from './helpers/listener-host.mjs';
 
 const PATHS = DACS_SELLER_HTTP_PATHS;
 const BUYER = { claim: buyer.claim, sign: buyer.signBytes };
@@ -43,7 +45,11 @@ async function wireClient({ pin = PIN, agreementHash = AGREEMENT_HASH, readAutho
   const options = { signer, binding, connection, endpointProof, publicEndpoint: FIXTURE_ENDPOINT, seller: seller.claim, resolveJob: () => ({ listingPin: pin, agreementHash }), now: () => NOW, ...overrides };
   return { auth: createSellerWireClientAuth(options), binding, connection, signs, options };
 }
-const bodyFor = (path) => (path === PATHS.state || path === PATHS.proposals ? { transportIdentity: { jobId: JOB } } : { jobId: JOB });
+const CONTEXT_ROUTES = [PATHS.contextChallenge, PATHS.context];
+function bodyFor(path) {
+  if (CONTEXT_ROUTES.includes(path)) return { scope: { jobId: JOB, listingPin: PIN } };
+  return path === PATHS.state || path === PATHS.proposals ? { transportIdentity: { jobId: JOB } } : { jobId: JOB };
+}
 const openedAs = ({ binding, connection }, header, options = {}) => openWireEnvelope(header, 'request', { binding, local: connection(), purchaseProfile: null, requireDelegation: false, ...options });
 
 test('each moved route is signed under the wire domain with the binding\'s TP-1 profile, and the wire opens it', async () => {
@@ -102,28 +108,51 @@ test('a session signer with the buyer\'s delegation signs as the buyer and embed
   assert.deepEqual((await openedAs(client, header, { requireDelegation: true })).payload, payload);
 });
 
-test('a route the wire does not carry goes to the fallback auth, and a wire route never does', async () => {
-  const calls = [];
-  const fallback = { request: async (path) => { calls.push(['request', path]); return { payload: { fallback: true }, header: 'fallback-header' }; }, verifyResponse: (request) => { calls.push(['verify', request.fallback === true]); return { fallback: true }; } };
-  const client = await wireClient({ fallback });
-  const challenge = await client.auth.request(SELLER_CONTEXT_PATH, { scope: { jobId: JOB } }, '{}');
-  assert.deepEqual(calls, [['request', SELLER_CONTEXT_PATH]]);
-  assert.deepEqual(await client.auth.verifyResponse(challenge.payload, { header: 'any', status: 200, text: '{}', responseBytes: Buffer.from('{}') }), { fallback: true });
-  assert.equal(calls.length, 2);
+test('an answer is verified by the wire, and an answer that is not signed by it is refused', async () => {
+  const client = await wireClient();
   const wired = await client.auth.request(PATHS.state, bodyFor(PATHS.state), JSON.stringify(bodyFor(PATHS.state)));
-  assert.equal(calls.length, 2, 'the wire request reached no fallback');
-  await assert.rejects(client.auth.verifyResponse(wired.payload, { header: 'not-a-wire-header', status: 200, text: '{}', responseBytes: Buffer.from('{}') }));
-  assert.equal(calls.length, 2, 'a wire route\'s answer is verified by the wire only');
+  await assert.rejects(client.auth.verifyResponse(wired.payload, { header: 'not-a-wire-header', status: 200, responseBytes: Buffer.from('{}') }));
 });
 
-test('a route the wire does not carry, with no fallback, is refused before anything is signed', async () => {
+test('the challenge and context routes are signed under the wire domain with the binding\'s profile and the scope hash, and the wire opens them', async () => {
   const client = await wireClient();
-  await assert.rejects(client.auth.request(SELLER_CONTEXT_PATH, { scope: { jobId: JOB } }, '{}'), { code: 'wire_client_route_unsupported' });
+  for (const path of CONTEXT_ROUTES) {
+    const body = bodyFor(path);
+    const text = JSON.stringify(body);
+    const { payload, header } = await client.auth.request(path, body, text);
+    const opened = await openedAs(client, header);
+    assert.deepEqual(opened.payload, payload, path);
+    assert.deepEqual({ path: payload.path, jobId: payload.jobId, profile: payload.profile, bodyHash: payload.bodyHash, agreementHash: payload.agreementHash, listingPin: payload.listingPin },
+      { path, jobId: JOB, profile: client.binding.profile, bodyHash: sha256Hex(text), agreementHash: sha256Hex(canonicalize(body.scope)), listingPin: PIN }, path);
+  }
+});
+
+test('the scope hash of a context request is the body\'s own, not the job lookup\'s Agreement hash', async () => {
+  const client = await wireClient({ agreementHash: OTHER_HASH });
+  const body = bodyFor(PATHS.context);
+  const { payload } = await client.auth.request(PATHS.context, body, JSON.stringify(body));
+  assert.equal(payload.agreementHash, sha256Hex(canonicalize(body.scope)));
+});
+
+test('an answer to a context route is verified by the wire, and an answer that is not signed by it is refused', async () => {
+  const client = await wireClient();
+  const body = bodyFor(PATHS.contextChallenge);
+  const signed = await client.auth.request(PATHS.contextChallenge, body, JSON.stringify(body));
+  await assert.rejects(client.auth.verifyResponse(signed.payload, { header: 'not-a-wire-header', status: 200, text: '{}', responseBytes: Buffer.from('{}') }));
+});
+
+test('a context request without a canonical job in its scope is refused before anything is looked up or signed', async () => {
+  let lookups = 0;
+  const client = await wireClient({ resolveJob: () => { lookups++; return { listingPin: PIN, agreementHash: AGREEMENT_HASH }; } });
+  for (const body of [{}, { scope: null }, { scope: { jobId: 'not-a-job' } }, { jobId: JOB }]) {
+    await assert.rejects(client.auth.request(PATHS.context, body, JSON.stringify(body)), { code: 'peer_job_invalid' }, JSON.stringify(body));
+  }
+  assert.equal(lookups, 0);
   assert.equal(client.signs.calls, 0);
 });
 
-test('a request for a path outside the kit\'s routes is refused even with a fallback that would sign it', async () => {
-  const client = await wireClient({ fallback: { request: async () => assert.fail('the fallback signed it'), verifyResponse: () => assert.fail('the fallback verified it') } });
+test('a request for a path outside the kit\'s routes is refused before anything is signed', async () => {
+  const client = await wireClient();
   await assert.rejects(client.auth.request('/dacs/v1/unknown', { jobId: JOB }, '{}'), { code: 'wire_client_route_unsupported' });
   assert.equal(client.signs.calls, 0);
 });
@@ -138,15 +167,14 @@ test('a configuration with a missing binding, endpoint proof, seller or job reso
 const STALLED = () => new Promise(() => {});
 const SIGNING_TIMEOUT_MS = 20;
 
-test('a stalled authority read, job lookup, evidence lookup or fallback signer ends as a signing timeout before anything is signed', async () => {
+test('a stalled authority read, job lookup or evidence lookup ends as a signing timeout before anything is signed', async () => {
   let authorityStalled = false;
   const readAuthority = (scope) => (authorityStalled ? STALLED() : authorityReader()(scope));
-  const fallback = { request: STALLED, verifyResponse: () => assert.fail('nothing was signed') };
   const cases = [
     ['authority reader', PATHS.state, { readAuthority }, () => { authorityStalled = true; }],
     ['resolveJob', PATHS.state, { resolveJob: STALLED }],
     ['evidenceFor', PATHS.state, { evidenceFor: STALLED }],
-    ['fallback', SELLER_CONTEXT_PATH, { fallback }],
+    ['resolveJob on a context route', PATHS.context, { resolveJob: STALLED }],
   ];
   for (const [name, path, overrides, stall = () => {}] of cases) {
     const client = await wireClient({ ...overrides, signingTimeoutMs: SIGNING_TIMEOUT_MS });
@@ -172,14 +200,14 @@ test('a signing deadline that is not a timer-sized integer is refused at constru
 });
 
 async function runningHost(t) {
-  const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE });
+  const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE, publicEndpoint: FIXTURE_ENDPOINT });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-wire-client-auth-'));
   const { nativeArtifactAnchor, ...config } = f.config;
   delete config.challengeLedger; // the host builds its own ledger
   delete config.durableDirectory;
   delete config.commitOnSignature;
   delete config.vetMode;
-  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() });
+  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), listener: proxyListener() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { f, host };
 }
@@ -188,7 +216,7 @@ test('a kit client with the shipped wire auth proposes to a running host and rea
   const { f, host } = await runningHost(t);
   const request = await f.proposal(host);
   const { auth } = await wireClient({ pin: host.listingPin, agreementHash: request.proposal.plan.agreementHash });
-  const client = createSellerAgentClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS });
+  const client = createSellerAgentClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: fetchAsHost() });
   assert.equal((await client.propose(request)).disposition, 'complete');
   assert.equal(typeof await client.agreementState(request.transportIdentity), 'object');
 });
@@ -198,11 +226,29 @@ test('an answer whose body was changed after the seller signed it is refused as 
   const request = await f.proposal(host);
   const { auth } = await wireClient({ pin: host.listingPin, agreementHash: request.proposal.plan.agreementHash });
   const tampering = async (url, init) => {
-    const response = await fetch(url, init);
+    const response = await fetchAsHost()(url, init);
     const text = (await response.text()).replace('"complete"', '"complet3"');
     return new Response(text, { status: response.status, headers: response.headers });
   };
   const client = createSellerAgentClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: tampering });
   await assert.rejects(client.propose(request), { name: 'SellerUnavailableError' });
   assert.equal(client.failureCause, 'response-auth');
+});
+
+test('a kit client with the shipped wire auth gets a challenge and the context answer from a running host, each answer verified', async (t) => {
+  const f = await contextHostFixture(t);
+  const host = await f.start();
+  const { scopeFor } = await f.buyerFor(host);
+  const session = testWallet(99);
+  const base = await wireClient({ pin: host.listingPin });
+  const delegationPayload = { version: '1', kind: 'seller-session-delegation', buyer: buyer.claim, seller: seller.claim, sessionPublicKey: session.claim.slice('did:demos:agent:'.length), listingPin: host.listingPin, jobId: JOB,
+    notBefore: NOW - SESSION_LEAD_MS, expiresAt: NOW + SESSION_LIFETIME_MS, profile: base.binding.profile };
+  const delegation = { payload: delegationPayload, signature: BUYER.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(delegationPayload))).toString('base64url') };
+  const authentication = createSellerWireClientAuth({ ...base.options, signer: { claim: session.claim, sign: session.signBytes }, delegation });
+  const client = createSellerAgentClient({ url: host.url, authentication, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: fetchAsHost() });
+  const scope = scopeFor(JOB);
+  const { sessionNonce } = await client.contextChallenge({ scope });
+  const bundle = presentationFor(buyer, sessionNonce, NOW);
+  const answer = await client.agreementContext({ scope: { ...scope, buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle });
+  assert.equal(answer.disposition, 'present');
 });

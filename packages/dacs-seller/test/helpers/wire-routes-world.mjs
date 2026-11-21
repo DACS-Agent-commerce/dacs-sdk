@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, compositeVerificationAddress, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { fixtureIdentityBundle, fixtureListing } from '../fixtures/listings.mjs';
 import { exchange } from './d5-http-fixture.mjs';
 import { proposalForInput } from './proposal-admission-fixture.mjs';
@@ -21,7 +21,7 @@ import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
 import { wireContinuationFixture, receiptReader } from './wire-continuation-fixture.mjs';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth, createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 
 export const PATHS = DACS_SELLER_HTTP_PATHS;
 export const CONTINUING = [PATHS.payments, PATHS.bundleRequest, PATHS.bundleCountersignature];
@@ -168,7 +168,6 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     const journalDirectory = join(directory, 'wire-journal');
     if (state.journals.length === 0) { mkdirSync(journalDirectory, { mode: 0o700, recursive: true }); state.journals.push(journalDirectory); }
     const journal = openWireRequestJournal(journalDirectory, { leaseMs, clock });
-    const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: pin, store, now: clock });
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
     // The journal's reservation re-checks authority with one more read, right after the coordinator is entered.
     const reserveCoordinated = reservations.reserveCoordinated.bind(reservations);
@@ -176,7 +175,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
     const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
       publicEndpoint: fixture?.listing.seller.publicEndpoint ?? FIXTURE_ENDPOINT, signedListing: fixture?.admittedListing, readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader(), reservations, completion, ...handle.wireOverrides });
-    Object.assign(handle, { store, capacity, authentication, wire, handler: createSellerHttpHandler(agent, { authentication, wire, commitOnSignature }) });
+    Object.assign(handle, { store, capacity, wire, handler: createSellerHttpHandler(agent, { wire, commitOnSignature }) });
   };
   mount();
   t.after(() => handle.store.close());
@@ -186,7 +185,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     handle.wireOverrides = overrides; reopen();
     try { return await work(); } finally { handle.wireOverrides = {}; reopen(); }
   };
-  const answerOf = (res, payload) => ({ status: res.status, text: res.text, body: JSON.parse(res.text), header: res.headers?.[SELLER_TRANSPORT_HEADER], signed: res.headers?.[SELLER_TRANSPORT_HEADER] !== undefined, payload });
+  const answerOf = (res, payload) => ({ status: res.status, text: res.text, body: JSON.parse(res.text), header: res.headers?.[DACS_SELLER_HTTP_HEADER], signed: res.headers?.[DACS_SELLER_HTTP_HEADER] !== undefined, payload });
   const send = async (path, { text, header, payload = null }) => answerOf(await exchange(handle.handler, { url: path, text, header }), payload);
   /** A request the buyer's `signWireRequest` signs, sent through the handler. */
   const post = async (path, body, { jobId, agreementHash, ...options } = {}) => {
@@ -196,7 +195,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   const verified = (answer) => buyerWire.authentication(() => null).verifyResponse(answer.payload, { header: answer.header, status: answer.status, responseBytes: Buffer.from(answer.text) });
   const rows = () => {
     const db = new DatabaseSync(storePath, { readonly: true });
-    try { return Object.fromEntries(['peer_effects', 'peer_nonces', 'peer_jobs', 'peer_slots', 'kit_purchase_profiles'].map((name) => [name, db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n])); } finally { db.close(); }
+    try { return Object.fromEntries(['peer_effects', 'peer_jobs', 'kit_purchase_profiles'].map((name) => [name, db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n])); } finally { db.close(); }
   };
   const journalFiles = () => state.journals.flatMap((directoryPath) => readdirSync(directoryPath));
   const effects = (counter = agent.calls) => Object.values(counter).reduce((sum, n) => sum + n, 0);

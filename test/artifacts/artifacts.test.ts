@@ -14,8 +14,6 @@ import {
   isEvidenceBoundFaultAttestationBundle,
   isCompositeVerificationRecord,
   isListing,
-  isLegacyMvpListing,
-  isLegacyMvpSettlementEvidence,
   isPayeeBoundAgreementDocument,
   isPricingSpec,
   isSettlementEvidence,
@@ -55,53 +53,6 @@ const VALIDATORS: Record<ArtifactKind, (v: unknown) => boolean> = {
   FaultAttestationBundle: isFaultAttestationBundle,
   EvidenceBoundFaultAttestationBundle: isEvidenceBoundFaultAttestationBundle,
 };
-
-describe("legacy MVP settlement finality compatibility", () => {
-  const evidence = {
-    evidenceVersion: "1",
-    jobId: "job-1",
-    phase: "pay-x402",
-    phaseIndex: 0,
-    outcome: "success",
-    paymentTxRefs: [{ rail: "test", txHash: "0x1", kind: "payment" }],
-    paymentAmount: { amount: "1", currency: "USDC" },
-    observedAt: 1,
-  };
-
-  it("accepts valid optional finality echoes and rejects cross-model fields", () => {
-    expect(isLegacyMvpSettlementEvidence({
-      ...evidence,
-      settlementFinality: {
-        model: "block-depth",
-        finalityObservedAt: 1,
-      },
-    })).toBe(true);
-    expect(isLegacyMvpSettlementEvidence({
-      ...evidence,
-      settlementFinality: {
-        model: "commitment-level",
-        finalityCommitmentLevel: "confirmed",
-        finalityObservedAt: 1,
-      },
-    })).toBe(true);
-    expect(isLegacyMvpSettlementEvidence({
-      ...evidence,
-      settlementFinality: {
-        model: "commitment-level",
-        finalityBlocks: 1,
-        finalityObservedAt: 1,
-      },
-    })).toBe(false);
-    expect(isLegacyMvpSettlementEvidence({
-      ...evidence,
-      settlementFinality: {
-        model: "provider-receipt",
-        finalityObservedAt: 1,
-        extra: true,
-      },
-    })).toBe(false);
-  });
-});
 
 describe("spine artifacts vs the §14 happy-path vector (T3)", () => {
   if (!have) {
@@ -385,23 +336,7 @@ describe.skipIf(!have)("FaultAttestationBundle discriminator", () => {
   });
 });
 
-describe("DACS-4 §9.3 PricingSpec + legacy Listing compatibility", () => {
-  const baseListing = {
-    agentId: "did:demos:seller",
-    serviceId: "svc",
-    name: "n",
-    description: "d",
-    claimRequirements: [],
-    supportedNegotiation: ["negotiate-fixed-price"],
-    supportedPaymentRails: ["pay-x402"],
-    supportedDelivery: ["deliver-attested-payload"],
-  };
-
-  it("keeps the reduced no-pricing shape in the explicit legacy read validator", () => {
-    expect(isLegacyMvpListing(baseListing)).toBe(true);
-    expect(isListing(baseListing)).toBe(false);
-  });
-
+describe("DACS-4 §9.3 PricingSpec", () => {
   it("accepts each PricingSpec kind", () => {
     expect(isPricingSpec({ kind: "fixed", price: { amount: "5", currency: "USDC" } })).toBe(true);
     expect(
@@ -427,10 +362,6 @@ describe("DACS-4 §9.3 PricingSpec + legacy Listing compatibility", () => {
         minTotal: { amount: "1", currency: "USDC" },
       }),
     ).toBe(true);
-    // A valid pre-metered pricing variant remains readable on the legacy shape.
-    expect(
-      isLegacyMvpListing({ ...baseListing, pricing: { kind: "fixed", price: { amount: "5", currency: "USDC" } } }),
-    ).toBe(true);
   });
 
   it("rejects a malformed PricingSpec (present but not well-formed)", () => {
@@ -441,8 +372,6 @@ describe("DACS-4 §9.3 PricingSpec + legacy Listing compatibility", () => {
     expect(
       isPricingSpec({ kind: "negotiable", bandCenter: { amount: "5", currency: "USDC" }, minPct: "x", maxPct: 1 }),
     ).toBe(false);
-    // a listing carrying a bad pricing is rejected — not silently accepted.
-    expect(isLegacyMvpListing({ ...baseListing, pricing: { kind: "banana" } })).toBe(false);
   });
 
   it("rejects a negotiable band that breaks the §8.5.2 minPct/maxPct bounds (#37)", () => {
@@ -460,37 +389,6 @@ describe("DACS-4 §9.3 PricingSpec + legacy Listing compatibility", () => {
     expect(isPricingSpec(band(150, 10))).toBe(false);
     expect(isPricingSpec(band(-1, 10))).toBe(false);
     expect(isPricingSpec(band(10, -5))).toBe(false);
-  });
-});
-
-// Ungated (no vendored vectors needed): the READ-path guard for listingVersion.
-// Publish validates its own writes, but a listing anchored by another writer (or
-// an older SDK) reaches consumers only through isListing — so the version pin
-// that flows into listingRef.version must be validated HERE (#46/#29).
-describe("isLegacyMvpListing — historical listingVersion clause (#46/#29)", () => {
-  const base = {
-    agentId: "did:demos:agent:seller",
-    serviceId: "svc-1",
-    name: "n",
-    description: "d",
-    claimRequirements: [],
-    supportedNegotiation: ["fixed-price"],
-    supportedPaymentRails: ["pay-x402"],
-    supportedDelivery: ["inline"],
-  };
-
-  it("accepts an absent listingVersion (⇒ v1) and positive integers", () => {
-    expect(isLegacyMvpListing(base)).toBe(true);
-    expect(isLegacyMvpListing({ ...base, listingVersion: 1 })).toBe(true);
-    expect(isLegacyMvpListing({ ...base, listingVersion: 7 })).toBe(true);
-  });
-
-  it("rejects a non-integer, zero, negative, fractional, or string version", () => {
-    expect(isLegacyMvpListing({ ...base, listingVersion: "bad" })).toBe(false);
-    expect(isLegacyMvpListing({ ...base, listingVersion: 0 })).toBe(false);
-    expect(isLegacyMvpListing({ ...base, listingVersion: -1 })).toBe(false);
-    expect(isLegacyMvpListing({ ...base, listingVersion: 1.5 })).toBe(false);
-    expect(isLegacyMvpListing({ ...base, listingVersion: null })).toBe(false);
   });
 });
 

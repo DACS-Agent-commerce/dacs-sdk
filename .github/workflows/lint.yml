@@ -28,6 +28,9 @@ jobs:
       - name: Lint
         run: npm run lint --prefix tools/lint
 
+      - name: Lint config check
+        run: node --test tools/lint/eslint-config.test.mjs
+
       - name: Layer check
         run: node tools/lint/layers.mjs
 

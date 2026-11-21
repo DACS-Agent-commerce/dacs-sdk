@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move the record anchor past the merged README choice with the native signature domain check and keep a README record after it",
+  "kind": "checkpoint",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "71a4b71c878835390030ce1cf36feeee3b9db4df",
+      "after": "71a4b71c878835390030ce1cf36feeee3b9db4df"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-9c52ddc1f00e.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "Both sides of the merge changed the README, so neither parent of the merge holds the merged copy. The anchor moves to the commit after the merge, whose one parent holds every anchored file as the anchor names it; the anchored blobs are unchanged. This record names the unchanged README so the anchored README keeps a record after the anchor."
+}

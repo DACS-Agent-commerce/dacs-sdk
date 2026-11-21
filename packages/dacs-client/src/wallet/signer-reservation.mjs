@@ -17,16 +17,19 @@
 // A reservation ends in one put. `consume` ends it on an authenticated execution of the stored bytes and moves the floor past
 // the nonce; `retireUnsigned` ends one that has no signed bytes and keeps the floor, so the nonce can be chosen again. Each first
 // settles the approval ledger's hold by id (`spent` or `released`), which is idempotent, so a crash between the settlement and the
-// put is finished by repeating the call. Signed bytes are never retired: only an execution frees them. While a retirement has
-// settled the approval `released` and its put has not committed, this instance refuses `bindSigned` for that reservation
-// (`signer_retirement_unfinished`), and the next `reserve` finishes the retirement before it claims.
+// put is finished by repeating the call. `consume` never reads the ledger to decide: a caller that has shown the ledger no longer
+// holds the approval open passes `approvalEnded: true`, and only then does `consume` end the reservation without a settlement.
+// Signed bytes are never retired: only an execution frees them. While a retirement has settled the approval `released` and its
+// put has not committed, this instance refuses `bindSigned` for that reservation (`signer_retirement_unfinished`), and the next
+// `reserve` finishes the retirement before it claims.
 //
 // `recover` removes the lock rows of other, dead processes, which changes no record, then retires every reservation without signed
 // bytes, which no live caller can finish. It needs the host's ownership proof (the state lock is held and the journal lies inside
 // its directory), never uses elapsed time, and never touches the rows of a live handle in this process.
 //
 // Lock order: the kit writer lock, then the signer lock; the signer lock is never re-entered. The native transport takes the signer
-// lock inside its own lane lock to issue a write, and nothing here takes a lane lock.
+// lock inside its own lane lock to issue a write, and nothing here takes a lane lock. The payment-evidence adapter takes the signer
+// lock alone to send the bytes a reservation holds.
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, sep } from 'node:path';
@@ -95,8 +98,8 @@ function validateSigned(signed, signer, nonce) {
 /**
  * Creates the reservation steps over a durable journal that has `get`, `put` and `withWalletLock`. `pins` supplies the
  * network, chain identity and pin version every record carries. `openApproval(requestText)` resolves null or the one open
- * `{ledgerId, requestText}` for those exact bytes; `settleApproval(ledgerId, outcome, reason)` settles by id and is idempotent
- * for the same outcome. Both refuse until supplied. Returns `reserve`, `bindApprovalIntent`, `bindApproval`, `bindSigned`,
+ * `{ledgerId, requestText}` for those exact bytes; `settleApproval(ledgerId, outcome, reason, requestText)` settles by id and the exact
+ * request text and is idempotent for the same outcome. Both refuse until supplied. Returns `reserve`, `bindApprovalIntent`, `bindApproval`, `bindSigned`,
  * `renewApproval`, `retireUnsigned`, `consume`, `recover` and the read-only `current(signer)`, which returns the signer's record or null.
  * Throws `signer_reservation_invalid` for a malformed record or argument, `signer_reservation_stale` for a handle that is
  * not the stored record, `signer_reservation_uncertain` when a failed write cannot be read back, `signer_lane_busy`,
@@ -246,9 +249,9 @@ export function createSignerReservations({ journal, pins, openApproval = refused
     });
   }
 
-  async function settle(ledgerId, outcome, reason) {
+  async function settle(ledgerId, requestText, outcome, reason) {
     if (ledgerId === null) return;
-    try { await settleApproval(ledgerId, outcome, reason); } catch (cause) { fail('signer_settlement_failed', cause); }
+    try { await settleApproval(ledgerId, outcome, reason, requestText); } catch (cause) { fail('signer_settlement_failed', cause); }
   }
   // The ledger id to settle for a reservation, or null when it holds none. An unsigned reservation with an intent and no id may
   // hold an approval whose id a crash left unrecorded: it is looked up by the exact intent text, and an answer that is not one
@@ -276,21 +279,23 @@ export function createSignerReservations({ journal, pins, openApproval = refused
   // Settles the approval of an unsigned reservation released, then marks the reservation unfinished until its put commits.
   async function settleRetirement(record) {
     check(record.active.signed === null, 'signed bytes cannot be retired as unsigned');
-    await settle(await approvalOf(record), 'released', 'unsigned-retired');
+    await settle(await approvalOf(record), record.active.approvalIntent, 'released', 'unsigned-retired');
     unfinishedRetirements.set(record.signer, record.active.attemptId);
   }
   /**
    * Ends a reservation on an authenticated execution of its exact signed bytes: `observation` is
    * `{status: 'executed', authenticated: true, txHash, projectionText}` from the lane's reader. Settles the approval spent, then
    * in one write clears the claim and moves the floor past the nonce. Anything else (pending, failed, unauthenticated, other
-   * bytes) is `signer_execution_unproven` and changes nothing. The handle is stale afterwards. Returns the stored record.
+   * bytes) is `signer_execution_unproven` and changes nothing. With `approvalEnded: true` the caller has shown that the ledger
+   * refused the spend and no longer holds the approval open (an operator released it): nothing is settled and the reservation
+   * ends all the same. The handle is stale afterwards. Returns the stored record.
    */
-  async function consume(reservation, observation) {
+  async function consume(reservation, observation, { approvalEnded = false } = {}) {
     return update(reservation, async ({ active }) => {
       check(active.signed !== null, 'signed bytes required');
       const { txHash, projectionText } = active.signed;
       if (!(observation?.status === 'executed' && observation.authenticated === true && observation.txHash === txHash && observation.projectionText === projectionText)) fail('signer_execution_unproven');
-      await settle(active.approvalId, 'spent', 'executed');
+      if (!approvalEnded) await settle(active.approvalId, active.approvalIntent, 'spent', 'executed');
       return SPENT;
     });
   }

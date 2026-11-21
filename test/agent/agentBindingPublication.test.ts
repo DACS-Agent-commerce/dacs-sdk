@@ -9,6 +9,7 @@ import {
   canonicalize,
   contentHash,
   listingAddress,
+  logicalToStorageProgramName,
   sha256Hex,
 } from "../../src/canonical/index.js";
 import {
@@ -547,5 +548,35 @@ describe("Agent.publishListing binding publication (#54)", () => {
     });
     expect(v2).toMatchObject({ status: "published", ref: "stor-2" });
     expect(state.creates).toBe(2);
+  });
+
+  test("refuses v2 over an unbound earlier-shape v1 anchor and creates nothing", async () => {
+    const { adapter, state } = fakeAdapter();
+    state.byName.set(logicalToStorageProgramName(LOGICAL), "stor-earlier-v1");
+    state.records.set("stor-earlier-v1", {
+      agentId: SELLER,
+      serviceId: "market-data",
+      name: "Earlier Market Data",
+      description: "Earlier SDK Listing",
+      claimRequirements: [],
+      supportedNegotiation: ["negotiate-fixed-price"],
+      supportedPaymentRails: ["pay-x402"],
+      supportedDelivery: ["deliver-attested-payload"],
+      listingVersion: 1,
+      signature: "earlier-signature",
+    });
+    const bindings = createInMemoryBindingStore();
+    const agent = buildAgent(adapter, {
+      demosRpc: "mem",
+      wallet: "secret",
+      ...PUBLICATION_CAPABILITIES,
+      bindings: { index: bindings, publisher: bindings },
+    });
+
+    await expect(
+      agent.publishListing({ ...LISTING, listingVersion: 2 }),
+    ).rejects.toThrow(/stor-earlier-v1 is not a readable signed Listing/);
+    expect(state.creates).toBe(0);
+    expect(bindings.snapshot()).toEqual([]);
   });
 });

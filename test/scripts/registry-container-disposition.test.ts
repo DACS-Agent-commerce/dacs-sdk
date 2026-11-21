@@ -653,7 +653,7 @@ async function runToConsumerStage(complete = false, failStart = false, hooks: Co
   const PATH = stubBin(directory, {
     curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  */-/ping*) printf \'{}\' ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
     // The host npm models the bootstrapped client: it is already 11.19.0 and any host-side install fails.
-    npm: ['case "$1" in', `  install) touch '${pinned}'; exit 92 ;;`,
+    npm: ['if [ "$1" = --prefix ]; then shift 2; fi', 'case "$1" in', `  install) touch '${pinned}'; exit 92 ;;`,
       '  --version) echo 11.19.0 ;;', `  root) echo '${npmRoot}' ;;`, '  view) exit 97 ;;',
       `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, 'esac', 'exit 0'].join("\n"),
     docker: [`printf '%s\\n' "$*" | tr '\\n' ' ' >> '${commands}'`, `echo >> '${commands}'`, ...(failStart ? ['if [ "$1 $2" = "run --detach" ]; then exit 17; fi'] : []), `if [ "$1" = inspect ]; then echo ${port}; exit 0; fi`,
@@ -3544,7 +3544,8 @@ describe("acceptance failure class", () => {
     writeFileSync(join(stage, "registry.log"), Buffer.from([0x63, 0x75, 0x72, 0x6c, 0xff]));
     expect(failureSummaryCli(stage, "registry-auth", "7").status).toBe(0);
     expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: false,
-      failureClass: "functional", exitCode: 7, failureEvidence: ["evidence classification failed: evidence is not valid UTF-8"] });
+      failureClass: "functional", exitCode: 7,
+      failureEvidence: [`evidence classification failed: evidence is not valid UTF-8: ${join(stage, "registry.log")}`] });
   });
 
   // The audit stage is the --audit-policy command alone. Run it on `audit` and

@@ -19,8 +19,6 @@ import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
-  declareSettlementBridge,
-  inheritSettlementBridge,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -35,7 +33,10 @@ export const DEM_DECIMALS = 9;
 
 // Only this module owns the authority used by its factory and record reads.
 const executionAuthority = createPayDemExecutionAuthority();
-/** SDK-built rails: whether each was built with a prepared-transfer journal. A rail not in here declares nothing. */
+/**
+ * SDK-built rails: whether each was built with a prepared-transfer journal.
+ * `payDemSettle` refuses one built without it unless the caller opts out.
+ */
 const railJournals = new WeakMap<object, boolean>();
 
 // Executed nonce whose account read had not caught up when its payment
@@ -823,8 +824,10 @@ export interface PayDemRailConfig {
    * denomination and maximum debit have all been validated, and before the one
    * broadcast call. A rejection prevents broadcast. Funded operators use this
    * to persist the canonical hash and nonce needed for ambiguous-response
-   * recovery. Callers may omit it, but then cross-process hash/nonce recovery
-   * requires an equivalent application-owned durable rail record.
+   * recovery. `payDemSettle` refuses a rail built without it unless the caller
+   * passes `allowUnjournaled: true`. A caller of `rail.settle` may omit it, but
+   * then cross-process hash/nonce recovery requires an equivalent
+   * application-owned durable rail record.
    */
   journalPreparedTransfer?: (
     transfer: Readonly<PayDemPreparedTransfer>,
@@ -1110,9 +1113,9 @@ async function observeDemosTerminalByHash(
     statusRequestTimeoutMs: number;
   }>,
 ): Promise<ObservedDemosTerminal> {
-  const deadline = Date.now() + options.inclusionTimeoutMs;
+  const deadline = performance.now() + options.inclusionTimeoutMs;
   while (true) {
-    const remaining = deadline - Date.now();
+    const remaining = deadline - performance.now();
     if (remaining <= 0) return { state: "timeout" };
 
     const request = Promise.resolve().then(() =>
@@ -1153,7 +1156,7 @@ async function observeDemosTerminalByHash(
       }
     }
 
-    const afterRead = deadline - Date.now();
+    const afterRead = deadline - performance.now();
     if (afterRead <= 0) return { state: "timeout" };
     await wait(Math.min(options.inclusionPollIntervalMs, afterRead));
   }
@@ -1483,11 +1486,11 @@ export async function observeDemosExecutionByHash(
     statusRequestTimeoutMs: number;
   }>,
 ): Promise<ObservedDemosExecution> {
-  const deadline = Date.now() + options.transactionRecordTimeoutMs;
+  const deadline = performance.now() + options.transactionRecordTimeoutMs;
   let pending = "transaction record was not observed";
   let readFailure: { cause: unknown } | undefined;
   while (true) {
-    const remaining = deadline - Date.now();
+    const remaining = deadline - performance.now();
     if (remaining <= 0) return { state: "indeterminate", reason: pending, ...readFailure };
 
     const request = Promise.resolve().then(() => getTxByHash(txHash));
@@ -1550,7 +1553,7 @@ export async function observeDemosExecutionByHash(
             reason: "transaction record does not match the prepared transfer",
           };
         }
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           return { state: "indeterminate", reason: "transaction record observation timed out" };
         }
         return record.status === DEMOS_FAILED_RECORD_STATUS
@@ -1561,7 +1564,7 @@ export async function observeDemosExecutionByHash(
       }
     }
 
-    const afterRead = deadline - Date.now();
+    const afterRead = deadline - performance.now();
     if (afterRead <= 0) return { state: "indeterminate", reason: pending, ...readFailure };
     await wait(Math.min(options.inclusionPollIntervalMs, afterRead));
   }
@@ -1884,9 +1887,10 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         ...(recovery === undefined ? {} : { recovery }),
       }) satisfies Readonly<PayDemPreparedTransfer>;
 
-      // This is the last operation before the only irreversible call. A funded
-      // runner's hook fsyncs hash + nonce and the already-validated immutable
-      // transfer facts. Any journal failure aborts before broadcast.
+      // This is the last operation before the only irreversible call. The
+      // caller's `journalPreparedTransfer` hook, when set, durably records hash
+      // + nonce and the already-validated immutable transfer facts. Any journal
+      // failure aborts before broadcast.
       const preparedJournal = invocationJournal ?? journalPreparedTransfer;
       if (preparedJournal) await preparedJournal(prepared);
       if (assertCurrentBeforeBroadcast) await assertCurrentBeforeBroadcast();
@@ -1931,11 +1935,11 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       // `included` is not execution: the node can include the signed
       // transaction and record it failed. Require the transaction record to
       // show this exact prepared transfer executed before reporting success.
-      const recordDeadline = Date.now() + transactionRecordTimeoutMs;
+      const recordDeadline = performance.now() + transactionRecordTimeoutMs;
       const execution = await observeDemosExecutionByHash(
         txHash,
         (hash) => readDemosTransactionRecord(rpc, hash,
-          Math.max(1, Math.min(statusRequestTimeoutMs, recordDeadline - Date.now())), fetchRecord),
+          Math.max(1, Math.min(statusRequestTimeoutMs, recordDeadline - performance.now())), fetchRecord),
         { blockNumber: terminal.blockNumber, transfer: transferBinding },
         {
           transactionRecordTimeoutMs,
@@ -2337,6 +2341,21 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
 }
 
 /**
+ * Refuse a pay-dem route that has no `journalPreparedTransfer` unless the
+ * caller passed `allowUnjournaled: true`. Throws a `DacsError` coded
+ * `settlement.unjournaled_rail`; returns when the opt-out is exactly `true`.
+ */
+export function requireUnjournaledOptOut(allowUnjournaled: boolean | undefined): void {
+  if (allowUnjournaled !== true) {
+    throw new DacsError(
+      "pay-dem settlement requires a rail built with journalPreparedTransfer; " +
+        "pass allowUnjournaled: true only to accept that a crash after the broadcast, before the settlement outcome is recorded, leaves no recorded transaction hash to recover from",
+      { code: "settlement.unjournaled_rail" },
+    );
+  }
+}
+
+/**
  * Bridge an SDK factory PayDemRail to a settle function `(request) => result`.
  * Custom rails are refused before a submission claim or native effect.
  *
@@ -2351,9 +2370,13 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  *
  * This is a guard on the current §9.5.1-legacy `AgreementDocument` path — NOT
  * PB-1..PB-3 conformance, which apply to a `PayeeBoundAgreementDocument` whose
- * destination is selected from a signed `terms.payoutBindings`. The
- * payee-bound-artifact path is separate follow-up work; here `req.payee` is the
- * listing seller carried through the fixed-price agreement.
+ * destination is selected from a signed `terms.payoutBindings`. A payee-bound
+ * agreement is not paid through this bridge: the fixed-price pay-dem buyer
+ * payment in `@kynesyslabs/dacs-node` (`createDacsFixedPricePayDemBuyerPaymentV1`)
+ * selects its destination from `terms.payoutBindings`, and that package's
+ * pay-dem payment code, not this bridge, calls the rail's `settle`. Here
+ * `req.payee` is the listing seller carried
+ * through the fixed-price agreement.
  *
  * SAFE BY DEFAULT: settlement is submitted at most once per
  * `(railId, jobId, phaseIndex)`. The caller must supply a durable store; add a
@@ -2361,11 +2384,19 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  * priorAttempts is a read-only audit: it never claims a submit generation,
  * even if the rail store lost its record.
  *
+ * The rail must be built with `journalPreparedTransfer`, so a crash after the
+ * broadcast leaves the signed hash to recover from. A rail without one is
+ * refused here, before any claim or transfer, with a `DacsError` coded
+ * `settlement.unjournaled_rail`, unless `opts.allowUnjournaled` is `true`.
+ * The journal makes recovery possible; it does not stop a plain retry from
+ * paying again after the settlement store is lost or not shared. Recover from
+ * the journal first (see {@link withRecoveredAttempts}).
+ *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
  * chain moves integer OS base units (1 DEM = 10^9 OS). This asserts the currency
  * is DEM and converts decimal → OS before handing off to the rail — WITHOUT this,
- * "5" DEM was submitted as 5 OS (a billionth of the agreed amount), settled silently.
+ * "5" DEM would be submitted as 5 OS (a billionth of the agreed amount).
  */
 export function payDemSettle(
   rail: PayDemRail,
@@ -2380,6 +2411,12 @@ export function payDemSettle(
   opts: {
     store: SettlementIdempotencyStore;
     reconcile?: PayDemSettlementReconcile;
+    /**
+     * Accept a rail built without `journalPreparedTransfer`. Without a journal,
+     * a crash after the broadcast, before the settlement outcome is recorded,
+     * leaves no recorded transaction hash to recover from.
+     */
+    allowUnjournaled?: boolean;
   },
 ): (req: SettleRequest) => Promise<SettleResult> {
   if (opts === undefined) {
@@ -2392,6 +2429,11 @@ export function payDemSettle(
   );
   if (!storeProperty.found || storeProperty.value === undefined) {
     throw new DacsError("pay-dem settlement requires a caller-supplied durable store");
+  }
+  // A rail the factory did not build is not in `railJournals`; the execution
+  // authority refuses it before any claim or transfer.
+  if (railJournals.get(rail) === false) {
+    requireUnjournaledOptOut(opts.allowUnjournaled);
   }
   const store = storeProperty.value as SettlementIdempotencyStore;
   const storeOnce = stableMethod<SettlementIdempotencyStore["once"]>(
@@ -2772,8 +2814,7 @@ export function payDemSettle(
       if (operations.get(key) === operation) operations.delete(key);
     }
   };
-  const journaled = railJournals.get(rail);
-  return declareSettlementBridge(bridge, journaled === undefined ? {} : { journaled });
+  return bridge;
 }
 
 /**
@@ -2781,9 +2822,8 @@ export function payDemSettle(
  * prepared-transfer journal. For a recovery request that carries no history it
  * calls `attempts` and forwards the request with what it returns; a request that
  * already carries history, or is not a recovery, is forwarded unchanged. The
- * wrapper keeps `bridge`'s registration and declared traits. It only adds
- * history: the bridge still decides whether the payment landed, and still
- * never pays on a recovery request.
+ * wrapper only adds history: the bridge still decides whether the payment
+ * landed, and still never pays on a recovery request.
  *
  * @returns A function with the same shape as `bridge`.
  * @throws Whatever `attempts` or `bridge` throws; nothing is caught.
@@ -2797,5 +2837,5 @@ export function withRecoveredAttempts(
     const found = await attempts(req);
     return bridge(found.length === 0 ? req : { ...req, priorAttempts: found });
   };
-  return inheritSettlementBridge(bridge, recovering);
+  return recovering;
 }

@@ -335,6 +335,8 @@ test("the existing checks refuse an integrated phase-0 fixture with a missing or
   assert.ok((await preparationErrors(clientRoot)).includes(`${CLIENT}: release identity or publish policy is invalid`));
   const hold = JSON.parse(readFileSync(join(repoRoot, "packages/dacs-client/HOLD.json"), "utf8"));
   assert.deepEqual(checkRecord(hold), []);
+  assert.ok(Object.hasOwn(hold.step1Freeze.files, 'DELTA-LEDGER.json'));
+  assert.equal(Object.hasOwn(hold.step1Freeze.files, 'DELTA-MAP.md'), false);
   hold.holds[0].files[0].heldBlob = "0".repeat(40);
   assert.match(checkRecord(hold).join("\n"), /heldBlob/);
 });
@@ -373,7 +375,7 @@ test("every test/**/*.test.mjs and packages/*/test/**/*.test.mjs file is selecte
     ...testFilesUnder("test"),
     ...readdirSync(join(repoRoot, "packages")).flatMap((name) => testFilesUnder(`packages/${name}/test`)),
   ];
-  assert.ok(discovered.includes("packages/dacs-seller/test/seller-transport-auth.test.mjs"));
+  assert.ok(discovered.includes("packages/dacs-seller/test/seller-wire-client-auth.test.mjs"));
   assert.ok(discovered.includes("test/scripts/release-five-package.test.mjs"));
   const rows = discovered.flatMap((file) => [...commands].filter(([, files]) => files.includes(file)).map(([command]) => [file, command]));
   const unselected = discovered.filter((file) => !rows.some(([selected]) => selected === file));

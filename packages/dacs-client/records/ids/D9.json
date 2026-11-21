@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D9",
+  "registration": "D9: existing client delta lane",
+  "subject": "delta(client): D9 make buyer chain readback unconditional and update freeze pins"
+}

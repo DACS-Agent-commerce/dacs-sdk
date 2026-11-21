@@ -3,6 +3,9 @@ import { verifyComponent } from '../dacs/listing.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 import { boundedResolutionValue, resolveWithDeadline } from '../util/bounded-resolution.mjs';
 import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
+import { reportNativeRefusal } from '../dacs/native-observation-evidence.mjs';
+import { lateWriteWatchOpen, watchLateWrite } from './late-write-watch.mjs';
+import { createWriteExclusionRule } from './write-exclusion.mjs';
 // Application-owned native publication for the real demo composition. Every
 // CREATE is produced by the packaged seller wallet and then accepted only
 // after an independent source read, original signed projection, and SDK
@@ -99,11 +102,6 @@ const REFUSED_DEAD='dead', REFUSED_INCOMPLETE='incomplete';
 // this is refused before it is hashed.
 const SIGNED_CREATE_MAX_BYTES=4*MAX_STORAGE_ARTIFACT_BYTES;
 const SIGNED_PROJECTION_MAX_BYTES=SIGNED_CREATE_MAX_BYTES+1024; // Authentication envelope above the signed-content budget.
-// A node can include a CREATE after the transport's own inclusion wait has ended. With awaitInclusion, publish
-// reads a CREATE it sent back again for at most this long after the wallet's answer, once per poll. The wallet
-// answers only after the transport's own inclusion wait (120 s by default), so the bound ends that much later
-// than the broadcast.
-const ISSUED_READBACK_MS=6*60_000, ISSUED_READBACK_POLL_MS=5_000;
 
 // The caller authenticates expectedSigner: the Vet verifier or commitment
 // orchestrator, which may differ from the native storage owner. In the
@@ -202,7 +200,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // Listing has no purchase, so its entry is keyed by locator and content hash
   // alone and lives only for the TTL, never for the whole process. `fresh`
   // reads skip reuse, and a fresh read that does not verify evicts the entry.
-  const immutable=createImmutableReadbacks({now});
+  const immutable=createImmutableReadbacks();
   const cachedKinds=new Set(['Listing','CompositeVerificationRecord','FinalityCommitmentRecord']);
   const cacheScope=(input,projection,receipt)=>({purchaseId:input.artifact.jobId ?? null,locator:input.logicalAddress,contentHash:input.receiptContentHash,scope:{input,projection,receipt,binding:sourceCapability.transportBinding}});
   const kinds=new Set(sourceCapability.demoArtifactPublication.artifactKinds);
@@ -224,6 +222,10 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return `demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
   };
 
+  // A refusal this anchor proves from its own retained intent or from an authenticated readback is reported, before
+  // the coarse status or error below replaces it, to the collector of the call that is running (if any).
+  const refusalProof=(kind,address,retainedHash,observedHash=null)=>reportNativeRefusal({kind,address,retainedHash,observedHash});
+  const scopeConflict=(address,retained,input)=>{refusalProof('immutable-scope-conflict',address,retained.inputHash,exactHash(input));fail('conflict','immutable demo artifact intent differs');};
   const snapshot=async()=>publicationSnapshot(await sourceCapability.journal.entries(),await journal.entries());
   const signedNothing=async(address,row)=>(await snapshot()).classify(address,row)==='unsigned';
 
@@ -379,13 +381,13 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     if(fate===REFUSED_INCOMPLETE) return {status:'indeterminate',reason:'broadcast_rejected: the original demo CREATE was sent again and the index is not complete past its nonce',noResend:true};
     return {status:'rejected',reason:refusal,noResend:true};
   }
-  // readAgain (optional): while the readback answers pending, observe asks it whether to read once more, and reads
-  // again passively (never a resend). publish passes it only for a CREATE it sent itself (awaitInclusion).
-  async function observe(input,retained,writeProof,{fresh=false,resend=false,authorizeResend,readAgain}={}) {
+  // watch (optional): the late-write wait of a CREATE publish sent (awaitInclusion). It gets the first readback and
+  // reads again passively (never a resend) while that is pending; its answer replaces the readback.
+  async function observe(input,retained,writeProof,{fresh=false,resend=false,authorizeResend,watch}={}) {
     let hash=retained.hash;
     if(!hash) {
       const hashes=(await snapshot()).addressHashes.get(input.logicalAddress);
-      if(!hashes?.size&&retained.error==='user_rejected') return {status:'rejected',reason:'user_rejected: the operator refused this CREATE',noResend:true};
+      if(!hashes?.size&&retained.error==='user_rejected'){refusalProof('operator-denied',input.logicalAddress,retained.inputHash);return {status:'rejected',reason:'user_rejected: the operator refused this CREATE',noResend:true};}
       if(hashes?.size!==1) return {status:'indeterminate',reason:'the original demo CREATE hash is not uniquely retained',noResend:true};
       hash=[...hashes][0];
       // Every caller holds the artifact lock from intent lookup through save,
@@ -403,12 +405,13 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     if(cached){await sourceCapability.observeBinding();return cached;}
     const refused=broadcastRejected(retained);
     let included=await observeSource(hash,projection,writeProof,{resend:resend&&(!refused||await refusedCreateMayResend(hash,projection)),refused,authorizeResend});
-    while(included.disposition==='pending'&&readAgain&&await readAgain()) included=await observeSource(hash,projection,writeProof,{resend:false});
+    if(watch) included=await watch(included,hash,projection,()=>observeSource(hash,projection,writeProof,{resend:false}));
     if(refused&&included.disposition==='absent') return refusedAbsence(hash,projection,retained);
     if(included.disposition!=='included') return {status:'indeterminate',reason:`the original demo CREATE has no authenticated inclusion readback (${included.disposition}: ${included.reason ?? included.error ?? 'no reason'})`,noResend:true};
     const record=await reader.read(input.logicalAddress,{expectedWriter:claim,expectedArtifactKind:input.artifactKind,...(input.deliveryBinding?{expectedDeliveryBinding:input.deliveryBinding}:{}),signedProjection:projection});
     if(record.status!=='present' || canonicalize(record.artifact)!==canonicalize(input.artifact) || record.receipt.contentHash!==input.receiptContentHash) {
       if(cacheable) immutable.delete(cacheKey);
+      if(record.status==='present') refusalProof('authenticated-contradiction',input.logicalAddress,input.receiptContentHash,contentHash(record.artifact));
       fail('invalid','native demo artifact readback differs from the retained intent');
     }
     const verdict=await reader.verifyReceipt({receipt:record.receipt,logicalAddress:input.logicalAddress,artifact:input.artifact,expectedWriter:claim,artifactKind:input.artifactKind,receiptContentHash:input.receiptContentHash,signedProjection:projection});
@@ -438,10 +441,12 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // which is asked once more right before the resend; without authorize, or when
   // it answers anything but true, the retained intent is only read back.
   // awaitInclusion (optional, needs authorize): a CREATE this call sends that reads back pending is read back
-  // again, never sent again, once per ISSUED_READBACK_POLL_MS for up to ISSUED_READBACK_MS after the wallet's
-  // answer (which itself comes after the transport's inclusion wait), while authorize still answers true. A
-  // retained intent is read back once, as without it. Like the transport's own inclusion wait, this keeps the
-  // seller's nonce lane, so no other seller CREATE is prepared meanwhile.
+  // again, never sent again, every five seconds (late-write-watch.mjs) until it is no longer pending, its
+  // exclusion is proven (write-exclusion.mjs), authorize no longer answers true, or 30 minutes have passed since
+  // the wallet's answer (which itself comes after the transport's inclusion wait). The issued intent keeps that
+  // time, so a publish after a restart inside those 30 minutes resumes the wait with passive reads only. Any
+  // other retained intent is read back once, as without it. Like the transport's own inclusion wait, this keeps
+  // the seller's nonce lane, so no other seller CREATE is prepared meanwhile.
   async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,authorizeSigning,reaskDenied=false,awaitInclusion=false}) {
     assertKitOperationAdmitted('publish');
     if(authorize!==undefined&&typeof authorize!=='function') fail('invalid','publish authorization must be a function');
@@ -475,13 +480,13 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         // carry it, and only within the same scope: a proven unsigned attempt signed nothing, and a dead refused CREATE can
         // never be included, so no immutable intent is left to contradict. A dead refused CREATE's replacement may differ only
         // in the re-stamped fields (RESTAMPED_FIELDS). Any other change stays a conflict.
-        if(!sameInput&&publicationScope(retained.input)!==publicationScope(input)) fail('conflict','immutable demo artifact intent differs');
+        if(!sameInput&&publicationScope(retained.input)!==publicationScope(input)) scopeConflict(logicalAddress,retained,input);
         if(!unsigned) {
-          if(!sameInput&&!restampedOnly(retained.input,input)) fail('conflict','immutable demo artifact intent differs');
+          if(!sameInput&&!restampedOnly(retained.input,input)) scopeConflict(logicalAddress,retained,input);
           const deadHash=await deadRefusedCreateHash(input,retained);
           if(deadHash) supersedes={hash:deadHash,transaction:clone(retained.transaction)};
-          else if(sameInput) return observe(input,retained,undefined,resendOptions);
-          else fail('conflict','immutable demo artifact intent differs');
+          else if(sameInput) return observe(input,retained,undefined,awaitInclusion&&retained.stage==='issued'&&lateWriteWatchOpen(retained.issuedAt,now())?{watch:lateWriteWatch(retained.issuedAt,authorize)}:resendOptions);
+          else scopeConflict(logicalAddress,retained,input);
         }
       }
       if(!retained&&(await snapshot()).addresses.has(logicalAddress)) return {status:'indeterminate',reason:'signed CREATE retained without an intent',noResend:true};
@@ -551,6 +556,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         const state=await snapshot();
         const signed=state.live([...state.sourceRows,...state.walletRows]).some(([,row])=>!state.rejected(row) && row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
         const code=answer?.error?.code;
+        if(code==='user_rejected') refusalProof('operator-denied',logicalAddress,intent.inputHash);
         const stage=code==='user_rejected'?'denied':code==='broadcast_rejected'?'rejected':answer?.success===false&&!signed?'unsigned':'issued';
         await journal.put(keyFor(logicalAddress),{...intent,stage,error:code ?? 'wallet-response-missing'});
         if(signed&&code==='user_rejected') return observe(input,{...intent,stage,error:code},undefined,resendOptions);
@@ -562,21 +568,16 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         await journal.put(keyFor(logicalAddress),{...intent,stage:'issued',error:'wallet-answer-unbound'});
         return {status:'indeterminate',reason:'wallet answer has no matching retained signed CREATE',noResend:true};
       }
-      const issued={...intent,stage:'issued',hash};
+      const issued={...intent,stage:'issued',hash,issuedAt:now()};
       await journal.put(keyFor(logicalAddress),issued);
-      return observe(input,issued,answer.data.writeProof,{...resendOptions,...(awaitInclusion?{readAgain:issuedReadbackGate(authorize)}:{})});
+      return observe(input,issued,answer.data.writeProof,{...resendOptions,...(awaitInclusion?{watch:lateWriteWatch(issued.issuedAt,authorize)}:{})});
     })));
   }
-  // observe's readAgain for a CREATE publish just sent: waits one poll, then answers true only while
-  // ISSUED_READBACK_MS has not passed since the wallet's answer and authorize still answers true (a throw ends it too).
-  function issuedReadbackGate(authorize) {
-    const deadline=now()+ISSUED_READBACK_MS;
-    return async()=>{
-      const left=deadline-now();
-      if(left<=0) return false;
-      await sleep(Math.min(ISSUED_READBACK_POLL_MS,left));
-      try { return await authorize()===true; } catch { return false; }
-    };
+  // observe's watch for a CREATE the wallet answered for at issuedAt: its late-write wait, judged by the exclusion rule
+  // of that exact signed CREATE.
+  function lateWriteWatch(issuedAt,authorize) {
+    return (first,hash,projection,readBack)=>watchLateWrite({first,readBack,issuedAt,now,sleep,authorize,
+      excluded:createWriteExclusionRule({hash,nonce:projection.content.nonce,readRpc:(path,body,limits)=>sourceCapability.readRpc(path,body,limits),readAccountNonce:accountNonceSnapshot})});
   }
   // options.resend (default false): a read is passive. It reads the chain back and
   // never rebroadcasts the retained CREATE or records a resend. true sends the
@@ -593,7 +594,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       const retained=await journal.get(keyFor(logicalAddress));
       if(!retained) return noIntentAbsence(logicalAddress);
       const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
-      if(retained.inputHash!==exactHash(input)) return {status:'rejected',reason:'retained demo CREATE scope differs'};
+      if(retained.inputHash!==exactHash(input)){refusalProof('immutable-scope-conflict',logicalAddress,retained.inputHash,exactHash(input));return {status:'rejected',reason:'retained demo CREATE scope differs'};}
       authorizeRetained(retained);
       if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
       if(retained.stage==='closing') return {status:'absent',reason:CLOSING_ABSENT};
@@ -622,7 +623,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
       if(!retained) return proofOfNoIntent?noIntentAbsence(logicalAddress):{status:'absent',reason:'no seller-owned demo CREATE intent'};
-      if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress) return {status:'rejected',reason:'retained demo CREATE scope differs'};
+      if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress){refusalProof('immutable-scope-conflict',logicalAddress,retained.inputHash);return {status:'rejected',reason:'retained demo CREATE scope differs'};}
       authorizeRetained(retained);
       // After the access check and before any proof, readback or recovery send, a retained Vet record is held to
       // this anchor's own mode: an intent kept under the other mode is refused, never read, resent or proven unsigned.

@@ -313,28 +313,15 @@ export interface RevocationBinding {
 /** Unsigned DACS-1 §6.3.4 input accepted by Listing publication. */
 export type ListingDraft = Omit<Listing, "signature">;
 
-/** Historical SDK MVP artifact. Read-only compatibility; never a new write. */
-export interface LegacyMvpListing {
-  agentId: string;
-  serviceId: string;
-  name: string;
-  description: string;
-  claimRequirements: Array<{ claimRef: ClaimRef; required: boolean }>;
-  supportedNegotiation: string[];
-  supportedPaymentRails: string[];
-  supportedDelivery: string[];
-  pricing?: Exclude<PricingSpec, { kind: "metered" }>;
-  listingVersion?: number;
-}
-
 /**
- * Explicit read boundary for normative and historical Listing artifacts.
- * A normative branch is only a structurally readable reader-step envelope;
- * consumers MUST obtain a `verified` ordered validation result before use.
+ * Result of `readListingArtifact`: a signed Listing envelope that is
+ * structurally readable by the reader steps. Consumers MUST obtain a
+ * `verified` ordered validation result before use.
  */
-export type ReadableListing =
-  | { compatibility: "normative"; listing: ListingEnvelope }
-  | { compatibility: "legacy-mvp"; listing: LegacyMvpListing };
+export type ReadableListing = {
+  compatibility: "normative";
+  listing: ListingEnvelope;
+};
 
 /** DACS-1 §6.3.4 / LR-1 exact Listing tuple pinned by a session. */
 export interface ListingPin {
@@ -432,36 +419,11 @@ export interface CompositeVerificationRecord {
   signature: ComponentSignature;
 }
 
-/**
- * Obsolete pre-§7.7 SDK result entry. This exists only behind the explicit
- * legacy read boundary; current producers and strict verifiers never emit or
- * accept it as a current VerifyResult.
- */
-export interface LegacyVerifyResultEntry {
-  claimRef: ClaimRef;
-  method: string;
-  status: VerificationDecision;
-  authority?: string;
-  responseHash?: string;
-  proof?: { kind: "hash" | "raw"; value: string };
-  data?: Record<string, unknown>;
-}
-
-/** Obsolete pre-DACS-2 §7.7 SDK record, retained for explicit historical reads. */
-export interface LegacyCompositeVerificationRecord {
-  subject: string;
-  recipeId: string;
-  recipeVersion: string;
-  results: LegacyVerifyResultEntry[];
-  decision: VerificationDecision;
-  verifiedAt: string;
-  signature?: ComponentSignature;
-}
-
-/** Explicit current-versus-legacy read result. */
-export type ReadableCompositeVerificationRecord =
-  | { compatibility: "current"; record: CompositeVerificationRecord }
-  | { compatibility: "legacy"; record: LegacyCompositeVerificationRecord };
+/** Result of `readCompositeVerificationRecord`: a record in the current DACS-2 §7.7 shape. */
+export type ReadableCompositeVerificationRecord = {
+  compatibility: "current";
+  record: CompositeVerificationRecord;
+};
 
 /** DACS-3 §8.5 party bound into an AgreementArtifact. */
 export interface AgreementParty {
@@ -1056,7 +1018,11 @@ export interface BundleSignature {
 export type BundlePartyRole = "buyer" | "seller" | "orchestrator";
 export type FaultedParty = BundlePartyRole | "none";
 
-/** Fields shared by the legacy and v0.3 DACS-5 bundle types. */
+/**
+ * Fields of the three DACS-5 bundle types below. `AttestationBundle`
+ * (`bundleVersion: "1"`) and the v0.4 `EvidenceBoundFaultAttestationBundle`
+ * each replace `phaseSummary` with their own entry type.
+ */
 interface BundleFields {
   jobId: string;
   outcome:
