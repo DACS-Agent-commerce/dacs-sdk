@@ -97,6 +97,14 @@ test("sessionPolicyFor absent, throwing, non-integer, non-finite, not after notB
   const p = await purchase(t, w, { policy: () => ({ expiresAt: T0 - 30000 + 86400000 }) });
   assert.equal((await identity(p)).delegation.payload.expiresAt, T0 - 30000 + 86400000);
 });
+test('without a retained plan only the challenge and context routes are signed; every other route refuses seller_plan_required before the signer is called', async (t) => {
+  const w = await world(t);
+  w.auth = w.createSellerWireAuthentication({ ...w.options, job: { ...w.job, agreementHash: undefined, deadline: undefined } });
+  for (const path of [wire.DACS_SELLER_HTTP_PATHS.state, wire.DACS_SELLER_HTTP_PATHS.proposals, wire.DACS_SELLER_HTTP_PATHS.commitments]) await assert.rejects(request(w, path), code('seller_plan_required'), path);
+  assert.equal(w.state.signs.length, 0);
+  const signed = await request(w, wire.DACS_SELLER_HTTP_PATHS.contextChallenge);
+  assert.equal(signed.payload.agreementHash, sha256Hex(canonicalize({ jobId: JOB })), 'signed under the scope hash');
+});
 test('a session signer without a claim refuses before a delegation payload is saved', async (t) => {
   const w = await world(t);
   w.options = { ...w.options, sessionSigner: { sign() {} } };
