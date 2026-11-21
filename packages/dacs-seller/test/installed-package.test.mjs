@@ -28,7 +28,7 @@ const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresent
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerAuthorityReader', 'createSellerContextRoute', 'createSellerHttpHandler',
   'createSellerTransportStore', 'createSellerWireClientAuth', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
 // The seller's Node wallet suites.
-const NODE_WALLET_TESTS = ['node-wallet-balance.test.mjs', 'node-wallet-composition.test.mjs', 'node-wallet-payment-evidence.test.mjs', 'node-wallet-sr2-bounds.test.mjs'];
+const NODE_WALLET_TESTS = ['node-wallet-approval.test.mjs', 'node-wallet-balance.test.mjs', 'node-wallet-composition.test.mjs', 'node-wallet-payment-evidence.test.mjs', 'node-wallet-sr2-bounds.test.mjs'];
 const INSTALLED_RUN_TIMEOUT_MS = 120000;
 const INSTALLED_TEST_TIMEOUT_MS = 600000;
 

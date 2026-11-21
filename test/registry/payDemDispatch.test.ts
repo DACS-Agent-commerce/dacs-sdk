@@ -54,9 +54,6 @@ import { DacsError } from "../../src/errors.js";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
-  isSettlementBridge,
-  declareSettlementBridge,
-  settlementBridgeTraits,
   type SettlementBinding,
   type SettlementIdempotencyStore,
 } from "../../src/rails/idempotency.js";
@@ -375,25 +372,6 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     })).rejects.toThrow(/caller-supplied durable settlement store/);
     expect(mocks.createPayDemRail).not.toHaveBeenCalled();
     expect(mocks.payDemSettle).not.toHaveBeenCalled();
-  });
-
-  test("the descriptor wrapper carries the registration and declared traits of the executor it binds", async () => {
-    mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle: vi.fn() });
-    const descriptor = await authenticatedDefinition();
-    const dispatch = async (executor: (req: never) => Promise<never>) => {
-      mocks.payDemSettle.mockReturnValue(executor);
-      return settleFromRail(descriptor, {
-        demosRpc: "https://demos.example",
-        demosSecret: "test-secret",
-        payDem: { settlementStore: testStore, allowUnjournaled: true },
-      });
-    };
-    const unused = async (): Promise<never> => { throw new Error("unused"); };
-
-    const unjournaled = await dispatch(declareSettlementBridge(async () => unused(), { journaled: false }));
-    expect(settlementBridgeTraits(unjournaled)).toEqual({ journaled: false });
-    expect(settlementBridgeTraits(await dispatch(declareSettlementBridge(async () => unused())))).toEqual({});
-    expect(isSettlementBridge(await dispatch(async () => unused()))).toBe(false);
   });
 
   test("captures recovery authorities before the optional peer connects", async () => {

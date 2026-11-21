@@ -93,8 +93,8 @@ test("the facade's member inventory equals the separately documented complete in
 test('the node-wallet entry and every composition it returns expose no raw transport and no unwrapped effect method', async t => {
   const w = await seller(t, { held: true }), buyer = await world(t, { held: true });
   for (const name of Object.keys(api)) assert.doesNotMatch(name, /^(?:createDevnet|registerHeld)/);
-  assert.deepEqual(Object.keys(w.session).sort(), ['close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'observer', 'paymentEvidenceAdapter', 'runInEffectPass', 'transport', 'wallet', 'walletFactory']);
-  assert.deepEqual(Object.keys(buyer.session).sort(), ['close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'transport', 'wallet', 'walletFactory']);
+  assert.deepEqual(Object.keys(w.session).sort(), ['close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'observer', 'paymentEvidenceAdapter', 'runInEffectPass', 'transport', 'wallet', 'walletFactory', 'withheldReopen']);
+  assert.deepEqual(Object.keys(buyer.session).sort(), ['close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'transport', 'wallet', 'walletFactory', 'withheldReopen']);
   for (const composition of [w.session, buyer.session]) {
     for (const wallet of [composition.wallet, composition.walletFactory({ anchorJournal: w.journal() })]) {
       assert.deepEqual(Object.keys(wallet).sort(), ['actionsAdmitted', 'getPublicAccount', 'getWriteProfile', 'isLocked', 'lock', 'request']);

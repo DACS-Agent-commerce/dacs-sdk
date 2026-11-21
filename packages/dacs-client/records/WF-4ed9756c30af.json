@@ -1,0 +1,24 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF leave a node failure code or message with control or formatting characters out of a failed storage CREATE readback",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "e734ee949ca079ec7da3cc708ef6daa6bb961d4f",
+      "after": "5d39d71149375e03aa04da2ec9bcbf68bc786e5e"
+    },
+    {
+      "path": "packages/dacs-client/test/failed-storage-write-readback.test.mjs",
+      "before": "8cbc9a4b667087cccb683232e2353ded9eb50df9",
+      "after": "2cb34f4ff38637f35115432d938e5c4ff3f2846d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-4ed9756c30af.json",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/test/failed-storage-write-readback.test.mjs"
+  ],
+  "note": "A storage CREATE the node recorded as failed is still reported as failed only when its body names the hash, sits in the status block, matches the retained signed bytes and its confirmed block lists the hash. The failure code and message the result repeats, in failure and in reason, are now left out (null) when they hold a control or formatting character, a line break, a direction override or a line or paragraph separator, as well as when they are longer than 512 characters. The result stays unresolved and readback-only, retains and sends nothing, and the lane keeps fencing its nonce."
+}
