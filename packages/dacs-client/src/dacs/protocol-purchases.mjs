@@ -59,7 +59,7 @@ import { SELLER_ANSWER_CLASS } from './seller-response-class.mjs';
 import { createSellerWireAuthentication } from './seller-wire-authentication.mjs';
 import { anchoredTupleMembers, createContinuationEvidence, keepCommitmentTuple, matchesCommitmentSummary } from './continuation-evidence.mjs';
 import { readDemDeliveryReady } from './dem-delivery-consumer.mjs';
-import { CHAIN_POINTER_ASK_LIMIT, CHAIN_READBACK_OPERATOR_ACTION, chainPointerAskDue, deliveryPointerDiffers, missingChainPointers, replacementAnswerProblem } from './seller-session-lifecycle.mjs';
+import { CHAIN_POINTER_ASK_LIMIT, CHAIN_READBACK_OPERATOR_ACTION, chainPointerAskDue, deliveryPointerDiffers, missingChainPointers, PAYMENT_OPEN, replacementAnswerProblem } from './seller-session-lifecycle.mjs';
 import { NATIVE_DEM_DELIVERY_SOURCE, nativeDemDeliveryConfig } from './native-dem-delivery-consumer.mjs';
 import { DEVNET_NATIVE_COMMITMENT_MARKER, devnetNativeCommitmentConfig } from '../devnet-demo/commitment-consumer.mjs';
 import { BuyerChainReadbackUnsupported, createBuyerChainReadback, POINTER_MISSING, signedCreateBytes, signedCreateFor } from './buyer-chain-readback.mjs';
@@ -729,13 +729,18 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // The wire reads its authority with no deadline of its own: stop waiting for a read after the seller request timeout.
   const withinSellerDeadline = (pending) => settleOnAbort(pending, AbortSignal.timeout(sellerRequestTimeoutMs))
     .catch((error) => { throw error?.name === 'TimeoutError' ? new OperationError('seller_authority_timeout', 'the wire authority read did not finish in time; nothing was signed or sent', undefined, { cause: error }) : error; });
-  function requireDelegationMargin(operation, step) {
+  // paymentOpen: a transfer for this purchase may already have been sent and is not verified, so the refusal must not invite a second payment.
+  function requireDelegationMargin(operation, step, { paymentOpen = false } = {}) {
     if (!operation.terms.protocol?.sellerTransport?.delegation) return;
     const expiresAt = operation.state.protocol?.sessionDelegation?.payload?.expiresAt;
     if (Number.isSafeInteger(expiresAt) && expiresAt - now() >= SELLER_DELEGATION_SAFETY_MARGIN_MS) return;
     const when = Number.isSafeInteger(expiresAt) ? new Date(expiresAt).toISOString() : 'unknown';
-    throw new OperationError('seller_delegation_expiring', `the seller session delegation expires at ${when}, less than ${SELLER_DELEGATION_SAFETY_MARGIN_MS / 60000} minutes from now, so ${step} would need a seller write it may not finish; nothing was signed or sent. Prepare a new purchase.`);
+    const why = `the seller session delegation expires at ${when}, less than ${SELLER_DELEGATION_SAFETY_MARGIN_MS / 60000} minutes from now, so ${step} would need a seller write it may not finish; nothing was signed or sent.`;
+    if (paymentOpen) throw new OperationError('seller_delegation_expiring_payment_unresolved', `${why} A payment for this purchase may already have been sent and is not verified yet (status ${operation.status}): do not pay again and do not prepare a new purchase. Verify or recover the payment first (verify_deal, given the transaction hash from your wallet history if none was reported); once it is verified, the purchase can renew its seller session until the delegation expires.`);
+    throw new OperationError('seller_delegation_expiring', `${why} Prepare a new purchase.`);
   }
+  // A paid purchase whose seller session delegation has expired: the seller takes no renewed key under it, and the buyer must not pay again.
+  const paidDelegationExpired = (expiresAt, options) => new OperationError('seller_delegation_expired', `the seller session delegation of this paid purchase has expired (its expiry is ${Number.isSafeInteger(expiresAt) ? new Date(expiresAt).toISOString() : 'unknown'}), so the seller will not take a renewed key under it; nothing was signed or sent. Do not pay again; keep the transaction hash.`, undefined, options);
 
   // ---- DACS-1 identity presentation (wallet signature) ----
   async function identityRequest(operation, address) {
@@ -811,7 +816,11 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     const p = operation.state.protocol, retained = p.sessionDelegation;
     if (!operation.terms.protocol.sellerTransport?.delegation || !retained) throw new OperationError('invalid_state', 'this purchase has no retained seller session delegation to renew');
     if (p.sellerSessionFinalAt !== undefined) throw new OperationError('seller_session_ended', 'the seller session of this purchase has ended; there is nothing to renew');
-    requireDelegationMargin(operation, 'a session renewal');
+    // A paid purchase (settled_verified) renews until the delegation itself expires: the renewal is how the seller hears of the payment after a
+    // restart, and the seller still takes a request under a delegation that has not expired. Every other purchase keeps the safety margin; one
+    // whose transfer may already have been sent (PAYMENT_OPEN) is told to verify that payment, never to pay again or prepare a new purchase.
+    if (operation.status !== 'settled_verified') requireDelegationMargin(operation, 'a session renewal', { paymentOpen: PAYMENT_OPEN.has(operation.status) });
+    else if (!Number.isSafeInteger(retained.payload?.expiresAt) || retained.payload.expiresAt <= now()) throw paidDelegationExpired(retained.payload?.expiresAt);
     let signer;
     try { signer = sellerTransport.sessionSignerFor(operation); }
     catch (error) { throw isSessionGone(error) ? new OperationError('session_not_started', 'no seller session key was started in this process; start one before asking for a renewal', undefined, { cause: error }) : error; }
@@ -847,7 +856,12 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     try { signature = decodeSignature(delegationSignature).toString('base64url'); }
     catch (cause) { throw new OperationError('bad_signature', 'the wallet delegation signature encoding is invalid', undefined, { cause }); }
     const delegation = { payload: pending.payload, signature }, agreement = p.agreement?.artifact ?? p.planned?.draft;
-    await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { ...delegationScope(operation), ...(agreement ? { deadline: agreement.terms.deadline } : {}) }));
+    try { await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { ...delegationScope(operation), ...(agreement ? { deadline: agreement.terms.deadline } : {}) })); }
+    catch (error) {
+      // The delegation of a paid purchase expired after its renewal was prepared: the same refusal sessionRenewal gives, and nothing is saved.
+      if (operation.status === 'settled_verified' && error?.code === 'peer_delegation_expired' && !(pending.payload.expiresAt > now())) throw paidDelegationExpired(pending.payload.expiresAt, { cause: error });
+      throw error;
+    }
     const next = save(operation, { sessionDelegation: delegation, pendingSessionDelegation: undefined },
       { event: 'protocol_seller_session_renewed', data: { previousSessionPublicKey: p.sessionDelegation.payload.sessionPublicKey, sessionPublicKey: pending.payload.sessionPublicKey } });
     return { operation: next };
