@@ -42,16 +42,33 @@ function continuationBytes(lead) {
 // State survives every chunk boundary.
 function jsonScanner() {
   const containers = [];
+  const stringBoundary = /["\\\xc2-\xf4]/g;
   let entries = 0, string = false, escaped = false, notJson = false, continuation = 0;
   return bytes => {
     if (notJson) return;
-    for (const byte of bytes) {
+    const end = bytes.length;
+    let text;
+    for (let i = 0; i < end; i++) {
+      let byte = bytes[i];
       if (string) {
         if (continuation > 0) {
           if (byte < 0x80 || byte > 0xbf) throw Object.assign(new Error("EMALFORMED npm HTTP response JSON string is not valid UTF-8"), { code: "EMALFORMED" });
           continuation--;
-        } else if (escaped) escaped = false;
-        else if (byte === 92) escaped = true;
+          continue;
+        }
+        if (escaped) { escaped = false; continue; }
+        // Latin-1 preserves byte offsets while native search skips ordinary string
+        // bytes. Short remainders stay byte by byte: tiny chunks would pay for a
+        // string per call.
+        if (end - i >= 64) {
+          text ??= Buffer.from(bytes.buffer, bytes.byteOffset, end).toString("latin1");
+          stringBoundary.lastIndex = i;
+          const boundary = stringBoundary.exec(text);
+          if (!boundary) return;
+          i = boundary.index;
+          byte = bytes[i];
+        }
+        if (byte === 92) escaped = true;
         else if (byte === 34) string = false;
         else continuation = continuationBytes(byte);
         continue;

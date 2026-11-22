@@ -155,7 +155,7 @@ export function createDacsFundedDoctorExecutorV1(
     try {
       resolved = await options.runtime.adapter.resolveAnchorByName(
         prepared.logicalAddress,
-        prepared.plan.walletAuthority,
+        prepared.plan.walletAuthority.slice("did:demos:agent:".length),
       );
     } catch {
       return "indeterminate";

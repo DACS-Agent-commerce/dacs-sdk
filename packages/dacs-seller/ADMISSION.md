@@ -110,8 +110,11 @@ unknown-job state reads insert no rows. Expired completed and no-effect nonces c
 effect answer remains durable. Pending and uncertain effects require reconciliation and cannot expire into permission to
 repeat work.
 
-Policy defaults remain
-six writes per job, 24 writes and 96 DEM per hour, and 4 DEM per write. Unresolved
+Policy defaults are
+six writes per job, 24 writes and 1,200 DEM per hour, and 50 DEM per write. The 50 DEM
+is a ceiling on one write's whole debit, not the debit a write is expected to cost.
+A context start holds two writes at that ceiling, so each start holds 100 DEM and
+twelve starts fill the hour. Unresolved
 writes count beyond the hour until completed. Configuration may lower or raise
 the PR-defined configurable limits; it cannot disable their validation.
 
