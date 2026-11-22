@@ -123,10 +123,13 @@ export function prepareDacsFundedDoctorV1(
 }
 
 /**
- * Execute exactly one funded Demos write. Reconciliation is read-only: an
- * absent result is returned as an authenticated local absence decision and is
- * never converted into another debit. The operator must authorize a fresh run
- * ID before another broadcast can occur.
+ * Execute one funded Demos write for the prepared run. Reconciliation is
+ * read-only. When it finds no landed write, the same run becomes performable
+ * again; the next perform goes through the write-once path, which first
+ * settles any earlier broadcast kept in the wallet's write journal, returns a
+ * landed create instead of sending another, and stops while such a broadcast is
+ * unresolved. Resume an unfinished run with its own run ID rather than
+ * starting a new one.
  */
 export function createDacsFundedDoctorExecutorV1(
   options: Readonly<DacsFundedDoctorExecutorOptionsV1>,
