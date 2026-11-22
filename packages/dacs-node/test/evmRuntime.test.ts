@@ -141,3 +141,27 @@ describe("buyer EVM runtime", () => {
     expect(JSON.stringify(identity)).not.toContain("44".repeat(32));
   });
 });
+
+
+it("the buyer runtime's challenge clients sign only with a hold's validBefore", async () => {
+  const runtime = await createDacsX402BuyerEvmRuntimeV1({ config: config(),
+    evmPrivateKey: secret(`0x${"11".repeat(32)}`), rpcUrl: "http://127.0.0.1:8545" });
+  try {
+    const authority = { jobId: JOB_ID, phaseIndex: 2, railId: "x402:default", railVersion: "1",
+      railDescriptorHash: "a".repeat(64), agreementHash: "b".repeat(64),
+      termsHash: "c".repeat(64), sessionBindingHash: "d".repeat(64), network: NETWORK,
+      payer: runtime.payerAddress, payee: PAYEE, asset: ASSET, amount: "1000",
+      httpResource: "https://seller.example/deliver/test", method: "GET" as const };
+    const expectedRequirements = { scheme: "exact", network: NETWORK, amount: "1000",
+      asset: ASSET, payTo: PAYEE, maxTimeoutSeconds: 120,
+      extra: { name: "USD Coin", version: "2", assetTransferMethod: "eip3009" } };
+    const client = await runtime.createChallengeClient({ authority, expectedRequirements });
+    const challenge = { x402Version: 2, resource: { url: authority.httpResource },
+      accepts: [expectedRequirements] };
+    await expect(client.createPaymentPayload(challenge)).rejects.toMatchObject({
+      reasonCode: "x402-authorization-valid-before-unbound",
+    });
+    const payload = await client.createPaymentPayload(challenge, { validBefore: 1_900_000_000 });
+    expect(payload).toMatchObject({ payload: { authorization: { validBefore: "1900000000" } } });
+  } finally { runtime.destroy(); }
+});

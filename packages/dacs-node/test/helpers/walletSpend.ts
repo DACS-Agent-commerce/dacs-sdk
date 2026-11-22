@@ -32,6 +32,7 @@ export function createPermissiveTestWalletSpendAuthorityV1(
       return Object.freeze({
         status: "reserved" as const,
         permit: Object.freeze({
+          authorizationValidBefore: 4_102_444_800,
           reservation: structuredClone(reservation),
           reservationId: reservation.reservationId,
           bindingHash: "e".repeat(64),
@@ -98,6 +99,7 @@ export function createAccountingTestWalletSpendAuthorityV1(input: Readonly<{
   }, {
     store: createInMemoryWalletSpendStateStore(),
     readBalance: async () => input.balance ?? ceiling,
+    bindAuthorizationValidBefore: async () => 4_102_444_800,
     authenticateRecovery: async () => true,
     owner: "test-accounting-authority",
     leaseDurationMs: 1_000,
