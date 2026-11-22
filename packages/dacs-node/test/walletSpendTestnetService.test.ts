@@ -280,6 +280,30 @@ describe("testnet wallet-spend authority service", () => {
     expect(next.authorizationValidBefore).toBe(validBefore + 1 + (LATEST_NUMBER - FINAL_NUMBER) * 2 + 120);
   });
 
+  it("changes nothing while the latest block cannot be read", async () => {
+    let blocksDown = false;
+    const stub = await chainStub(defaultChain(FIRST_FINAL_TIME), {
+      answer: (call) => blocksDown && call.method === "eth_getBlockByNumber" ? { status: 500, body: "down" } : undefined,
+    });
+    const settings = await serviceSettings({ rpcUrl: stub.url });
+    cleanups.push(() => settings.remove());
+    const client = await (await attach(stub, settings)).client();
+    const before = { revision: (await client.inspect()).revision, witness: witnessFiles(settings.dataDirectory) };
+
+    blocksDown = true;
+    await expect(client.reserve(testnetReservation(), WINDOW)).rejects.toMatchObject(rejected);
+    expect((await client.inspect()).revision).toBe(before.revision);
+    expect(witnessFiles(settings.dataDirectory)).toEqual(before.witness);
+
+    blocksDown = false;
+    await (await permitFor(client)).beginEffect();
+    paymentAt(stub.state);
+    blocksDown = true;
+    await expect(client.reconcile(testnetReservation(), settledClaim)).rejects.toMatchObject(rejected);
+    expect((await client.inspect()).activeEffects).toBe(1);
+    expect(headState(settings.dataDirectory).reservations[0]?.stage).toBe("effect-pending");
+  });
+
   it("refuses another token or scope through inspect and records nothing", async () => {
     const service = await running();
     const dataDirectory = service.settings.dataDirectory;
