@@ -49,6 +49,8 @@ const sameResult = (record, result) => {
 const contexts = new WeakSet();
 const brand = (context) => { contexts.add(context); return Object.freeze(context); };
 const PLAIN_CONTEXT = brand({ operationClass: null, currentAuthorization: null });
+// The binding each boundary was built over, so a composition can check that a boundary is the host's.
+const boundaryBindings = new WeakMap();
 
 /**
  * The private context of a seller job pass: its class ('job-create', 'payment-evidence' or 'job-resume')
@@ -374,7 +376,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     return answer;
   }
 
-  return Object.freeze({
+  const boundary = Object.freeze({
     withFence, signPass, dispatchPass,
     pass: (op, innerSign, innerSend, { stage, context } = {}) => withFence(op, async (held) => {
       const { bytes } = await signUnderFence(held, innerSign);
@@ -416,4 +418,9 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     },
     connectionGeneration: () => generation,
   });
+  boundaryBindings.set(boundary, binding);
+  return boundary;
 }
+
+/** The binding `createEffectBoundary` built `value` over, or undefined for any value it did not return. Never throws. */
+export const effectBoundaryBinding = (value) => boundaryBindings.get(value);
