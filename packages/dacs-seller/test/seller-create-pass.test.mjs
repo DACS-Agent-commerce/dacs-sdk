@@ -43,11 +43,12 @@ function manualClock() {
 
 // A node answer in the RPC envelope.
 const rpc = (response, extra = null) => jsonResponse({ result: 200, response, require_reply: false, extra });
-// A node that acknowledges a broadcast it never applies, so the CREATE reads back pending and its one resend stays open.
-const pendingNode = (row) => {
+// A node that acknowledges a broadcast it never applies, so the CREATE reads back pending and its one resend stays open. While the
+// CREATE is sent its status read fails, which ends the transport's inclusion wait at once; afterwards the status is unknown.
+const pendingNode = ({ statusUnavailable }) => (row) => {
   const call = row.body?.params[0], message = call?.message || call?.extra;
   if (message === 'broadcastTx') return rpc({ hash: call.data.response.data.transaction.hash });
-  if (message === 'getTransactionStatus') return rpc({ state: 'unknown' }, '');
+  if (message === 'getTransactionStatus') return statusUnavailable ? jsonResponse({ result: 500, response: 'TEST-unavailable', require_reply: false, extra: null }) : rpc({ state: 'unknown' }, '');
   if (message === 'getTxByHash') return jsonResponse({ result: 400, response: 'error', require_reply: false, extra: null });
   return undefined;
 };
@@ -140,18 +141,18 @@ function listingRequest(w) {
  */
 async function seedPendingCreate(w, runCreate) {
   const wallet = w.real.walletFactory({ anchorJournal: w.real.artifactJournal }), request = listingRequest(w);
-  w.world.node.reply = pendingNode;
+  w.world.node.reply = pendingNode({ statusUnavailable: true });
   w.zero();
   const answer = await runCreate(createOp(), () => wallet.request(request));
   assert.equal(answer?.success, true, JSON.stringify(answer));
   assert.deepEqual(w.passes.map(({ reads }) => reads), [1], 'seeding CREATE: one session pass, after the step-1 read');
   assert.deepEqual(w.refreshes, CREATE_PHASES.map((phase) => [phase, 1]), 'seeding CREATE: one refresh read per gated phase');
   assert.deepEqual({ signatures: w.signatures.length, executes: w.executes() }, { signatures: 1, executes: ['confirmTx', 'broadcastTx'] }, 'seeding CREATE: transmitted once');
-  const chainIdentity = w.world.stages.binding.profile.chainIdentity;
+  const chainIdentity = w.world.stages.binding.profile.chainIdentity, pending = pendingNode({ statusUnavailable: false });
   w.world.node.reply = (row) => {
     const call = row.body?.params[0];
     if (call?.message === 'getBlockByNumber' && call.data.blockNumber === 0) return rpc({ number: 0, status: 'confirmed', hash: chainIdentity }, '');
-    return pendingNode(row);
+    return pending(row);
   };
   const retained = (await w.real.transport.journal.entries()).find(([key, value]) => key.startsWith('devnet/native-transfer/') && value?.signedTransaction);
   return retained[1].signedTransaction;
