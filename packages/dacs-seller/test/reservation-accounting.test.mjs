@@ -152,7 +152,7 @@ test('P11b1-T10 one payment transaction for two jobs suspends credit for both in
   for (const jobs of [[JOB, JOB2], [JOB2, JOB]]) {
     const f = await accountingFixture(t);
     const durableDir = join(f.dir, 'seller');
-    const config = { dir: durableDir, signer: { claim: SELLER.claim, sign: SELLER.signBytes }, listingPin: PIN };
+    const config = { dir: durableDir, integritySigner: { claim: SELLER.claim, sign: SELLER.signBytes }, listingPin: PIN };
     let durable = await createSellerDurableState(config);
     t.after(() => durable.close());
     let intake = 0;

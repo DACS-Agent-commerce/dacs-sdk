@@ -6,6 +6,7 @@ import DatabaseSync from 'better-sqlite3';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 import { createSellerAgent } from '../../src/dacs/seller-agent.mjs';
+import { agentSigning } from './agent-signing.mjs';
 import { createSellerDurableState } from '../../src/dacs/seller-durable-state.mjs';
 import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { fixtureListing } from '../fixtures/listings.mjs';
@@ -38,7 +39,7 @@ export const markPaid = (session, state) => {
 /** Rewrites one retained session of the real agent behind `fixture` while the agent is closed, then reopens the agent. */
 export async function editSession(fixture, jobId, change) {
   fixture.agent().close();
-  const state = await createSellerDurableState({ dir: fixture.dir, signer: { ...seller, sign: seller.signBytes }, listingPin: listingPin(fixture.listing) });
+  const state = await createSellerDurableState({ dir: fixture.dir, integritySigner: { ...seller, sign: seller.signBytes }, listingPin: listingPin(fixture.listing) });
   await state.withJob(jobId, (session) => { change(session, state); state.saveSession(session); });
   state.close();
   await fixture.reopen();
@@ -94,7 +95,7 @@ export async function proposalSigningRig(directory) {
     if (Buffer.from(bytes).toString() === agreementBytes) signatures.push(sha256Hex(bytes));
     return seller.signBytes(bytes);
   } };
-  const agent = await createSellerAgent({ signer, listing, anchors: localAnchor({ now: () => NOW + 2000 }), durableDirectory: directory, now: () => NOW + 2000, simulatedFixture: true });
+  const agent = await createSellerAgent({ ...agentSigning(signer, { historyDirectory: `${directory}-effects` }), listing, anchors: localAnchor({ now: () => NOW + 2000 }), durableDirectory: directory, now: () => NOW + 2000, simulatedFixture: true });
   return { agent, body, signatures, failNextSignature: () => { failures = 1; } };
 }
 

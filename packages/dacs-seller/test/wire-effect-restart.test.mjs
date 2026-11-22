@@ -282,7 +282,7 @@ test('commitments/signature cut after the wire reservation, before the early-att
       // The buyer's slot was reserved durably before the cut: the same retained state with its slot and no marker.
       const { listingPin } = seller.agent;
       seller.agent.close();
-      const state = await createSellerDurableState({ dir: seller.f.dir, signer: seller.f.config.signer, listingPin });
+      const state = await createSellerDurableState({ dir: seller.f.dir, integritySigner: seller.f.config.signer, listingPin });
       await state.withJob(JOB, () => state.reserveSignatureCommitment(buyer.claim, JOB));
       state.close();
       await seller.restart();

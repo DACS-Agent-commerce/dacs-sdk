@@ -13,6 +13,7 @@ import {seller,buyer,JOB,NOW} from './protocol-fixture.mjs';
 import {fixtureListing,fixtureIdentityBundle} from '../fixtures/listings.mjs';
 import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
+import {integrityRoleOf,testEffectBoundary} from './agent-signing.mjs';
 import {createSellerTransportStore} from './bound-transport-store.mjs';
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import {HOST_CONTEXT_CALLBACKS,presentContextAnswer} from './host-context-callbacks.mjs';
@@ -36,7 +37,14 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
  const orchestrated=vetMode===ORCHESTRATOR_MODE,sellerParty={claim:seller.claim,sign:seller.signBytes};
  const resolveSeller=async({jobId})=>contexts.has(jobId)?{disposition:'present',value:structuredClone(contexts.get(jobId))}:{disposition:'indeterminate',reason:'TEST context unavailable'};
  const capability=mode=>createDemDeliveryContext({authority:'TEST-admission',vetMode:mode,resolveBuyer:async scope=>presentContextAnswer(scope),resolveSeller,...HOST_CONTEXT_CALLBACKS});
- const config={get challengeLedger(){return ledger===null?store.challenges:ledger();},maxJobs,...vetMode===undefined?{}:{vetMode},signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
+ // The key's roles as the host takes them. An agent built here signs with `config.signer` as it is when the agent opens
+ // (`signing`), under one boundary whose history lasts as long as the fixture.
+ const sellerSigner={claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}};
+ sellerSigner.integritySigner=integrityRoleOf(sellerSigner);
+ // `stop.requested` is the boundary's stop check: set it to stop the seller.
+ const stop={requested:false},{effectBoundary,dataDirectory:effectsDirectory}=testEffectBoundary({stopped:()=>stop.requested});
+ const signingNow=()=>({effectSigner:config.signer,integritySigner:integrityRoleOf(config.signer),effectBoundary});
+ const config={get challengeLedger(){return ledger===null?store.challenges:ledger();},maxJobs,...vetMode===undefined?{}:{vetMode},signer:sellerSigner,listing,durableDirectory:dir,now:()=>time,
   agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,
   nativePaymentEvidence:createNativePaymentEvidenceConsumer({rpcUrl:'http://127.0.0.1:1',anchorEvidence:unreachable,fetchImpl:unreachable}),demDeliveryContext:capability(vetMode)};
  const sourceUrl=new URL('../../src/dacs/seller-agent.mjs',import.meta.url),api=await privateModule(sourceUrl,[],source=>{
@@ -50,7 +58,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
   if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposal,retainedVetEvidenceProblem};');
  });
  // The agent's closed-bootstrap gate lets every job on: no K1 admission row exists in this fixture, and the gate's own answers have their tests.
- const open=async(overrides={})=>{const agent=await api.createSellerAgent({...config,closedBootstrapGate:()=>null,...overrides});t.after(()=>agent.close());return agent;};
+ const open=async(overrides={})=>{const agent=await api.createSellerAgent({...config,...signingNow(),closedBootstrapGate:()=>null,...overrides});t.after(()=>agent.close());return agent;};
  // The same durable directory reopened under `mode` (its own capability and agent option).
  const reopenAs=mode=>open({vetMode:mode,demDeliveryContext:capability(mode)});
  const sign=(party,bundle)=>{bundle.presentation.signatures[0].signature=party.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');};
@@ -80,7 +88,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
   contexts.set(jobId,{input:structuredClone(actual),vetRequirements:structuredClone(vetRequirements)});
   return proposalForInput(synthetic?base:actual);
  };
- return{config,listing,dir,admission,signed,open,reopenAs,capability,input,unadmitted,proposal,contexts,advance:ms=>{time+=ms;},get store(){return store;},storePath:join(storeDirectory,'transport.sqlite'),reopenStore(){store.close();openStore();}};
+ return{config,get signing(){return signingNow();},effectBoundary,effectsDirectory,stop,listing,dir,admission,signed,open,reopenAs,capability,input,unadmitted,proposal,contexts,advance:ms=>{time+=ms;},get store(){return store;},storePath:join(storeDirectory,'transport.sqlite'),reopenStore(){store.close();openStore();}};
 }
 
 export async function proposalForInput(input){

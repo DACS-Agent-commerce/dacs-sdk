@@ -22,6 +22,7 @@ import { wireAuthenticator } from './seller-wire-requests.mjs';
 import { createCompletionRecords } from './seller-completion-records.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { createSellerEffectRoutes } from './seller-effect-routes.mjs';
+import { COSIGNATURE_ANSWER } from './cosignature-answer.mjs';
 
 const MAX_BODY = 64 * 1024;
 /** How many requests one handler serves at once unless its `maxConcurrent` says otherwise; the host bounds its live bootstrap scopes by it too. */
@@ -319,7 +320,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         await row.revalidate({ agent, jobId: request.jobId, outcome: { status: outcome.status, text } });
       }
     };
-    const conclude = async (outcome, end) => {
+    // A refusal that withheld an answer carrying the Agreement co-signature (the boundary's, or the reservation check's
+    // inside the pass): the attempt stays open and the refusal is answered.
+    let withheld = null;
+    const conclude = async (outcome, end, recheck = () => {}) => {
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
       await revalidateFinalPayment(outcome);
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
@@ -327,8 +331,21 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const text = auth.encode(JSON.stringify(outcome.value)), sent = await pointed(outcome.status, text, request.jobId, req.url);
       const headers = await signedHeaders(outcome.status, sent, request);
       if (outcome.status === 200) await creditHeld(request.jobId);
-      end(text);
-      delivered = true;
+      let storing = false;
+      const store = () => { storing = true; end(text); delivered = true; };
+      // An answer that carries the co-signature is that signature's transmission: it becomes the attempt's outcome only
+      // inside a dispatch pass, after the pass's checks. The bytes go out once the pass has returned, so the job is not
+      // still held by the pass's acknowledgement record when the buyer's next request arrives.
+      const cosignature = outcome.status === 200 ? outcome.value?.[COSIGNATURE_ANSWER] : undefined;
+      if (cosignature === undefined) store();
+      else {
+        try { await cosignature.send({ recheck, write: store }); } catch (error) {
+          // Refused before the outcome was stored: nothing is written and the refusal is answered. Once stored, the
+          // answer is sent; a lost acknowledgement record leaves the history at `dispatch-started`, which reads as unknown.
+          if (!storing) withheld = error;
+          if (!delivered) throw error;
+        }
+      }
       write(res, outcome.status, headers, sent);
     };
     // The options an answer is stored with: its classification and, for a route with a row, the row's end decision for the exact text.
@@ -336,7 +353,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const row = rowOfRoute();
       return { noEffect: outcome.noEffect, retry: outcome.retry, ...(row === undefined ? {} : { decision: row.endAfter({ ...outcome, text }, routeEvidence(agent, req.url, request.jobId, outcome)) }) };
     };
-    const finishWith = (outcome) => conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)));
+    const finishWith = (outcome) => conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)), () => auth.store.assertPending(reservation));
     try {
       if (listener?.mode !== 'tls' && (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress))) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
       if (now() - windowStart >= rateWindowMs) { windowStart = now(); requests = 0; }
@@ -374,6 +391,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       // A signed read reserves and completes nowhere: it answers from the agent's current state.
       if (opened.read) {
         const outcome = transportOutcome(req.url, { answer: await route(agent, body, {}) }, { retained: false });
+        // A read that carries the Agreement co-signature transmits it too: it goes out only after its answer pass admits it.
+        await outcome.value?.[COSIGNATURE_ANSWER]?.send({ recheck: () => {}, write: () => {} });
         return await send(res, outcome.status, outcome.value, request);
       }
       // Payment evidence is taken only on an assembled settlement profile.
@@ -404,7 +423,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           claim: () => (claimed = auth.store.claim(reservation, request, { live: !readOnly })),
           settle: (outcome) => {
             if (!claimed) throw new SellerTransportError('peer_reconciliation_conflict', 503);
-            return conclude(outcome, reconcile(outcome));
+            return conclude(outcome, reconcile(outcome), () => claimed.check());
           },
         });
         if (typeof agent.reconcileTransport === 'function') {
@@ -422,6 +441,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (!delivered) await finishWith(classified({ answer }));
     } catch (error) {
       if (delivered) return;
+      if (withheld !== null) return await send(res, Number.isSafeInteger(withheld.status) ? withheld.status : 503, { error: String(withheld.code ?? 'answer_withheld'), message: String(withheld.message) }, request);
       const beforeEffect = !reservation || reservation.disposition !== 'perform';
       // A refusal keeps its code, status and cause, never `operation_uncertain`. After the effect started, only the
       // refusal to store an unsignable answer and a source that cannot confirm a final answer do; any other error leaves the effect uncertain.

@@ -33,10 +33,14 @@ durable stores use the native `better-sqlite3` module. Use the same version of
 The private package uses a core tarball built from the same checkout.
 This build refuses to start (`kit_operation_guard_off`) until the testnet
 switch, and every other entry that signs for a send or sends refuses too. A
-durable store still signs its own local records through the signer you give it:
-when it creates a new store and when it creates or updates an authenticated
-record (reopening a store or taking a lock signs nothing). The kit publishes
-none of these signatures; what your own signer does with them is up to it.
+durable store still signs its own local records, with the key's integrity role
+only: when it creates a new store and when it creates or updates an
+authenticated record (reopening a store or taking a lock signs nothing). The
+kit publishes none of these signatures. The store holds no signer for anything
+else: each Agreement co-signature, commitment, evidence and audit-source
+signature of the seller agent is made inside one pass of the host's effect
+boundary, with the key's effect role, and the answer that carries a new
+Agreement co-signature is written only inside that boundary's dispatch pass.
 
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
@@ -122,7 +126,7 @@ untouched.
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
 const host = await startSellerHost({
-  signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
+  signer,               // the seller key's roles, as openSellerKey returns them: { claim, sign(bytes), integritySigner, ... }
   listing,              // the signed Listing this seller serves; the signer must control it
   dataDirectory,        // absolute real path of a private (0700) directory owned by this user
   contextSessionState,  // optional, synchronous ({ jobId }) -> DACS-5 state name or null

@@ -26,7 +26,7 @@ async function acceptedFixture(t, { legacy = false, save = true, vetted = false 
   agent.close();
   const nonce = input.buyerIdentityBundle.sessionNonce;
   const challenge = f.store.challenges.retained(nonce);
-  const state = await createSellerDurableState({ dir: f.dir, signer: f.config.signer, listingPin: listingPin(f.listing) });
+  const state = await createSellerDurableState({ dir: f.dir, integritySigner: f.config.signer, listingPin: listingPin(f.listing) });
   if (save && !vetted) await state.withJob(JOB, () => state.saveSession({ jobId: JOB, buyerBundle: input.buyerIdentityBundle,
     buyerBundleHash: identityBundleHash(input.buyerIdentityBundle), stage: 'proposed' }));
   state.close();
@@ -179,7 +179,7 @@ test('failed reclamation leaves the accepted proof restorable', async t => {
 test('archived challenges still require retained Vet evidence', async t => {
   const w = await acceptedFixture(t);
   reclaim(t, w);
-  const state = await createSellerDurableState({ dir: w.dir, signer: w.config.signer, listingPin: listingPin(w.listing) });
+  const state = await createSellerDurableState({ dir: w.dir, integritySigner: w.config.signer, listingPin: listingPin(w.listing) });
   await state.withJob(JOB, session => { session.stage = 'agreed'; state.saveSession(session); }); state.close();
   await assert.rejects(w.open(), error => error.code === 'seller_state_unverified' && /Vet/.test(error.message));
 });

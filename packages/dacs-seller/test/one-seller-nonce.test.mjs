@@ -216,7 +216,7 @@ async function composed(t, storeOptions = {}) {
     // Keeps the proposal session the agent would have saved, then reopens the agent so its retained-session reader checks it.
     async retainProposedSession(bundle) {
       agent.close();
-      const state = await createSellerDurableState({ dir: pa.dir, signer: signer(agentSeller), listingPin: listingPin(pa.listing) });
+      const state = await createSellerDurableState({ dir: pa.dir, integritySigner: signer(agentSeller), listingPin: listingPin(pa.listing) });
       try { await state.withJob(JOB, () => state.saveSession({ jobId: JOB, buyerBundle: structuredClone(bundle), buyerBundleHash: identityBundleHash(bundle), proposal: null, stage: 'proposed' })); }
       finally { state.close(); }
       agent = await pa.open();
@@ -363,7 +363,7 @@ test(card('T13'), async t => {
 test(card('T19'), async t => {
   const guard = await import('../src/kit-operation-guard.mjs');
   const unconfigured = await composed(t); unconfigured.agent.close();
-  const missing = await createSellerAgent({ ...unconfigured.pa.config, sessionAdmission: null });
+  const missing = await createSellerAgent({ ...unconfigured.pa.config, ...unconfigured.pa.signing, sessionAdmission: null });
   t.after(() => missing.close());
   const bundle = unconfigured.present(unconfigured.issueChallenge().sessionNonce), request = { jobId: JOB, bundle, nonce: bundle.sessionNonce };
   const watch = watchWrites(t);

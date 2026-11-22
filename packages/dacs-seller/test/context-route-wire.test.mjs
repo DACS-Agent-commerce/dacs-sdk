@@ -1422,7 +1422,7 @@ const AGENT_EFFECT_ENTRIES = ['receiveProposal', 'commit', 'commitOnSignature', 
 
 test('an agent refuses every direct effect entry without a closed-bootstrap gate, and asks its gate before any work', async (t) => {
   const f = await proposalAdmissionFixture(t), request = { jobId: AGENT_JOB, transportIdentity: { jobId: AGENT_JOB } };
-  const ungated = await createSellerAgent({ ...f.config });
+  const ungated = await createSellerAgent({ ...f.config, ...f.signing });
   t.after(() => ungated.close());
   for (const entry of AGENT_EFFECT_ENTRIES) {
     await assert.rejects(ungated[entry](request), (error) => error.code === 'session_admission_unavailable' && error.status === 503, `${entry} without a gate`);
