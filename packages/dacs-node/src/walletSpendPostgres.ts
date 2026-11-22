@@ -183,6 +183,9 @@ export function createDacsWalletSpendContinuityAuthorityV2(input: Readonly<{
     store,
     readBalance: input.dependencies.readBalance,
     authenticateRecovery: input.dependencies.authenticateRecovery,
+    ...(input.dependencies.bindAuthorizationValidBefore === undefined ? {} : {
+      bindAuthorizationValidBefore: input.dependencies.bindAuthorizationValidBefore,
+    }),
     ...(input.dependencies.verifyOperatorApproval === undefined ? {} : {
       verifyOperatorApproval: input.dependencies.verifyOperatorApproval,
     }),

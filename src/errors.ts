@@ -23,6 +23,17 @@ export type FaultCategory = "transient" | "permanent" | "counterparty" | "substr
  * - `DemosChainIdentityError`: one of the network identity codes, such as `chain_identity_mismatch`, chosen at each throw.
  */
 const codeCategory = {
+  "canonical.container_not_plain": "permanent",
+  "canonical.decimal_invalid": "permanent",
+  "canonical.nesting_too_deep": "permanent",
+  "canonical.number_non_finite": "permanent",
+  "canonical.number_out_of_range": "permanent",
+  "canonical.structure_cyclic": "permanent",
+  "canonical.token_decimals_invalid": "permanent",
+  "canonical.type_unsupported": "permanent",
+  "canonical.unicode_invalid": "permanent",
+  "payment.amount_nonpositive": "permanent",
+  "payment.amount_precision_exceeded": "permanent",
   "schema.invalid_field": "permanent",
   "settlement.unjournaled_rail": "permanent",
 } as const satisfies Record<string, FaultCategory>;

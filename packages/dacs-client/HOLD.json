@@ -1021,11 +1021,11 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "records/ANCHOR.json": {
-        "blob": "8bc0c58630bd1d3e79d46ea10b4f649e0e9f44b3"
+        "blob": "8b883a8d75c34ea49b9fd518717ac72355e4cfa8"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "04e96028887c368e95ea429a107f65338a3cc06c"
+        "blob": "47367cbee457408079089d7befad8b028ec50229"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "08a34331a1279937f2a522a175a0adc8d84fe380"

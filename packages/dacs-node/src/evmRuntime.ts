@@ -223,6 +223,7 @@ export async function createDacsX402BuyerEvmRuntimeV1(
         evmPrivateKey: privateKey,
         authority: input.authority,
         expectedRequirements: input.expectedRequirements,
+        requireHoldValidBefore: true,
       });
     },
     async signIdentityPresentation(bundleHash) {
