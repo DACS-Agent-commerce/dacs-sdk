@@ -358,6 +358,23 @@ test('a stopped public protocolRecheck or agreementSubmit given {operationId, to
   }
 });
 
+test('a stopped public sessionRenewal or sessionRenewalAccept given {operationId, token} suspends queued work before it refuses, and lifting the stop alone starts none of it', async t => {
+  for (const method of ['sessionRenewal', 'sessionRenewalAccept']) {
+    const s = await storedWorld(t, { paid: true }); queueWork(s);
+    const journal = s.p.config.walletAgreement.journal, lock = journal.withWalletLock, agreementLanes = [];
+    journal.withWalletLock = (key, work) => { if (key.startsWith('plugin/agreement/')) agreementLanes.push(key); return lock(key, work); };
+    const stop = { now: true }, { service, request } = await stoppedReader(s, () => stop.now, { publicService: true });
+    const portal = { operationId: request.operationId, token: request.token };
+    await assert.rejects(service[method](portal), hostStopRefusal('writes_stopped'));
+    const held = suspension(s);
+    assert.equal(held?.cause, 'writes_stopped', method);
+    stop.now = false;
+    const outcome = await service.verifyDeal(request).then(() => 'resolved', error => error);
+    assert.deepEqual(agreementLanes, [], method); assert.equal(outcome, 'resolved', method);
+    assert.deepEqual(suspension(s), held, method); assert.equal(s.fetches.length, 0, method);
+  }
+});
+
 test('a stopped token action whose token does not authenticate records nothing, even with the purchase\'s accountId; a stopped cancel suspends by account', async t => {
   for (const method of ['protocolRecheck', 'agreementSubmit', 'cancel']) {
     const s = await storedWorld(t, { paid: true }); queueWork(s);

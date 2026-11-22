@@ -1701,7 +1701,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
 // The service actions that authenticate their request with the purchase's handoff token.
 const TOKEN_ACTIONS = new Set(['issueApprovalChallenge', 'approve', 'prepareHandoff', 'nativePaymentLane', 'reportWalletResult',
-  'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign', 'protocolRecheck']);
+  'agreementIdentity', 'sessionRenewal', 'sessionRenewalAccept', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign', 'protocolRecheck']);
 
 // Each service's recorder for host stop refusals of its actions. Module-private.
 const stopRefusalRecorders = new WeakMap();
