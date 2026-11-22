@@ -38,7 +38,7 @@ function presentAnswer({ scope, buyerIdentityBundle }, listing) {
  * Builds the composed world. `sellerEndpoint(claim, options)` answers the protocol's seller lookups; `contextGate` (a Promise) holds the
  * operator's context read; `demDeliveryContext` (a capability) replaces the operator context.
  */
-export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null } = {}) {
+export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, stopped } = {}) {
   const { binding, currentLocal, authority, current } = await bindFixture();
   const admission = { binding, currentLocal };
   const wallet = createEphemeralWallet(), seller = createEphemeralWallet();
@@ -62,11 +62,11 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   // Every protocol call that reaches a seller or the buyer-access seam is counted.
   const counters = { sellerLookups: 0, buyerAccess: 0, challengesIssued: 0 };
   const challenges = { issue: () => { counters.challengesIssued++; return { challengeId: 'TEST-challenge' }; } };
-  const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
+  const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
       nativeSellerCommitment: commitment, ...(demDeliveryContext ? { demDeliveryContext } : { agreementContext }), sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: wallet.address }] }, verifier, chain, protocol,
-    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission, stopped });
   const prepare = (idempotencyKey = 'TEST-key') => service.prepare({ accountId: ACCOUNT_ID, listingId: 'TEST-listing', version: 1, seller: seller.claim,
     idempotencyKey, walletAddress: wallet.address, protocol: OFFLINE_AGREEMENT_MODE });
   // Prepares a purchase and has the buyer present their identity; returns what agreementPlan needs.
