@@ -1025,7 +1025,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "52dc9f7318e4766bf055f3f71b93576d6e708505"
+        "blob": "f95a540f6605daa5f08e5c5825e703f5ac6335e1"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "86f7088926df09a4d0404ef2d86e198ac87f3438"
@@ -1064,7 +1064,7 @@
         "blob": "705e8a7a718a5a25a07b1ef6de8ca91d507c0168"
       },
       "scripts/delta-frontier.test.mjs": {
-        "blob": "a21c2499a63a28fe5a65e23c3a70f72adb2ee7de"
+        "blob": "027578d9f049f202cc6f07f8c415cb80a433e72c"
       },
       "scripts/delta-map.mjs": {
         "blob": "9c1dfb2158611773cf6a51f997e4bbc9157cca88"
