@@ -276,6 +276,23 @@ describe("DEM chain rule for the testnet wallet-spend authority", () => {
     expect(answers.filter((answer) => answer.reasonCode === "wallet-spend-dem-evidence-reused")).toHaveLength(1);
   });
 
+  it("checks a retried claim again from the chain after a restart before the core recorded it", async () => {
+    const hold = demHold();
+    const other = demHold("job-other");
+    // The core had not recorded the first acceptance, so the state still shows no transfer for either hold.
+    const state = stateOf(row(hold), row(other));
+    const beforeRestart = await world(state);
+    await expect(beforeRestart.rule.check(hold, settled()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-paid" });
+
+    const afterRestart = await world(state);
+    await expect(afterRestart.rule.check(hold, settled()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-paid" });
+    expect(afterRestart.calls.filter((call) => call.message === "getTxByHash")).toHaveLength(1);
+    await expect(afterRestart.rule.check(other, settled()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-evidence-reused" });
+  });
+
   it("refuses DEM holds the rule cannot bind", async () => {
     const hold = demHold();
     const [service, fee] = hold.debits;

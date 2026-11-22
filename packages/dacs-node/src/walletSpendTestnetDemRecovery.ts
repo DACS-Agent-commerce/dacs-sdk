@@ -96,7 +96,7 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
   const counted = new Map<string, string>();
 
   function reportOnce(reasonCode: string, reservationId: string, transactionHash?: string): void {
-    const key = `${reservationId} ${reasonCode}`;
+    const key = JSON.stringify([reservationId, reasonCode]);
     if (reported.has(key)) return;
     reported.add(key);
     input.report({
