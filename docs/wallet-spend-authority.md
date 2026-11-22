@@ -216,7 +216,8 @@ A start refusal exits with one named code and serves nothing. The likely ones:
   `wallet-spend-testnet-authority-witness-seed-invalid`: the file is missing,
   malformed or unsafe, often owned by another user (`secret-file-owner-mismatch`).
 
-While running, the service prints `hold-needs-operator` on stderr when the
-chain rule in step 7 cannot release a hold. With
-`wallet-spend-chain-nonce-used-unmatched`, the nonce paid for something else:
-the hold stays, and the wallet key should be treated as in use elsewhere.
+While running, the service prints a `hold-needs-operator` line on stderr, with
+`wallet-spend-chain-nonce-used-unmatched`, when the chain shows a hold's nonce
+used in a transaction that does not pay the agreed amount to the agreed payee.
+That nonce paid for something else: the hold stays, and the wallet key should
+be treated as in use elsewhere.
