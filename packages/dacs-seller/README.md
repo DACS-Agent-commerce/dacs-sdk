@@ -651,8 +651,14 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   (`createSellerNodeWallet`, below); `isDevnetDemoTransport`
   (`src/dacs/devnet-source.mjs`, the client's own check) refuses any other
   value. Every write it makes is still held by the kit operation guard and the
-  client's purchase hold. An operator-supplied anchor must enforce the contract
-  itself.
+  client's purchase hold. It also needs `runCreate` from
+  `createSellerCreatePass` (`src/devnet-demo/create-pass.mjs`): each wallet
+  CREATE, and the one resend of a retained CREATE, runs after the kit effect
+  boundary's checks, under its fence, inside one effect pass of the wallet
+  session. That pass asks the lane's synchronous `currentAuthorization` check
+  last before the signature and before each transmission, so `publish` needs
+  `operationClass` and `currentAuthorization` for every artifact kind. An
+  operator-supplied anchor must enforce the contract itself.
 - Without the next option, a Deliverable CREATE the capability signed but did
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
@@ -1254,7 +1260,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   refusals). Only then does it call `loadKeyRecord` once; the port zero-fills
   the bytes it returns on every outcome. It builds the wallet over the port's
   own connection and binds the handle to the artifact anchor composed over
-  it. That anchor's readback compares the chain identity the port's
+  it, whose wallet CREATEs run through `runCreate` over the host's effect
+  boundary and this session. That anchor's readback compares the chain identity the port's
   connection reader observes (within the readback's remaining time, at most
   10,000 ms, else `tp1_authority_timeout`) with the binding. The finalized
   session has `effectPass`, `runInEffectPass`,
