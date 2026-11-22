@@ -1337,14 +1337,11 @@ function confirmedEditDebitOs(
 }
 
 /**
- * Payer's real total debit (amount plus the fee the chain removed) of a
- * confirmed native send record, in OS, as a decimal string. The unit comes
- * from the native payload's own encoding: a string payload is post-fork OS and
- * a number payload is pre-fork DEM. Pure: no I/O.
- *
- * @returns null unless the record is `confirmed`, within the observation
- *   limits, and binds exactly this hash, nonce, block, payer, payee and amount,
- *   with balance edits that hold one removal and one credit of the amount.
+ * Payer's real total debit (amount plus the fee the chain removed) of a confirmed native send
+ * record, in OS, as a decimal string. The unit comes from the native payload's own encoding: a
+ * string payload is post-fork OS and a number payload is pre-fork DEM. Pure: no I/O.
+ * @returns null unless the record is `confirmed`, within the observation limits, and binds exactly
+ *   this hash, nonce, block, payer, payee and amount, with one removal and one credit of the amount.
  */
 export function payDemConfirmedTotalDebitOs(record: unknown, expected: Readonly<{
   txHash: string; nonce: number; blockNumber: number; payer: string; payee: string; amountOs: string;
