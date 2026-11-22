@@ -154,9 +154,11 @@ topology, durability or failover evidence.
 
 ## Run the testnet service
 
-For Base Sepolia (`eip155:84532`) only, `@kynesyslabs/dacs-node` includes a
-file-backed authority service that a generated x402 or dual-rail buyer project
-runs on a loopback address. It serves only the x402 policy. It is not the
+For testnets only, `@kynesyslabs/dacs-node` includes a file-backed authority
+service that a generated x402 or dual-rail buyer project runs on a loopback
+address. It serves the x402 policy on Base Sepolia (`eip155:84532`) and, when
+its Demos settings are set, the `pay-dem` policy on the Demos testnet
+(`demos`), each lane in its own data directory and lineage. It is not the
 production authority: its witness and state share one directory, it uses no
 PostgreSQL, and it does not detect a restored old copy. Run each step as the
 runtime user that owns the secret files:
@@ -185,8 +187,17 @@ runtime user that owns the secret files:
    is past that `validBefore` with the authorization unused, and the 5-minute
    hold lease has ended; the buyer's next request then releases it. Never
    reuse an epoch.
-8. In a dual-rail project the service refuses the `pay-dem` policy, so `pay-dem`
-   purchases and the `pay-dem.service-limit` check need the production authority.
+8. The generated commands set up only the x402 lane. The service also runs a
+   `pay-dem` lane when `DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY` (another
+   new directory, neither inside nor containing the x402 one),
+   `DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE` (the buyer's DEM policy) and
+   `DACS_DEMOS_RPC_URL` (an `https` Demos node) are set. It starts that lane only
+   when the node's identity is the approved Demos testnet, and refuses with
+   `wallet-spend-testnet-authority-demos-network-mismatch` otherwise. It counts a
+   DEM payment only when the chain shows that transfer executed from the policy
+   wallet to the agreed payee for the exact amount, with the fee the chain
+   record shows. It never releases a DEM hold on the buyer's word or by time, so
+   an interrupted DEM purchase keeps its hold.
 
 | Setting | Meaning |
 |---|---|

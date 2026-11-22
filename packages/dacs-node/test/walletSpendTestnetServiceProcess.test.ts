@@ -2,13 +2,26 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { connect, createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { TP1_APPROVED_IDENTITY_RECORD } from "@kynesyslabs/dacs/wire";
 
+import { dacsWalletSpendLineageKeyV1, dacsWalletSpendPolicyHashV1 } from "../src/walletSpendPostgres.js";
 import { createDacsRemoteWalletSpendAuthorityV2 } from "../src/walletSpendRemote.js";
+import {
+  DEMOS_NODE_URL,
+  DEMOS_WALLET,
+  closeDemosNodeStubs,
+  closedPortUrl,
+  demosLaneSettings,
+  demosNodeStub,
+  demosPolicy,
+  recordedDemosState,
+  withoutX402Lane,
+} from "./helpers/walletSpendDemosNode.js";
 import { witnessReceipts } from "./helpers/walletSpendFileAuthorityStores.js";
 import {
   TESTNET_TOKEN,
@@ -36,6 +49,7 @@ afterEach(async () => {
   for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   for (const cleanup of cleanups.splice(0)) await cleanup();
   await closeChainStubs();
+  await closeDemosNodeStubs();
 });
 
 interface Run {
@@ -47,8 +61,12 @@ interface Run {
   stdout(): string;
 }
 
-function run(environment: Record<string, string | undefined>, args: readonly string[] = []): Run {
-  const child = spawn(process.execPath, [BIN, ...args], {
+function run(
+  environment: Record<string, string | undefined>,
+  args: readonly string[] = [],
+  nodeArguments: readonly string[] = [],
+): Run {
+  const child = spawn(process.execPath, [...nodeArguments, BIN, ...args], {
     env: { PATH: process.env.PATH, ...environment },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -236,6 +254,46 @@ describe("testnet wallet-spend authority process", { timeout: 60_000 }, () => {
     const signed = text.indexOf("\"stateHash\":\"") + "\"stateHash\":\"".length;
     writeFileSync(head, `${text.slice(0, signed)}${text[signed] === "0" ? "1" : "0"}${text.slice(signed + 1)}`);
     await refusedWith(environment, "wallet-spend-file-witness-record-damaged");
+  });
+
+  it("the bin starts a DEM lane only against the approved testnet", async () => {
+    const node = await demosNodeStub(recordedDemosState(TP1_APPROVED_IDENTITY_RECORD.chainIdentity));
+    const settings = await serviceSettings({ rpcUrl: "https://base-sepolia.unused.example/" });
+    cleanups.push(() => settings.remove());
+    const lane = await demosLaneSettings({ root: settings.root, rpcUrl: DEMOS_NODE_URL });
+    const port = await freePort();
+    const environment = {
+      ...withoutX402Lane(settings.environment), ...lane.environment, DACS_WALLET_AUTHORITY_URL: `http://127.0.0.1:${port}`,
+      DACS_TEST_DEMOS_NODE_TARGET: node.url,
+    };
+    const routed = ["--import", pathToFileURL(join(PACKAGE_DIRECTORY, "test/helpers/routeDemosNodeFetch.mjs")).href];
+
+    const service = run(environment, [], routed);
+    const started = await service.started;
+    expect(started, service.stderr()).toMatchObject({
+      status: "listening",
+      payDemLineageKey: dacsWalletSpendLineageKeyV1(DEMOS_WALLET, "demos"),
+      payDemPolicyHash: dacsWalletSpendPolicyHashV1(demosPolicy()),
+    });
+    expect(started).not.toHaveProperty("lineageKey");
+    expect(started).not.toHaveProperty("policyHash");
+    service.child.kill("SIGTERM");
+    await expect(service.exited).resolves.toBe(0);
+
+    const otherNetwork = await demosNodeStub(recordedDemosState("ab".repeat(32)));
+    const baseSepoliaPolicy = join(settings.root, "dem-policy-base-sepolia.json");
+    writeFileSync(baseSepoliaPolicy, JSON.stringify(demosPolicy({ chainId: "eip155:84532" })), { mode: 0o644 });
+    const refusals: readonly (readonly [Record<string, string>, string])[] = [
+      [{ DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: baseSepoliaPolicy }, "wallet-spend-testnet-authority-network-refused"],
+      [{ DACS_TEST_DEMOS_NODE_TARGET: otherNetwork.url }, "wallet-spend-testnet-authority-demos-network-mismatch"],
+      [{ DACS_TEST_DEMOS_NODE_TARGET: await closedPortUrl() }, "wallet-spend-testnet-authority-demos-node-unavailable"],
+    ];
+    for (const [changed, reasonCode] of refusals) {
+      const refused = run({ ...environment, ...changed }, [], routed);
+      expect(await refused.exited, `${reasonCode}: ${refused.stdout()}${refused.stderr()}`).toBe(1);
+      expect(JSON.parse(refused.stderr().trim())).toMatchObject({ status: "refused", reasonCode });
+      expect(await portRefused(port)).toBe(true);
+    }
   });
 
   it("prints the witness public key from the seed file alone", async () => {

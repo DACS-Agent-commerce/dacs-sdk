@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Registers the package's Demos SDK resolver before anything can load the SDK, as the generated
+// commands do with `--import @kynesyslabs/dacs-node/demos-loader`, so the bare bin needs no flag.
+import "./demosLoader.js";
 import { startDacsWalletSpendTestnetAuthorityV1 } from "./walletSpendTestnetService.js";
 import {
   DacsWalletSpendTestnetAuthorityError,
@@ -15,12 +18,14 @@ function printLine(stream: NodeJS.WriteStream, line: Readonly<Record<string, str
 
 function refused(error: unknown): void {
   const named = error instanceof DacsWalletSpendTestnetAuthorityError;
-  printLine(process.stderr, {
+  const line = {
     status: "refused",
     reasonCode: named ? error.reasonCode : "wallet-spend-testnet-authority-start-failed",
     ...(named && error.setting !== undefined ? { setting: error.setting } : {}),
-  });
-  process.exitCode = 1;
+  };
+  // Exits explicitly once the line is written: the Demos SDK's WebAssembly modules set
+  // process.exitCode to 0 when they finish loading, which can happen after a fast refusal.
+  process.stderr.write(`${JSON.stringify(line)}\n`, () => process.exit(1));
 }
 
 async function printWitnessPublicKey(): Promise<void> {
@@ -39,8 +44,12 @@ async function serve(): Promise<void> {
     authorityId: authority.authorityId,
     epoch: authority.epoch,
     witnessVerificationKey: authority.witnessVerificationKey,
-    lineageKey: authority.lineageKey,
-    policyHash: authority.policyHash,
+    ...(authority.lineageKey === undefined || authority.policyHash === undefined ? {} : {
+      lineageKey: authority.lineageKey, policyHash: authority.policyHash,
+    }),
+    ...(authority.payDem === undefined ? {} : {
+      payDemLineageKey: authority.payDem.lineageKey, payDemPolicyHash: authority.payDem.policyHash,
+    }),
   });
   const shutDown = () => {
     authority.stop().then(() => process.exit(0), () => process.exit(1));
