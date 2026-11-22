@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assemble, readArchive } from './delta-assemble.mjs';
-import { isAnchored, isCorePath, isRecordNamed, readAnchor, recordName, selects } from './delta-record.mjs';
+import { isAnchored, isCorePath, isRecordNamed, isUnrecorded, readAnchor, recordName, selects } from './delta-record.mjs';
 import { checkRecordFiles } from './delta-freeze.mjs';
 import { publicationJson, publicationText } from './publication-text.mjs';
 import { sourceGit } from './source-git.mjs';
@@ -176,7 +176,9 @@ export function checkDeltas(packageDir=pkg) {
   // commits after it, and their changes are checked from it on.
   const anchor=readAnchor(pkg), anchored=path=>isAnchored(path.slice(prefix.length)), afterAnchor=new Set(git('rev-list',`${anchor.commit}..HEAD`).split('\n'));
   const core=path=>isCorePath(path.slice(prefix.length));
-  const covered=(path,sha)=>!core(path)&&(/^packages\/dacs-client\/(src|test)\//.test(path)||(anchored(path)&&(sha==null||afterAnchor.has(sha))));
+  // The README needs no record: every check below skips it and each record or anchor entry that names it.
+  const unrecorded=path=>isUnrecorded(path.slice(prefix.length));
+  const covered=(path,sha)=>!core(path)&&!unrecorded(path)&&(/^packages\/dacs-client\/(src|test)\//.test(path)||(anchored(path)&&(sha==null||afterAnchor.has(sha))));
   // Records are checked one by one by their schema; this rule binds the archive.
   const last=readArchive(pkg).ledger.changes.at(-1);
   if(last && !last.files.some(file=>/^packages\/dacs-client\/(src|test)\//.test(file.path))) failures.push(`${prefix}DELTA-LEDGER.json: last record names no source or test change`);
@@ -209,7 +211,7 @@ export function checkDeltas(packageDir=pkg) {
   if(JSON.stringify(evidence.sourceManifest)!==JSON.stringify(JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'))))) failures.push('source manifest differs from archived source/delta evidence');
   if(data.schema!=='dacs-client-deltas/v2'||data.baseline!==BASELINE) failures.push('delta ledger baseline/schema changed');
   for(const [path,want] of Object.entries(anchor.files)) {
-    if(blobAt(`${anchor.commit}:${path}`)!==want) failures.push(`${path}: the anchor blob differs from the file at the anchor commit`);
+    if(!unrecorded(path)&&blobAt(`${anchor.commit}:${path}`)!==want) failures.push(`${path}: the anchor blob differs from the file at the anchor commit`);
   }
   const selectors=new Map(), recorded=new Map(), skipped=[];
   for(const c of data.changes) {
@@ -224,7 +226,7 @@ export function checkDeltas(packageDir=pkg) {
     if(matches.length===1) {
       const sha=matches[0].sha;
       for(const f of c.files) {
-        if(core(f.path)) continue;
+        if(core(f.path)||unrecorded(f.path)) continue;
         // The anchor already holds the result of a commit it contains, so such a record does not enter the chain.
         if(anchored(f.path)&&!afterAnchor.has(sha)) skipped.push(`${f.path}: delta ${c.delta} ${sha} is contained in the anchor; skipped`);
         else recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,before:f.before,after:f.after}]);
@@ -272,12 +274,13 @@ export function checkDeltas(packageDir=pkg) {
   for(const h of history) {
     const item=recordFor(inventory,h);
     if(!graph.get(h.sha).parents.length) throw new Error(`commit ${h.sha} has no parent to compare with`);
-    const files=[...graph.get(h.sha).files].sort();
+    // The README is left out on both sides, so a commit that changes only it needs no row.
+    const files=graph.get(h.sha).files.filter(path=>!unrecorded(path)).sort();
     // The published inventory remains auditable. Later unrelated SDK work
     // does not require a client control update; merges are excluded above.
     const published=publishedCommits.has(h.sha);
     if(!published&&!files.some(path=>path.startsWith(prefix)))continue;
-    if(!item || (item.sha!==null && item.sha!==h.sha) || JSON.stringify([...item.files].sort())!==JSON.stringify(files)) failures.push(`complete commit/file inventory differs for ${h.sha}`);
+    if(!item || (item.sha!==null && item.sha!==h.sha) || JSON.stringify(item.files.filter(path=>!unrecorded(path)).sort())!==JSON.stringify(files)) failures.push(`complete commit/file inventory differs for ${h.sha}`);
   }
   for(const h of history) {
     // Source and test changes come from the path-limited log; changes to a path the anchor names, after the anchor, from the full one.
@@ -299,7 +302,7 @@ export function checkDeltas(packageDir=pkg) {
   // must all hold the newest recorded blob; a merge that keeps a stale side,
   // rolls back or deletes a recorded file fails here.
   for(const path of allowed) {
-    if(core(path)) continue;
+    if(core(path)||unrecorded(path)) continue;
     let expected;
     if(recorded.has(path)) {
       const result=expectedBlob(recorded.get(path),independent);
@@ -318,7 +321,7 @@ if(process.argv[1]===fileURLToPath(import.meta.url)) {
   if(process.argv[2]==='--record') {
     const [delta,...words]=process.argv.slice(3), subject=words.join(' ');
     const changed=git('diff','--cached','--no-renames','--name-only').split('\n').filter(Boolean);
-    const files=changed.filter(path=>path.startsWith(prefix)&&isRecordNamed(path.slice(prefix.length))).map(path=>{
+    const files=changed.filter(path=>path.startsWith(prefix)&&isRecordNamed(path.slice(prefix.length))&&!isUnrecorded(path.slice(prefix.length))).map(path=>{
       let before=null;try{before=git('rev-parse','--verify',`HEAD:${path}`);}catch{}
       const entry=git('ls-files','--stage','--',path);
       return {path,before,after:entry?entry.split(' ')[1]:null};

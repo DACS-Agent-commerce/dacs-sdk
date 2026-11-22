@@ -8,6 +8,8 @@ re-pin; other changes keep the controls unchanged. Declare a new lane once in
 `records/ids/`, including its register line and the subject of one of its records.
 A later record may supersede an earlier record; both remain immutable and
 continue to supply history and inventory evidence.
+Changes to `README.md` need no record, and no check reads the README entries
+of existing records or of the anchor; Git history shows who changed it.
 
 The historical notes below describe the frozen archive. They are retained as
 reference text; new per-change notes are rendered from records. Public entry
