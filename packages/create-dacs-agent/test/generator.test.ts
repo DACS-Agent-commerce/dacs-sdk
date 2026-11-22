@@ -747,8 +747,8 @@ async function generatedLiveProject(
 function environmentLines(text: string): Map<string, string> {
   const lines = new Map<string, string>();
   for (const line of text.split("\n")) {
-    const match = /^([A-Z0-9_]+)=(.*)$/.exec(line);
-    if (match !== null) lines.set(match[1]!, match[2]!);
+    const [, name, value] = /^([A-Z0-9_]+)=(.*)$/.exec(line) ?? [];
+    if (name !== undefined && value !== undefined) lines.set(name, value);
   }
   return lines;
 }
@@ -880,7 +880,7 @@ describe("generated testnet wallet-spend authority wiring", { timeout: 60_000 },
       expect(end, rails).toBeGreaterThan(start);
       const limits = [...config.slice(start, end).matchAll(
         /(?:positiveIntegerEnvironment\(\s*"([A-Z0-9_]+)",\s*(\d+)|decimalEnvironment\(\s*"([A-Z0-9_]+)",\s*"([^"]+)")/g,
-      )].map((match) => ({ name: (match[1] ?? match[3])!, fallback: (match[2] ?? match[4])! }));
+      )].map((match) => ({ name: match[1] ?? match[3] ?? "", fallback: match[2] ?? match[4] ?? "" }));
       expect(limits, rails).toHaveLength(8);
       const compose = await readFile(join(target, "compose.yaml"), "utf8");
       const buyer = composeEnvironment(compose, "buyer");
@@ -925,7 +925,7 @@ describe("generated testnet wallet-spend authority wiring", { timeout: 60_000 },
       .filter((line) => /^#{1,6} /.test(line))
       .map((line) => line.replace(/^#+ /, "").trim().toLowerCase()
         .replace(/[^a-z0-9 -]/g, "").replace(/ /g, "-")));
-    const anchors = [...docs.matchAll(/\]\(#([^)]+)\)/g)].map((match) => match[1]!);
+    const anchors = [...docs.matchAll(/\]\(#([^)]+)\)/g)].map((match) => match[1] ?? "");
     expect(anchors).toContain("run-the-testnet-service");
     for (const anchor of anchors) expect(slugs, anchor).toContain(anchor);
   });
