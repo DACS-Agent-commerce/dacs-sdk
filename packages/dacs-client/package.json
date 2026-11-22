@@ -45,7 +45,7 @@
     "src/wallet/durable-journal.mjs", "src/wallet/effect-boundary.mjs", "src/wallet/effect-fence.mjs", "src/wallet/effect-history.mjs",
     "src/wallet/holder-incarnation.mjs", "src/wallet/keystore-file.mjs", "src/wallet/keystore-wallet-opener.mjs", "src/wallet/node-demos-loading.mjs",
     "src/wallet/native-dispatch-history.mjs", "src/wallet/node-wallet-session.mjs", "src/wallet/node-payment-evidence-adapter.mjs", "src/wallet/pass-context.mjs", "src/wallet/signer-reservation.mjs", "src/wallet/withheld-reopen-grants.mjs", "src/public/portal/embedded-wallet/sdk-provider.mjs",
-    "src/wallet/payload-helpers.mjs",
+    "src/wallet/payload-helpers.mjs", "src/wallet/wallet-lane.mjs",
     "README.md", "LICENSE",
     "src/public-admission.mjs", "src/public-guidance.mjs", "src/public-verification.mjs"
   ],
