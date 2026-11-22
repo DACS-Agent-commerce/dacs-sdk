@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -10,7 +10,6 @@ import type {
   WalletSpendPolicyV1,
   WalletSpendRecoveryObservationV1,
   WalletSpendReservationV1,
-  WalletSpendStateV1,
 } from "@kynesyslabs/dacs";
 
 import { TP1_APPROVED_IDENTITY_RECORD } from "@kynesyslabs/dacs/wire";
