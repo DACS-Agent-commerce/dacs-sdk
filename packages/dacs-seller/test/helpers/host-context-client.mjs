@@ -1,5 +1,5 @@
 // Unshipped fixture: a buyer that reaches a started seller host over loopback HTTP, and a context provider capability with every callback
-// the host needs. The buyer signs the challenge and the context request through the wire, delegated to a session key.
+// the host needs. The buyer signs the challenge and the context request through the wire, delegated to a session key, or itself with `direct`.
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +13,8 @@ import { commitmentFixture } from './commitment-fixture.mjs';
 import { presentationFor } from './context-wire-world.mjs';
 import { HOST_CONTEXT_CALLBACKS, presentContextAnswer } from './host-context-callbacks.mjs';
 import { JOB, NOW, buyer, seller, testWallet } from './protocol-fixture.mjs';
-import { TEST_CONNECTION, authorityReader, testNetwork } from './wire-authority-fixture.mjs';
+import { hostAuthority } from './kit-wallet-session.mjs';
+import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './wire-buyer.mjs';
 import { fetchAsHost, proxyListener } from './listener-host.mjs';
 
@@ -40,7 +41,7 @@ export async function contextHostFixture(t, { publicEndpoint = FIXTURE_ENDPOINT,
   for (const key of ['durableDirectory', 'commitOnSignature', 'vetMode', 'challengeLedger']) delete config[key];
   const hosts = [];
   const start = async (changes = {}) => {
-    const host = await startHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), demDeliveryContext: contextCapability(), listener: proxyListener(), ...changes });
+    const host = await startHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, ...hostAuthority(), demDeliveryContext: contextCapability(), listener: proxyListener(), ...changes });
     hosts.push(host);
     return host;
   };
@@ -52,14 +53,17 @@ export async function contextHostFixture(t, { publicEndpoint = FIXTURE_ENDPOINT,
  * A buyer for `host` (`ca` is the trust for a host in tls mode). `challenge(jobId)` posts the signed challenge request,
  * `context(jobId, nonce)` the signed context request over that challenge, and `requestContext(jobId)` both; each answers
  * `{ status, text, body, signed }`. Requests are delegated to a session key; `{ delegated: false }` signs the context request with the
- * buyer's own key instead. `signedChallenge(jobId)` signs the challenge request without sending it: `{ path, header, text }`.
- * `scopeFor(jobId)` is the challenge scope the buyer sends, and `admit(jobId)` the first admission a proposal needs. `send(path, jobId, body)`
- * signs `body` under a new envelope at the buyer's clock and posts it. Each request sent is also pushed, as `{ url, init }`, onto `requests` when given.
+ * buyer's own key instead; with `direct` the buyer signs each request itself, with no session delegation. `scopeFor(jobId)` is the
+ * challenge scope the buyer sends, and `admit(jobId)` the first admission a proposal needs. `connection` and `readAuthority` are the buyer's own (the fixture authority by default). `signChallenge(jobId, options)` signs a
+ * challenge request without sending it, `signedChallenge(jobId)` does the same and answers `{ path, header, text }`, `post(path, signed)`
+ * sends a signed request as it is, and `send(path, jobId, body)` signs `body` under a new envelope at the buyer's clock and posts it. Each
+ * request sent is also pushed, as `{ url, init }`, onto `requests` when given.
  */
-export async function hostBuyer(host, listing, { jobId: defaultJob, ca, buyer: buyerKey = buyer, seller: sellerKey = seller, clock = () => NOW, requests }) {
-  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
+export async function hostBuyer(host, listing, { jobId: defaultJob, ca, buyer: buyerKey = buyer, seller: sellerKey = seller, clock = () => NOW, requests,
+  connection = () => ({ ...TEST_CONNECTION }), readAuthority = authorityReader(), direct = false }) {
+  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: connection(), readAuthority });
   const session = testWallet(99), support = purchaseSupport(listing);
-  const wire = await wireBuyer({ buyer: signerOf(buyerKey), seller: signerOf(sellerKey), listingPin: host.listingPin, clock });
+  const wire = await wireBuyer({ buyer: signerOf(buyerKey), seller: signerOf(sellerKey), listingPin: host.listingPin, clock, connection, readAuthority });
   const scopeFor = (jobId) => ({ source: AGREEMENT_CONTEXT_SOURCE, wallet: buyerKey.address, jobId, buyer: buyerKey.claim, seller: sellerKey.claim, listingPin: host.listingPin,
     rail: { railId: 'demos-native:DEM', railVersion: 1 }, payee: support.payee, price: support.price, generatedAt: clock() });
   const delegationFor = (jobId) => {
@@ -67,22 +71,24 @@ export async function hostBuyer(host, listing, { jobId: defaultJob, ca, buyer: b
       listingPin: host.listingPin, jobId, notBefore: clock() - DELEGATION_LEAD_MS, expiresAt: clock() + DELEGATION_LIFETIME_MS, profile: binding.profile };
     return { payload, signature: buyerKey.signBytes(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(payload))).toString('base64url') };
   };
-  const sign = async (path, jobId, body, { delegated = true } = {}) => {
-    const signed = await wire.signRequest(path, body, { jobId, agreementHash: sha256Hex(canonicalize(body.scope)), delegation: delegated ? delegationFor(jobId) : null,
-      signer: signerOf(delegated ? session : buyerKey), text: JSON.stringify(body) });
-    return { path, header: signed.header, text: signed.text };
-  };
+  const sign = (path, jobId, body, { delegated = !direct } = {}) => wire.signRequest(path, body, { jobId, agreementHash: sha256Hex(canonicalize(body.scope)),
+    delegation: delegated ? delegationFor(jobId) : null, signer: signerOf(delegated ? session : buyerKey), text: JSON.stringify(body) });
   const hostFetch = fetchAsHost({ ca, ...(listing.seller.publicEndpoint ? { authority: new URL(listing.seller.publicEndpoint).host } : {}) });
-  const send = async (path, jobId, body, options) => {
-    const signed = await sign(path, jobId, body, options);
-    const init = { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.text };
+  const post = async (path, signed, { signal } = {}) => {
+    const init = { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.text, signal };
     requests?.push({ url: host.url + path, init });
     const response = await hostFetch(host.url + path, init);
     const text = await response.text();
     return { status: response.status, text, body: JSON.parse(text), signed: response.headers.has(DACS_SELLER_HTTP_HEADER) };
   };
-  const signedChallenge = (jobId = defaultJob) => sign(DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: scopeFor(jobId) });
-  const challenge = (jobId = defaultJob) => send(DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: scopeFor(jobId) });
+  // `options.signal` lets the caller abandon the request.
+  const send = async (path, jobId, body, options) => post(path, await sign(path, jobId, body, options), options);
+  const signChallenge = (jobId = defaultJob, options) => sign(DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: scopeFor(jobId) }, options);
+  const signedChallenge = async (jobId = defaultJob) => {
+    const signed = await signChallenge(jobId);
+    return { path: DACS_SELLER_HTTP_PATHS.contextChallenge, header: signed.header, text: signed.text };
+  };
+  const challenge = (jobId = defaultJob, options) => send(DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: scopeFor(jobId) }, options);
   const context = async (jobId, nonce, options) => {
     const bundle = presentationFor(buyerKey, nonce, clock());
     return { ...await send(DACS_SELLER_HTTP_PATHS.context, jobId, { scope: { ...scopeFor(jobId), buyerBundleHash: identityBundleHash(bundle) }, buyerIdentityBundle: bundle }, options), bundle };
@@ -102,5 +108,5 @@ export async function hostBuyer(host, listing, { jobId: defaultJob, ca, buyer: b
     if (answered.status !== 200) throw refusal('context request', answered);
     return answered.bundle;
   };
-  return { challenge, context, requestContext, signedChallenge, scopeFor, admit, send };
+  return { challenge, context, requestContext, scopeFor, admit, send, signChallenge, signedChallenge, post, verifyDiscovery: wire.verifyDiscovery };
 }

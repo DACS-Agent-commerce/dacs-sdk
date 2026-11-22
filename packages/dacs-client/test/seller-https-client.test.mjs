@@ -35,7 +35,8 @@ async function sellerRig(t, handler, clientOptions = {}) {
   const bytes = (value) => Buffer.from(canonicalize(value));
   const verifications = [];
   const base = w.createSellerWireAuthentication({ ...w.options, evidence: async () => ({ commitment: bytes(made.anchored), agreement: bytes(made.agreement), signedListing: bytes(made.listing) }) });
-  const authentication = { request: (...args) => base.request(...args), verifyResponse: (...args) => { verifications.push(args); return base.verifyResponse(...args); } };
+  const authentication = { request: (...args) => base.request(...args), verifyResponse: (...args) => { verifications.push(args); return base.verifyResponse(...args); },
+    resumeProof: (...args) => base.resumeProof(...args) };
   const sends = [];
   // `route(connector)` may swap the connector that a send reaches; every send is recorded first.
   const connectorFor = (route = (real) => real) => ({ send: (options) => { sends.push(options); return route(seller.connector).send(options); } });
@@ -63,6 +64,25 @@ test('requests carry exactly the allowlisted headers and never cookies or author
   assert.deepEqual(Object.keys(seller.seen.requests[0].headers).sort(), ['accept', 'accept-encoding', 'connection', 'content-length', 'content-type', 'host', 'user-agent', PEER_HEADER]);
 });
 
+test('an explicit resume sends its proof header to the seller on the first attempt only: not on an automatic retry, a different route or a later call', async (t) => {
+  const resumed = PATHS.proposals;
+  let armed = true;
+  const explicitResume = (path) => armed && path === resumed && !(armed = false);
+  // Stored attempts, so an unknown answer is retried; the clock never moves, so both retries fit the 15 second deadline.
+  const requestRecords = { start: (_path, body) => ({ text: JSON.stringify(body), stored: true, check() {}, finish() {} }), failure() {} };
+  const { client, seller, sends } = await sellerRig(t, (res, record, answer) => answer(503, '{"error":"seller_effect_pending"}'),
+    { explicitResume, requestRecords, timeoutMs: 15000, clock: { now: () => 0, sleep: async () => {} } });
+  unavailable(await failure(client.propose(bodyFor(resumed))), 'status-5xx');
+  unavailable(await failure(client.request(PATHS.commitments, bodyFor(PATHS.commitments))), 'status-5xx');
+  unavailable(await failure(client.propose(bodyFor(resumed))), 'status-5xx');
+  const received = seller.seen.requests.map((record) => [record.path, wire.DACS_SELLER_RESUME_HEADER in record.headers]);
+  assert.deepEqual(received, [[resumed, true], [resumed, false], [resumed, false],
+    [PATHS.commitments, false], [PATHS.commitments, false], [PATHS.commitments, false], [resumed, false], [resumed, false], [resumed, false]]);
+  const header = seller.seen.requests[0].headers[wire.DACS_SELLER_RESUME_HEADER];
+  assert.equal(header, sends[0].headers[wire.DACS_SELLER_RESUME_HEADER], 'the seller receives the proof the client sent, unchanged');
+  assert.ok(header.length > 0 && header.length <= wire.DACS_SELLER_HTTP_LIMITS.maxHeaderLength);
+});
+
 test('a 512 KiB response passes and 512 KiB plus one byte is refused before decode, declared and streamed', async (t) => {
   let reply;
   const { client, verifications } = await sellerRig(t, (res, record, answer) => reply(res, record, answer));
@@ -79,7 +99,7 @@ test('a 512 KiB response passes and 512 KiB plus one byte is refused before deco
   assert.equal(verifications.length, verifiedBefore);
 });
 
-test('every CF-5 corpus vector on the HTTPS path is refused with its admission code or verified unchanged', async (t) => {
+test('every raw-JSON ingress corpus vector on the HTTPS path is refused with its admission code or verified unchanged', async (t) => {
   let current;
   const seller = await startHttpsSeller(t, (_req, res) => { res.writeHead(200, { ...JSON_TYPE, 'content-length': current.length }); res.end(current); });
   const received = [];

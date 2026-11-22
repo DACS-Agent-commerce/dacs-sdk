@@ -10,7 +10,7 @@ import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
-const { readBoundedResponse, installBoundedNpmHttp, NPM_JSON_MAX_ENTRIES, NPM_TARBALL_MAX_UNPACKED_BYTES } = require("../../scripts/bounded-npm-http.cjs");
+const { readBoundedResponse, installBoundedNpmHttp, jsonScanner, NPM_JSON_MAX_ENTRIES, NPM_TARBALL_MAX_UNPACKED_BYTES } = require("../../scripts/bounded-npm-http.cjs");
 const response = (bytes: Buffer[], headers = {}) => Object.assign(Readable.from(bytes), { headers });
 const read = (body: string) => readBoundedResponse(response([Buffer.from(body)]), 64 * 1024 * 1024);
 const deep = "[".repeat(130) + "0" + "]".repeat(130);
@@ -53,6 +53,55 @@ describe("raw-token admission", () => {
     const bytes = Buffer.from(JSON.stringify({ 'a"\\': ['[,{', '\\"', "é"] }) + "\n{}");
     expect(await readBoundedResponse(response([...bytes].map(byte => Buffer.from([byte]))), 1024)).toEqual(bytes);
     await expect(readBoundedResponse(response([...Buffer.from(deep)].map(byte => Buffer.from([byte]))), 1024)).rejects.toMatchObject({ code: "ELIMIT" });
+  });
+  it.each([1, 7, 4096])("preserves long strings across %i-byte chunks", async size => {
+    const bytes = Buffer.from(JSON.stringify({ readme: "x".repeat(4096) + '"\\é€😀' + "y".repeat(4096) }));
+    const chunks = (body: Buffer) => Array.from({ length: Math.ceil(body.length / size) }, (_, i) => body.subarray(i * size, (i + 1) * size));
+    expect(await readBoundedResponse(response(chunks(bytes)), 65536)).toEqual(bytes);
+    await expect(readBoundedResponse(response(chunks(Buffer.concat([bytes, Buffer.from("\n" + deep)]))), 65536)).rejects.toMatchObject({ code: "ELIMIT" });
+  });
+  // Plain runs long enough to search, then runs of escapes and of 2, 3 and 4-byte
+  // characters dense enough to pause the search, so boundaries land inside escapes,
+  // inside characters, at the 64-byte cutover and where a pause ends.
+  const dense = Buffer.from(JSON.stringify({ readme: "x".repeat(100) + '"'.repeat(300) + "é".repeat(200) + "a".repeat(9) + "€".repeat(150)
+    + "😀".repeat(100) + "y".repeat(100) + "\\".repeat(50) + ("abcdefg" + '"').repeat(40) + "z".repeat(70) }));
+  const denseThenDeep = Buffer.concat([dense, Buffer.from("\n" + deep)]);
+  it.each([1, 7, 63, 64, 65, 511, 512, 513, 4096])("preserves dense escapes and multibyte characters across %i-byte chunks", async size => {
+    const chunks = (body: Buffer) => Array.from({ length: Math.ceil(body.length / size) }, (_, i) => body.subarray(i * size, (i + 1) * size));
+    expect(await readBoundedResponse(response(chunks(dense)), 65536)).toEqual(dense);
+    await expect(readBoundedResponse(response(chunks(denseThenDeep)), 65536)).rejects.toMatchObject({ code: "ELIMIT" });
+  });
+  it("preserves dense escapes and multibyte characters split in two at every offset", async () => {
+    for (let at = 1; at < dense.length; at++) {
+      expect(dense.equals(await readBoundedResponse(response([dense.subarray(0, at), dense.subarray(at)]), 65536)), `split at ${at}`).toBe(true);
+      await expect(readBoundedResponse(response([denseThenDeep.subarray(0, at), denseThenDeep.subarray(at)]), 65536)).rejects.toMatchObject({ code: "ELIMIT" });
+    }
+  });
+  // The tests above check verdicts and bytes, which stay right whether or not a
+  // pause ends. Here the scanner's native search (RegExp.prototype.test) is
+  // watched while it runs: a dense stretch pauses the search, and the plain run
+  // after it must be searched again rather than checked byte by byte to the end.
+  it.each([0, 300])("resumes the native search after a dense stretch (chunk size %i, 0 = whole body)", size => {
+    const body = Buffer.from(JSON.stringify(["é".repeat(100) + "a".repeat(4096)]));
+    const plainStart = body.indexOf("a");
+    const chunks = size ? Array.from({ length: Math.ceil(body.length / size) }, (_, i) => body.subarray(i * size, (i + 1) * size)) : [body];
+    const searchStarts: number[] = [];
+    const search = RegExp.prototype.test;
+    const scan = jsonScanner();
+    let offset = 0;
+    RegExp.prototype.test = function (this: RegExp, text: string) {
+      searchStarts.push(offset + this.lastIndex);
+      return search.call(this, text);
+    };
+    try {
+      for (const chunk of chunks) { scan(chunk); offset += chunk.length; }
+    } finally {
+      RegExp.prototype.test = search;
+    }
+    // The dense stretch is not searched at each of its 100 boundaries...
+    expect(searchStarts.filter(at => at < plainStart).length).toBeLessThan(10);
+    // ...and the search is used again on the plain run once the pause ends.
+    expect(searchStarts.some(at => at >= plainStart)).toBe(true);
   });
   it("fails on an oversized valid prefix before reading its tail", async () => {
     let tailRead = false;

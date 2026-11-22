@@ -16,6 +16,7 @@ import {
 import { fetchBoundedJson } from '../util/http.mjs';
 import { addressForClaim } from './demos-claims.mjs';
 import { assertNoCallerSignatureDomain, signatureDomainFromNetworkInfo } from './signature-domain.mjs';
+import { liveExpectedIdentity, sameSharedTuple } from './sr2-live-identity.mjs';
 import { verifyTransactionSignature } from './transaction-signature.mjs';
 import { deriveStorageAddress } from './wallet-transactions.mjs';
 
@@ -131,23 +132,33 @@ export function demosSr2TxRef(receipt) {
  * node's own `getNetworkInfo` answer, read on each authentication: the bare hash while
  * the signature-domain fork is inactive, `demos-tx:v1:<chain id>:<hash>` once it is
  * active. An answer that cannot be read is `indeterminate` and authenticates nothing.
- * Throws TypeError for a `signatureChainId` option: no caller names the domain.
+ *
+ * With a `sourceCapability` the adapter is live. It then takes its chain identity from `binding`, the `bindTp1Profile` binding the
+ * host holds, and needs `observeIdentity({ signal, timeoutMs })`, the host's connection decision on the chain identity: it resolves
+ * the identity the shared reader observes now, `undefined` for a connection it cannot authenticate, and rejects with its own error
+ * when it cannot read. An observation is only compared with `binding`; it never authorizes a record. A record whose writer is
+ * `ownWriter` must carry the source's own binding exactly; a record of any other writer needs the shared tuple only. Without
+ * `ownWriter` every record is held to the exact binding.
+ * Throws TypeError for a `signatureChainId` option, or for a live adapter without `binding` or `observeIdentity`, and an error with
+ * code `tp1_identity_fixture` or `invalid-chain` when the source's pin is a fixture chain or disagrees with `binding`.
  */
-export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, signatureChainId }) {
+export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, binding: boundProfile, observeIdentity, ownWriter, signatureChainId }) {
   assertNoCallerSignatureDomain({ signatureChainId });
   if(sourceCapability !== null && (!isDevnetAgreementTransport(sourceCapability)||typeof sourceCapability.observeBinding!=='function')) reject('source-held','an opaque independently supplied Agreement transport is required');
+  if(sourceCapability !== null && typeof observeIdentity !== 'function') throw new TypeError('a live adapter needs observeIdentity');
   const endpoint = new URL(rpcUrl);
   if (sourceCapability ? rpcUrl !== sourceCapability.pins.endpoint : (endpoint.protocol !== 'http:' || !LITERAL_LOOPBACK.has(endpoint.hostname) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/')) {
     reject('offline-only', 'Demos SR-2 requires a literal HTTP loopback root endpoint');
   }
   if (!journal || ['records'].some((k) => typeof journal[k] !== 'function')) reject('journal-required', 'an explicit readback journal is required');
   const base = endpoint.origin;
-  const expectedIdentity=sourceCapability?.pins.chainIdentity ?? DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
+  const expectedIdentity=sourceCapability ? liveExpectedIdentity({ binding: boundProfile, sourceCapability }) : DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
   const mode=sourceCapability ? 'explicit-pinned-transport-single-node' : DEMOS_SR2_EVIDENCE_MODE;
   const receiptLabels = sourceCapability ? DEMOS_FINALITY_RECEIPT : DEMOS_SR2_FIXTURE_RECEIPT;
   const scope = canonicalize([base, expectedIdentity,...(sourceCapability?[sourceCapability.transportBinding.bindingId]:[])]);
   const ownRecords = async () => (await journal.records()).filter((r) => r.scope === scope);
   const retained = async (logicalAddress, writer) => (await ownRecords()).find((r) => r.logicalAddress === logicalAddress && r.writer === writer);
+  // One aggregate deadline per resolution: its signal and the moment it ends, which every read inside it shares.
   const readBudget = new AsyncLocalStorage();
   async function boundedRead(work) {
     if (readBudget.getStore()) return work();
@@ -157,18 +168,24 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     const deadline = new Promise((_, fail) => { timer = setTimeout(() => {
       controller.abort(cause); fail(new DemosSr2Error('indeterminate', cause.message, { cause }));
     }, timeoutMs); });
-    try { return await readBudget.run(controller.signal, () => Promise.race([work(), deadline])); }
+    const budget = { signal: controller.signal, endsAt: performance.now() + timeoutMs };
+    try { return await readBudget.run(budget, () => Promise.race([work(), deadline])); }
     finally { clearTimeout(timer); controller.abort(); }
   }
+  // The whole milliseconds left of the current resolution's deadline (at least 1), or the full deadline outside one.
+  const remainingMs = () => {
+    const budget = readBudget.getStore();
+    return budget ? Math.min(timeoutMs, Math.max(1, Math.ceil(budget.endsAt - performance.now()))) : timeoutMs;
+  };
 
   async function call(path, body) {
     try {
-      const signal = readBudget.getStore(); signal?.throwIfAborted();
-      if(sourceCapability) return await sourceCapability.readRpc(path,body,{signal,maxBytes:DEMOS_SR2_REPLY_BYTES,timeoutMs});
+      const signal = readBudget.getStore()?.signal; signal?.throwIfAborted();
+      if(sourceCapability) return await sourceCapability.readRpc(path,body,{signal,maxBytes:DEMOS_SR2_REPLY_BYTES,timeoutMs:remainingMs()});
       return await fetchBoundedJson(`${base}${path}`, {
         method: body === undefined ? 'GET' : 'POST', body, timeoutMs, maxBytes: DEMOS_SR2_REPLY_BYTES, expectedOrigin: base,
         fetchImpl: async (url, options) => {
-          const signal = readBudget.getStore(); signal?.throwIfAborted();
+          const signal = readBudget.getStore()?.signal; signal?.throwIfAborted();
           const response = await fetchImpl(url, { ...options, signal: signal ? AbortSignal.any([signal, options.signal]) : options.signal });
           signal?.throwIfAborted();
           if (response.headers.get('x-dacs-simulation') !== 'fixture') {
@@ -193,11 +210,22 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     try { return signatureDomainFromNetworkInfo(info); }
     catch (cause) { reject('indeterminate', cause.message, { cause }); }
   }
+  // The host's observation of the chain identity, which must be the one `binding` names. It is asked once for each resolution and is a
+  // comparison only: a record still has to authenticate by itself.
+  async function observedIdentityMatches(signal) {
+    const budget = readBudget.getStore();
+    if (budget?.identityObserved) return;
+    let observed;
+    try { observed = await observeIdentity({ signal, timeoutMs: remainingMs() }); }
+    catch (error) { reject('indeterminate', `chain identity observation unavailable: ${error?.message ?? 'transport'}`, { cause: error, status: error?.status }); }
+    if (observed !== expectedIdentity) reject('invalid-chain', 'the observed chain identity is not the bound one');
+    if (budget) budget.identityObserved = true;
+  }
   async function chainIdentity() {
-    readBudget.getStore()?.throwIfAborted();
+    const signal = readBudget.getStore()?.signal; signal?.throwIfAborted();
     if(sourceCapability){
       let binding;
-      try{binding=await sourceCapability.observeBinding();}
+      try{binding=await sourceCapability.observeBinding({signal,timeoutMs:remainingMs()});}
       catch(error){reject('indeterminate',`source-bound chain identity observation unavailable: ${error?.message??'transport'}`,{cause:error,status:error?.status});}
       const keys=['bindingId','bindingVersion','chainIdentity','connectionId','endpoint','expiresAt','network','observedAt','pinVersion','source','transportAuthority'];
       if(!object(binding)||JSON.stringify(Object.keys(binding).sort())!==JSON.stringify(keys)
@@ -205,6 +233,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       const declaration=sourceCapability.transportBinding;
       if(['bindingVersion','bindingId','network','chainIdentity','pinVersion','endpoint','transportAuthority'].some((key)=>binding[key]!==declaration[key])
         ||binding.chainIdentity!==expectedIdentity) reject('invalid-chain','source-bound chain identity differs');
+      await observedIdentityMatches(signal);
       return binding.chainIdentity;
     }
     const genesis = await nodeCall('getBlockByNumber', { blockNumber: 0 });
@@ -291,6 +320,11 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     return owned[0] ?? null;
   }
 
+  // The seller's own records carry the source's binding exactly. Another writer's carry its own endpoint, so they need the shared tuple only.
+  const bindsSourcePin = (recorded, writer) => ownWriter === undefined || writer === ownWriter
+    ? canonicalize(recorded) === canonicalize(sourceCapability.transportBinding)
+    : sameSharedTuple(recorded, sourceCapability.transportBinding);
+
   async function authenticate(logicalAddress, expectedWriter, native, txHash, saved = null, signedProjection) {
     const identity = await chainIdentity();
     if (!HASH.test(txHash)) reject('invalid', 'transaction hash must be SHA-256 hex');
@@ -337,7 +371,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       || canonicalize(native.metadata) !== canonicalize(op.metadata) || op.metadata?.logicalAddress !== logicalAddress
       || op.metadata?.envelopeHash !== exactHash(native.data) || !HASH.test(op.metadata?.contentHash)) reject('invalid', 'transaction does not bind the logical address, native address and exact readback');
     if (op.metadata.contentHash !== artifactContentHash(native.data, op.metadata.artifactKind)) reject('invalid', 'native artifact content hash differs from the signed metadata');
-    if(sourceCapability && (comparison.network!==sourceCapability.pins.network || comparison.chainIdentity!==expectedIdentity || canonicalize(op.metadata.networkBinding)!==canonicalize(sourceCapability.transportBinding))) reject('invalid','signed Agreement metadata does not bind the exact source pin');
+    if(sourceCapability && (comparison.network!==sourceCapability.pins.network || comparison.chainIdentity!==expectedIdentity || !bindsSourcePin(op.metadata.networkBinding, expectedWriter))) reject('invalid','signed Agreement metadata does not bind the exact source pin');
     if (saved && ((!embedded && canonicalize(c) !== canonicalize(saved.payload.content)) || txHash !== saved.authorizationMessage
       || exactHash(native.data) !== saved.envelopeHash || op.metadata.contentHash !== saved.hash || op.metadata.artifactKind !== saved.artifactKind)) reject('invalid', 'transaction differs from the retained wallet plan');
     const block = await nodeCall('getBlockByNumber', { blockNumber: tx.blockNumber });

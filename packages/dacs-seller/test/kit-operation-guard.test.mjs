@@ -22,8 +22,9 @@ const LOADER_SETTER = 'setKitOperationGuardForTest';
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs'];
 // Guarded entries that exist only on a capability the guarded `reserveContext` issues, or on the store's internal adapter, so the
 // off-state probe cannot reach them; context-admission-transaction.test.mjs flips the guard off after the capability exists and pins
-// `complete`, and helpers/coordinator-guard-off-probe.mjs pins `terminalSession`.
-const REACHED_BY_ISSUED_CAPABILITY = ['complete', 'terminalSession'];
+// `complete`, and helpers/coordinator-guard-off-probe.mjs pins `terminalSession`. The wallet-session port's `finalize` exists only on
+// a port built while the guard is on; seller-wallet-session.test.mjs flips the guard off after construction and pins it.
+const REACHED_BY_ISSUED_CAPABILITY = ['complete', 'terminalSession', 'sellerWalletSession.finalize'];
 // The entries each module guards, named as the error's `entry` (51-2, 51-3).
 const GUARD_SITES = {
   'src/host.mjs': ['startSellerHost'],
@@ -45,6 +46,8 @@ const GUARD_SITES = {
   'src/devnet-demo/artifact-anchor.mjs': ['publish'],
   'src/devnet-demo/listing.mjs': ['createDevnetDemoListingPublisher'],
   'src/devnet-demo/native-delivery.mjs': ['createDevnetDemoDeliveryCapability.submit'],
+  'src/devnet-demo/seller-node-wallet.mjs': ['createSellerNodeWallet'],
+  'src/devnet-demo/seller-wallet-session.mjs': ['createSellerWalletSession', 'sellerWalletSession.finalize'],
   'src/devnet-demo/storage-write-recovery.mjs': ['storageWriteRpcSigner'],
   'src/seller-key.mjs': ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'],
 };

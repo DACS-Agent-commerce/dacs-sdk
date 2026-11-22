@@ -110,8 +110,11 @@ unknown-job state reads insert no rows. Expired completed and no-effect nonces c
 effect answer remains durable. Pending and uncertain effects require reconciliation and cannot expire into permission to
 repeat work.
 
-Policy defaults remain
-six writes per job, 24 writes and 96 DEM per hour, and 4 DEM per write. Unresolved
+Policy defaults are
+six writes per job, 24 writes and 1,200 DEM per hour, and 50 DEM per write. The 50 DEM
+is a ceiling on one write's whole debit, not the debit a write is expected to cost.
+A context start holds two writes at that ceiling, so each start holds 100 DEM and
+twelve starts fill the hour. Unresolved
 writes count beyond the hour until completed. Configuration may lower or raise
 the PR-defined configurable limits; it cannot disable their validation.
 
@@ -172,7 +175,9 @@ ledger and the exact accepted seller presentation is retained per job.
 A context start records its intent, opens its policy hold and accepts the
 presentation before the wire reservation commits. A reservation refused after
 the acceptance, or a provider that fails by itself, ends the row and releases
-its hold and slot unless an effect cannot be ruled out. The admission records
+its hold and slot once each Vet address shows no signed write, a Vet that
+landed, or a refused CREATE that can never land; while that evidence is
+undetermined the row keeps them. The admission records
 and the wire journal are not one atomic transaction: a crash after completion
 or during release can leave an unfinished row or an open policy hold, which the
 startup and periodic sweeps finish or retry.

@@ -40,7 +40,7 @@ const ROOT = {
     'demDeliveryContextUsage', 'isDemDeliveryContextAuthority',
     'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
     'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence',
-    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport',
+    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
     'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader', 'createPublicSellerClient'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
@@ -66,6 +66,7 @@ const modules = {
   "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority createDemDeliveryContext",
   "dacs/native-dem-delivery-consumer.mjs": "createNativeDemDeliveryCapability",
   "dacs/source-demo-seller-transport.mjs": "createSourceDemoSellerTransport",
+  "dacs/seller-session-keys.mjs": "createSellerSessionKeys",
   "devnet-demo/commitment-consumer.mjs": "createDevnetNativeCommitmentCapability DEVNET_NATIVE_COMMITMENT_MARKER",
   "dacs/demos-sr2-wallet-bridge.mjs": "SR2_WALLET_KIND DemosSr2BridgeError",
   "wallet/devnet-native-transport.mjs": "rpcAuthRefusal transferRefusal DEVNET_AGREEMENT_KIND DEVNET_AGREEMENT_PROFILE DEVNET_NATIVE_BINDING_PATH DEVNET_NATIVE_RPC_PATH",
@@ -316,7 +317,7 @@ test("node-wallet subpath exports exactly its reviewed names; the root import lo
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
  const api=await import('../src/wallet/node-wallet-session.mjs');
- assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession',
+ assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession','openKeystoreWalletSession',
    'createHeldTransportFacade','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext',
    'DEVNET_AGREEMENT_PROFILE','DEVNET_AGREEMENT_KIND','DEVNET_AGREEMENT_SOURCE','DEVNET_SETTLEMENT_KIND','DEVNET_SETTLEMENT_POLICY',
    'DEVNET_DELIVERY_KIND','DEVNET_DELIVERY_POLICY','DEVNET_DEMO_ARTIFACT_KIND','DEVNET_DEMO_ARTIFACT_POLICY','DEVNET_DEMO_ARTIFACT_TYPES'].sort());
@@ -344,8 +345,27 @@ test('createPublicSellerClient requires admission and rejects every active metho
   }
 });
 
+test('createPublicSellerClient refuses a timeoutMs outside 1000 through 300000 and a commitOnSignature that is not a boolean', async () => {
+  const { createPublicSellerClient } = await import('@kynesyslabs/dacs-client');
+  const { binding, currentLocal } = await bindFixture();
+  const authentication = { request: async () => assert.fail('nothing is signed'), verifyResponse: async () => assert.fail('nothing is verified') };
+  const build = (extra) => createPublicSellerClient({ admission: { binding, currentLocal }, publicEndpoint: 'https://seller.example.test', authentication, ...extra });
+  for (const timeoutMs of [-1, 0, 999, 300001, 1500.5, Number.NaN, Infinity, '5000', 'abc', null]) {
+    assert.throws(() => build({ timeoutMs }), { name: 'TypeError', message: 'timeoutMs must be an integer from 1000 through 300000' }, String(timeoutMs));
+  }
+  for (const timeoutMs of [undefined, 1000, 300000]) assert.equal(build({ timeoutMs }).origin, 'https://seller.example.test', String(timeoutMs));
+  for (const commitOnSignature of ['false', 'true', 1, 0, null, {}]) {
+    assert.throws(() => build({ commitOnSignature }), { name: 'TypeError', message: 'commitOnSignature must be boolean' }, String(commitOnSignature));
+  }
+  assert.equal('commitOnSignature' in build({ commitOnSignature: false }), false);
+  assert.equal('commitOnSignature' in build({}), false);
+  assert.equal(typeof build({ commitOnSignature: true }).commitOnSignature, 'function');
+});
+
 test('an archive installed outside the checkout exports createPublicSellerClient, constructs the held client and loads without SQLite, with no checkout-relative import', (t) => {
-  const { app, run } = installPackedPair(t);
+  // This file also runs on the Node 24 leg, whose npm checks the app lock against the app manifest: the lock is
+  // recomputed for this app, as the other packed test on that leg does, rather than copied from the workspace.
+  const { app, run } = installPackedPair(t, { installedDependencyGraph: true });
   writeFileSync(join(app, 'seller-client.mjs'), `
     import assert from 'node:assert/strict';
     import { existsSync } from 'node:fs';

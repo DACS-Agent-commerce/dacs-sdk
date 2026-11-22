@@ -8,7 +8,9 @@ own TLS; see "Listener modes"). The agent runs negotiation (DACS-3), the finaliz
 (`@kynesyslabs/dacs`), with the operator's Vet context, native payment
 evidence and native DEM delivery capabilities, which the host requires. This
 is the devnet-demo seller kit, ported from the plugin seller kit (see
-[SOURCES.md](SOURCES.md)). Its packaged native readers are **fixture-only**:
+[SOURCES.md](SOURCES.md)). It builds its Node wallet through the client's held
+Node composition, which the kit guard and the client hold keep off. Its
+packaged native readers are **fixture-only**:
 the native DEM delivery capability and the DEM delivery context accept only a
 `TEST-` authority (`src/dacs/native-dem-delivery-consumer.mjs`,
 `src/dacs/dem-delivery-context-consumer.mjs`), and
@@ -169,11 +171,18 @@ const host = await startSellerHost({
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
   readCommitmentReceipt, // Chain-bound current SR-2 receipt reader, with bounded I/O.
-  tp1Network,            // { connection() -> { endpoint, transportAuthority, connectionId }, readAuthority(scope) }:
-                         // this host's own https connection and the trusted reader that confirms it and the
-                         // chain, read once within 10,000 ms (tp1_authority_timeout; connection() must return
-                         // at once). The host binds the SDK's approved TP-1 identity record over it before
-                         // it opens any state: no option, environment variable or file names a record
+  walletSession,         // { authority, connectionAuthority, finalize, close? }: the seller's wallet session.
+                         // authority is its read-only capability (it cannot sign or send); connectionAuthority
+                         // is the client's createAuthorityReader over it; finalize({ binding, effectBoundary,
+                         // stopped, feeCeilingOs, stateLock, dataDirectory }) resolves the session, with close().
+                         // Before it opens any state the host binds the SDK's approved TP-1 record (no option,
+                         // environment variable or file names one) through its production reader over this
+                         // session, each read within 10,000 ms (tp1_authority_timeout). Under the lock it finalizes it.
+                         // createSellerWalletSession(...) is the production port (below); with it, artifactAnchor
+                         // must be walletSession.artifactAnchor, or the host refuses with a TypeError
+  participantImplementations, // { entriesFor(claim) -> [{ claim, profile, modules, evidence, revoked }] }: the
+                         // independently approved enrollment of each buyer, read on every request; a buyer
+                         // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then
@@ -188,10 +197,20 @@ const host = await startSellerHost({
 // A buyer gets its challenge from the host's signed challenge route and presents it on the context route.
 ```
 
+Before the wire opens a signed request, the host checks the buyer's own
+signature on it (the buyer wallet's on a delegation, or the buyer's on a direct
+request). A signature that does not verify is refused
+`peer_delegation_signature_invalid` or `peer_signature_invalid` (401) before
+any authority read. One that does relates the buyer to that job for that
+request only; the host's reader also relates the buyer of a context admission
+that is still open. Discovery is answered for the seller's own claim only.
+
 The host keeps three state directories under `dataDirectory`: `seller/`,
 `transport/` and `wire-journal/`, the wire request journal, opened with a 300 s
 lease. `kit-format.json` (`{"format":"dacs-kit-data/tp1-1"}`) is written first, on
-a directory that holds none of them. A directory that holds any of them without
+a directory that holds none of them. Right after it the host creates and syncs
+`effects/`, the effect boundary's history, before it finalizes the wallet
+session; a failed sync refuses startup. A directory that holds any of the three without
 that marker, or with another one, is from an older kit format and is refused
 with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A transport store that still has the
@@ -280,7 +299,9 @@ refusal with its stable code and HTTP status. The other root exports are the
 parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
 `createSellerContextRoute`,
-`createWireSellerContextRoute` (the context step on the wire) and the buyer
+`createWireSellerContextRoute` (the context step on the wire),
+`createSellerAuthorityReader` (the host's TP-1 authority reader),
+`createSellerWalletSession` (the host's production `walletSession` port) and the buyer
 side `createSellerAgentClient` and `createSellerWireClientAuth`. The host
 answers every route through the wire, under the wire domain with a TP-1
 profile in each request, and refuses a request signed under the transport's
@@ -317,7 +338,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createWireSellerContextRoute`,
-`createSellerTransportStore` and `createSellerWireClientAuth`. The kit's other modules are reachable by
+`createSellerTransportStore`, `createSellerAuthorityReader`, `createSellerWalletSession` and `createSellerWireClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -349,15 +370,20 @@ Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
 the signed transaction before sending it. The party Vet provider also passes
 `awaitInclusion: true`: a CREATE that call sends and that still reads back as
-pending is read again every five seconds for a bounded time while `authorize()`
-still answers `true`. The additional polls never send the CREATE again; the
-first pending read can still run the existing one-time recovery send
+pending is read again every five seconds while `authorize()` still answers
+`true`. The additional polls never sign, ask the wallet or send the CREATE
+again; the first pending read can still run the existing one-time recovery send
 (`recoverStorageWrite`) of the retained CREATE, as without `awaitInclusion`. In
-the reference anchor the bound is six minutes after the wallet's answer, and the
-wallet answers only after the transport's own inclusion wait (120 seconds by
-default), so the bound ends about eight minutes after the broadcast. Meanwhile
-the seller's other writes wait behind the pending write, up to that bound,
-instead of failing at once with a retryable error. `readBackRecords({ jobId,
+the reference anchor the wait ends 30 minutes after the wallet's answer, or
+earlier once the node can no longer include the CREATE. That is decided only
+from the reference block R the transport hands back on the pending readback:
+blocks R+1 and R+2 are confirmed and do not list the CREATE, the seller's account
+nonce has not reached its nonce, and a last status read no longer knows it. The
+answer is then `indeterminate`, with a reason that says the CREATE is excluded.
+A readback with no reference block never proves exclusion. A `publish` after a
+restart within those 30 minutes resumes the wait with reads only. Meanwhile the
+seller's other writes wait behind the pending write, up to that bound, instead
+of failing at once with a retryable error. `readBackRecords({ jobId,
 buyer })` reads a job's two retained Vet records back without signing or
 sending anything; it answers `present` only when both records read back as
 included, and `indeterminate` when one is not written yet or does not read
@@ -484,8 +510,10 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   logging one `seller-state: released the lock on job ...` line per row, closes
   the challenge validations it left as lost, and ends every context admission it
   left running: a row whose outcome the wire journal holds is settled from it,
-  and any other is compensated, which releases its hold and slot unless a Vet
-  write cannot be ruled out. Saved sessions, effects and settlements are not
+  and any other is compensated, which releases its hold and slot once each Vet
+  address shows no signed write, a Vet that landed (its receipt finalized and
+  verified), or a refused CREATE that can never land; a Vet write whose outcome
+  is still unknown keeps them. Saved sessions, effects and settlements are not
   changed. A lock row the host
   cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
@@ -619,10 +647,12 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   after a Deliverable landed reads as never asked, and the order is submitted
   again (an operator-induced limit). The package's reference implementation,
   `createDevnetDemoArtifactAnchor` (`src/devnet-demo/artifact-anchor.mjs`),
-  cannot be constructed in this snapshot: its constructor requires the opaque
-  devnet-demo source capability, and `isDevnetDemoTransport` always returns
-  `false` (`src/dacs/devnet-source.mjs`), so it refuses every input. Supply an
-  anchor that enforces the contract.
+  is constructed only with the source capability of the seller's Node wallet
+  (`createSellerNodeWallet`, below); `isDevnetDemoTransport`
+  (`src/dacs/devnet-source.mjs`, the client's own check) refuses any other
+  value. Every write it makes is still held by the kit operation guard and the
+  client's purchase hold. An operator-supplied anchor must enforce the contract
+  itself.
 - Without the next option, a Deliverable CREATE the capability signed but did
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
@@ -1185,14 +1215,55 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   the envelope is signed. The answer is `{ sessionNonce, expiresAt }`, signed; the same job,
   buyer and scope get the same nonce back, also after a restart. The context step, and the
   challenge of a handler composed without `wire`, stay on the old auth.
-- The devnet source transport and wallet custody are not part of this
-  package (the payment-evidence journal composes the operator's own wallet
-  primitives). The kit builders that need them (the devnet artifact
-  anchor, issued-write readback and the source mode of native payment
-  evidence) refuse every value here; the operator supplies its own
-  capabilities. Native DEM delivery and the DEM delivery context accept only
-  `TEST-` authorities, as in the source kit. Native writes also need a
+- The kit builds its Node wallet through the client
+  (`@kynesyslabs/dacs-client/node-wallet`): `createSellerNodeWallet`
+  (`src/devnet-demo/seller-node-wallet.mjs`) takes the seller state lock it
+  must hold, the opened seller key and the key record, the composed seller
+  approval and a node connection, and returns the wallet factory, the held
+  source capability, the read-only observer, the payment-evidence journal
+  over the client's payment-evidence adapter, and a bounded balance read.
+  Before any effect it removes the lock rows a dead holder left in the client
+  journals it opens. The source capability is the only value the devnet
+  artifact anchor, issued-write readback and the source mode of native
+  payment evidence accept. Each signature and send needs an effect pass made
+  through the composition's `effectPass`. The wallet's views say
+  `guardsSigning: true`: a request's `authorize` check is asked as its
+  approval answer returns and again in the effect gate right before the
+  transaction signature, and any answer but an immediate `true` refuses
+  `not-authorized` with nothing signed or sent. A signature or send is also
+  refused while the kit
+  operation guard is off or the client's purchase hold is held, which is how
+  both ship. `start` does not build the wallet. Native DEM delivery and the
+  DEM delivery context accept only `TEST-` authorities, as in the source kit.
+  Native writes also need a
   qualified node deployment (`QUALIFIED_NODE_COMMITS`).
+- `createSellerWalletSession` (`src/devnet-demo/seller-wallet-session.mjs`) is
+  the host's production `walletSession` port. It takes the node connection
+  (`endpoint`, `transportAuthority`, `fetchImpl`), the seller `signer`,
+  `loadKeyRecord()`, and the `approve`, `approvalMode`, `journalMode`,
+  `publications` and `diagnostics` it passes unchanged to
+  `createSellerNodeWallet`, a wall `clock` (`Date.now` by default) and the
+  anchor's `buyerAccess` (`null` by default, which refuses every job's write
+  and read with `buyer_access_closed`); any other option is a TypeError. Its
+  `artifactAnchor` is the one handle the operator gives the host, the Vet
+  provider and the delivery capability. Until the host finalizes the port
+  under the state lock, every anchor method refuses
+  `wallet_session_not_finalized`. Finalization checks that the host's effect
+  boundary was built over its binding (`wallet_session_boundary_mismatch`) and
+  that the binding is current on the port's connection (the wire's `tp1_*`
+  refusals). Only then does it call `loadKeyRecord` once; the port zero-fills
+  the bytes it returns on every outcome. It builds the wallet over the port's
+  own connection and binds the handle to the artifact anchor composed over
+  it. That anchor's readback compares the chain identity the port's
+  connection reader observes (within the readback's remaining time, at most
+  10,000 ms, else `tp1_authority_timeout`) with the binding. The finalized
+  session has `effectPass`, `runInEffectPass`,
+  `walletFactory`, `transport` (with `recoverStorageWrite`),
+  `acquireConnectionFence` (the fence its passes need), `address`,
+  `observer`, `artifactJournal`, `paymentEvidence`, `readBalance` and
+  `close`. A second finalization refuses `wallet_session_finalize_once`, and
+  after a close the handle, the fence and finalization refuse
+  `wallet_session_closed`.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).

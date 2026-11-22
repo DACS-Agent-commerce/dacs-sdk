@@ -9,10 +9,8 @@ import { fixtureIdentityBundle, fixtureListing } from './fixtures/listings.mjs';
 import { testWallet } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
-import { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
-import { createSellerAgentClient as createBuyerSellerAgentClient } from '../../dacs-client/src/dacs/seller-http.mjs';
-import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
-import { createWireContext } from '../src/dacs/seller-wire-requests.mjs';
+import { createSellerHttpsClient } from '../../dacs-client/src/dacs/seller-http.mjs';
+import { fetchClient } from '../../dacs-client/test/helpers/seller-https-rig.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { boundPurchaseOf, createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from '../../dacs-client/test/helpers/purchase-admission-hook.mjs';
@@ -21,13 +19,18 @@ installPurchaseAdmissionHook();
 const { setPurchaseAdmission } = await loadAdmissionDouble();
 setPurchaseAdmission('testnet-tp1');
 const { exchangeAgreement, planAgreement, listingPin } = await import('../../dacs-client/src/dacs/purchase-protocol.mjs');
+// These seller modules reach the client (through the devnet source checks), so they load after the hold double is installed.
+const { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } = await import('../src/dacs/seller-http.mjs');
+const { createSellerWireClientAuth } = await import('../src/dacs/seller-wire-client-auth.mjs');
+const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs');
 const T0 = Date.UTC(2026, 9, 27, 12);
 const JOURNAL_LEASE_MS = 300_000;
 
 // The real buyer coordinator, wire authentication, HTTP client, handler and durable
 // transport store. The agent retains the exact proposal; contribution/anchor work
 // is deliberately unreachable so each case stops at the boundary under review.
-// `clientPackage` drives the buyer's own HTTP client (packages/dacs-client) instead of the seller package's.
+// `clientPackage` drives the buyer's own HTTPS client (packages/dacs-client) instead of the seller package's,
+// at a public origin through a stand-in connector that answers from the same handler.
 async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) {
   mock.method(Date, 'now', () => T0);
   t.after(() => mock.restoreAll());
@@ -68,7 +71,7 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
     journal, store, ready: () => true, now: clock, agent, requireDelegation: false, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }),
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
   const handler = createSellerHttpHandler(agent, { wire: hostWire });
-  const client = (clientPackage ? createBuyerSellerAgentClient : createSellerAgentClient)({ url: 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
+  const client = (clientPackage ? fetchClient(createSellerHttpsClient) : createSellerAgentClient)({ url: clientPackage ? FIXTURE_ENDPOINT : 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
     request: async (...args) => { const signed = await authentication.request(...args); request = signed.payload; return signed; },
     // The buyer client hands over `{header, status, body}`; the seller package's adapter reads the same bytes as `responseBytes`.
     verifyResponse: (request, received) => faults.verify(authentication, request, clientPackage ? { header: received.header, status: received.status, responseBytes: received.body } : received),

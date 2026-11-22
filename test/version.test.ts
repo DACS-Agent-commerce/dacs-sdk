@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -45,13 +46,24 @@ describe("public version metadata", () => {
     expect(security).toContain(`peerDependencies: { "@kynesyslabs/demosdk": "${peer}" }`);
   });
 
-  it("limits compatibility PR runs to workflow or dependency changes", async () => {
-    const workflow = await readFile(new URL("../.github/workflows/demosdk-compat.yml", import.meta.url), "utf8");
-    const paths = workflow.match(/  pull_request:\n    paths:\n([\s\S]*?)\n\npermissions:/)?.[1];
-    expect(paths?.trim().split("\n").map((line) => line.trim())).toEqual([
-      '- ".github/workflows/demosdk-compat.yml"', '- "package.json"', '- "package-lock.json"',
+  it("runs the demosdk compatibility workflow on pull requests that change source, tests, type configuration or dependencies", async () => {
+    const workflow = parse(
+      await readFile(new URL("../.github/workflows/demosdk-compat.yml", import.meta.url), "utf8"),
+    ) as { on: { pull_request: { paths: string[] } } };
+    expect(workflow.on.pull_request.paths).toEqual([
+      ".github/workflows/demosdk-compat.yml",
+      "package.json",
+      "package-lock.json",
+      "tsconfig*.json",
+      "src/**",
+      "test/**",
+      "packages/dacs-client/**",
+      "packages/dacs-node/**",
     ]);
-    expect(workflow).not.toContain("ordinary CI never compiles");
-    expect(workflow).toContain("update the matrix entry here too");
+  });
+
+  it("keeps the package.json Standard revision equal to the exported Standard pin", async () => {
+    const packageJson = await import("../package.json", { with: { type: "json" } });
+    expect(packageJson.default.dacs.standardRevision).toBe(DACS_STANDARD_PIN);
   });
 });

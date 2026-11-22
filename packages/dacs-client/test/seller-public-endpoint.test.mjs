@@ -5,6 +5,7 @@ import { world, purchase, JOB, T0, setPurchaseAdmission } from './helpers/wire-c
 import { fixtureListing } from './fixtures/listings.mjs';
 import { fetchClient } from './helpers/seller-https-rig.mjs';
 const { createSellerHttpsClient } = await import('../src/dacs/seller-http.mjs');
+const { compositionWorld } = await import('./helpers/public-composition-world.mjs');
 const clientOverFetch = fetchClient(createSellerHttpsClient);
 const { SELLER_ANSWER_CLASS } = await import('../src/dacs/seller-response-class.mjs');
 
@@ -41,6 +42,47 @@ test('preparing a purchase keeps the public https origin of a seller whose trans
   const { terms } = await p.service.prepareTerms({ verification: { listing }, domain: { mode: 'public-chain-read', network: 'testnet', chainIdentity: w.binding.profile.chainIdentity }, sellerClaim: w.seller.claim });
   assert.equal(terms.sellerAgent, SELLER_ORIGIN);
   assert.deepEqual(terms.sellerTransport, p.transport.declaration);
+});
+
+// The seller transport is declared only alongside native payment evidence, so a payable purchase lacking either cannot authenticate its seller requests.
+for (const missing of ['sellerTransport', 'nativePaymentEvidence']) {
+  test(`preparing a payable purchase at a public https seller without ${missing} is refused before anything is signed`, async (t) => {
+    const w = await world(t, { publicEndpoint: SELLER_ORIGIN });
+    const p = await purchase(t, w, { paid: true });
+    const listing = fixtureListing(w.seller, { now: T0 });
+    const prepare = () => p.service.prepareTerms({ verification: { listing }, domain: { mode: 'public-chain-read', network: 'testnet', chainIdentity: w.binding.profile.chainIdentity }, sellerClaim: w.seller.claim });
+    assert.equal((await prepare()).terms.sellerAgent, SELLER_ORIGIN);
+    delete p.config[missing];
+    p.reopen();
+    await assert.rejects(prepare(), (error) => error.name === 'OperationError' && error.code === 'seller_agent_unavailable' && /declared seller transport/.test(error.message));
+    assert.equal(w.state.signs.length, 0);
+    assert.equal(p.policies(), 0);
+  });
+}
+
+// Without native payment the terms declare no seller transport, so its seller requests could never be authenticated.
+test('the default unpaid configuration with a public https seller is refused at prepare, with no purchase row and nothing to sign', async (t) => {
+  setPurchaseAdmission('testnet-tp1');
+  t.after(() => setPurchaseAdmission('held'));
+  const paid = await compositionWorld(t);
+  assert.ok((await paid.prepare()).operation.terms.protocol.sellerTransport, 'the same setup with a declared seller transport prepares');
+  const unpaid = await compositionWorld(t, { unpaid: true });
+  const before = unpaid.rows();
+  await assert.rejects(unpaid.prepare(), (error) => error.name === 'OperationError' && error.code === 'seller_agent_unavailable' && /declared seller transport/.test(error.message));
+  assert.equal(unpaid.rows(), before, 'no purchase row, event, coordinate, approval or nonce record');
+  assert.equal(unpaid.counters.challengesIssued, 0);
+});
+
+test('a signed Agreement on a row that declares no seller transport is refused with seller_agent_unavailable before any seller request', async (t) => {
+  const w = await world(t, { publicEndpoint: SELLER_ORIGIN });
+  const p = await purchase(t, w, { paid: true, configureTerms: (terms) => {
+    delete terms.protocol.sellerTransport;
+    Object.assign(terms, { network: 'testnet', domain: { mode: 'public-chain-read', network: 'testnet', chainIdentity: w.binding.profile.chainIdentity } });
+  }, protocolPatch: { stage: 'agreement-signing', planned: { plan: { agreementHash: 'a'.repeat(64) }, draft: {}, agreementMessage: 'TEST-agreement' }, signatures: { agreement: 'TEST-signature' } } });
+  const before = JSON.stringify(p.get());
+  await assert.rejects(p.service.submitAgreement(p.get()), (error) => error.name === 'OperationError' && error.code === 'seller_agent_unavailable' && /declares no seller transport/.test(error.message));
+  assert.equal(w.state.signs.length, 0, 'no seller request was signed');
+  assert.equal(JSON.stringify(p.get()), before, 'the row is unchanged');
 });
 
 test('a public endpoint without a wire authentication is refused', async () => {
