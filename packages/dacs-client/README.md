@@ -162,7 +162,7 @@ The complete facade inventory is below. Active calls return Promises and run the
 
 | Facade member class | Complete member list |
 |---|---|
-| Facade active | `rpc`, `walletBinding`, `recoverStorageWrite`, `cancelNativeTransfer` |
+| Facade active | `rpc`, `walletBinding`, `recoverStorageWrite`, `cancelNativeTransfer`, `withWalletNonceLock` |
 | Facade passive | `pins`, `transportBinding`, `journal`, `settlementPublication`, `deliveryPublication`, `demoArtifactPublication`, `readRpc`, `observeBinding`, `chainReader`, `nativeTransferClaimed`, `nativeTransferCancelled`, `nativeTransferRefused`, `nativeNonceConsumer`, `isWalletIdle`, `profile`, `onPurchaseStep`, `onStorageWriteResend`, `reserveRpcAuth`, `close` |
 | Facade phase dependent | `binding` |
 
@@ -177,6 +177,19 @@ What the option does not cover:
 - It does not run for preparation reads, or for a confirmation the retained record already answers, because neither sends a transaction.
 - It does not apply to `walletBinding`, `binding`, `recoverStorageWrite` or `cancelNativeTransfer`. `walletBinding` sends no transaction, and a lease it grants is useless until a relayed `rpc` send, which runs the check.
 - It can run twice for one broadcast: once before the lane and intent records are written and once right before the request. Keep it cheap and free of side effects.
+
+### Wallet nonce lane
+
+The seller composition's `transport.withWalletNonceLock({owner, network, chainIdentity}, work)` runs `work` while it holds the wallet's native lane. That is the lock row every native write of that wallet takes on the same client journal file, a buyer composition's writes included. A seller artifact anchor takes it from its nonce read to its broadcast, so two writes of one wallet never take the same nonce.
+
+- The scope is exactly those three keys: the wallet's `0x` address, `transport.pins.network` and `transport.pins.chainIdentity`. Anything else is refused `invalid_params`.
+- It is an active member. While the purchase hold is held it refuses `profile_not_admitted`, and it reads the connection authority once per call.
+- Inside `work`, the transport's readback, CREATE recovery and broadcast for that wallet continue in the held lane. A lease that names a native transfer, that transfer's confirmation and `cancelNativeTransfer` refuse `journal-reentrant`.
+- It waits at most the journal's lock timeout (2 s by default) and then refuses `journal-busy`, before `work` runs. Nothing queues or retries.
+- It is taken before any effect pass and refuses `nonce_lane_order` inside one. A readback, recovery or leased broadcast that holds the connection fence and then meets a held lane refuses `journal-busy` after the same wait.
+- The lane is released when `work` settles, whatever its outcome. The call rejects with `work`'s own error, or with `journal-fenced` when the lock row was removed while `work` ran. Steps inside `work` that need the lane after that removal refuse `journal-fenced` before they send.
+- It reads nothing from the node, writes no journal record and signs nothing. `transport.close()` waits for it.
+- It does not serialize writers of the same wallet that use another journal file.
 
 The entry also re-exports the boolean capability checks `isDevnetAgreementTransport`, `isDevnetSettlementTransport` and `isDevnetDemoTransport`, and the declarations `DEVNET_AGREEMENT_PROFILE`, `DEVNET_AGREEMENT_KIND`, `DEVNET_AGREEMENT_SOURCE`, `DEVNET_SETTLEMENT_KIND`, `DEVNET_SETTLEMENT_POLICY`, `DEVNET_DELIVERY_KIND`, `DEVNET_DELIVERY_POLICY`, `DEVNET_DEMO_ARTIFACT_KIND`, `DEVNET_DEMO_ARTIFACT_POLICY` and `DEVNET_DEMO_ARTIFACT_TYPES`. No raw transport constructor is exported.
 

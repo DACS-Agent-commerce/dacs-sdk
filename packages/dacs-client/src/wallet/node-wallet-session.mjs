@@ -92,7 +92,7 @@ export { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDemoTr
 
 /**
  * Returns a frozen facade over a registered transport, itself registered so the `isDevnet*Transport` checks accept it. Active members (`rpc`, `walletBinding`,
- * `recoverStorageWrite`, `cancelNativeTransfer` and `binding` for every phase but `readback`) run the admission wrapper and reject `profile_not_admitted` while held;
+ * `recoverStorageWrite`, `cancelNativeTransfer`, `withWalletNonceLock` and `binding` for every phase but `readback`) run the admission wrapper and reject `profile_not_admitted` while held;
  * the passive members listed in the README keep their signatures. `readback` is read once, before the call, so a request changed afterwards cannot move it
  * between the two classes. Options: `{admission, transport}`. Throws TypeError(admission_required | admission_input_untrusted | an unregistered transport) and
  * OperationError(runtime_unsupported); active calls reject with `profile_not_admitted`, `runtime_unsupported` or the transport's own error.
@@ -638,6 +638,7 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
  * Returns a Promise for `{wallet, walletFactory, transport, observer, paymentEvidenceAdapter, internalCauseOf, effectPass, runInEffectPass, effectBoundary, withheldReopen, close}`: the session
  * of `createNodeWalletSession` over a seller transport.
  * `transport` is the registered held facade of `createHeldTransportFacade`; `observer` is `createNodeObserver({owner, clock})` over the same owner, with no fence.
+ * The facade has `withWalletNonceLock(scope, work)`, the wallet's native lane held around `work` (see the README's "Wallet nonce lane").
  * `paymentEvidenceAdapter` is `{signCreate, broadcast, readAccountNonce, readTransactionState}`: the first two are active members under the hold and run in the caller's
  * effect pass (`signCreate` signs one payment-evidence storage CREATE on the signer reservation and sends nothing; `broadcast` confirms and dispatches the stored bytes),
  * and the two reads are passive (see `node-payment-evidence-adapter.mjs`).
