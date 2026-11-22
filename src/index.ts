@@ -203,6 +203,8 @@ export {
   SubstrateError,
   UnsupportedCapabilityError,
   faultCategory,
+  isDacsErrorCode,
+  type DacsErrorCode,
   type FaultCategory,
 } from "./errors.js";
 
