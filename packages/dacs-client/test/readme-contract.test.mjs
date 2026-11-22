@@ -65,6 +65,7 @@ function world(t, { native = false, expired = false, reader = 'present', disposi
   let activeCalls = 0;
   const chain = new Proxy({ network: 'testnet', pinnedIdentity: IDENTITY,
     networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
+    getTransactionFees: async () => { activeCalls++; throw new Error('TEST-fee-read-called'); },
     observeTransfer: () => { activeCalls++; throw new Error('TEST-active-reader-called'); },
     ...(reader === 'absent' ? {} : { observePassiveTransfer: reader === 'noncallable' ? true : async () => observation ? observation() : ({
       status: 'included', txHash: HASH, payer: PAYER, payee: PAYEE, amountOs: '1000000000', blockNumber: 7,
@@ -72,7 +73,9 @@ function world(t, { native = false, expired = false, reader = 'present', disposi
     }) }),
   }, { get(target, key) { chainTouched.add(key); return target[key]; } });
   const service = client.createPurchaseService({ db, ops, coordinates, chain, store, now: () => NOW,
-    config: {}, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false, admission });
+    config: {}, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false, feeCeilingOs: '50000000000', admission });
+  // Construction checks that the fee reader exists; only the reads made after it are the diagnostics' own.
+  chainTouched.clear();
   const token = savedOps.handoffTokenFor(op.id);
   return { db, op, coordinates, touched, chainTouched, service,
     activeCalls: () => activeCalls,
@@ -225,7 +228,8 @@ probe('README protocol pass-through behavior and every held method', passive.con
   const { db } = database(t), store = client.createSqlitePurchaseStore();
   let hostCalls = 0;
   const protocol = client.createProtocolPurchases({ db, store, ops: {}, coordinates: client.createCoordinateStore({ db }),
-    dacsProtocol: {}, buyerAccess: { assertWallet(wallet) { assert.equal(wallet, PAYER); hostCalls++; } }, stopped: () => false, admission });
+    dacsProtocol: {}, buyerAccess: { assertWallet(wallet) { assert.equal(wallet, PAYER); hostCalls++; } }, stopped: () => false,
+    feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n }, admission });
   assert.deepEqual([...section('Protocol').matchAll(/`([^`]+)`/g)].map(m => m[1]), [...passive, 'profile_not_admitted']);
   assert.equal(protocol.assertBuyerAccess(PAYER), undefined);
   assert.equal(hostCalls, 1);

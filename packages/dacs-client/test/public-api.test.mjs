@@ -49,6 +49,8 @@ const ROOT = {
     'OFFLINE_AGREEMENT_MODE', 'DEVNET_NATIVE_COMMITMENT_MARKER'],
 };
 const GUIDANCE_NAMES = ['purchaseNext', 'PURCHASE_STATUS_HELP', 'protocolView'];
+// The host's per-write fee ceiling (testnet 50 DEM) and the chain fee reader both purchase factories require.
+const FEE_CEILING = { feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } };
 const modules = {
   "purchase-state-schema.mjs": "PURCHASE_STATE_SCHEMA",
   "seams/purchase-store-not-wired.mjs": "createSqlitePurchaseStore",
@@ -180,7 +182,7 @@ test('public refusals retain the exported error identity', async () => {
   const client = await import('@kynesyslabs/dacs-client');
   assert.throws(() => client.createProtocolPurchases({}), error => error instanceof TypeError && error.message === 'admission_required');
   const { binding, currentLocal } = await bindFixture();
-  const buyer = client.createProtocolPurchases({ store: client.createSqlitePurchaseStore(), stopped: () => false, admission: { binding, currentLocal } });
+  const buyer = client.createProtocolPurchases({ store: client.createSqlitePurchaseStore(), stopped: () => false, ...FEE_CEILING, admission: { binding, currentLocal } });
   await assert.rejects(buyer.prepareTerms({}), error => error instanceof client.OperationError && error.code === 'profile_not_admitted');
 });
 
@@ -223,7 +225,7 @@ test('the complete public protocol method set refuses actions before host effect
   const effect = () => { effects++; throw new Error('TEST-host-effect'); };
   const options = { store: client.createSqlitePurchaseStore(), ops: { transition: effect, record: effect } };
   const { binding, currentLocal } = await bindFixture();
-  const internal = internalFactory(options), publicProtocol = client.createProtocolPurchases({ ...options, stopped: () => false, admission: { binding, currentLocal } });
+  const internal = internalFactory(options), publicProtocol = client.createProtocolPurchases({ ...options, stopped: () => false, ...FEE_CEILING, admission: { binding, currentLocal } });
   assert.deepEqual(Object.keys(publicProtocol).sort(), Object.keys(internal).sort());
   for (const [name, method] of Object.entries(publicProtocol)) {
     if (typeof method !== 'function' || PASSIVE_PROTOCOL_METHODS.has(name)) continue;
@@ -253,8 +255,8 @@ async function heldPublicObjects() {
     .map(([name, method]) => [name, (...args) => { writes.count++; return method(...args); }]));
   const coordinates = client.createCoordinateStore({ db });
   const store = client.createSqlitePurchaseStore();
-  const protocol = client.createProtocolPurchases({ db, ops: counted, coordinates, store, stopped: () => false, admission });
-  const service = client.createPurchaseService({ db, ops: counted, coordinates, chain: {}, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false, admission });
+  const protocol = client.createProtocolPurchases({ db, ops: counted, coordinates, store, stopped: () => false, ...FEE_CEILING, admission });
+  const service = client.createPurchaseService({ db, ops: counted, coordinates, ...FEE_CEILING, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false, admission });
   const verifier = client.createListingVerifier({ directory: {}, chain: {}, admission });
   const rows = () => JSON.stringify(db.prepare('SELECT name FROM sqlite_master WHERE type = ?').all('table').map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}"`).all()]));
   return { service, protocol, verifier, writes, rows, close: () => db.close() };

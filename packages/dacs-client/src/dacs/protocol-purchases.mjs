@@ -5,6 +5,7 @@ import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '
 import { deliveryDeadlineView, DELIVERY_TIME_SOURCE, verifiedDelivery } from './delivery-deadline-watch.mjs';
 import { purchaseStore } from '../seams/purchase-store-not-wired.mjs';
 import { projectDiagnostic } from '../diagnostic-projection.mjs';
+import { assertWriteWithinFeeCeiling, CREATE_STORAGE_RESERVE_OS } from '../public-admission.mjs';
 // The plugin's buyer side of one DACS fixed-price pay-dem purchase, driven
 // from a purchase operation's durable state (operation.state.protocol).
 //
@@ -459,8 +460,10 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now, 
 
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
 // already-resolved operator capability (null when it has none, so the paths
-// that need one refuse with buyer_access_closed).
-export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, checkStopped }) {
+// that need one refuse with buyer_access_closed). `feeCeilingOs` is the host's
+// per-write fee ceiling and `chain.getTransactionFees()` reads the fee it is
+// compared with; a missing ceiling or fee refuses the buyer's Agreement write.
+export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, checkStopped, chain, feeCeilingOs }) {
   const { transaction } = purchaseStore(store);
   if (deliveryDeadlineWatch !== null) throw new TypeError('deliveryDeadlineWatch is not wired; invoke the separate watch.observe method explicitly');
   if (dacsProtocol?.buyerAccess !== undefined) throw new TypeError('buyerAccess moved to the top-level createProtocolPurchases option');
@@ -989,6 +992,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   async function submitAgreementCore(operation, { agreementSignature, anchorSignature } = {}) {
     if (!available) throw unavailable();
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
+    // Until a CREATE intent is retained this submission can issue the buyer's Agreement CREATE, a paid write whose debit
+    // is its network fee plus the storage reserve. A retained intent is only read back through the bridge's resume.
+    if (!operation.state.protocol.walletAnchor) await assertWriteWithinFeeCeiling(feeCeilingOs, CREATE_STORAGE_RESERVE_OS, chain);
     let current = operation;
     const p = current.state.protocol;
     if (agreementSignature || anchorSignature) {

@@ -78,7 +78,7 @@ test('the installed ./substrate/demos entry exports one testnet-pinned reader th
         terms: { buyer: { wallet }, seller: { payee: seller }, price: { amountOs: '1' }, network: 'testnet', rail: 'demos-native:DEM',
           domain: { network: 'testnet', rail: 'demos-native:DEM', mode: 'public-chain-read', chainIdentity: identity } } };
       const service = client.createPurchaseService({ db, coordinates, config: {}, ops: { get: (account, id) => (account === 'buyer' && id === 'first' ? saved : null) },
-        accounts: {}, verifier: {}, chain, challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, stopped: () => false, admission });
+        accounts: {}, verifier: {}, chain, challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, stopped: () => false, feeCeilingOs: '50000000000', admission });
       const { verification } = await service.verifyDeal({ accountId: 'buyer', operationId: 'first' });
       assert.equal(verification.outcome, 'not_broadcast', JSON.stringify(verification));
     } finally { db.close(); }
@@ -97,11 +97,12 @@ test('a binding made through the consumer\'s own @kynesyslabs/dacs/wire import i
     const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local, readAuthority: async scope => ({ local: { ...scope.local },
       chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, provenance: 'TEST-authority', sessionId: scope.sessionId, participants: [] }) });
     const store = createSqlitePurchaseStore(), currentLocal = () => ({ ...local });
-    const accepted = createProtocolPurchases({ store, stopped: () => false, admission: { binding, currentLocal } });
+    const feeCeiling = { feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } };
+    const accepted = createProtocolPurchases({ store, stopped: () => false, ...feeCeiling, admission: { binding, currentLocal } });
     assert.equal(accepted.actionsAdmitted, true, 'the switched copy is admitted');
     // Admitted: the original ran and gave its own refusal, not the wrapper's.
     await assert.rejects(accepted.prepareTerms({ verification: {}, domain: {}, sellerClaim: 'TEST-seller' }), { code: 'dacs_protocol_unavailable' });
-    const cloned = createProtocolPurchases({ store, stopped: () => false, admission: { binding: structuredClone(binding), currentLocal } });
+    const cloned = createProtocolPurchases({ store, stopped: () => false, ...feeCeiling, admission: { binding: structuredClone(binding), currentLocal } });
     await assert.rejects(cloned.prepareTerms({}), error => error.code === 'profile_not_admitted' && error.cause?.code === 'tp1_binding_required');
   `);
   run(process.execPath, ['identity.mjs'], app);

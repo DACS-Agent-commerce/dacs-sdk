@@ -1,0 +1,128 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF require a per-write fee ceiling on the purchase factories and check each paid write against it",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "9d1e8dbeeab20cce190d2b56208c01b5a020d0cc",
+      "after": "a0ced74c5d2ab3796468b8c23c51c89998b738d9"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "61b0f933e06cd10dfc3df7e6324e55407a0a8ae6",
+      "after": "8b7d7c087d1d2c5335a6a6abcea17cd5fadbc8cf"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "8bed97ae687e3ab16c85b3b2a51fa070c4794421",
+      "after": "d65cf6a2c731a416468c37761b647f5cbd1d464f"
+    },
+    {
+      "path": "packages/dacs-client/src/public-admission.mjs",
+      "before": "76964fd4e9a2e63f93b3bfb7e8c7f02afc3c5b7f",
+      "after": "9e2b16f4534e9ffaa7fbe8607f06febf4ca641c9"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "65f6fbbd3342f2270ca32eea64eb71441991c8c5",
+      "after": "1f46186eb240afba7c91937d8a099a472879ba2e"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "c2ecd0dd44e3939b45081134ab0adadbe60956d3",
+      "after": "01448293e9050cc0072f9eeafb6e85915cf93bd0"
+    },
+    {
+      "path": "packages/dacs-client/test/fee-ceiling.test.mjs",
+      "before": null,
+      "after": "35f4b036612d146b8c38bd9aba641b40c97a3375"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+      "before": "becf13a9ca6cc3c349762bb509ade042e41899f4",
+      "after": "bfaa66071377d2f9e762fb2c1e0a1af6d76abf27"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/public-demos-reader-purchase.mjs",
+      "before": "a128c6978a07bd5f9b8d1e3ed72898565fe31533",
+      "after": "b6bd0e45eb1229789ef39e68d705a10209c80338"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+      "before": "b59171dbbc86f4612ba57ae203e0fc3822ac7a1c",
+      "after": "c399f4d84d52279554e28dff771d0d6d93616f2c"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+      "before": "ae0e0d3c0ff21ac268326116e4a0b0e01c246304",
+      "after": "e3c79946e962b43d4993ba6950fd506f65e280e2"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "5ea82183316c83b1e9f761a5ef409d11438565d6",
+      "after": "8a8d148fc89f2011f557e6ac89e3f32caee41f79"
+    },
+    {
+      "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+      "before": "ab3441b664f975ca7a79c0dcc9d3b513c79ffb0f",
+      "after": "7249c60ed522d5f1ed370bb2ffa7cf1c59b4bdfb"
+    },
+    {
+      "path": "packages/dacs-client/test/public-admission.test.mjs",
+      "before": "fe375641bc0fb119b320e168219804d8af6be2a4",
+      "after": "22f9b7e2253dffc5571d69bbb65e21b29a85c604"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "913c8ee2a0459002e2e55fd1234a7a71375c2319",
+      "after": "2cdb25043ebe91c1dc895fb981a92c5ed793496b"
+    },
+    {
+      "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+      "before": "79bbdf941514278fd77d9c36250c73bc67112bc3",
+      "after": "733c98588af72fac4c7318c0ec378a52e88e6efc"
+    },
+    {
+      "path": "packages/dacs-client/test/readme-contract.test.mjs",
+      "before": "16de92d6976fbe3cdb8d53afc69cec7ae1818cfa",
+      "after": "678397ba823a28f5304482838db11f6e75b74eae"
+    },
+    {
+      "path": "packages/dacs-client/test/runtime-floor.test.mjs",
+      "before": "1db1986ca25e654d199cddc17963915b5cc59f5b",
+      "after": "dc03ed39b8047877de3dc95c13d5539fd65401d1"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-suspension.test.mjs",
+      "before": "84d67eb01c770511ee64157ee493aac88decd079",
+      "after": "1c166ae24267da22055ff65b3986848fbf26ed5d"
+    }
+  ],
+  "commitFiles": [
+    ".github/workflows/ci.yml",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-4e282286a4c9.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/public-admission.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/fee-ceiling.test.mjs",
+    "packages/dacs-client/test/helpers/public-composition-world.mjs",
+    "packages/dacs-client/test/helpers/public-demos-reader-purchase.mjs",
+    "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+    "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+    "packages/dacs-client/test/package-contents.test.mjs",
+    "packages/dacs-client/test/packed-consumer.test.mjs",
+    "packages/dacs-client/test/public-admission.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "packages/dacs-client/test/readback-review-decisions.test.mjs",
+    "packages/dacs-client/test/readme-contract.test.mjs",
+    "packages/dacs-client/test/runtime-floor.test.mjs",
+    "packages/dacs-client/test/seller-suspension.test.mjs",
+    "test/client/nonce-slot-cancel.test.ts",
+    "test/kit-client/client-purchase.mjs"
+  ]
+}

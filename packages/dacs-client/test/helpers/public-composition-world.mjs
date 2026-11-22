@@ -16,6 +16,8 @@ import { bindFixture } from '../fixtures/tp1-authority-reader.mjs';
 
 export { OFFLINE_AGREEMENT_MODE, NOW, SellerTlsUnusableError };
 export const ACCOUNT_ID = 'TEST-buyer';
+// The testnet host's per-write fee ceiling: 50 DEM in OS.
+export const TESTNET_FEE_CEILING_OS = '50000000000';
 // The seller client accepts only a loopback endpoint; nothing here connects to it.
 export const SELLER_ENDPOINT = 'https://seller.example.test';
 const AUTHORITY = 'TEST-RUN-composition0';
@@ -37,9 +39,10 @@ function presentAnswer({ scope, buyerIdentityBundle }, listing) {
 /**
  * Builds the composed world. `sellerEndpoint(claim, options)` answers the protocol's seller lookups; `contextGate` (a Promise) holds the
  * operator's context read; `demDeliveryContext` (a capability) replaces the operator context. `stopped` is the host's stop check and
- * `passiveOnly` composes both factories in their read-only mode, and `native` replaces the native source world.
+ * `passiveOnly` composes both factories in their read-only mode, and `native` replaces the native source world. `feeCeilingOs` is the
+ * host's per-write fee ceiling (the testnet 50 DEM by default); the chain double's fee is 1 OS.
  */
-export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, stopped = () => false, passiveOnly = false, native = passiveNativeWorld() } = {}) {
+export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, stopped = () => false, passiveOnly = false, native = passiveNativeWorld(), feeCeilingOs = TESTNET_FEE_CEILING_OS } = {}) {
   const { binding, currentLocal, authority, current } = await bindFixture();
   const admission = { binding, currentLocal };
   const wallet = createEphemeralWallet(), seller = createEphemeralWallet();
@@ -62,11 +65,11 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   // Every protocol call that reaches a seller or the buyer-access seam is counted.
   const counters = { sellerLookups: 0, buyerAccess: 0, challengesIssued: 0 };
   const challenges = { issue: () => { counters.challengesIssued++; return { challengeId: 'TEST-challenge' }; } };
-  const protocol = createProtocolPurchases({ db, ops, coordinates, store, stopped, ...(passiveOnly ? { passiveOnly } : {}), admission, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
+  const protocol = createProtocolPurchases({ db, ops, coordinates, store, stopped, feeCeilingOs, chain, ...(passiveOnly ? { passiveOnly } : {}), admission, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
       nativeSellerCommitment: commitment, ...(demDeliveryContext ? { demDeliveryContext } : { agreementContext }), sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: wallet.address }] }, verifier, chain, protocol,
-    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped, ...(passiveOnly ? { passiveOnly } : {}), admission });
+    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped, feeCeilingOs, ...(passiveOnly ? { passiveOnly } : {}), admission });
   const prepare = (idempotencyKey = 'TEST-key') => service.prepare({ accountId: ACCOUNT_ID, listingId: 'TEST-listing', version: 1, seller: seller.claim,
     idempotencyKey, walletAddress: wallet.address, protocol: OFFLINE_AGREEMENT_MODE });
   // Prepares a purchase and has the buyer present their identity; returns what agreementPlan needs.

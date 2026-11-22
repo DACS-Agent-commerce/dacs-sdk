@@ -50,7 +50,8 @@ export function purchaseWorld(t, { chain, chainIdentity, native = false, status 
   coordinates.save({ operationId: operation.id, kind: 'native-dem-transfer', network: 'testnet', from: wallet, nonceFence: expectedNonce - 1, expectedNonce, target: payee, amountOs,
     payload: { content: { nonce: expectedNonce } } });
   if (reportedTxHash) coordinates.reportHash(operation.id, reportedTxHash);
-  const service = createPurchaseService({ db, ops, coordinates, config: {}, chain, protocol, store: { transaction, isUniqueViolation }, purposes: { APPROVE_PURCHASE: 'approve-purchase' } });
+  const service = createPurchaseService({ db, ops, coordinates, config: {}, chain, protocol, store: { transaction, isUniqueViolation }, purposes: { APPROVE_PURCHASE: 'approve-purchase' },
+    feeCeilingOs: '50000000000' });
   return {
     service,
     verify: () => service.verifyDeal({ accountId: ACCOUNT_ID, operationId: operation.id }),

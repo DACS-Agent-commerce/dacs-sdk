@@ -1,6 +1,7 @@
 import { canonicalize } from '@kynesyslabs/dacs';
 import { assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { OperationError } from './client-errors.mjs';
+import { OS_INTEGER } from './dacs/chain.mjs';
 import { PURCHASE_ADMISSION } from './dacs/purchase-admission-state.mjs';
 
 const ADMITTED_STATE = 'testnet-tp1';
@@ -10,6 +11,39 @@ const NODE_VERSION = /^v(\d+)\.(\d+)\.(\d+)$/;
 
 /** K0's aggregate deadline for the authority read behind one admitted call. */
 export const AUTHORITY_READ_DEADLINE_MS = 10_000;
+
+/** A positive OS amount: decimal digits with no sign, point or leading zero. Used for the host's per-write fee ceiling. */
+export const POSITIVE_OS_AMOUNT = /^[1-9][0-9]*$/;
+
+/** The storage fee held for a buyer Agreement CREATE, in OS: the native wallet bounds a CREATE at 24 KiB, charged 1 DEM per 10 KiB, so three chunks. */
+export const CREATE_STORAGE_RESERVE_OS = '3000000000';
+
+/**
+ * assertWithinFeeCeiling(feeCeilingOs, amountOs, fee) returns undefined when one paid write's declared debit, `amountOs` (decimal OS text) plus
+ * the network `fee` (a non-negative bigint), is at most `feeCeilingOs`; a debit equal to the ceiling passes. It throws OperationError(write-fee-cap),
+ * as the wallet's effect boundary does, when the debit is over the ceiling, and also when the ceiling is not a positive OS amount, the amount is not
+ * decimal OS text or the fee is not a non-negative bigint.
+ */
+export function assertWithinFeeCeiling(feeCeilingOs, amountOs, fee) {
+  if (typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs) || typeof amountOs !== 'string' || !OS_INTEGER.test(amountOs)
+    || typeof fee !== 'bigint' || fee < 0n || BigInt(amountOs) + fee > BigInt(feeCeilingOs)) {
+    throw new OperationError('write-fee-cap', 'effect refused: write-fee-cap');
+  }
+}
+
+/**
+ * assertWriteWithinFeeCeiling(feeCeilingOs, amountOs, chain) reads the network fee once with `chain.getTransactionFees()` and applies
+ * assertWithinFeeCeiling. A fee that cannot be read refuses OperationError(write-fee-cap) with the read's error as its cause.
+ */
+export async function assertWriteWithinFeeCeiling(feeCeilingOs, amountOs, chain) {
+  let fee;
+  try {
+    fee = await chain.getTransactionFees();
+  } catch (error) {
+    throw new OperationError('write-fee-cap', 'effect refused: write-fee-cap', undefined, { cause: error });
+  }
+  assertWithinFeeCeiling(feeCeilingOs, amountOs, fee);
+}
 
 /** Whether the one hold constant currently admits purchase actions; read live on every call. */
 export const purchaseActionsAdmitted = () => PURCHASE_ADMISSION === ADMITTED_STATE;
@@ -51,6 +85,16 @@ function readStopped(options) {
 function readPassiveOnly(options) {
   if (options.passiveOnly !== undefined && options.passiveOnly !== true) throw new TypeError('passive_only_invalid');
   return options.passiveOnly === true;
+}
+
+// The host's per-write fee ceiling and the chain that reads each write's network fee. Checks the fee reader's shape only;
+// it is never called here, so construction reads nothing.
+function readFeeCeiling(options) {
+  const { feeCeilingOs, chain } = options;
+  if (typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs) || typeof chain?.getTransactionFees !== 'function') {
+    throw new TypeError('fee_ceiling_required');
+  }
+  return feeCeilingOs;
 }
 
 // The host's stop check, bounded by the read deadline. Resolves only for the answer `false`; every other outcome is a
@@ -118,7 +162,7 @@ async function callAdmitted(original, receiver, args, { admission, purchase, sto
 }
 
 /**
- * admitPublicFactory(factory, {passive, purchase, stopSeam, onCreated}) returns a factory that requires `admission: {binding, currentLocal}` and returns a frozen object
+ * admitPublicFactory(factory, {passive, purchase, stopSeam, feeCeiling, onCreated}) returns a factory that requires `admission: {binding, currentLocal}` and returns a frozen object
  * whose function members are Promise-returning, except the names in `passive`, which pass through unchanged. Each wrapped call, in order: refuses while the
  * hold is held, checks the Node floor when `purchase` is set, awaits the host's stop check when `stopSeam` is set, awaits the wire's binding check under
  * AUTHORITY_READ_DEADLINE_MS, re-checks the hold and `currentLocal()` synchronously, then invokes the original once with its receiver and arguments.
@@ -126,18 +170,22 @@ async function callAdmitted(original, receiver, args, { admission, purchase, sto
  * With `stopSeam` the factory also requires `stopped`, a function answering true or false, and accepts `passiveOnly: true`, which leaves only the `passive`
  * functions and the non-function members on the returned object. The original factory receives `passiveOnly` and `checkStopped()`, the same bounded stop
  * check, which resolves for `false` and rejects with the refusal otherwise; the stop check is the host's, never a default.
- * Throws TypeError(admission_required | admission_input_untrusted | stopped_required | passive_only_invalid) and, for purchase factories, OperationError(runtime_unsupported) before building anything.
+ * With `feeCeiling`, a factory that is not `passiveOnly` also requires `feeCeilingOs`, the host's per-write fee ceiling as a positive OS amount, and a
+ * `chain` with a `getTransactionFees` function, which is not called here; the original factory receives the checked `feeCeilingOs`. There is no default.
+ * Throws TypeError(admission_required | admission_input_untrusted | stopped_required | passive_only_invalid | fee_ceiling_required) and, for purchase factories, OperationError(runtime_unsupported) before building anything.
  * Wrapped calls reject with OperationError(profile_not_admitted) carrying the cause, with OperationError(writes_stopped | stop_check_failed | stop_check_invalid | stop_check_timeout), or with runtime_unsupported or the original's own error.
  */
-export function admitPublicFactory(factory, { passive = [], purchase = false, stopSeam = false, onCreated } = {}) {
+export function admitPublicFactory(factory, { passive = [], purchase = false, stopSeam = false, feeCeiling = false, onCreated } = {}) {
   const passiveNames = new Set(passive);
   return function admittedFactory(options) {
     const admission = readAdmission(options);
     if (purchase) assertPurchaseRuntime(process.version);
     const stopped = stopSeam ? readStopped(options) : undefined;
     const passiveOnly = stopSeam && readPassiveOnly(options);
+    const feeCeilingOs = feeCeiling && !passiveOnly ? readFeeCeiling(options) : undefined;
     const factoryOptions = { ...options };
     factoryOptions.admission = admission;
+    if (feeCeilingOs !== undefined) factoryOptions.feeCeilingOs = feeCeilingOs;
     if (stopSeam) {
       delete factoryOptions.stopped;
       factoryOptions.checkStopped = () => checkStopped(stopped);

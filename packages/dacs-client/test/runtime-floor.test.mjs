@@ -27,12 +27,15 @@ function countingStandIns() {
   return { count, options: { db: standIn(), store: standIn(), ops: standIn(), coordinates: standIn(), journal: standIn(), custody: standIn(), signer: standIn() } };
 }
 
+// The host's per-write fee ceiling (testnet 50 DEM) and the chain fee reader both purchase factories require.
+const FEE_CEILING = { feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } };
+
 function realOptions(t, name) {
   if (name === 'createListingVerifier') return { directory: {}, chain: {} };
-  if (name === 'createProtocolPurchases') return { store: createSqlitePurchaseStore(), stopped: () => false };
+  if (name === 'createProtocolPurchases') return { store: createSqlitePurchaseStore(), stopped: () => false, ...FEE_CEILING };
   const db = openDatabase(':memory:'); t.after(() => db.close());
   return { db, ops: createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => 1 }), coordinates: createCoordinateStore({ db }),
-    chain: {}, config: {}, store: createSqlitePurchaseStore(), purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false };
+    ...FEE_CEILING, config: {}, store: createSqlitePurchaseStore(), purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped: () => false };
 }
 
 const FACTORIES = { createProtocolPurchases, createPurchaseService, createListingVerifier };
@@ -103,6 +106,8 @@ test('CI asserts the packed refusal on Node 20.19.0 and 22.13.0 and constructs e
   const floor = step('Check both packed JavaScript entry points at the engine floor');
   for (const name of Object.keys(FACTORIES)) assert.match(floor, new RegExp(`c\\.${name}\\(`), name);
   for (const name of ['createProtocolPurchases', 'createPurchaseService']) {
-    assert.match(floor, new RegExp(`c\\.${name}\\([^\\n]*admission, stopped \\}\\)`), `${name} is given the stop check it requires`);
+    assert.match(floor, new RegExp(`c\\.${name}\\([^\\n]*admission, stopped[,} ]`), `${name} is given the stop check it requires`);
+    assert.match(floor, new RegExp(`c\\.${name}\\([^\\n]*feeCeilingOs: '50000000000'`), `${name} is given the fee ceiling it requires`);
+    assert.match(floor, new RegExp(`c\\.${name}\\([^\\n]*chain: \\{ getTransactionFees: `), `${name} is given the fee reader it requires`);
   }
 });

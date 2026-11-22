@@ -11,7 +11,7 @@ import { canonicalize } from '@kynesyslabs/dacs';
 import { assertTp1Binding, bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
 import { isTp1AuthorityLabel } from '../dacs/tp1-authority-label.mjs';
-import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
+import { AUTHORITY_READ_DEADLINE_MS, POSITIVE_OS_AMOUNT, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { claimForAddress } from '../signatures.mjs';
 import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
 import { createAuthorityReader } from './authority-reader.mjs';
@@ -47,7 +47,6 @@ const RPC_INVALID = 'node_wallet_rpc_invalid';
 const STAGE_NOT_DISPATCHED = 'not_dispatched';
 const STAGE_DISPATCHED_NO_ACK = 'dispatched_no_ack';
 const OS_AMOUNT = /^(?:0|[1-9][0-9]*)$/;
-const POSITIVE_OS_AMOUNT = /^[1-9][0-9]*$/;
 // The `extra` values of a JSON-RPC `execute` body that put a transaction in front of the node; the gate runs at each.
 const GATED_EXECUTE_STAGES = ['confirmTx', 'broadcastTx'];
 const TP1_LABEL_PREFIX = 'TP1-';

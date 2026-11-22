@@ -238,6 +238,7 @@ test('resumption validates retained buyer access before clearing the suspension'
   const { createProtocolPurchases } = await import('../src/index.mjs');
   const failure = Object.assign(new Error('TEST-buyer-access-closed'), { code: 'buyer_access_closed', details: { buyerAccessMissing: true } });
   const protocol = createProtocolPurchases({ db: s.p.db, ops: s.p.ops, coordinates: {}, dacsProtocol: s.p.config, admission: s.w.admission, stopped: () => false,
+    feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n },
     store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() { throw failure; } } });
   await assert.rejects(protocol.recheck(s.p.get(), null, { resumeSuspensionId: held.id }), error => error === failure);
   assert.deepEqual(suspension(s), held);
