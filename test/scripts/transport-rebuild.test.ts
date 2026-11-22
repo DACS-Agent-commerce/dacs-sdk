@@ -54,6 +54,12 @@ describe("raw-token admission", () => {
     expect(await readBoundedResponse(response([...bytes].map(byte => Buffer.from([byte]))), 1024)).toEqual(bytes);
     await expect(readBoundedResponse(response([...Buffer.from(deep)].map(byte => Buffer.from([byte]))), 1024)).rejects.toMatchObject({ code: "ELIMIT" });
   });
+  it.each([1, 7, 4096])("preserves long strings across %i-byte chunks", async size => {
+    const bytes = Buffer.from(JSON.stringify({ readme: "x".repeat(4096) + '"\\é€😀' + "y".repeat(4096) }));
+    const chunks = (body: Buffer) => Array.from({ length: Math.ceil(body.length / size) }, (_, i) => body.subarray(i * size, (i + 1) * size));
+    expect(await readBoundedResponse(response(chunks(bytes)), 65536)).toEqual(bytes);
+    await expect(readBoundedResponse(response(chunks(Buffer.concat([bytes, Buffer.from("\n" + deep)]))), 65536)).rejects.toMatchObject({ code: "ELIMIT" });
+  });
   it("fails on an oversized valid prefix before reading its tail", async () => {
     let tailRead = false;
     async function* body() { yield Buffer.from(deep); tailRead = true; throw new Error("tail was read"); }
