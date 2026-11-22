@@ -142,8 +142,94 @@ Generated funded buyers instead use the remote authority client described in
 `wallet-budget-authority-design.md`. They hold only an endpoint and role-scoped
 token plus operator-controlled authority-id, epoch and witness-public-key pins.
 They speak only remote protocol V2 and do not fall back to V1 or this filesystem
-store. The service owns PostgreSQL access, stable wallet/chain lineage,
+store. The production service owns PostgreSQL access, stable wallet/chain lineage,
 provisioning, migration, authenticated balances/recovery and transitions; every
 authorization and status read is fenced by the independently rollback-resistant
-continuity witness. The included in-memory witness is deterministic test/reference
-code only and is not production topology, durability or failover evidence.
+continuity witness. The testnet-only file-backed service in
+`@kynesyslabs/dacs-node` is not that service: its witness and state share one
+directory, it uses no PostgreSQL, and it does not detect a restored old copy.
+See [Run the testnet service](#run-the-testnet-service). The included in-memory
+witness is deterministic test/reference code only and is not production
+topology, durability or failover evidence.
+
+## Run the testnet service
+
+For Base Sepolia (`eip155:84532`) only, `@kynesyslabs/dacs-node` includes a
+file-backed wallet-spend authority service that a generated x402 or dual-rail
+buyer project can run on its own machine. It listens on a loopback address,
+serves only the x402 policy, and refuses any other network. It is not the
+production authority: its witness and state share one directory, it uses no
+PostgreSQL, and it does not detect a restored old copy.
+
+A generated project runs it in these steps, each command as the runtime user
+that owns the secret files:
+
+1. Create two private files outside the project, mode 0600, owned by the
+   runtime user: a bearer token of at least 32 characters and a witness seed of
+   64 hexadecimal characters. The generator creates neither.
+2. Fill in the settings in the table below. Use a new epoch and a new data
+   directory outside the role data directories, and set
+   `DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=1` for the buyer.
+3. Run `npm run dacs:authority -- --print-witness-public-key` and put the
+   printed key in `DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY`.
+4. Run `npm run dacs:authority:policy`. It writes the buyer's own x402 policy,
+   as canonical JSON, to `DACS_WALLET_AUTHORITY_POLICY_FILE`.
+5. Run `npm run dacs:authority` and keep it running while buying. Start the
+   roles, then run `npm run dacs:doctor -- --phase post-start --for buy` (with
+   `--rail x402` in a dual-rail project) before the first purchase. Buy only
+   when its `x402.service-limit` check passes: a buyer whose pins differ from
+   the service refuses the answer only after the service has recorded a hold.
+6. Changing a wallet limit, the wallet or the rail asset changes the policy.
+   Write the policy again and start a new lineage (a new data directory and a
+   new epoch); its spend totals start from zero. With Docker, restart the buyer
+   so that it reads the changed limit.
+7. The service counts a payment only when the chain shows the purchase's
+   authorization nonce used in a final transaction that moves exactly the
+   agreed amount to the agreed payee. When it records a hold, it sets the
+   authorization's `validBefore` from the chain's time, at most 24 hours later;
+   the generated buyer asks for 120 seconds. An interrupted purchase keeps its
+   hold until the chain shows the authorization cancelled, or the chain's time
+   is past that `validBefore` with the authorization unused, and the 5-minute
+   hold lease has ended. The hold is then released when the buyer next asks.
+   Never reuse an epoch.
+8. In a dual-rail project this service refuses the `pay-dem` policy, so
+   `pay-dem` purchases and the doctor's `pay-dem.service-limit` check need the
+   separately operated authority.
+
+| Setting | Meaning |
+|---|---|
+| `DACS_WALLET_AUTHORITY_URL` | `http://127.0.0.1:<port>/` the service listens on and the buyer calls |
+| `DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE` | private file holding the buyer's bearer token |
+| `DACS_WALLET_AUTHORITY_ID` | the authority id both sides pin |
+| `DACS_WALLET_AUTHORITY_EPOCH` | the lineage epoch; new for every new data directory |
+| `DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY` | the witness key printed in step 3 |
+| `DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE` | private file holding the witness seed |
+| `DACS_WALLET_AUTHORITY_DATA_DIRECTORY` | the service's state and witness directory |
+| `DACS_WALLET_AUTHORITY_POLICY_FILE` | the policy written in step 4 |
+| `DACS_EVM_RPC_URL` | the Base Sepolia RPC the service reads balances and payments from |
+| `DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK` | the first block searched for this wallet's authorizations |
+
+At start the service refuses with one named code and opens no port when
+something is wrong. The codes an operator is most likely to see:
+
+- `wallet-spend-testnet-authority-setting-missing`: a setting is empty; the
+  refusal names it.
+- `wallet-spend-testnet-authority-network-refused`: the policy file is for a
+  network other than `eip155:84532`.
+- `wallet-spend-testnet-authority-witness-key-mismatch`: the seed file does not
+  match `DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY`.
+- `wallet-spend-testnet-authority-listen-failed`: the port is taken.
+- `wallet-spend-continuity-policy-mismatch`: the policy changed over an existing
+  data directory; start a new lineage (step 6).
+- `wallet-spend-file-witness-record-damaged`: a witness record is damaged.
+- `wallet-spend-testnet-authority-token-invalid` or
+  `wallet-spend-testnet-authority-witness-seed-invalid`: the file is missing,
+  malformed or unsafe. A common cause is a file owned by another user, which
+  the secret loader refuses as `secret-file-owner-mismatch`; run the command as
+  the file's owner.
+
+While running, the service prints a `hold-needs-operator` line on stderr when a
+hold cannot be released by the chain rule in step 7, for example
+`wallet-spend-chain-nonce-used-unmatched` when the nonce paid for something
+else. The hold stays, and the wallet key should be treated as in use outside
+the buyer.
