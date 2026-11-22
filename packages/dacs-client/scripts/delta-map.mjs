@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assemble, readArchive } from './delta-assemble.mjs';
-import { isAnchored, isCorePath, isRecordNamed, isUnrecorded, readAnchor, recordName, selects } from './delta-record.mjs';
+import { isAnchored, isCorePath, isRecordNamed, isUnrecorded, readAnchor, recordName, selects, UNRECORDED_PATH } from './delta-record.mjs';
 import { checkRecordFiles } from './delta-freeze.mjs';
 import { publicationJson, publicationText } from './publication-text.mjs';
 import { sourceGit } from './source-git.mjs';
@@ -177,7 +177,8 @@ export function checkDeltas(packageDir=pkg) {
   const anchor=readAnchor(pkg), anchored=path=>isAnchored(path.slice(prefix.length)), afterAnchor=new Set(git('rev-list',`${anchor.commit}..HEAD`).split('\n'));
   const core=path=>isCorePath(path.slice(prefix.length));
   // The README needs no record: every check below skips it and each record or anchor entry that names it.
-  const unrecorded=path=>isUnrecorded(path.slice(prefix.length));
+  // Paths here are repository-wide, so only the full client path is exempt, not another package's README.
+  const unrecorded=path=>path===prefix+UNRECORDED_PATH;
   const covered=(path,sha)=>!core(path)&&!unrecorded(path)&&(/^packages\/dacs-client\/(src|test)\//.test(path)||(anchored(path)&&(sha==null||afterAnchor.has(sha))));
   // Records are checked one by one by their schema; this rule binds the archive.
   const last=readArchive(pkg).ledger.changes.at(-1);

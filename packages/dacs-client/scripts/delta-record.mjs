@@ -59,7 +59,7 @@ const RECORD_NAMED = /^(?:src\/|test\/|scripts\/|README\.md$|package\.json$|DELT
 export const isRecordNamed = path => !isCorePath(path) && RECORD_NAMED.test(path);
 // The package README changes with most features, so a change to it needs no
 // record; Git history keeps who changed it. Records and the anchor may still
-// name it, but no check reads those entries or compares the README with them.
+// name it; those entries are checked for shape only, never against the README.
 export const UNRECORDED_PATH = 'README.md';
 /** True for the one package-relative path whose changes need no record. */
 export const isUnrecorded = path => path === UNRECORDED_PATH;
