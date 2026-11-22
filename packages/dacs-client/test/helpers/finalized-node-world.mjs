@@ -9,7 +9,7 @@ const { queuedOwner } = await import('./queued-owner.mjs');
 const { openDurableWalletJournal } = await import('../../src/wallet/durable-journal.mjs');
 const { buildNativeTransferPayload } = await import('../../src/dacs/wallet-transactions.mjs');
 
-export async function finalizedWorld(t, { path, node = scriptedNode(), state = {}, input = {}, journalOptions = {}, journalWrap = j => j } = {}) {
+export async function finalizedWorld(t, { path, node = scriptedNode(), state = {}, input = {}, journalOptions = {}, journalWrap = j => j, compose = options => api.composeNodeWalletSession(options) } = {}) {
   setPurchaseAdmission('testnet-tp1');
   const directory = path ? null : mkdtempSync(join(tmpdir(), 'finalized-node-'));
   const journalPath = path ?? join(directory, 'wallet.sqlite');
@@ -24,7 +24,7 @@ export async function finalizedWorld(t, { path, node = scriptedNode(), state = {
   let session, closed = false;
   const close = async () => { if (!closed) { closed = true; await session?.close(); await owner.close(); journal.close(); } };
   t.after(async () => { await close(); if (directory) rmSync(directory, { recursive: true, force: true }); });
-  const build = async () => { session = await api.composeNodeWalletSession(options); return session; };
+  const build = async () => { session = await compose(options); return session; };
   const world = { node, owner, journal, key, options, clock, state, path: journalPath, close, build,
     get session() { return session; },
     records: async () => (await journal.entries()).filter(([key]) => key.startsWith('eb/')).map(([, value]) => value),

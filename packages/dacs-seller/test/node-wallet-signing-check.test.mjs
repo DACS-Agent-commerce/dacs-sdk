@@ -19,6 +19,7 @@ const { OPERATOR_CLOSING } = await import('../src/devnet-demo/operator-approval.
 const { createDevnetDemoArtifactAnchor } = await import('../src/devnet-demo/artifact-anchor.mjs');
 const { deriveWalletIdentity } = await import('../src/cli/node-identity.mjs');
 const { fixtureListing } = await import('./fixtures/listings.mjs');
+const { productionObserveIdentity } = await import('./helpers/sr2-live-fixture.mjs');
 
 const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 const LISTING_ADDRESS = 'dacs1:listing:fixture-report:1';
@@ -176,11 +177,12 @@ test('before asking approval, the composed wallet refuses a second argument that
   sentNothing(world, signatures);
 });
 
-// An artifact anchor over the wallet's walletFactory, built outside any effect pass, and the fixture Listing it would publish.
+// An artifact anchor over the wallet's walletFactory, built outside any effect pass with the world's binding and the host's
+// identity observation, and the fixture Listing it would publish.
 async function listingAnchor(world) {
   const { sourceCapability } = world.wallet, signer = await fixtureSigner();
-  const anchor = createDevnetDemoArtifactAnchor({ sourceCapability, journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory,
-    network: sourceCapability.pins.network, signer: { claim: signer.claim } });
+  const anchor = createDevnetDemoArtifactAnchor({ sourceCapability, binding: world.admission.binding, observeIdentity: productionObserveIdentity(world),
+    journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory, network: sourceCapability.pins.network, signer: { claim: signer.claim } });
   return { anchor, listing: fixtureListing(signer, { now: T0 }) };
 }
 

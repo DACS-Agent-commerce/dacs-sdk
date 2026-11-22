@@ -12,7 +12,7 @@ import Database from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
 import {commitmentFixture} from './helpers/commitment-fixture.mjs';
 import {privateModule} from './helpers/private-module.mjs';
-import {testNetwork} from './helpers/wire-authority-fixture.mjs';
+import {hostAuthority,testWalletSession} from './helpers/kit-wallet-session.mjs';
 import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost,KIT_TP1_VET_MODE} from '../src/host.mjs';
@@ -28,7 +28,7 @@ async function fixture(t,{wrap=agent=>agent,publicEndpoint=FIXTURE_ENDPOINT}={})
  const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;delete config.vetMode;
  delete config.challengeLedger; // the host builds its own ledger
  const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){const wrapped=new WeakMap();testWrapper=agent=>{if(!wrapped.has(agent))wrapped.set(agent,value(agent));return wrapped.get(agent);};}\nconst REQUIRED =').replace('now, agent, requireDelegation: false','now, agent: testWrapper(agent), requireDelegation: false').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
- api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,tp1Network:testNetwork(),listener:proxyListener()},hosts=[];
+ api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,...hostAuthority(),listener:proxyListener()},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
  const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:wireAuthentication({buyer:{claim:buyer.claim,sign:buyer.signBytes},seller:{claim:seller.claim,sign:seller.signBytes},listingPin:host.listingPin,clock:()=>NOW},()=>request.proposal.plan.agreementHash),timeoutMs:60000,fetchImpl:fetchAsHost()});
@@ -157,17 +157,17 @@ test('host close destroys a connection that never finishes its request headers',
  }finally{socket.destroy();}
 });
 
-test('a class-instance tp1Network whose connection() reads its own private field answers a signed proposal, state read and commitment, each signed and verified by the buyer',async t=>{
- const f=await fixture(t),network=testNetwork(),receivers=[];
- class OperatorNetwork{#current=network.connection();connection(){receivers.push(this);return {...this.#current};}readAuthority(scope){return network.readAuthority(scope);}}
- const tp1Network=new OperatorNetwork(),host=await f.start({tp1Network}),request=await f.proposal(host),client=f.client(host,request);
+test('a class-instance wallet-session authority whose context() reads its own private field answers a signed proposal, state read and commitment, each signed and verified by the buyer',async t=>{
+ const f=await fixture(t),{walletSession}=testWalletSession(),receivers=[];
+ class OperatorAuthority{#inner=walletSession.authority;context(){receivers.push(this);return this.#inner.context();}authorityRpc(body,options){return this.#inner.authorityRpc(body,options);}connectionGeneration(){return this.#inner.connectionGeneration();}}
+ const authority=new OperatorAuthority(),host=await f.start({walletSession:{...walletSession,authority}}),request=await f.proposal(host),client=f.client(host,request);
  const reads=[receivers.length];
  const answer=await client.propose(request);assert.equal(answer.disposition,'complete');reads.push(receivers.length);
  assert.equal(typeof await client.agreementState(request.transportIdentity),'object');reads.push(receivers.length);
  await anchorAgreement(f,request,answer);
  assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');reads.push(receivers.length);
  for(let i=1;i<reads.length;i++)assert.ok(reads[i]-reads[i-1]>=2,`request ${i} read the connection again`);
- assert.ok(receivers.every(receiver=>receiver===tp1Network),'every read ran on tp1Network');
+ assert.ok(receivers.every(receiver=>receiver===authority),'every read ran on the authority');
 });
 test('wrapped native artifact readbacks keep their capability receiver',async t=>{
  const f=await fixture(t),native=f.native;
@@ -319,7 +319,7 @@ test('host refuses malformed options before opening any state',async t=>{
  // The data directory's mode must be exactly 0700: owner-only modes without full owner access refuse too.
  const notExactly0700=await Promise.all([0o500,0o600,0o710].map(async mode=>{const directory=await mkdtemp(join(root,'mode-'));await chmod(directory,mode);return [mode,directory];}));
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
- const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{seller:{publicEndpoint:FIXTURE_ENDPOINT}},listener:proxyListener(),dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',tp1Network:testNetwork()});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{seller:{publicEndpoint:FIXTURE_ENDPOINT}},listener:proxyListener(),dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',...hostAuthority()});
  const cases=[
   ['non-object',null,/must be an object/],
   ['array options',[],/must be an object/],

@@ -3,10 +3,13 @@
 // one with `passContext` (exported by `./node-wallet`), and only the native transport reads it,
 // once at the start of each effectful call. A request field, a header, an operation field or
 // a wallet method never supplies a class or a check.
+// The held facade makes one more kind of context for a relayed send, `relayPassContext`. It is
+// never exported from a package entry and `passContext` refuses its class.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { OperationError } from '../client-errors.mjs';
 
 const JOB_CLASSES = ['job-create', 'payment-evidence', 'job-resume'];
+const RELAY_CLASS = 'wallet-relay';
 const contexts = new WeakSet();
 const stored = new AsyncLocalStorage();
 const brand = (context) => { contexts.add(context); return Object.freeze(context); };
@@ -22,6 +25,17 @@ const PLAIN_CONTEXT = brand({ operationClass: null });
 export function passContext({ operationClass = null, operationId, currentAuthorization } = {}) {
   if (operationClass !== null && !JOB_CLASSES.includes(operationClass)) throw new TypeError(`operationClass is null or one of ${JOB_CLASSES.join(', ')}`);
   return brand({ operationClass, operationId, currentAuthorization });
+}
+
+/**
+ * Creates the context of a relayed send from `{ currentAuthorization }`, a synchronous function that returns `true`
+ * while the relay's authority is current and throws its cause otherwise. It has no operation id, so a lease keeps its own.
+ * Throws `TypeError('relay_authorization_invalid')` unless `options` is a plain object whose only member is that function.
+ */
+export function relayPassContext(options) {
+  const plain = options !== null && typeof options === 'object' && Object.getPrototypeOf(options) === Object.prototype;
+  if (!plain || Object.keys(options).length !== 1 || typeof options.currentAuthorization !== 'function') throw new TypeError('relay_authorization_invalid');
+  return brand({ operationClass: RELAY_CLASS, currentAuthorization: options.currentAuthorization });
 }
 
 /** Returns true for a context `passContext` made, false for anything else. */
