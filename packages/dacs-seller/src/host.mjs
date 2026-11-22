@@ -10,7 +10,7 @@
 // variable changes the mode.
 //
 // The host only composes package modules. The operator supplies the signer
-// (the seller key's roles as openSellerKey returns them: the agent signs its
+// (the seller key's signing roles: the agent signs its
 // effects with `sign` inside the host's effect boundary, and its durable state
 // signs its journal with `integritySigner`) and the native capabilities, which are required:
 // the host never builds a fixture substrate, and it starts only with the whole
@@ -310,7 +310,7 @@ export async function startSellerHost(options) {
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, walletSession, participantImplementations, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
     maxReservationUnits = maxRecords, now = () => Date.now(), contextSessionState = null } = options;
-  if (typeof signer.sign !== 'function' || typeof signer.integritySigner?.sign !== 'function') throw new TypeError('signer must be the seller key\'s roles (sign and integritySigner), as openSellerKey returns them');
+  if (typeof signer.sign !== 'function' || typeof signer.integritySigner?.sign !== 'function') throw new TypeError('signer must be the seller key\'s signing roles (sign and integritySigner)');
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
   if (contextSessionState !== null && typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.

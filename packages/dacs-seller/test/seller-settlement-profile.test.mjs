@@ -1023,7 +1023,7 @@ test('failed Agreement signing leaves no in-flight rail; live recovery signs onc
   } };
   let agent = await w.agent(complete(w, { durableDirectory, signer }));
   assert.equal((await agent.receiveProposal(request)).disposition, 'indeterminate');
-  assert.notEqual(agent.durableSessionOf(w.jobId).railPinSigned, true);
+  assert.notEqual(agent.durableSessionOf(w.jobId)?.railPinSigned, true);
   agent.close(); fail = false;
   agent = await w.agent(complete(w, { durableDirectory, signer, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
   assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'rail_unavailable', status: 503 });

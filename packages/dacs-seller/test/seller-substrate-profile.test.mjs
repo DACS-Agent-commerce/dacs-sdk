@@ -63,7 +63,7 @@ test('each complete profile constructs', async () => {
   const w = sellerWorld();
   for (const options of [{ agreementAnchor: w.agreementAnchor, ...w.artifacts, railAuthority: w.railAuthority }, { anchors: w.anchors, simulatedFixture: true }]) {
     const agent = await seller.createSellerAgent({ ...w.base, ...options });
-    assert.equal(agent.claim, w.base.signer.claim);
+    assert.equal(agent.claim, w.base.effectSigner.claim);
     agent.close();
   }
 });
