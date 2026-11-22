@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { join } from "node:path";
 
 import {
   canonicalWalletSpendWalletV1,
@@ -19,7 +20,10 @@ import {
   createDacsWalletSpendAuthorityServiceV2,
   createInMemoryDacsWalletSpendRemoteOperationStoreV1,
 } from "./walletSpendRemote.js";
-import { createDacsWalletSpendTestnetDemRecoveryV1 } from "./walletSpendTestnetDemRecovery.js";
+import {
+  createDacsWalletSpendTestnetDemRecoveryV1,
+  openDacsWalletSpendDemEvidenceStoreV1,
+} from "./walletSpendTestnetDemRecovery.js";
 import { createDacsWalletSpendTestnetRecoveryV1 } from "./walletSpendTestnetRecovery.js";
 import {
   DacsWalletSpendTestnetAuthorityError,
@@ -223,9 +227,14 @@ function x402Lane(stores: Lane["stores"], policy: Lane["policy"], reader: Readon
  * The DEM lane: Demos testnet reads and its chain rule. It binds no validBefore: a signed DEM
  * transfer carries no expiry, so a DEM hold ends only when the chain shows its transfer.
  */
-function payDemLane(stores: Lane["stores"], policy: Lane["policy"], reader: Readonly<DacsWalletSpendDemosReaderV1>): Lane {
+function payDemLane(
+  stores: Lane["stores"],
+  policy: Lane["policy"],
+  reader: Readonly<DacsWalletSpendDemosReaderV1>,
+  evidenceStore: Parameters<typeof createDacsWalletSpendTestnetDemRecoveryV1>[0]["evidenceStore"],
+): Lane {
   const recovery = createDacsWalletSpendTestnetDemRecoveryV1({
-    policy, reader, readState: headStateReader(stores), report: reportLine,
+    policy, reader, readState: headStateReader(stores), evidenceStore, report: reportLine,
   });
   return {
     stores,
@@ -314,7 +323,11 @@ export async function startDacsWalletSpendTestnetAuthorityV1(input: Readonly<{
     try {
       if (x402 !== undefined) x402Open = x402Lane(await openStores(x402.settings), x402.settings.policy, x402.reader);
       if (payDem !== undefined) {
-        payDemOpen = payDemLane(await openStores(payDem.settings), payDem.settings.policy, payDem.reader);
+        const stores = await openStores(payDem.settings);
+        // Opened inside the lane's data directory, beside `witness/` and `states/`; it outlives restarts.
+        const evidenceStore = await openDacsWalletSpendDemEvidenceStoreV1(join(payDem.settings.dataDirectory, "transfers"))
+          .catch(async (error: unknown) => { await stores.close(); throw error; });
+        payDemOpen = payDemLane(stores, payDem.settings.policy, payDem.reader, evidenceStore);
       }
     } catch (error) {
       serve(new Error("wallet-spend-testnet-authority-stores-unavailable"));

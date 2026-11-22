@@ -196,7 +196,9 @@ runtime user that owns the secret files:
    `wallet-spend-testnet-authority-demos-network-mismatch` otherwise. It counts a
    DEM payment only when the chain shows that transfer executed from the policy
    wallet to the agreed payee for the exact amount, with the fee the chain
-   record shows. It never releases a DEM hold on the buyer's word or by time, so
+   record shows, and it keeps one claim per transfer in that directory's
+   `transfers/` folder, so a transfer settles one hold even across restarts. It
+   never releases a DEM hold on the buyer's word or by time, so
    an interrupted DEM purchase keeps its hold.
 
 | Setting | Meaning |
