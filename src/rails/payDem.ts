@@ -1380,8 +1380,9 @@ export function payDemConfirmedTotalDebitOs(record: unknown, expected: Readonly<
 }
 
 /**
- * Every account a confirmed body credits or may credit: its `to`, a native send's recipient and each
- * execution edit's account. Null when a native recipient or an edit account cannot be read.
+ * Every account through which a confirmed body can credit someone: its `to`, a native send's recipient
+ * and each execution edit's account (removals included). Null when a native recipient or an edit
+ * account cannot be read.
  */
 function namedRecipients(body: Record<string, unknown>): string[] | null {
   const edits = body.gcr_edits;
