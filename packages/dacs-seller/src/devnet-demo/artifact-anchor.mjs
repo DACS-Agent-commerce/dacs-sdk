@@ -176,7 +176,10 @@ export function createDevnetDemoArtifactAnchor(options) {
 // absent. It decides who may sign the seller's own composite record; nothing
 // read or requested later can change it. Any other value throws a TypeError
 // before the wallet factory or the journal is touched.
-function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now(),vetMode:vetModeOption},ports={}) {
+// options.binding and options.observeIdentity: the host's bindTp1Profile binding
+// and its connection decision on the chain identity. The anchor's readback takes
+// its expected chain identity from them (see createDemosSr2Adapter).
+function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now(),vetMode:vetModeOption,binding,observeIdentity},ports={}) {
   const vetMode=sellerFulfilmentVetModeOf(vetModeOption);
   if(vetMode===null) throw new TypeError('unsupported Vet mode');
   // Only the seller's own Listing has no purchase. Every other write, new or
@@ -210,9 +213,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // its own journal readback intentionally uses byte-for-byte JSON.stringify.
   delegate={get:(key)=>journal.get(`demo/wallet/${key}`),put:(key,value)=>journal.put(`demo/wallet/${key}`,structuredClone(value)),withWalletLock:(key,work)=>journal.withWalletLock(`demo/wallet/${key}`,work)};
   if(!wallet || typeof wallet.request!=='function' || typeof wallet.getPublicAccount!=='function' || typeof wallet.getWriteProfile!=='function') throw new TypeError('the packaged seller wallet contract is unavailable');
-  const reader=ports.reader ?? createDemosSr2Adapter({rpcUrl:sourceCapability.pins.endpoint,journal:createInMemoryDemosSr2Journal(),sourceCapability,now});
   const owner=wallet.getPublicAccount()?.address;
   const claim=owner ? `did:demos:agent:${owner.slice(2)}` : null;
+  const reader=ports.reader ?? createDemosSr2Adapter({rpcUrl:sourceCapability.pins.endpoint,journal:createInMemoryDemosSr2Journal(),sourceCapability,binding,observeIdentity,ownWriter:claim,now});
   const signRpc=Object.hasOwn(ports,'signRpc')?ports.signRpc:storageWriteRpcSigner(signer,claim);
   const sleep=ports.sleep ?? (ms=>new Promise(resolve=>setTimeout(resolve,ms)));
   if(!owner || wallet.getWriteProfile()?.demoArtifactPublication?.policy!==DEVNET_DEMO_ARTIFACT_POLICY) throw new TypeError('the packaged seller wallet does not carry the demo artifact publication policy');
