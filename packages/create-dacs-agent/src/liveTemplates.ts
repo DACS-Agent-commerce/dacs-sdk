@@ -3849,6 +3849,12 @@ async function authority(args: readonly string[]): Promise<number> {
     }) + "\\n");
     return 1;
   }
+  // Listen for the stop signals before announcing, so a signal sent on the
+  // "listening" line stops the service instead of killing the process.
+  const stopRequested = new Promise<void>((resolve) => {
+    process.once("SIGINT", () => resolve());
+    process.once("SIGTERM", () => resolve());
+  });
   process.stdout.write(JSON.stringify({
     status: "listening",
     url: service.url,
@@ -3858,10 +3864,7 @@ async function authority(args: readonly string[]): Promise<number> {
     lineageKey: service.lineageKey,
     policyHash: service.policyHash,
   }) + "\\n");
-  await new Promise<void>((resolve) => {
-    process.once("SIGINT", () => resolve());
-    process.once("SIGTERM", () => resolve());
-  });
+  await stopRequested;
   await service.stop();
   return 0;
 }
