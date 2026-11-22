@@ -1430,6 +1430,7 @@ export {
   type D402SettlementResult,
   createPayDemRail,
   PayDemIncludedNonceVisibilityError,
+  payDemConfirmedTotalDebitOs,
   payDemSettle,
   payDemSettleCore,
   withRecoveredAttempts,
