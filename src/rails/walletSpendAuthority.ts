@@ -103,6 +103,7 @@ export interface WalletSpendStoredReservationV1 {
   owner?: string;
   leaseExpiresAt?: number;
   authorizationValidBefore?: number;
+  plannedTransferNonce?: number;
   approvalHash?: string;
   evidenceHash?: string;
   actualDebits?: readonly WalletSpendActualDebitV1[];
@@ -196,6 +197,15 @@ export interface WalletSpendAuthorityDependenciesV1 {
     reservation: Readonly<WalletSpendReservationV1>;
     authorizationWindowSeconds?: number;
   }>): Promise<number>;
+  /**
+   * Bind a new hold to the account nonce its transfer must use, read from the
+   * chain. The answer must be a non-negative safe integer; otherwise `reserve`
+   * throws and records no hold.
+   */
+  bindPlannedTransferNonce?(input: Readonly<{
+    reservation: Readonly<WalletSpendReservationV1>;
+    policyHash: string;
+  }>): Promise<number>;
   now?: () => number;
   leaseDurationMs?: number;
   owner?: string;
@@ -210,6 +220,8 @@ export interface WalletSpendEffectFenceV1 extends WalletSpendLeaseTokenV1 {
 
 export interface WalletSpendPermitV1 extends WalletSpendEffectFenceV1 {
   readonly authorizationValidBefore?: number;
+  /** The only account nonce the hold's transfer may be signed with, when the authority binds one. */
+  readonly plannedTransferNonce?: number;
   reservation: Readonly<WalletSpendReservationV1>;
   /** Persist ambiguity immediately before the first irreversible operation. */
   beginEffect(): Promise<void>;
@@ -292,6 +304,7 @@ export interface WalletSpendAuthorityReplayV1 {
   operation: "current" | "begin" | "settle";
   permit: Readonly<{
     authorizationValidBefore?: number;
+    plannedTransferNonce?: number;
     reservationId: string;
     bindingHash: string;
     settlementBindingHash: string;
@@ -717,6 +730,7 @@ function captureReplayOperation(
   binding: string;
   token: Readonly<WalletSpendLeaseTokenV1>;
   authorizationValidBefore?: number;
+  plannedTransferNonce?: number;
   observation?: Readonly<WalletSpendSettlementObservationV1>;
 }> {
   const captured = frozenSnapshot(input, "wallet spend claimed operation replay");
@@ -729,7 +743,7 @@ function captureReplayOperation(
       Array.isArray(captured.permit) || Object.keys(captured.permit).some((key) =>
         !new Set([
           "reservationId", "bindingHash", "settlementBindingHash", "owner",
-          "generation", "reservation", "authorizationValidBefore",
+          "generation", "reservation", "authorizationValidBefore", "plannedTransferNonce",
         ]).has(key))) {
     throw new DacsError("wallet spend claimed operation replay is invalid");
   }
@@ -752,9 +766,14 @@ function captureReplayOperation(
   if (authorizationValidBefore !== undefined) {
     safeInteger(authorizationValidBefore, "wallet spend replay authorization validBefore", true);
   }
+  const plannedTransferNonce = captured.permit.plannedTransferNonce;
+  if (plannedTransferNonce !== undefined) {
+    safeInteger(plannedTransferNonce, "wallet spend replay planned transfer nonce");
+  }
   if (captured.operation !== "settle") {
     return Object.freeze({ operation: captured.operation, reservation, binding, token,
-      ...(authorizationValidBefore === undefined ? {} : { authorizationValidBefore }) });
+      ...(authorizationValidBefore === undefined ? {} : { authorizationValidBefore }),
+      ...(plannedTransferNonce === undefined ? {} : { plannedTransferNonce }) });
   }
   if (captured.observation === undefined) {
     throw new DacsError("wallet spend settlement replay lacks an observation");
@@ -873,9 +892,11 @@ function captureState(
     if (Object.keys(row).some((key) => !new Set([
       "reservationId", "bindingHash", "reservation", "stage", "generation",
       "owner", "leaseExpiresAt", "approvalHash", "evidenceHash", "actualDebits",
-      "createdAt", "updatedAt", "authorizationValidBefore",
+      "createdAt", "updatedAt", "authorizationValidBefore", "plannedTransferNonce",
     ]).has(key)) || (row.authorizationValidBefore !== undefined &&
-        (!Number.isSafeInteger(row.authorizationValidBefore) || row.authorizationValidBefore <= 0))) {
+        (!Number.isSafeInteger(row.authorizationValidBefore) || row.authorizationValidBefore <= 0)) ||
+        (row.plannedTransferNonce !== undefined &&
+          (!Number.isSafeInteger(row.plannedTransferNonce) || row.plannedTransferNonce < 0))) {
       throw new DacsError("wallet spend state has an invalid reservation shape");
     }
     const capturedReservation = captureReservation(row.reservation, policy);
@@ -1178,6 +1199,13 @@ export function createWalletSpendAuthorityV1(
     : stableMethod<NonNullable<WalletSpendAuthorityDependenciesV1["bindAuthorizationValidBefore"]>>(
         dependencies, "bindAuthorizationValidBefore", "wallet authorization expiry binder",
       );
+  const nonceBindingProperty = stableProperty(
+    dependencies, "bindPlannedTransferNonce", "wallet planned transfer nonce binder",
+  );
+  const bindPlannedTransferNonce = nonceBindingProperty.value === undefined ? undefined
+    : stableMethod<NonNullable<WalletSpendAuthorityDependenciesV1["bindPlannedTransferNonce"]>>(
+        dependencies, "bindPlannedTransferNonce", "wallet planned transfer nonce binder",
+      );
   const store = stableProperty(
     dependencies,
     "store",
@@ -1318,7 +1346,7 @@ export function createWalletSpendAuthorityV1(
     reservation: Readonly<WalletSpendReservationV1>,
     binding: string,
     token: Readonly<WalletSpendLeaseTokenV1>,
-    authorizationValidBefore?: number,
+    bound: Readonly<{ authorizationValidBefore?: number; plannedTransferNonce?: number }>,
   ): WalletSpendPermitV1 => {
     const assertCurrent = async (): Promise<void> => assertCurrentPermit(
       reservation,
@@ -1328,7 +1356,7 @@ export function createWalletSpendAuthorityV1(
     );
 
     const permit: WalletSpendPermitV1 = {
-      ...(authorizationValidBefore === undefined ? {} : { authorizationValidBefore }),
+      ...bound,
       reservationId: reservation.reservationId,
       bindingHash: binding,
       settlementBindingHash: reservation.settlementBindingHash,
@@ -1461,7 +1489,8 @@ export function createWalletSpendAuthorityV1(
         reservationId === reservation.reservationId);
       if (!row || row.bindingHash !== binding || row.owner !== token.owner ||
           row.generation !== token.generation ||
-          row.authorizationValidBefore !== captured.authorizationValidBefore) {
+          row.authorizationValidBefore !== captured.authorizationValidBefore ||
+          row.plannedTransferNonce !== captured.plannedTransferNonce) {
         throw new DacsError("wallet spend claimed operation replay is stale");
       }
       if (row.stage === "effect-pending") {
@@ -1576,6 +1605,17 @@ export function createWalletSpendAuthorityV1(
           throw new DacsError("wallet spend authorization validBefore is unavailable", { cause });
         }
       }
+      let plannedTransferNonce: number | undefined;
+      if (bindPlannedTransferNonce !== undefined) {
+        try {
+          plannedTransferNonce = safeInteger(
+            await bindPlannedTransferNonce({ reservation, policyHash }),
+            "wallet spend planned transfer nonce",
+          );
+        } catch (cause) {
+          throw new DacsError("wallet spend planned transfer nonce is unavailable", { cause });
+        }
+      }
       type InternalClaim = Exclude<
         WalletSpendReservationClaimV1,
         { status: "reserved" }
@@ -1675,6 +1715,7 @@ export function createWalletSpendAuthorityV1(
           leaseExpiresAt,
           ...(approvalHash === undefined ? {} : { approvalHash }),
           ...(authorizationValidBefore === undefined ? {} : { authorizationValidBefore }),
+          ...(plannedTransferNonce === undefined ? {} : { plannedTransferNonce }),
           createdAt: timestamp,
           updatedAt: timestamp,
         };
@@ -1693,7 +1734,10 @@ export function createWalletSpendAuthorityV1(
       if (claim.status !== "reserved") return claim;
       return {
         status: "reserved",
-        permit: permitFor(reservation, binding, { owner, generation: claim.generation }, authorizationValidBefore),
+        permit: permitFor(reservation, binding, { owner, generation: claim.generation }, {
+          ...(authorizationValidBefore === undefined ? {} : { authorizationValidBefore }),
+          ...(plannedTransferNonce === undefined ? {} : { plannedTransferNonce }),
+        }),
       };
     },
     async reconcile(inputReservation, inputObservation) {

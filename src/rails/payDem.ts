@@ -1226,6 +1226,15 @@ function confirmedTransactionBinding(
   return binding.transaction;
 }
 
+/** Every present one of `from` and `from_ed25519_address` names `payer`, and at least one is present. */
+function bodyNamesPayer(body: Record<string, unknown>, payer: string): boolean {
+  const expectedPayer = normalizedDemosAccount(payer);
+  const payerFields = [body.from, body.from_ed25519_address]
+    .filter((field) => field != null);
+  return expectedPayer !== null && payerFields.length > 0 &&
+    payerFields.every((field) => normalizedDemosAccount(field) === expectedPayer);
+}
+
 function nativeTransferBodyMatches(
   transaction: Record<string, unknown>,
   input: Readonly<{
@@ -1250,14 +1259,10 @@ function nativeTransferBodyMatches(
     return false;
   }
 
-  const expectedPayer = normalizedDemosAccount(input.payer);
   const expectedPayee = normalizedDemosAccount(input.payee);
-  if (expectedPayer === null || expectedPayee === null) return false;
-  const payerFields = [body.from, body.from_ed25519_address]
-    .filter((field) => field != null);
+  if (expectedPayee === null) return false;
   if (
-    payerFields.length === 0 ||
-    payerFields.some((field) => normalizedDemosAccount(field) !== expectedPayer) ||
+    !bodyNamesPayer(body, input.payer) ||
     normalizedDemosAccount(body.to) !== expectedPayee ||
     (
       source === "confirmed"
@@ -1372,6 +1377,54 @@ export function payDemConfirmedTotalDebitOs(record: unknown, expected: Readonly<
   };
   if (!nativeTransferBodyMatches(transaction, binding, "confirmed")) return null;
   return confirmedEditDebitOs(transaction, binding)?.toString() ?? null;
+}
+
+/**
+ * Every account a confirmed body credits or may credit: its `to`, a native send's recipient and each
+ * execution edit's account. Null when a native recipient or an edit account cannot be read.
+ */
+function namedRecipients(body: Record<string, unknown>): string[] | null {
+  const edits = body.gcr_edits;
+  if (!Array.isArray(edits)) return null;
+  const accounts: unknown[] = edits.map((edit: unknown) =>
+    (edit !== null && typeof edit === "object" ? (edit as Record<string, unknown>).account : null));
+  if (body.type === "native") {
+    accounts.push((body.data as [unknown, { args?: unknown[] }?] | undefined)?.[1]?.args?.[0]);
+  }
+  const recipients = accounts.map(normalizedDemosAccount).filter((account) => account !== null);
+  if (recipients.length !== accounts.length) return null;
+  const to = normalizedDemosAccount(body.to);
+  return to === null ? recipients : [...recipients, to];
+}
+
+/**
+ * Classifies the confirmed transaction `txHash` that took `nonce` for `payer`. Pure: no I/O.
+ * @returns "pays-payee" when it credits `payee` in any way (its `to`, a native send's recipient or
+ *   an execution edit's account), "other" when it does not, and null unless the record is
+ *   `confirmed`, within the observation limits, binds exactly this hash, nonce and payer, and every
+ *   native recipient and edit account in it can be read.
+ */
+export function payDemConfirmedNonceSlot(record: unknown, expected: Readonly<{
+  txHash: string; nonce: number; payer: string; payee: string;
+}>): "pays-payee" | "other" | null {
+  const payee = normalizedDemosAccount(expected.payee);
+  if (payee === null || !transactionRecordWithinLimits(record)) return null;
+  let snapshot: unknown;
+  try {
+    snapshot = snapshotCanonicalJsonRead(record, "pay-dem nonce slot record");
+  } catch {
+    return null;
+  }
+  const identity = transactionIdentityBinding(snapshot, {
+    signedHash: expected.txHash,
+    signedNonce: expected.nonce,
+  });
+  if (identity.status !== "bound" || identity.transaction.status !== DEMOS_EXECUTED_RECORD_STATUS) return null;
+  const body = identity.transaction.content as Record<string, unknown>;
+  if (!bodyNamesPayer(body, expected.payer)) return null;
+  const recipients = namedRecipients(body);
+  if (recipients === null) return null;
+  return recipients.includes(payee) ? "pays-payee" : "other";
 }
 
 /** The confirmed transfer's real total debit and the fee its record declares, both in OS. */
