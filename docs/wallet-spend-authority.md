@@ -155,68 +155,80 @@ topology, durability or failover evidence.
 ## Run the testnet service
 
 For testnets only, `@kynesyslabs/dacs-node` includes a file-backed authority
-service that a generated x402 or dual-rail buyer project runs on a loopback
-address. It serves the x402 policy on Base Sepolia (`eip155:84532`) and, when
-its Demos settings are set, the `pay-dem` policy on the Demos testnet
-(`demos`), each lane in its own data directory and lineage. It is not the
+service that a generated buyer project runs on a loopback address. It serves
+each rail the project uses in its own lane, with its own policy file, data
+directory and lineage: the x402 policy on Base Sepolia (`eip155:84532`) and the
+`pay-dem` policy on the Demos testnet (`demos`). It starts the DEM lane only
+when the Demos node's identity is the approved Demos testnet. It is not the
 production authority: its witness and state share one directory, it uses no
 PostgreSQL, and it does not detect a restored old copy. Run each step as the
 runtime user that owns the secret files:
 
 1. Create two private files outside the project, mode 0600: a bearer token of at
    least 32 characters and a witness seed of 64 hexadecimal characters.
-2. Fill in the settings below, with a new epoch, a new data directory outside
-   the role data directories, and `DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=1`.
+2. Fill in the settings below for the project's rails, with a new epoch,
+   `DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=1`, and a new data directory
+   for each lane, outside the role data directories and apart from each other.
 3. Run `npm run dacs:authority -- --print-witness-public-key` and put the
    printed key in `DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY`.
-4. Run `npm run dacs:authority:policy`, which writes the buyer's own x402
-   policy as canonical JSON, then `npm run dacs:authority`.
+4. Run `npm run dacs:authority:policy`, which writes the buyer's own policy for
+   each of its rails as canonical JSON, then `npm run dacs:authority`.
 5. Start the roles and run `npm run dacs:doctor -- --phase post-start --for buy`
-   (`--rail x402` in a dual-rail project). Buy only when its
-   `x402.service-limit` check passes: a buyer whose pins differ from the
-   service refuses the answer only after the service has recorded a hold.
+   (`--rail x402` or `--rail pay-dem` in a dual-rail project). Buy on a rail
+   only when its `x402.service-limit` or `pay-dem.service-limit` check passes:
+   a buyer whose pins differ from the service refuses the answer only after the
+   service has recorded a hold.
 6. A changed wallet limit, wallet or rail asset changes the policy: write it
    again and start a new lineage (a new data directory and epoch), whose spend
-   totals start from zero. With Docker, restart the buyer too.
-7. The service counts a payment only when the chain shows the purchase's
+   totals start from zero. Both lanes share one epoch, so in a dual-rail project
+   a new lineage needs new data directories for both. With Docker, restart the
+   buyer too.
+7. The x402 lane counts a payment only when the chain shows the purchase's
    authorization nonce used in a final transaction that moves exactly the
    agreed amount to the agreed payee. When it records a hold, it sets the
    authorization's `validBefore` from the chain's time, at most 24 hours later;
    the generated buyer asks for 120 seconds. An interrupted purchase keeps its
    hold until the chain shows the authorization cancelled, or the chain's time
    is past that `validBefore` with the authorization unused, and the 5-minute
-   hold lease has ended; the buyer's next request then releases it. Never
-   reuse an epoch.
-8. The generated commands set up only the x402 lane. The service also runs a
-   `pay-dem` lane when `DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY` (another
-   new directory, neither inside nor containing the x402 one),
-   `DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE` (the buyer's DEM policy) and
-   `DACS_DEMOS_RPC_URL` (an `https` Demos node) are set. It starts that lane only
-   when the node's identity is the approved Demos testnet, and refuses with
-   `wallet-spend-testnet-authority-demos-network-mismatch` otherwise. It counts a
-   DEM payment only when the chain shows that transfer executed from the policy
-   wallet to the agreed payee for the exact amount, with the fee the chain
-   record shows. It never releases a DEM hold on the buyer's word or by time, so
-   an interrupted DEM purchase keeps its hold.
+   hold lease has ended; the buyer's next request then releases it.
+   The DEM lane counts a payment only when the chain shows that transfer
+   executed from the policy wallet to the agreed payee for the exact amount,
+   with the fee the chain record shows. A DEM transfer carries no expiry, so the
+   DEM lane never releases a hold on the buyer's word or by time: an interrupted
+   DEM purchase keeps its hold. Never reuse an epoch.
+8. In a dual-rail project one service on one address serves both lanes, because
+   the buyer uses one authority connection for both rails. The lanes share the
+   token, id, epoch and witness key.
 
-| Setting | Meaning |
-|---|---|
-| `DACS_WALLET_AUTHORITY_URL` | `http://127.0.0.1:<port>/` the service listens on and the buyer calls |
-| `DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE` | private file holding the buyer's bearer token |
-| `DACS_WALLET_AUTHORITY_ID` | the authority id both sides pin |
-| `DACS_WALLET_AUTHORITY_EPOCH` | the lineage epoch; new for every new data directory |
-| `DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY` | the witness key printed in step 3 |
-| `DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE` | private file holding the witness seed |
-| `DACS_WALLET_AUTHORITY_DATA_DIRECTORY` | the service's state and witness directory |
-| `DACS_WALLET_AUTHORITY_POLICY_FILE` | the policy written in step 4 |
-| `DACS_EVM_RPC_URL` | the Base Sepolia RPC the service reads balances and payments from |
-| `DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK` | the first block searched for this wallet's authorizations |
+| Setting | Lane | Meaning |
+|---|---|---|
+| `DACS_WALLET_AUTHORITY_URL` | common | `http://127.0.0.1:<port>/` the service listens on and the buyer calls |
+| `DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE` | common | private file holding the buyer's bearer token |
+| `DACS_WALLET_AUTHORITY_ID` | common | the authority id both sides pin |
+| `DACS_WALLET_AUTHORITY_EPOCH` | common | the lineage epoch; new for every new data directory |
+| `DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY` | common | the witness key printed in step 3 |
+| `DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE` | common | private file holding the witness seed |
+| `DACS_WALLET_AUTHORITY_DATA_DIRECTORY` | x402 | the x402 lane's state and witness directory |
+| `DACS_WALLET_AUTHORITY_POLICY_FILE` | x402 | the x402 policy written in step 4 |
+| `DACS_EVM_RPC_URL` | x402 | the Base Sepolia RPC the lane reads balances and payments from |
+| `DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK` | x402 | the first block searched for this wallet's authorizations |
+| `DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY` | DEM | the DEM lane's state and witness directory |
+| `DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE` | DEM | the DEM policy written in step 4 |
+| `DACS_DEMOS_RPC_URL` | DEM | the `https` Demos node the lane reads balances and transfers from |
 
 A start refusal exits with one named code and serves nothing. The likely ones:
 
 - `wallet-spend-testnet-authority-setting-missing`: the named setting is empty.
-- `wallet-spend-testnet-authority-network-refused`: the policy is not for
-  `eip155:84532`.
+- `wallet-spend-testnet-authority-network-missing`: neither lane's data
+  directory or policy file is set.
+- `wallet-spend-testnet-authority-network-refused`: the x402 policy is not for
+  `eip155:84532`, or the DEM policy is not for `demos`.
+- `wallet-spend-testnet-authority-demos-network-mismatch`: the Demos node's
+  identity is not the approved Demos testnet.
+- `wallet-spend-testnet-authority-demos-node-unavailable`: the Demos node did
+  not answer the identity check.
+- `wallet-spend-testnet-authority-demos-rpc-url-refused`: `DACS_DEMOS_RPC_URL`
+  is not an address the service accepts, or carries a user or password.
 - `wallet-spend-testnet-authority-witness-key-mismatch`: the seed does not
   match the pinned witness key.
 - `wallet-spend-testnet-authority-listen-failed`: the port is taken.
@@ -228,7 +240,16 @@ A start refusal exits with one named code and serves nothing. The likely ones:
   malformed or unsafe, often owned by another user (`secret-file-owner-mismatch`).
 
 While running, the service prints a `hold-needs-operator` line on stderr, with
-`wallet-spend-chain-nonce-used-unmatched`, when the chain shows a hold's nonce
-used in a transaction that does not pay the agreed amount to the agreed payee.
-That nonce paid for something else: the hold stays, and the wallet key should
-be treated as in use elsewhere.
+a `wallet-spend-chain-` code for the x402 lane or a `wallet-spend-dem-` code for
+the DEM lane. In each case the hold stays.
+
+- `wallet-spend-chain-nonce-used-unmatched`: the chain shows a hold's nonce
+  used in a transaction that does not pay the agreed amount to the agreed
+  payee. That nonce paid for something else, and the wallet key should be
+  treated as in use elsewhere.
+- `wallet-spend-dem-absence-refused`: the buyer reported that a DEM payment
+  never happened. The DEM lane releases no hold on that claim.
+- `wallet-spend-dem-transfer-mismatch`: the transfer the buyer named does not
+  move the hold's amount from the policy wallet to the hold's payee.
+- `wallet-spend-dem-evidence-reused`: the transfer the buyer named is already
+  counted for another hold.
