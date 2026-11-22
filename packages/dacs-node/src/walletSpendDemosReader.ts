@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  DEMOS_HISTORY_MAX_PAGE_SIZE,
   DemosChainIdentityError,
   canonicalWalletSpendWalletV1,
   observePayDemTransferCore,
@@ -24,22 +25,86 @@ export interface DacsWalletSpendDemosReaderV1 {
     observation: Readonly<DemosTransferObservation>;
     record?: unknown;
   }>>;
+  /** The policy wallet's highest confirmed account nonce. An answer that is not one is refused, never read as 0. */
+  readAccountNonce(): Promise<number>;
+  /** The nonce the wallet's next transfer signs with: the confirmed account nonce plus one. */
+  plannedTransferNonce(): Promise<number>;
+  /** The node's `getTxByHash` answer for `txHash`, unparsed. */
+  readRecord(txHash: string): Promise<unknown>;
+  /**
+   * The hash of the wallet's one own confirmed transaction at `nonce` on its newest history page, or
+   * undefined when the page does not show exactly one. The hash only locates the transaction; the
+   * caller reads its record back before deciding anything.
+   */
+  findTransactionAtNonce(nonce: number): Promise<string | undefined>;
 }
 
 const RECORD_ANSWER_BYTES = 64 * 1024;
-/** A block lists its transaction hashes, so it gets a larger limit than a record. */
-const BLOCK_ANSWER_BYTES = 4 * 1024 * 1024;
+/** A block or a history page lists many transactions, so it gets a larger limit than a record. */
+const LIST_ANSWER_BYTES = 4 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 30_000;
 const OS_PER_DEM = 1_000_000_000n;
 const AMOUNT_RE = /^(?:0|[1-9][0-9]*)$/;
+const TX_HASH_RE = /^[0-9a-f]{64}$/;
 const RESPONSE_INVALID = "wallet-spend-demos-rpc-response-invalid";
 const RESPONSE_TOO_LARGE = "wallet-spend-demos-rpc-response-too-large";
 
 const invalid = (): never => { throw new Error(RESPONSE_INVALID); };
 
-const answerObject = (value: unknown): Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : invalid();
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+const answerObject = (value: unknown): Record<string, unknown> => (isObject(value) ? value : invalid());
+
+/** A nonce as the node writes it: a non-negative safe integer, or a canonical decimal string of one. */
+function nodeNonce(value: unknown): number | null {
+  const nonce = typeof value === "string" && AMOUNT_RE.test(value) ? Number(value) : value;
+  return typeof nonce === "number" && Number.isSafeInteger(nonce) && nonce >= 0 ? nonce : null;
+}
+
+/** A Demos account as `0x` and 64 lowercase hex digits, or null. */
+function demosAccount(value: unknown): string | null {
+  const account = canonicalWalletSpendWalletV1(value);
+  return account?.length === 66 ? account : null;
+}
+
+/**
+ * One history row of `wallet`: "skip" when it says nothing about the wallet's nonce (a failed row, or
+ * another readable payer), the own confirmed row's nonce and hash, or "unknown" for anything else,
+ * which makes the whole page unknown. The payer is `from_ed25519_address` when present, else `from`.
+ */
+function slotRow(row: unknown, wallet: string): "skip" | "unknown" | Readonly<{ nonce: number; hash: string }> {
+  if (!isObject(row) || (row.status !== "confirmed" && row.status !== "failed")) return "unknown";
+  if (row.status === "failed") return "skip";
+  if (!isObject(row.content)) return "unknown";
+  const { content } = row;
+  const payer = demosAccount(content.from_ed25519_address === undefined ? content.from : content.from_ed25519_address);
+  if (payer === null) return "unknown";
+  if (payer !== wallet) return "skip";
+  const nonce = nodeNonce(content.nonce);
+  const blockNumber = row.blockNumber;
+  if (demosAccount(content.from) !== wallet || typeof blockNumber !== "number" || !Number.isSafeInteger(blockNumber) ||
+      blockNumber < 0 || typeof row.hash !== "string" || !TX_HASH_RE.test(row.hash) || nonce === null) {
+    return "unknown";
+  }
+  return { nonce, hash: row.hash };
+}
+
+/** The one own row at `nonce` on a page whose own rows are newest first by nonce, else undefined. */
+function ownRowAtNonce(page: readonly unknown[], wallet: string, nonce: number): string | undefined {
+  let found: string | undefined;
+  let last = Number.POSITIVE_INFINITY;
+  for (const row of page) {
+    const slot = slotRow(row, wallet);
+    if (slot === "unknown") return undefined;
+    if (slot === "skip") continue;
+    if (slot.nonce > last || (slot.nonce === nonce && found !== undefined)) return undefined;
+    last = slot.nonce;
+    if (slot.nonce === nonce) found = slot.hash;
+  }
+  return found;
+}
 
 /** The live node's two not-found replies to `getTransactionStatus`, with exactly these two members. */
 function isNotFoundEnvelope(envelope: Record<string, unknown>): boolean {
@@ -179,10 +244,30 @@ export function createDacsWalletSpendDemosReaderV1(input: Readonly<{
         record = { value: await nodeCall("getTxByHash", { hash }, RECORD_ANSWER_BYTES) };
         return record.value;
       },
-      getBlockByNumber: (blockNumber) => nodeCall("getBlockByNumber", { blockNumber }, BLOCK_ANSWER_BYTES),
+      getBlockByNumber: (blockNumber) => nodeCall("getBlockByNumber", { blockNumber }, LIST_ANSWER_BYTES),
     });
     return Object.freeze(record === undefined ? { observation } : { observation, record: record.value });
   }
 
-  return Object.freeze({ assertNetwork, readBalance, observeTransfer });
+  async function readAccountNonce(): Promise<number> {
+    return nodeNonce(await nodeCall("getAddressNonce", { address: policy.wallet }, RECORD_ANSWER_BYTES)) ?? invalid();
+  }
+
+  async function findTransactionAtNonce(nonce: number): Promise<string | undefined> {
+    const page = await nodeCall("getTransactionHistory", {
+      address: policy.wallet, type: "all", start: 0, limit: DEMOS_HISTORY_MAX_PAGE_SIZE,
+    }, LIST_ANSWER_BYTES);
+    if (!Array.isArray(page) || page.length > DEMOS_HISTORY_MAX_PAGE_SIZE) return invalid();
+    return ownRowAtNonce(page, policy.wallet, nonce);
+  }
+
+  return Object.freeze({
+    assertNetwork,
+    readBalance,
+    observeTransfer,
+    readAccountNonce,
+    plannedTransferNonce: async () => (await readAccountNonce()) + 1,
+    readRecord: (txHash: string) => nodeCall("getTxByHash", { hash: txHash }, RECORD_ANSWER_BYTES),
+    findTransactionAtNonce,
+  });
 }

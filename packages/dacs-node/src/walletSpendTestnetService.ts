@@ -187,7 +187,7 @@ interface Lane {
   stores: Readonly<DacsWalletSpendFileAuthorityStoresV1>;
   policy: Readonly<WalletSpendPolicyV1>;
   dependencies: Readonly<Pick<WalletSpendAuthorityDependenciesV1,
-    "readBalance" | "authenticateRecovery" | "bindAuthorizationValidBefore">>;
+    "readBalance" | "authenticateRecovery" | "bindAuthorizationValidBefore" | "bindPlannedTransferNonce">>;
 }
 
 /** The lane's head state; its stores are provisioned at open, so a missing head is an error. */
@@ -221,7 +221,9 @@ function x402Lane(stores: Lane["stores"], policy: Lane["policy"], reader: Readon
 
 /**
  * The DEM lane: Demos testnet reads and its chain rule. It binds no validBefore: a signed DEM
- * transfer carries no expiry, so a DEM hold ends only when the chain shows its transfer.
+ * transfer carries no expiry. Each new hold binds the wallet's next account nonce instead, so the
+ * hold ends when the chain shows its transfer, or shows that nonce used by a transaction that pays
+ * the payee nothing.
  */
 function payDemLane(stores: Lane["stores"], policy: Lane["policy"], reader: Readonly<DacsWalletSpendDemosReaderV1>): Lane {
   const recovery = createDacsWalletSpendTestnetDemRecoveryV1({
@@ -230,7 +232,11 @@ function payDemLane(stores: Lane["stores"], policy: Lane["policy"], reader: Read
   return {
     stores,
     policy,
-    dependencies: { readBalance: reader.readBalance, authenticateRecovery: recovery.authenticateRecovery },
+    dependencies: {
+      readBalance: reader.readBalance,
+      authenticateRecovery: recovery.authenticateRecovery,
+      bindPlannedTransferNonce: () => reader.plannedTransferNonce(),
+    },
   };
 }
 

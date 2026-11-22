@@ -4,7 +4,12 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { settlementKey, type PayDemRail, type WalletSpendReservationV1 } from "@kynesyslabs/dacs";
+import {
+  createPayDemSellerObserver,
+  settlementKey,
+  type PayDemRail,
+  type WalletSpendReservationV1,
+} from "@kynesyslabs/dacs";
 import {
   createFixedPricePayDemBuyerCoordinator,
   FIXED_PRICE_PAY_DEM_COMMERCE_PROFILE,
@@ -16,10 +21,12 @@ import {
 import { TP1_APPROVED_IDENTITY_RECORD } from "@kynesyslabs/dacs/wire";
 
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
+import { createDacsFixedPricePayDemBuyerReconciliationV1 } from "../src/fixedPricePayDemBuyerPayment.js";
 import { putDacsLiveOrderInputV1 } from "../src/orderInput.js";
 import { createDacsPayDemBuyerPaymentTrackV1, type DacsPayDemBuyerPaymentAuthorityV1 } from "../src/payDemPayment.js";
 import { markDacsSdkPreparedPayDemRailV1 } from "../src/payDemRailCapabilities.js";
 import { openDacsNodeSqliteDatabase, type DacsNodeSqliteDatabase } from "../src/sqlite.js";
+import { createDacsWalletSpendDemosReaderV1 } from "../src/walletSpendDemosReader.js";
 import { startDacsWalletSpendTestnetAuthorityV1 } from "../src/walletSpendTestnetService.js";
 import {
   CONFIRMED_AMOUNT,
@@ -35,8 +42,10 @@ import {
   demosAuthorityClient,
   demosLaneSettings,
   demosNodeStub,
+  demosHold,
   fetchRoutingDemosNodeTo,
   recordedDemosState,
+  selfTransferRecord,
   withoutX402Lane,
 } from "./helpers/walletSpendDemosNode.js";
 import { headStateFile } from "./helpers/walletSpendFileAuthorityStores.js";
@@ -107,6 +116,7 @@ const success: FixedPricePayDemTrackOperation = async ({ fence }) => {
 const cleanups: (() => Promise<void> | void)[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   await closeDemosNodeStubs();
@@ -216,7 +226,133 @@ async function purchase(chainFee: string) {
   };
 }
 
+/** A transfer the buyer prepares and never broadcasts; the node does not know it. */
+const PREPARED_HASH = "9".repeat(64);
+/** The service's hold lease (5 minutes), with room. */
+const PAST_HOLD_LEASE_MS = 6 * 60_000;
+
+/** A rail that journals the next prepared transfer, passes the pre-broadcast hook, then stops: nothing is broadcast. */
+function stoppingRail(transfers: readonly Readonly<{ txHash: string; nonce: number }>[]): PayDemRail {
+  let attempt = 0;
+  return markDacsSdkPreparedPayDemRailV1<PayDemRail>({
+    address: DEMOS_PAYER,
+    async settle(input) {
+      const transfer = transfers[attempt];
+      attempt += 1;
+      if (transfer === undefined || input.journalPreparedTransfer === undefined ||
+          input.assertCurrentBeforeBroadcast === undefined || input.recovery === undefined) {
+        throw new Error("expected a planned transfer and the SDK's prepared-transfer hooks");
+      }
+      await input.journalPreparedTransfer({
+        txHash: transfer.txHash, nonce: transfer.nonce, payer: DEMOS_PAYER, payee: DEMOS_PAYEE,
+        amountOs: CONFIRMED_AMOUNT, denomination: "os", network: "demos",
+        maxTotalDebitOs: AUTHORITY.maxTotalDebitOs, confirmedTotalDebitOs: PAID_TOTAL, recovery: input.recovery,
+      });
+      await input.assertCurrentBeforeBroadcast();
+      throw new Error("buyer stopped before broadcast");
+    },
+  });
+}
+
+/**
+ * Starts one pay-dem purchase against a DEM-only service whose rail stops before broadcast. The track
+ * reconciles as the live buyer graph builds it: the SDK observer and the service's bounded reader.
+ */
+async function interruptedPurchase(transfers: Parameters<typeof stoppingRail>[0]) {
+  const node = await demosNodeStub(recordedDemosState(TP1_APPROVED_IDENTITY_RECORD.chainIdentity));
+  const routed = fetchRoutingDemosNodeTo(node.url);
+  vi.stubGlobal("fetch", routed);
+  const settings = await serviceSettings({ rpcUrl: "https://base-sepolia.unused.example/" });
+  cleanups.push(() => settings.remove());
+  const lane = await demosLaneSettings({ root: settings.root, rpcUrl: DEMOS_NODE_URL });
+  const authority = await startDacsWalletSpendTestnetAuthorityV1({
+    environment: { ...withoutX402Lane(settings.environment), ...lane.environment },
+  });
+  cleanups.push(() => authority.stop());
+  const walletSpendAuthority = await demosAuthorityClient({ authority, tokenFile: settings.tokenFile });
+  const reader = createDacsWalletSpendDemosReaderV1({
+    rpcUrl: DEMOS_NODE_URL, policy: walletSpendAuthority.policy, fetch: routed,
+  });
+  const observer = createPayDemSellerObserver({ rpc: DEMOS_NODE_URL, fetchImpl: routed });
+  const database = await buyerDatabase([]);
+  const payment = createDacsPayDemBuyerPaymentTrackV1({
+    walletSpendAuthority,
+    database,
+    workerId: "buyer-dem-interrupted",
+    rail: stoppingRail(transfers),
+    resolveAuthority: () => AUTHORITY,
+    reconcile: createDacsFixedPricePayDemBuyerReconciliationV1(observer.observeDemosTransfer, reader.readAccountNonce),
+    publishNotice: () => undefined,
+    retryDelayMs: 1,
+  });
+  const coordinator = createFixedPricePayDemBuyerCoordinator({
+    store: database.createPayDemCoordinatorStore("buyer"),
+    workerId: "buyer-coordinator-interrupted",
+    operations: { agreement: success, payment, "payment-evidence": success, "buyer-received": success, audit: success },
+  });
+  await coordinator.startOrder(ORDER);
+  await coordinator.runPending({ limit: 2 });
+  const hold = () => {
+    const row = headStateFile(lane.dataDirectory).reservations[0];
+    if (row === undefined) throw new Error("expected the purchase's hold");
+    return row;
+  };
+  return { node, coordinator, walletSpendAuthority, hold };
+}
+
 describe("pay-dem buyer against the testnet wallet-spend authority", { timeout: 30_000 }, () => {
+  it("an interrupted DEM purchase is released through the service once the chain proves its nonce used", async () => {
+    const planned = CONFIRMED_NONCE;
+    const purchase = await interruptedPurchase([
+      { txHash: PREPARED_HASH, nonce: planned },
+      { txHash: "8".repeat(64), nonce: planned + 2 },
+    ]);
+    // (a) The hold planned the nonce the transfer was signed with; nothing reached the chain.
+    expect(purchase.hold()).toMatchObject({ stage: "effect-pending", plannedTransferNonce: planned });
+    await expect(purchase.walletSpendAuthority.reserve(demosHold("job-two")))
+      .resolves.toEqual({ status: "denied", reason: "concurrency-limit" });
+    await purchase.coordinator.runPending({ limit: 1 });
+    expect(purchase.hold()).toMatchObject({ stage: "effect-pending", plannedTransferNonce: planned });
+
+    // (b) The operator's two self-transfers take the planned nonce and move the wallet past it.
+    const selfAtPlanned = selfTransferRecord("5".repeat(64), planned);
+    const selfAfterPlanned = selfTransferRecord("6".repeat(64), planned + 1);
+    purchase.node.state.records.set(String(selfAtPlanned.hash), selfAtPlanned);
+    purchase.node.state.records.set(String(selfAfterPlanned.hash), selfAfterPlanned);
+    purchase.node.state.history = [selfAfterPlanned, selfAtPlanned];
+    purchase.node.state.accountNonce = planned + 1;
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    vi.setSystemTime(Date.now() + PAST_HOLD_LEASE_MS);
+    await purchase.coordinator.runPending({ limit: 1 });
+    const released = purchase.hold();
+    expect(released).toMatchObject({ stage: "released", evidenceHash: PREPARED_HASH, plannedTransferNonce: planned });
+
+    // A buyer that restarts before recording the release asks again and changes nothing.
+    await expect(purchase.walletSpendAuthority.reconcile(released.reservation, {
+      disposition: "terminal-absent", evidenceHash: PREPARED_HASH,
+    })).resolves.toBe("existing");
+
+    // The retried payment takes a fresh hold planned at the wallet's next nonce.
+    await purchase.coordinator.runPending({ limit: 1 });
+    expect(purchase.hold()).toMatchObject({ stage: "effect-pending", plannedTransferNonce: planned + 2 });
+  });
+
+  it("an interrupted DEM purchase whose transfer landed at its planned nonce is settled once through the service", async () => {
+    const purchase = await interruptedPurchase([{ txHash: CONFIRMED_HASH, nonce: CONFIRMED_NONCE }]);
+    expect(purchase.hold()).toMatchObject({ stage: "effect-pending", plannedTransferNonce: CONFIRMED_NONCE });
+    await purchase.coordinator.runPending({ limit: 1 });
+    expect(purchase.hold()).toMatchObject({
+      stage: "settled",
+      evidenceHash: CONFIRMED_HASH,
+      actualDebits: [
+        { asset: "DEM", purpose: "service", amount: CONFIRMED_AMOUNT },
+        { asset: "DEM", purpose: "network-fee", amount: CONFIRMED_FEE },
+      ],
+    });
+    await purchase.coordinator.runPending({ limit: 4 });
+    expect((await purchase.walletSpendAuthority.inspect()).assets[0]?.cumulativeSettledDebit).toBe(PAID_TOTAL);
+  });
+
   it("the generated pay-dem buyer reserves, begins and settles on the service", async () => {
     const paid = await purchase(CONFIRMED_FEE);
     expect(paid.events).toEqual([
