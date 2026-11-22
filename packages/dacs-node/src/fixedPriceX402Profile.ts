@@ -24,6 +24,7 @@ import {
   type X402BuyerEvmIntentAuthority,
   type X402BuyerPaymentRequirements,
   type X402BuyerSettlementIntent,
+  type X402BuyerUnsignedIntentScope,
   type SellerFixedPriceAgreementContextQuery,
   type SellerFixedPriceAgreementContextResolution,
   type UnsignedAgreementArtifact,
@@ -1594,7 +1595,7 @@ function paymentPreparation(
 }
 
 function intentMatchesPreparation(
-  intent: Readonly<X402BuyerSettlementIntent>,
+  intent: Readonly<X402BuyerUnsignedIntentScope>,
   preparation: Readonly<DacsX402BuyerRuntimePreparationV1>,
 ): boolean {
   const authority = preparation.authority;
