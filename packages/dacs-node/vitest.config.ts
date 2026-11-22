@@ -22,6 +22,7 @@ export default defineConfig({
       { find: "@kynesyslabs/dacs/rails", replacement: coreSource("rails") },
       { find: "@kynesyslabs/dacs/seller", replacement: coreSource("seller") },
       { find: "@kynesyslabs/dacs/substrate", replacement: coreSource("substrate") },
+      { find: "@kynesyslabs/dacs/wire", replacement: coreSource("wire") },
     ],
   },
   test: {
