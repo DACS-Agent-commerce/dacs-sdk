@@ -88,6 +88,8 @@ const CANONICAL_PACKAGE: string = "@kynesyslabs/dacs/canonical";
 const VIEM_ACCOUNTS: string = "viem/accounts";
 
 const NODE_PACKAGE = new URL("../../dacs-node/", import.meta.url);
+/** Generating two projects and loading the real packages takes longer than the default hook timeout. */
+const SETUP_TIMEOUT_MS = 120_000;
 const RAIL_CONTRACT = `0x${"ab".repeat(20)}`;
 const TESTNET_RAIL: Rail = Object.freeze({
   railId: "x402:default",
@@ -210,7 +212,7 @@ beforeAll(async () => {
     DACS_WALLET_AUTHORITY_POLICY_FILE: join(root, "policy", "policy.json"),
     DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK: "1",
   };
-});
+}, SETUP_TIMEOUT_MS);
 
 afterEach(async () => {
   vi.unstubAllEnvs();

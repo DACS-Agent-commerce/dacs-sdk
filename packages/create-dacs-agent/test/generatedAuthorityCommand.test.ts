@@ -25,6 +25,8 @@ const NODE_PACKAGE = new URL("../../dacs-node/", import.meta.url);
 const POLICY_WALLET = `0x${"5e".repeat(20)}`;
 const POLICY_ASSET = `0x${"03".repeat(20)}`;
 const PORT_CLOSE_DEADLINE_MS = 10_000;
+/** Generating the project takes longer than the default hook timeout on a loaded machine. */
+const SETUP_TIMEOUT_MS = 60_000;
 
 interface Run {
   child: ChildProcess;
@@ -83,7 +85,7 @@ beforeAll(async () => {
     DACS_BUYER_EVM_SECRET_FILE: join(secrets, "buyer-evm"),
     DACS_SELLER_EVM_SECRET_FILE: join(secrets, "seller-evm"),
   };
-});
+}, SETUP_TIMEOUT_MS);
 
 afterEach(() => {
   for (const child of children.splice(0)) {
