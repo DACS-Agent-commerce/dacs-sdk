@@ -297,8 +297,8 @@ export interface SubstrateAdapter {
    *
    * Returns a TYPED {@link AnchorResolution}: `present` (owned by the writer),
    * `absent` (readable candidates, none the writer's), or `indeterminate` (the
-   * lookup itself failed) — so a transient substrate failure is never mistaken
-   * for "never created".
+   * lookup failed or its answers could not be confirmed) — so a transient
+   * substrate failure is never mistaken for "never created".
    */
   resolveAnchorByName(
     name: string,

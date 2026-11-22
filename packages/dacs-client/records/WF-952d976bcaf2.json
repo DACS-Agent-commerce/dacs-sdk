@@ -1,0 +1,30 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test the relay check on the held facade's rpc before it exists",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs",
+      "before": "1b83d2a67290fc5fb683667e993dbf498ecaf269",
+      "after": "b3a9649825bbe32e099c53a997817e1c38403701"
+    },
+    {
+      "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+      "before": "8c93c30249f14f12f5d4b68d58b3af76b7557778",
+      "after": "0d17bb1488cd276e8593b796cc4ac72ab734cf35"
+    },
+    {
+      "path": "packages/dacs-client/test/relay-authorization.test.mjs",
+      "before": null,
+      "after": "9a5236ecb4246dd3e4ddc1ab3584ee164f5043b6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-952d976bcaf2.json",
+    "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs",
+    "packages/dacs-client/test/native-effect-paths.test.mjs",
+    "packages/dacs-client/test/relay-authorization.test.mjs"
+  ],
+  "note": "Tests only, no source change. relay-authorization.test.mjs covers an optional relay check passed as a third argument to the held transport facade's rpc, over the real native transport and a scripted test node. The wait-until-settled and refused-after-context helpers move from native-effect-paths.test.mjs into the shared effect-boundary fixture so both files use one copy. The new tests fail until the next record's source change."
+}

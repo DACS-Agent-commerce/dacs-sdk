@@ -7,6 +7,8 @@ export { createSellerHttpHandler, createSellerAgentClient } from './dacs/seller-
 export { createSellerContextRoute, createWireSellerContextRoute } from './dacs/seller-context-route.mjs';
 export { createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 export { createSellerWireClientAuth } from './dacs/seller-wire-client-auth.mjs';
+// The seller's production TP-1 authority reader, for operators that compose their own host's binding.
+export { createSellerAuthorityReader } from './dacs/authority-reader.mjs';
 export { buildUnsignedIdentityBundle, attachIdentityPresentation, buildListingDraft, listingSigningMessage, attachListingSignature } from './dacs/listing.mjs';
 // The Listing reader resolves its rail from the steward-signed railAuthority.
 export { validateSellerListing as validateListing } from './dacs/rail-authority.mjs';
