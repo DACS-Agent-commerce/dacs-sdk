@@ -324,9 +324,23 @@ describe("init refuses before anything is written", () => {
     const run = initFixture({ env: true });
     refuses(run, initArguments(run), /project\/\.env already exists; generate a new project/);
   });
+  it("refuses a project that already has a request.json", () => {
+    const run = initFixture();
+    const request = join(run, "project", "request.json");
+    writeFileSync(request, "existing request\n");
+    refuses(run, initArguments(run), /project\/request\.json already exists; generate a new project/);
+    expect(existsSync(join(run, "project", ".env"))).toBe(false);
+    expect(readFileSync(request, "utf8")).toBe("existing request\n");
+  });
   it("refuses a project that is not built", () => {
     const run = initFixture({ built: false });
     refuses(run, initArguments(run), /not built; run npm run build inside project\//);
+  });
+  it("refuses a project with both payment rails", () => {
+    const run = initFixture();
+    const example = join(run, "project", ".env.example");
+    writeFileSync(example, `${readFileSync(example, "utf8")}DACS_PAY_DEM_LISTING_DRAFT_FILE=./listing-draft-pay-dem.json\n`);
+    refuses(run, initArguments(run), /project\/ must be generated with --mode live-demos --rails x402 --deploy local and installed/);
   });
   it("refuses a seller URL with a root path", () => {
     const run = initFixture();
@@ -487,7 +501,7 @@ describe("record", () => {
   const ready = () => Response.json({ ready: true, checkedAt: 1, reasonCodes: [] });
 
   /** A run directory that init and registry would have left, with the secrets and provider key a record must not copy. */
-  function recordFixture(demosRpc = "https://node2.demos.sh") {
+  function recordFixture(demosRpc = "https://node2.demos.sh", evmRpc = `https://rpc.example/v2/${providerKey}?token=1`) {
     const run = freshDirectory();
     const project = join(run, "project");
     for (const directory of [project, join(run, "packs"), join(run, "logs"), join(run, "secrets")]) mkdirSync(directory);
@@ -499,7 +513,7 @@ describe("record", () => {
     writeFileSync(join(run, "secrets", "buyer-demos"), walletWords);
     writeFileSync(join(project, ".env.example"), "DACS_DEPLOYMENT=local\nDACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json\n");
     writeFileSync(join(project, ".env"), [
-      "DACS_DEPLOYMENT=local", `DACS_DEMOS_RPC_URL=${demosRpc}`, `DACS_EVM_RPC_URL=https://rpc.example/v2/${providerKey}?token=1`,
+      "DACS_DEPLOYMENT=local", `DACS_DEMOS_RPC_URL=${demosRpc}`, `DACS_EVM_RPC_URL=${evmRpc}`,
       "DACS_BUYER_SERVICE_URL=http://127.0.0.1:3101", "DACS_SELLER_SERVICE_URL=http://127.0.0.1:3102",
       `DACS_BUYER_AUTHORITY=did:demos:agent:${"a".repeat(64)}`, `DACS_SELLER_AUTHORITY=${seller}`, `DACS_RAIL_STEWARD_AUTHORITY=${seller}`,
       `DACS_SELLER_EVM_PAYEE=${PAYEE}`, `DACS_BUYER_DEMOS_SECRET_FILE=${join(run, "secrets", "buyer-demos")}`, "",
@@ -513,7 +527,7 @@ describe("record", () => {
 
   /** Answers the chain-id read, and /ready on each role's port. */
   const network = (chainId: string, answers: { "3101": () => Response; "3102": () => Response }) => (async (url: string) => {
-    if (url.startsWith("https://rpc.example")) return Response.json({ jsonrpc: "2.0", id: 1, result: chainId });
+    if (new URL(url).hostname.endsWith("rpc.example")) return Response.json({ jsonrpc: "2.0", id: 1, result: chainId });
     return answers[String(new URL(url).port) as "3101"]();
   }) as unknown as typeof fetch;
   const onBaseSepolia = network("0x14a34", { "3101": notReady, "3102": notReady });
@@ -581,12 +595,12 @@ describe("record", () => {
   it("keeps no key, secret, absolute path or URL path", async () => {
     quietly();
     standInNpm(5, doctorText(5, BLOCKED_CHECKS));
-    const run = recordFixture("https://demos.example/node-key-5678");
+    const run = recordFixture("https://demos.example/node-key-5678", `https://${providerKey}.rpc.example/v2/${providerKey}?token=1`);
     await walkthrough.record({ runDir: run, listingRef: ref }, onBaseSepolia);
     const text = readFileSync(join(run, "record.json"), "utf8");
     for (const secret of [...walletWords.split(" "), providerKey, "node-key-5678", "token=1", "/v2/", run, tmpdir(), "secrets"]) expect(text).not.toContain(secret);
     expect(JSON.parse(text)).toMatchObject({
-      evmRpc: { host: "rpc.example" }, demosRpc: { host: "custom", chainIdentity: "chain-1" },
+      evmRpc: { host: "custom" }, demosRpc: { host: "custom", chainIdentity: "chain-1" },
       deployment: "local", rails: ["x402"], authorities: { seller, steward: seller }, payee: PAYEE,
       registry: { definition: "d".repeat(64), index: "e".repeat(64) },
     });
@@ -672,6 +686,15 @@ describe("record", () => {
     it("when the buy prints something other than a doctor report", async () => {
       standInNpm(1, "listing reference is malformed\n");
       await refuses(recordFixture(), /buy output/, onBaseSepolia, ref);
+    });
+    it("removes the previous record when a rerun cannot read the buy output", async () => {
+      quietly();
+      const run = recordFixture();
+      await walkthrough.record({ runDir: run }, onBaseSepolia);
+      expect(existsSync(join(run, "record.json"))).toBe(true);
+      standInNpm(1, "listing reference is malformed\n");
+      await refuses(run, /buy output.*see logs\/buy\.log/, onBaseSepolia, ref);
+      expect(readFileSync(join(run, "logs", "buy.log"), "utf8")).toContain("listing reference is malformed");
     });
     it("when the project's .env is missing", async () => {
       const run = recordFixture();

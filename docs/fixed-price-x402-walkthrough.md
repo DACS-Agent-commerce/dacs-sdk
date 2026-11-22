@@ -323,7 +323,7 @@ writes no readiness record or doctor report.
   role's outbox, and every `dacs:` script rebuilds the project's `dist/`. The raw output goes to
   `<run>/logs/buy.log`.
 - **Fields.** `commit`, `packageVersion`, `tarballs` (name to sha256), `deployment`, `rails`,
-  `network` (chain, USDC contract, facilitator host), `evmRpc` (host only), `demosRpc` (host, or
+  `network` (chain, USDC contract, facilitator host), `evmRpc` (host masked as `custom`), `demosRpc` (host, or
   `custom` with the chain identity), `authorities` (buyer, seller, steward), `payee`, `registry`
   (the two refs), `listingRef`, `readiness` (one entry per role), `steps` and `fundedRun`.
 - **Step statuses.** Each entry of `steps` is `ran`, `blocked` or `unrun`, and an `unrun` entry
@@ -344,9 +344,8 @@ writes no readiness record or doctor report.
   Sepolia; when a tarball no longer matches; when `project/.env` is missing or holds a bad public
   value; when the EVM RPC cannot be reached or does not answer with a chain id; or when the buy does
   not finish or prints something other than a doctor report.
-- **Before you share** `record.json`, read it. It holds public values and hostnames, but `record`
-  copies the EVM RPC hostname as it is, and a provider key can sit in that hostname. Replace such a
-  hostname with a placeholder first. **Never share** keys, phrases or tokens, `<run>/secrets`,
+- **Before you share** `record.json`, read it. It holds public values and the known public hostnames;
+  custom RPC hostnames are masked as `custom`. **Never share** keys, phrases or tokens, `<run>/secrets`,
   `project/.env`, or `<run>/logs/*.log`, which hold raw output nobody has filtered.
 
 ## Troubleshooting
