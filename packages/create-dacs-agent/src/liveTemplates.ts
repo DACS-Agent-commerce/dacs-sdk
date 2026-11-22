@@ -4928,9 +4928,14 @@ that exact retained purchase, repeat the same inputs with
 Funded doctor is a separate, optional one-anchor Demos smoke using a named
 disposable wallet. It is plan-only unless \`DACS_DOCTOR_FUNDED_CONFIRM=1\` is
 supplied for that invocation, always requires \`--max-cost-dem\`, and never
-authorizes setup or purchase. Reconcile an ambiguous exact run with
-\`--resume-run <printed-run-id>\`; reconciliation is read-only and cannot
-rebroadcast the smoke.
+authorizes setup or purchase. Recover an unfinished run by repeating the same
+\`--wallet\` and \`--max-cost-dem\` with \`--resume-run <printed-run-id>\`.
+When an earlier write's outcome is unknown, a resume first reconciles; that
+reconciliation is read-only. If it finds no landed write it reports
+\`reconciliation-cleared\`, and the next resume performs the write again.
+That write first settles any earlier broadcast kept in the wallet's write
+journal, reuses it if it landed and stops if it is still unresolved. Do not
+start a new run while an earlier one is unfinished.
 
 Upgrade check is read-only. It queries the public npm \`next\` manifests for all
 three exact-version DACS packages, compares their declared Standard, config and
