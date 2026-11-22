@@ -520,18 +520,16 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // holder: the calling flow's `{get(), set(next)}` over its own `current`, so the request records advance the flow's row.
   function sellerFor(holder) {
     const operation = holder.get();
-    const declared = assertSellerDeclaration(operation);
+    // Seller requests are authenticated only through the declared seller transport; without one nothing can be sent.
+    if (!assertSellerDeclaration(operation)) throw new OperationError('seller_agent_unavailable', 'this purchase declares no seller transport to authenticate seller requests; nothing was sent to the seller');
     const url = dacsProtocol.sellerEndpoint(operation.terms.seller.claim);
     if (!url) throw new OperationError('seller_agent_unavailable', 'no seller agent endpoint is known for this seller; nothing was signed or paid');
-    let authentication;
-    if (declared) {
-      const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
-      if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
-      authentication = createSellerWireAuthentication({ admission, sessionSigner: sellerTransport.sessionSignerFor(operation), delegation: p.sessionDelegation,
-        seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
-        job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
-          deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
-    }
+    const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
+    if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
+    const authentication = createSellerWireAuthentication({ admission, sessionSigner: sellerTransport.sessionSignerFor(operation), delegation: p.sessionDelegation,
+      seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
+      job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
+        deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
     const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now });
     const client = createSellerHttpsClient({ publicEndpoint: url, connector: sellerConnector, commitOnSignature, requestRecords, authentication, timeoutMs: sellerRequestTimeoutMs, explicitResume: explicitResumeTaker() });
     if (client.origin !== operation.terms.protocol.sellerAgent) throw new OperationError('seller_agent_changed', 'the seller agent endpoint changed since this purchase was prepared; nothing was signed or paid');

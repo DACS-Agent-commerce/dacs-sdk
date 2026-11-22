@@ -73,6 +73,18 @@ test('the default unpaid configuration with a public https seller is refused at 
   assert.equal(unpaid.counters.challengesIssued, 0);
 });
 
+test('a signed Agreement on a row that declares no seller transport is refused with seller_agent_unavailable before any seller request', async (t) => {
+  const w = await world(t, { publicEndpoint: SELLER_ORIGIN });
+  const p = await purchase(t, w, { paid: true, configureTerms: (terms) => {
+    delete terms.protocol.sellerTransport;
+    Object.assign(terms, { network: 'testnet', domain: { mode: 'public-chain-read', network: 'testnet', chainIdentity: w.binding.profile.chainIdentity } });
+  }, protocolPatch: { stage: 'agreement-signing', planned: { plan: { agreementHash: 'a'.repeat(64) }, draft: {}, agreementMessage: 'TEST-agreement' }, signatures: { agreement: 'TEST-signature' } } });
+  const before = JSON.stringify(p.get());
+  await assert.rejects(p.service.submitAgreement(p.get()), (error) => error.name === 'OperationError' && error.code === 'seller_agent_unavailable' && /declares no seller transport/.test(error.message));
+  assert.equal(w.state.signs.length, 0, 'no seller request was signed');
+  assert.equal(JSON.stringify(p.get()), before, 'the row is unchanged');
+});
+
 test('a public endpoint without a wire authentication is refused', async () => {
   assert.throws(() => clientOverFetch({ url: SELLER_ORIGIN, fetchImpl: failIfCalled([]) }), { name: 'TypeError', message: /wire authentication/ });
 });
