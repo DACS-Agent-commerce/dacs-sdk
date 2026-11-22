@@ -2,6 +2,7 @@
 // before publish reaches the wallet: no authority or node read, no stored intent and no signature follows any of them.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { anchorFixture, signSdkCreate } from './helpers/anchor-isolated-fixture.mjs';
 import { T0, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 
@@ -102,4 +103,41 @@ test('the Listing publisher passes operationClass job-create and its publication
   await assert.rejects(anchor.publish(withoutPass), { code: 'invalid' }, 'the same publish without them');
   assert.deepEqual(world.effects(), NOTHING);
   assert.equal(await anchor.hasIntent(inputs[0].logicalAddress), false, 'no intent was stored');
+});
+
+// A runCreate that refuses before it calls its work, as the kit boundary's pre-checks do when the seller is stopping.
+const refusingRunCreate = async () => { throw Object.assign(new Error('TEST-seller-stopping'), { code: 'seller_stopped' }); };
+const FIXTURE_JOB = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
+
+test('a runCreate refusal after publish stored its intent makes no CREATE, and the intent it leaves is read as unsigned, so the next publish asks the wallet once from the same nonce', async () => {
+  const f = await anchorFixture();
+  f.controls.runCreate = refusingRunCreate;
+  await assert.rejects(f.publish(f.open(), FIXTURE_JOB), { code: 'seller_stopped' });
+  assert.equal(f.captured.length, 0, 'the wallet was never asked');
+  assert.deepEqual([...f.journal.rows.values()].map(({ stage }) => stage), ['intent'], 'only the intent is stored');
+  f.controls.runCreate = undefined;
+  await f.publish(f.open(), FIXTURE_JOB);
+  assert.deepEqual(f.captured.map(({ transaction }) => transaction.content.nonce), [1], 'the retry asked the wallet once, from the nonce the refused attempt never used');
+});
+
+test('a runCreate refusal before a retained CREATE\'s resend records no recovery intent and sends nothing, so the one resend stays open for the next read', async () => {
+  const f = await anchorFixture({ signRpc: async () => 'TEST-rpc-auth' }), resends = [];
+  f.source.binding = async () => ({ disposition: 'pending' });
+  f.source.recoverStorageWrite = async ({ signedTransaction }) => { resends.push(signedTransaction.hash); return {}; };
+  f.controls.request = async (request) => {
+    const signedTransaction = await signSdkCreate(request.transaction), hash = signedTransaction.hash;
+    await f.journal.put(`demo/wallet/${request.jobId}`, { stage: 'broadcast-started', hash, signedTransaction });
+    await f.sourceJournal.put(`source/${request.jobId}`, { stage: 'signed', hash, signedTransaction });
+    return { success: false, error: { code: 'internal_error' } };
+  };
+  await f.publish(f.open(), FIXTURE_JOB);
+  const { input } = [...f.journal.rows.values()].find((row) => row.input);
+  const resend = { resend: true, authorizeResend: () => true };
+  f.controls.runCreate = refusingRunCreate;
+  await assert.rejects(f.open().read(input, resend), { code: 'seller_stopped' });
+  assert.deepEqual(resends, [], 'nothing was resent');
+  assert.equal([...f.journal.rows.keys()].some((key) => key.startsWith('demo/recovery/')), false, 'no recovery intent was recorded');
+  f.controls.runCreate = undefined;
+  await f.open().read(input, resend);
+  assert.equal(resends.length, 1, 'the next read used the one resend');
 });
