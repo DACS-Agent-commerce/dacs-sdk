@@ -60,11 +60,12 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
   if (t === "number") {
     const n = value as number;
     if (!Number.isFinite(n)) {
-      throw new DacsError(`canonical form: non-finite number (${n})`);
+      throw new DacsError(`canonical form: non-finite number (${n})`, { code: "canonical.number_non_finite" });
     }
     if (Math.abs(n) > MAX_SAFE) {
       throw new DacsError(
         `canonical form: number outside IEEE-754 safe-integer range (${n}); carry as a string`,
+        { code: "canonical.number_out_of_range" },
       );
     }
     return JSON.stringify(n);
@@ -73,6 +74,7 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
   if (t === "bigint") {
     throw new DacsError(
       "canonical form: bigint not allowed; carry large integers as decimal or 0x-hex strings",
+      { code: "canonical.type_unsupported" },
     );
   }
 
@@ -82,6 +84,7 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
       if (Object.getPrototypeOf(value) !== Array.prototype) {
         throw new DacsError(
           "canonical form: array must use the standard Array prototype",
+          { code: "canonical.container_not_plain" },
         );
       }
       const items: string[] = [];
@@ -89,6 +92,7 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
         if (!Object.hasOwn(value, index)) {
           throw new DacsError(
             `canonical form: sparse array; arrays must be dense (missing entry at index ${index})`,
+            { code: "canonical.container_not_plain" },
           );
         }
         const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
@@ -99,6 +103,7 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
         ) {
           throw new DacsError(
             "canonical form: arrays must be dense enumerable data properties",
+            { code: "canonical.container_not_plain" },
           );
         }
         items.push(canonValue(descriptor.value, ancestors, depth + 1));
@@ -107,6 +112,7 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
       if (ownKeys.length !== value.length + 1) {
         throw new DacsError(
           "canonical form: arrays must be dense and contain no extra properties",
+          { code: "canonical.container_not_plain" },
         );
       }
       return "[" + items.join(",") + "]";
@@ -118,19 +124,21 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
     return withCycleGuard(object, ancestors, () => {
       assertNestingDepth(depth);
       if (!isPlainJsonObject(object)) {
-        throw new DacsError("canonical form: only plain JSON objects are supported");
+        throw new DacsError("canonical form: only plain JSON objects are supported", { code: "canonical.container_not_plain" });
       }
 
       for (const key of Reflect.ownKeys(object)) {
         if (typeof key !== "string") {
           throw new DacsError(
             "canonical form: symbol-keyed properties are not valid JSON",
+            { code: "canonical.container_not_plain" },
           );
         }
         const descriptor = Object.getOwnPropertyDescriptor(object, key)!;
         if (!descriptor.enumerable || !("value" in descriptor)) {
           throw new DacsError(
             "canonical form: object properties must be enumerable data properties",
+            { code: "canonical.container_not_plain" },
           );
         }
       }
@@ -157,7 +165,7 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
     });
   }
 
-  throw new DacsError(`canonical form: unsupported value type (${t})`);
+  throw new DacsError(`canonical form: unsupported value type (${t})`, { code: "canonical.type_unsupported" });
 }
 
 /**
@@ -166,6 +174,10 @@ function canonValue(value: unknown, ancestors: Set<object>, depth: number): stri
  * JSON numbers within the IEEE-754 safe-integer magnitude range (everything
  * larger must be a string). Throws on any value that has no reproducible
  * canonical form.
+ * Throws a `DacsError` coded `canonical.number_non_finite`,
+ * `canonical.number_out_of_range`, `canonical.type_unsupported`,
+ * `canonical.container_not_plain`, `canonical.unicode_invalid`,
+ * `canonical.nesting_too_deep` or `canonical.structure_cyclic`.
  */
 export function canonicalize(value: unknown): string {
   return canonValue(value, new Set<object>(), 0);
@@ -179,12 +191,14 @@ function assertNoLoneSurrogates(value: string): void {
       if (!(next >= 0xdc00 && next <= 0xdfff)) {
         throw new DacsError(
           "canonical form: unpaired UTF-16 surrogate: lone high surrogate",
+          { code: "canonical.unicode_invalid" },
         );
       }
       index += 1;
     } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
       throw new DacsError(
         "canonical form: unpaired UTF-16 surrogate: lone low surrogate",
+        { code: "canonical.unicode_invalid" },
       );
     }
   }
@@ -192,7 +206,7 @@ function assertNoLoneSurrogates(value: string): void {
 
 function assertNestingDepth(depth: number): void {
   if (depth >= MAX_NESTING_DEPTH) {
-    throw new DacsError(`canonical form: nesting depth exceeds ${MAX_NESTING_DEPTH}`);
+    throw new DacsError(`canonical form: nesting depth exceeds ${MAX_NESTING_DEPTH}`, { code: "canonical.nesting_too_deep" });
   }
 }
 
@@ -214,7 +228,7 @@ function withCycleGuard<T>(
   operation: () => T,
 ): T {
   if (ancestors.has(value)) {
-    throw new DacsError("canonical form: cyclic structure");
+    throw new DacsError("canonical form: cyclic structure", { code: "canonical.structure_cyclic" });
   }
   ancestors.add(value);
   try {
