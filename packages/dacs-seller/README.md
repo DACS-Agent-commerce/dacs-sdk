@@ -367,15 +367,20 @@ Its `publish({ logicalAddress, artifact, artifactKind, authorize })` must check
 `authorize()` immediately before retaining a CREATE intent and must durably keep
 the signed transaction before sending it. The party Vet provider also passes
 `awaitInclusion: true`: a CREATE that call sends and that still reads back as
-pending is read again every five seconds for a bounded time while `authorize()`
-still answers `true`. The additional polls never send the CREATE again; the
-first pending read can still run the existing one-time recovery send
+pending is read again every five seconds while `authorize()` still answers
+`true`. The additional polls never sign, ask the wallet or send the CREATE
+again; the first pending read can still run the existing one-time recovery send
 (`recoverStorageWrite`) of the retained CREATE, as without `awaitInclusion`. In
-the reference anchor the bound is six minutes after the wallet's answer, and the
-wallet answers only after the transport's own inclusion wait (120 seconds by
-default), so the bound ends about eight minutes after the broadcast. Meanwhile
-the seller's other writes wait behind the pending write, up to that bound,
-instead of failing at once with a retryable error. `readBackRecords({ jobId,
+the reference anchor the wait ends 30 minutes after the wallet's answer, or
+earlier once the node can no longer include the CREATE. That is decided only
+from the reference block R the transport hands back on the pending readback:
+blocks R+1 and R+2 are confirmed and do not list the CREATE, the seller's account
+nonce has not reached its nonce, and a last status read no longer knows it. The
+answer is then `indeterminate`, with a reason that says the CREATE is excluded.
+A readback with no reference block never proves exclusion. A `publish` after a
+restart within those 30 minutes resumes the wait with reads only. Meanwhile the
+seller's other writes wait behind the pending write, up to that bound, instead
+of failing at once with a retryable error. `readBackRecords({ jobId,
 buyer })` reads a job's two retained Vet records back without signing or
 sending anything; it answers `present` only when both records read back as
 included, and `indeterminate` when one is not written yet or does not read
@@ -1218,7 +1223,12 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   journals it opens. The source capability is the only value the devnet
   artifact anchor, issued-write readback and the source mode of native
   payment evidence accept. Each signature and send needs an effect pass made
-  through the composition's `effectPass`, and is refused while the kit
+  through the composition's `effectPass`. The wallet's views say
+  `guardsSigning: true`: a request's `authorize` check is asked as its
+  approval answer returns and again in the effect gate right before the
+  transaction signature, and any answer but an immediate `true` refuses
+  `not-authorized` with nothing signed or sent. A signature or send is also
+  refused while the kit
   operation guard is off or the client's purchase hold is held, which is how
   both ship. `start` does not build the wallet. Native DEM delivery and the
   DEM delivery context accept only `TEST-` authorities, as in the source kit.

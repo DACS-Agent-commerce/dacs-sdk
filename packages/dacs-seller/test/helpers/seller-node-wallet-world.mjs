@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
-import { api, finalization, mnemonicBytes, ok, scriptedNode, setPurchaseAdmission, T0 } from '../../../dacs-client/test/helpers/tp1-node-fixture.mjs';
+import { agreementRequest, api, finalization, mnemonicBytes, ok, scriptedNode, setPurchaseAdmission, T0 } from '../../../dacs-client/test/helpers/tp1-node-fixture.mjs';
 
 const { createAuthorityFixture } = await import('../../../dacs-client/test/fixtures/tp1-authority-reader.mjs');
 const { recordingApproval } = await import('../../../dacs-client/test/helpers/payment-evidence-approval-double.mjs');
@@ -143,11 +143,12 @@ export async function spyTransactionSignatures(mocker, onSigned = () => {}) {
 export const replyTo = (node, message, respond) => { node.reply = row => ((row.body?.params[0].message || row.body?.params[0].extra) === message ? respond(row) : undefined); };
 export const jsonResponse = answer;
 
-/** Connects an owner to `node` and binds the TP-1 admission through the authority fixture. */
+/** Connects an owner to `node` and binds the TP-1 admission through the authority fixture, returned as `authority`. */
 export async function nodeConnection(node = replayNode()) {
   const owner = api.createNodeTransportOwner({ endpoint: ENDPOINT, transportAuthority: 'vector-authority', fetchImpl: node.fetch });
-  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: owner.currentLocal(), readAuthority: createAuthorityFixture().read });
-  return { node, owner, admission: { binding, currentLocal: owner.currentLocal } };
+  const authority = createAuthorityFixture();
+  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: owner.currentLocal(), readAuthority: authority.read });
+  return { node, owner, authority, admission: { binding, currentLocal: owner.currentLocal } };
 }
 
 /** The composed seller approval double: `retained` is the ledger (the recording one by default); `confirm` records each confirmed write and approves it. */
@@ -219,3 +220,37 @@ export const restartedWorld = (t, directory, stateDirectory) => sellerWalletWorl
 /** A payment-evidence anchor input written by the wallet's own address. */
 export const evidenceInput = (world, label = 'a') => ({ logicalAddress: `dacs4:payment:TEST-job-${label}:demos-native:DEM:2`, artifact: { TEST: `evidence-${label}` },
   writer: `did:demos:agent:${world.wallet.address.slice(2)}`, artifactKind: 'SettlementEvidence', jobId: `TEST-job-${label}`, receiptContentHash: 'e1'.repeat(32) });
+
+// Requests through the composed walletFactory, for the approval accounting suites.
+const JOB_CREATE = () => api.passContext({ operationClass: 'job-create', currentAuthorization: () => true });
+
+/**
+ * The seller approval double: it accepts every request after `gate(request)` resolves (or rejects), and `settle` records each
+ * outcome, or throws `failure` when one is given.
+ */
+export function settlingApproval({ failure, gate = async () => {} } = {}) {
+  const base = sellerApproval();
+  const approve = async request => { await gate(request); approve.accepted.push(request); return true; };
+  Object.assign(approve, { accepted: [], settled: [], confirm: base.confirm, retained: base.retained });
+  approve.settle = async (request, outcome) => {
+    if (failure) throw failure;
+    approve.settled.push({ request, outcome });
+  };
+  return approve;
+}
+// The settlements of the transactions the wallet wrote; the message signature that precedes each is settled apart.
+export const writesOf = approve => approve.settled.filter(({ request }) => request.method === 'sendTransaction');
+export const outcomes = world => writesOf(world.approve).map(({ outcome }) => outcome);
+export const settlingWorld = (t, { approve = settlingApproval(), ...options } = {}) => sellerWalletWorld(t, { options: { approve, ...options } });
+
+/** An artifact CREATE request built through the walletFactory over `factoryOptions` (the artifact journal by default), and the wallet to send it with. */
+export async function preparedWrite(world, factoryOptions = { anchorJournal: world.wallet.artifactJournal }) {
+  const wallet = world.wallet.walletFactory(factoryOptions);
+  return { wallet, request: await agreementRequest({ session: { wallet }, node: world.node }) };
+}
+export const sendWrite = (world, { wallet, request }) => inWalletPass(world, () => wallet.request(request), { context: JOB_CREATE() });
+/** One artifact CREATE, prepared and sent. */
+export const artifactWrite = async (world, factoryOptions) => ({ answer: await sendWrite(world, await preparedWrite(world, factoryOptions)) });
+export const refuseConfirmation = world => replyTo(world.node, 'confirmTx', row => jsonResponse(ok({ data: { valid: false, message: 'TEST-insufficient-balance', gas_operation: null,
+  transaction: row.body.params[0].data } })));
+
