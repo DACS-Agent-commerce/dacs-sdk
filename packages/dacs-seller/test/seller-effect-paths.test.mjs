@@ -16,7 +16,6 @@ import { PATHS } from './helpers/wire-routes-world.mjs';
 import { MONOTONIC_CLOCK, TEST_BINDING, integrityRoleOf } from './helpers/agent-signing.mjs';
 import { TEST_CONNECTION } from './helpers/wire-authority-fixture.mjs';
 import { JOBS } from './helpers/bilateral-vet-fixture.mjs';
-import { JOB } from './helpers/protocol-fixture.mjs';
 import { T0, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 
