@@ -167,6 +167,55 @@ test('sessionRenewal refuses session_live, session_not_started, seller_session_e
   }
 });
 
+test('a paid purchase renews its seller session inside the safety margin and is refused only once the delegation has expired; an unpaid one keeps the margin', async (t) => {
+  const restarted = async (paid) => {
+    const s = await openPurchase(t);
+    s.restart();
+    if (paid) {
+      const row = s.p.get();
+      s.p.ops.transition(row.id, row.status, 'settled_verified', { state: { protocol: { ...row.state.protocol, stage: 'payment-observed' } }, event: 'test_purchase_paid', data: {} });
+    }
+    return s;
+  };
+  const at = (s, msBeforeExpiry) => { s.w.state.time = s.old.payload.expiresAt - msBeforeExpiry; };
+  const renews = async (s) => {
+    const newClaim = s.session.keys.signerFor(s.p.get()).claim;
+    const { delegation } = await s.p.service.sessionRenewal(s.p.get());
+    assert.deepEqual(delegation.payload, { ...s.old.payload, sessionPublicKey: keyOf(newClaim), notBefore: s.w.state.time - 30000 });
+    assert.deepEqual(protocolOf(s.p).pendingSessionDelegation, { payload: delegation.payload });
+    return delegation;
+  };
+  const refuses = async (s, expected) => {
+    const before = eventCount(s.p);
+    await assert.rejects(s.p.service.sessionRenewal(s.p.get()), code(expected));
+    assert.equal(eventCount(s.p), before);
+    assert.equal(protocolOf(s.p).pendingSessionDelegation, undefined);
+  };
+
+  const fourMinutes = await restarted(true);
+  at(fourMinutes, 4 * 60000);
+  const delegation = await renews(fourMinutes);
+  await fourMinutes.p.service.sessionRenewalAccept(fourMinutes.p.get(), buyerSignsDelegation(fourMinutes.w, delegation.payload));
+  assert.deepEqual(protocolOf(fourMinutes.p).sessionDelegation.payload, delegation.payload);
+  assert.equal(fourMinutes.p.get().status, 'settled_verified');
+
+  const tenMinutes = await restarted(true);
+  at(tenMinutes, 10 * 60000);
+  await renews(tenMinutes);
+
+  for (const msBeforeExpiry of [0, -1]) {
+    const expired = await restarted(true);
+    at(expired, msBeforeExpiry);
+    await refuses(expired, 'seller_delegation_expired');
+  }
+
+  const unpaid = await restarted(false);
+  at(unpaid, 4 * 60000);
+  await refuses(unpaid, 'seller_delegation_expiring');
+  at(unpaid, 10 * 60000);
+  await renews(unpaid);
+});
+
 test("sessionRenewalAccept refuses a signature that does not decode (bad_signature), one that does not verify (peer_delegation_signature_invalid), a payload outside the purchase's scope (peer_delegation_mismatch) and a pending payload whose key is no longer live (session_gone_reapprove), saving nothing", async (t) => {
   const s = await openPurchase(t);
   s.restart();

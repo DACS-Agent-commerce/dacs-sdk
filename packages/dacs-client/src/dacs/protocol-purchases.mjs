@@ -794,7 +794,13 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     const p = operation.state.protocol, retained = p.sessionDelegation;
     if (!operation.terms.protocol.sellerTransport?.delegation || !retained) throw new OperationError('invalid_state', 'this purchase has no retained seller session delegation to renew');
     if (p.sellerSessionFinalAt !== undefined) throw new OperationError('seller_session_ended', 'the seller session of this purchase has ended; there is nothing to renew');
-    requireDelegationMargin(operation, 'a session renewal');
+    // A paid purchase (settled_verified) renews until the delegation itself expires: the renewal is how the seller hears of the payment after a
+    // restart, and the seller still takes a request under a delegation that has not expired. The safety margin stays for an unpaid purchase.
+    if (operation.status !== 'settled_verified') requireDelegationMargin(operation, 'a session renewal');
+    else if (!Number.isSafeInteger(retained.payload?.expiresAt) || retained.payload.expiresAt <= now()) {
+      const when = Number.isSafeInteger(retained.payload?.expiresAt) ? new Date(retained.payload.expiresAt).toISOString() : 'unknown';
+      throw new OperationError('seller_delegation_expired', `the seller session delegation of this paid purchase has expired (its expiry is ${when}), so the seller will not take a renewed key under it; nothing was signed or sent. Do not pay again; keep the transaction hash.`);
+    }
     let signer;
     try { signer = sellerTransport.sessionSignerFor(operation); }
     catch (error) { throw isSessionGone(error) ? new OperationError('session_not_started', 'no seller session key was started in this process; start one before asking for a renewal', undefined, { cause: error }) : error; }
