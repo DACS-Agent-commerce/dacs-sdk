@@ -3810,15 +3810,6 @@ async function uninstall(args: readonly string[]): Promise<number> {
 
 const PRINT_WITNESS_KEY_FLAG = "--print-witness-public-key";
 
-function x402AuthorityRefused(): number | undefined {
-  if (dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402")) return undefined;
-  process.stderr.write(JSON.stringify({
-    status: "refused",
-    reasonCode: "authority-x402-profile-required",
-  }) + "\\n");
-  return 1;
-}
-
 // Runs the testnet wallet-spend authority until SIGINT or SIGTERM. With the
 // witness flag it runs the SDK's service bin instead, which prints the witness
 // public key for DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE and starts nothing.
@@ -3828,8 +3819,10 @@ async function authority(args: readonly string[]): Promise<number> {
     process.stderr.write("usage: npm run dacs:authority [-- " + PRINT_WITNESS_KEY_FLAG + "]\\n");
     return 2;
   }
-  const refused = x402AuthorityRefused();
-  if (refused !== undefined) return refused;
+  if (!dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402")) {
+    process.stderr.write(JSON.stringify({ status: "refused", reasonCode: "authority-x402-profile-required" }) + "\\n");
+    return 1;
+  }
   if (printKey) {
     const bin = fileURLToPath(new URL(
       "walletSpendTestnetServiceMain.js",

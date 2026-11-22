@@ -126,9 +126,9 @@ function stopGroup(run: Run): void {
 }
 
 /** Starts a process in the project, in its own process group, with no DACS setting inherited. */
-function runInProject(executable: string, args: readonly string[]): Run {
+function runInProject(executable: string, args: readonly string[], directory = project): Run {
   const child = spawn(executable, args, {
-    cwd: project,
+    cwd: directory,
     detached: true,
     env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR },
     stdio: ["ignore", "pipe", "pipe"],
@@ -250,5 +250,26 @@ describe("generated authority command line", { timeout: 180_000 }, () => {
       JSON.stringify({ status: "refused", reasonCode: "authority-policy-actor-unavailable" }),
     );
     expect(await readdir(dirname(target))).toEqual([]);
+  });
+
+  test("the authority command refuses in a project without the x402 rail", async () => {
+    const payDem = await generatedProject("pay-dem");
+    try {
+      await writeFile(join(payDem.project, ".env"), [
+        "DACS_BUYER_PUBLIC_BASE_URL=https://buyer.example.test",
+        "DACS_SELLER_PUBLIC_BASE_URL=https://seller.example.test",
+      ].join("\n") + "\n");
+      const build = runInProject("npm", ["run", "build"], payDem.project);
+      expect(await build.exited, build.stdout() + build.stderr()).toBe(0);
+      const refused = runInProject(process.execPath, [
+        "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/cli.js", "authority",
+      ], payDem.project);
+      expect(await refused.exited).toBe(1);
+      expect(refused.stderr()).toContain(
+        JSON.stringify({ status: "refused", reasonCode: "authority-x402-profile-required" }),
+      );
+    } finally {
+      await rm(payDem.root, { recursive: true, force: true });
+    }
   });
 });
