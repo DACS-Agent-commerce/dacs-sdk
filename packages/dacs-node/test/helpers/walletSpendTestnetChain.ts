@@ -1,5 +1,8 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   EIP3009_AUTHORIZATION_CANCELED_TOPIC,
@@ -12,17 +15,24 @@ import {
   type WalletSpendStateV1,
 } from "@kynesyslabs/dacs";
 
+import { createDacsWalletSpendContinuitySignerV1 } from "../../src/walletSpendPostgres.js";
+
 type Hex = `0x${string}`;
 
 export const TESTNET_WALLET = `0x${"5e".repeat(20)}`;
 export const TESTNET_ASSET = `0x${"03".repeat(20)}`;
 export const TESTNET_PAYEE = `0x${"7a".repeat(20)}`;
 export const TESTNET_AMOUNT = "250000";
-const TESTNET_DEPTH = 3;
+export const TESTNET_DEPTH = 3;
 export const SEARCH_FLOOR = 10_000;
 export const LATEST_NUMBER = 20_000;
 /** The final head's height at the fixture depth. */
 export const FINAL_NUMBER = LATEST_NUMBER - TESTNET_DEPTH + 1;
+/** The wallet's token balance the stub answers to `balanceOf`. */
+const TESTNET_BALANCE = 10_000_000n;
+const BALANCE_OF_SELECTOR = "0x70a08231";
+export const TESTNET_TOKEN ="testnet-authority-bearer-".padEnd(48, "k");
+const SEED = Buffer.alloc(32, 7);
 
 export function testnetPolicy(overrides: Partial<WalletSpendPolicyV1> = {}): WalletSpendPolicyV1 {
   return {
@@ -104,7 +114,7 @@ export function stateWithHold(
 
 export interface StubBlock { number: number; hash: Hex; parentHash: Hex; timestamp: number }
 
-const blockHash = (fork: string, number: number): Hex => `0x${sha256Hex(`block:${fork}:${number}`)}`;
+export const blockHash = (fork: string, number: number): Hex => `0x${sha256Hex(`block:${fork}:${number}`)}`;
 
 /**
  * Blocks `low..high` of one chain. Below `split` the blocks are fork "a"'s, so
@@ -216,6 +226,8 @@ export interface RpcCall { id: number; method: string; params: unknown[] }
 
 export interface ChainStub {
   url: string;
+  /** The view the stub serves; tests change it between requests. */
+  state: ChainState;
   calls: RpcCall[];
   close(): Promise<void>;
 }
@@ -241,6 +253,7 @@ function answerFor(state: ChainState, call: RpcCall): unknown {
       return blockAnswer(state.byHash.get(String(first).toLowerCase() as Hex));
     case "eth_call": {
       const data = String((first as { data: string }).data);
+      if (data.startsWith(BALANCE_OF_SELECTOR)) return word(TESTNET_BALANCE);
       const at = state.byHash.get((call.params[1] as { blockHash: Hex }).blockHash);
       const usedFrom = state.usedFrom.get(`0x${data.slice(-64)}`);
       return word(at !== undefined && usedFrom !== undefined && at.number >= usedFrom ? 1 : 0);
@@ -268,9 +281,11 @@ function reply(response: ServerResponse, body: unknown, status = 200): void {
 /**
  * A loopback JSON-RPC stand-in for Base Sepolia that serves `state` and records
  * every call. `answer` may replace an answer (return a status and body).
+ * `hold` may delay an answer until the promise it returns settles.
  */
 export async function chainStub(state: ChainState, options: Readonly<{
   answer?: (call: RpcCall) => Readonly<{ status: number; body: unknown }> | undefined;
+  hold?: (call: RpcCall) => Promise<void> | undefined;
 }> = {}): Promise<ChainStub> {
   const calls: RpcCall[] = [];
   const server = createServer((request, response) => {
@@ -284,13 +299,17 @@ export async function chainStub(state: ChainState, options: Readonly<{
       calls.push(call);
       const replaced = options.answer?.(call);
       if (replaced !== undefined) return reply(response, replaced.body, replaced.status);
-      reply(response, { jsonrpc: "2.0", id: call.id, result: answerFor(state, call) });
+      const answer = () => reply(response, { jsonrpc: "2.0", id: call.id, result: answerFor(state, call) });
+      const held = options.hold?.(call);
+      if (held === undefined) return answer();
+      void held.then(answer);
     });
   });
   stubs.push(server);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/`,
+    state,
     calls,
     close: () => new Promise((resolve) => {
       server.closeAllConnections();
@@ -302,4 +321,48 @@ export async function chainStub(state: ChainState, options: Readonly<{
 /** The default view: one chain whose final head is at `finalTime`. */
 export function defaultChain(finalTime = 1_800_000_000): ChainState {
   return chainState(chainBlocks({ time: timeWithFinalAt(finalTime) }));
+}
+
+export const witnessPublicKey = (): string => createDacsWalletSpendContinuitySignerV1({ seed: SEED }).verificationKey;
+
+async function privateFile(path: string, content: string, mode = 0o600): Promise<string> {
+  await writeFile(path, content, { mode });
+  await chmod(path, mode);
+  return path;
+}
+
+/** A private directory with the token, seed and policy files, and the ten settings. */
+export async function serviceSettings(input: Readonly<{
+  rpcUrl: string;
+  port?: number;
+  policy?: unknown;
+}>): Promise<Readonly<{
+  root: string;
+  dataDirectory: string;
+  tokenFile: string;
+  environment: Record<string, string | undefined>;
+  remove(): Promise<void>;
+}>> {
+  const root = await mkdtemp(join(tmpdir(), "dacs-testnet-authority-"));
+  const tokenFile = await privateFile(join(root, "token"), `${TESTNET_TOKEN}\n`);
+  const dataDirectory = join(root, "data");
+  return {
+    root,
+    dataDirectory,
+    tokenFile,
+    environment: {
+      DACS_WALLET_AUTHORITY_URL: `http://127.0.0.1:${input.port ?? 0}`,
+      DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE: tokenFile,
+      DACS_WALLET_AUTHORITY_ID: "testnet-authority",
+      DACS_WALLET_AUTHORITY_EPOCH: "epoch-one",
+      DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY: witnessPublicKey(),
+      DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE: await privateFile(join(root, "seed"), `${SEED.toString("hex")}\n`),
+      DACS_WALLET_AUTHORITY_DATA_DIRECTORY: dataDirectory,
+      DACS_WALLET_AUTHORITY_POLICY_FILE:
+        await privateFile(join(root, "policy.json"), JSON.stringify(input.policy ?? testnetPolicy()), 0o644),
+      DACS_EVM_RPC_URL: input.rpcUrl,
+      DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK: String(SEARCH_FLOOR),
+    },
+    remove: () => rm(root, { recursive: true, force: true }),
+  };
 }

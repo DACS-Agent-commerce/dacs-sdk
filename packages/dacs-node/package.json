@@ -53,6 +53,9 @@
     "./demos-loader": "./dist/demosLoader.js",
     "./vectors/dacs-http-envelope-v1.json": "./vectors/dacs-http-envelope-v1.json"
   },
+  "bin": {
+    "dacs-wallet-spend-testnet-authority": "./dist/walletSpendTestnetServiceMain.js"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
