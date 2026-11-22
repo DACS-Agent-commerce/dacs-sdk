@@ -381,9 +381,10 @@ describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", 
   it("plans every shard of each suite wherever the suite runs, and only there", () => {
     expect(shards.checkPlan()).toEqual([]);
     expect(shards.plan("pull_request").map((e: Entry) => `${e["node-version"]} ${e.part}`)).toEqual([
-      "22 seller-1", "22 seller-2", "22 client-1", "22 client-2", "22 client-3", "22 client-4", "24 seller-1", "24 seller-2",
+      "22 seller-1", "22 seller-2", "22 seller-3", "22 seller-4", "22 client-1", "22 client-2", "22 client-3", "22 client-4",
+      "24 seller-1", "24 seller-2", "24 seller-3", "24 seller-4",
     ]);
-    for (const event of EVENTS) expect(shards.plan(event)).toHaveLength(8);
+    for (const event of EVENTS) expect(shards.plan(event)).toHaveLength(12);
   });
 
   it("keeps the required check names on build-test-result only, one job per leg that needs every build-test job", () => {
@@ -479,8 +480,8 @@ describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", 
     });
 
     it("refuses a shard count that differs from the suite's", () => {
-      expect(shards.parseShard("2/2", "seller")).toEqual({ index: 2, count: 2 });
-      for (const text of ["1/3", "3/2", "0/2", "2", "", undefined, " 1/2x"]) expect(() => shards.parseShard(text, "seller")).toThrow();
+      expect(shards.parseShard("4/4", "seller")).toEqual({ index: 4, count: 4 });
+      for (const text of ["1/2", "1/5", "5/4", "0/4", "4", "", undefined, " 1/4x"]) expect(() => shards.parseShard(text, "seller")).toThrow();
     });
   });
 });

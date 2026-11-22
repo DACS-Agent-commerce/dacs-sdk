@@ -13,9 +13,9 @@ import { createOperationStore } from './helpers/purchase-integrity-operations.mj
 // actions only read, record observations or reach protocol steps through the
 // held protocol recheck.
 const SERVICE_HELD = ['prepare', 'issueApprovalChallenge', 'approve', 'prepareHandoff', 'nativePaymentLane',
-  'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign'];
+  'agreementIdentity', 'sessionRenewal', 'sessionRenewalAccept', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign'];
 const SERVICE_OPEN = ['status', 'reportWalletResult', 'verifyDeal', 'cancel', 'portalOperation', 'portalEvidence', 'planRunning', 'protocolRecheck'];
-const PROTOCOL_HELD = ['prepareTerms', 'identityRequest', 'planRequest', 'signRequest', 'submitAgreement',
+const PROTOCOL_HELD = ['prepareTerms', 'identityRequest', 'sessionRenewal', 'sessionRenewalAccept', 'planRequest', 'signRequest', 'submitAgreement',
   'recheckCommitment', 'recheck', 'withNativePaymentLane', 'readNativePaymentLane'];
 const PROTOCOL_COMPLETION_HELD = ['checkDelivery', 'countersignRequest', 'countersign'];
 const TABLES = ['operations', 'operation_events', 'challenges', 'approvals', 'write_coordinates', 'wallet_nonce_consumptions'];

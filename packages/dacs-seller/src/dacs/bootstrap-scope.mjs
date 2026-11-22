@@ -19,28 +19,43 @@ function readEnvelope(header) {
   try { return admitWireJson(bytes, DACS_SELLER_HTTP_LIMITS.maxHeaderLength, 'wire_json_rejected', 401); } catch { return null; }
 }
 
-// The wallet address of a canonical claim, or null for any other spelling (the wire canonicalises those itself).
+// A claim as the wire reads it: a `DID:` scheme in any letter case resolves as `did:`; any other value comes back unchanged.
+const RECEIVED_CLAIM = /^[dD][iI][dD]:demos:agent:[0-9a-f]{64}$/;
+const canonicalClaim = (value) => (typeof value === 'string' && RECEIVED_CLAIM.test(value) ? `did${value.slice(3)}` : value);
+
+// A copy of a received payload with its buyer and seller claims in canonical spelling. The shape check, the signature and the
+// scope all read this copy, as the wire's own checks do, never the received spelling.
+function withCanonicalClaims(payload) {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const copy = { ...payload };
+  for (const field of ['buyer', 'seller']) if (Object.hasOwn(copy, field)) copy[field] = canonicalClaim(copy[field]);
+  return copy;
+}
+
+// The wallet address of a canonical claim, or null for any other value.
 function addressOf(claim) {
   try { return addressForClaim(claim); } catch { return null; }
 }
 
 // The `{jobId, buyer, seller, listingPin}` the buyer signed: a delegation's payload, signed by the buyer wallet over the
-// delegation domain and its canonical bytes, or a direct request's payload, signed over the wire's envelope bytes. Null for
-// a payload that cannot be read this way. Throws the wire's own signature refusal (401) when the signature does not verify.
+// delegation domain and its canonical bytes, or a direct request's payload, signed over the wire's envelope bytes; in both the
+// canonical copy of the claims. Null for a payload that cannot be read this way. Throws the wire's own signature refusal (401)
+// when the signature does not verify.
 function signedScope(envelope) {
   if (Object.hasOwn(envelope, 'delegation')) {
-    const { payload, signature } = envelope.delegation ?? {};
+    const { payload: received, signature } = envelope.delegation ?? {};
+    const payload = withCanonicalClaims(received);
     const address = addressOf(payload?.buyer);
     if (address === null) return null;
     const message = `${DACS_SELLER_HTTP_DOMAINS.delegation}${canonicalize(payload)}`;
     if (!verifyDemosSignature({ address, message, signature })) throw new WireError('peer_delegation_signature_invalid', 401);
     return payload;
   }
-  const { payload, signature } = envelope;
+  const payload = withCanonicalClaims(envelope.payload);
   const address = isWirePayload(payload, 'request') ? addressOf(payload.buyer) : null;
   if (address === null) return null;
   const message = wireEnvelopeSigningBytes(payload).toString('utf8');
-  if (!verifyDemosSignature({ address, message, signature })) throw new WireError('peer_signature_invalid', 401);
+  if (!verifyDemosSignature({ address, message, signature: envelope.signature })) throw new WireError('peer_signature_invalid', 401);
   return payload;
 }
 

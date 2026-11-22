@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
@@ -51,7 +52,7 @@ import { SELLER_SR2_PUBLIC_PROJECTION } from './seller-sr2-agreement-consumer.mj
 import { NATIVE_AGREEMENT_PAYMENT, usesNativeAgreementPayment, nativeAgreementPaymentConfig } from './native-agreement-payment-consumer.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, usesNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { sourceDemoSellerTransportConfig } from './source-demo-seller-transport.mjs';
-import { verifySellerSessionDelegation, sellerSessionDelegationSigningBytes, DACS_SELLER_HTTP_LIMITS } from '@kynesyslabs/dacs/wire';
+import { verifySellerSessionDelegation, sellerSessionDelegationSigningBytes, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from '@kynesyslabs/dacs/wire';
 import { SELLER_ANSWER_CLASS } from './seller-response-class.mjs';
 import { createSellerWireAuthentication } from './seller-wire-authentication.mjs';
 import { anchoredTupleMembers, createContinuationEvidence, keepCommitmentTuple, matchesCommitmentSummary } from './continuation-evidence.mjs';
@@ -109,6 +110,14 @@ const AUTHENTICATED_SELLER_TIMEOUT_MS = 240000;
 // composition may set dacsProtocol.planWaitMs (1-90s).
 const PLAN_WAIT_MS = 60000;
 const SESSION_CLAIM_PREFIX = 'did:demos:agent:';
+const SESSION_GONE_CODE = 'session_gone_reapprove';
+// The plugin's own refusal, never a code the seller chose: a refused seller answer is not this.
+const isSessionGone = (error) => error instanceof OperationError && error.code === SESSION_GONE_CODE;
+const sessionGone = () => new OperationError(SESSION_GONE_CODE, 'the seller session key this purchase approved is no longer held; the buyer must approve a new session key; nothing was signed or sent');
+// A retained delegation names the one key the buyer approved. Another key answers the named result before anything is built, signed or recorded.
+function assertDelegationNamesKey(delegation, signer) {
+  if (delegation && `${SESSION_CLAIM_PREFIX}${delegation.payload?.sessionPublicKey}` !== signer.claim) throw sessionGone();
+}
 // Purchase statuses after which a job's Agreement context is never read again.
 const ENDED_STATUSES = new Set(['settled_verified', 'payment_failed', 'payment_mismatch', 'expired', 'terms_changed', 'cancelled', 'superseded', 'agreement_rejected']);
 // A step that leads to a NEW seller write (the Agreement plan, the first
@@ -434,6 +443,8 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
   };
 }
 
+// The routes a proof of explicit resume can name: the wire's signed effect routes.
+const EFFECT_ROUTE_PATHS = new Set(DACS_SELLER_HTTP_ROUTES.filter(route => route.auth === 'signed' && route.effect === 'effect').map(route => route.path));
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
 // already-resolved operator capability (null when it has none, so the paths
 // that need one refuse with buyer_access_closed).
@@ -499,6 +510,19 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   const listingPinFor = operation => Object.fromEntries(['listingId', 'version', 'contentHash'].map(key => [key, operation.terms.listing[key]]));
   const delegationScope = operation => ({ binding: admission.binding, local: admission.currentLocal(), buyer: buyerClaim(operation), seller: operation.terms.seller.claim,
     listingPin: listingPinFor(operation), jobId: operation.terms.protocol.jobId, time: now() });
+  // The route a buyer's explicit resume named belongs to that one call: the call runs in its own scope, so only the seller clients it
+  // builds can take it, once, on its first request for that route. It is never saved and never shared by purchase: another recheck of
+  // the same purchase, an automatic retry or a restart finds none, so only the explicit action sends a proof.
+  const explicitResumeScope = new AsyncLocalStorage();
+  function explicitResumeTaker() {
+    const resume = explicitResumeScope.getStore();
+    if (!resume) return null;
+    return path => {
+      if (resume.path !== path) return false;
+      resume.path = null;
+      return true;
+    };
+  }
   // holder: the calling flow's `{get(), set(next)}` over its own `current`, so the request records advance the flow's row.
   function sellerFor(holder) {
     const operation = holder.get();
@@ -509,13 +533,15 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (declared) {
       const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
       if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
-      authentication = createSellerWireAuthentication({ admission, sessionSigner: sellerTransport.sessionSignerFor(operation), delegation: p.sessionDelegation,
+      const sessionSigner = sellerTransport.sessionSignerFor(operation);
+      assertDelegationNamesKey(p.sessionDelegation, sessionSigner);
+      authentication = createSellerWireAuthentication({ admission, sessionSigner, delegation: p.sessionDelegation,
         seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
         job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
           deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
     }
     const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now });
-    const client = createSellerAgentClient({ url, fetchImpl, commitOnSignature, requestRecords, ...(declared ? { authentication, timeoutMs: sellerRequestTimeoutMs } : {}) });
+    const client = createSellerAgentClient({ url, fetchImpl, commitOnSignature, requestRecords, ...(declared ? { authentication, timeoutMs: sellerRequestTimeoutMs, explicitResume: explicitResumeTaker() } : {}) });
     if (client.origin !== operation.terms.protocol.sellerAgent) throw new OperationError('seller_agent_changed', 'the seller agent endpoint changed since this purchase was prepared; nothing was signed or paid');
     return client;
   }
@@ -720,6 +746,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       current = save(current, { sessionDelegation: { payload: sessionDelegationPayload(current) } }, { event: 'protocol_seller_session_requested' });
     }
     const delegation = current.state.protocol.sessionDelegation;
+    if (delegation) assertDelegationNamesKey(delegation, sellerTransport.sessionSignerFor(current));
     requireDelegationMargin(current, 'the wallet delegation');
     const message = delegation ? await delegationWalletMessage(delegation.payload) : null;
     requireDelegationMargin(current, 'the wallet delegation');
@@ -746,6 +773,66 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     assertPurchaseActionsAdmitted();
     if (canonicalize(admission.currentLocal()) !== localDigest) throw new OperationError('tp1_local_binding_changed', 'the actor connection changed before the wallet message');
     return Buffer.from(bytes).toString('utf8');
+  }
+
+  // ---- Re-approving the seller session key after a restart ----
+  // The retained delegation names a key that only the earlier process held. The buyer's wallet signs a new delegation naming the key this
+  // process holds now. Buyer, seller, Listing pin, job, profile and `expiresAt` stay those of the retained delegation: only `sessionPublicKey`
+  // and `notBefore` change, so approving restores the authority approved before and never a longer or wider one. Nothing is signed or sent here.
+  async function sessionRenewal(operation) {
+    assertPurchaseActionsAdmitted();
+    assertBuyerAccess(operation.terms.buyer.wallet, operation);
+    try {
+      return await sessionRenewalOnce(operation);
+    } catch (error) {
+      return fromStoredIfStale(operation, error, sessionRenewalOnce);
+    }
+  }
+
+  async function sessionRenewalOnce(operation) {
+    assertSellerDeclaration(operation);
+    const p = operation.state.protocol, retained = p.sessionDelegation;
+    if (!operation.terms.protocol.sellerTransport?.delegation || !retained) throw new OperationError('invalid_state', 'this purchase has no retained seller session delegation to renew');
+    if (p.sellerSessionFinalAt !== undefined) throw new OperationError('seller_session_ended', 'the seller session of this purchase has ended; there is nothing to renew');
+    requireDelegationMargin(operation, 'a session renewal');
+    let signer;
+    try { signer = sellerTransport.sessionSignerFor(operation); }
+    catch (error) { throw isSessionGone(error) ? new OperationError('session_not_started', 'no seller session key was started in this process; start one before asking for a renewal', undefined, { cause: error }) : error; }
+    const sessionPublicKey = signer.claim.slice(SESSION_CLAIM_PREFIX.length);
+    if (retained.payload.sessionPublicKey === sessionPublicKey) throw new OperationError('session_live', 'the retained delegation names the session key this process holds; there is nothing to renew');
+    let pending = p.pendingSessionDelegation, current = operation;
+    if (pending?.payload.sessionPublicKey !== sessionPublicKey) {
+      pending = { payload: { ...retained.payload, sessionPublicKey, notBefore: now() - DACS_SELLER_HTTP_LIMITS.maxClockSkewMs } };
+      current = save(operation, { pendingSessionDelegation: pending }, { event: 'protocol_seller_session_renewal_requested' });
+    }
+    const message = await delegationWalletMessage(pending.payload);
+    return { operation: current, delegation: { payload: pending.payload, message } };
+  }
+
+  // The buyer's signature over the pending payload is verified against the purchase's own scope before it is saved; nothing else grants a renewed key.
+  async function sessionRenewalAccept(operation, delegationSignature) {
+    assertPurchaseActionsAdmitted();
+    assertBuyerAccess(operation.terms.buyer.wallet, operation);
+    try {
+      return await sessionRenewalAcceptOnce(operation, delegationSignature);
+    } catch (error) {
+      return fromStoredIfStale(operation, error, (stored) => sessionRenewalAcceptOnce(stored, delegationSignature));
+    }
+  }
+
+  async function sessionRenewalAcceptOnce(operation, delegationSignature) {
+    assertSellerDeclaration(operation);
+    const p = operation.state.protocol, pending = p.pendingSessionDelegation;
+    if (!pending) throw sessionGone();
+    assertDelegationNamesKey(pending, sellerTransport.sessionSignerFor(operation));
+    let signature;
+    try { signature = decodeSignature(delegationSignature).toString('base64url'); }
+    catch (cause) { throw new OperationError('bad_signature', 'the wallet delegation signature encoding is invalid', undefined, { cause }); }
+    const delegation = { payload: pending.payload, signature }, agreement = p.agreement?.artifact ?? p.planned?.draft;
+    await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { ...delegationScope(operation), ...(agreement ? { deadline: agreement.terms.deadline } : {}) }));
+    const next = save(operation, { sessionDelegation: delegation, pendingSessionDelegation: undefined },
+      { event: 'protocol_seller_session_renewed', data: { previousSessionPublicKey: p.sessionDelegation.payload.sessionPublicKey, sessionPublicKey: pending.payload.sessionPublicKey } });
+    return { operation: next };
   }
 
   // ---- DACS-3 plan: the exact Agreement the wallet will sign ----
@@ -1090,7 +1177,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       }
       commitAnswer = await sellerFor({ get: () => current, set: (next) => { current = next; } }).commit(current.terms.protocol.jobId, signedProjection === undefined ? {} : { signedProjection });
     } catch (error) {
-      if (error instanceof StaleProtocolCheck) throw error;
+      if (error instanceof StaleProtocolCheck || isSessionGone(error)) throw error;
       current = note(current, 'commit-request', error instanceof SellerRefusedError ? 'refused' : 'unavailable', error.message, {}, sellerFailureAttempt(error));
     }
     const readback = await readCurrentCommitment(current, { answer: commitAnswer });
@@ -1115,7 +1202,10 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     const p = operation.state.protocol, projected = operation.terms.protocol.sellerAgreementProjection === SELLER_SR2_PUBLIC_PROJECTION;
     if (projected && !p.agreement?.signedProjection) return { reason: 'no kept Agreement signed CREATE to repeat the seller commit request unchanged' };
     try { return { answer: await sellerFor({ get: () => operation, set: (next) => { operation = next; } }).commit(operation.terms.protocol.jobId, projected ? { signedProjection: p.agreement.signedProjection } : {}) }; }
-    catch (error) { return { reason: `the seller's commit answer could not be replayed (${error instanceof SellerRefusedError ? 'refused' : 'unavailable'}: ${String(error?.message ?? error).slice(0, 160)})` }; }
+    catch (error) {
+      if (isSessionGone(error)) throw error;
+      return { reason: `the seller's commit answer could not be replayed (${error instanceof SellerRefusedError ? 'refused' : 'unavailable'}: ${String(error?.message ?? error).slice(0, 160)})` };
+    }
   }
 
   // Fresh independent readback, required before approval and before handoff.
@@ -1295,9 +1385,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       answer = retained ?? await seller.submitPayment({ jobId: operation.terms.protocol.jobId, txHash: coords.reportedTxHash,
         payerPayingKey: buyerClaim(operation), nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
     } catch (error) {
-      // A deleted session key never ends the readback: re-read the retained
+      // A deleted or lost session key never ends the readback: re-read the retained
       // pointer instead, so delivery stays current only on a fresh read.
-      const pointer = !retained && error?.code === 'seller_session_retired' ? retainedSellerAnswer(operation) : null;
+      const pointer = !retained && (error?.code === 'seller_session_retired' || isSessionGone(error)) ? retainedSellerAnswer(operation) : null;
       if (pointer) return advanceNativeEvidence(operation, coords, { retained: pointer, ...({ pointerAsk, sellerProblem: 'the seller session key is retired', sellerGone: true }) });
       if (holding && asking) return withoutSeller(`the seller ${error instanceof SellerRefusedError ? 'refused' : 'could not be asked'} (${String(error?.message ?? error).slice(0, 120)})`);
       // An Agreement readback that is not a definite rejection is indeterminate.
@@ -1371,7 +1461,11 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   // A suspended purchase continues only on an explicit request naming its suspension, after admission and buyer access are checked again.
-  async function recheck(operation, coords, { resumeSuspensionId } = {}) {
+  function recheck(operation, coords, options = {}) {
+    const resume = options.resumeSuspensionId ? { path: null } : null;
+    return explicitResumeScope.run(resume, () => recheckOnce(operation, coords, options, resume));
+  }
+  async function recheckOnce(operation, coords, { resumeSuspensionId } = {}, resume = null) {
     assertPurchaseActionsAdmitted();
     try{assertBuyerAccess(operation.terms.buyer.wallet, operation);}
     catch(error){
@@ -1381,8 +1475,11 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       }
       throw error;
     }
-    if (resumeSuspensionId) createSellerRequestRecords({ db, ops, transaction, holder: { get: () => operation, set: (row) => { operation = row; } }, now }).resume(resumeSuspensionId);
-    else {
+    if (resumeSuspensionId) {
+      const suspension = ops.get(operation.accountId, operation.id)?.state?.protocol?.sellerSuspension;
+      createSellerRequestRecords({ db, ops, transaction, holder: { get: () => operation, set: (row) => { operation = row; } }, now }).resume(resumeSuspensionId);
+      if (suspension?.id === resumeSuspensionId && EFFECT_ROUTE_PATHS.has(suspension.path)) resume.path = suspension.path;
+    } else {
       const stored = ops.get(operation.accountId, operation.id);
       if (stored?.state?.protocol?.sellerSuspension) return stored;
     }
@@ -1444,6 +1541,8 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     prepareTerms,
     assertSellerAdmission,
     identityRequest,
+    sessionRenewal,
+    sessionRenewalAccept,
     planRequest,
     runningPlan,
     planRunning,

@@ -1,5 +1,4 @@
-// node:test reporter for scripts/ci-test-names.mjs (--test-reporter=<this file>). It is a separate module so that the
-// stand-in for "node:test" in that file has no default export, and a file that default-imports node:test fails to load.
+// node:test reporter for scripts/ci-test-names.mjs (--test-reporter=<this file>), kept in its own module.
 
 /**
  * One JSON line per top-level test that ran, {"name", "ok"}.

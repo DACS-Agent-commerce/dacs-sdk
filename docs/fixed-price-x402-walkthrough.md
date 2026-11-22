@@ -81,8 +81,10 @@ Funding follows `docs/live-e2e.md` §2 for the faucet requests and the DEM denom
 
 ### 1. Build and generate (manual)
 
-These commands copy the packed-consumer job in CI. `<checkout>` is your checkout, `<run>` the run
-directory, and `<v>` the checkout's version (`node -p 'require("./package.json").version'`).
+These commands follow the flow of the packed live consumer job in CI, but generate the project with
+`--role seller --deploy local` where that job uses `--role buyer --deploy docker`. `<checkout>` is
+your checkout, `<run>` the run directory, and `<v>` the checkout's version
+(`node -p 'require("./package.json").version'`).
 
 ```bash
 mkdir -m 700 <run>                         # refuses a directory that exists

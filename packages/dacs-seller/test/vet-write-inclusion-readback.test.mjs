@@ -11,7 +11,7 @@ import { orchestratorFixture, assertPresent, blocked, address, BUYER, SELLER, OT
 import { fixture as counterpartyFixture } from './helpers/bilateral-vet-fixture.mjs';
 
 const T0 = 1800000000000, JOB_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
-const READBACK_BOUND_MS = 6 * 60_000;
+const READBACK_BOUND_MS = 30 * 60_000;
 // The orchestrator fixture's anchor clock does not move, so its waits are counted
 // instead: a readback that never stops fails the test rather than hanging it.
 const countedSleep = (onSleep = () => {}) => { let count = 0; return async () => { if (++count > 100) throw new Error('TEST the readback did not stop'); onSleep(count); }; };
