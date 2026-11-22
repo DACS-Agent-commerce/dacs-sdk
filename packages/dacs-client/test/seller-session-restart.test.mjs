@@ -45,9 +45,11 @@ async function sellerRun(t, kind, keys, beforeRun = () => {}) {
   const { createSourceDemoSellerTransport } = await import('../src/dacs/source-demo-seller-transport.mjs');
   const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
   const proof = {};
-  const sellerTransport = createSourceDemoSellerTransport({ authority: 'TEST-wire', sessionSignerFor: (operation) => keys.signerFor(operation), sessionPolicyFor: () => ({ expiresAt: T0 + 1800000 }), endpointProofFor: () => proof.value });
+  // The flow's world, with its endpoint proof and its effect boundary, exists only once the flow starts.
+  const effectBoundary = { signerFor: (...args) => proof.boundary.signerFor(...args) };
+  const sellerTransport = createSourceDemoSellerTransport({ authority: 'TEST-wire', sessionSignerFor: (operation) => keys.signerFor(operation), sessionPolicyFor: () => ({ expiresAt: T0 + 1800000 }), endpointProofFor: () => proof.value, effectBoundary });
   const seen = {};
-  const run = sellerFlow(t, kind, async (s, state, service) => { proof.value = s.w.endpointProof; seen.s = s; seen.service = service; await beforeRun(s, service); }, { sellerTransport });
+  const run = sellerFlow(t, kind, async (s, state, service) => { proof.value = s.w.endpointProof; proof.boundary = s.w.options.effectBoundary; seen.s = s; seen.service = service; await beforeRun(s, service); }, { sellerTransport });
   return { run, seen };
 }
 const noSellerTraffic = (s) => {

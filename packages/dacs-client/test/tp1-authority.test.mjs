@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { createAuthorityFixture, LOCAL } from './fixtures/tp1-authority-reader.mjs';
 import { api, setPurchaseAdmission, world } from './helpers/tp1-node-fixture.mjs'; // first: it installs the purchase-admission hook
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 
 // Loaded after the fixture above has installed the purchase-admission hook.
 const { createWorld, JOB_IDS, queuingFenceOwner } = await import('./helpers/native-create-world.mjs');
@@ -52,7 +53,7 @@ function admitPurchases(t, state = 'testnet-tp1') {
 /** The four token-taking capability constructors, each built from an authority and an explicit binding. */
 const CONSTRUCTORS = [
   { name: 'source demo seller transport', fixture: 'TEST-fixture-seller',
-    build: (authority, binding) => createSourceDemoSellerTransport({ authority, binding, sessionSignerFor: noop, sessionPolicyFor: noop, endpointProofFor: noop }),
+    build: (authority, binding) => createSourceDemoSellerTransport({ authority, binding, sessionSignerFor: noop, sessionPolicyFor: noop, endpointProofFor: noop, effectBoundary: readOnlyBoundary }),
     declared: capability => capability.declaration.authority, configured: sourceDemoSellerTransportConfig },
   { name: 'DEM delivery context', fixture: 'TEST-fixture-context',
     build: (authority, binding) => createDemDeliveryContext({ authority, binding, resolveBuyer: noop, resolveSeller: noop }),

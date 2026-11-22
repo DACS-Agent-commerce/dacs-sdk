@@ -69,7 +69,7 @@ export async function purchaseWorld(t, { host, listing }) {
   const unused = (what) => () => { throw new Error(`TEST ${what} not in scope`); };
   const session = createEphemeralWallet();
   const sellerTransport = createSourceDemoSellerTransport({ authority: COMMITMENT_AUTHORITY, sessionSignerFor: () => ({ claim: session.claim, sign: unused('session signing') }),
-    sessionPolicyFor: () => ({ expiresAt: CLIENT_NOW + 1_800_000 }), endpointProofFor: unused('endpoint proof') });
+    sessionPolicyFor: () => ({ expiresAt: CLIENT_NOW + 1_800_000 }), endpointProofFor: unused('endpoint proof'), effectBoundary: readOnlyBoundary });
   const evidenceSource = createDevnetSettlementTransport({ boundary: readOnlyBoundary, journal: native.journal,
     settlementPublication: { policy: DEVNET_SETTLEMENT_POLICY, artifactKind: 'SettlementEvidence', phase: 'pay-dem', railId: 'demos-native:DEM', phaseIndex: 2, authority: COMMITMENT_AUTHORITY },
     expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },

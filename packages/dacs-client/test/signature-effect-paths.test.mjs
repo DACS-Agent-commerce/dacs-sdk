@@ -244,7 +244,8 @@ test('with the signing of a session-key request held pending, or the request hel
     await flush();
     pending.change[name]();
     held.release();
-    await assert.rejects(sending, error => error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT);
+    // A host stop refused before anything was written reaches the caller as the stop's own refusal; the others are unsent seller calls.
+    await assert.rejects(sending, error => name === 'stop' ? error.code === expected : error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT);
     assert.equal(pending.seller.seen.requests.length, 0, `${name}: the request was written while its signing was pending`);
 
     const waiting = await requestWorld(t);
