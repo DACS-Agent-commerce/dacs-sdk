@@ -38,6 +38,12 @@ async function printWitnessPublicKey(): Promise<void> {
 
 async function serve(): Promise<void> {
   const authority = await startDacsWalletSpendTestnetAuthorityV1();
+  // Registered before the listening line is printed: whoever reads that line may stop the service at once.
+  const shutDown = () => {
+    authority.stop().then(() => process.exit(0), () => process.exit(1));
+  };
+  process.once("SIGTERM", shutDown);
+  process.once("SIGINT", shutDown);
   printLine(process.stdout, {
     status: "listening",
     url: authority.url,
@@ -51,11 +57,6 @@ async function serve(): Promise<void> {
       payDemLineageKey: authority.payDem.lineageKey, payDemPolicyHash: authority.payDem.policyHash,
     }),
   });
-  const shutDown = () => {
-    authority.stop().then(() => process.exit(0), () => process.exit(1));
-  };
-  process.once("SIGTERM", shutDown);
-  process.once("SIGINT", shutDown);
 }
 
 async function main(args: readonly string[]): Promise<void> {
