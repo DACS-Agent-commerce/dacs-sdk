@@ -44,7 +44,9 @@
 // `walletSession` and `participantImplementations`; no option, environment
 // variable or file names a record. Under the state lock it checks the data
 // directory's format marker (kit-format.json), finalizes the wallet session with
-// its one effect boundary over <dataDirectory>/effects, keeps the wire request journal at
+// its one effect boundary over <dataDirectory>/effects (with the production port,
+// createSellerWalletSession, `artifactAnchor` must be the port's own handle, which
+// that finalization binds), keeps the wire request journal at
 // <dataDirectory>/wire-journal under a 300 s lease, so an unusable journal
 // refuses startup, and holds the binding, the journal and the seller's signer in a
 // wire context for the signed routes. Every route opens each request and signs
@@ -82,6 +84,7 @@ import { createSellerTransportStore, sellerStoreInternals } from './dacs/seller-
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
+import { isSellerWalletSession } from './devnet-demo/seller-wallet-session.mjs';
 import { stopRequested } from './devnet-demo/stop-request.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
@@ -329,6 +332,10 @@ export async function startSellerHost(options) {
   }
   // The context route's provider handoff: a copied or incomplete capability is refused here, before the lock and any file.
   const provider = demDeliveryContextHost(demDeliveryContext);
+  // The production port's anchor handle is bound when the port is finalized; no other anchor can stand in for it.
+  if (isSellerWalletSession(walletSession) && artifactAnchor !== walletSession.artifactAnchor) {
+    throw new TypeError('with the production walletSession, artifactAnchor must be walletSession.artifactAnchor');
+  }
   const sellerClaim = listing.seller.identity.presentedBy;
   // The production reader reads a job's context admission row; the transaction that keeps those rows exists only under
   // the lock, and no request is served before it does.

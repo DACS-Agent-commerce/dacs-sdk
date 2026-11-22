@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move the record anchor past the merged README and wallet session choices",
+  "kind": "checkpoint",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "88725ab32103a570eaa7269f9f32c8755a912078",
+      "after": "88725ab32103a570eaa7269f9f32c8755a912078"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-9629541c9b48.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "The merged README differs from both parents of the merge, so the anchor moves to the commit that chose it, whose one parent already holds the anchored copy; the anchored manifest moves to this side's copy, which that commit holds. This commit changes only the anchor and the pins; this checkpoint states the README blob it left unchanged, so the anchored README keeps a record after the anchor."
+}

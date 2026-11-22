@@ -16,6 +16,7 @@ import { createEffectHistory } from './effect-history.mjs';
 import { assertCurrentAuthorization, currentPassContext, runInPassContext } from './pass-context.mjs';
 import { classifyDispatchHistory, nothingSent } from './native-dispatch-history.mjs';
 import { signerReservationKey } from './signer-reservation.mjs';
+import { authorityLabel } from '../dacs/tp1-authority-token.mjs';
 import { createDemosChainReader, nonceFromNode, nodeProjectedNonce } from '../dacs/chain.mjs';
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
 import { observePayDemTransferCore } from '@kynesyslabs/dacs/seller';
@@ -123,6 +124,10 @@ const TRANSFER_REFUSALS = Object.freeze({
 export const transferRefusal = (error) => Object.hasOwn(TRANSFER_REFUSALS,error?.code ?? '')
   ? [409,{ error:error.code,message:TRANSFER_REFUSALS[error.code],result:409,response:TRANSFER_REFUSALS[error.code],require_reply:false,extra:null }] : null;
 const clone = (v) => structuredClone(v);
+const isTestLabel = (value) => typeof value === 'string' && value.startsWith('TEST-');
+const isTestRunLabel = (value) => typeof value === 'string' && /^TEST-RUN-[A-Za-z0-9._-]{8,80}$/.test(value);
+// A publication policy as the transport declares it: a frozen copy whose authority is its label. A token counts only for `binding`.
+const declaredPolicy = (policy, binding, isFixtureLabel, requirement) => Object.freeze(clone({ ...policy, authority: authorityLabel(policy.authority, binding, isFixtureLabel, requirement) }));
 // What the transport calls on the effect boundary (the required `boundary` option of the transport constructors).
 const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPass'];
 // The lease's expiry timer fires this long after the lease expires, so a timer that fires early still finds it expired.
@@ -296,7 +301,7 @@ export function createSourceObserver({ record, owner, stabilisedGenesis = null, 
 function constructTransport({ expected, transportOwner, journal, fallback = null, stabilisedGenesis = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
   fetchImpl = globalThis.fetch, now = () => Date.now(), stamps = { next: () => now() }, monotonicNow = () => performance.now(), timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null, boundary, reopenGrants = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
+  settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, authorityBinding, approveConfirmedWrite = null, boundary, reopenGrants = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
   if (!BOUNDARY_METHODS.every((name) => typeof boundary?.[name] === 'function')) throw new TypeError(`the effect boundary needs ${BOUNDARY_METHODS.join(', ')}`);
   if (reopenGrants !== null && typeof reopenGrants?.consume !== 'function') throw new TypeError('reopenGrants is null or an object with a consume function');
   if (!transportOwner || typeof transportOwner.getContext !== 'function' || typeof transportOwner.acquireConnectionFence !== 'function') throw new TypeError('actual transport-owner context and connection fencing are required');
@@ -329,22 +334,19 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   if(agreement && new URL(pinned?.endpoint ?? 'https://held.invalid').pathname !== '/') throw new TypeError('the explicit Agreement source supports the SDK root RPC contract only');
   if (settlement && (!settlementPublication || JSON.stringify(Object.keys(settlementPublication).sort()) !== JSON.stringify(['artifactKind','authority','phase','phaseIndex','policy','railId'])
     || settlementPublication.policy !== DEVNET_SETTLEMENT_POLICY || settlementPublication.artifactKind !== 'SettlementEvidence'
-    || settlementPublication.phase !== 'pay-dem' || settlementPublication.railId !== 'demos-native:DEM' || settlementPublication.phaseIndex !== 2
-    || typeof settlementPublication.authority !== 'string' || !settlementPublication.authority.startsWith('TEST-'))) throw new TypeError('an exact explicit TEST SettlementEvidence publication policy is required');
+    || settlementPublication.phase !== 'pay-dem' || settlementPublication.railId !== 'demos-native:DEM' || settlementPublication.phaseIndex !== 2)) throw new TypeError('an exact explicit SettlementEvidence publication policy is required');
   if (!settlement && settlementPublication !== null) throw new TypeError('SettlementEvidence policy requires the separate settlement transport constructor');
-  const publication = settlement ? Object.freeze(clone(settlementPublication)) : null;
+  const publication = settlement ? declaredPolicy(settlementPublication, authorityBinding, isTestLabel, 'a TEST or token authority is required for the SettlementEvidence publication policy') : null;
   if (delivery && (!deliveryPublication || JSON.stringify(Object.keys(deliveryPublication).sort()) !== JSON.stringify(['artifactKind','authority','phase','phaseIndex','policy'])
     || deliveryPublication.policy !== DEVNET_DELIVERY_POLICY || deliveryPublication.artifactKind !== 'Deliverable'
-    || deliveryPublication.phase !== 'deliver-storage-program' || !Number.isSafeInteger(deliveryPublication.phaseIndex) || deliveryPublication.phaseIndex < 0
-    || typeof deliveryPublication.authority !== 'string' || !deliveryPublication.authority.startsWith('TEST-'))) throw new TypeError('an exact explicit TEST Deliverable publication policy is required');
+    || deliveryPublication.phase !== 'deliver-storage-program' || !Number.isSafeInteger(deliveryPublication.phaseIndex) || deliveryPublication.phaseIndex < 0)) throw new TypeError('an exact explicit Deliverable publication policy is required');
   if (!delivery && deliveryPublication !== null) throw new TypeError('Deliverable policy requires the separate delivery transport constructor');
-  const deliveryDeclaration = delivery ? Object.freeze(clone(deliveryPublication)) : null;
+  const deliveryDeclaration = delivery ? declaredPolicy(deliveryPublication, authorityBinding, isTestLabel, 'a TEST or token authority is required for the Deliverable publication policy') : null;
   if (demo && (!demoArtifactPublication || JSON.stringify(Object.keys(demoArtifactPublication).sort()) !== JSON.stringify(['artifactKinds','authority','policy'])
     || demoArtifactPublication.policy !== DEVNET_DEMO_ARTIFACT_POLICY
-    || ![DEVNET_DEMO_ARTIFACT_TYPES,[...DEVNET_DEMO_ARTIFACT_TYPES,'SettlementEvidence']].some(kinds=>canonicalize(demoArtifactPublication.artifactKinds)===canonicalize(kinds))
-    || typeof demoArtifactPublication.authority !== 'string' || !/^TEST-RUN-[A-Za-z0-9._-]{8,80}$/.test(demoArtifactPublication.authority))) throw new TypeError('an exact run-scoped TEST demo artifact publication policy is required');
+    || ![DEVNET_DEMO_ARTIFACT_TYPES,[...DEVNET_DEMO_ARTIFACT_TYPES,'SettlementEvidence']].some(kinds=>canonicalize(demoArtifactPublication.artifactKinds)===canonicalize(kinds)))) throw new TypeError('an exact demo artifact publication policy is required');
   if (!demo && demoArtifactPublication !== null) throw new TypeError('demo artifact policy requires the separate demo transport constructor');
-  const demoDeclaration = demo ? Object.freeze(clone(demoArtifactPublication)) : null;
+  const demoDeclaration = demo ? declaredPolicy(demoArtifactPublication, authorityBinding, isTestRunLabel, 'a run-scoped TEST or token authority is required for the demo artifact publication policy') : null;
   // Keep the binder's established identity unchanged: the separate signed
   // publication declaration narrows what this capability may relay, but does
   // not invent a different observed network.

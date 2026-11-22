@@ -517,7 +517,7 @@ const signLines=async(f)=>(await f.read()).rows.filter(row=>row.signAuthorized).
 const TOTAL_OS=BigInt(payDem().content.debit.totalOs);
 for(const [label,limits,hold,spent] of [
  ['a fee-cap hold under a one-write hourly limit',{maxWritesPerHour:1,maxWriteTotalOs:'1000000000'},'write-fee-cap',1],
- ['an hourly write-limit hold over the hourly DEM limit',{maxWritesPerHour:1,maxTotalOsPerHour:(TOTAL_OS+1n).toString()},'hourly-write-limit',1],
+ ['an hourly write-limit hold over the hourly DEM limit',{maxWritesPerHour:1,maxWriteTotalOs:TOTAL_OS.toString(),maxTotalOsPerHour:(TOTAL_OS+1n).toString()},'hourly-write-limit',1],
  ['a job write-limit hold at the hourly write limit',{maxWritesPerHour:6},'job-write-limit',6]])
  test(`a manual yes for ${label} is refused at the sign gate`,async t=>{
   const f=await fixture(t,purchase);await spentWrites(f,spent);const signed=await signLines(f),p=policyWith(f,limits),r=payDem();

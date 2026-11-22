@@ -66,7 +66,7 @@ export function scriptedNode() {
   };
   return node;
 }
-export async function world(t, { held = false, journalWrap = x => x, ownerWrap = x => x, createSession = api.createNodeWalletSession, sessionOptions = {} } = {}) {
+export async function world(t, { held = false, journalWrap = x => x, ownerWrap = x => x, createSession = api.createNodeWalletSession, sessionOptions = {}, sessionOptionsFor = async () => ({}) } = {}) {
   setPurchaseAdmission(held ? 'held' : 'testnet-tp1');
   const dir = mkdtempSync(join(tmpdir(), 'node-wallet-session-')), path = join(dir, 'journal.sqlite');
   const node = scriptedNode(), authority = createAuthorityFixture(), key = mnemonicBytes();
@@ -82,7 +82,7 @@ export async function world(t, { held = false, journalWrap = x => x, ownerWrap =
     // A seller composition requires the host's proof that it owns the state directory and its payment-evidence approval ledger.
     const sellerInputs = createSession === api.createNodeSellerComposition
       ? { stateOwnership: { directory: dir, held: () => true }, paymentEvidenceApproval: recordingApproval() } : {};
-    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...finalization, ...sellerInputs, ...sessionOptions });
+    session = await createSession({ admission, owner, journal: journalWrap(journal), key: mnemonicBytes(), approve: async () => true, clock, ...finalization, ...sellerInputs, ...sessionOptions, ...await sessionOptionsFor(admission) });
     sessions.push(session);
     return { owner, admission };
   }

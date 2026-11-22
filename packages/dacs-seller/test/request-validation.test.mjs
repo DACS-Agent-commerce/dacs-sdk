@@ -145,7 +145,7 @@ test('a Vet record with no seller record of its job is held',async()=>{
 // Named regressions of earlier review findings.
 test('there is no manual approval option or caller total: an over-cap or malformed request refuses with them (D-1, D-2)',async()=>{
   const options={manualApproved:true,countedTotal:0n,confirmedTotal:0n},malformed=requestFor();malformed.content.exactCreate='{';
-  assert.equal(await refusal(requestFor({rpcFeeDem:'10'}),approvable(false),options),'write-fee-cap');
+  assert.equal(await refusal(requestFor({rpcFeeDem:'48'}),approvable(false),options),'write-fee-cap');
   assert.equal(await refusal(malformed,approvable(false),options),'create-bytes');
 });
 for(const [label,mutate] of [
