@@ -16,13 +16,15 @@ import {
   DEMOS_WALLET,
   closeDemosNodeStubs,
   closedPortUrl,
+  demosAuthorityClient,
+  demosHold,
   demosLaneSettings,
   demosNodeStub,
   demosPolicy,
   recordedDemosState,
   withoutX402Lane,
 } from "./helpers/walletSpendDemosNode.js";
-import { witnessReceipts } from "./helpers/walletSpendFileAuthorityStores.js";
+import { headStateFile, witnessReceipts } from "./helpers/walletSpendFileAuthorityStores.js";
 import {
   TESTNET_TOKEN,
   chainStub,
@@ -256,8 +258,9 @@ describe("testnet wallet-spend authority process", { timeout: 60_000 }, () => {
     await refusedWith(environment, "wallet-spend-file-witness-record-damaged");
   });
 
-  it("the bin starts a DEM lane only against the approved testnet", async () => {
-    const node = await demosNodeStub(recordedDemosState(TP1_APPROVED_IDENTITY_RECORD.chainIdentity));
+  /** A DEM-only service's settings over an approved-identity node stub, with the node routed in the child. */
+  async function demFixture(stubOptions: Parameters<typeof demosNodeStub>[1] = {}) {
+    const node = await demosNodeStub(recordedDemosState(TP1_APPROVED_IDENTITY_RECORD.chainIdentity), stubOptions);
     const settings = await serviceSettings({ rpcUrl: "https://base-sepolia.unused.example/" });
     cleanups.push(() => settings.remove());
     const lane = await demosLaneSettings({ root: settings.root, rpcUrl: DEMOS_NODE_URL });
@@ -266,9 +269,15 @@ describe("testnet wallet-spend authority process", { timeout: 60_000 }, () => {
       ...withoutX402Lane(settings.environment), ...lane.environment, DACS_WALLET_AUTHORITY_URL: `http://127.0.0.1:${port}`,
       DACS_TEST_DEMOS_NODE_TARGET: node.url,
     };
-    const routed = ["--import", pathToFileURL(join(PACKAGE_DIRECTORY, "test/helpers/routeDemosNodeFetch.mjs")).href];
+    const start = (changed: Record<string, string> = {}) => run({ ...environment, ...changed }, [], [
+      "--import", pathToFileURL(join(PACKAGE_DIRECTORY, "test/helpers/routeDemosNodeFetch.mjs")).href,
+    ]);
+    return { settings, dataDirectory: lane.dataDirectory, port, start };
+  }
 
-    const service = run(environment, [], routed);
+  it("the bin starts a DEM lane only against the approved testnet", async () => {
+    const { settings, port, start } = await demFixture();
+    const service = start();
     const started = await service.started;
     expect(started, service.stderr()).toMatchObject({
       status: "listening",
@@ -289,11 +298,59 @@ describe("testnet wallet-spend authority process", { timeout: 60_000 }, () => {
       [{ DACS_TEST_DEMOS_NODE_TARGET: await closedPortUrl() }, "wallet-spend-testnet-authority-demos-node-unavailable"],
     ];
     for (const [changed, reasonCode] of refusals) {
-      const refused = run({ ...environment, ...changed }, [], routed);
+      const refused = start(changed);
       expect(await refused.exited, `${reasonCode}: ${refused.stdout()}${refused.stderr()}`).toBe(1);
       expect(JSON.parse(refused.stderr().trim())).toMatchObject({ status: "refused", reasonCode });
       expect(await portRefused(port)).toBe(true);
     }
+  });
+
+  it("a kill between recording a DEM hold and answering never yields a second authorization", async () => {
+    let balanceReads = 0;
+    let release = (): void => undefined;
+    let reached = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const recorded = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    // The reserve reads the balance before it records the hold; the second read builds the answer.
+    const { settings, dataDirectory, start } = await demFixture({
+      hold: (call) => {
+        if (call.message !== "getAddressInfo" || ++balanceReads !== 2) return undefined;
+        reached();
+        return held;
+      },
+    });
+    const sent: { body: string; operationId: string }[] = [];
+    const client = (url: string) => demosAuthorityClient({
+      authority: { url, authorityId: "testnet-authority", epoch: "epoch-one", witnessVerificationKey: witnessPublicKey() },
+      tokenFile: settings.tokenFile,
+      fetch: async (input, init) => {
+        if (init?.method === "POST" && typeof init.body === "string") {
+          sent.push({ body: init.body, operationId: (JSON.parse(init.body) as { operationId: string }).operationId });
+        }
+        return fetch(input, init);
+      },
+    });
+
+    const first = start();
+    const reserving = (await client(await listening(first))).reserve(demosHold()).catch(() => "unanswered");
+    await recorded;
+    first.child.kill("SIGKILL");
+    await first.exited;
+    release();
+    await expect(reserving).resolves.toBe("unanswered");
+    const [reserve] = sent.filter((request) => request.body.includes("\"operation\":\"reserve\""));
+    if (reserve === undefined) throw new Error("expected a reserve request");
+
+    const second = start();
+    const repeated = await (await post(await listening(second), reserve.body)).json() as { result: unknown };
+    expect(repeated.result).toMatchObject({ status: "held", stage: "reserved" });
+    expect(headStateFile(dataDirectory).reservations).toHaveLength(1);
+    expect(witnessReceipts(dataDirectory).filter((receipt) => receipt.operationId === reserve.operationId))
+      .toHaveLength(1);
   });
 
   it("prints the witness public key from the seed file alone", async () => {

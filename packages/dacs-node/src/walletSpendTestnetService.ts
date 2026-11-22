@@ -303,39 +303,33 @@ export async function startDacsWalletSpendTestnetAuthorityV1(input: Readonly<{
     await payDem?.reader.assertNetwork();
 
     const { server, origin, serve } = await bindPort(settings.listen);
-    const opened: Lane["stores"][] = [];
-    const openStores = async (lane: Readonly<{ dataDirectory: string; policy: Lane["policy"] }>) => {
-      const stores = await openDacsWalletSpendFileAuthorityStoresV1({
+    const openStores = (lane: Readonly<{ dataDirectory: string; policy: Lane["policy"] }>) =>
+      openDacsWalletSpendFileAuthorityStoresV1({
         directory: lane.dataDirectory, policy: lane.policy,
         authorityId: settings.authorityId, epoch: settings.epoch, seed: witnessSeed,
       });
-      opened.push(stores);
-      return stores;
-    };
-    const lanes: Lane[] = [];
-    let x402Stores: Lane["stores"] | undefined;
-    let payDemStores: Lane["stores"] | undefined;
+    let x402Open: Lane | undefined;
+    let payDemOpen: Lane | undefined;
+    const closeStores = () => Promise.all([x402Open?.stores.close(), payDemOpen?.stores.close()]);
     try {
-      if (x402 !== undefined) {
-        x402Stores = await openStores(x402.settings);
-        lanes.push(x402Lane(x402Stores, x402.settings.policy, x402.reader));
-      }
+      if (x402 !== undefined) x402Open = x402Lane(await openStores(x402.settings), x402.settings.policy, x402.reader);
       if (payDem !== undefined) {
-        payDemStores = await openStores(payDem.settings);
-        lanes.push(payDemLane(payDemStores, payDem.settings.policy, payDem.reader));
+        payDemOpen = payDemLane(await openStores(payDem.settings), payDem.settings.policy, payDem.reader);
       }
     } catch (error) {
       serve(new Error("wallet-spend-testnet-authority-stores-unavailable"));
       await closeServer(server, 0);
-      await Promise.all(opened.map((stores) => stores.close()));
+      await closeStores();
       throw error;
     }
-    serve(composeHandler({ settings, tokenDigest, lanes }));
+    serve(composeHandler({
+      settings, tokenDigest, lanes: [x402Open, payDemOpen].filter((lane) => lane !== undefined),
+    }));
 
     let stopped: Promise<void> | undefined;
     const stop = async (): Promise<void> => {
       await closeServer(server, STOP_GRACE_MS);
-      await Promise.all(opened.map((stores) => stores.close()));
+      await closeStores();
     };
     return Object.freeze({
       url: `${origin}/`,
@@ -343,9 +337,11 @@ export async function startDacsWalletSpendTestnetAuthorityV1(input: Readonly<{
       epoch: settings.epoch,
       // The settings check that the seed derives this key, and every lane's stores sign with that seed.
       witnessVerificationKey: settings.witnessVerificationKey,
-      ...(x402Stores === undefined ? {} : { lineageKey: x402Stores.lineageKey, policyHash: x402Stores.policyHash }),
-      ...(payDemStores === undefined ? {} : {
-        payDem: Object.freeze({ lineageKey: payDemStores.lineageKey, policyHash: payDemStores.policyHash }),
+      ...(x402Open === undefined ? {} : {
+        lineageKey: x402Open.stores.lineageKey, policyHash: x402Open.stores.policyHash,
+      }),
+      ...(payDemOpen === undefined ? {} : {
+        payDem: Object.freeze({ lineageKey: payDemOpen.stores.lineageKey, policyHash: payDemOpen.stores.policyHash }),
       }),
       stop: () => (stopped ??= stop()),
     });
