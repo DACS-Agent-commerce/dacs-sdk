@@ -1,5 +1,6 @@
 import { createFixtureSettlement } from './fixture-settlement.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
+import { currentAuthorizationFor } from '../devnet-demo/create-pass.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 // Seller agent for one verified fixed-price DEM Listing, acting as phase
 // orchestrator (seller-as-phase-orchestrator-v1). Transport-neutral: every
@@ -547,6 +548,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const transport = transportAuthority.getStore();
     return () => { transport?.check(); assertSettlementCredit(jobId); return durable ? durable.assertHeld(jobId) : true; };
   };
+  // The pass of a job's native CREATE: heldFor's predicates and the lane's retained revision (`revisionOf` the job's current
+  // session must still give `expected`), asked last before the CREATE is signed and before each transmission.
+  const jobCreatePass = (jobId, expected, revisionOf) => ({ operationClass: 'job-create', currentAuthorization: currentAuthorizationFor({ held: heldFor(jobId),
+    revision: { expected, current: () => { const session = durable?.loadSession(jobId) ?? sessions.get(jobId); return session ? revisionOf(session) : null; } } }) });
   // The restart read of a Deliverable this seller submitted: a CREATE it kept that
   // is still pending is sent again (the original bytes, once) only while heldFor's
   // check, asked right before the send, still holds. Any other read is passive.
@@ -1121,7 +1126,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             heldFor(jobId)?.();
             session.commitmentPublishAsked = true;
             persist(session);
-            const out=await nativeArtifactAnchor.publish({logicalAddress,artifact:commitmentRecord,artifactKind:'FinalityCommitmentRecord',authorize:heldFor(jobId),authorizeSigning:heldFor(jobId)});
+            const out=await nativeArtifactAnchor.publish({logicalAddress,artifact:commitmentRecord,artifactKind:'FinalityCommitmentRecord',authorize:heldFor(jobId),authorizeSigning:heldFor(jobId),
+              ...jobCreatePass(jobId,contentHash(agreement),(current)=>contentHash(current.agreement))});
             if(out.status!=='present') throw new Error(out.reason ?? 'native commitment publication is indeterminate');
             nativeCommitmentProjection=out.signedProjection;
             return {record:commitmentRecord,nativeAddress:out.receipt.nativeAddress,anchorTxRef:out.txRef,anchorReceipt:out.receipt};
@@ -1667,8 +1673,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         persist(session);
         // authorize('signing') is the capability's last check before it signs; passing it holds the settlement gate until the submission returns.
         let release=null,answer;
+        // The capability also asks authorize('signing') as its CREATE pass's current-authorization check, bound to this fulfilment.
+        const {currentAuthorization}=jobCreatePass(session.jobId,canonicalize(binding),(current)=>current.deliveryAdapter&&canonicalize(current.deliveryAdapter.deliveryBinding));
         const authorize=(stage)=>{
-          const allowed=heldFor(session.jobId)();
+          const allowed=currentAuthorization();
           if(allowed===true&&stage==='signing'&&!release){let open;signingGates.set(work.intake.settlementId,new Promise((resolve)=>{open=resolve;}));release=()=>{signingGates.delete(work.intake.settlementId);open();};}
           return allowed;
         };
@@ -1994,16 +2002,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // was signed, so it holds instead of asking a non-idempotent capability for
     // a second CREATE at the same address.
     let read;
+    const evidencePass=jobCreatePass(session.jobId,ready.evidenceHash,(current)=>current.deliveryEvidenceWork?.evidenceHash);
     try{
       if(!session.deliveryEvidenceWork){
         session.deliveryEvidenceWork={address,evidenceHash:ready.evidenceHash};persist(session);
-        read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId)});
+        read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId),...evidencePass});
       }else{
         if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash)return held('retained delivery evidence work differs from the verified Deliverable');
         // Only a seller that publishes delivery evidence may send its retained CREATE again,
         // and only while the check that authorized signing it still holds.
         read=await readRetainedBounded(nativeArtifactAnchor,{logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true},{resend:deliveryEvidenceEnabled,authorizeResend:heldFor(session.jobId)});
-        if(deliveryEvidenceEnabled&&mayPublishAgain(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId)});
+        if(deliveryEvidenceEnabled&&mayPublishAgain(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId),...evidencePass});
       }
     }catch(error){return held(String(error?.message??error).slice(0,240));}
     if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');

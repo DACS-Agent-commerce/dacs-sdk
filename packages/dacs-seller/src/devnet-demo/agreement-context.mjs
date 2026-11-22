@@ -6,6 +6,7 @@ import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionS
 import { addressForClaim } from '../dacs/demos-claims.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
+import { currentAuthorizationFor } from './create-pass.mjs';
 import { OperationError } from '../operations.mjs';
 import { sellerDiagnostic } from '../seller-diagnostics.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -646,7 +647,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ);
     if(read.status!=='present'){
       guard(job,'counterparty anchor');await markWrite(job);
-      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job),awaitInclusion:true});
+      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job),awaitInclusion:true,...vetCreatePass(job)});
       // A returned refusal and an unknown submission are different outcomes:
       // keep the anchor's own reason and its retryable/terminal class.
       if(read?.status!=='present'){
@@ -682,6 +683,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   function authorizeSigningFor(job) {
     return ()=>{guard(job,'signature');return true;};
   }
+  // A Vet CREATE's pass check is the same synchronous purchase check, asked last before it signs and before each
+  // transmission. The durable row is read asynchronously, so it stays authorize's (awaited before the intent).
+  const vetCreatePass=(job)=>({operationClass:'job-create',currentAuthorization:currentAuthorizationFor({held:authorizeSigningFor(job),revision:null})});
   // The durable lifecycle is shared by every provider, unlike job.open().
   async function authorizeEffect(job) {
     const row=await state.read(job.jobId);
@@ -780,7 +784,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
             // and sends nothing. The write mark is inside anchorCall, so a busy
             // store there is a retryable wait like a busy anchor journal.
             const authorize=async()=>{try{return await authorizeEffect(job);}catch(error){throw closure('anchor-authorize',error);}};
-            out=await anchorCall(async()=>{await markWrite(job);return observed('publish',()=>anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize,authorizeSigning:authorizeSigningFor(job),awaitInclusion:true}));});
+            out=await anchorCall(async()=>{await markWrite(job);return observed('publish',()=>anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize,authorizeSigning:authorizeSigningFor(job),awaitInclusion:true,...vetCreatePass(job)}));});
           }else{
             // Readback only: a read never creates an intent.
             out=await anchorRead('publish',()=>anchor.read({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord'},PASSIVE_RETAINED_READ));

@@ -189,7 +189,7 @@ test('after finalization the port\'s artifactAnchor is the anchor composed over 
   assert.equal(anchor.authority, session.transport.demoArtifactPublication.authority, 'the authority is the declared publication\'s');
 
   const listing = fixtureListing(world.signer, { now: T0 });
-  const input = { logicalAddress: 'dacs1:listing:fixture-report:1', artifact: listing, artifactKind: 'Listing' };
+  const input = { logicalAddress: 'dacs1:listing:fixture-report:1', artifact: listing, artifactKind: 'Listing', operationClass: 'job-create', currentAuthorization: () => true };
   const reads = world.node.calls.length;
   await assert.rejects(anchor.publish({ ...input, authorizeSigning: true }), { code: 'not-authorized' });
   await assert.rejects(anchor.publish({ ...input, authorizeSigning: () => true }), { code: 'nonce_lane_unavailable' });
@@ -405,7 +405,8 @@ async function composedObserver(t) {
   const composed = anchorOptions.length;
   await world.finalize();
   assert.equal(anchorOptions.length, composed + 1, 'finalize composed one anchor');
-  const { binding, observeIdentity } = anchorOptions.at(-1);
+  const { binding, observeIdentity, runCreate } = anchorOptions.at(-1);
+  assert.equal(typeof runCreate, 'function', 'the anchor runs its wallet CREATEs through runCreate');
   assert.equal(binding, world.stages.binding, 'the anchor reads back against the host\'s binding');
   return { world, observeIdentity };
 }
