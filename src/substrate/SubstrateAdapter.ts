@@ -294,6 +294,7 @@ export interface SubstrateAdapter {
    * physical address folds in the writer's create-time nonce, so a third party
    * must resolve by name rather than precompute. Owner binding is required — a
    * program name is not exclusive, so name-only resolution is squattable.
+   * `expectedOwner` is the bare native owner (hex), not a DID.
    *
    * Returns a TYPED {@link AnchorResolution}: `present` (owned by the writer),
    * `absent` (readable candidates, none the writer's), or `indeterminate` (the
