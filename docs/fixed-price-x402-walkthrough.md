@@ -67,8 +67,8 @@ too) prints `unknown command: <name>`. On any failure the script prints one mess
   without a provider key for this walkthrough where one exists. `init` takes the URL only as
   `--evm-rpc <url>`, with no environment variable, so the URL reaches your shell history and the
   process arguments of the `init` command, and `init` also writes it to `project/.env` (mode
-  `0600`). A provider key in the URL reaches all three. `record` also prints the URL's hostname (see
-  "Before you share").
+  `0600`). A provider key in the URL reaches all three. `record` writes the EVM RPC host
+  as `custom` (see "Before you share").
 - Network access to the npm registry, the Demos RPC (default `https://node2.demos.sh`), the Demos
   faucet (`faucetbackend.demos.sh`), your Base Sepolia RPC and the facilitator
   (`https://x402.org/facilitator`).
@@ -81,8 +81,10 @@ Funding follows `docs/live-e2e.md` §2 for the faucet requests and the DEM denom
 
 ### 1. Build and generate (manual)
 
-These commands copy the packed-consumer job in CI. `<checkout>` is your checkout, `<run>` the run
-directory, and `<v>` the checkout's version (`node -p 'require("./package.json").version'`).
+These commands follow the flow of the packed live consumer job in CI, but generate the project with
+`--role seller --deploy local` where that job uses `--role buyer --deploy docker`. `<checkout>` is
+your checkout, `<run>` the run directory, and `<v>` the checkout's version
+(`node -p 'require("./package.json").version'`).
 
 ```bash
 mkdir -m 700 <run>                         # refuses a directory that exists
@@ -123,7 +125,7 @@ node scripts/fixed-price-x402-walkthrough.mjs init --run-dir <run> \
 
 - **It refuses, before writing anything,** a run directory inside the checkout or not mode `0700`
   and owned by you; an unsupported Node; a `<run>/secrets` that exists or a `state.json` that records
-  `init`; a `project/.env` that exists; a project that is not built, not generated with
+  `init`; a `project/.env` or `project/request.json` that exists; a project that is not built, not generated with
   `--mode live-demos --rails x402 --deploy local`, or not installed with both packages at the
   checkout's version; tracked changes in the checkout; a seller URL that is not plain HTTPS with a path; and an EVM chain id
   other than 84532.
@@ -321,7 +323,7 @@ writes no readiness record or doctor report.
   role's outbox, and every `dacs:` script rebuilds the project's `dist/`. The raw output goes to
   `<run>/logs/buy.log`.
 - **Fields.** `commit`, `packageVersion`, `tarballs` (name to sha256), `deployment`, `rails`,
-  `network` (chain, USDC contract, facilitator host), `evmRpc` (host only), `demosRpc` (host, or
+  `network` (chain, USDC contract, facilitator host), `evmRpc` (host masked as `custom`), `demosRpc` (host, or
   `custom` with the chain identity), `authorities` (buyer, seller, steward), `payee`, `registry`
   (the two refs), `listingRef`, `readiness` (one entry per role), `steps` and `fundedRun`.
 - **Step statuses.** Each entry of `steps` is `ran`, `blocked` or `unrun`, and an `unrun` entry
@@ -342,9 +344,8 @@ writes no readiness record or doctor report.
   Sepolia; when a tarball no longer matches; when `project/.env` is missing or holds a bad public
   value; when the EVM RPC cannot be reached or does not answer with a chain id; or when the buy does
   not finish or prints something other than a doctor report.
-- **Before you share** `record.json`, read it. It holds public values and hostnames, but `record`
-  copies the EVM RPC hostname as it is, and a provider key can sit in that hostname. Replace such a
-  hostname with a placeholder first. **Never share** keys, phrases or tokens, `<run>/secrets`,
+- **Before you share** `record.json`, read it. It holds public values. Both RPC hosts are masked as
+  `custom`, except the Demos host when it is the default public one. **Never share** keys, phrases or tokens, `<run>/secrets`,
   `project/.env`, or `<run>/logs/*.log`, which hold raw output nobody has filtered.
 
 ## Troubleshooting

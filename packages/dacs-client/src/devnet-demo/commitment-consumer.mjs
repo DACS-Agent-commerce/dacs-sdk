@@ -1,12 +1,15 @@
 import { CounterpartyError, DacsError, faultCategory, FINALITY_COMMITMENT_SEPARATOR, isReadableFinalityCommitmentRecord, NotImplementedError, signedBytes, UnsupportedCapabilityError, contentHash } from '@kynesyslabs/dacs';
 import { commitmentVerifier, listingPin } from '../dacs/purchase-protocol.mjs';
 import { SELLER_SR2_PUBLIC_PROJECTION } from '../dacs/seller-sr2-agreement-consumer.mjs';
+import { authorityLabel } from '../dacs/tp1-authority-token.mjs';
 
 export const DEVNET_NATIVE_COMMITMENT_MARKER='dacs-chatgpt-plugin/devnet-native-seller-commitment/v1';
 const capabilities=new WeakMap();
-export function createDevnetNativeCommitmentCapability({authority,anchor}) {
-  if(typeof authority!=='string'||!/^TEST-RUN-[A-Za-z0-9._-]{8,80}$/.test(authority)||anchor?.authority!==authority||typeof anchor.readRetained!=='function'||typeof anchor.verifyReceipt!=='function') throw new TypeError('native commitment requires the exact run-scoped seller artifact reader');
-  const value=Object.freeze({source:DEVNET_NATIVE_COMMITMENT_MARKER,authority,publicProjection:SELLER_SR2_PUBLIC_PROJECTION});capabilities.set(value,anchor);return value;
+const isFixtureLabel=(value)=>typeof value==='string'&&/^TEST-RUN-[A-Za-z0-9._-]{8,80}$/.test(value);
+export function createDevnetNativeCommitmentCapability({authority,binding,anchor}) {
+  const label=authorityLabel(authority,binding,isFixtureLabel,'native commitment requires a TEST-RUN- authority or an authority token');
+  if(anchor?.authority!==label||typeof anchor.readRetained!=='function'||typeof anchor.verifyReceipt!=='function') throw new TypeError('native commitment requires the exact run-scoped seller artifact reader');
+  const value=Object.freeze({source:DEVNET_NATIVE_COMMITMENT_MARKER,authority:label,publicProjection:SELLER_SR2_PUBLIC_PROJECTION});capabilities.set(value,anchor);return value;
 }
 export function devnetNativeCommitmentConfig(value){if(value==null)return null;if(!capabilities.has(value))throw new TypeError('native seller commitment requires a constructed capability');return value;}
 

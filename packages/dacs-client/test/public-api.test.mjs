@@ -40,7 +40,7 @@ const ROOT = {
     'demDeliveryContextUsage', 'isDemDeliveryContextAuthority',
     'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
     'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence',
-    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport',
+    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
     'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader', 'createPublicSellerClient'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
@@ -66,6 +66,7 @@ const modules = {
   "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority createDemDeliveryContext",
   "dacs/native-dem-delivery-consumer.mjs": "createNativeDemDeliveryCapability",
   "dacs/source-demo-seller-transport.mjs": "createSourceDemoSellerTransport",
+  "dacs/seller-session-keys.mjs": "createSellerSessionKeys",
   "devnet-demo/commitment-consumer.mjs": "createDevnetNativeCommitmentCapability DEVNET_NATIVE_COMMITMENT_MARKER",
   "dacs/demos-sr2-wallet-bridge.mjs": "SR2_WALLET_KIND DemosSr2BridgeError",
   "wallet/devnet-native-transport.mjs": "rpcAuthRefusal transferRefusal DEVNET_AGREEMENT_KIND DEVNET_AGREEMENT_PROFILE DEVNET_NATIVE_BINDING_PATH DEVNET_NATIVE_RPC_PATH",
@@ -316,7 +317,7 @@ test("node-wallet subpath exports exactly its reviewed names; the root import lo
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
  const api=await import('../src/wallet/node-wallet-session.mjs');
- assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession',
+ assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession','openKeystoreWalletSession',
    'createHeldTransportFacade','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext',
    'DEVNET_AGREEMENT_PROFILE','DEVNET_AGREEMENT_KIND','DEVNET_AGREEMENT_SOURCE','DEVNET_SETTLEMENT_KIND','DEVNET_SETTLEMENT_POLICY',
    'DEVNET_DELIVERY_KIND','DEVNET_DELIVERY_POLICY','DEVNET_DEMO_ARTIFACT_KIND','DEVNET_DEMO_ARTIFACT_POLICY','DEVNET_DEMO_ARTIFACT_TYPES'].sort());

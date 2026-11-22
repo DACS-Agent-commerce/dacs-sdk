@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { jsonResponse, ok, replyTo, sellerWalletWorld } from './helpers/seller-node-wallet-world.mjs';
+import { productionObserveIdentity } from './helpers/sr2-live-fixture.mjs';
 
 const { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_REPLY_BYTES } = await import('../src/dacs/demos-sr2-adapter.mjs');
 const { registerHeldTransportFacade, TP1_REVIEWED_BLOCK_TWO_HASH } = await import('../../dacs-client/src/wallet/devnet-native-transport.mjs');
@@ -36,7 +37,8 @@ async function recordedSource(t) {
     readRpc: (path, body, options) => { calls.push({ member: 'readRpc', message: body?.params?.[0]?.message, options }); return source.readRpc(path, body, options); },
     observeBinding: options => { calls.push({ member: 'observeBinding', options }); return source.observeBinding(options); } });
   registerHeldTransportFacade(recording, source);
-  const adapter = createDemosSr2Adapter({ rpcUrl: source.pins.endpoint, journal: createInMemoryDemosSr2Journal(), sourceCapability: recording, timeoutMs: SR2_TIMEOUT_MS });
+  const adapter = createDemosSr2Adapter({ rpcUrl: source.pins.endpoint, journal: createInMemoryDemosSr2Journal(), sourceCapability: recording, timeoutMs: SR2_TIMEOUT_MS,
+    binding: world.admission.binding, observeIdentity: productionObserveIdentity(world) });
   return { world, adapter, calls, expectedWriter: `did:demos:agent:${world.wallet.address.slice(2)}` };
 }
 

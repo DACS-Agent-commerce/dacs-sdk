@@ -698,10 +698,12 @@ export class DemosAdapter implements SubstrateAdapter {
    * Race a non-cancellable demosdk call against the caller's total budget.
    * Composite stages can retain a more specific failure observed before the
    * shared deadline instead of replacing it with the outer stage name.
+   * Given a function, it calls it only when the budget is not yet spent, so
+   * no read is sent once the wait is already over.
    */
   private waitFor<T>(
     ctx: AnchorContext,
-    promise: Promise<T>,
+    call: Promise<T> | (() => Promise<T>),
     stage: string,
     timeoutFailure?: () => AnchorWaitError | undefined,
   ): Promise<T> {
@@ -717,6 +719,7 @@ export class DemosAdapter implements SubstrateAdapter {
           this.fail(ctx, "timeout", `anchor timed out during ${stage}`),
       );
     }
+    const promise = typeof call === "function" ? call() : call;
 
     return new Promise<T>((resolve, reject) => {
       let settled = false;
@@ -1942,9 +1945,11 @@ export class DemosAdapter implements SubstrateAdapter {
     // unresolved with what it last read, instead of as a plain timeout.
     let transportFailures = 0;
     let recognisedAnswer = false;
-    // The last account-nonce read for an unknown write got a transport-failure
-    // answer: no information, so the wait polls on and the deadline is
-    // unresolved, never a plain timeout.
+    // The latest completed round read the account nonce for an unknown write
+    // and got a transport-failure answer: no information, so the wait polls on
+    // and the deadline is unresolved, never a plain timeout. A round changes
+    // it only once its own nonce read has finished, so a deadline that falls
+    // inside the round still sees the earlier unread nonce.
     let nonceUnread = false;
     let accountNonce: number | undefined;
     let lastBlock: number | undefined;
@@ -2008,9 +2013,6 @@ export class DemosAdapter implements SubstrateAdapter {
       }
 
       if (status) ctx.receipt.lastObservedState = status.state;
-      // Set again below only by this round's nonce read; any other round that
-      // read the hash is not one whose nonce went unread.
-      nonceUnread = false;
       if (status?.state === "unrecognised" || row?.status === "unrecognised") {
         throw this.unresolvedWrite(
           ctx,
@@ -2085,6 +2087,8 @@ export class DemosAdapter implements SubstrateAdapter {
             ? "included-execution-read-error"
             : "included-execution-pending";
         this.emit(ctx);
+        // This round read the hash and needed no nonce read.
+        nonceUnread = false;
         await this.delay(ctx);
         continue;
       }
@@ -2115,13 +2119,16 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       if (signedNonce !== undefined && broadcastSettledBeforeRead &&
           status?.state === "unknown" && row?.status === "none") {
-        nonceUnread =
-          (await this.stopUnknownWrite(txRef, ctx, signedNonce, deadlineFailure)) ===
-            "transport-failure";
+        const nonceAnswer =
+          await this.stopUnknownWrite(txRef, ctx, signedNonce, deadlineFailure);
+        nonceUnread = nonceAnswer === "transport-failure";
         if (nonceUnread) {
           transportFailures += 1;
           lastBlock = (await this.readLastBlock(ctx)) ?? lastBlock;
         }
+      } else {
+        // This round read the hash and needed no nonce read.
+        nonceUnread = false;
       }
       if (
         broadcast?.state === "accepted" &&
@@ -2183,9 +2190,11 @@ export class DemosAdapter implements SubstrateAdapter {
     let nonceAnswer: unknown;
     try {
       // demos.getAddressNonce turns any answer it cannot read into 0.
+      // Sent only while the budget lasts: once the deadline has passed, its
+      // answer could only be ignored.
       nonceAnswer = await this.waitFor(
         ctx,
-        this.#demos.nodeCall("getAddressNonce", {
+        () => this.#demos.nodeCall("getAddressNonce", {
           address: this.#demos.getAddress(),
         }),
         "account nonce read",

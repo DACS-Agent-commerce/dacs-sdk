@@ -54,6 +54,29 @@ describe("raw-token admission", () => {
     expect(await readBoundedResponse(response([...bytes].map(byte => Buffer.from([byte]))), 1024)).toEqual(bytes);
     await expect(readBoundedResponse(response([...Buffer.from(deep)].map(byte => Buffer.from([byte]))), 1024)).rejects.toMatchObject({ code: "ELIMIT" });
   });
+  it.each([1, 7, 4096])("preserves long strings across %i-byte chunks", async size => {
+    const bytes = Buffer.from(JSON.stringify({ readme: "x".repeat(4096) + '"\\é€😀' + "y".repeat(4096) }));
+    const chunks = (body: Buffer) => Array.from({ length: Math.ceil(body.length / size) }, (_, i) => body.subarray(i * size, (i + 1) * size));
+    expect(await readBoundedResponse(response(chunks(bytes)), 65536)).toEqual(bytes);
+    await expect(readBoundedResponse(response(chunks(Buffer.concat([bytes, Buffer.from("\n" + deep)]))), 65536)).rejects.toMatchObject({ code: "ELIMIT" });
+  });
+  // Plain runs long enough to search, then runs of escapes and of 2, 3 and 4-byte
+  // characters dense enough to pause the search, so boundaries land inside escapes,
+  // inside characters, at the 64-byte cutover and where a pause ends.
+  const dense = Buffer.from(JSON.stringify({ readme: "x".repeat(100) + '"'.repeat(300) + "é".repeat(200) + "a".repeat(9) + "€".repeat(150)
+    + "😀".repeat(100) + "y".repeat(100) + "\\".repeat(50) + ("abcdefg" + '"').repeat(40) + "z".repeat(70) }));
+  const denseThenDeep = Buffer.concat([dense, Buffer.from("\n" + deep)]);
+  it.each([1, 7, 63, 64, 65, 511, 512, 513, 4096])("preserves dense escapes and multibyte characters across %i-byte chunks", async size => {
+    const chunks = (body: Buffer) => Array.from({ length: Math.ceil(body.length / size) }, (_, i) => body.subarray(i * size, (i + 1) * size));
+    expect(await readBoundedResponse(response(chunks(dense)), 65536)).toEqual(dense);
+    await expect(readBoundedResponse(response(chunks(denseThenDeep)), 65536)).rejects.toMatchObject({ code: "ELIMIT" });
+  });
+  it("preserves dense escapes and multibyte characters split in two at every offset", async () => {
+    for (let at = 1; at < dense.length; at++) {
+      expect(dense.equals(await readBoundedResponse(response([dense.subarray(0, at), dense.subarray(at)]), 65536)), `split at ${at}`).toBe(true);
+      await expect(readBoundedResponse(response([denseThenDeep.subarray(0, at), denseThenDeep.subarray(at)]), 65536)).rejects.toMatchObject({ code: "ELIMIT" });
+    }
+  });
   it("fails on an oversized valid prefix before reading its tail", async () => {
     let tailRead = false;
     async function* body() { yield Buffer.from(deep); tailRead = true; throw new Error("tail was read"); }

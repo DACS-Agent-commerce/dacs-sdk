@@ -40,9 +40,13 @@
 // the stores and the state lock. The host takes no policy hold for a context
 // step: it has no approval ledger.
 // Before it opens anything the host binds the SDK's approved TP-1 identity
-// record over the operator's `tp1Network` ({ connection(), readAuthority }); no
-// option, environment variable or file names a record. It then checks the data
-// directory's format marker (kit-format.json), keeps the wire request journal at
+// record through its production authority reader over the operator's
+// `walletSession` and `participantImplementations`; no option, environment
+// variable or file names a record. Under the state lock it checks the data
+// directory's format marker (kit-format.json), finalizes the wallet session with
+// its one effect boundary over <dataDirectory>/effects (with the production port,
+// createSellerWalletSession, `artifactAnchor` must be the port's own handle, which
+// that finalization binds), keeps the wire request journal at
 // <dataDirectory>/wire-journal under a 300 s lease, so an unusable journal
 // refuses startup, and holds the binding, the journal and the seller's signer in a
 // wire context for the signed routes. Every route opens each request and signs
@@ -56,29 +60,31 @@ import { isIP } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 import { createSecureContext } from 'node:tls';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_PATHS, TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, isPublicEndpoint, bindTp1Profile, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS, admitWireArtifact, isPublicEndpoint, completeWireEffect, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { createAbandonedPurchaseState } from './dacs/abandoned-purchase.mjs';
-import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { createAccountingReconciler } from './dacs/accounting-reconciliation.mjs';
 import { createContextWorkRegistry } from './dacs/context-work-registry.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
 import { demDeliveryContextHost, demDeliveryContextVetMode } from './dacs/dem-delivery-context-consumer.mjs';
 import { addressForClaim } from './dacs/demos-claims.mjs';
+import { openSellerStages } from './dacs/host-stages.mjs';
 import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
 import { PASSIVE_RETAINED_READ, isDeadRefusedCreate, isProvenUnsignedAbsence } from './dacs/native-dem-delivery-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
+import { listingPin } from './dacs/purchase-protocol.mjs';
 import { createContextAdmissionTransaction } from './dacs/seller-admission-transaction.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { createClosedBootstrapGate } from './dacs/closed-bootstrap-gate.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-capacity-defaults.mjs';
 import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute, createWireSellerContextRoute } from './dacs/seller-context-route.mjs';
-import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
+import { SELLER_HTTP_MAX_CONCURRENT, createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createLiveAttemptGate, createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
+import { isSellerWalletSession } from './devnet-demo/seller-wallet-session.mjs';
 import { stopRequested } from './devnet-demo/stop-request.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
@@ -89,11 +95,8 @@ import { isPrivateDirectory } from './private-directory.mjs';
  * variable, Listing member or request field selects another. */
 export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'listener', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
-  'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network', 'readCommitmentReceipt']);
+  'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'walletSession', 'participantImplementations', 'readCommitmentReceipt']);
 const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'maxReservationUnits', 'now', 'contextSessionState']);
-const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
-// The startup binding read is bounded; a later answer grants nothing.
-const TP1_AUTHORITY_TIMEOUT_MS = 10000;
 // One journal for every seller route; its lease must exceed the 240 s context step.
 const KIT_JOURNAL_LEASE_MS = 300000;
 // The reservation budget of the wire accounting rows that still count.
@@ -223,28 +226,6 @@ function boundedArtifactReads(anchor, { signal, timeoutMs }) {
   };
 }
 
-function checkTp1Network(tp1Network) {
-  if (tp1Network === null || typeof tp1Network !== 'object' || Array.isArray(tp1Network)) throw new TypeError('tp1Network must be an object');
-  const unknown = Object.keys(tp1Network).filter((key) => !TP1_NETWORK_KEYS.includes(key));
-  if (unknown.length) throw new TypeError(`unknown tp1Network option: ${unknown.join(', ')}`);
-  if (TP1_NETWORK_KEYS.some((key) => typeof tp1Network[key] !== 'function')) throw new TypeError('tp1Network needs a connection() and a readAuthority function');
-}
-
-// The operator's authority reader, each read within 10,000 ms. The wire keeps the reader it is bound with and calls it on
-// every signed request, so the deadline is on the reader itself: a stalled read ends as `tp1_authority_timeout` (the
-// timeout is its cause) instead of holding a request slot for good. Only this deadline is that error; any other failure,
-// a reader's own TimeoutError included, is the reader's own error.
-const withinAuthorityDeadline = (work) => boundedCall(work, { timeoutMs: TP1_AUTHORITY_TIMEOUT_MS }).catch((error) => {
-  if (isBoundedCallTimeout(error)) throw new WireError('tp1_authority_timeout', 500, undefined, error);
-  throw error;
-});
-
-// The binding over the SDK's approved record and the operator's current connection, read once and within the same deadline.
-async function bindApprovedProfile(tp1Network) {
-  const readAuthority = (input) => withinAuthorityDeadline(() => tp1Network.readAuthority(input));
-  return withinAuthorityDeadline(() => bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: tp1Network.connection(), readAuthority }));
-}
-
 const journalAccountingMismatch = (detail, cause) => Object.assign(
   new Error(`kit_journal_accounting_mismatch: ${detail}`, cause === undefined ? undefined : { cause }), { code: 'kit_journal_accounting_mismatch' });
 
@@ -306,7 +287,8 @@ function admitListener(listener, listing) {
 // mode is refused with a TypeError (code `vet_mode_mismatch`) before the lock.
 // The startup errors include the binding's own (`tp1_*`, with the reader's
 // error kept as the cause; `tp1_authority_timeout` after 10,000 ms), which come
-// before the state lock and any file; `kit_store_format_unsupported` for a data
+// before the state lock and any file; the effect history's or the wallet
+// session's finalization error, after the lock; `kit_store_format_unsupported` for a data
 // directory from an older kit format; `kit_journal_accounting_mismatch` for a
 // new kit store over a journal that already holds reservations; and the
 // journal's own `seller_replay_guard_invalid` with its detail. A store that already
@@ -325,7 +307,7 @@ export async function startSellerHost(options) {
   const missing = REQUIRED.filter((key) => options[key] == null);
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
-    nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
+    nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, walletSession, participantImplementations, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
     maxReservationUnits = maxRecords, now = () => Date.now(), contextSessionState = null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
   if (contextSessionState !== null && typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
@@ -350,13 +332,19 @@ export async function startSellerHost(options) {
   }
   // The context route's provider handoff: a copied or incomplete capability is refused here, before the lock and any file.
   const provider = demDeliveryContextHost(demDeliveryContext);
-  checkTp1Network(tp1Network);
-  // Refuses an unbindable connection before the lock and any file; the signed routes keep the binding.
-  const binding = await bindApprovedProfile(tp1Network);
-  // One live process owns the state for its lifetime (this one too, for a
-  // second start); taken before anything is opened, released after all of it.
-  const lock = await acquireSellerStateLock(dataDirectory);
-  const opened = [() => lock.release()];
+  // The production port's anchor handle is bound when the port is finalized; no other anchor can stand in for it.
+  if (isSellerWalletSession(walletSession) && artifactAnchor !== walletSession.artifactAnchor) {
+    throw new TypeError('with the production walletSession, artifactAnchor must be walletSession.artifactAnchor');
+  }
+  const sellerClaim = listing.seller.identity.presentedBy;
+  // The production reader reads a job's context admission row; the transaction that keeps those rows exists only under
+  // the lock, and no request is served before it does.
+  let admissionRecord = () => null;
+  // Stages one to three refuse an unbindable connection before the lock and any file; the signed routes keep the binding.
+  const stages = await openSellerStages({ walletSession, participantImplementations, sellerClaim, listingPin: listingPin(listing),
+    retainedJob: (jobId) => admissionRecord(jobId), maxConcurrent: SELLER_HTTP_MAX_CONCURRENT });
+  const { binding } = stages;
+  const opened = [() => stages.close()];
   const release = async () => {
     const errors = [];
     for (const close of opened.splice(0).reverse()) { try { await close(); } catch (error) { errors.push(error); } }
@@ -364,8 +352,14 @@ export async function startSellerHost(options) {
   };
   const shutdown = new AbortController();
   try {
+    // One live process owns the state for its lifetime (this one too, for a
+    // second start); taken before any state is opened, released after all of it.
+    const lock = await acquireSellerStateLock(dataDirectory);
+    opened.unshift(() => lock.release());
     const generation = randomBytes(16).toString('hex');
     await assertKitDataFormat(dataDirectory, DURABLE_SYNC);
+    // Stages four and five: the effect history, the host's one effect boundary and the finalized wallet session, under the lock.
+    await stages.finalize({ dataDirectory, stopped: stopRequested, stateLock: lock });
     const transport = join(dataDirectory, 'transport');
     const journalDirectory = join(dataDirectory, JOURNAL_DIRECTORY);
     if (!existsSync(join(dataDirectory, TRANSPORT_STORE_FILE))) assertJournalHoldsNoAccounting(journalDirectory);
@@ -385,7 +379,6 @@ export async function startSellerHost(options) {
     store.challenges.closeLostValidations();
     store.recoverLostContextReservations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
-    const sellerClaim = listing.seller.identity.presentedBy;
     // The agent asks which context requests were admitted through these records; the admission transaction and the journal they read are
     // opened below, before any request is served.
     const records = createSellerContextRecords({ listing, admission: (jobId) => admission.admissionRecord(jobId), contextOutcome: (jobId) => completedContextOutcome(journal, sellerClaim)(jobId) });
@@ -417,6 +410,7 @@ export async function startSellerHost(options) {
     const hostStopped = () => stopping || stopRequested();
     const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
       completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
+    admissionRecord = (jobId) => admission.admissionRecord(jobId);
     abandonedPurchaseState = createAbandonedPurchaseState({ admissionRecord: admission.admissionRecord, now, agreementDeadline: agent.retainedAgreementDeadline,
       operationState: ({ jobId, path }) => inspectWireOperation(journal, { jobId, seller: sellerClaim, path }).state,
       retainsCommitmentWork: (jobId) => agent.retainsCommitmentWork(jobId),
@@ -433,8 +427,8 @@ export async function startSellerHost(options) {
     // allotment does not fit. The context route keeps `sellerReady`, so an accepted context request sent again is still answered.
     const acceptsNewPurchase = () => sellerReady() && admission.fitsNewPurchase();
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
-    // answer reads the operator's connection again through it.
-    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: acceptsNewPurchase, stopped: hostStopped, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
+    // answer reads the wallet session's current connection again through it, and opens under its own bootstrap scope.
+    const wire = createWireContext({ binding, tp1Network: { connection: stages.local }, bootstrap: stages.bootstrap, signer, store, journal, ready: acceptsNewPurchase, stopped: hostStopped, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
     const contextWork = createContextWorkRegistry();
     const buyerWalletAccess = operatorBuyerAccessConfig(buyerAccess);
     const assertBuyerAccess = (buyerClaim) => buyerWalletAccess.assertWallet(addressForClaim(buyerClaim));

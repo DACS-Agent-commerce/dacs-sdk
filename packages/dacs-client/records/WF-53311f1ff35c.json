@@ -1,0 +1,36 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF keep a failed suspension write beside the re-hold or host stop refusal's own cause",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "79e4aae9472004a14f16e0185d712f65087c10e0",
+      "after": "027c83df99fbf70cafd8c53dc6715dfa7dd643c5"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "22f7c1aa2406d2dbc0917ac8681300ac865ea298",
+      "after": "b2c7b199283b3b706164f1694e266d691d1355c2"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "9831d5a8312d9d4145797e68a30f3019b68587f5",
+      "after": "d8e60fc34984e2966f20029508b09ff3dbaad432"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-suspension.test.mjs",
+      "before": "8ca49010ac883836aaf9461dee23ef439ec267dc",
+      "after": "5c53a7dcaa67f66fe26b02665ed2cda7e7a88000"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-53311f1ff35c.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/test/seller-suspension.test.mjs"
+  ],
+  "note": "When the suspension write after a re-hold or host stop failed, the service and the protocol set the write's error as the refusal's cause only when it had none, so a stop_check_failed refusal, which carries the stop check's error, or a profile_not_admitted refusal with a cause, dropped the write failure. Both writers now leave the refusal's cause as it was and keep the write's error as details.suspensionWriteError. The README says so, and a test fails the suspension write while a throwing stop check refuses a request mid-flight."
+}

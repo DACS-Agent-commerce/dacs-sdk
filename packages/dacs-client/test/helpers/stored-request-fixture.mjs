@@ -7,6 +7,7 @@ import { contextScope } from '../../../../test/kit-client/fixtures.mjs';
 import { fetchClient } from './seller-https-rig.mjs';
 const { createSellerRequestRecords } = await import('../../src/dacs/protocol-purchases.mjs');
 const { createSqlitePurchaseStore } = await import('../../src/seams/purchase-store-not-wired.mjs');
+const { createHostStop } = await import('../../src/host-stop.mjs');
 const { createSellerHttpsClient } = await import('../../src/dacs/seller-http.mjs');
 const clientOverFetch = fetchClient(createSellerHttpsClient);
 
@@ -20,16 +21,17 @@ export const errorCode = code => error => error.code === code;
  * A purchase row with a retained Agreement plan, the real wire authentication and an in-process seller that
  * signs with the wire's `signWireResponse`. `clock` is injected: `sleep` advances it and the purchase clock.
  */
-export async function storedWorld(t, { stage = 'agreement-signing', accepted = true, status = 'agreement_pending', paid = false, configureTerms } = {}) {
+export async function storedWorld(t, { stage = 'agreement-signing', accepted = true, status = 'agreement_pending', paid = false, configureTerms, sessionSignerFor } = {}) {
   const made = await committedPurchase({ jobId: JOB, publicEndpoint: PUBLIC_ENDPOINT });
   const w = await world(t, { pin: made.pin, agreementHash: made.agreementHash, readCommitmentReceipt: validReceipt });
-  const p = await purchase(t, w, { status, paid, configureTerms, signedListing: paid ? made.listing : undefined, protocolPatch: { stage, ...(accepted ? { planned: { draft: made.agreement } } : {}), paymentEvidence: { retained: true } } });
+  const p = await purchase(t, w, { status, paid, configureTerms, ...(sessionSignerFor ? { sessionSignerFor } : {}), signedListing: paid ? made.listing : undefined, protocolPatch: { stage, ...(accepted ? { planned: { draft: made.agreement } } : {}), paymentEvidence: { retained: true } } });
   const bytes = value => Buffer.from(canonicalize(value));
-  const auth = w.createSellerWireAuthentication({ ...w.options, evidence: async () => ({ commitment: bytes(made.anchored), agreement: bytes(made.agreement), signedListing: bytes(made.listing) }) });
+  const evidence = async () => ({ commitment: bytes(made.anchored), agreement: bytes(made.agreement), signedListing: bytes(made.listing) });
+  const auth = w.createSellerWireAuthentication({ ...w.options, evidence });
   const { transaction } = createSqlitePurchaseStore();
   let current = p.get(), time = 0;
   const holder = { get: () => current, set: next => { current = next; } };
-  const records = (target = holder, recordTransaction = transaction) => createSellerRequestRecords({ db: p.db, ops: p.ops, transaction: recordTransaction, holder: target, now: () => w.state.time });
+  const records = (target = holder, recordTransaction = transaction, hostStop) => createSellerRequestRecords({ db: p.db, ops: p.ops, transaction: recordTransaction, holder: target, now: () => w.state.time, hostStop });
   const fetches = [], delays = [];
   const clock = { now: () => time, async sleep(ms) { delays.push(ms); time += ms; w.state.time += ms; } };
   const reply = async (init, status = 200, body = { status: 'complete' }) => {
@@ -38,8 +40,10 @@ export async function storedWorld(t, { stage = 'agreement-signing', accepted = t
     const header = await wire.signWireResponse(payload, status, text, { signer: w.seller, binding: w.binding, local: w.local, purchaseProfile: w.binding.profile, now: w.state.time });
     return new Response(text, { status, headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: header } });
   };
-  const client = ({ respond = init => reply(init), requestRecords = records(), ...options } = {}) => clientOverFetch({
-    url: PUBLIC_ENDPOINT, authentication: auth, requestRecords, clock, commitOnSignature: true,
+  // `stopped` gives the client the host stop check on its request records and its wire signer, as the protocol factory does.
+  const client = ({ respond = init => reply(init), stopped, requestRecords = records(holder, transaction, createHostStop(stopped)), ...options } = {}) => clientOverFetch({
+    url: PUBLIC_ENDPOINT, requestRecords, clock, commitOnSignature: true,
+    authentication: stopped ? w.createSellerWireAuthentication({ ...w.options, evidence, assertNotStopped: requestRecords.assertNotStopped }) : auth,
     fetchImpl: async (_url, init) => { fetches.push(init); return respond(init); }, ...options
   });
   const patch = (protocol = {}, nextStatus = p.get().status) => {

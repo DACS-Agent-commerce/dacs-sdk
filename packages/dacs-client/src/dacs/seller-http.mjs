@@ -15,6 +15,7 @@ import { isDacsPublicAddressV1, RawJsonAdmissionError } from '@kynesyslabs/dacs'
 import { classifySellerAnswer, SELLER_ANSWER_CLASS, SELLER_EFFECT_UNRESOLVED } from './seller-response-class.mjs';
 import { createSellerHttpsConnector, SellerHttpsConnectorError } from './seller-https-connector.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
+import { isHostStopRefusal } from '../host-stop.mjs';
 
 const MAX_BODY = 64 * 1024;
 /** The most response header bytes the connector reads from a seller. */
@@ -250,6 +251,7 @@ export function createSellerHttpsClient(options) {
       return { body: answerOrError(verdict, answer, response.status), answerClass: verdict.answerClass };
     } catch (error) {
       if (recordRefusals.has(error)) throw error;
+      if (!dispatched && isHostStopRefusal(error)) throw error;
       if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
       if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }

@@ -1,0 +1,25 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move the record anchor past the merged README, package manifest and client entry point choice with the testnet authority token, the SDK session key and the host stop",
+  "kind": "checkpoint",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "302c605901c601c0f4822296bf20b13d07c41961",
+      "after": "302c605901c601c0f4822296bf20b13d07c41961"
+    },
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "d288f7bf3637c4ba47472608888e7f3175fbfd07",
+      "after": "d288f7bf3637c4ba47472608888e7f3175fbfd07"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-6e610f2a8b3c.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "The merged README and package manifest differ from both sides' anchored copies, and the base's anchor (its README, package manifest and Node wallet session resolution with the SDK session key and the testnet authority token) stands before this branch's first README and manifest record, which no longer starts from it. The anchor moves to the resolution commit whose parent already holds the chosen copies; it names the merged README and package manifest as they stand there, and the other anchored blobs are unchanged. The checkpoint keeps those unchanged copies recorded after the anchor, and the controls are re-pinned."
+}

@@ -42,7 +42,7 @@ function presentAnswer({ scope, buyerIdentityBundle }, listing) {
  * operator's context read; `demDeliveryContext` (a capability) replaces the operator context. `unpaid` composes the default
  * configuration instead: no native payment, no payment evidence and no seller transport.
  */
-export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, unpaid = false } = {}) {
+export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, unpaid = false, stopped } = {}) {
   // The fixture authority's answer, with every participant it was asked about (the buyer and seller of the session
   // delegation) on the bound profile; its gate, failure and call count still apply.
   const authority = createAuthorityFixture();
@@ -81,14 +81,14 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
     settlementPublication: { policy: DEVNET_SETTLEMENT_POLICY, artifactKind: 'SettlementEvidence', phase: 'pay-dem', railId: 'demos-native:DEM', phaseIndex: 2, authority: AUTHORITY },
     expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },
     transportOwner: { getContext: unused('evidence context'), acquireConnectionFence: unused('evidence fence') } });
-  const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
+  const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
       nativeSellerCommitment: commitment,
       ...(unpaid ? {} : { nativeAgreementPayment: native.source, sellerTransport,
         nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: native.source.pins.endpoint, sourceCapability: evidenceSource }) }),
       ...(demDeliveryContext ? { demDeliveryContext } : { agreementContext }), sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: wallet.address }] }, verifier, chain, protocol,
-    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission, stopped });
   const prepare = (idempotencyKey = 'TEST-key') => service.prepare({ accountId: ACCOUNT_ID, listingId: 'TEST-listing', version: 1, seller: seller.claim,
     idempotencyKey, walletAddress: wallet.address, protocol: OFFLINE_AGREEMENT_MODE });
   // Prepares a purchase and has the buyer present their identity and sign the seller session delegation; returns what agreementPlan needs.

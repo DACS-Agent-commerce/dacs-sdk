@@ -76,12 +76,12 @@ export async function world(t, { pin: committedPin, agreementHash = sha256Hex('a
   return { buyer, seller, session, other, local, state, binding, admission, pin, endpointProof, publicEndpoint, payload, delegation, job, options, auth, createSellerWireAuthentication };
 }
 export const request = (w, path = wire.DACS_SELLER_HTTP_PATHS.state) => w.auth.request(path, { transportIdentity: { jobId: JOB } }, JSON.stringify({ transportIdentity: { jobId: JOB } }));
-export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {} } = {}) {
+export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {}, sessionSignerFor = () => w.options.sessionSigner } = {}) {
   const { createSourceDemoSellerTransport } = await import('../../src/dacs/source-demo-seller-transport.mjs');
   const { createProtocolPurchases } = await import('../../src/index.mjs');
   let policies = 0;
   const transport = createSourceDemoSellerTransport({
-    authority: 'TEST-wire', sessionSignerFor: () => w.options.sessionSigner, sessionPolicyFor: (op) => {
+    authority: 'TEST-wire', sessionSignerFor, sessionPolicyFor: (op) => {
       policies++;
       return policy(op);
     }, endpointProofFor: () => w.endpointProof

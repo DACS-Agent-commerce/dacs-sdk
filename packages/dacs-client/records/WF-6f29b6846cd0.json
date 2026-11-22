@@ -1,0 +1,25 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move the record anchor past the merged README and manifest resolutions",
+  "kind": "checkpoint",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "cf085807656df5360fcc15e7642989579020daf4",
+      "after": "cf085807656df5360fcc15e7642989579020daf4"
+    },
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "6ba0e4afca0bb8b9b9eda442929dc80ed45c246c",
+      "after": "6ba0e4afca0bb8b9b9eda442929dc80ed45c246c"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-6f29b6846cd0.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "The merged histories leave the README and package manifest parent chains discontinuous at the earlier anchor. The anchor moves to the last resolution commit, whose parent already holds every chosen blob. This checkpoint records both unchanged files after the anchor; reciprocal pins are regenerated."
+}
