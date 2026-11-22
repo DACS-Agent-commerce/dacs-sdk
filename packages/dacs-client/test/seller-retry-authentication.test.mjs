@@ -1,23 +1,12 @@
 import test from 'node:test';
-import { DACS_SELLER_HTTP_HEADER } from '@kynesyslabs/dacs/wire';
 import assert from 'node:assert/strict';
 import { storedWorld, PATHS, bodyFor, sameBodies } from './helpers/stored-request-fixture.mjs';
 
-for (const path of [PATHS.proposals, PATHS.commitmentSignature, PATHS.state]) {
-  test(`unauthenticated ${path} sends once per explicit call even with real purchase records`, async t => {
-    const s = await storedWorld(t);
-    const client = s.client({ authentication: undefined, respond: init => {
-      assert.equal(init.headers[DACS_SELLER_HTTP_HEADER], undefined);
-      return new Response('{"error":"operation_uncertain"}', { status: 503, headers: { 'content-type': 'application/json' } });
-    } });
-    await assert.rejects(client.request(path, bodyFor(path)), e => e.answerClass === 'unknown');
-    assert.equal(s.fetches.length, 1);
-    assert.deepEqual(s.delays, []);
-    await assert.rejects(client.request(path, bodyFor(path)));
-    assert.equal(s.fetches.length, 2);
-    if (path !== PATHS.state) assert.equal(s.record(path).attempts, 2);
-  });
-}
+test('a seller client without a wire authentication is refused at construction and sends nothing', async t => {
+  const s = await storedWorld(t);
+  assert.throws(() => s.client({ authentication: undefined }), { name: 'TypeError', message: /wire authentication/ });
+  assert.equal(s.fetches.length, 0);
+});
 
 test('authenticated callers without request records send once', async t => {
   const s = await storedWorld(t);

@@ -28,7 +28,8 @@ import { isDevnetAgreementTransport, DEVNET_AGREEMENT_KIND } from '../wallet/dev
 import { NotWiredError, OperationError } from '../client-errors.mjs';
 import { verifyDemosSignature, claimForAddress, decodeSignature } from '../signatures.mjs';
 import { attachIdentityPresentation, buildUnsignedIdentityBundle, verifyComponent } from './listing.mjs';
-import { createSellerAgentClient, sellerEndpointOrigin, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
+import { createSellerHttpsClient, sellerEndpointOrigin, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
+import { createSellerHttpsConnector } from './seller-https-connector.mjs';
 import { createDemosSr2WalletBridge, SR2_WALLET_KIND } from './demos-sr2-wallet-bridge.mjs';
 import { DemosSr2Error } from './demos-sr2-adapter.mjs';
 import {
@@ -477,6 +478,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     }
   };
   const walletConfig = dacsProtocol?.walletAgreement;
+  const sellerConnector = createSellerHttpsConnector();
   const sellerRequestTimeoutMs = dacsProtocol?.sellerRequestTimeoutMs ?? AUTHENTICATED_SELLER_TIMEOUT_MS;
   if (!Number.isSafeInteger(sellerRequestTimeoutMs) || sellerRequestTimeoutMs < 1000 || sellerRequestTimeoutMs > 300000) throw new TypeError('sellerRequestTimeoutMs must be an integer from 1000 through 300000');
   const planWaitMs = dacsProtocol?.planWaitMs ?? PLAN_WAIT_MS;
@@ -539,23 +541,21 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // holder: the calling flow's `{get(), set(next)}` over its own `current`, so the request records advance the flow's row.
   function sellerFor(holder) {
     const operation = holder.get();
-    const declared = assertSellerDeclaration(operation);
+    // Seller requests are authenticated only through the declared seller transport; without one nothing can be sent.
+    if (!assertSellerDeclaration(operation)) throw new OperationError('seller_agent_unavailable', 'this purchase declares no seller transport to authenticate seller requests; nothing was sent to the seller');
     const url = dacsProtocol.sellerEndpoint(operation.terms.seller.claim);
     if (!url) throw new OperationError('seller_agent_unavailable', 'no seller agent endpoint is known for this seller; nothing was signed or paid');
-    let authentication;
     const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now, hostStop });
-    if (declared) {
-      const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
-      if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
-      const sessionSigner = sellerTransport.sessionSignerFor(operation);
-      assertDelegationNamesKey(p.sessionDelegation, sessionSigner);
-      authentication = createSellerWireAuthentication({ admission, sessionSigner, delegation: p.sessionDelegation,
-        seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
-        assertNotStopped: requestRecords.assertNotStopped,
-        job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
-          deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
-    }
-    const client = createSellerAgentClient({ url, fetchImpl, commitOnSignature, requestRecords, ...(declared ? { authentication, timeoutMs: sellerRequestTimeoutMs, explicitResume: explicitResumeTaker() } : {}) });
+    const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
+    if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
+    const sessionSigner = sellerTransport.sessionSignerFor(operation);
+    assertDelegationNamesKey(p.sessionDelegation, sessionSigner);
+    const authentication = createSellerWireAuthentication({ admission, sessionSigner, delegation: p.sessionDelegation,
+      seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
+      assertNotStopped: requestRecords.assertNotStopped,
+      job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
+        deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
+    const client = createSellerHttpsClient({ publicEndpoint: url, connector: sellerConnector, commitOnSignature, requestRecords, authentication, timeoutMs: sellerRequestTimeoutMs, explicitResume: explicitResumeTaker() });
     if (client.origin !== operation.terms.protocol.sellerAgent) throw new OperationError('seller_agent_changed', 'the seller agent endpoint changed since this purchase was prepared; nothing was signed or paid');
     return client;
   }
@@ -592,10 +592,12 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (!url) throw new OperationError('seller_agent_unavailable', 'no seller agent endpoint is known for this seller; nothing was prepared');
     if (mode === OFFLINE_AGREEMENT_MODE && domain.network !== walletConfig.network) throw new OperationError('network_identity_mismatch', 'the injected wallet bridge is not bound to the prepared fixture network');
     if (!nativeSellerCommitment) throw new OperationError('seller_commitment_unavailable', 'native seller commitment capability required');
-    // The declared seller transport below is what makes later calls authenticated, which is what allows a public https endpoint.
-    const authenticated = Boolean(mode === OFFLINE_AGREEMENT_MODE && nativePayment && nativeEvidence && sellerTransport);
+    // A seller endpoint is always a public https origin, and the seller client sends only with the wire authentication
+    // that the declared seller transport below provides. The terms declare one only with native payment and its evidence;
+    // terms without one would fail at their first Agreement submit, after the buyer signed, so they are refused here.
+    if (!(nativePayment && nativeEvidence && sellerTransport)) throw new OperationError('seller_agent_unavailable', 'the seller agent endpoint needs a declared seller transport to authenticate requests; nothing was prepared');
     return {
-      terms: { wireProfile: admission.binding.profile, profile: OFFLINE_AGREEMENT_PROFILE, orchestration: ORCHESTRATION, sellerAgent: sellerEndpointOrigin(url, authenticated), substrate: 'source-pinned-native-fixed-price-demo; finality-held',
+      terms: { wireProfile: admission.binding.profile, profile: OFFLINE_AGREEMENT_PROFILE, orchestration: ORCHESTRATION, sellerAgent: sellerEndpointOrigin(url), substrate: 'source-pinned-native-fixed-price-demo; finality-held',
         ...(mode === OFFLINE_AGREEMENT_MODE && sourceCapability ? {transportBinding:sourceCapability.transportBinding} : {}),
         ...(mode === OFFLINE_AGREEMENT_MODE && (agreementContext || demDeliveryContext) ? { agreementContext: demDeliveryContext ? DEM_DELIVERY_CONTEXT_SOURCE : AGREEMENT_CONTEXT_SOURCE } : {}),
         ...(mode === OFFLINE_AGREEMENT_MODE && nativeDemDelivery ? {nativeDelivery:NATIVE_DEM_DELIVERY_SOURCE}:{}),

@@ -4,10 +4,12 @@ import * as wire from '@kynesyslabs/dacs/wire';
 import { world, purchase, JOB, PUBLIC_ENDPOINT, validReceipt } from './wire-client-fixture.mjs';
 import { committedPurchase } from './wire-committed-purchase.mjs';
 import { contextScope } from '../../../../test/kit-client/fixtures.mjs';
+import { fetchClient } from './seller-https-rig.mjs';
 const { createSellerRequestRecords } = await import('../../src/dacs/protocol-purchases.mjs');
 const { createSqlitePurchaseStore } = await import('../../src/seams/purchase-store-not-wired.mjs');
 const { createHostStop } = await import('../../src/host-stop.mjs');
-const { createSellerAgentClient } = await import('../../src/dacs/seller-http.mjs');
+const { createSellerHttpsClient } = await import('../../src/dacs/seller-http.mjs');
+const clientOverFetch = fetchClient(createSellerHttpsClient);
 
 export const PATHS = wire.DACS_SELLER_HTTP_PATHS;
 const READS = new Set([PATHS.state, PATHS.bundleBuyerCopy]);
@@ -39,7 +41,7 @@ export async function storedWorld(t, { stage = 'agreement-signing', accepted = t
     return new Response(text, { status, headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: header } });
   };
   // `stopped` gives the client the host stop check on its request records and its wire signer, as the protocol factory does.
-  const client = ({ respond = init => reply(init), stopped, requestRecords = records(holder, transaction, createHostStop(stopped)), ...options } = {}) => createSellerAgentClient({
+  const client = ({ respond = init => reply(init), stopped, requestRecords = records(holder, transaction, createHostStop(stopped)), ...options } = {}) => clientOverFetch({
     url: PUBLIC_ENDPOINT, requestRecords, clock, commitOnSignature: true,
     authentication: stopped ? w.createSellerWireAuthentication({ ...w.options, evidence, assertNotStopped: requestRecords.assertNotStopped }) : auth,
     fetchImpl: async (_url, init) => { fetches.push(init); return respond(init); }, ...options
