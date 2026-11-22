@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -617,6 +617,24 @@ describe("testnet wallet-spend authority service", () => {
         expect(existsSync(settings.dataDirectory)).toBe(false);
         expect(existsSync(settings.demDirectory)).toBe(false);
       }
+    });
+
+    it("refuses to start when the DEM lane's witness is damaged and leaves the port closed", async () => {
+      const chain = await chainStub(defaultChain(FIRST_FINAL_TIME));
+      await approvedNode();
+      const port = await freePort();
+      const settings = await withDemLane(chain);
+      const environment = { ...settings.environment, DACS_WALLET_AUTHORITY_URL: `http://127.0.0.1:${port}` };
+      await (await startDacsWalletSpendTestnetAuthorityV1({ environment })).stop();
+      const witness = join(settings.demDirectory, "witness");
+      const head = join(witness, readdirSync(witness).sort().at(-1) ?? "");
+      const text = readFileSync(head, "utf8");
+      const signed = text.indexOf("\"stateHash\":\"") + "\"stateHash\":\"".length;
+      writeFileSync(head, `${text.slice(0, signed)}${text[signed] === "0" ? "1" : "0"}${text.slice(signed + 1)}`);
+
+      await expect(startDacsWalletSpendTestnetAuthorityV1({ environment }))
+        .rejects.toMatchObject({ reasonCode: "wallet-spend-file-witness-record-damaged" });
+      await expect(portRefused(port)).resolves.toBe(true);
     });
 
     it("a DEM hold recorded before a restart is held and never released by time", async () => {
