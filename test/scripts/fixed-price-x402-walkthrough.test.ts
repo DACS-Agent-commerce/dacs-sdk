@@ -696,6 +696,14 @@ describe("record", () => {
       await refuses(run, /buy output.*see logs\/buy\.log/, onBaseSepolia, ref);
       expect(readFileSync(join(run, "logs", "buy.log"), "utf8")).toContain("listing reference is malformed");
     });
+    it("removes the previous record when a rerun cannot reach the EVM RPC", async () => {
+      quietly();
+      const run = recordFixture();
+      await walkthrough.record({ runDir: run }, onBaseSepolia);
+      expect(existsSync(join(run, "record.json"))).toBe(true);
+      const rpcDown = (async () => new Response("unavailable", { status: 503 })) as unknown as typeof fetch;
+      await refuses(run, /eth_chainId failed with HTTP 503/, rpcDown);
+    });
     it("when the project's .env is missing", async () => {
       const run = recordFixture();
       rmSync(join(run, "project", ".env"));

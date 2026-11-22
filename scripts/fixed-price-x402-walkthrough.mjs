@@ -12,7 +12,7 @@
 // diagnostic in each role's outbox, and every dacs: script rebuilds the project's dist/.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -476,6 +476,7 @@ function readEnvFile(run, name) {
 // cannot be observed as unrun with the reason. It writes no readiness record and no doctor report.
 export async function record({ runDir, listingRef }, fetchImpl = fetch) {
   const run = checkRunDirectory(runDir);
+  rmSync(join(run, "record.json"), { force: true }); // a rerun that fails must not leave the previous record looking current
   const { init, registry } = readState(run);
   if (init === undefined) throw new Error("run init first");
   const env = readEnvFile(run, ".env");
@@ -511,7 +512,6 @@ export async function record({ runDir, listingRef }, fetchImpl = fetch) {
       if (result.status === null) throw new Error(`buy did not finish (${result.error?.code ?? result.signal})`);
       buy = { exitCode: result.status, ...parseBuyOutput(result.stdout, result.status) };
     } catch (error) {
-      if (existsSync(join(run, "record.json"))) unlinkSync(join(run, "record.json"));
       throw new Error(`${error.message}; see logs/buy.log`);
     }
   }
