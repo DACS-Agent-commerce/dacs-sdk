@@ -7,6 +7,7 @@ import {
   type WalletSpendPolicyV1,
   type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationV1,
+  type WalletSpendStateV1,
 } from "@kynesyslabs/dacs";
 
 import type {
@@ -37,6 +38,8 @@ const VERDICT_CODES: Readonly<Record<DacsWalletSpendTestnetChainVerdictV1, strin
 });
 const ANCESTRY_UNPROVEN = "wallet-spend-chain-ancestry-unproven";
 const HOLD_UNBOUND = "wallet-spend-chain-hold-unbound";
+const HOLD_CHANGED = "wallet-spend-chain-hold-changed";
+const NONCE_CLAIMED = "wallet-spend-chain-nonce-claimed";
 const LOWERCASE_ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 
 /** Ends a check early: a step-0 refusal (no verdict) or a verdict with a specific reason. */
@@ -75,8 +78,12 @@ function nonceFor(jobId: string, phaseIndex: number): Hex {
  * the latest block by parent hash: `settled` needs the exact payment, and
  * `terminal-absent` needs a final cancel or an unused nonce at a head whose
  * time is past the hold's bound `validBefore`. `not-invoked` is never accepted.
- * The core supplies the stored hold with an absence claim and releases only
- * while that hold is still current, so the expiry judged is the one released.
+ * After the chain walk the rule reads the lane's state once more. A payment is
+ * refused while another rail's hold for the same job phase, which shares the
+ * nonce, is reserved, effect-pending or settled: each hold is stored before its
+ * own check runs, so of two such holds the later check always sees the other.
+ * A release is refused unless the stored hold still has the generation and
+ * expiry the core supplied; the core compares both again when it releases.
  *
  * @returns `authenticateRecovery` and `bindAuthorizationValidBefore` for the
  *   core, and `check`, which gives the same decision with its reason code.
@@ -85,6 +92,8 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   policy: Readonly<WalletSpendPolicyV1>;
   reader: Pick<DacsWalletSpendEvmReaderV1,
     "readBlock" | "readBlockByHash" | "readAuthorizationState" | "readAuthorizationLogs" | "readReceipt">;
+  /** The lane's current state; a check that cannot read it is refused. */
+  readState(): Promise<Readonly<WalletSpendStateV1>>;
   report(line: Readonly<Record<string, string>>): void;
 }>): Readonly<{
   authenticateRecovery: WalletSpendAuthorityDependenciesV1["authenticateRecovery"];
@@ -99,6 +108,17 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   const asset = policy.assets[0]?.asset;
   const walletTopic = topicOf(policy.wallet.toLowerCase());
   const reported = new Set<string>();
+
+  /** Reports a hold the rule keeps refusing, once per hold and reason. */
+  function reportForOperator(reservationId: string, reasonCode: string, transactionHash?: string): void {
+    const key = JSON.stringify([reservationId, reasonCode]);
+    if (reported.has(key)) return;
+    reported.add(key);
+    input.report({
+      status: "hold-needs-operator", reasonCode, reservationId,
+      ...(transactionHash === undefined ? {} : { transactionHash }),
+    });
+  }
 
   /** Step 0: the hold is one x402 service debit on the policy's asset, keyed by its settlement. */
   function bindHold(reservation: Readonly<WalletSpendReservationV1>): BoundHold {
@@ -204,16 +224,36 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
     const transfers = matchingTransfers(receipt, hold);
     if (transfers > 1) stopWith("unavailable");
     if (transfers === 1) return "paid";
-    if (!reported.has(hold.reservationId)) {
-      reported.add(hold.reservationId);
-      input.report({
-        status: "hold-needs-operator",
-        reasonCode: VERDICT_CODES["used-unmatched"],
-        reservationId: hold.reservationId,
-        transactionHash: receipt.transactionHash,
-      });
-    }
+    reportForOperator(hold.reservationId, VERDICT_CODES["used-unmatched"], receipt.transactionHash);
     return "used-unmatched";
+  }
+
+  /**
+   * Step 4, after the walk: a payment needs no other live or settled hold on the
+   * same nonce, unless this hold already settled (a retry, which the core answers
+   * from its record), and a release needs the stored hold unchanged.
+   * @returns the refusal's reason code, or `undefined` when the state allows it.
+   */
+  async function stateRefusal(
+    reservation: Readonly<WalletSpendReservationV1>,
+    disposition: "settled" | "terminal-absent",
+    storedHold: StoredHold,
+  ): Promise<string | undefined> {
+    const state = await input.readState().catch(() => undefined);
+    if (state === undefined) return VERDICT_CODES.unavailable;
+    const row = state.reservations.find((stored) => stored.reservationId === reservation.reservationId);
+    if (disposition === "settled") {
+      const nonce = nonceFor(reservation.jobId, reservation.phaseIndex);
+      const claimed = row?.stage !== "settled" && state.reservations.some((other) =>
+        other.reservationId !== reservation.reservationId && other.stage !== "released" &&
+        nonceFor(other.reservation.jobId, other.reservation.phaseIndex) === nonce);
+      if (!claimed) return undefined;
+      reportForOperator(reservation.reservationId, NONCE_CLAIMED);
+      return NONCE_CLAIMED;
+    }
+    const unchanged = row !== undefined && row.generation === storedHold?.generation &&
+      row.authorizationValidBefore === storedHold.authorizationValidBefore;
+    return unchanged ? undefined : HOLD_CHANGED;
   }
 
   /** Steps 1 to 3: the verdict for one bound hold. */
@@ -255,7 +295,11 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
     const accepted = observation.disposition === "settled"
       ? found.verdict === "paid"
       : found.verdict === "cancelled" || found.verdict === "expired-unused";
-    return { accepted, reasonCode: found.reasonCode };
+    if (!accepted) return { accepted, reasonCode: found.reasonCode };
+    const refusal = await stateRefusal(reservation, observation.disposition, storedHold);
+    return refusal === undefined
+      ? { accepted, reasonCode: found.reasonCode }
+      : { accepted: false, reasonCode: refusal };
   }
 
   /** Binds a new hold's `validBefore` to the latest block's time plus the buyer's signing window. */

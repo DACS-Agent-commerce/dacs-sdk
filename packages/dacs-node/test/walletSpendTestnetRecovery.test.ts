@@ -14,8 +14,10 @@ import {
   createInMemoryWalletSpendStateStore,
   createWalletSpendAuthorityV1,
   createX402BuyerSettlementIntent,
+  x402BuyerSettlementKey,
   type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationV1,
+  type WalletSpendSettlementObservationV1,
   type WalletSpendStateV1,
 } from "@kynesyslabs/dacs";
 
@@ -59,12 +61,34 @@ const NONCE = nonceOf("job-one", 0);
 const PAYMENT_NUMBER = FINAL_NUMBER - 5;
 const POLICY = captureWalletSpendPolicyV1(testnetPolicy());
 
-const settledClaim = (amount = TESTNET_AMOUNT): WalletSpendRecoveryObservationV1 => ({
+const settledClaim = (amount = TESTNET_AMOUNT): WalletSpendSettlementObservationV1 => ({
   disposition: "settled",
   evidenceHash: "d".repeat(64),
   debits: [{ asset: TESTNET_ASSET, purpose: "service", amount }],
 });
 const absentClaim: WalletSpendRecoveryObservationV1 = { disposition: "terminal-absent", evidenceHash: "e".repeat(64) };
+
+const SECOND_RAIL = "x402-exact-evm-second";
+
+/** The same job phase's hold on a second configured rail: another reservation id, the same nonce. */
+function otherRailHold(item: WalletSpendReservationV1): WalletSpendReservationV1 {
+  const key = x402BuyerSettlementKey({ railId: SECOND_RAIL, jobId: item.jobId, phaseIndex: item.phaseIndex });
+  return { ...item, railId: SECOND_RAIL, reservationId: `x402:${key}` };
+}
+
+type StoredStage = WalletSpendStateV1["reservations"][number]["stage"];
+
+/** The fixture state with a second rail's hold for the same job phase stored first, at `stage`. */
+function stateWithOtherRail(stage: StoredStage): WalletSpendStateV1 {
+  const state = stateWithHold(RESERVATION, VALID_BEFORE);
+  const [row] = state.reservations;
+  if (row === undefined) throw new Error("the fixture state has one row");
+  const other = otherRailHold(RESERVATION);
+  return {
+    ...state,
+    reservations: [{ ...row, reservationId: other.reservationId, reservation: other, stage, generation: 1 }, row],
+  };
+}
 
 function blockAt(state: ChainState, number: number): StubBlock {
   const block = state.byNumber.get(number);
@@ -85,6 +109,7 @@ function rule(
   stub: Readonly<{ url: string }>,
   state: WalletSpendStateV1 = stateWithHold(RESERVATION, VALID_BEFORE),
   searchFloor = SEARCH_FLOOR,
+  readState: () => Promise<WalletSpendStateV1> = async () => state,
 ) {
   const reports: Record<string, string>[] = [];
   const recovery = createDacsWalletSpendTestnetRecoveryV1({
@@ -92,6 +117,7 @@ function rule(
     reader: createDacsWalletSpendEvmReaderV1({
       rpcUrl: stub.url, policy: POLICY, authorizationSearchFromBlock: searchFloor,
     }),
+    readState,
     report: (line) => reports.push(line),
   });
   /** Checks as the core does: with the stored row's generation and expiry. */
@@ -444,14 +470,14 @@ describe("testnet wallet-spend recovery rule", () => {
 
   it("judges the expiry of the hold it is given, and a settlement needs no hold", async () => {
     const finalTime = 1_800_000_000;
-    const hold = (authorizationValidBefore: number) => ({ generation: 5, authorizationValidBefore });
+    const hold = (authorizationValidBefore: number) => ({ generation: 2, authorizationValidBefore });
     const stub = await chainStub(defaultChain(finalTime));
-    const { raw } = rule(stub);
+    const { raw } = rule(stub, stateWithHold(RESERVATION, finalTime - 1));
     await expect(raw.check(RESERVATION, absentClaim, hold(finalTime)))
       .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-authorization-still-valid" });
     await expect(raw.check(RESERVATION, absentClaim, hold(finalTime - 1)))
       .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-expired-unused" });
-    await expect(raw.check(RESERVATION, absentClaim, { generation: 5 }))
+    await expect(raw.check(RESERVATION, absentClaim, { generation: 2 }))
       .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-authorization-valid-before-missing" });
 
     const paid = defaultChain();
@@ -459,6 +485,86 @@ describe("testnet wallet-spend recovery rule", () => {
     await expect(rule(await chainStub(paid)).raw.check(RESERVATION, settledClaim()))
       .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-paid" });
   });
+
+  for (const stage of ["reserved", "effect-pending", "settled"] as const) {
+    it(`refuses a payment for a hold when another rail's ${stage} hold uses the same job phase`, async () => {
+      const state = defaultChain();
+      payment(state);
+      const recovery = rule(await chainStub(state), stateWithOtherRail(stage));
+
+      await expect(recovery.check(RESERVATION, settledClaim()))
+        .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-nonce-claimed" });
+      await recovery.check(RESERVATION, settledClaim());
+      expect(recovery.reports).toEqual([{
+        status: "hold-needs-operator",
+        reasonCode: "wallet-spend-chain-nonce-claimed",
+        reservationId: RESERVATION.reservationId,
+      }]);
+    });
+  }
+
+  it("counts a payment when the other rail's hold for the job phase was released", async () => {
+    const state = defaultChain();
+    payment(state);
+
+    await expect(rule(await chainStub(state), stateWithOtherRail("released")).check(RESERVATION, settledClaim()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-paid" });
+  });
+
+  it("refuses a decision when the state cannot be read after the chain walk", async () => {
+    const unreadable = async (): Promise<WalletSpendStateV1> => {
+      throw new Error("state store offline");
+    };
+    const paid = defaultChain();
+    payment(paid);
+    await expect(rule(await chainStub(paid), undefined, SEARCH_FLOOR, unreadable).check(RESERVATION, settledClaim()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-unavailable" });
+
+    const finalTime = 1_800_000_000;
+    const expired = rule(await chainStub(defaultChain(finalTime)), stateWithHold(RESERVATION, finalTime - 1),
+      SEARCH_FLOOR, unreadable);
+    await expect(expired.check(RESERVATION, absentClaim))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-unavailable" });
+  });
+
+  for (const change of [
+    { name: "the hold was released and reserved again", generation: 3, validBefore: 1_800_000_120 },
+    { name: "only the hold's expiry changed", generation: 2, validBefore: 1_800_000_120 },
+    { name: "only the hold's generation changed", generation: 3, validBefore: 1_799_999_990 },
+  ]) {
+    it(`refuses a release when ${change.name} during a slow check`, async () => {
+      const finalTime = 1_800_000_000;
+      const checkedExpiry = finalTime - 10;
+      const stub = await chainStub(defaultChain(finalTime));
+      const real = createDacsWalletSpendEvmReaderV1({
+        rpcUrl: stub.url, policy: POLICY, authorizationSearchFromBlock: SEARCH_FLOOR,
+      });
+      const replacement = stateWithHold(RESERVATION, change.validBefore);
+      const current = { state: stateWithHold(RESERVATION, checkedExpiry) };
+      const recovery = createDacsWalletSpendTestnetRecoveryV1({
+        policy: POLICY,
+        reader: {
+          readBlock: (block) => real.readBlock(block),
+          readBlockByHash: (hash) => real.readBlockByHash(hash),
+          readAuthorizationState: (request) => real.readAuthorizationState(request),
+          readReceipt: (hash) => real.readReceipt(hash),
+          async readAuthorizationLogs(request) {
+            current.state = {
+              ...replacement,
+              generation: change.generation,
+              reservations: replacement.reservations.map((row) => ({ ...row, generation: change.generation })),
+            };
+            return real.readAuthorizationLogs(request);
+          },
+        },
+        readState: async () => current.state,
+        report: () => undefined,
+      });
+
+      await expect(recovery.check(RESERVATION, absentClaim, { generation: 2, authorizationValidBefore: checkedExpiry }))
+        .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-hold-changed" });
+    });
+  }
 });
 
 describe("testnet wallet-spend recovery rule inside the authority, with the hold reserved again", () => {
@@ -469,9 +575,11 @@ describe("testnet wallet-spend recovery rule inside the authority, with the hold
   const SECOND_EXPIRY = FINAL_TIME + 120;
   const LEASE_MS = 100_000;
   const ITEM = testnetReservation("01J9ZQ6X3F8K2M5N7P4R1T0VWA");
+  const LINEAGE = "testnet-lineage";
 
-  async function authority() {
-    const stub = await chainStub(defaultChain(FINAL_TIME));
+  async function authority(chain = defaultChain(FINAL_TIME)) {
+    const stub = await chainStub(chain);
+    const memory = createInMemoryWalletSpendStateStore();
     const real = createDacsWalletSpendEvmReaderV1({
       rpcUrl: stub.url, policy: POLICY, authorizationSearchFromBlock: SEARCH_FLOOR,
     });
@@ -500,12 +608,17 @@ describe("testnet wallet-spend recovery rule inside the authority, with the hold
           return real.readAuthorizationLogs(request);
         },
       },
+      async readState() {
+        const state = await memory.read?.(LINEAGE);
+        if (state === undefined || state === null) throw new Error("no state yet");
+        return state;
+      },
       report: () => undefined,
     });
     const expiries = [FIRST_EXPIRY, SECOND_EXPIRY];
     const clock = { value: 1_000_000 };
     const wallet = createWalletSpendAuthorityV1(POLICY, {
-      store: createInMemoryWalletSpendStateStore(),
+      store: { ...memory, lineageScope: () => LINEAGE },
       readBalance: async () => "100000000",
       authenticateRecovery: recovery.authenticateRecovery,
       bindAuthorizationValidBefore: async () => expiries.shift() ?? SECOND_EXPIRY,
@@ -513,8 +626,8 @@ describe("testnet wallet-spend recovery rule inside the authority, with the hold
       owner: "testnet-authority",
       leaseDurationMs: LEASE_MS,
     });
-    const reserve = async () => {
-      const claim = await wallet.reserve(ITEM, { authorizationWindowSeconds: 120 });
+    const reserve = async (item = ITEM) => {
+      const claim = await wallet.reserve(item, { authorizationWindowSeconds: 120 });
       if (claim.status !== "reserved") throw new Error(`expected a hold, got ${claim.status}`);
       return claim.permit;
     };
@@ -561,7 +674,7 @@ describe("testnet wallet-spend recovery rule inside the authority, with the hold
       harness.resume();
 
       await expect(stalled).resolves.toMatchObject({
-        message: "wallet spend absence was checked against another hold",
+        message: "wallet spend recovery authentication failed",
       });
       expect(await harness.wallet.reserve(ITEM)).toMatchObject({
         status: "held", stage: scenario.effect ? "effect-pending" : "reserved",
@@ -579,6 +692,30 @@ describe("testnet wallet-spend recovery rule inside the authority, with the hold
     harness.lapse();
     await expect(harness.wallet.reconcile(ITEM, absentClaim)).rejects.toThrow("recovery authentication failed");
     expect((await harness.wallet.inspect()).activeEffects).toBe(1);
+  });
+
+  it("two rails for one job phase and one payment settle exactly one hold and release neither", async () => {
+    const chain = defaultChain(FINAL_TIME);
+    payment(chain, { nonce: nonceOf(ITEM.jobId, ITEM.phaseIndex) });
+    const harness = await authority(chain);
+    const first = await harness.reserve();
+    await first.beginEffect();
+    await first.settle(settledClaim());
+
+    const secondItem = otherRailHold(ITEM);
+    const second = await harness.reserve(secondItem);
+    await second.beginEffect();
+    await expect(second.settle(settledClaim())).rejects.toThrow("wallet spend settlement authentication failed");
+    harness.lapse();
+    await expect(harness.wallet.reconcile(secondItem, settledClaim()))
+      .rejects.toThrow("wallet spend recovery authentication failed");
+    await expect(harness.wallet.reconcile(secondItem, absentClaim))
+      .rejects.toThrow("wallet spend recovery authentication failed");
+
+    expect(await harness.wallet.reconcile(ITEM, settledClaim())).toBe("existing");
+    const view = await harness.wallet.inspect();
+    expect(view.activeEffects).toBe(1);
+    expect(view.assets[0]).toMatchObject({ cumulativeSettledDebit: TESTNET_AMOUNT });
   });
 
   it("two simultaneous checks of one hold release it once", async () => {
