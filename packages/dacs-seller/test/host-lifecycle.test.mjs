@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs, {chmodSync} from 'node:fs';
+import {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {connect} from 'node:net';
 import {once} from 'node:events';
@@ -26,7 +26,7 @@ const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{p
 async function fixture(t,{wrap=agent=>agent,publicEndpoint=FIXTURE_ENDPOINT}={}){
  const f=await commitmentFixture(t,{vetMode:KIT_TP1_VET_MODE,publicEndpoint}),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
  // `vetMode` is an agent option: the host fixes it and takes no such option.
- const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;delete config.vetMode;
+ const config={...f.config};delete config.durableDirectory;delete config.commitOnSignature;const nativeArtifactAnchor=config.nativeArtifactAnchor;delete config.nativeArtifactAnchor;delete config.vetMode;
  delete config.challengeLedger; // the host builds its own ledger
  const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){const wrapped=new WeakMap();testWrapper=agent=>{if(!wrapped.has(agent))wrapped.set(agent,value(agent));return wrapped.get(agent);};}\nconst REQUIRED =').replace('now, agent, requireDelegation: false','now, agent: testWrapper(agent), requireDelegation: false').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,...hostAuthority(),listener:proxyListener()},hosts=[];
@@ -76,7 +76,7 @@ test('a frozen startup failure is kept as the aggregate cause when cleanup also 
 });
 
 test('the host still refuses a native artifact capability without its readbacks',async t=>{
- const f=await fixture(t);const {readRetained:_removed,...anchor}=f.native;
+ const f=await fixture(t),anchor={...f.native};delete anchor.readRetained;
  await assert.rejects(f.start({artifactAnchor:anchor}),/native demo artifact capability is incomplete/);
  const host=await f.start();await host.close();
 });

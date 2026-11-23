@@ -17,7 +17,7 @@ export function spyOnFsync({ onSync, aroundSync } = {}) {
   const open = fs.promises.open;
   const pathsByDescriptor = new Map();
   const synced = [];
-  let handlePrototype, handleSync, wrappedHandleSync;
+  const handleSyncs = new Map();
   const syncPath = (path, sync, wrap = false) => {
     if (path !== undefined) synced.push(path);
     if (onSync) onSync(path);
@@ -42,16 +42,19 @@ export function spyOnFsync({ onSync, aroundSync } = {}) {
       if (typeof path === 'string') {
         const descriptor = handle.fd;
         pathsByDescriptor.set(descriptor, resolve(path));
-        const prototype = Object.getPrototypeOf(handle);
-        if (!handlePrototype) {
-          handlePrototype = prototype;
-          handleSync = prototype.sync;
-          wrappedHandleSync = function (...args) {
-            const openedPath = pathsByDescriptor.get(this.fd);
-            return syncPath(openedPath, () => handleSync.apply(this, args), true);
-          };
-          prototype.sync = wrappedHandleSync;
-        }
+        const originalSync = handle.sync;
+        const ownSync = Object.getOwnPropertyDescriptor(handle, 'sync');
+        const wrappedSync = function (...args) {
+          const openedPath = pathsByDescriptor.get(this.fd);
+          return syncPath(openedPath, () => originalSync.apply(this, args), true);
+        };
+        Object.defineProperty(handle, 'sync', {
+          configurable: true,
+          enumerable: ownSync?.enumerable ?? false,
+          value: wrappedSync,
+          writable: true,
+        });
+        handleSyncs.set(handle, { ownSync, wrappedSync });
         handle.once('close', () => pathsByDescriptor.delete(descriptor));
       }
       return handle;
@@ -64,7 +67,12 @@ export function spyOnFsync({ onSync, aroundSync } = {}) {
   const restore = () => {
     for (const name of ['openSync', 'closeSync', 'fsyncSync']) if (fs[name] === spies[name]) fs[name] = originals[name];
     if (fs.promises.open === spies.promiseOpen) fs.promises.open = originals.promiseOpen;
-    if (handlePrototype && handlePrototype.sync === wrappedHandleSync) handlePrototype.sync = handleSync;
+    for (const [handle, { ownSync, wrappedSync }] of handleSyncs) {
+      if (handle.sync !== wrappedSync) continue;
+      if (ownSync) Object.defineProperty(handle, 'sync', ownSync);
+      else delete handle.sync;
+    }
+    handleSyncs.clear();
     syncBuiltinESMExports();
   };
   return { synced, restore };
