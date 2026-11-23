@@ -9,11 +9,12 @@ const PROTOCOL_SELLER_SEED = 17;
  * `{ key, effectSigner, integritySigner, readOnlyAnswerSigner, counts, effectBytes }`: `effectSigner` is the key's effect role,
  * `integritySigner` its integrity role and `readOnlyAnswerSigner` its read-only answer role, each counting into
  * `counts.effect`, `counts.integrity` or `counts.readOnly` the cryptographic signatures it made; `effectBytes` holds the bytes
- * of every effect signature made. The key closes after the test.
+ * of every effect signature made. The key is the protocol fixture's seller unless `seedByte` names another test wallet; it closes
+ * after the test.
  */
-export async function countedKeyRoles(t) {
+export async function countedKeyRoles(t, { seedByte = PROTOCOL_SELLER_SEED } = {}) {
   const { openSellerKey } = await importSellerKey();
-  const key = await openSellerKey(openOptions(keyFixture(t, { seedByte: PROTOCOL_SELLER_SEED })));
+  const key = await openSellerKey(openOptions(keyFixture(t, { seedByte })));
   t.after(() => key.close());
   const counts = { effect: 0, integrity: 0, readOnly: 0 }, effectBytes = [];
   const counted = (role, sign, bytes) => {

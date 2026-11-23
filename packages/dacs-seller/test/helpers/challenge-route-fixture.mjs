@@ -53,7 +53,8 @@ export function watchSql(t) {
 }
 
 // `resume` is `{ directory, generation }` of an earlier world whose store and journal are closed: this world opens the same files, as a restart does.
-export async function challengeWorld(t, { store: storeOptions = {}, requireDelegation = false, resume = null } = {}) {
+// sellerRoles: the seller key's roles the wire signs answers with, in place of the fixture seller's.
+export async function challengeWorld(t, { store: storeOptions = {}, requireDelegation = false, resume = null, sellerRoles = null } = {}) {
   const directory = resume?.directory ?? await mkdtemp(join(tmpdir(), 'TEST-challenge-route-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, 'transport.sqlite'), journalDirectory = join(directory, 'wire-journal');
@@ -84,7 +85,7 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
   /** The wire context over the current store; `overrides` replace only the members they name. */
   const effectBoundary = testEffectBoundary({ binding }).effectBoundary;
   const makeWire = (overrides = {}) => createWireContext({ binding, tp1Network: { connection: () => { calls.connection++; return { ...TEST_CONNECTION }; } },
-    signer: { ...signer(SELLER), readOnlyAnswerSigner: readOnlyRoleOf(signer(SELLER)) }, effectBoundary, store, journal,
+    signer: sellerRoles ?? { ...signer(SELLER), readOnlyAnswerSigner: readOnlyRoleOf(signer(SELLER)) }, effectBoundary, store, journal,
     ready: () => state.ready(), stopped: () => state.stop(), now, agent, requireDelegation, signedListing: admitWireArtifact(Buffer.from(JSON.stringify(listing))), readCommitmentReceipt, ...overrides });
   let wire = null;
   const compose = () => {
