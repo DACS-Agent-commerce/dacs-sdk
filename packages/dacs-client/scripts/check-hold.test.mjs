@@ -165,7 +165,8 @@ test('a README change needs no record: committed it passes, uncommitted only the
   const r=gate(s); assert.equal(r.status, 1, r.text);
   assert.deepEqual([...r.text.matchAll(/^FAIL (.*)$/gm)].map(match => match[1]), [`${P}README.md: working file differs from HEAD (bytes or mode)`]);
   git(s.repo,'add','--',P+'README.md'); commit(s.repo,'docs(client): TEST unrecorded README change');
-  passes(s);
+  const committed=gate(s); assert.equal(committed.status, 0, committed.text);
+  assert.match(committed.text, /package README excluded from record\/anchor\/baseline blob checks/);
 });
 test('an unrecorded package.json change is still refused once committed', t => {
   const s=scratch(t), file=join(s.dir,'package.json');
@@ -175,11 +176,13 @@ test('an unrecorded package.json change is still refused once committed', t => {
   refuses(s, fail('package.json', `HEAD, index, working file differ from ${ANCHORED}`));
 });
 test('paths that only look like the README are not exempt', t => {
-  const s=scratch(t), paths=['README.md.bak', 'readme.md', 'docs/README.md', 'src/README.md'];
+  // A case-insensitive filesystem aliases readme.md to the tracked README.md;
+  // case variants are checked directly by delta-record.test.mjs instead.
+  const s=scratch(t), paths=['README.md.bak', 'docs/README.md', 'src/README.md'];
   for (const path of paths) put(join(s.dir, path), 'TEST look-alike\n');
   git(s.repo,'add','--',...paths.map(path => P + path)); commit(s.repo,'docs(client): TEST README look-alikes');
   refuses(s,
-    ...['README.md.bak', 'readme.md', 'docs/README.md'].map(path => fail(path, 'not a core path, a record file or a record-named path')),
+    ...['README.md.bak', 'docs/README.md'].map(path => fail(path, 'not a core path, a record file or a record-named path')),
     fail('src/README.md', 'HEAD, index, working file differ from the baseline \\(no file\\)'));
 });
 test('a file the anchor does not name is refused, and a deleted baseline script cannot come back', t => {

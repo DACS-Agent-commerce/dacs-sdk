@@ -1,0 +1,19 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF enforce README inventory exemption (#2154 #2155)",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/WF-32529d6e5f8c.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/check-hold.test.mjs",
+    "packages/dacs-client/scripts/delta-freeze.mjs",
+    "packages/dacs-client/scripts/delta-freeze.test.mjs",
+    "packages/dacs-client/scripts/delta-frontier.test.mjs",
+    "packages/dacs-client/scripts/delta-map.mjs",
+    "packages/dacs-client/scripts/delta-provenance.test.mjs",
+    "packages/dacs-client/scripts/delta-record.mjs",
+    "packages/dacs-client/scripts/delta-record.test.mjs"
+  ]
+}

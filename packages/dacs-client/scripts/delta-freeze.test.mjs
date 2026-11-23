@@ -85,6 +85,33 @@ test('an unrecorded README change passes on each side, after a README record too
   assert.deepEqual(derived(s), []);
 });
 
+test('the repository README is outside the package freeze, but a nested package README is not exempt', t => {
+  const s = scratch(t);
+  appendFileSync(join(s.repo, 'README.md'), '\nTEST repository README\n');
+  s.git('add', '--', 'README.md'); s.git('commit', '-qm', 'docs: TEST update repository README');
+  assert.deepEqual(derived(s), []);
+  mkdirSync(join(s.dir, 'docs'), { recursive: true });
+  writeFileSync(join(s.dir, 'docs/README.md'), 'TEST nested package README\n');
+  s.git('add', '--', P + 'docs/README.md'); s.git('commit', '-qm', 'docs(client): TEST add nested README');
+  assert.deepEqual(derived(s), [`${P}docs/README.md: not a core path, a record file or a record-named path`]);
+});
+
+test('renaming the exact package README to a nested README removes the exemption', t => {
+  const s = scratch(t);
+  mkdirSync(join(s.dir, 'docs'), { recursive: true });
+  s.git('mv', '--', P + 'README.md', P + 'docs/README.md');
+  s.git('commit', '-qm', 'docs(client): TEST rename README into docs');
+  assert.deepEqual(derived(s), [`${P}docs/README.md: not a core path, a record file or a record-named path`]);
+});
+
+test('a backslash filename is literal on POSIX and does not become a README exemption', t => {
+  if (process.platform === 'win32') return t.skip('backslashes are path separators on Windows');
+  const s = scratch(t), path = 'scripts\\README.md';
+  writeFileSync(join(s.dir, path), 'TEST literal backslash filename\n');
+  s.git('add', '--', P + path); s.git('commit', '-qm', 'docs(client): TEST literal backslash filename');
+  assert.deepEqual(derived(s), [`${P}${path}: not a core path, a record file or a record-named path`]);
+});
+
 test('a file the anchor does not name, a file outside every class and a core path without a pin are refused', t => {
   const s = scratch(t);
   for (const path of ['scripts/new-tool.mjs', 'TEST-live.mjs']) writeFileSync(join(s.dir, path), 'export {};\n');
