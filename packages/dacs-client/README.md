@@ -207,7 +207,7 @@ Payment and bundle requests (the wire's continuing routes) and the two ordinary 
 
 The keys live in process memory and nowhere else. No key is written to a file, a database, a journal, an event or a log, and none is derived from the wallet's recovery phrase. Memory hygiene is partial: the registry zero-fills its own seed on `stop`, but Node keeps a copy inside each private-key object it builds to sign, which the registry cannot clear.
 
-After a restart the registry is empty, and a purchase whose saved delegation names a key from before the restart answers `session_gone_reapprove` before anything is signed, sent or recorded. Passive readers and chain readback keep working. To continue, the buyer approves a new key for the same authority:
+After a restart the registry is empty. If a purchase's saved delegation names the old key, the client cannot sign or send a new seller request. Before payment, the commit and replayed-commit steps return `session_gone_reapprove`. If a paid purchase needs a new seller request for native payment evidence, it stays `settled_verified`. The client records a held `native-evidence` attempt and includes the `session_gone_reapprove` code in the corresponding history event. Passive readers and chain readback keep working. To continue, the buyer approves a new key for the same authority:
 
 1. `start(operationId)` makes a key in the new process.
 2. `sessionRenewal` returns `{operation, delegation: {payload, message}}`. The payload keeps the buyer, seller, Listing pin, job, profile and `expiresAt` of the saved delegation, and changes only `sessionPublicKey` and `notBefore`. The buyer's wallet signs `message`.
