@@ -424,6 +424,33 @@ export function createDacsPayDemSellerPaymentTrackV1(
     receipt: { kind: "pay-dem", txHash: input.notice.settlement.txHash },
   }, intakeDeps);
 
+  const readIntake = async (
+    input: Readonly<DacsPayDemSellerPaymentInputV1>,
+  ): Promise<Readonly<DacsLiveEffectReconciliationV1<DacsPayDemSellerPaymentResultV1>>> => {
+    let intake: Readonly<SellerPaymentIntakeResult>;
+    try {
+      intake = await verify(captureInput(input));
+    } catch {
+      return Object.freeze({
+        status: "indeterminate",
+        reasonCode: "pay-dem-payment-intake-unavailable",
+      });
+    }
+    const verified = captureVerified(intake, input);
+    if (verified !== undefined) {
+      return Object.freeze({ status: "completed", result: verified });
+    }
+    return Object.freeze({
+      status: intake.disposition === "rejected" ? "operator-action" : "indeterminate",
+      reasonCode: reasonCode(
+        intake.reason,
+        intake.disposition === "rejected"
+          ? "pay-dem-payment-rejected"
+          : "pay-dem-payment-indeterminate",
+      ),
+    });
+  };
+
   return createDacsLiveEffectTrackV1<
     DacsPayDemSellerPaymentInputV1,
     DacsPayDemSellerPaymentResultV1,
@@ -504,35 +531,13 @@ export function createDacsPayDemSellerPaymentTrackV1(
         }
         return captureVerified(intake, input) ?? executionControl(intake);
       },
-      async reconcile({ input, fence }): Promise<
-        Readonly<DacsLiveEffectReconciliationV1<DacsPayDemSellerPaymentResultV1>>
-      > {
+      async reconcile({ input, fence }) {
         await fence.assertCurrent();
-        let intake: Readonly<SellerPaymentIntakeResult>;
-        try {
-          intake = await verify(captureInput(input));
-        } catch {
-          return Object.freeze({
-            status: "indeterminate",
-            reasonCode: "pay-dem-payment-intake-unavailable",
-          });
-        }
-        const verified = captureVerified(intake, input);
-        if (verified !== undefined) {
-          return Object.freeze({ status: "completed", result: verified });
-        }
-        return Object.freeze({
-          status: intake.disposition === "rejected"
-            ? "operator-action"
-            : "indeterminate",
-          reasonCode: reasonCode(
-            intake.reason,
-            intake.disposition === "rejected"
-              ? "pay-dem-payment-rejected"
-              : "pay-dem-payment-indeterminate",
-          ),
-        });
+        return readIntake(input);
       },
+      // A completed payment is verified against the node again before it is
+      // reported; this is the same read-only intake check `reconcile` makes.
+      reauthenticate: ({ input }) => readIntake(input),
     },
     projectResult(value) {
       const captured = captureResult(value);

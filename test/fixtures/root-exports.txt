@@ -291,6 +291,7 @@ type D402SettlementResult
 type Dacs5ResumableSessionState
 type Dacs5SessionState
 type Dacs5SessionTransitionContext
+type DacsErrorCode
 type DacsPublicHttpsDependenciesV1
 type DacsPublicHttpsFetchOptionsV1
 type DacsPublicHttpsGetInitV1
@@ -1216,6 +1217,7 @@ type WalletSpendStateStore
 type WalletSpendStateV1
 type WalletSpendStatusV1
 type WalletSpendStoredReservationV1
+type X402BuyerAuthorizationBindingV1
 type X402BuyerAuthorizationLookup
 type X402BuyerAuthorizationProvider
 type X402BuyerAuthorizationReconciliation
@@ -1259,6 +1261,7 @@ type X402BuyerSettlementProgress
 type X402BuyerSettlementStore
 type X402BuyerSignedEventReference
 type X402BuyerTerminalFailureKind
+type X402BuyerUnsignedIntentScope
 type X402ClientLike
 type X402OutboundHeaderInit
 type X402OutboundRequestInput
@@ -1387,6 +1390,7 @@ value TransientError
 value UnsupportedCapabilityError
 value VERSION
 value WALLET_SPEND_STATE_VERSION
+value X402BuyerAuthorizationBindingError
 value X402OutboundTransportError
 value X402_BUYER_SETTLEMENT_STORE_VERSION
 value X402_PAYWALL_SETTLEMENT_STORE_VERSION
@@ -1658,6 +1662,7 @@ value isCompositeBundleRequirement
 value isCompositeSeparator
 value isCompositeVerificationRecord
 value isDacs5SessionTransitionAllowed
+value isDacsErrorCode
 value isDacsPublicAddressV1
 value isDeliverableSpec
 value isDemosAgentClaimRef
@@ -1906,6 +1911,7 @@ value vetPhaseFailureClass
 value withRecoveredAttempts
 value x402BuyerSettlementAuthenticationHash
 value x402BuyerSettlementKey
+value x402BuyerUnsignedIntentHash
 value x402Eip3009Nonce
 value x402PaywallCore
 value x402PaywallFulfilmentKey

@@ -2,7 +2,7 @@ import { canonicalize } from '@kynesyslabs/dacs';
 import { assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { OperationError } from './client-errors.mjs';
 import { PURCHASE_ADMISSION } from './dacs/purchase-admission-state.mjs';
-import { bindHostStop, createHostStop } from './host-stop.mjs';
+import { bindHostStop, createHostStop, isHostStopRefusal } from './host-stop.mjs';
 
 const ADMITTED_STATE = 'testnet-tp1';
 const ADMISSION_MEMBERS = 'binding,currentLocal';
@@ -80,9 +80,9 @@ function assertUnchangedSinceCheck(checkedText, currentLocal) {
   if (!unchanged) throw notAdmittedError(new OperationError('tp1_local_binding_changed', 'the actor\'s connection changed during the admission check'));
 }
 
-async function callAdmitted(original, receiver, args, admission, purchase, hostStop, onStopRefused) {
+async function callAdmitted(original, receiver, args, admission, purchase, hostStop, stopRefused) {
   const assertNotStopped = () => {
-    try { hostStop.assert(); } catch (refusal) { onStopRefused?.(receiver, args, refusal); throw refusal; }
+    try { hostStop.assert(); } catch (refusal) { stopRefused?.(refusal); throw refusal; }
   };
   if (!purchaseActionsAdmitted()) throw notAdmittedError();
   if (purchase) assertPurchaseRuntime(process.version);
@@ -90,7 +90,10 @@ async function callAdmitted(original, receiver, args, admission, purchase, hostS
   const checkedText = await checkBinding(admission);
   assertUnchangedSinceCheck(checkedText, admission.currentLocal);
   assertNotStopped();
-  return original.apply(receiver, args);
+  try { return await original.apply(receiver, args); } catch (error) {
+    if (isHostStopRefusal(error)) stopRefused?.(error);
+    throw error;
+  }
 }
 
 /**
@@ -98,8 +101,8 @@ async function callAdmitted(original, receiver, args, admission, purchase, hostS
  * whose function members are Promise-returning, except the names in `passive`, which pass through unchanged. Each wrapped call, in order: refuses while the
  * hold is held, checks the Node floor when `purchase` is set, refuses while the host stop answers stopped (only when `hostStop` is set and the factory was given
  * `stopped`), awaits the wire's binding check under AUTHORITY_READ_DEADLINE_MS, re-checks the hold and `currentLocal()` synchronously, reads the host stop
- * again in the same synchronous step, then invokes the original once with its receiver and arguments. When either stop read refuses,
- * `onStopRefused(original, args, refusal)` runs before the refusal is thrown. `actionsAdmitted` is a construction-time snapshot, never
+ * again in the same synchronous step, then invokes the original once with its receiver and arguments. When either stop read refuses, or the
+ * original rejects with a host stop refusal, `onStopRefused(original, name, args, refusal)` runs before the refusal is thrown. `actionsAdmitted` is a construction-time snapshot, never
  * authority. `onCreated(publicObject, original)` runs once after construction.
  * Throws TypeError(admission_required | admission_input_untrusted | stop_seam_invalid) and, for purchase factories, OperationError(runtime_unsupported) before building anything.
  * Wrapped calls reject with OperationError(profile_not_admitted) carrying the cause, or with writes_stopped, stop_check_failed or stop_check_invalid, or runtime_unsupported or the original's own error.
@@ -114,7 +117,9 @@ export function admitPublicFactory(factory, { passive = [], purchase = false, ho
     factoryOptions.admission = admission;
     const original = factory(factoryOptions);
     const members = Object.entries(original).map(([name, value]) => [name,
-      typeof value !== 'function' || passiveNames.has(name) ? value : function admittedAction(...args) { return callAdmitted(value, original, args, admission, purchase, gate, onStopRefused); }]);
+      typeof value !== 'function' || passiveNames.has(name) ? value : function admittedAction(...args) {
+        return callAdmitted(value, original, args, admission, purchase, gate, onStopRefused && (refusal => onStopRefused(original, name, args, refusal)));
+      }]);
     const publicObject = Object.freeze({ ...Object.fromEntries(members), actionsAdmitted: purchaseActionsAdmitted() });
     if (hostStop) bindHostStop(publicObject, options.stopped);
     onCreated?.(publicObject, original);

@@ -1,9 +1,11 @@
 // Public ESM boundary. Also runnable from an empty packed-package consumer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
+import { installPackedPair } from './helpers/packed-install.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 function declaresPublicContract(source, line) {
@@ -38,8 +40,8 @@ const ROOT = {
     'demDeliveryContextUsage', 'isDemDeliveryContextAuthority',
     'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
     'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence',
-    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport',
-    'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader',
+    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
+    'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader', 'createPublicSellerClient',
     'createPurchaseOperations', 'isPurchaseOperationId', 'createPurchaseChallenges', 'purchaseApprovalChallengeText', 'createLocalPurchaseAccount'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
@@ -59,12 +61,13 @@ const modules = {
   "public-verification.mjs": "createListingVerifier NotConfiguredError",
   "dacs/chain.mjs": "DEM_DECIMAL OS_INTEGER",
   "dacs/purchase-protocol.mjs": "deliveryEvidenceAddress vetNotPerformedRef",
-  "dacs/seller-http.mjs": "sellerFailureCause SellerRefusedError SellerUnavailableError SellerTlsUnusableError",
+  "dacs/seller-http.mjs": "sellerFailureCause SellerRefusedError SellerUnavailableError SellerTlsUnusableError createPublicSellerClient",
   "dacs/native-payment-evidence-consumer.mjs": "usesNativePaymentEvidence createNativePaymentEvidenceConsumer",
   "dacs/agreement-context-consumer.mjs": "AGREEMENT_CONTEXT_SOURCE isOperatorContextAuthority",
   "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority createDemDeliveryContext",
   "dacs/native-dem-delivery-consumer.mjs": "createNativeDemDeliveryCapability",
   "dacs/source-demo-seller-transport.mjs": "createSourceDemoSellerTransport",
+  "dacs/seller-session-keys.mjs": "createSellerSessionKeys",
   "devnet-demo/commitment-consumer.mjs": "createDevnetNativeCommitmentCapability DEVNET_NATIVE_COMMITMENT_MARKER",
   "dacs/demos-sr2-wallet-bridge.mjs": "SR2_WALLET_KIND DemosSr2BridgeError",
   "wallet/devnet-native-transport.mjs": "rpcAuthRefusal transferRefusal DEVNET_AGREEMENT_KIND DEVNET_AGREEMENT_PROFILE DEVNET_NATIVE_BINDING_PATH DEVNET_NATIVE_RPC_PATH",
@@ -93,6 +96,7 @@ for (const name of [...ROOT.functions, ...ROOT.classes, ...ROOT.values]) {
     const module = Object.keys(modules).find(path => modules[path].split(' ').includes(name));
     const original = await import(new URL(module, import.meta.resolve('@kynesyslabs/dacs-client')));
     if (name === 'createProtocolPurchases') assert.notEqual(client[name], original[name], 'public protocol uses a held facade');
+    else if (name === 'createPublicSellerClient') assert.notEqual(client[name], original.buildPublicSellerClient, 'public seller client is the admission wrapper over its builder');
     else if (name === 'createPurchaseService') assert.notEqual(client[name], original.createPublicPurchaseService, 'public service is the admission wrapper over the diagnostic service');
     else if (GUIDANCE_NAMES.includes(name)) assert.notEqual(client[name], original[name], 'guidance is chosen on each call, not the admitted form itself');
     else assert.equal(client[name], original[name], 'export retains its defining identity');
@@ -103,9 +107,10 @@ test('root exposes exactly the reviewed names', async () => {
   assert.deepEqual(Object.keys(await import('@kynesyslabs/dacs-client')).sort(), [...ROOT.functions, ...ROOT.classes, ...ROOT.values].sort());
 });
 
-test('durable journal subpath exports exactly its factory, error, format and version', async () => {
+test('durable journal subpath exports exactly its factory, error, format, version and the wallet-lane view', async () => {
   const journal = await import('@kynesyslabs/dacs-client/wallet/durable-journal');
-  assert.deepEqual(Object.keys(journal).sort(), ['DURABLE_WALLET_JOURNAL_FORMAT', 'DURABLE_WALLET_JOURNAL_VERSION', 'DurableWalletJournalError', 'openDurableWalletJournal'].sort());
+  assert.deepEqual(Object.keys(journal).sort(), ['DURABLE_WALLET_JOURNAL_FORMAT', 'DURABLE_WALLET_JOURNAL_VERSION', 'DurableWalletJournalError', 'openDurableWalletJournal', 'createWalletLaneView', 'walletLane', 'walletLaneKey'].sort());
+  for (const name of ['createWalletLaneView', 'walletLane', 'walletLaneKey']) assert.equal(typeof journal[name], 'function');
   assert.equal(typeof journal.openDurableWalletJournal, 'function');
   assert.equal(typeof journal.DurableWalletJournalError, 'function');
   assert.equal(journal.DURABLE_WALLET_JOURNAL_FORMAT, 'dacs-durable-wallet-journal');
@@ -318,8 +323,70 @@ test("node-wallet subpath exports exactly its reviewed names; the root import lo
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
  const api=await import('../src/wallet/node-wallet-session.mjs');
- assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession',
+ assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession','openKeystoreWalletSession',
    'createHeldTransportFacade','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext',
    'DEVNET_AGREEMENT_PROFILE','DEVNET_AGREEMENT_KIND','DEVNET_AGREEMENT_SOURCE','DEVNET_SETTLEMENT_KIND','DEVNET_SETTLEMENT_POLICY',
    'DEVNET_DELIVERY_KIND','DEVNET_DELIVERY_POLICY','DEVNET_DEMO_ARTIFACT_KIND','DEVNET_DEMO_ARTIFACT_POLICY','DEVNET_DEMO_ARTIFACT_TYPES'].sort());
+});
+
+const SELLER_CLIENT_ACTIONS = ['propose', 'agreementState', 'commit', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy'];
+
+test('createPublicSellerClient requires admission and rejects every active method while held with no connector call', async () => {
+  const { createPublicSellerClient } = await import('@kynesyslabs/dacs-client');
+  const calls = { request: 0, verifyResponse: 0 };
+  const authentication = { request: async () => { calls.request++; }, verifyResponse: async () => { calls.verifyResponse++; } };
+  const options = { publicEndpoint: 'https://seller.example.test', authentication };
+  assert.throws(() => createPublicSellerClient(options), { name: 'TypeError', message: 'admission_required' });
+  const { binding, currentLocal } = await bindFixture();
+  const seller = createPublicSellerClient({ ...options, admission: { binding, currentLocal }, commitOnSignature: true });
+  assert.equal(seller.origin, 'https://seller.example.test');
+  for (const name of [...SELLER_CLIENT_ACTIONS, 'commitOnSignature']) {
+    const result = seller[name]({ jobId: 'TEST-job' });
+    assert.ok(result instanceof Promise, `${name} returns a Promise`);
+    await assert.rejects(result, { code: 'profile_not_admitted' }, name);
+  }
+  assert.deepEqual(calls, { request: 0, verifyResponse: 0 });
+  for (const option of ['fetchImpl', 'connector', 'resolveHost', 'prepareTransmit', 'beforeTransmit']) {
+    assert.throws(() => createPublicSellerClient({ ...options, admission: { binding, currentLocal }, [option]: () => {} }), TypeError, option);
+  }
+});
+
+test('createPublicSellerClient refuses a timeoutMs outside 1000 through 300000 and a commitOnSignature that is not a boolean', async () => {
+  const { createPublicSellerClient } = await import('@kynesyslabs/dacs-client');
+  const { binding, currentLocal } = await bindFixture();
+  const authentication = { request: async () => assert.fail('nothing is signed'), verifyResponse: async () => assert.fail('nothing is verified') };
+  const build = (extra) => createPublicSellerClient({ admission: { binding, currentLocal }, publicEndpoint: 'https://seller.example.test', authentication, ...extra });
+  for (const timeoutMs of [-1, 0, 999, 300001, 1500.5, Number.NaN, Infinity, '5000', 'abc', null]) {
+    assert.throws(() => build({ timeoutMs }), { name: 'TypeError', message: 'timeoutMs must be an integer from 1000 through 300000' }, String(timeoutMs));
+  }
+  for (const timeoutMs of [undefined, 1000, 300000]) assert.equal(build({ timeoutMs }).origin, 'https://seller.example.test', String(timeoutMs));
+  for (const commitOnSignature of ['false', 'true', 1, 0, null, {}]) {
+    assert.throws(() => build({ commitOnSignature }), { name: 'TypeError', message: 'commitOnSignature must be boolean' }, String(commitOnSignature));
+  }
+  assert.equal('commitOnSignature' in build({ commitOnSignature: false }), false);
+  assert.equal('commitOnSignature' in build({}), false);
+  assert.equal(typeof build({ commitOnSignature: true }).commitOnSignature, 'function');
+});
+
+test('an archive installed outside the checkout exports createPublicSellerClient, constructs the held client and loads without SQLite, with no checkout-relative import', (t) => {
+  // This file also runs on the Node 24 leg, whose npm checks the app lock against the app manifest: the lock is
+  // recomputed for this app, as the other packed test on that leg does, rather than copied from the workspace.
+  const { app, run } = installPackedPair(t, { installedDependencyGraph: true });
+  writeFileSync(join(app, 'seller-client.mjs'), `
+    import assert from 'node:assert/strict';
+    import { existsSync } from 'node:fs';
+    import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+    assert.equal(existsSync(new URL('./node_modules/better-sqlite3', import.meta.url)), false, 'better-sqlite3 is absent');
+    assert.match(import.meta.resolve('@kynesyslabs/dacs-client'), /\\/node_modules\\/@kynesyslabs\\/dacs-client\\//, 'the package is the installed copy');
+    const client = await import('@kynesyslabs/dacs-client');
+    assert.equal(typeof client.createPublicSellerClient, 'function');
+    const local = { endpoint: 'https://rpc.example.invalid/', transportAuthority: 'vector-authority', connectionId: 'vector-conn-1' };
+    const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local, readAuthority: async scope => ({ local: { ...scope.local },
+      chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, provenance: 'TEST-authority', sessionId: scope.sessionId, participants: [] }) });
+    const authentication = { request: async () => assert.fail('held: nothing is signed'), verifyResponse: async () => assert.fail('held: nothing is read') };
+    const seller = client.createPublicSellerClient({ admission: { binding, currentLocal: () => ({ ...local }) }, publicEndpoint: 'https://seller.example.test', authentication });
+    await assert.rejects(seller.propose({}), { code: 'profile_not_admitted' });
+    assert.equal(process.moduleLoadList.includes('NativeModule sqlite'), false, 'SQLite was never loaded');
+  `);
+  run(process.execPath, ['seller-client.mjs'], app);
 });
