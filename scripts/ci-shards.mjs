@@ -9,7 +9,8 @@
 // Files are assigned by weight (seconds per file from a recent CI run), heaviest first, each to the shard with the
 // least weight so far; ties go to the lower shard, then to the earlier file name. A file with no recorded weight gets
 // DEFAULT_WEIGHT, so a new test file always lands in some shard. The weights only balance the shards: a stale weight
-// makes the split uneven, never incomplete.
+// makes the split uneven, never incomplete. check refuses a weight whose key names no test file or test (staleKeys), so
+// a renamed or removed test cannot leave its weight behind; a test with no weight is fine.
 //
 // A file in SPLIT_FILES is not assigned whole: each of its top-level tests is assigned on its own, by the same rule,
 // alongside the whole files. Its test names are listed by loading it without running any test
@@ -37,8 +38,8 @@ export const DEFAULT_TEST_WEIGHT = 60;
 //   19 minutes on a normal hosted runner and about 35 on a slow one, more than a whole shard should take.
 export const SPLIT_FILES = { seller: ["seller-host-native-delivery.test.mjs"], client: ["scripts/delta-provenance.test.mjs"] };
 
-// Seconds per file on a normal hosted runner. The weights only balance the shards; a missing or stale entry never drops
-// a file (see check).
+// Seconds per file on a normal hosted runner. The weights only balance the shards; a missing entry never drops a file
+// (see check), and check refuses an entry that names no test file.
 // - client: the time between consecutive "[client-tests] <file>" lines in a client shard job's log.
 // - seller: from node 22 seller jobs of the two-shard layout. Files of the old shard 1: the sum of their tests'
 //   duration_ms (mean of two jobs) plus half a second to start the file's process. Files of the old shard 2 (that log
@@ -322,11 +323,13 @@ export const WEIGHTS = {
   },
 };
 
-// Seconds per test of each file in SPLIT_FILES, from the duration_ms per test in CI job logs (client: the same run as
-// the client file weights). A test with no entry gets DEFAULT_TEST_WEIGHT.
+// Seconds per test of each file in SPLIT_FILES. Historical entries use CI duration_ms values (client: the same run as
+// the client file weights). The four current delta-provenance entries below use the mean of two local Node 22.22.3
+// duration_ms measurements on 2026-11-23. A test with no entry gets DEFAULT_TEST_WEIGHT.
 export const TEST_WEIGHTS = {
   "scripts/delta-provenance.test.mjs": {
-    "committed delta history and generated per-file table agree": 106,
+    "committed delta history and immutable record files agree": 6,
+    "a commit in a scratch clone starts no background git maintenance that could outlive the test": 0.8,
     "callback history explains the superseded guard and matches the recorded write-lease files": 1,
     "callback history check needs no ancestry beyond the checked-out commit": 1,
     "SQLite split history distinguishes the lease from the later transaction adapter": 1,
@@ -336,7 +339,7 @@ export const TEST_WEIGHTS = {
     "removing a delta record cannot hide its historical file changes": 106,
     "removing a bookkeeping checkpoint is also refused": 105,
     "a later commit with an unlisted moved-file edit is refused": 55,
-    "the per-file Markdown table is checked, not trusted": 105,
+    "a stored per-file Markdown table is refused by the closed freeze": 1.5,
     "a committed deletion without a named delta is refused": 55,
     "a staged moved-file edit with restored working bytes is refused": 105,
     "archived source and pre-publication delta evidence cannot be rewritten": 104,
@@ -353,7 +356,7 @@ export const TEST_WEIGHTS = {
     "a WF delta record is accepted and an unlisted delta id is still refused": 118,
     "a WF record selected by its full commit hash may carry the subject \"fix(client): TEST published fix without a delta id\"; the same subject without the hash is refused": 112,
     "a WF record selected by its full commit hash may carry the subject \"TEST published fix with a plain subject\"; the same subject without the hash is refused": 112,
-    "the ledger gate refuses each fault in a PR's own delta records, one table row per fault, each run in a scratch clone of the checked head, and the committed head passes with every WF record listing the files its PR changed at their committed blobs": 543,
+    "the committed head passes and each archived record fault is refused": 32.8,
   },
   // Mean duration_ms of each test over two node 22 seller jobs on normal runners, in registration order.
   "seller-host-native-delivery.test.mjs": {
@@ -728,6 +731,25 @@ export async function clientFiles() {
 }
 
 /**
+ * Failures (empty when every key is current): a WEIGHTS key of suite that is not one of files, or is a split file (its
+ * tests have the weights), and a TEST_WEIGHTS key of a split file of suite that is not one of its listed tests. A file or
+ * test with no key is not a failure: it gets the default weight.
+ */
+export function staleKeys(suite, files, split, weights = WEIGHTS[suite], testWeights = TEST_WEIGHTS) {
+  const failures = [];
+  for (const key of Object.keys(weights ?? {})) {
+    if (!files.includes(key)) failures.push(`${suite} weight ${JSON.stringify(key)}: not a test file`);
+    else if (Object.hasOwn(split, key)) failures.push(`${suite} weight ${JSON.stringify(key)}: a split file has no whole-file weight`);
+  }
+  for (const [file, names] of Object.entries(split)) {
+    for (const key of Object.keys(testWeights[file] ?? {})) {
+      if (!names.includes(key)) failures.push(`${suite} ${file} test weight ${JSON.stringify(key)}: not a test of the file`);
+    }
+  }
+  return failures;
+}
+
+/**
  * Failures (empty when complete): each file of each suite is selected by exactly one shard and nothing else is; for a
  * split file, each of its tests is instead, and the file is never also selected whole.
  */
@@ -794,7 +816,8 @@ async function main(args) {
         failed = true;
         continue;
       }
-      const { shards, failures } = checkPartition(suite, files, split);
+      const { shards, failures: partition } = checkPartition(suite, files, split);
+      const failures = [...partition, ...staleKeys(suite, files, split)];
       const weight = (list) => list.reduce((sum, entry) => sum + (entry.tests === null
         ? (WEIGHTS[suite][entry.file] ?? DEFAULT_WEIGHT)
         : entry.tests.reduce((n, test) => n + (TEST_WEIGHTS[entry.file]?.[test] ?? DEFAULT_TEST_WEIGHT), 0)), 0);
