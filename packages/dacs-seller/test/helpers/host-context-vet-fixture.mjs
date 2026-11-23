@@ -14,6 +14,8 @@ import { JOB, buyer, seller } from './protocol-fixture.mjs';
 export const VET = 'CompositeVerificationRecord';
 export const ADDRESS = Object.freeze({ buyer: compositeVerificationAddress(JOB, buyer.claim), seller: compositeVerificationAddress(JOB, seller.claim) });
 const WORKER = new URL('./host-context-vet-worker.mjs', import.meta.url);
+/** How long `vetHostProcess` waits for its child to report that its host started. */
+export const STARTUP_TIMEOUT_MS = 60_000;
 
 const deferred = () => {
   let resolve, reject;
@@ -48,14 +50,16 @@ export function vetProvider(anchor, writes, { stall }) {
  * provider makes to the anchor is answered here by `anchor`, so what the anchor holds outlives the child, as a node outlives the host.
  * `host` has the child host's `url` and `listingPin`; `entered.promise` resolves with the child provider's `seen` once its work holds
  * after the Vet writes; `kill()` stops the process with SIGKILL and resolves once it has exited. The child gets its own temporary
- * directory for the fixture's files, removed with the child when the test ends.
+ * directory for the fixture's files, removed with the child when the test ends, also when `fork` throws. A child that has not reported
+ * its start within `startupTimeoutMs` is killed and the returned promise rejects. `worker` replaces the child's module.
  */
-export async function vetHostProcess(t, f, anchor, writes) {
+export async function vetHostProcess(t, f, anchor, writes, { worker = WORKER, startupTimeoutMs = STARTUP_TIMEOUT_MS } = {}) {
   const temporary = await mkdtemp(join(tmpdir(), 'TEST-host-context-process-'));
-  const child = fork(WORKER, [], { env: { ...process.env, TMPDIR: temporary }, serialization: 'advanced', stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
-  const exited = once(child, 'exit');
-  const kill = async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await exited; };
+  let child = null, exited = null;
+  const kill = async () => { if (child === null) return; if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await exited; };
   t.after(async () => { await kill(); await rm(temporary, { recursive: true, force: true }); });
+  child = fork(worker, [], { env: { ...process.env, TMPDIR: temporary }, serialization: 'advanced', stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  exited = once(child, 'exit');
   let stderr = '';
   child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
   const started = deferred(), entered = deferred();
@@ -74,6 +78,10 @@ export async function vetHostProcess(t, f, anchor, writes) {
     entered.reject(ended);
   }, () => {});
   child.send({ type: 'start', dataDirectory: f.dataDirectory, writes });
-  const { url, listingPin } = await started.promise;
+  const deadline = setTimeout(() => {
+    started.reject(new Error(`TEST the host process did not report its start within ${startupTimeoutMs} ms: ${stderr}`));
+    kill().catch(() => {});
+  }, startupTimeoutMs);
+  const { url, listingPin } = await started.promise.finally(() => clearTimeout(deadline));
   return { host: { url, listingPin }, entered: { promise: entered.promise }, kill };
 }
