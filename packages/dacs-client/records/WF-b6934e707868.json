@@ -1,0 +1,24 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF declare the seller transport on the readback review rows that reach a seller call",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/helpers/readback-review-loader.mjs",
+      "before": "6cccbf60b9c02f8a377528151543bdb7834f1990",
+      "after": "2ea7113c988257b0456ebcf03dc88c8bcf64a590"
+    },
+    {
+      "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+      "before": "79bbdf941514278fd77d9c36250c73bc67112bc3",
+      "after": "a537a83a557e3a8cee30dccc0f164a2db7ee5607"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-b6934e707868.json",
+    "packages/dacs-client/test/helpers/readback-review-loader.mjs",
+    "packages/dacs-client/test/readback-review-decisions.test.mjs"
+  ],
+  "note": "The readback review decision rows model a paid purchase but declared no seller transport, a shape prepare refuses, and reached a seller call only because their seller client is a stand-in that ignores authentication. The seller call path now refuses such rows, so the rows declare a source demo seller transport as every paid row does, and the test loader stands in for the wire authentication next to the seller client it already replaces. No assertion changed."
+}

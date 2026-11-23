@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test that only the challenge and context routes are signed before a plan exists",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/wire-delegation.test.mjs",
+      "before": "303ea14f287c4d3c8e863270f4c361f261bf518b",
+      "after": "6ca3f598c71e1a1fdaaf78bca13adb6527fcf1bc"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-763ea5606659.json",
+    "packages/dacs-client/test/wire-delegation.test.mjs"
+  ]
+}

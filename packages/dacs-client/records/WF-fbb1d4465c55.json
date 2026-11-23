@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged package manifest with the wallet lane view",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "39283a01661783d54fae19d40d118f9376d1b12c",
+      "after": "39283a01661783d54fae19d40d118f9376d1b12c"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-fbb1d4465c55.json"
+  ],
+  "note": "Both sides of the merge recorded the package manifest; this record chooses the copy that lists the wallet lane view module."
+}

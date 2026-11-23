@@ -115,11 +115,6 @@
       "count": 2
     }
   },
-  "packages/dacs-client/test/guarded-sqlite.test.mjs": {
-    "no-unused-vars": {
-      "count": 3
-    }
-  },
   "packages/dacs-client/test/helpers/devnet-live-composition-app.mjs": {
     "no-unused-vars": {
       "count": 1
@@ -1030,11 +1025,6 @@
   "test/two-sided-bundle.test.ts": {
     "@typescript-eslint/no-unused-vars": {
       "count": 12
-    }
-  },
-  "test/version.test.ts": {
-    "no-regex-spaces": {
-      "count": 1
     }
   },
   "test/wire/approvedIdentity.test.ts": {

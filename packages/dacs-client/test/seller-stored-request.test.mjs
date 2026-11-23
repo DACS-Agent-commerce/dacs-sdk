@@ -222,11 +222,10 @@ test("a configured sellerRequestTimeoutMs is the send budget on every route but 
   }
 });
 
-test("the unauthenticated transport defaults to 15 seconds on every route but context, which defaults to 240 seconds", async (t) => {
-  const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
-  const fetchImpl = async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+test("the transport defaults to 15 seconds on every route but context, which defaults to 240 seconds", async (t) => {
+  const s = await storedWorld(t);
   for (const [path, expected] of [[PATHS.context, 240000], [PATHS.state, 15000]]) {
-    const budgets = await budgetsDuring(t, () => createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl }).request(path, {}).catch(() => {}));
+    const budgets = await budgetsDuring(t, () => s.client().request(path, bodyFor(path)).catch(() => {}));
     assert.deepEqual(budgets, [expected], path);
   }
 });

@@ -14,7 +14,9 @@
 //     anchor commit) must start from the anchor's blob. A branch cut before
 //     the anchor's last change to an anchored file holds an older copy of it;
 //     its record cannot start from the anchor, so it is refused until the
-//     branch is rebased onto the anchor.
+//     branch is rebased onto the anchor;
+//   - the README (UNRECORDED_PATH in delta-record.mjs), which needs no record:
+//     the rule ignores its blob and every record or anchor entry naming it.
 // Anything else is refused. The rule reads the history from the baseline to
 // HEAD with one `git rev-list` for the commit graph and one `git log --raw`
 // for the commits and their package changes, and fails closed without it.
@@ -23,8 +25,11 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { assemble } from './delta-assemble.mjs';
 import { BASELINE, blob, expectedBlob } from './delta-map.mjs';
-import { isAnchored, isCorePath, isRecordFile, isRecordNamed, PACKAGE_PREFIX, readAnchor, selects } from './delta-record.mjs';
+import { isAnchored, isCorePath, isRecordFile, isRecordNamed, PACKAGE_PREFIX, readAnchor, selects, UNRECORDED_PATH } from './delta-record.mjs';
 import { sourceGit } from './source-git.mjs';
+
+// The full repository path of the README; only this path is exempt.
+const UNRECORDED = PACKAGE_PREFIX + UNRECORDED_PATH;
 
 const MAX_GIT_OUTPUT = 1 << 28;
 
@@ -87,14 +92,15 @@ function afterAnchorIn({ parents, order }, anchor) {
 // Path -> [{sha, after}] from every resolved delta record, superseded ones
 // first, then active records in file name order, as delta-map.mjs reads them.
 // Ancestry determines the newest blob regardless of that order. An anchored
-// path is recorded only after the anchor.
+// path is recorded only after the anchor; the README is never recorded.
 function recordedBlobs(ledger, commits, afterAnchor, failures) {
   const recorded = new Map();
   for (const change of [...(ledger.supersededChanges ?? []), ...ledger.changes]) {
     const hits = commits.filter(commit => selects(change, commit));
     if (hits.length !== 1) { failures.push(`delta commit selector must resolve once: ${change.sha == null ? change.subject : `${change.sha} ${change.subject}`}`); continue; }
     for (const file of change.files) {
-      if (isAnchored(file.path.slice(PACKAGE_PREFIX.length)) && !afterAnchor(hits[0].sha)) continue;
+      const rel = file.path.slice(PACKAGE_PREFIX.length);
+      if (file.path === UNRECORDED || (isAnchored(rel) && !afterAnchor(hits[0].sha))) continue;
       recorded.set(file.path, [...(recorded.get(file.path) ?? []), { sha: hits[0].sha, before: file.before, after: file.after }]);
     }
   }
@@ -164,6 +170,7 @@ export function checkDerivedFreeze({ repoRoot, packageDir, pins, files, head, in
     const rel = path.slice(PACKAGE_PREFIX.length), present = files.has(rel) || head.has(path) || index.has(path);
     let want;
     if (isCorePath(rel)) { if (present && !pins[rel]) failures.push(`${path}: core path without an exact pin`); continue; }
+    if (path === UNRECORDED) continue;
     if (isRecordFile(rel)) {
       if (!added.has(path)) { if (present) failures.push(`${path}: record file not added by a commit after the baseline`); continue; }
       want = { blob: added.get(path), from: 'the blob it was added with' };

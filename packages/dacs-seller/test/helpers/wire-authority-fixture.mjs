@@ -19,8 +19,3 @@ export function authorityReader({ chainIdentity = TP1_APPROVED_IDENTITY_RECORD.c
     participants: scope.participants.map((claim) => ({ claim, profile, modules: TESTNET_PROFILE_TP1.tuple })),
   });
 }
-
-/** The host's `tp1Network` option over TEST_CONNECTION, with each part replaceable. */
-export function testNetwork({ connection = () => ({ ...TEST_CONNECTION }), readAuthority = authorityReader() } = {}) {
-  return { connection, readAuthority };
-}

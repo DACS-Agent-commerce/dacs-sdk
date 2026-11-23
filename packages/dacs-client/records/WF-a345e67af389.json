@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move the record anchor past the merged README choice with the bounded HTTPS seller client and the explicit resume proof and keep a README record after it",
+  "kind": "checkpoint",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "bb0e67ebc977237a0091e0a7c54ac7c72f4f5f74",
+      "after": "bb0e67ebc977237a0091e0a7c54ac7c72f4f5f74"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-a345e67af389.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "Both sides of the merge changed the README, so neither parent of the merge holds the merged copy. The anchor moves to the commit after the merge, whose one parent holds every anchored file as the anchor names it; the anchored blobs are unchanged. This record names the unchanged README so the anchored README keeps a record after the anchor."
+}

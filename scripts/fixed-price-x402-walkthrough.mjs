@@ -12,7 +12,7 @@
 // diagnostic in each role's outbox, and every dacs: script rebuilds the project's dist/.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -354,6 +354,7 @@ async function init({ runDir, sellerUrl, evmRpc }) {
   checkFreshInit(run);
   const project = join(run, "project");
   if (existsSync(join(project, ".env"))) throw new Error("project/.env already exists; generate a new project, or remove the file if nothing uses it");
+  if (existsSync(join(project, "request.json"))) throw new Error("project/request.json already exists; generate a new project, or remove the file if nothing uses it");
   if (!existsSync(join(project, "dist/src/config.js"))) throw new Error("project/ is not built; run npm run build inside project/, then init again");
   const url = normalizeSellerUrl(sellerUrl);
   buildEnvFile("", { DACS_SELLER_PUBLIC_BASE_URL: url, DACS_EVM_RPC_URL: evmRpc, DACS_BUYER_DEMOS_SECRET_FILE: join(run, "secrets") }); // values .env cannot hold fail before any key is written
@@ -475,6 +476,7 @@ function readEnvFile(run, name) {
 // cannot be observed as unrun with the reason. It writes no readiness record and no doctor report.
 export async function record({ runDir, listingRef }, fetchImpl = fetch) {
   const run = checkRunDirectory(runDir);
+  rmSync(join(run, "record.json"), { force: true }); // a rerun that fails must not leave the previous record looking current
   const { init, registry } = readState(run);
   if (init === undefined) throw new Error("run init first");
   const env = readEnvFile(run, ".env");
@@ -483,15 +485,15 @@ export async function record({ runDir, listingRef }, fetchImpl = fetch) {
     if (!pattern.test(env[name] ?? "")) throw new Error(`${name} in project/.env is not ${kind}`);
     return env[name];
   };
-  const hostname = (name) => {
-    try { return new URL(env[name]).hostname; } catch { throw new Error(`${name} in project/.env is not a URL`); }
+  const hostname = (name, publicHost) => {
+    try { const host = new URL(env[name]).hostname; return host === publicHost ? host : "custom"; } catch { throw new Error(`${name} in project/.env is not a URL`); }
   };
   const authorities = {
     buyer: publicValue("DACS_BUYER_AUTHORITY", AUTHORITY_RE, "an authority"), seller: publicValue("DACS_SELLER_AUTHORITY", AUTHORITY_RE, "an authority"),
     steward: publicValue("DACS_RAIL_STEWARD_AUTHORITY", AUTHORITY_RE, "an authority"),
   };
   const payee = publicValue("DACS_SELLER_EVM_PAYEE", EVM_ADDRESS_RE, "an address");
-  const [evmHost, demosHost] = [hostname("DACS_EVM_RPC_URL"), hostname("DACS_DEMOS_RPC_URL")];
+  const [evmHost, demosHost] = [hostname("DACS_EVM_RPC_URL"), hostname("DACS_DEMOS_RPC_URL", DEFAULT_DEMOS_HOST)];
   const tarballs = hashTarballs(run, init.packageVersion);
   for (const [name, hash] of Object.entries(init.tarballs)) {
     if (tarballs[name] !== hash) throw new Error(`tarball ${name} no longer matches the hash saved by init`);
@@ -515,7 +517,7 @@ export async function record({ runDir, listingRef }, fetchImpl = fetch) {
   }
   const report = {
     commit: init.commit, packageVersion: init.packageVersion, tarballs: init.tarballs,
-    deployment: example.DACS_DEPLOYMENT, rails: Object.hasOwn(example, "DACS_PAY_DEM_LISTING_DRAFT_FILE") ? ["x402", "pay-dem"] : ["x402"],
+    deployment: example.DACS_DEPLOYMENT, rails: ["x402"],
     network: { chain: `eip155:${CHAIN_ID}`, asset: USDC, facilitator: new URL(FACILITATOR).hostname },
     evmRpc: { host: evmHost },
     demosRpc: demosHost === DEFAULT_DEMOS_HOST ? { host: demosHost } : { host: "custom", chainIdentity: registry?.chainIdentity },
