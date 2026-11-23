@@ -1,0 +1,60 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF Expose the shared wallet lane journal view",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "a19207599d694e16db9dab4873b2eafff92d9f24",
+      "after": "ef8cd608a3bb5ee0a972be898e7ca53d7e2a9eb7"
+    },
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "d288f7bf3637c4ba47472608888e7f3175fbfd07",
+      "after": "39283a01661783d54fae19d40d118f9376d1b12c"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+      "before": "7e7181f3e64f5e1be2dccd7ee991d363f2292a63",
+      "after": "25c4ca0823e26f15bdb283a04ede43d4a344a3a6"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+      "before": "43a29d02665781c4315ac877f81ee04856a6f3a8",
+      "after": "218f80d92381ec77ea1367d31483c63b10cd3347"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+      "before": "06f6dedcee47233c8f0cde4a77eca355e5cf85ff",
+      "after": "f4deb51120d4281d5d2544d0f1624ff6f206638f"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/wallet-lane.mjs",
+      "before": null,
+      "after": "f831eeec519ef789b66c404c9759c046c030d64f"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "75c76e652186c99c45915cb98ccfe1fa1c28d856",
+      "after": "291c4897a76c814ab3fb70f69cb6576b65c20b01"
+    },
+    {
+      "path": "packages/dacs-client/test/wallet-lane-view.test.mjs",
+      "before": null,
+      "after": "c39123acdb099d3cc825769624972c4bb1a14a60"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-88683f03ea36.json",
+    "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+    "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+    "packages/dacs-client/src/wallet/durable-journal.mjs",
+    "packages/dacs-client/src/wallet/wallet-lane.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "packages/dacs-client/test/wallet-lane-view.test.mjs",
+    "scripts/release-policy.json"
+  ]
+}

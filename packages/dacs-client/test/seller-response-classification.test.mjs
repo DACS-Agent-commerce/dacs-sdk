@@ -5,8 +5,10 @@ import * as wire from '@kynesyslabs/dacs/wire';
 import { world, validReceipt, PUBLIC_ENDPOINT, JOB } from './helpers/wire-client-fixture.mjs';
 import { committedPurchase } from './helpers/wire-committed-purchase.mjs';
 import { storedWorld, STORED_PATHS, bodyFor, errorCode, nonce, sameBodies } from './helpers/stored-request-fixture.mjs';
+import { fetchClient } from './helpers/seller-https-rig.mjs';
 // The fixture installs the admission double, so the modules that read admission state load after it.
-const { createSellerAgentClient, SellerRefusedError, SellerTlsUnusableError, SellerUnavailableError } = await import('../src/dacs/seller-http.mjs');
+const { createSellerHttpsClient, SellerRefusedError, SellerTlsUnusableError, SellerUnavailableError } = await import('../src/dacs/seller-http.mjs');
+const clientOverFetch = fetchClient(createSellerHttpsClient);
 const { classifySellerAnswer, SELLER_ANSWER_CLASS: CLASS } = await import('../src/dacs/seller-response-class.mjs');
 
 const PATHS = wire.DACS_SELLER_HTTP_PATHS;
@@ -44,7 +46,7 @@ const CALLS = {
 // One real call through post(): the value the caller gets, or the error it gets, and how many requests were sent.
 async function viaPost(s, path, status, body, options = {}) {
   const fetches = [];
-  const client = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: answering(s.w, status, body, fetches), ...options });
+  const client = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: answering(s.w, status, body, fetches), ...options });
   const outcome = await CALLS[path](client).then((value) => ({ value }), (error) => ({ error }));
   return { ...outcome, fetches: fetches.length, client };
 }
@@ -84,11 +86,11 @@ test('408 peer_expired, another signed 5xx, an unsigned answer and a timeout are
   unavailableAs(await viaPost(s, PATHS.payments, 409, { error: 'peer_request_replayed' }), CLASS.UNKNOWN, 'status-4xx', 'peer_request_replayed');
   unavailableAs(await viaPost(s, PATHS.payments, 503, { error: 'seller_effect_pending' }), CLASS.UNKNOWN, 'status-5xx', 'seller_effect_pending');
   unavailableAs(await viaPost(s, PATHS.payments, 503, { error: 'seller_not_ready' }), CLASS.UNKNOWN, 'status-5xx', 'seller_not_ready');
-  const unsignedClient = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => new Response('{"error":"peer_expired"}', { status: 408, headers: { 'content-type': 'application/json' } }) });
+  const unsignedClient = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => new Response('{"error":"peer_expired"}', { status: 408, headers: { 'content-type': 'application/json' } }) });
   const unsigned = await CALLS[PATHS.payments](unsignedClient).catch((error) => error);
   assert.ok(unsigned instanceof SellerUnavailableError);
   assert.deepEqual([unsigned.answerClass, unsigned.causeCode], [CLASS.UNKNOWN, 'response-auth']);
-  const timedOutClient = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => { throw Object.assign(new Error('timed out'), { name: 'TimeoutError' }); } });
+  const timedOutClient = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => { throw Object.assign(new Error('timed out'), { name: 'TimeoutError' }); } });
   const timedOut = await CALLS[PATHS.payments](timedOutClient).catch((error) => error);
   assert.ok(timedOut instanceof SellerUnavailableError);
   assert.deepEqual([timedOut.answerClass, timedOut.causeCode], [CLASS.UNKNOWN, 'timeout']);
@@ -172,7 +174,7 @@ test('other signed 4xx with an error are definite refusals and unsigned 4xx are 
   assert.equal(classOf({ status: 404, signed: false, body: { error: 'not_found' } }, ctx(PATHS.proposals)), CLASS.UNKNOWN);
   assert.equal(classOf({ status: 404, body: { error: 'not_found' } }, ctx(PATHS.proposals)), CLASS.UNKNOWN);
   refusedAs(await viaPost(s, PATHS.proposals, 422, { error: 'agreement_rejected', message: 'x'.repeat(500) }), CLASS.DEFINITE, 'agreement_rejected', 422);
-  const unsignedClient = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => new Response('{"error":"not_found"}', { status: 404, headers: { 'content-type': 'application/json' } }) });
+  const unsignedClient = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => new Response('{"error":"not_found"}', { status: 404, headers: { 'content-type': 'application/json' } }) });
   const unsigned = await CALLS[PATHS.proposals](unsignedClient).catch((error) => error);
   assert.ok(unsigned instanceof SellerUnavailableError);
   assert.equal(unsigned.answerClass, CLASS.UNKNOWN);
@@ -182,11 +184,11 @@ test('a TLS failure before dispatch is not sent (dispatched false) and after dis
   const s = await sellerWorld(t);
   assert.equal(classOf(null, ctx(PATHS.payments, { dispatched: false })), CLASS.NOT_SENT);
   assert.equal(classOf(null, ctx(PATHS.payments, { dispatched: true })), CLASS.UNKNOWN);
-  const before = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: { request: async () => { throw new SellerTlsUnusableError('the seller certificate expired'); }, verifyResponse: s.auth.verifyResponse }, fetchImpl: async () => assert.fail('nothing is dispatched') });
+  const before = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: { request: async () => { throw new SellerTlsUnusableError('the seller certificate expired'); }, verifyResponse: s.auth.verifyResponse }, fetchImpl: async () => assert.fail('nothing is dispatched') });
   const notSent = await CALLS[PATHS.state](before).catch((error) => error);
   assert.deepEqual([notSent.answerClass, notSent.dispatched, notSent.causeCode], [CLASS.NOT_SENT, false, 'tls']);
   assert.equal(before.failureDispatched, false);
-  const after = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'CERT_HAS_EXPIRED' } }); } });
+  const after = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'CERT_HAS_EXPIRED' } }); } });
   const dispatched = await CALLS[PATHS.state](after).catch((error) => error);
   assert.deepEqual([dispatched.answerClass, dispatched.dispatched, dispatched.causeCode], [CLASS.UNKNOWN, undefined, 'tls']);
   assert.equal(after.failureDispatched, undefined);
@@ -204,7 +206,7 @@ test('a real signed 200 result, a signed progress response and a signed refusal 
   }
   assert.equal(receipts.length, 3);
   // The signed status and the HTTP status must agree: the wire refuses a mismatch, so it is never a refusal or a result.
-  const mismatched = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async (_url, init) => signedResponse(s.w, init, 200, '{"status":"committed"}', 409) });
+  const mismatched = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async (_url, init) => signedResponse(s.w, init, 200, '{"status":"committed"}', 409) });
   const rejected = await CALLS[PATHS.commitments](mismatched).catch((error) => error);
   assert.ok(rejected instanceof SellerUnavailableError, String(rejected));
   assert.deepEqual([rejected.answerClass, rejected.causeCode], [CLASS.UNKNOWN, 'response-auth']);
@@ -215,7 +217,7 @@ test('with an authentication adapter whose verification resolves no receipt, an 
   for (const missing of [undefined, null])
     for (const [status, text] of [[200, '{"status":"delivered","forged":true}'], [409, '{"error":"peer_operation_mismatch"}']]) {
       const authentication = { request: (...args) => s.auth.request(...args), verifyResponse: async () => missing };
-      const client = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication, fetchImpl: async () => new Response(text, { status, headers: { 'content-type': 'application/json' } }) });
+      const client = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication, fetchImpl: async () => new Response(text, { status, headers: { 'content-type': 'application/json' } }) });
       const error = await CALLS[PATHS.payments](client).then(() => assert.fail(`an unverified ${status} was returned`), (rejection) => rejection);
       assert.ok(error instanceof SellerUnavailableError, String(error));
       assert.deepEqual([error.answerClass, error.causeCode], [CLASS.UNKNOWN, 'response-auth']);
@@ -232,7 +234,7 @@ test('with verification held at a barrier and then rejected, no result reaches t
     await barrier;
     throw new wire.WireError('peer_response_mismatch', 502);
   } };
-  const client = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication, fetchImpl: async (_url, init) => signedResponse(s.w, init, 200, '{"status":"committed"}') });
+  const client = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication, fetchImpl: async (_url, init) => signedResponse(s.w, init, 200, '{"status":"committed"}') });
   let consumed = false;
   const consumer = CALLS[PATHS.commitments](client).then((value) => { consumed = true; return value; }, (error) => { consumed = true; throw error; });
   const received = await atBarrier;
@@ -280,10 +282,10 @@ test('every status, code, route and provenance cell maps to exactly one class', 
 
 test('a pre-dispatch TLS failure on a fresh client after restart marks only that attempt and leaves an earlier unknown attempt unresolved', async (t) => {
   const s = await sellerWorld(t);
-  const beforeCrash = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }); } });
+  const beforeCrash = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }); } });
   const earlier = await CALLS[PATHS.payments](beforeCrash).catch((error) => error);
   assert.deepEqual([earlier.answerClass, earlier.causeCode], [CLASS.UNKNOWN, 'network']);
-  const afterRestart = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: { request: async () => { throw new SellerTlsUnusableError('the seller certificate expired'); }, verifyResponse: s.auth.verifyResponse }, fetchImpl: async () => assert.fail('nothing is dispatched') });
+  const afterRestart = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: { request: async () => { throw new SellerTlsUnusableError('the seller certificate expired'); }, verifyResponse: s.auth.verifyResponse }, fetchImpl: async () => assert.fail('nothing is dispatched') });
   const latest = await CALLS[PATHS.payments](afterRestart).catch((error) => error);
   assert.deepEqual([latest.answerClass, latest.dispatched], [CLASS.NOT_SENT, false]);
   assert.equal(afterRestart.failureDispatched, false);
@@ -297,7 +299,7 @@ test('a pre-dispatch TLS failure on a fresh client after restart marks only that
 test('an unavailable error from signing keeps the client-sign cause and is not taken for a classified answer', async (t) => {
   const s = await sellerWorld(t);
   const signingFailure = new SellerUnavailableError('the signer is not available', 'other');
-  const client = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: { request: async () => { throw signingFailure; }, verifyResponse: s.auth.verifyResponse }, fetchImpl: async () => assert.fail('nothing is dispatched') });
+  const client = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: { request: async () => { throw signingFailure; }, verifyResponse: s.auth.verifyResponse }, fetchImpl: async () => assert.fail('nothing is dispatched') });
   const error = await CALLS[PATHS.state](client).catch((rejection) => rejection);
   assert.ok(error instanceof SellerUnavailableError);
   assert.notEqual(error, signingFailure);
@@ -344,10 +346,12 @@ test('the identical signed 503 seller_not_ready status and body answering a requ
 test("a capability claim or a new-purchase claim in the response body, or a caller-supplied flag, never changes the class: provenance and request kind come only from the adapter's own request record", async (t) => {
   const s = await storedWorld(t);
   const claims = { error: 'seller_not_ready', newPurchase: true, continuation: false };
-  await assert.rejects(s.client({ newPurchase: true, continuation: false, respond: init => s.reply(init, 503, claims) }).submitPayment(bodyFor(PATHS.payments)), e => e.answerClass === 'unknown');
+  assert.throws(() => s.client({ newPurchase: true, continuation: false }), { name: 'TypeError' });
+  await assert.rejects(s.client({ respond: init => s.reply(init, 503, claims) }).submitPayment(bodyFor(PATHS.payments)), e => e.answerClass === 'unknown');
   assert.equal(s.fetches.length, 3); assert.equal(s.record(PATHS.payments).clearAttempts, 0);
   const fresh = await storedWorld(t, { accepted: false });
-  await assert.rejects(fresh.client({ continuation: true, respond: init => fresh.reply(init, 503, { error: 'seller_not_ready', continuation: true, newPurchase: false }) }).request(PATHS.context, bodyFor(PATHS.context)), e => e.answerClass === 'not-started');
+  assert.throws(() => fresh.client({ continuation: true }), { name: 'TypeError' });
+  await assert.rejects(fresh.client({ respond: init => fresh.reply(init, 503, { error: 'seller_not_ready', continuation: true, newPurchase: false }) }).request(PATHS.context, bodyFor(PATHS.context)), e => e.answerClass === 'not-started');
 });
 
 test("the identical signed 503 seller_not_ready status and body, through real post() and wire verification, is not started for a first context request and unknown for a continuing payment with no capability, a committed state read with no capability and a retained proposals request with no capability; no committed or paid purchase is marked not started or failed and no retained evidence is cleared; a payment whose delivery is still pending after a restart stays payment-evidenced and unknown; unknown retries use the stored bytes within DC-CW6's bounds; an unsigned or rejected answer stays unknown (round 4, attack C3)", async (t) => {
@@ -402,4 +406,20 @@ test('a restart with a re-ordered or changed caller scope sends the stored bytes
     }
     assert.equal(effects.size, 1); assert.equal(new Set(s.fetches.map(init => init.body)).size, 1); assert.equal(s.record(path).bodyHash, sha256Hex(original));
   }
+});
+
+
+test('a signed bootstrap refusal keeps its bounded seller cause', async (t) => {
+  const s = await sellerWorld(t), cause = 'TEST-seller-cause-'.repeat(20);
+  const outcome = await viaPost(s, PATHS.state, 409, { error: 'context_challenge_failed', message: 'TEST seller validation failed', cause });
+  refusedAs(outcome, CLASS.FAILED_BOOTSTRAP, 'context_challenge_failed', 409);
+  assert.equal(outcome.error.cause, cause.slice(0, 240));
+  assert.equal(outcome.fetches, 1);
+});
+
+test('a signed context rate limit without an error code keeps its failed-bootstrap code', async (t) => {
+  const s = await sellerWorld(t);
+  const client = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: s.auth, fetchImpl: answering(s.w, 429, { message: 'TEST the seller is busy' }, []) });
+  const error = await client.request(PATHS.context, { scope: { jobId: JOB } }).catch((failure) => failure);
+  refusedAs({ error }, CLASS.FAILED_BOOTSTRAP, 'seller_rate_limited', 429);
 });

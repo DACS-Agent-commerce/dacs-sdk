@@ -3,6 +3,7 @@
 // approvals and receipts; it never holds a key, mnemonic, password or vault.
 // Interface: async get(key), put(key, value), entries(), withWalletLock(key, work),
 // appendUnderLock(laneKey, key, value), withOwnedOrAcquiredLane(laneKey, work, { owner }).
+// Also exports walletLane, walletLaneKey and createWalletLaneView for storage anchors.
 // withWalletLock and withOwnedOrAcquiredLane pass an opaque lane owner to work.
 // History keys under eb/ have their own maxRecords and maxTotalBytes budget,
 // separate from native keys.
@@ -27,6 +28,7 @@ import { classifyHolder, formatHolderInstance, HolderLeaseError, OS_IDENTITY, PR
 
 export const DURABLE_WALLET_JOURNAL_FORMAT = 'dacs-durable-wallet-journal';
 export const DURABLE_WALLET_JOURNAL_VERSION = 1;
+export { walletLane, walletLaneKey, createWalletLaneView } from './wallet-lane.mjs';
 
 export class DurableWalletJournalError extends Error {
   constructor(code, message, options) { super(message, options); this.code = code; }

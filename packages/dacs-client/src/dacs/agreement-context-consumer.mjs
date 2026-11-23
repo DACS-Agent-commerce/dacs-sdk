@@ -49,17 +49,17 @@ export function agreementContextConfig(value) {
   return Object.freeze({ authority: value.authority, resolve: value.resolve });
 }
 
-// The exact purchase scope the provider must bind and echo.
-export function agreementContextScope({ operation, buyerBundle, generatedAt }) {
+/**
+ * The purchase's seller challenge scope: the ten members the seller's challenge binds for `buyer` (a claim) at `generatedAt`.
+ * It is the context scope without the bundle hash and without the local account and operation ids.
+ */
+export function agreementChallengeScope({ operation, buyer, generatedAt }) {
   const t = operation.terms;
   return {
     source: AGREEMENT_CONTEXT_SOURCE,
-    account: operation.accountId,
-    operation: operation.id,
     wallet: t.buyer.wallet,
     jobId: t.protocol.jobId,
-    buyer: buyerBundle.presentedBy,
-    buyerBundleHash: identityBundleHash(buyerBundle),
+    buyer,
     seller: t.seller.claim,
     listingPin: { listingId: t.listing.listingId, version: t.listing.version, contentHash: t.listing.contentHash },
     rail: { railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion },
@@ -67,6 +67,12 @@ export function agreementContextScope({ operation, buyerBundle, generatedAt }) {
     price: structuredClone(t.price),
     generatedAt,
   };
+}
+
+// The exact purchase scope the provider must bind and echo.
+export function agreementContextScope({ operation, buyerBundle, generatedAt }) {
+  return { ...agreementChallengeScope({ operation, buyer: buyerBundle.presentedBy, generatedAt }), account: operation.accountId, operation: operation.id,
+    buyerBundleHash: identityBundleHash(buyerBundle) };
 }
 
 function vetRefProblem(ref, jobId, party, role) {

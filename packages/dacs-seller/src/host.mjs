@@ -44,7 +44,9 @@
 // `walletSession` and `participantImplementations`; no option, environment
 // variable or file names a record. Under the state lock it checks the data
 // directory's format marker (kit-format.json), finalizes the wallet session with
-// its one effect boundary over <dataDirectory>/effects, keeps the wire request journal at
+// its one effect boundary over <dataDirectory>/effects (with the production port,
+// createSellerWalletSession, `artifactAnchor` must be the port's own handle, which
+// that finalization binds), keeps the wire request journal at
 // <dataDirectory>/wire-journal under a 300 s lease, so an unusable journal
 // refuses startup, and holds the binding, the journal and the seller's signer in a
 // wire context for the signed routes. Every route opens each request and signs
@@ -82,6 +84,7 @@ import { createSellerTransportStore, sellerStoreInternals } from './dacs/seller-
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
+import { isSellerWalletSession } from './devnet-demo/seller-wallet-session.mjs';
 import { stopRequested } from './devnet-demo/stop-request.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
@@ -329,6 +332,10 @@ export async function startSellerHost(options) {
   }
   // The context route's provider handoff: a copied or incomplete capability is refused here, before the lock and any file.
   const provider = demDeliveryContextHost(demDeliveryContext);
+  // The production port's anchor handle is bound when the port is finalized; no other anchor can stand in for it.
+  if (isSellerWalletSession(walletSession) && artifactAnchor !== walletSession.artifactAnchor) {
+    throw new TypeError('with the production walletSession, artifactAnchor must be walletSession.artifactAnchor');
+  }
   const sellerClaim = listing.seller.identity.presentedBy;
   // The production reader reads a job's context admission row; the transaction that keeps those rows exists only under
   // the lock, and no request is served before it does.
@@ -367,10 +374,9 @@ export async function startSellerHost(options) {
     opened.push(() => store.close());
     // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
     const capacity = createPurchaseCapacity({ store, now, maxRecords: maxReservationUnits, sessionState: sellerStoreInternals(store).sessionState });
-    // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
-    // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
+    // This host holds the state lock, so a validator left by an earlier process has no run left: it closes as lost.
+    // The admission transaction's startup sweep, below, ends the context steps an earlier process left running.
     store.challenges.closeLostValidations();
-    store.recoverLostContextReservations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     // The agent asks which context requests were admitted through these records; the admission transaction and the journal they read are
     // opened below, before any request is served.

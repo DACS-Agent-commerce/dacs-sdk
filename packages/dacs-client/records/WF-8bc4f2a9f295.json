@@ -1,0 +1,71 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF accept the delegation a session renewal saved in the three-step start",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "fb6902ffa3253fb6bce7dbb32b32150090c58baa",
+      "after": "7cfef04afbc7c81e3a0f3a9db267f434f32b2c1b"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/kit-bootstrap-world.mjs",
+      "before": "03be4045322ce7fce0e9bdbf341b063d9407f00f",
+      "after": "e24cd79f712615f4daca69f300c14fc786a7bc8f"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/kit-endpoint-proof.mjs",
+      "before": null,
+      "after": "3dddc4d9a529b812b92043ce95f5c04df00c6218"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/seller-stand-in.mjs",
+      "before": null,
+      "after": "b53a4402a2ab8cff09a54e623f8b987bec45deba"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/stored-request-flow-loader.mjs",
+      "before": "0e3c4975edb3401490fdb4a69551f7b509dd0032",
+      "after": "9c2ed6df3e267865dd72ea002c327a4b1175a34d"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+      "before": "256ff0e0ccf410e47ba62c17a4ec50c399890a9d",
+      "after": "48d6c30fccc8f88165ad3cf8ba00e46abe351b62"
+    },
+    {
+      "path": "packages/dacs-client/test/host-stop-wire.test.mjs",
+      "before": "941a3e6210e0efe7bfc4a7610ebe070cce2f8848",
+      "after": "3633a08d04d6bf6a8924507079206d410a05001c"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-session-restart.test.mjs",
+      "before": "7b82ae2cb16bc7bf78dcfd3f597150ba7f900ea5",
+      "after": "528e416ec7156dba9e5eb3c66e6281b551a20eec"
+    },
+    {
+      "path": "packages/dacs-client/test/wire-delegation.test.mjs",
+      "before": "6ca3f598c71e1a1fdaaf78bca13adb6527fcf1bc",
+      "after": "dd2b89e676076e7ee833dc872f14f5df874ef2ce"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-8bc4f2a9f295.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/test/helpers/kit-bootstrap-world.mjs",
+    "packages/dacs-client/test/helpers/kit-endpoint-proof.mjs",
+    "packages/dacs-client/test/helpers/seller-stand-in.mjs",
+    "packages/dacs-client/test/helpers/stored-request-flow-loader.mjs",
+    "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+    "packages/dacs-client/test/host-stop-wire.test.mjs",
+    "packages/dacs-client/test/seller-session-restart.test.mjs",
+    "packages/dacs-client/test/wire-delegation.test.mjs",
+    "test/kit-client/client-purchase.mjs",
+    "test/kit-client/harness-index.json",
+    "test/kit-client/purchase.test.mjs",
+    "test/kit-client/test-loader.mjs"
+  ],
+  "note": "A session renewal can now land at any step of the three-step start. agreementDelegation checks first that the saved delegation names the live session key, so after a restart it answers session_gone_reapprove before anything is accepted, saved, signed or sent. Called without a signature, it accepts the delegation a session renewal saved, and the wire verifies that signature again before the challenge scope is saved or the seller is asked; an unsigned saved delegation is still refused bad_signature. sessionRenewalAccept rebuilds the wallet message for the renewed payload and saves it with the payload in one save, so identityRequest never returns one payload with another's message; that rebuild makes one more authority read, and a refusal there saves nothing. The restart tests drive the three steps; the old plan-step refusal of the pre-renewal signature is now step 2's wire verification. The protocol service's own seller requests in the wire fixture and the kit bootstrap world reach a fetch stand-in through the real HTTPS client by swapping only the service's connector, and the kit worlds share one endpoint proof helper. The kit purchase world now has a real endpoint proof, session signer and one clock, so the recorded first incompatibility moves past the seller's challenge to the plan step's context read. The host stop exchange test builds its bundle over a seller nonce."
+}

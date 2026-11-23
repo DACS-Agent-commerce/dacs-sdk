@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import * as client from '@kynesyslabs/dacs-client';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
+import { createEphemeralWallet } from './fixtures/wallet.mjs';
 
 const { binding, currentLocal } = await bindFixture();
 const admission = { binding, currentLocal };
@@ -318,6 +319,33 @@ probe('README host contract: createIdempotent writes jobId to the job_id column'
     request: {}, status: 'agreement_pending', terms: {}, termsHash: IDENTITY, expiresAt: new Date(NOW + 3600000).toISOString(),
     jobId: 'TEST-job' });
   assert.equal(db.prepare('SELECT job_id FROM operations WHERE id=?').get(operation.id).job_id, 'TEST-job');
+});
+probe('README shipped host adapters: required handoff options, the local account and its refusal, the challenge refusals and one consumption',
+  ['handoffSecret', 'handoffTtlMs', 'idempotency_conflict', 'handoff_expires_at', 'local:', 'local_account_mismatch', 'issue', 'origin',
+    'challenge_account_required', 'challenge_origin_not_accepted', 'verifyAndConsume'], t => {
+  const { db } = database(t), store = client.createSqlitePurchaseStore(), wallet = createEphemeralWallet(), now = () => NOW;
+  const handoff = { handoffSecret: 'TEST-'.repeat(8), handoffTtlMs: 60_000 };
+  for (const missing of ['handoffSecret', 'handoffTtlMs']) assert.throws(() => client.createPurchaseOperations({ db, store, ...handoff, [missing]: undefined }), TypeError);
+  const accounts = client.createLocalPurchaseAccount({ db, store, wallet: wallet.address, now });
+  assert.equal(accounts.accountId, `local:${wallet.address}`);
+  const ops = client.createPurchaseOperations({ db, store, ...handoff, now });
+  const request = { accountId: accounts.accountId, kind: 'purchase', idempotencyKey: 'TEST', request: {}, status: 'awaiting_approval', terms: {}, termsHash: IDENTITY,
+    expiresAt: new Date(NOW + 3600000).toISOString() };
+  const { operation } = ops.createIdempotent(request);
+  assert.equal(db.prepare('SELECT handoff_expires_at FROM operations WHERE id=?').get(operation.id).handoff_expires_at, new Date(NOW + 60_000).toISOString());
+  assert.throws(() => ops.createIdempotent({ ...request, request: { other: true } }), { code: 'idempotency_conflict' });
+  const other = database(t).db;
+  other.prepare('INSERT INTO accounts(id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('TEST-other', 'local-wallet', wallet.address, new Date(NOW).toISOString());
+  assert.throws(() => client.createLocalPurchaseAccount({ db: other, store, wallet: wallet.address, now }), { code: 'local_account_mismatch' });
+  const challenges = client.createPurchaseChallenges({ db, store, origin: 'https://portal.example.invalid', purpose: 'approve-purchase', ttlMs: 60_000, now });
+  const issue = { purpose: 'approve-purchase', address: wallet.address, accountId: accounts.accountId, binding: { operation: operation.id } };
+  assert.throws(() => challenges.issue({ ...issue, accountId: undefined }), { code: 'challenge_account_required' });
+  assert.throws(() => challenges.issue({ ...issue, origin: 'https://other.example.invalid' }), { code: 'challenge_origin_not_accepted' });
+  const issued = challenges.issue(issue);
+  const verify = () => challenges.verifyAndConsume({ challengeId: issued.challengeId, purpose: 'approve-purchase', expectedBinding: { operation: operation.id, address: wallet.address },
+    signature: wallet.signHex(issued.message), consumedBy: operation.id });
+  assert.equal(verify().challengeId, issued.challengeId);
+  assert.throws(verify, { code: 'challenge_replayed' });
 });
 probe('README required schema table exactly matches the exported schema', [], t => {
   const { db } = database(t);

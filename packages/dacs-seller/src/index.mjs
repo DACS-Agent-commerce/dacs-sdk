@@ -9,6 +9,8 @@ export { createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 export { createSellerWireClientAuth } from './dacs/seller-wire-client-auth.mjs';
 // The seller's production TP-1 authority reader, for operators that compose their own host's binding.
 export { createSellerAuthorityReader } from './dacs/authority-reader.mjs';
+// The seller's production wallet session: the host's walletSession port and its artifact anchor handle.
+export { createSellerWalletSession } from './devnet-demo/seller-wallet-session.mjs';
 export { buildUnsignedIdentityBundle, attachIdentityPresentation, buildListingDraft, listingSigningMessage, attachListingSignature } from './dacs/listing.mjs';
 // The Listing reader resolves its rail from the steward-signed railAuthority.
 export { validateSellerListing as validateListing } from './dacs/rail-authority.mjs';

@@ -108,7 +108,7 @@ export async function commitWorld(t, { create = createSellerAgent, nativeEvidenc
   let agent = await build();
   t.after(() => agent?.close());
   const jobId = generateCanonicalJobId();
-  const unsigned = buildUnsignedIdentityBundle({ address: buyer.address, presentedAt: clock, sessionSeed: 'review-commit-retry-buyer' });
+  const unsigned = buildUnsignedIdentityBundle({ address: buyer.address, presentedAt: clock, sessionNonce: sha256Hex('TEST review-commit-retry seller nonce') });
   const buyerBundle = attachIdentityPresentation(unsigned, buyer.signHex(unsigned.message));
   const planned = planAgreement({ jobId, listing, buyerBundle, generatedAt: clock });
   let client = null, store = null;

@@ -35,9 +35,11 @@ export function createDevnetDemoListingPublisher({anchor,sign,scanOwnListings,lo
           result.receipt.writer===input.writer && result.receipt.contentHash===hash &&
           await anchor.verifyReceipt({...input,receipt:result.receipt,signedProjection:result.signedProjection,fresh:true})==='valid';
         // authorize runs before the intent is stored; authorizeSigning runs in the wallet as its approval answer returns.
-        // A stop during the wallet's later network and nonce reads is not rechecked here.
+        // currentAuthorization is this one publication's check: the CREATE's pass asks it last before the signature and
+        // each transmission, so a stop requested meanwhile sends nothing more. A Listing has no job; its pass class is job-create.
         const running=()=>stopRequested()?'the operator is stopping':true;
-        const written=await anchor.publish({...input,authorize:running,authorizeSigning:running,reaskDenied:true});
+        const currentAuthorization=()=>{assertRunning();return true;};
+        const written=await anchor.publish({...input,authorize:running,authorizeSigning:running,reaskDenied:true,operationClass:'job-create',currentAuthorization});
         if(written?.status!=='present' || !await authenticatedFinalReceipt(written)) throw new Error(written?.reason ?? 'native Listing publication has no authenticated finalized receipt');
         const resolved=await anchor.read({...input,fresh:true});
         if(resolved?.status!=='present' || !await authenticatedFinalReceipt(resolved) || canonicalize(resolved.artifact)!==canonicalize(value) ||

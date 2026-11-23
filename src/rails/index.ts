@@ -268,6 +268,8 @@ export {
 export {
   X402_BUYER_SETTLEMENT_STORE_VERSION,
   x402BuyerSettlementKey,
+  x402BuyerUnsignedIntentHash,
+  type X402BuyerUnsignedIntentScope,
   createX402BuyerSettlementIntent,
   assertX402BuyerSettlementIntent,
   x402BuyerSettlementAuthenticationHash,
@@ -329,6 +331,8 @@ export {
 } from "./x402BuyerEvmViem.js";
 export {
   prepareX402BuyerSettlement,
+  X402BuyerAuthorizationBindingError,
+  type X402BuyerAuthorizationBindingV1,
   createX402BuyerPaidRequestTransport,
   createX402BuyerRetainedDisclosureRecovery,
   type X402BuyerChallengeClient,
