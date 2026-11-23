@@ -90,6 +90,33 @@ test('the publication inventory cannot omit an outside-only commit or name an ab
     assert.match(result.text, /complete commit\/file inventory differs/);
   }
 });
+test('README exemption does not hide an inaccurate commit inventory row',t=>{
+ function commitInventory(dir, edits, subject, rowFiles){
+  const git=scratchGit(dir);
+  for(const [path,text] of edits)appendFileSync(join(dir,path),text);
+  git('add','--',...edits.map(([path])=>path));
+  git('commit','-qm',subject);
+  const rows=JSON.parse(readFileSync(join(dir,'packages/dacs-client/DELTA-COMMITS.json'),'utf8'));
+  if(rowFiles!==null)rows.push({sha:null,subject,files:rowFiles});
+  writeFileSync(join(dir,'packages/dacs-client/DELTA-COMMITS.json'),JSON.stringify(rows));
+  return check(dir);
+ }
+ const cases=[
+  {name:'README-only change without an inventory row',edits:[['packages/dacs-client/README.md','\nTEST exempt README without a row\n']],files:null,expected:false},
+  {name:'README-only change with its valid empty row',edits:[['packages/dacs-client/README.md','\nTEST exempt README with an empty row\n']],files:[],expected:false},
+  {name:'README-only change with a row naming an unchanged source file',edits:[['packages/dacs-client/README.md','\nTEST deceptive inventory row\n']],files:[moved],expected:true},
+  {name:'repository-root README change with its exact inventory row',edits:[['README.md','\nTEST repository README row\n']],files:['README.md'],expected:false},
+  {name:'outside-only change with its exact inventory row',edits:[['.gitleaksignore','\n# TEST outside-only row\n']],files:['.gitleaksignore'],expected:false},
+  {name:'outside-only change with a row naming an unchanged source file',edits:[['.gitleaksignore','\n# TEST deceptive outside-only row\n']],files:[moved],expected:true},
+  {name:'mixed README and source change whose row names both paths',edits:[['packages/dacs-client/README.md','\nTEST mixed README\n'],[moved,'\n// TEST mixed source change\n']],files:['packages/dacs-client/README.md',moved],expected:false},
+ ];
+ for(const fixture of cases){
+  const dir=scratch(t),subject=`docs: TEST ${fixture.name}`;
+  const result=commitInventory(dir,fixture.edits,subject,fixture.files);
+  const inventoryFailure=/complete commit\/file inventory differs/.test(result.text);
+  assert.equal(inventoryFailure,fixture.expected,`${fixture.name}\n${result.text}`);
+ }
+});
 test('an unenumerated working-tree edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST edit\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
 test('a deletion needs a named delta',t=>{const dir=scratch(t);unlinkSync(join(dir,moved));const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/current blob differs/);});
 // The gate reports `unenumerated change` only for the client's src/ and test/ files, so a fault that expects it

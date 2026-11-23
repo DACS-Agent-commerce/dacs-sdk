@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { isCorePath, isUnrecorded, recordName } from './delta-record.mjs';
+import { isCorePath, isUnrecordedRepositoryPath, recordName } from './delta-record.mjs';
 import { commits, expectedBlob, git, ledger, selects } from './delta-map.mjs';
 
 // The gate reads superseded and active records together and skips selectors
@@ -19,7 +19,7 @@ function recordedPaths() {
     if (matches.length !== 1) continue;
     for (const file of change.files) {
       const rel = file.path.slice('packages/dacs-client/'.length);
-      if (isCorePath(rel) || isUnrecorded(rel)) continue;
+      if (isCorePath(rel) || isUnrecordedRepositoryPath(file.path)) continue;
       records.set(file.path, [...(records.get(file.path) ?? []), { sha: matches[0].sha, after: file.after }]);
     }
   }

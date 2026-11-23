@@ -3,8 +3,10 @@
 //
 //   node packages/dacs-client/scripts/check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]
 //
-// HOLD.json pins the core files. Other package files follow their delta
-// records, the anchor or the baseline. Every package.json key except `files`
+// HOLD.json pins the core files. Other package files except
+// `packages/dacs-client/README.md` follow their delta records, the anchor or
+// the baseline. The README is exempt from those blob checks but remains subject
+// to clean HEAD/index/working-tree checks. Every package.json key except `files`
 // is pinned by the gate. The derived rule loads only after its modules match
 // their pins, and needs the Git history from the baseline to HEAD.
 // HOLD.json and this gate are the reviewed control pair: changing a pin or
@@ -35,8 +37,8 @@ class UsageError extends Error {}
 export const DERIVED_RULE_MODULES = Object.freeze(["scripts/delta-freeze.mjs", "scripts/delta-assemble.mjs", "scripts/delta-map.mjs", "scripts/delta-record.mjs", "scripts/publication-text.mjs", "scripts/source-git.mjs"]);
 
 export const PINNED = Object.freeze({
-  holdSha256: "34341ba3fba03d697179fadb18720726a1308facfa6e70a5d8db224b3a90a85b",
-  holdBytesSha256: "09d84cdf06eee9eaf73ecc45969deec648eb22a8f8ab14bc7655ae815f43918d",
+  holdSha256: "06e67e15a6b50fcdc6d87c2e8742f2d24702c62a255ddb5a46a2253344b216b2",
+  holdBytesSha256: "25959ed5f885d004bbe9b6a327e60790f091935a1949c2425e4085a650c4f326",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -293,7 +295,7 @@ function finish(failures, summary) {
     process.exitCode = 1;
     return;
   }
-  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); reviewed package manifest; package HEAD blobs verified against pins; package index and working files match HEAD; every package file holds the blob its records, the anchor or the baseline name; outside SDK files are unrestricted; no behavioural imports`);
+  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); reviewed package manifest; package HEAD blobs verified against pins; package index and working files match HEAD; package README excluded from record/anchor/baseline blob checks; all other package files hold their pinned or recorded blob; outside SDK files are unrestricted; no behavioural imports`);
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

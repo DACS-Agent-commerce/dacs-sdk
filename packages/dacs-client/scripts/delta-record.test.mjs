@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { isRecordNamed, isUnrecorded, recordName, UNRECORDED_PATH, validateRecord } from './delta-record.mjs';
+import { isRecordNamed, isUnrecordedRepositoryPath, recordName, validateRecord } from './delta-record.mjs';
 
 const at = 'packages/dacs-client/';
 const blobA = 'a'.repeat(40), blobB = 'b'.repeat(40);
@@ -74,9 +74,8 @@ test('a commit-only record has no files and stands for a commit that changes onl
 });
 
 test('only the exact package README needs no record', () => {
-  assert.equal(UNRECORDED_PATH, 'README.md');
-  assert.equal(isUnrecorded('README.md'), true);
-  for (const path of ['README.md.bak', 'docs/README.md', 'src/README.md', 'scripts/README.md', 'readme.md', 'Readme.md', 'README.MD', './README.md', 'package.json', 'DELTA-NOTES.md']) assert.equal(isUnrecorded(path), false, path);
+  assert.equal(isUnrecordedRepositoryPath('packages/dacs-client/README.md'), true);
+  for (const path of ['README.md', 'packages/other/README.md', 'packages/dacs-client/README.md.bak', 'packages/dacs-client/docs/README.md', 'packages/dacs-client/src/README.md', 'packages/dacs-client/scripts/README.md', 'packages/dacs-client/readme.md', 'packages/dacs-client/Readme.md', 'packages/dacs-client/README.MD', './packages/dacs-client/README.md', 'packages/dacs-client\\README.md', 'packages/dacs-client/package.json', 'packages/dacs-client/DELTA-NOTES.md']) assert.equal(isUnrecordedRepositoryPath(path), false, path);
   // Records may still name the README; the checks ignore those entries.
   assert.equal(isRecordNamed('README.md'), true);
 });
