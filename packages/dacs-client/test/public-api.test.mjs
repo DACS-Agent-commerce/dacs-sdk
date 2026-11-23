@@ -102,9 +102,10 @@ test('root exposes exactly the reviewed names', async () => {
   assert.deepEqual(Object.keys(await import('@kynesyslabs/dacs-client')).sort(), [...ROOT.functions, ...ROOT.classes, ...ROOT.values].sort());
 });
 
-test('durable journal subpath exports exactly its factory, error, format and version', async () => {
+test('durable journal subpath exports exactly its factory, error, format, version and the wallet-lane view', async () => {
   const journal = await import('@kynesyslabs/dacs-client/wallet/durable-journal');
-  assert.deepEqual(Object.keys(journal).sort(), ['DURABLE_WALLET_JOURNAL_FORMAT', 'DURABLE_WALLET_JOURNAL_VERSION', 'DurableWalletJournalError', 'openDurableWalletJournal'].sort());
+  assert.deepEqual(Object.keys(journal).sort(), ['DURABLE_WALLET_JOURNAL_FORMAT', 'DURABLE_WALLET_JOURNAL_VERSION', 'DurableWalletJournalError', 'openDurableWalletJournal', 'createWalletLaneView', 'walletLane', 'walletLaneKey'].sort());
+  for (const name of ['createWalletLaneView', 'walletLane', 'walletLaneKey']) assert.equal(typeof journal[name], 'function');
   assert.equal(typeof journal.openDurableWalletJournal, 'function');
   assert.equal(typeof journal.DurableWalletJournalError, 'function');
   assert.equal(journal.DURABLE_WALLET_JOURNAL_FORMAT, 'dacs-durable-wallet-journal');
