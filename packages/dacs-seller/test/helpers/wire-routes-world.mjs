@@ -38,6 +38,7 @@ export const MAX_RESPONSE_BYTES = 512 * 1024;
 export const MAX_BODY_BYTES = 64 * 1024;
 export const MAX_HEADER_CHARS = 4096;
 export const MAX_REQUEST_LIFETIME_MS = 60_000;
+const performanceMocksByTest = new WeakMap();
 export const MAX_SIGNED_LIFETIME_MS = 30_000;
 export const SKEW_MS = 30_000;
 export const DAY_MS = 86_400_000;
@@ -123,8 +124,17 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [], session: null };
   // The wire measures the time an admission takes with `performance.now`: the test moves it forward by `elapsedMs`.
   const monotonicNow = performance.now.bind(performance);
+  if (!performanceMocksByTest.has(t)) {
+    const originalNow = Object.getOwnPropertyDescriptor(performance, 'now');
+    performanceMocksByTest.set(t, originalNow);
+    t.after(() => {
+      mock.reset();
+      if (originalNow) Object.defineProperty(performance, 'now', originalNow);
+      else delete performance.now;
+      performanceMocksByTest.delete(t);
+    });
+  }
   mock.method(performance, 'now', () => monotonicNow() + state.elapsedMs);
-  t.after(() => mock.restoreAll());
   const clock = () => state.time;
   const connection = () => ({ ...state.connection });
   const signing = { calls: 0, failures: 0 };
