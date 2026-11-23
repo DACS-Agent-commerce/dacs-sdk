@@ -170,13 +170,17 @@ wait_for_registry() {
   stage=registry-ready
   require_bounded_http || return 1
   ready=0
-  local ping ping_status=0 ping_error_line
+  local ping ping_status=0 ping_error_line ping_error_file
   local max_attempts=30 max_error_bytes=1024
+  ping_error_file=$(mktemp "${registry_log}.curl-error.XXXXXX") || return
+  registry_ping_errors=$ping_error_file
   for attempt in $(seq 1 "$max_attempts"); do
     ping_status=0
-    # curl is silent on success, so `ping` is the body then and, after a failure,
-    # holds curl's error message (--show-error) for the log below.
-    ping=$(curl "${http_json_curl[@]}" "$host_registry/-/ping" 2>&1) || ping_status=$?
+    # Keep the untrusted response body separate from curl's diagnostic. A body
+    # can contain text that resembles a curl error and must not affect failure
+    # classification.
+    : > "$ping_error_file"
+    ping=$(curl "${http_json_curl[@]}" "$host_registry/-/ping" 2>"$ping_error_file") || ping_status=$?
     # Verdaccio answers its ping with a JSON object; a 200 carrying anything else
     # (an empty or malformed body from an intermediary) is not readiness. `--`
     # keeps a reply that starts with `-` an argument instead of a node option.
@@ -189,16 +193,20 @@ wait_for_registry() {
     sleep 1
   done
   if [ "$ready" -ne 1 ]; then
-    docker logs "$registry_container" 2>&1 | tee -a "$registry_log" >&2
+    { docker logs "$registry_container" 2>&1 || true; } | tee -a "$registry_log" >&2
     {
       if [ "$ping_status" -ne 0 ]; then
-        ping_error_line=$(printf '%s\n' "$ping" | grep -o 'curl: ([0-9]*) .*' | tail -n 1 | head -c "$max_error_bytes" || true)
+        ping_error_line=$(grep -o 'curl: ([0-9]*) .*' "$ping_error_file" | tail -n 1 | head -c "$max_error_bytes" || true)
         if [ -n "$ping_error_line" ]; then printf '%s\n' "$ping_error_line"; fi
       fi
       echo "registry ping did not succeed within $max_attempts attempts"
     } | tee -a "$registry_log" >&2
+    rm -f -- "$ping_error_file"
+    registry_ping_errors=""
     exit "$((ping_status == 0 ? 1 : ping_status))"
   fi
+  rm -f -- "$ping_error_file"
+  registry_ping_errors=""
 }
 
 # Creates the run-local publishing user; sets `auth_token` from a bounded reply.
