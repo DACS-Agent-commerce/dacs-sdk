@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "D16",
+  "subject": "delta(client): D16 clarify SR-2 commitment outcome comments",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "5e8ca771d7123c576d280901857032dcb0a9e4f6",
+      "after": "35f0e77a27a582efd8df3653e97760c29231f10a"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/D16-51a099d22249.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs"
+  ]
+}
