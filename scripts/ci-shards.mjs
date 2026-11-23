@@ -40,7 +40,9 @@ export const SPLIT_FILES = { seller: ["seller-host-native-delivery.test.mjs"], c
 
 // Seconds per file on a normal hosted runner. The weights only balance the shards; a missing entry never drops a file
 // (see check), and check refuses an entry that names no test file.
-// - client: the time between consecutive "[client-tests] <file>" lines in a client shard job's log.
+// - client: the time between consecutive "[client-tests] <file>" lines in a client shard job's log. The current
+//   client estimates use the mean from successful Node 22 hosted runs 45100507368 and 45103485226 (2026-11-23);
+//   obvious whole-file drift is refreshed alongside the per-test timings for the split history file.
 // - seller: from node 22 seller jobs of the two-shard layout. Files of the old shard 1: the sum of their tests'
 //   duration_ms (mean of two jobs) plus half a second to start the file's process. Files of the old shard 2 (that log
 //   has no per-file split): each file timed alone on a test machine, scaled so they add up to that shard's measured
@@ -224,10 +226,11 @@ export const WEIGHTS = {
     "write-ceiling-agreement.test.mjs": 1.2,
   },
   client: {
-    "scripts/check-hold.test.mjs": 9,
+    "scripts/check-hold.test.mjs": 56.8,
     "scripts/check-provenance.test.mjs": 2,
+    "scripts/delta-anchor.test.mjs": 72.7,
     "scripts/delta-continuity.test.mjs": 4,
-    "scripts/delta-frontier.test.mjs": 755,
+    "scripts/delta-frontier.test.mjs": 103.4,
     "scripts/test-layout.test.mjs": 1,
     "test/bound-terms-mismatch.test.mjs": 1,
     "test/buyer-chain-indeterminate.test.mjs": 1,
@@ -242,7 +245,7 @@ export const WEIGHTS = {
     "test/d11-seam-parameters.test.mjs": 1,
     "test/delivery-access-model.test.mjs": 1,
     "test/delivery-evidence-gate.test.mjs": 1,
-    "test/delta-ledger-gate.test.mjs": 639,
+    "test/delta-ledger-gate.test.mjs": 63.7,
     "test/diagnostic-bounds.test.mjs": 6,
     "test/diagnostic-projection.test.mjs": 2,
     "test/diagnostic-reader.test.mjs": 1,
@@ -280,7 +283,7 @@ export const WEIGHTS = {
     "test/price-bound.test.mjs": 1,
     "test/public-admission.test.mjs": 1,
     "test/public-api-inventory.test.mjs": 46,
-    "test/public-api.test.mjs": 1,
+    "test/public-api.test.mjs": 50.3,
     "test/public-composition.test.mjs": 1,
     "test/public-demos-reader-construction.test.mjs": 1,
     "test/public-demos-reader-consumers.test.mjs": 1,
@@ -323,53 +326,54 @@ export const WEIGHTS = {
   },
 };
 
-// Seconds per test of each file in SPLIT_FILES. Client delta-provenance weights below are means of two complete
-// serial Node 22.22.3 runs on Darwin 24.6.0 arm64, measured on 2026-11-23. A test with no entry gets DEFAULT_TEST_WEIGHT.
+// Seconds per test of each file in SPLIT_FILES. Client delta-provenance values are means of the per-test TAP durations
+// from successful Node 22 hosted runs 45100507368 and 45103485226, measured 2026-11-23. A test with no entry gets
+// DEFAULT_TEST_WEIGHT.
 export const TEST_WEIGHTS = {
   "scripts/delta-provenance.test.mjs": {
-    "committed delta history and immutable record files agree": 5.5,
-    "a commit in a scratch clone starts no background git maintenance that could outlive the test": 0.7,
+    "committed delta history and immutable record files agree": 7.1,
+    "a commit in a scratch clone starts no background git maintenance that could outlive the test": 0.4,
     "callback history explains the superseded guard and matches the recorded write-lease files": 0.1,
-    "callback history check needs no ancestry beyond the checked-out commit": 0.8,
+    "callback history check needs no ancestry beyond the checked-out commit": 1.1,
     "SQLite split history distinguishes the lease from the later transaction adapter": 0.1,
-    "the publication inventory cannot omit an outside-only commit or name an absent hash": 10.5,
-    "an unenumerated working-tree edit is refused": 5.1,
-    "a deletion needs a named delta": 5.9,
-    "removing a delta record cannot hide its historical file changes": 5.2,
-    "removing a bookkeeping checkpoint is also refused": 6.0,
-    "a later commit with an unlisted moved-file edit is refused": 5.1,
+    "the publication inventory cannot omit an outside-only commit or name an absent hash": 10.6,
+    "an unenumerated working-tree edit is refused": 5.5,
+    "a deletion needs a named delta": 5.6,
+    "removing a delta record cannot hide its historical file changes": 8.9,
+    "removing a bookkeeping checkpoint is also refused": 9.2,
+    "a later commit with an unlisted moved-file edit is refused": 5.4,
     "a stored per-file Markdown table is refused by the closed freeze": 1.4,
-    "a committed deletion without a named delta is refused": 5.4,
-    "a staged moved-file edit with restored working bytes is refused": 5.3,
-    "archived source and pre-publication delta evidence cannot be rewritten": 5.3,
-    "launch review: unrelated future SDK commits do not need a client re-pin": 5.3,
-    "launch review: unrelated main commits and a PR merge preserve client provenance": 5.6,
-    "launch review: unrelated main commits and a PR merge preserve client provenance from a detached HEAD": 6.0,
-    "D11 source history accepts delta(client) records": 10.7,
-    "D11 source history accepts fix(client) records": 10.4,
-    "two commits sharing a subject need SHA-qualified selectors": 20.1,
-    "a commit reached only through a content-free merge is still audited": 5.8,
-    "the inventory cannot name an unreachable commit": 5.3,
-    "a hashed inventory row must carry its commit subject, and one commit has one row": 10.0,
-    "a record that names its full commit hash needs no delta prefix in the subject, an unqualified one does": 10.5,
-    "a WF delta record is accepted and an unlisted delta id is still refused": 10.4,
+    "a committed deletion without a named delta is refused": 5.6,
+    "a staged moved-file edit with restored working bytes is refused": 5.4,
+    "archived source and pre-publication delta evidence cannot be rewritten": 7.1,
+    "launch review: unrelated future SDK commits do not need a client re-pin": 7.2,
+    "launch review: unrelated main commits and a PR merge preserve client provenance": 8.9,
+    "launch review: unrelated main commits and a PR merge preserve client provenance from a detached HEAD": 8.8,
+    "D11 source history accepts delta(client) records": 11,
+    "D11 source history accepts fix(client) records": 10.7,
+    "two commits sharing a subject need SHA-qualified selectors": 20.6,
+    "a commit reached only through a content-free merge is still audited": 5.6,
+    "the inventory cannot name an unreachable commit": 7.4,
+    "a hashed inventory row must carry its commit subject, and one commit has one row": 10.5,
+    "a record that names its full commit hash needs no delta prefix in the subject, an unqualified one does": 10.6,
+    "a WF delta record is accepted and an unlisted delta id is still refused": 11.1,
     "a WF record selected by its full commit hash may carry the subject \"fix(client): TEST published fix without a delta id\"; the same subject without the hash is refused": 10.9,
-    "a WF record selected by its full commit hash may carry the subject \"TEST published fix with a plain subject\"; the same subject without the hash is refused": 10.1,
-    "the committed head passes and each archived record fault is refused": 32.1,
+    "a WF record selected by its full commit hash may carry the subject \"TEST published fix with a plain subject\"; the same subject without the hash is refused": 17.4,
+    "the committed head passes and each archived record fault is refused": 46.7,
     "immutable record files refuse an omitted inventory path": 6.4,
     "immutable record files refuse a removed source-change record": 6.3,
-    "immutable record files refuse a removed checkpoint": 6.3,
+    "immutable record files refuse a removed checkpoint": 8.5,
     "immutable record files refuse a renamed record": 6.4,
-    "immutable record files refuse an unreachable commit selector": 7.0,
-    "immutable record files refuse a changed subject on a hashed selector": 7.9,
-    "immutable record files refuse a repeated commit selector": 8.3,
-    "immutable record files refuse an unqualified subject without a delta prefix": 6.8,
-    "immutable record files refuse a changed terminal blob": 6.7,
-    "immutable record files refuse a changed parent blob": 6.9,
-    "immutable record files refuse an ordinary record with no changed blob": 6.7,
-    "immutable record files refuse an empty file list": 7.0,
-    "immutable record files refuse an inventory row naming another file": 6.8,
-    "immutable record files refuse an unqualified repeated subject": 6.7,
+    "immutable record files refuse an unreachable commit selector": 6.6,
+    "immutable record files refuse a changed subject on a hashed selector": 6.5,
+    "immutable record files refuse a repeated commit selector": 9.7,
+    "immutable record files refuse an unqualified subject without a delta prefix": 6.4,
+    "immutable record files refuse a changed terminal blob": 9.8,
+    "immutable record files refuse a changed parent blob": 6.4,
+    "immutable record files refuse an ordinary record with no changed blob": 9.8,
+    "immutable record files refuse an empty file list": 8.3,
+    "immutable record files refuse an inventory row naming another file": 6.5,
+    "immutable record files refuse an unqualified repeated subject": 8.6,
   },
   // Mean duration_ms of each test over two node 22 seller jobs on normal runners, in registration order.
   "seller-host-native-delivery.test.mjs": {
