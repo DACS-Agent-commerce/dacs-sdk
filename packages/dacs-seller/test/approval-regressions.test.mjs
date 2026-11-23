@@ -718,15 +718,16 @@ test('a held sign line that could not be appended, nor released, is pending unti
 test('an automatic sign line written but not synced, whose release failed, is pending until settled as released',async t=>{
  const f=await fixture(t,purchase),r=payDem();let syncs=0;
  const spy=spyOnFsync({onSync:path=>{if(path===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');}});
- t.after(spy.restore);
- const restore=failingAppends(t,1,1);await assert.rejects(f.p.prepare(r),{message:'TEST sync failed'});restore();spy.restore();
+ // Restore in the reverse of the install order, also when the test fails early (helpers/fsync-spy.mjs).
+ let restore;t.after(()=>{restore?.();spy.restore();});
+ restore=failingAppends(t,1,1);await assert.rejects(f.p.prepare(r),{message:'TEST sync failed'});restore();spy.restore();
  assert.equal((await openSignRows(f)).length,1);await assert.rejects(f.p.prepare(r),{code:'seller_approval_pending'});
  await f.p.settle(r,'released');assert.equal((await openSignRows(f)).length,0);assert.equal(await f.p.prepare(r),true);
 });
 test('cold F2 a Vet whose sign line failed to sync, and whose release failed, is not refused: the composer releases it and rejects, and a retry is approved',async t=>{
  const f=await fixture(t,()=>null,{ledgerRetryMs:1}),r=vetRequest();let armed=false,prompts=0,restore;
  const spy=spyOnFsync({onSync:path=>{if(armed&&path===f.evidencePath){armed=false;throw new Error('TEST sync failed');}}});
- t.after(spy.restore);
+ t.after(()=>{restore?.();spy.restore();});
  // The first manual yes: its sign line is written but its sync fails, and the release of that line fails once.
  const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{if(++prompts===1){armed=true;restore=failingAppends(t,1,1);}return true;}});
  await assert.rejects(a(r),{message:'TEST sync failed'});restore();
