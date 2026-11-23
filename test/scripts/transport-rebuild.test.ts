@@ -100,6 +100,8 @@ describe("raw-token admission", () => {
     }
     // The dense stretch is not searched at each of its 100 boundaries...
     expect(searchStarts.filter(at => at < plainStart).length).toBeLessThan(10);
+    // ...and a chunk boundary cannot restart the search inside the 512-byte pause.
+    expect(searchStarts[1]!).toBeGreaterThanOrEqual(searchStarts[0]! + 512);
     // ...and the search is used again on the plain run once the pause ends.
     expect(searchStarts.some(at => at >= plainStart)).toBe(true);
   });
