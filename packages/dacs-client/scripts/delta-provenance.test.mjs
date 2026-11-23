@@ -246,11 +246,27 @@ test('the inventory cannot name an unreachable commit',t=>{
 });
 test('a hashed inventory row must carry its commit subject, and one commit has one row',t=>{
  const dir=scratch(t),file=join(dir,control[0]),rows=JSON.parse(readFileSync(file,'utf8'));
- const head=execFileSync('git',['-C',dir,'log','-1','--no-merges','--format=%H%x09%s','--','packages/dacs-client'],{encoding:'utf8'}).trim().split('\t');
+ // Use a recorded source commit, not whichever package commit is currently
+ // newest. Verify the inventory row against Git before exercising its faults.
+ // Later unrelated and exempt README commits must not change this selection.
+ const source=rows.find(row=>row.sha&&row.files.some(path=>path.startsWith('packages/dacs-client/src/')||path.startsWith('packages/dacs-client/test/')));
+ assert.ok(source,'the public inventory must contain a hashed client source or test commit');
+ const actualSubject=execFileSync('git',['-C',dir,'log','-1','--format=%s',source.sha],{encoding:'utf8'}).trim();
+ assert.equal(actualSubject,source.subject,'the fixture subject must match its recorded commit');
+ const actualFiles=execFileSync('git',['-C',dir,'diff-tree','--no-commit-id','--name-only','-r',source.sha],{encoding:'utf8'}).trim().split('\n');
+ assert.ok(source.files.every(path=>actualFiles.includes(path)),'the fixture inventory files must belong to its recorded commit');
+ assert.ok(source.files.some(path=>path.startsWith('packages/dacs-client/src/')||path.startsWith('packages/dacs-client/test/')),
+  'the fixture source commit must select a client source or test file');
  for(const [extra,message] of [
-  [{sha:head[0],subject:'fix(client): D11 TEST wrong subject',files:['fake']},new RegExp(`commit inventory subject differs from commit ${head[0]}`)],
-  [{sha:head[0],subject:head[1],files:['fake']},new RegExp(`commit inventory selects ${head[0]} more than once`)],
+  [{sha:source.sha,subject:'fix(client): D11 TEST wrong subject',files:['fake']},new RegExp(`commit inventory subject differs from commit ${source.sha}`)],
+  [{sha:source.sha,subject:source.subject,files:['fake']},new RegExp(`commit inventory selects ${source.sha} more than once`)],
  ]){
+  appendFileSync(join(dir,'README.md'),'\nUnrelated inventory fixture documentation\n');
+  execFileSync('git',['-C',dir,'add','--','README.md']);
+  execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false','commit','-qm','docs: unrelated inventory fixture update']);
+  appendFileSync(join(dir,'packages/dacs-client/README.md'),'\nExempt inventory fixture documentation\n');
+  execFileSync('git',['-C',dir,'add','--','packages/dacs-client/README.md']);
+  execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false','commit','-qm','docs(client): exempt inventory fixture update']);
   writeFileSync(file,JSON.stringify([...rows,extra]));
   const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,message);
  }
