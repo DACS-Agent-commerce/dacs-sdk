@@ -352,6 +352,48 @@ describe("wallet-spend EVM reader", () => {
       .rejects.toThrow("wallet-spend-evm-rpc-response-invalid");
   });
 
+  it("reads a block by hash with its parent hash and the chain id", async () => {
+    const parent = `0x${"a7".repeat(32)}` as const;
+    const mixedCase = (hash: string) => hash.toUpperCase().replace("0X", "0x");
+    const block = (overrides: Record<string, unknown> = {}) => ({
+      number: "0x3000", hash: mixedCase(BLOCK_HASH), parentHash: mixedCase(parent), timestamp: "0x6553F100",
+      ...overrides,
+    });
+    const stub = await rpcStub(onBaseSepolia(() => block()));
+    await expect(reader(stub.url).readBlockByHash(mixedCase(BLOCK_HASH) as `0x${string}`)).resolves.toEqual({
+      number: 0x3000, hash: BLOCK_HASH, parentHash: parent, timestamp: 0x6553f100,
+    });
+    expect(stub.calls.map((call) => [call.method, call.params]).sort()).toEqual([
+      ["eth_chainId", []],
+      ["eth_getBlockByHash", [BLOCK_HASH, false]],
+    ]);
+
+    for (const answer of [
+      null,
+      block({ hash: `0x${"b2".repeat(32)}` }),
+      block({ parentHash: undefined }),
+      block({ parentHash: `0x${"a7".repeat(31)}` }),
+    ]) {
+      const invalid = await rpcStub(onBaseSepolia(() => answer));
+      await expect(reader(invalid.url).readBlockByHash(BLOCK_HASH))
+        .rejects.toThrow("wallet-spend-evm-rpc-response-invalid");
+    }
+
+    const mainnet = await rpcStub((call, response) => reply(response, result(call,
+      call.method === "eth_chainId" ? "0x2105" : block())));
+    await expect(reader(mainnet.url).readBlockByHash(BLOCK_HASH))
+      .rejects.toThrow("wallet-spend-testnet-authority-rpc-chain-mismatch");
+
+    const oversized = await rpcStub(onBaseSepolia(() => block({ padding: "x".repeat(1_100 * 1024) })));
+    await expect(reader(oversized.url).readBlockByHash(BLOCK_HASH))
+      .rejects.toThrow("wallet-spend-evm-rpc-response-too-large");
+
+    const unsent = await rpcStub(onBaseSepolia(() => block()));
+    await expect(reader(unsent.url).readBlockByHash(`0x${"b1".repeat(31)}`))
+      .rejects.toThrow("wallet-spend-evm-rpc-request-invalid");
+    expect(unsent.calls).toEqual([]);
+  });
+
   it("reads authorization state pinned to a canonical block hash", async () => {
     let state: unknown = word(1);
     const stub = await rpcStub(onBaseSepolia(() => state));
