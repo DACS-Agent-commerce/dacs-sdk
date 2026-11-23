@@ -254,7 +254,9 @@ export function createDacsWalletSpendDemosReaderV1(input: Readonly<{
   }
 
   async function readAccountNonce(): Promise<number> {
-    return nodeNonce(await nodeCall("getAddressNonce", { address: policy.wallet }, RECORD_ANSWER_BYTES)) ?? invalid();
+    const answer = await nodeCall("getAddressNonce", { address: policy.wallet }, RECORD_ANSWER_BYTES);
+    // A node answers with the nonce itself or with `{ nonce }`; a missing member is never read as 0.
+    return nodeNonce(isObject(answer) ? answer.nonce : answer) ?? invalid();
   }
 
   async function findTransactionAtNonce(nonce: number): Promise<DemosHistorySlot | undefined> {
