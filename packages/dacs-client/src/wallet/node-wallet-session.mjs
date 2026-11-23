@@ -25,6 +25,7 @@ import { createReopenGrants } from './withheld-reopen-grants.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createPaymentEvidenceCreateAdapter } from './node-payment-evidence-adapter.mjs';
 import { assertCurrentAuthorization, currentPassContext, isPassContext, passContext, relayPassContext, runInPassContext } from './pass-context.mjs';
+import { createReadQueue } from './read-queue.mjs';
 import { createSignerReservations } from './signer-reservation.mjs';
 import { createKeystoreWalletOpener, JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
 import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError, normalizeMnemonic } from '../public/portal/embedded-wallet/sdk-provider.mjs';
@@ -247,26 +248,6 @@ function listsWithin(value, limit) {
     for (const member of members) pending.push(member);
   }
   return true;
-}
-
-// Runs at most `limit` reads at once. The rest wait in order, and a waiter leaves with the signal's reason when its signal aborts.
-function createReadQueue(limit) {
-  let running = 0;
-  const waiting = [];
-  const release = () => { const next = waiting.shift(); if (next) next(); else running -= 1; };
-  return async function runQueued(read, signal) {
-    signal.throwIfAborted();
-    if (running < limit) running += 1;
-    else {
-      await new Promise((resolve, reject) => {
-        const turn = () => { signal.removeEventListener('abort', leave); resolve(); };
-        const leave = () => { waiting.splice(waiting.indexOf(turn), 1); reject(signal.reason); };
-        waiting.push(turn);
-        signal.addEventListener('abort', leave, { once: true });
-      });
-    }
-    try { return await read(); } finally { release(); }
-  };
 }
 
 /**
