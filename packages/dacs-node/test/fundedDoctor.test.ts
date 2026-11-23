@@ -517,7 +517,7 @@ describe("funded doctor Demos smoke resumed under the same run ID", () => {
   type World = ReturnType<typeof world>;
 
   /** A real adapter for one process, with its node calls answered by the world. */
-  async function process(value: World, options: { deadlineMs?: number } = {}) {
+  async function startProcess(value: World, options: { deadlineMs?: number } = {}) {
     const { state } = value;
     const adapter = new DemosAdapter({
       rpc: nextRpc(),
@@ -710,18 +710,18 @@ describe("funded doctor Demos smoke resumed under the same run ID", () => {
   it("returns an absent run to performable state under the same run ID", async () => {
     const scenario = world({ included: false, readable: true, signs: false });
     const { database: db, invoke } = await runs();
-    await expect(invoke(await process(scenario, { deadlineMs: 60 })))
+    await expect(invoke(await startProcess(scenario, { deadlineMs: 60 })))
       .resolves.toMatchObject({ status: "reconciliation-required" });
     expect(scenario.state.writeCalls).toBe(1);
     scenario.land();
-    await expect(invoke(await process(scenario)))
+    await expect(invoke(await startProcess(scenario)))
       .resolves.toMatchObject({ status: "reconciliation-cleared" });
     expect(db.loadEffect("payment", prepared().plan.effectId)).toMatchObject({
       state: "intent",
       absenceProofHash: expect.any(String),
     });
     expect(scenario.state.writeCalls).toBe(1);
-    await expect(invoke(await process(scenario)))
+    await expect(invoke(await startProcess(scenario)))
       .resolves.toMatchObject({ status: "completed" });
     expect(scenario.state.writeCalls).toBe(2);
   });
@@ -729,20 +729,20 @@ describe("funded doctor Demos smoke resumed under the same run ID", () => {
   it("resumes a smoke that landed after the first run gave up without a second broadcast", async () => {
     const scenario = world({ included: false, readable: true, signs: true });
     const { invoke } = await runs();
-    await expect(invoke(await process(scenario, { deadlineMs: 60 })))
+    await expect(invoke(await startProcess(scenario, { deadlineMs: 60 })))
       .resolves.toMatchObject({ status: "reconciliation-required" });
     expect(await journalStages(scenario)).toEqual(["write-1:broadcast-intent"]);
     scenario.land();
-    await expect(invoke(await process(scenario)))
+    await expect(invoke(await startProcess(scenario)))
       .resolves.toMatchObject({ status: "reconciliation-cleared" });
-    const resumed = await invoke(await process(scenario));
+    const resumed = await invoke(await startProcess(scenario));
     expect(resumed).toMatchObject({
       status: "completed",
       result: { receipt: { transactionRef: { value: "tx-1" } } },
     });
     expect(scenario.state.signed).toEqual(["tx-1"]);
     expect(scenario.state.broadcast).toEqual(["tx-1"]);
-    await expect(invoke(await process(scenario)))
+    await expect(invoke(await startProcess(scenario)))
       .resolves.toMatchObject({ status: "existing-completion" });
     expect(scenario.state.broadcast).toEqual(["tx-1"]);
   });
@@ -750,13 +750,13 @@ describe("funded doctor Demos smoke resumed under the same run ID", () => {
   it("resumes a smoke confirmed before its native read without a second broadcast", async () => {
     const scenario = world({ included: true, readable: false, signs: true });
     const { invoke } = await runs();
-    await expect(invoke(await process(scenario, { deadlineMs: 60 })))
+    await expect(invoke(await startProcess(scenario, { deadlineMs: 60 })))
       .resolves.toMatchObject({ status: "reconciliation-required" });
     expect(await journalStages(scenario)).toEqual(["write-1:canonical-confirmed"]);
     scenario.land();
-    await expect(invoke(await process(scenario)))
+    await expect(invoke(await startProcess(scenario)))
       .resolves.toMatchObject({ status: "reconciliation-cleared" });
-    await expect(invoke(await process(scenario))).resolves.toMatchObject({
+    await expect(invoke(await startProcess(scenario))).resolves.toMatchObject({
       status: "completed",
       result: { receipt: { transactionRef: { value: "tx-1" } } },
     });
@@ -766,14 +766,14 @@ describe("funded doctor Demos smoke resumed under the same run ID", () => {
   it("performs the one create when the first run never signed", async () => {
     const scenario = world({ included: false, readable: true, signs: false });
     const { invoke } = await runs();
-    await expect(invoke(await process(scenario, { deadlineMs: 60 })))
+    await expect(invoke(await startProcess(scenario, { deadlineMs: 60 })))
       .resolves.toMatchObject({ status: "reconciliation-required" });
     expect(await journalStages(scenario)).toEqual(["write-1:prepared"]);
     expect(scenario.state.signed).toEqual([]);
     scenario.land();
-    await expect(invoke(await process(scenario)))
+    await expect(invoke(await startProcess(scenario)))
       .resolves.toMatchObject({ status: "reconciliation-cleared" });
-    await expect(invoke(await process(scenario))).resolves.toMatchObject({
+    await expect(invoke(await startProcess(scenario))).resolves.toMatchObject({
       status: "completed",
       result: { receipt: { transactionRef: { value: "tx-1" } } },
     });
