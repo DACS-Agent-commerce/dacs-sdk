@@ -13,7 +13,7 @@ import { chainIdentityRead } from './chain-identity-read.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
 import { createEffectHistory } from './effect-history.mjs';
-import { assertCurrentAuthorization, currentPassContext, runInPassContext } from './pass-context.mjs';
+import { assertCurrentAuthorization, currentPassContext, insideEffectPass, runInPassContext } from './pass-context.mjs';
 import { classifyDispatchHistory, nothingSent } from './native-dispatch-history.mjs';
 import { signerReservationKey } from './signer-reservation.mjs';
 import { authorityLabel } from '../dacs/tp1-authority-token.mjs';
@@ -134,6 +134,8 @@ const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPas
 const LEASE_EXPIRY_MARGIN_MS = 1;
 // The fee members of a confirmation's gas operation, each a canonical decimal OS string.
 const FEE_MEMBERS = ['network_fee', 'rpc_fee', 'additional_fee'];
+// The only own keys of a wallet nonce lane's scope.
+const NONCE_LANE_SCOPE_KEYS = ['owner', 'network', 'chainIdentity'];
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const ONLY_ORIGINAL_SENDS = 'only the original signed native DEM send or explicitly admitted immutable CREATE is relayed';
 const envelope = (response, result = 200) => ({ result, response, require_reply: false, extra: null });
@@ -205,6 +207,13 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // one explicit send of a broadcast whose whole dispatch history shows it never reached the node (a withheld pass,
 // not an acknowledged, unknown or unpaired one): the lease, the retained confirmation (or a new one) and the broadcast of the
 // retained bytes, under the retained operation's id. Every other issued native hash stays readback-only.
+//
+// A demo transport also has `withWalletNonceLock({owner, network, chainIdentity}, work)`, the wallet nonce lane: it runs `work`
+// holding the lock row of `nativeWalletLaneKey(pins, owner)` in this journal, the row every native write of that wallet takes,
+// a buyer's included. Inside it, this transport's readback, CREATE recovery and broadcast claim for that wallet continue in the
+// held lane; a lease that names a transfer, a transfer's confirmation claim and a cancellation still refuse journal-reentrant.
+// It is the one use of the wallet lane taken before the connection fence, so it is refused inside an effect pass
+// (nonce_lane_order), and a fence holder that then needs the lane waits at most the journal's lock timeout.
 export function createDevnetNativeTransport(options) { return constructTransport(options,false); }
 export function createDevnetAgreementTransport(options) { return constructTransport(options,true); }
 // Separate opt-in composition. The Agreement-only constructor above remains
@@ -408,6 +417,27 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     reader:sourceBlockReader({ chainIdentity:pinned.chainIdentity, reviewedReads, fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post:raw, now }) });
   const binder = makeBinder(),storageRecoveryBinder = makeBinder(true);
   const lane = (address) => nativeWalletLaneKey(pinned, address);
+  // The wallet's lane for a readback, a CREATE recovery or a broadcast claim: continued when this context already holds it (a caller's nonce lane), else acquired.
+  const laneLock = (address, work) => (typeof journal.withOwnedOrAcquiredLane === 'function'
+    ? journal.withOwnedOrAcquiredLane(lane(address), work) : journal.withWalletLock(lane(address), work));
+  /**
+   * Runs `work` holding the native lane of `scope.owner`, exactly `{owner, network, chainIdentity}` on the pinned network and chain, and
+   * resolves or rejects as `work` does once the lane is released. Rejects before `work` runs: invalid_params, nonce_lane_unavailable (a
+   * journal without owned lanes), nonce_lane_order (inside an effect pass), the journal's own refusals (journal-busy after its lock wait,
+   * journal-reentrant, journal-closed, journal-integrity) and transport_closed. A hold lost while `work` runs rejects journal-fenced.
+   */
+  async function withWalletNonceLock(scope, work) {
+    const keys = scope !== null && typeof scope === 'object' ? Reflect.ownKeys(scope) : [];
+    if (keys.length !== NONCE_LANE_SCOPE_KEYS.length || !NONCE_LANE_SCOPE_KEYS.every((key) => keys.includes(key)) || typeof work !== 'function') fail('invalid_params','the nonce lane scope is exactly {owner, network, chainIdentity} and its work is a function');
+    const { owner, network, chainIdentity } = scope;
+    if (typeof owner !== 'string' || !ADDRESS.test(owner) || network !== pinned.network || canonicalChainIdentity(chainIdentity) !== pinned.chainIdentity) fail('invalid_params','the nonce lane scope names a native address on the pinned network and chain');
+    if (typeof journal.withOwnedOrAcquiredLane !== 'function') fail('nonce_lane_unavailable','this journal cannot keep the wallet lane through the wallet\'s own writes');
+    if (insideEffectPass()) fail('nonce_lane_order','the wallet nonce lane is taken before an effect pass, never inside one');
+    return journal.withWalletLock(lane(owner), () => {
+      if (closed) fail('transport_closed','the native transport is closed');
+      return work();
+    });
+  }
   const intent = (hash) => `devnet/native-transfer/${hash}`;
   // A retained lane or intent stamped by another pin version belongs to a retired
   // pin: it is read back only, never reconfirmed, resent or re-keyed.
@@ -976,7 +1006,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   }
   async function readback(address, hash, writeProof, failedNonceFence, consumedByHash) {
     if (!ADDRESS.test(address ?? '') || !HASH.test(hash ?? '')) fail('invalid_params','a public native writer and hash are required');
-    return fenced(() => journal.withWalletLock(lane(address), async () => {
+    return fenced(() => laneLock(address, async () => {
       await clearDeadReservationLock(address);
       const latest=await journal.get(lane(address));
       const r=await journal.get(intent(hash)) ?? (latest?.hash === hash ? latest : null);
@@ -1101,7 +1131,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     const signed=(await historyOf({ lane:lane(address),artifactHash:sha(JSON.stringify(tx)) }).catch(() => [])).find((record) => record.state === 'signed');
     if(!signed) return pending;
     const underConnection=(work) => boundary.withOperation(signed,work).catch((error) => { if(error?.code?.startsWith('journal')) throw error; return pending; });
-    return underConnection(()=>journal.withWalletLock(lane(address),async()=>{
+    return underConnection(()=>laneLock(address,async()=>{
       let r=await journal.get(intent(hash));
       const latest=await journal.get(lane(address));
       if(!r || JSON.stringify(r.signedTransaction)!==JSON.stringify(tx) || latest?.hash!==hash
@@ -1321,7 +1351,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       try {
         // A node fee view other than the signed fees is refused before any lane or dispatch record; the lease ends.
         if(!feeViewIsSigned(retained.gasOperation,tx.content.transaction_fee)) fail('fee_view_mismatch',TRANSFER_REFUSALS.fee_view_mismatch);
-        accepted = await journal.withWalletLock(lane(tx.content.from),async () => {
+        accepted = await laneLock(tx.content.from,async () => {
           // The signer's reservation lock is the one lock an evidence CREATE takes to claim the signer, and each side checks the other's
           // record inside it. It is held from the reservation check through the dispatch pass, which writes this lane record, so a stored
           // evidence CREATE and this write never take the same nonce, and a refusal before the dispatch leaves no lane record.
@@ -1490,6 +1520,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   }
   const capability = Object.freeze({
     ...(reopenGrants?{reopenWithheldBroadcast:(request)=>tracked(()=>reopenWithheldBroadcast(request))}:{}),
+    ...(demo?{withWalletNonceLock:(scope,work)=>tracked(()=>withWalletNonceLock(scope,work))}:{}),
     ...(settlement?{recoverStorageWrite:(request)=>tracked(()=>recoverStorageWrite(request)),
       onStorageWriteResend(listener) { if(typeof listener!=='function')throw new TypeError('resend listener required');resendListeners.add(listener);return()=>resendListeners.delete(listener); }}:{}),
     ...(agreement?{pins:pinned,transportBinding:declaration,journal,...(publication?{settlementPublication:publication}:{}),...(deliveryDeclaration?{deliveryPublication:deliveryDeclaration}:{}),...(demoDeclaration?{demoArtifactPublication:demoDeclaration}:{}),

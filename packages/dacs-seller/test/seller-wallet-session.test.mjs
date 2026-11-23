@@ -175,7 +175,7 @@ test('the finalized session\'s pass needs a live fence from its own owner: a rel
   await assert.rejects(world.port.artifactAnchor.hasIntent('dacs1:listing:TEST'), { code: 'wallet_session_closed' }, 'the handle closes with the session');
 });
 
-test('after finalization the port\'s artifactAnchor is the anchor composed over the finalized session: its writer, authority, source and Vet mode are unchanged from before finalization and match the session\'s address and declared publication; a Listing publish whose signing check is not a function refuses not-authorized and one with a signing check or without refuses nonce_lane_unavailable, and a job\'s retained read with the default buyer access refuses buyer_access_closed, each before any read, storing no intent and signing and sending nothing', async (t) => {
+test('after finalization the port\'s artifactAnchor is the anchor composed over the finalized session: its writer, authority, source and Vet mode are unchanged from before finalization and match the session\'s address and declared publication; a Listing publish whose signing check is not a function refuses not-authorized and one with a signing check or without refuses deployment_unqualified, and a job\'s retained read with the default buyer access refuses buyer_access_closed, each before any artifact read, storing no intent and signing and sending nothing', async (t) => {
   const signatures = await spyTransactionSignatures(t.mock);
   const world = await walletSessionWorld(t);
   const anchor = world.port.artifactAnchor;
@@ -192,11 +192,12 @@ test('after finalization the port\'s artifactAnchor is the anchor composed over 
   const input = { logicalAddress: 'dacs1:listing:fixture-report:1', artifact: listing, artifactKind: 'Listing' };
   const reads = world.node.calls.length;
   await assert.rejects(anchor.publish({ ...input, authorizeSigning: true }), { code: 'not-authorized' });
-  await assert.rejects(anchor.publish({ ...input, authorizeSigning: () => true }), { code: 'nonce_lane_unavailable' });
-  await assert.rejects(anchor.publish(input), { code: 'nonce_lane_unavailable' });
+  await assert.rejects(anchor.publish({ ...input, authorizeSigning: () => true }), { code: 'deployment_unqualified' });
+  await assert.rejects(anchor.publish(input), { code: 'deployment_unqualified' });
   await assert.rejects(anchor.readRetained({ logicalAddress: `dacs4:deliverable:${JOB_ID}`, artifactKind: 'Deliverable' }), { code: 'buyer_access_closed' });
   assert.equal(await anchor.hasIntent(input.logicalAddress), false, 'no intent was stored');
-  assert.deepEqual({ reads: world.node.calls.length - reads, stages: world.executeStages(), signatures: signatures.length }, { reads: 0, stages: 0, signatures: 0 });
+  assert.deepEqual(world.node.calls.slice(reads).map((call) => call.body.params[0].message), ['getBlockByNumber', 'getBlockByNumber']);
+  assert.deepEqual({ stages: world.executeStages(), signatures: signatures.length }, { stages: 0, signatures: 0 });
 });
 
 test('after loadKeyRecord returns, finalize zero-fills the key bytes itself on every path: a close during the key load, a close during the wallet build, a value that is not a Uint8Array, malformed key bytes, a refused state lock and a key loader that throws each leave no live journal and no live anchor, and every array the loader returned is all zeros', async (t) => {
