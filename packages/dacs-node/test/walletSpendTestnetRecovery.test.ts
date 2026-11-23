@@ -25,6 +25,8 @@ import { createDacsFixedPriceX402BuyerPaymentPolicyV1 } from "../src/fixedPriceX
 import { createDacsWalletSpendEvmReaderV1 } from "../src/walletSpendEvmReader.js";
 import {
   DACS_WALLET_SPEND_TESTNET_HOLD_EXPIRY_SECONDS,
+  DACS_WALLET_SPEND_TESTNET_MAXIMUM_ANCESTRY_DEPTH,
+  DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS,
   createDacsWalletSpendTestnetRecoveryV1,
 } from "../src/walletSpendTestnetRecovery.js";
 import {
@@ -68,6 +70,10 @@ const settledClaim = (amount = TESTNET_AMOUNT): WalletSpendSettlementObservation
 });
 const absentClaim: WalletSpendRecoveryObservationV1 = { disposition: "terminal-absent", evidenceHash: "e".repeat(64) };
 
+/** The fixture hold declaring another finality depth. */
+const withDepth = (finalityBlocks: number, item = RESERVATION): WalletSpendReservationV1 =>
+  ({ ...item, finality: { model: "confirmation-depth", finalityBlocks } });
+
 const SECOND_RAIL = "x402-exact-evm-second";
 
 /** The same job phase's hold on a second configured rail: another reservation id, the same nonce. */
@@ -110,6 +116,7 @@ function rule(
   state: WalletSpendStateV1 = stateWithHold(RESERVATION, VALID_BEFORE),
   searchFloor = SEARCH_FLOOR,
   readState: () => Promise<WalletSpendStateV1> = async () => state,
+  releaseFinalityBlocks = 1,
 ) {
   const reports: Record<string, string>[] = [];
   const recovery = createDacsWalletSpendTestnetRecoveryV1({
@@ -119,6 +126,7 @@ function rule(
     }),
     readState,
     report: (line) => reports.push(line),
+    releaseFinalityBlocks,
   });
   /** Checks as the core does: with the stored row's generation and expiry. */
   const check = (reservation: WalletSpendReservationV1, observation: WalletSpendRecoveryObservationV1) => {
@@ -405,7 +413,7 @@ describe("testnet wallet-spend recovery rule", () => {
       .resolves.toEqual(unproven);
 
     const deep = chainState(chainBlocks({ low: LATEST_NUMBER - 4_200, time }));
-    payment(deep, { block: blockAt(deep, LATEST_NUMBER - 4_097) });
+    payment(deep, { block: blockAt(deep, FINAL_NUMBER - 4_097) });
     const deepStub = await chainStub(deep);
     await expect(rule(deepStub).check(RESERVATION, settledClaim())).resolves.toEqual(unproven);
     expect(hashReads(deepStub)).toHaveLength(3);
@@ -483,6 +491,105 @@ describe("testnet wallet-spend recovery rule", () => {
     const paid = defaultChain();
     payment(paid);
     await expect(rule(await chainStub(paid)).raw.check(RESERVATION, settledClaim()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-paid" });
+  });
+
+  it("accepts a payment at depth 4,096 that lies more than 4,096 blocks below the latest block", async () => {
+    const deepest = withDepth(DACS_WALLET_SPEND_TESTNET_MAXIMUM_ANCESTRY_DEPTH);
+    const state = chainState(chainBlocks({ low: LATEST_NUMBER - 4_200, time: timeWithFinalAt(1_800_000_000) }));
+    const finalNumber = LATEST_NUMBER - DACS_WALLET_SPEND_TESTNET_MAXIMUM_ANCESTRY_DEPTH + 1;
+    payment(state, { block: blockAt(state, finalNumber - 10) });
+    const real = createDacsWalletSpendEvmReaderV1({
+      rpcUrl: (await chainStub(state)).url, policy: POLICY, authorizationSearchFromBlock: SEARCH_FLOOR,
+    });
+    const held = stateWithHold(deepest, VALID_BEFORE);
+    const recovery = createDacsWalletSpendTestnetRecoveryV1({
+      policy: POLICY,
+      reader: {
+        readBlock: (block) => real.readBlock(block),
+        // The walk's 4,100 parent links are read from memory; one HTTP read each takes too long here.
+        readBlockByHash: async (hash) => {
+          const block = state.byHash.get(hash);
+          if (block === undefined) throw new Error(`no block ${hash}`);
+          return block;
+        },
+        readAuthorizationState: (request) => real.readAuthorizationState(request),
+        readAuthorizationLogs: (request) => real.readAuthorizationLogs(request),
+        readReceipt: (hash) => real.readReceipt(hash),
+      },
+      readState: async () => held,
+      report: () => undefined,
+      releaseFinalityBlocks: 1,
+    });
+
+    await expect(recovery.check(deepest, settledClaim()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-paid" });
+  });
+
+  it("refuses a hold that declares a depth above 4,096 before any hold is taken", async () => {
+    const stub = await chainStub(defaultChain());
+    const recovery = rule(stub);
+    const memory = createInMemoryWalletSpendStateStore();
+    const wallet = createWalletSpendAuthorityV1(POLICY, {
+      store: { ...memory, lineageScope: () => "depth-lineage" },
+      readBalance: async () => "100000000",
+      authenticateRecovery: recovery.authenticateRecovery,
+      bindAuthorizationValidBefore: recovery.bindAuthorizationValidBefore,
+      now: () => 1_000_000,
+      owner: "testnet-authority",
+    });
+    const tooDeep = withDepth(5_000);
+
+    await expect(wallet.reserve(tooDeep, { authorizationWindowSeconds: 120 }))
+      .rejects.toThrow("wallet spend authorization validBefore is unavailable");
+    expect(stub.calls).toEqual([]);
+    expect((await wallet.inspect()).activeEffects).toBe(0);
+    await expect(recovery.check(tooDeep, settledClaim()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-hold-unbound" });
+    await expect(wallet.reserve(withDepth(DACS_WALLET_SPEND_TESTNET_MAXIMUM_ANCESTRY_DEPTH), {
+      authorizationWindowSeconds: 120,
+    })).resolves.toMatchObject({ status: "reserved" });
+  });
+
+  it("releases an unused hold only once the block the release depth below the latest block is past its expiry", async () => {
+    const releaseNumber = (latest: number) => latest - DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS + 1;
+    const time = (number: number) => VALID_BEFORE + (number - releaseNumber(LATEST_NUMBER)) * 2;
+    const state = chainState(chainBlocks({ high: LATEST_NUMBER + 1, time }));
+    state.latest = LATEST_NUMBER;
+    const recovery = rule(await chainStub(state), undefined, SEARCH_FLOOR, undefined,
+      DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS);
+
+    await expect(recovery.check(RESERVATION, absentClaim))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-authorization-still-valid" });
+    state.latest = LATEST_NUMBER + 1;
+    await expect(recovery.check(RESERVATION, absentClaim))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-expired-unused" });
+  });
+
+  it("releases a cancelled hold only once the cancel is the release depth below the latest block", async () => {
+    const state = chainState(chainBlocks({ high: LATEST_NUMBER + 1, time: timeWithFinalAt(1_800_000_000) }));
+    state.latest = LATEST_NUMBER;
+    payment(state, {
+      block: blockAt(state, LATEST_NUMBER - DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS + 2),
+      event: "canceled",
+      transfers: [],
+    });
+    const recovery = rule(await chainStub(state), stateWithHold(RESERVATION, 1_900_000_000), SEARCH_FLOOR, undefined,
+      DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS);
+
+    await expect(recovery.check(RESERVATION, absentClaim))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-authorization-still-valid" });
+    state.latest = LATEST_NUMBER + 1;
+    await expect(recovery.check(RESERVATION, absentClaim))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-cancelled" });
+  });
+
+  it("counts a payment at the hold's own depth when the release depth is deeper", async () => {
+    const state = defaultChain();
+    payment(state);
+
+    await expect(rule(await chainStub(state), undefined, SEARCH_FLOOR, undefined,
+      DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS).check(RESERVATION, settledClaim()))
       .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-paid" });
   });
 
@@ -568,6 +675,7 @@ describe("testnet wallet-spend recovery rule", () => {
         },
         readState: async () => current.state,
         report: () => undefined,
+        releaseFinalityBlocks: 1,
       });
 
       await expect(recovery.check(RESERVATION, absentClaim, { generation: 2, authorizationValidBefore: checkedExpiry }))
@@ -623,6 +731,7 @@ describe("testnet wallet-spend recovery rule inside the authority, with the hold
         return state;
       },
       report: () => undefined,
+      releaseFinalityBlocks: 1,
     });
     const expiries = [FIRST_EXPIRY, SECOND_EXPIRY];
     const clock = { value: 1_000_000 };
@@ -736,5 +845,65 @@ describe("testnet wallet-spend recovery rule inside the authority, with the hold
       harness.wallet.reconcile(ITEM, absentClaim),
     ]);
     expect([...results].sort()).toEqual(["existing", "released"]);
+  });
+});
+
+describe("testnet wallet-spend recovery rule inside the authority, across a short reorg", () => {
+  const LINEAGE = "reorg-lineage";
+  const LEASE_MS = 100_000;
+  /** A buyer that declares the shallowest finality: the latest block. */
+  const ITEM = withDepth(1, testnetReservation("job-reorg"));
+  /** Two seconds a block; of the first chain only the latest block is past the hold's expiry. */
+  const time = (number: number) => 1_800_000_000 + (number - LATEST_NUMBER) * 2;
+  const EXPIRY = time(LATEST_NUMBER) - 1;
+  /** The lowest of the nine blocks the reorg replaces. */
+  const REORG_FROM = LATEST_NUMBER - 8;
+
+  it("does not release a hold by time on a block a 9-block reorg replaces, and counts the payment the reorg brings", async () => {
+    const replacement = chainBlocks({ fork: "b", split: REORG_FROM, low: REORG_FROM, time });
+    const chain = chainState(chainBlocks({ time }), replacement);
+    const stub = await chainStub(chain);
+    const memory = createInMemoryWalletSpendStateStore();
+    const recovery = createDacsWalletSpendTestnetRecoveryV1({
+      policy: POLICY,
+      reader: createDacsWalletSpendEvmReaderV1({
+        rpcUrl: stub.url, policy: POLICY, authorizationSearchFromBlock: SEARCH_FLOOR,
+      }),
+      async readState() {
+        const state = await memory.read?.(LINEAGE);
+        if (state === undefined || state === null) throw new Error("no state yet");
+        return state;
+      },
+      report: () => undefined,
+      releaseFinalityBlocks: DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS,
+    });
+    const clock = { value: 1_000_000 };
+    const wallet = createWalletSpendAuthorityV1(POLICY, {
+      store: { ...memory, lineageScope: () => LINEAGE },
+      readBalance: async () => "100000000",
+      authenticateRecovery: recovery.authenticateRecovery,
+      bindAuthorizationValidBefore: async () => EXPIRY,
+      now: () => clock.value,
+      owner: "testnet-authority",
+      leaseDurationMs: LEASE_MS,
+    });
+    const claim = await wallet.reserve(ITEM, { authorizationWindowSeconds: 120 });
+    if (claim.status !== "reserved") throw new Error(`expected a hold, got ${claim.status}`);
+    await claim.permit.beginEffect();
+    clock.value += LEASE_MS + 1;
+
+    await expect(wallet.reconcile(ITEM, absentClaim)).rejects.toThrow("wallet spend recovery authentication failed");
+
+    for (const block of replacement) chain.byNumber.set(block.number, block);
+    recordAuthorization(chain, {
+      block: blockIn(replacement, REORG_FROM),
+      nonce: nonceOf(ITEM.jobId, ITEM.phaseIndex),
+      transfers: [{ payee: TESTNET_PAYEE, amount: TESTNET_AMOUNT }],
+    });
+
+    await expect(wallet.reconcile(ITEM, settledClaim())).resolves.toBe("settled");
+    const view = await wallet.inspect();
+    expect(view.activeEffects).toBe(0);
+    expect(view.assets[0]).toMatchObject({ cumulativeSettledDebit: TESTNET_AMOUNT });
   });
 });

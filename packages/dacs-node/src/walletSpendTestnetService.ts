@@ -24,7 +24,10 @@ import {
   createDacsWalletSpendTestnetDemRecoveryV1,
   openDacsWalletSpendDemEvidenceStoreV1,
 } from "./walletSpendTestnetDemRecovery.js";
-import { createDacsWalletSpendTestnetRecoveryV1 } from "./walletSpendTestnetRecovery.js";
+import {
+  DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS,
+  createDacsWalletSpendTestnetRecoveryV1,
+} from "./walletSpendTestnetRecovery.js";
 import {
   DacsWalletSpendTestnetAuthorityError,
   loadDacsWalletSpendTestnetAuthoritySettingsV1,
@@ -207,10 +210,14 @@ const reportLine = (line: Readonly<Record<string, string>>): void => {
   process.stderr.write(`${JSON.stringify(line)}\n`);
 };
 
-/** The x402 lane: Base Sepolia reads and its chain rule, which binds each hold's validBefore. */
+/**
+ * The x402 lane: Base Sepolia reads and its chain rule, which binds each hold's validBefore and
+ * releases a hold only on a cancel or an expiry at the service's release depth.
+ */
 function x402Lane(stores: Lane["stores"], policy: Lane["policy"], reader: Readonly<DacsWalletSpendEvmReaderV1>): Lane {
   const recovery = createDacsWalletSpendTestnetRecoveryV1({
     policy, reader, readState: headStateReader(stores), report: reportLine,
+    releaseFinalityBlocks: DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS,
   });
   return {
     stores,

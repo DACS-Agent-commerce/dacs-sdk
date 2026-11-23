@@ -195,9 +195,12 @@ runtime user that owns the secret files:
    When it records a hold, it sets the
    authorization's `validBefore` from the chain's time, at most 24 hours later;
    the generated buyer asks for 120 seconds. An interrupted purchase keeps its
-   hold until the chain shows the authorization cancelled, or the chain's time
-   is past that `validBefore` with the authorization unused, and the 5-minute
-   hold lease has ended; the buyer's next request then releases it.
+   hold until a block 64 blocks deep (about two minutes) shows the
+   authorization cancelled, or has a time past that `validBefore` with the
+   authorization unused, and the 5-minute hold lease has ended; the buyer's
+   next request then releases it. The buyer's declared finality cannot lower
+   that depth, so a short reorg cannot undo a release. A hold that declares a
+   finality deeper than 4,096 blocks is refused before it is recorded.
    The DEM lane counts a payment only when the chain shows that transfer
    executed from the policy wallet to the agreed payee for the exact amount,
    with the fee the chain record shows, and it keeps one claim per transfer in
