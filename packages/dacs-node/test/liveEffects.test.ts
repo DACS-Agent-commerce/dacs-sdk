@@ -258,23 +258,13 @@ describe("durable live irreversible-effect track", () => {
 
     async function completedTrack(
       reauthenticate: DacsLiveEffectAdapterV1<EffectInput, EffectResult>["reauthenticate"],
-      projectResult: (result: Readonly<EffectResult>) => Readonly<{
-        reference: string;
-        authenticationHash?: string;
-      }> = (result) => result,
     ) {
       const opened = await database();
       const execute = vi.fn(async () => COMPLETED);
-      const operation = createDacsLiveEffectTrackV1({
-        database: opened,
-        kind: "payment",
-        role: "buyer",
-        track: "payment",
-        workerId: "effect-worker",
-        retryDelayMs: 1,
-        buildInput: () => ({ jobId: JOB_ID, amount: "1" }),
-        adapter: { execute, reconcile: vi.fn(), reauthenticate },
-        projectResult,
+      const operation = track(opened, {
+        execute,
+        reconcile: vi.fn(),
+        reauthenticate,
       });
       await expect(operation(operationInput())).resolves.toMatchObject({
         status: "final",
@@ -307,18 +297,13 @@ describe("durable live irreversible-effect track", () => {
       const reauthenticate = vi.fn()
         .mockResolvedValueOnce({
           status: "completed" as const,
-          result: { ...COMPLETED, reference: "evm:payment:malformed" },
+          result: { ...COMPLETED, reference: "" },
         })
         .mockResolvedValueOnce({
           status: "completed" as const,
           result: COMPLETED,
         });
-      const { opened, execute, operation } = await completedTrack(
-        reauthenticate,
-        (result) => result.reference === "evm:payment:malformed"
-          ? { reference: "" }
-          : result,
-      );
+      const { opened, execute, operation } = await completedTrack(reauthenticate);
       const stored = opened.loadEffect("payment", EFFECT_ID);
       execute.mockClear();
 
