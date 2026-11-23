@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF assert exact wrong-chain broadcast refusal",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+      "before": "4b085583830a67d1c8a3c8ad2b3f33f0c840bba0",
+      "after": "c218b5936fcd0f6ce07cdb134267c773dfb7a1bb"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-0c5330ee0605.json",
+    "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs"
+  ]
+}
