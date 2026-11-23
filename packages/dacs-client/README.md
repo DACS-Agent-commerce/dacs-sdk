@@ -258,7 +258,7 @@ A verified `seller_stopped` answer (class `suspended`), a re-hold and a host sto
 
 ## Factory integration
 
-Supply application inputs through host, including a synchronous operations-store factory. On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.
+Supply application inputs through host, including a synchronous operations-store factory; the package ships one, with the approval challenges and a local account (see Shipped host adapters). On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.
 
 ```js
 import { DatabaseSync } from 'node:sqlite';
@@ -293,6 +293,28 @@ const diagnostic = purchases.status(host.accountId, host.operation.id, host.toke
 ```
 
 The synchronous `store.transaction` commits both writes or rolls both back on an error. Nested synchronous calls use savepoints. Keep transaction control, database configuration and schema changes outside callbacks; asynchronous callbacks and results refuse. Call diagnostics outside the transaction. This example records host bookkeeping and grants no purchase or settlement authority.
+
+### Shipped host adapters
+
+`createPurchaseOperations`, `createPurchaseChallenges` and `createLocalPurchaseAccount` build `ops`, `challenges` and `accounts` on the same database and store as the factories. They write only inside the store's transaction.
+
+```js
+const ops = createPurchaseOperations({
+  db, store, handoffSecret: host.handoffSecret, handoffTtlMs: host.handoffTtlMs,
+});
+const accounts = createLocalPurchaseAccount({ db, store, wallet: host.walletAddress });
+const challenges = createPurchaseChallenges({
+  db, store, origin: host.origin, purpose: 'approve-purchase', ttlMs: 300_000,
+});
+// Pass ops, accounts and challenges to both factories, and
+// purposes: { APPROVE_PURCHASE: 'approve-purchase' } to createPurchaseService.
+```
+
+- `handoffSecret` (at least 32 characters) and `handoffTtlMs` are required and have no default. A purchase's handoff token is an HMAC of its id under the secret; it is never stored, and the handoff lifetime is never extended. Keep the secret across restarts: with another secret, earlier purchases can no longer be read through their tokens. `isPurchaseOperationId` is true exactly for the ids its `createIdempotent` mints.
+- A host that writes its own `ops` keeps what the shipped one does: one operation per account, key and request (`idempotency_conflict` for another request), `job_id` and `handoff_expires_at` written in the same insert, the saved status compared in `transition`, and only a hash of the handoff token stored.
+- The account id is derived from the wallet: `local:` followed by the normalized address, one `accounts` row per wallet. A saved row for that wallet that does not match refuses `local_account_mismatch`.
+- `issue` needs an account id (`challenge_account_required`). Every challenge is signed under the one `origin` the host passes at construction; an `origin` given to `issue` refuses `challenge_origin_not_accepted`. `purchaseApprovalChallengeText` rebuilds the signed text from the fields `issue` returns and that origin.
+- `verifyAndConsume` reads, checks and consumes a challenge in one store transaction, so a challenge is consumed at most once, and only for a signature by its own wallet.
 
 ### Database admission
 
@@ -345,7 +367,7 @@ The fields marked included are required when status is included; other statuses 
 
 ### Operations
 
-`ops` is synchronous, returns fresh hydrated operations, preserves original errors and uses the same database connection. Diagnostics use only `get`, `getByHandoff` and `history`. The additional `transition` method is used only by `watch.observe`; it must compare the saved status and atomically update state and append its event, refusing a stale status.
+`ops` is synchronous, returns fresh hydrated operations, preserves original errors and uses the same database connection. Diagnostics use only `get`, `getByHandoff` and `history`. The additional `transition` method is used only by `watch.observe`; it must compare the saved status and atomically update state and append its event, refusing a stale status. The package ships one (see Shipped host adapters).
 
 ### Diagnostics
 
