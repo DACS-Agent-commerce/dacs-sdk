@@ -76,6 +76,7 @@ export async function vetHostProcess(t, f, anchor, writes, { worker = WORKER, st
   const started = deferred(), entered = deferred();
   entered.promise.catch(() => {});
   let startupSettled = false;
+  let disconnectGrace;
   const failBeforeStart = (error) => {
     if (startupSettled) return;
     startupSettled = true;
@@ -89,6 +90,7 @@ export async function vetHostProcess(t, f, anchor, writes, { worker = WORKER, st
     } else if (message.type === 'started') {
       if (!startupSettled) {
         startupSettled = true;
+        clearTimeout(disconnectGrace);
         started.resolve(message);
       }
     }
@@ -100,8 +102,21 @@ export async function vetHostProcess(t, f, anchor, writes, { worker = WORKER, st
   });
   child.on('disconnect', () => {
     const disconnected = new Error(`TEST the host process disconnected before reporting startup: ${stderr}`);
-    failBeforeStart(disconnected);
-    entered.reject(disconnected);
+    disconnectGrace = setTimeout(() => {
+      if (!startupSettled && child.exitCode === null && child.signalCode === null) {
+        failBeforeStart(disconnected);
+        entered.reject(disconnected);
+      }
+    }, 25);
+  });
+  child.once('exit', (code, signal) => {
+    clearTimeout(disconnectGrace);
+    const ended = new Error(`TEST the host process ended (${signal ?? code}): ${stderr}`);
+    failBeforeStart(ended);
+    entered.reject(ended);
+    // A descendant can inherit stderr and keep the pipe open after this child
+    // exits. Stop reading its output so teardown can wait for the direct child.
+    child.stderr.destroy();
   });
   child.on('close', (code, signal) => {
     const ended = new Error(`TEST the host process ended (${signal ?? code}): ${stderr}`);
