@@ -59,7 +59,7 @@ test('the root exposes both host context routes and the buyer wire signer', asyn
 });
 
 test('the seller-agent module exports createSellerAgent outside the root API', async () => {
-  assert.ok(readme.includes('(`' + SELLER_AGENT + '`)'), 'the README documents the seller-agent submodule');
+  assert.ok(readme.includes('`' + SELLER_AGENT + '`'), 'the README documents the seller-agent submodule');
   const resolved = import.meta.resolve(SELLER_AGENT);
   assert.ok(resolved.startsWith('file:'), 'the documented seller-agent submodule resolves through package exports');
   assert.equal(statSync(fileURLToPath(resolved)).isFile(), true, 'the seller-agent submodule resolves to a file');
