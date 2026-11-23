@@ -9,10 +9,8 @@ import {
   type DacsWalletSpendFileAuthorityStoresV1,
 } from "./walletSpendFileAuthorityStores.js";
 import { createDacsWalletSpendContinuityAuthorityV2 } from "./walletSpendPostgres.js";
-import {
-  createDacsWalletSpendAuthorityServiceV2,
-  createInMemoryDacsWalletSpendRemoteOperationStoreV1,
-} from "./walletSpendRemote.js";
+import { createDacsWalletSpendAuthorityServiceV2 } from "./walletSpendRemote.js";
+import { createRetainingDacsWalletSpendOperationLogV1 } from "./walletSpendTestnetOperationLog.js";
 import { createDacsWalletSpendTestnetRecoveryV1 } from "./walletSpendTestnetRecovery.js";
 import {
   DacsWalletSpendTestnetAuthorityError,
@@ -38,8 +36,8 @@ type Settings = Readonly<DacsWalletSpendTestnetAuthoritySettingsV1>;
 
 const BUYER_ROLE = "buyer";
 const OWNER = "dacs-wallet-spend-testnet-authority";
-/** One stuck hold retried every 5 s until its bound validBefore (at most a day) passes fits with room. */
-const MAXIMUM_OPERATIONS_PER_ROLE = 50_000;
+/** Operations the log keeps; once full, the oldest completed one is dropped for a new claim. */
+const RETAINED_OPERATIONS = 50_000;
 const HEADERS_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const STOP_GRACE_MS = 5_000;
@@ -208,10 +206,7 @@ function composeHandler({ settings, tokenDigest, stores, reader }: Readonly<{
         },
       });
     },
-    operations: createInMemoryDacsWalletSpendRemoteOperationStoreV1({
-      maximumOperationsPerRole: MAXIMUM_OPERATIONS_PER_ROLE,
-      maximumOperations: MAXIMUM_OPERATIONS_PER_ROLE + 1,
-    }),
+    operations: createRetainingDacsWalletSpendOperationLogV1(RETAINED_OPERATIONS),
   });
 }
 
