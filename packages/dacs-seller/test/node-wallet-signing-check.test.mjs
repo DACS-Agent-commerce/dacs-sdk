@@ -182,7 +182,8 @@ test('before asking approval, the composed wallet refuses a second argument that
 async function listingAnchor(world) {
   const { sourceCapability } = world.wallet, signer = await fixtureSigner();
   const anchor = createDevnetDemoArtifactAnchor({ sourceCapability, binding: world.admission.binding, observeIdentity: productionObserveIdentity(world),
-    journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory, network: sourceCapability.pins.network, signer: { claim: signer.claim } });
+    journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory, network: sourceCapability.pins.network, signer: { claim: signer.claim },
+    runCreate: () => assert.fail('no CREATE reaches runCreate here') });
   return { anchor, listing: fixtureListing(signer, { now: T0 }) };
 }
 
@@ -202,7 +203,8 @@ test('an artifact anchor over the composed wallet takes a Listing publish with a
   const signatures = await spyTransactionSignatures(t.mock);
   const world = await loggedWorld(t);
   const { anchor, listing } = await listingAnchor(world);
-  const publish = extra => () => anchor.publish({ logicalAddress: LISTING_ADDRESS, artifact: listing, artifactKind: 'Listing', ...extra });
+  const publish = extra => () => anchor.publish({ logicalAddress: LISTING_ADDRESS, artifact: listing, artifactKind: 'Listing', operationClass: 'job-create',
+    currentAuthorization: () => true, ...extra });
   // The one authority read is the transport facade's admission of withWalletNonceLock, an active member.
   await assertPublishRefused(world, signatures, publish({ authorizeSigning: () => true }), 'deployment_unqualified', 1);
   await assertPublishRefused(world, signatures, publish({}), 'deployment_unqualified', 1);
@@ -251,7 +253,8 @@ test('an artifact anchor over the composed wallet refuses a Listing publish whos
   const world = await loggedWorld(t);
   const { anchor, listing } = await listingAnchor(world);
   for (const authorizeSigning of ['TEST', {}]) {
-    await assertPublishRefused(world, signatures, () => anchor.publish({ logicalAddress: LISTING_ADDRESS, artifact: listing, artifactKind: 'Listing', authorizeSigning }), 'not-authorized');
+    await assertPublishRefused(world, signatures, () => anchor.publish({ logicalAddress: LISTING_ADDRESS, artifact: listing, artifactKind: 'Listing', authorizeSigning,
+      operationClass: 'job-create', currentAuthorization: () => true }), 'not-authorized');
   }
 });
 

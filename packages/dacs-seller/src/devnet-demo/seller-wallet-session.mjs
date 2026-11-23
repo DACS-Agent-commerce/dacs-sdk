@@ -12,6 +12,7 @@ import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { OperationError } from '../operations.mjs';
 import { SellerKeyError } from '../seller-key.mjs';
 import { createDevnetDemoArtifactAnchor } from './artifact-anchor.mjs';
+import { createSellerCreatePass } from './create-pass.mjs';
 import { createSellerNodeWallet } from './seller-node-wallet.mjs';
 
 const OPTIONS = Object.freeze(['endpoint', 'transportAuthority', 'fetchImpl', 'signer', 'loadKeyRecord', 'approve', 'approvalMode', 'journalMode', 'publications',
@@ -44,9 +45,11 @@ function checkOptions(options) {
 }
 
 // The one place the kit builds the artifact anchor over a finalized session, with the host's binding and connection reader.
-function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, binding, observeIdentity }) {
+// Its wallet CREATEs and resends run through runCreate, over the host's effect boundary and this session.
+function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, binding, observeIdentity, effectBoundary, stopped, feeCeilingOs }) {
+  const { runCreate } = createSellerCreatePass({ effectBoundary, session, stopped, feeCeilingOs, clock });
   return createDevnetDemoArtifactAnchor({ sourceCapability: session.transport, journal: session.artifactJournal, walletFactory: session.walletFactory,
-    network: session.transport.pins.network, signer, buyerAccess, now: () => clock.now(), vetMode: VET_MODE, binding, observeIdentity });
+    network: session.transport.pins.network, signer, buyerAccess, now: () => clock.now(), vetMode: VET_MODE, binding, observeIdentity, runCreate });
 }
 
 /**
@@ -146,7 +149,8 @@ export function createSellerWalletSession(options) {
       const wallet = await buildWallet({ binding, stopped, feeCeilingOs, stateLock, dataDirectory, keyRecord });
       try {
         const finalized = sessionOver(wallet);
-        anchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity });
+        anchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, effectBoundary, stopped,
+          feeCeilingOs });
         session = finalized;
         return finalized;
       } catch (error) {

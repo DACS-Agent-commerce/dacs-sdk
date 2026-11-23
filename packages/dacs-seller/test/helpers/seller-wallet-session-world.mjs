@@ -55,11 +55,13 @@ export async function portOptions(node, loadKeyRecord, overrides = {}) {
  * Seams: `keyBytes()` is what `loadKeyRecord` returns (or throws); with `gateKeyLoad` it waits for `world.releaseKeyLoad()` and
  * `world.keyLoadStarted` resolves when it is called; with `closeInsideWalletBuild` the lock's `held()` closes the port on its first
  * call after `loadKeyRecord` returned, then answers the real value; `nodeScript(row)` answers the node's requests after the binding;
- * `createPort(options)` builds the port (`createSellerWalletSession` by default).
+ * `createPort(options)` builds the port (`createSellerWalletSession` by default). With `countAuthority`, the stages are opened over
+ * a frozen delegate of the port whose `connectionAuthority` adds one to `world.authorityReads` on each call, so every authority
+ * read through the stages' binding is counted.
  * `t.after` closes the stages and releases the lock.
  */
 export async function walletSessionWorld(t, { directory = privateDataDirectory(t), node = replayNode(), keyBytes = () => keyRecordBytes(), gateKeyLoad = false,
-  closeInsideWalletBuild = false, nodeScript = null, options = {}, createPort = createSellerWalletSession } = {}) {
+  closeInsideWalletBuild = false, nodeScript = null, options = {}, createPort = createSellerWalletSession, countAuthority = false } = {}) {
   setPurchaseAdmission('testnet-tp1');
   const world = { node, directory, returnedKeys: [], keyLoads: 0 };
   let keyReturned = false, closedInBuild = false, started;
@@ -77,7 +79,11 @@ export async function walletSessionWorld(t, { directory = privateDataDirectory(t
   world.options = await portOptions(node, loadKeyRecord, options);
   world.signer = world.options.signer;
   world.port = createPort(world.options);
-  world.stages = await openSellerStages({ walletSession: world.port, participantImplementations: enrollment(), sellerClaim: world.signer.claim, listingPin: LISTING_PIN,
+  world.authorityReads = 0;
+  const { authority, connectionAuthority, artifactAnchor, finalize, close } = world.port;
+  const walletSession = !countAuthority ? world.port : Object.freeze({ authority, artifactAnchor, finalize, close,
+    connectionAuthority: (...args) => { world.authorityReads += 1; return connectionAuthority(...args); } });
+  world.stages = await openSellerStages({ walletSession, participantImplementations: enrollment(), sellerClaim: world.signer.claim, listingPin: LISTING_PIN,
     retainedJob: () => null, maxConcurrent: 1 });
   if (nodeScript) node.reply = nodeScript;
   const lock = await acquireSellerStateLock(directory);
