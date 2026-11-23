@@ -52,8 +52,17 @@ export const CORE_FILES = Object.freeze([
 export const isCorePath = path => CORE_FILES.includes(path) || path.startsWith('evidence/') || path === 'records/.gitkeep';
 // Sources, tests, the README, the manifest, the notes and scripts outside the core.
 const RECORD_NAMED = /^(?:src\/|test\/|scripts\/|README\.md$|package\.json$|DELTA-NOTES\.md$)/;
-/** True when the package-relative `path` holds the blob its records name (core paths never do). */
+/**
+ * True when records may name the package-relative `path` (core paths never
+ * are). Each such path but UNRECORDED_PATH holds the blob its records name.
+ */
 export const isRecordNamed = path => !isCorePath(path) && RECORD_NAMED.test(path);
+// The package README changes with most features, so a change to it needs no
+// record; Git history keeps who changed it. Records and the anchor may still
+// name it; those entries are checked for shape only, never against the README.
+export const UNRECORDED_PATH = 'README.md';
+/** True for the one package-relative path whose changes need no record. */
+export const isUnrecorded = path => path === UNRECORDED_PATH;
 /** True for a record-named path outside src/ and test/: the anchor holds its blob before any record. */
 export const isAnchored = path => isRecordNamed(path) && !/^(?:src|test)\//.test(path);
 /** True for a package-relative path under records/ that is a record file, not a core pin. */
@@ -104,11 +113,11 @@ function commitFileFailures(name, record) {
   if (!Array.isArray(list) || list.length === 0 || !list.every(path => typeof path === 'string' && path !== '')) return ['commitFiles must list the paths the commit changes'];
   const failures = isSortedUnique(list) ? [] : ['commitFiles must be sorted and unique'];
   for (const path of list) if (!isCanonicalPath(path)) failures.push(notCanonical(path));
-  // A commit-only record stands for a commit that changes only core or record files.
+  // A commit-only record stands for a commit that changes only core or record files, and perhaps the README.
   if (record.kind === 'commit-only') for (const path of list) {
     const rel = path.startsWith(PACKAGE_PREFIX) ? path.slice(PACKAGE_PREFIX.length) : null;
     if (rel === 'DELTA-MAP.md' && MAP_COMMIT_ONLY_RECORDS.includes(name)) continue;
-    if (rel !== null && !isCorePath(rel) && !rel.startsWith('records/')) failures.push(`a commit-only record's commit changes ${path}`);
+    if (rel !== null && !isCorePath(rel) && !rel.startsWith('records/') && !isUnrecorded(rel)) failures.push(`a commit-only record's commit changes ${path}`);
   }
   return failures;
 }

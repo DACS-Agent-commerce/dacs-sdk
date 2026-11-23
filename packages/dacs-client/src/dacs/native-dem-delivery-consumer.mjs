@@ -1,16 +1,19 @@
 // Explicit application capability for native DEM deliverable publication and
 // public readback. It is deliberately opaque/default-absent: copying its
 // descriptor or setting a Boolean never grants a seller write or buyer proof.
+import { authorityLabel } from './tp1-authority-token.mjs';
+
 export const NATIVE_DEM_DELIVERY_SOURCE = 'dacs-chatgpt-plugin/native-dem-delivery/v1';
 
 const capabilities = new WeakMap();
+const isFixtureLabel = (value) => typeof value === 'string' && value.startsWith('TEST-');
 
-export function createNativeDemDeliveryCapability({ authority, submit, reconcile, read, verifyReceipt }) {
-  if (typeof authority !== 'string' || !authority.startsWith('TEST-') ||
-      [submit,reconcile,read,verifyReceipt].some((fn)=>typeof fn!=='function')) {
-    throw new TypeError('native DEM delivery requires explicit TEST authority and complete seller/buyer operations');
+export function createNativeDemDeliveryCapability({ authority, binding, submit, reconcile, read, verifyReceipt }) {
+  const label = authorityLabel(authority, binding, isFixtureLabel, 'native DEM delivery requires a TEST authority or an authority token');
+  if ([submit,reconcile,read,verifyReceipt].some((fn)=>typeof fn!=='function')) {
+    throw new TypeError('native DEM delivery requires complete seller/buyer operations');
   }
-  const capability=Object.freeze({source:NATIVE_DEM_DELIVERY_SOURCE,authority});
+  const capability=Object.freeze({source:NATIVE_DEM_DELIVERY_SOURCE,authority:label});
   capabilities.set(capability,{submit,reconcile,read,verifyReceipt});
   return capability;
 }

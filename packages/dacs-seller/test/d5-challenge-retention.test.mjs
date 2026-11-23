@@ -22,7 +22,7 @@ function world(t, options = {}) {
   // hostStart: what the host does with the lock held, right after it opens the store.
   const reopen = ({ hostStart = false, ...changes } = {}) => {
     store?.close(); store = createSellerTransportStore({ ...config, ...changes });
-    if (hostStart) { store.challenges.closeLostValidations(); store.recoverLostContextReservations(); }
+    if (hostStart) store.challenges.closeLostValidations();
     return store;
   };
   reopen(); t.after(() => store.close());

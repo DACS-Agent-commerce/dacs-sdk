@@ -28,7 +28,8 @@ import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.
 import { finalizedCommitmentReader } from './finalized-commitment-reader.mjs';
 import { createNativeRetrySeam } from './native-retry-seam.mjs';
 import { railSteward } from './rail-authority-fixture.mjs';
-import { testNetwork, FIXTURE_PROFILE } from './wire-authority-fixture.mjs';
+import { hostAuthority } from './kit-wallet-session.mjs';
+import { FIXTURE_PROFILE } from './wire-authority-fixture.mjs';
 import { createSellerDurableState } from '../../src/dacs/seller-durable-state.mjs';
 import { createDemDeliveryContext } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { KIT_TP1_VET_MODE, startSellerHost } from '../../src/host.mjs';
@@ -98,7 +99,9 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   // The wire times an admission with `performance.now`, which moves forward with the world's clock.
   const monotonicNow = performance.now.bind(performance);
   mock.method(performance, 'now', () => monotonicNow() + advancedMs);
-  t.after(() => mock.restoreAll());
+  // A mock that stays installed or listed keeps every call it records, and with it each caller's stack. So the world forgets
+  // the tracker's mocks and hands back the process clock, also when another world of the same test mocked it on top of this one.
+  t.after(() => { mock.reset(); delete performance.now; });
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: clock });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, T0 - 1000), displayName: 'Native payment seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'native-payment-wire', listingVersion: 1, title: 'Native payment report', description: 'A paid report delivered through the wire handler.',
@@ -271,7 +274,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: node.rpcUrl, fetchImpl: node.fetchImpl, anchorEvidence: wallet.anchorEvidence, now: clock }),
     reconcilePaymentEvidence: wallet.reconcilePaymentEvidence, demDeliveryContext,
     nativeDemDelivery: createDevnetDemoDeliveryCapability({ authority: AUTHORITY, anchor: { ...artifactAnchor, authority: AUTHORITY }, deliveryEvidenceEnabled: true }),
-    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), listener: proxyListener({ publicOrigin: listing.seller.publicEndpoint }), now: clock, artifactAnchor, dataDirectory });
+    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, ...hostAuthority(), listener: proxyListener({ publicOrigin: listing.seller.publicEndpoint }), now: clock, artifactAnchor, dataDirectory });
   const start = async () => { const running = await startSellerHost(capabilities()); hosts.push(running); return running; };
   let host = await start();
   // The commitment the buyer attaches to a request: the seller's CREATE as the node and its finality reader show it.

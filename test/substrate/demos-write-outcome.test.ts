@@ -78,6 +78,11 @@ interface NodeScript {
   accountNonce?: number;
   /** After this many answers, a node call never answers, as one cut off by the deadline. */
   hangAfter?: { getAddressNonce?: number; getLastBlockNumber?: number };
+  /**
+   * The clock passes the deadline while this status read (counted from 1) is
+   * in flight: the read goes out before the deadline and answers after it.
+   */
+  deadlineDuringStatusRead?: number;
 }
 
 function answerAt<T>(answers: readonly T[], index: number): T | undefined {
@@ -98,11 +103,20 @@ function scriptedAdapter(script: NodeScript) {
   let lastBlockReads = 0;
   const hangs = (name: "getAddressNonce" | "getLastBlockNumber", answered: number) =>
     answered >= (script.hangAfter?.[name] ?? Number.POSITIVE_INFINITY);
+  const realNow = performance.now.bind(performance);
+  let clockOffset = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => realNow() + clockOffset);
   vi.spyOn(adapter.raw, "getAddress").mockReturnValue(SENDER);
   vi.spyOn(adapter.raw, "nodeCall").mockImplementation(async (message: unknown) => {
     reads.push(String(message));
     if (message === "getTransactionStatus") {
-      return answerAt(script.reads, statusReads++)?.getTransactionStatus;
+      const answer = answerAt(script.reads, statusReads++)?.getTransactionStatus;
+      if (statusReads === script.deadlineDuringStatusRead) {
+        // Let the caller start its wait for this read, then move the clock.
+        await Promise.resolve();
+        clockOffset += 10 * RECONCILE_MS;
+      }
+      return answer;
     }
     if (message === "getAddressNonce") {
       if (hangs(message, nonceReads)) return new Promise<never>(() => undefined);
@@ -638,6 +652,29 @@ describe("Demos write outcome from recorded testnet answers", () => {
 
     const error = expectUnresolved(await reconcile(adapter, lease), write);
     expect(error.message).toContain(`last block ${rounds.B36.getLastBlockNumber}`);
+    expect(broadcast).not.toHaveBeenCalled();
+    await lease.release();
+  });
+
+  it("a deadline between a round's status read and its nonce read, after a nonce-read transport failure, ends demos-write-unresolved", async () => {
+    const { write, rounds } = pending;
+    const { adapter, reads, broadcast } = scriptedAdapter({
+      reads: [pending.neverSeen.B1],
+      nonces: [await sdkTransportFailure()],
+      lastBlock: rounds.B36.getLastBlockNumber,
+      deadlineDuringStatusRead: 2,
+    });
+    const lease = await journalledTransfer(write);
+
+    const error = expectUnresolved(await reconcile(adapter, lease), write);
+    expect(error.message).toContain("account nonce could not be read");
+    expect(error.message).toContain(`last block ${rounds.B36.getLastBlockNumber}`);
+    expect(error.message).toContain("only transport failures: 1;");
+    // The second round read the hash, then the deadline stopped it before
+    // its nonce read went out.
+    expect(reads.filter((read) => read === "getTransactionStatus")).toHaveLength(2);
+    expect(reads.filter((read) => read === "getAddressNonce")).toHaveLength(1);
+    expect(stages(lease)).toEqual(["broadcast-intent"]);
     expect(broadcast).not.toHaveBeenCalled();
     await lease.release();
   });

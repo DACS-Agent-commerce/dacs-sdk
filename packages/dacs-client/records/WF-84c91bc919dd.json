@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client entry point after the current base records",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "4fcb5a9e56612112c3cd1f7ccc7db8dfd686aa41",
+      "after": "4fcb5a9e56612112c3cd1f7ccc7db8dfd686aa41"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-84c91bc919dd.json"
+  ],
+  "note": "The merged file combines the current base with the stopped service seam. This resolution chooses the unchanged merged blob after both record histories meet."
+}

@@ -17,7 +17,7 @@ const FLOW_PATHS = { agreement: PATHS.proposals, commit: PATHS.commitments, sign
  * verification, SQLite saves and the note reducers. The coordinator and the authenticated source readbacks are
  * supplied at their existing seams.
  */
-export async function sellerFlow(t, kind, beforeRun = () => {}, configOverrides = {}) {
+export async function sellerFlow(t, kind, beforeRun = () => {}, configOverrides = {}, { stopped } = {}) {
   const s = await storedWorld(t, { paid: true, configureTerms(terms, listing) {
     const unsigned = { ...listing };
     delete unsigned.signature;
@@ -26,10 +26,10 @@ export async function sellerFlow(t, kind, beforeRun = () => {}, configOverrides 
     terms.seller.payee = terms.seller.claim.slice('did:demos:agent:'.length);
     if (kind === 'commit') delete terms.protocol.sellerAgreementProjection;
   } });
-  return run(s, kind, beforeRun, configOverrides);
+  return run(s, kind, beforeRun, configOverrides, stopped);
 }
 
-async function run(s, kind, beforeRun, configOverrides) {
+async function run(s, kind, beforeRun, configOverrides, stopped) {
   const { p, w, made } = s, jobId = w.job.jobId, address = fixedPriceAgreementLogicalAddress(jobId);
   const agreement = { artifact: made.agreement, hash: made.agreementHash,
     ref: { anchor: { kind: 'storage-program', locator: address }, contentHash: made.agreementHash },
@@ -64,7 +64,7 @@ async function run(s, kind, beforeRun, configOverrides) {
     };
   }
   const service = createProtocolPurchases({ db: p.db, ops: p.ops, dacsProtocol: config, admission: w.admission,
-    coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, store: createSqlitePurchaseStore(), now: () => w.state.time });
+    coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, store: createSqlitePurchaseStore(), now: () => w.state.time, stopped });
   await beforeRun(s, state, service);
   let result;
   if (kind === 'payment') {

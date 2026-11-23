@@ -21,7 +21,7 @@ const unavailable = (message, options) => new OperationError('eb_history_unavail
 const persistFailed = (cause) => new OperationError('eb_persist_failed', 'the dispatch record was not persisted', undefined, { cause });
 
 function checkedRecord(record) {
-  if (!isPlainObject(record) || !isArtifact(record) || !isText(record.passId) || !isText(record.state)) {
+  if (!isPlainObject(record) || Object.hasOwn(record, 'seq') || !isArtifact(record) || !isText(record.passId) || !isText(record.state)) {
     throw new TypeError('a history record is an object with a lane, a 64-hex artifactHash, a passId and a state');
   }
   return record;
@@ -44,12 +44,14 @@ function storedRecord(key, value, lane) {
 /**
  * The dispatch history over an explicit durable wallet journal.
  *
- * `append(record)` takes `{ lane, artifactHash, passId, state, ...fields }` and
- * resolves `{ status: 'appended' }`, or `{ status: 'existing' }` when the same
+ * `append(record, { owner } = {})` takes a record with
+ * `{ lane, artifactHash, passId, state, ...fields }`. It reserves `seq` for journal ordering (a record carrying it throws TypeError),
+ * and resolves `{ status: 'appended' }`, or `{ status: 'existing' }` when the same
  * pass and state already hold a deep-equal record (a retry, also a concurrent
  * one; it grants no send). It runs in the frame that already owns `record.lane`
- * and acquires the lane once when none does. It rejects `eb_persist_failed` with
- * the real cause (`eb_history_conflict` for a different record of that pass and
+ * or reuses the explicit lane owner passed by `withWalletLock`, including from
+ * outside that frame, and acquires the lane once when neither is supplied.
+ * It rejects `eb_persist_failed` with the real cause (`eb_history_conflict` for a different record of that pass and
  * state, `journal-fenced`, `journal-capacity`, `journal-busy`, `journal-invalid`)
  * and throws `TypeError` for a malformed record.
  *
@@ -79,11 +81,11 @@ export function createEffectHistory({ journal }) {
   }
 
   return {
-    async append(record) {
+    async append(record, { owner } = {}) {
       const checked = checkedRecord(record);
       const key = historyKey(checked);
       try {
-        await journal.withOwnedOrAcquiredLane(checked.lane, () => journal.appendUnderLock(checked.lane, key, checked));
+        await journal.withOwnedOrAcquiredLane(checked.lane, () => journal.appendUnderLock(checked.lane, key, checked), { owner });
         return { status: 'appended' };
       } catch (error) {
         if (error?.code !== 'journal-key-exists') throw persistFailed(error);

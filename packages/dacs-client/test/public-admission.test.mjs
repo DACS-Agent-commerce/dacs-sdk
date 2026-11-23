@@ -327,3 +327,116 @@ test('every internal admission assertion follows the one constant', async (t) =>
   const refusers = walk(srcDir).filter((path) => readFileSync(path, 'utf8').includes("new OperationError('profile_not_admitted'")).map((path) => path.slice(srcDir.length)).sort();
   assert.deepEqual(refusers, ['public-admission.mjs'], 'every refusal is built by the one helper the constant drives');
 });
+
+// The host stop option on the two purchase factories.
+const stopRefusal = (code) => (error) => error.code === code && error.message === `host stop refused: ${code}`;
+
+async function realFactories(t, { stopped, protocolStopped = stopped, withProtocol = true, construct = true } = {}) {
+  setPurchaseAdmission('testnet-tp1');
+  t.after(() => setPurchaseAdmission('held'));
+  const { binding, authority, currentLocal } = await bindFixture();
+  const admission = { binding, currentLocal };
+  const db = openDatabase(':memory:');
+  t.after(() => db.close());
+  const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => 1 });
+  const coordinates = client.createCoordinateStore({ db });
+  const store = client.createSqlitePurchaseStore();
+  const protocol = client.createProtocolPurchases({ db, ops, coordinates, store, admission, ...(protocolStopped ? { stopped: protocolStopped } : {}) });
+  const build = () => client.createPurchaseService({ db, ops, coordinates, chain: {}, config: {}, store, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission,
+    ...(withProtocol ? { protocol } : {}), ...(stopped ? { stopped } : {}) });
+  return { authority, admission, db, ops, coordinates, store, protocol, build, service: withProtocol && construct ? build() : null };
+}
+const activeMembers = (object, passive) => Object.entries(object).filter(([name, value]) => typeof value === 'function' && !passive.includes(name));
+
+test('stopped: every active method of both purchase factories rejects writes_stopped before the authority read and the original runs 0 times, and every passive method still runs', async (t) => {
+  const stop = { now: true };
+  const world = await realFactories(t, { stopped: () => stop.now });
+  const readsBefore = world.authority.state.calls;
+  const passiveProtocol = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment'];
+  const passiveService = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning'];
+  const members = [...activeMembers(world.protocol, passiveProtocol), ...activeMembers(world.service, passiveService)];
+  assert.ok(members.length > 20);
+  for (const [name, member] of members) await assert.rejects(member({}), stopRefusal('writes_stopped'), name);
+  assert.equal(world.authority.state.calls, readsBefore);
+  assert.equal(world.db.prepare('SELECT COUNT(*) AS n FROM operations').get().n, 0);
+  assert.equal(world.protocol.supportsMode('TEST-mode'), false);
+  assert.equal(world.service.planRunning({ status: 'cancelled' }), false);
+  const made = recordingFactory();
+  const wrapped = admitPublicFactory(made.factory, { hostStop: true, passive: ['passiveReader'] })({ admission: world.admission, stopped: () => stop.now });
+  await assert.rejects(wrapped.completionRequest(), stopRefusal('writes_stopped'));
+  await assert.rejects(wrapped.asyncAction(), stopRefusal('writes_stopped'));
+  assert.equal(wrapped.passiveReader(1), 2);
+  assert.deepEqual(made.calls.map((call) => call.name), ['passiveReader']);
+  stop.now = false;
+  assert.equal(await wrapped.completionRequest(), 7);
+});
+
+test('stopped: the stop turning true at the authority barrier is refused writes_stopped and the original runs 0 times', async (t) => {
+  const world = await admittedWorld(t, { construct: false });
+  const stop = { now: false };
+  const wrapped = admitPublicFactory(world.factory, { hostStop: true })({ admission: world.admission, stopped: () => stop.now });
+  world.authority.state.gate = async () => { stop.now = true; };
+  await assert.rejects(wrapped.completionRequest(), stopRefusal('writes_stopped'));
+  assert.equal(world.calls.length, 0);
+});
+
+test('stopped: a held client reports profile_not_admitted before the stop', async (t) => {
+  const world = await admittedWorld(t, { construct: false });
+  const wrapped = admitPublicFactory(world.factory, { hostStop: true })({ admission: world.admission, stopped: () => true });
+  setPurchaseAdmission('held');
+  await assert.rejects(wrapped.completionRequest(), refusal());
+  assert.equal(world.calls.length, 0);
+});
+
+test('stopped: a throwing stop check rejects stop_check_failed with its cause, and a promise-returning one rejects stop_check_invalid without one', async (t) => {
+  const world = await admittedWorld(t, { construct: false });
+  const failure = new Error('TEST-stop-check-failure');
+  const throwing = admitPublicFactory(world.factory, { hostStop: true })({ admission: world.admission, stopped: () => { throw failure; } });
+  await assert.rejects(throwing.completionRequest(), (error) => stopRefusal('stop_check_failed')(error) && error.cause === failure);
+  const promising = admitPublicFactory(world.factory, { hostStop: true })({ admission: world.admission, stopped: () => Promise.resolve(false) });
+  await assert.rejects(promising.completionRequest(), (error) => stopRefusal('stop_check_invalid')(error) && error.cause === undefined);
+  assert.equal(world.calls.length, 0);
+});
+
+test('construction: a stopped option that is not a synchronous function throws stop_seam_invalid before any component is built, for both factories', async (t) => {
+  const world = await realFactories(t, { withProtocol: false });
+  const prepares = t.mock.method(world.db, 'prepare');
+  const invalid = (error) => error instanceof TypeError && error.message === 'stop_seam_invalid';
+  const options = { db: world.db, ops: world.ops, coordinates: world.coordinates, store: world.store, admission: world.admission };
+  for (const stopped of ['yes', async () => false, function* () {}]) {
+    assert.throws(() => client.createProtocolPurchases({ ...options, stopped }), invalid);
+    assert.throws(() => client.createPurchaseService({ ...options, chain: {}, config: {}, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped }), invalid);
+  }
+  assert.equal(prepares.mock.callCount(), 0);
+  const made = recordingFactory();
+  assert.throws(() => admitPublicFactory(made.factory, { hostStop: true })({ admission: world.admission, stopped: async () => false }), invalid);
+  assert.equal(made.made.length, 0);
+});
+
+test('construction: a purchase service whose protocol was built with another stop check, or with none, throws stop_seam_mismatch before any statement is prepared, and a service with a stop check and no protocol constructs', async (t) => {
+  const mismatch = (error) => error instanceof TypeError && error.message === 'stop_seam_mismatch';
+  const same = () => false;
+  const sameFunction = await realFactories(t, { stopped: same });
+  assert.ok(sameFunction.service);
+  const another = await realFactories(t, { stopped: same, protocolStopped: () => false, construct: false });
+  const anotherPrepares = t.mock.method(another.db, 'prepare');
+  assert.throws(another.build, mismatch);
+  const none = await realFactories(t, { stopped: same, protocolStopped: null, construct: false });
+  const nonePrepares = t.mock.method(none.db, 'prepare');
+  assert.throws(none.build, mismatch);
+  assert.equal(anotherPrepares.mock.callCount() + nonePrepares.mock.callCount(), 0);
+  const serviceOnly = await realFactories(t, { stopped: same, withProtocol: false });
+  assert.ok(serviceOnly.build());
+  const protocolOnly = await realFactories(t, { stopped: null, protocolStopped: same, construct: false });
+  assert.throws(protocolOnly.build, mismatch);
+});
+
+test('Listing verification takes no stop check and verifies while the host is stopped', async (t) => {
+  const world = await admittedWorld(t, { construct: false });
+  let reads = 0, checks = 0;
+  const directory = { findSummary: () => { reads++; throw new Error('TEST-directory-read'); } };
+  const verifier = client.createListingVerifier({ directory, chain: {}, admission: world.admission, stopped: () => { checks++; return true; } });
+  await assert.rejects(verifier.verify({ listingId: 'TEST-listing', version: 1, seller: 'TEST-seller' }), (error) => error.code !== 'writes_stopped');
+  assert.equal(reads, 1);
+  assert.equal(checks, 0);
+});

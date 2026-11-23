@@ -71,7 +71,7 @@ export function queuingFenceOwner(events = []) {
  * `referenceBlock()` gives the reference block of each confirmation (`null` leaves the field out).
  */
 export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null, answer = () => undefined, stamps, timeoutMs, boundary = writingBoundary({ owner, journal }), pinVersion = PINS.pinVersion, gas = null,
-  now = () => NOW, networkInfoAnswer = () => networkInfo(), referenceBlock = () => 0 }) {
+  now = () => NOW, networkInfoAnswer = () => networkInfo(), referenceBlock = () => 0, authorities = {}, authorityBinding = null }) {
   const wallet = deterministicWallet();
   const sent = { confirms: [], broadcasts: [] };
   const answerNode = async (init) => {
@@ -100,9 +100,9 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
   };
   const fetchImpl = async (url, init) => new Response(JSON.stringify(await answerNode(init)), { headers: { 'content-type': 'application/json' } });
   const capability = createDevnetDemoTransport({ expected: { ...PINS, pinVersion }, transportOwner: owner, boundary, journal, fetchImpl, now, stamps, timeoutMs, inclusionWaitMs: 0,
-    settlementPublication: { artifactKind: 'SettlementEvidence', authority: 'TEST-lock-order-settlement', phase: 'pay-dem', phaseIndex: 2, policy: DEVNET_SETTLEMENT_POLICY, railId: 'demos-native:DEM' },
-    deliveryPublication: { artifactKind: 'Deliverable', authority: 'TEST-lock-order-delivery', phase: 'deliver-storage-program', phaseIndex: 3, policy: DEVNET_DELIVERY_POLICY },
-    demoArtifactPublication: { policy: DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...DEVNET_DEMO_ARTIFACT_TYPES], authority: DEMO_AUTHORITY } });
+    settlementPublication: { artifactKind: 'SettlementEvidence', authority: authorities.settlement ?? 'TEST-lock-order-settlement', phase: 'pay-dem', phaseIndex: 2, policy: DEVNET_SETTLEMENT_POLICY, railId: 'demos-native:DEM' },
+    deliveryPublication: { artifactKind: 'Deliverable', authority: authorities.delivery ?? 'TEST-lock-order-delivery', phase: 'deliver-storage-program', phaseIndex: 3, policy: DEVNET_DELIVERY_POLICY },
+    demoArtifactPublication: { policy: DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...DEVNET_DEMO_ARTIFACT_TYPES], authority: authorities.demo ?? DEMO_AUTHORITY }, authorityBinding });
   const { address } = wallet;
   const laneKey = `devnet/native-wallet/${JSON.stringify([PINS.network, PINS.chainIdentity, address])}`;
   const reservationKey = signerReservationKey(PINS, address);
@@ -126,7 +126,7 @@ export function createWorld({ journal, owner = queuingFenceOwner(), onNode = asy
     tx.content.network = PINS.network; tx.content.chainIdentity = PINS.chainIdentity;
     Object.assign(tx.content.data[1].metadata, { artifactKind: 'FinalityCommitmentRecord', contentHash: contentHash(artifact),
       networkBinding: structuredClone(capability.profile('https://wallet.test').transportBinding),
-      artifactBinding: { version: '1', policy: DEVNET_DEMO_ARTIFACT_POLICY, authority: DEMO_AUTHORITY, artifactKind: 'FinalityCommitmentRecord', jobId, logicalAddress, writer: wallet.claim } });
+      artifactBinding: { version: '1', policy: DEVNET_DEMO_ARTIFACT_POLICY, authority: capability.profile('https://wallet.test').demoArtifactPublication.authority, artifactKind: 'FinalityCommitmentRecord', jobId, logicalAddress, writer: wallet.claim } });
     tx.hash = sha(JSON.stringify(tx.content));
     tx.signature = { type: 'ed25519', data: wallet.signHex(tx.hash) };
     return tx;
