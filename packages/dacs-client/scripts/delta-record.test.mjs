@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { recordName, validateRecord } from './delta-record.mjs';
+import { isRecordNamed, isUnrecorded, recordName, UNRECORDED_PATH, validateRecord } from './delta-record.mjs';
 
 const at = 'packages/dacs-client/';
 const blobA = 'a'.repeat(40), blobB = 'b'.repeat(40);
@@ -71,6 +71,22 @@ test('a commit-only record has no files and stands for a commit that changes onl
   refuses({ ...commitOnly, files: change().files }, /a commit-only record has no files/);
   refuses({ ...commitOnly, commitFiles: [at + 'HOLD.json', at + 'src/purchases.mjs'] }, /commit changes packages\/dacs-client\/src\/purchases\.mjs/);
   refuses(change({ files: undefined }), /files must list at least one file/);
+});
+
+test('only the exact package README needs no record', () => {
+  assert.equal(UNRECORDED_PATH, 'README.md');
+  assert.equal(isUnrecorded('README.md'), true);
+  for (const path of ['README.md.bak', 'docs/README.md', 'src/README.md', 'scripts/README.md', 'readme.md', 'Readme.md', 'README.MD', './README.md', 'package.json', 'DELTA-NOTES.md']) assert.equal(isUnrecorded(path), false, path);
+  // Records may still name the README; the checks ignore those entries.
+  assert.equal(isRecordNamed('README.md'), true);
+});
+
+test('a commit-only record may stand for a commit that also changes the README, and for no other record-named file', () => {
+  const commitOnly = change({ kind: 'commit-only', files: undefined, commitFiles: [at + 'HOLD.json', at + 'README.md', at + 'records/WF-000000000000.json'] });
+  assert.deepEqual(failures(commitOnly), []);
+  for (const path of ['package.json', 'DELTA-NOTES.md', 'README.md.bak', 'readme.md', 'src/README.md', 'docs/README.md']) {
+    refuses({ ...commitOnly, commitFiles: [at + 'HOLD.json', at + path, at + 'records/WF-000000000000.json'].sort() }, new RegExp(`a commit-only record's commit changes ${(at + path).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+  }
 });
 
 test('a new commit-only record may not name DELTA-MAP.md; the existing records that name it stay valid', () => {

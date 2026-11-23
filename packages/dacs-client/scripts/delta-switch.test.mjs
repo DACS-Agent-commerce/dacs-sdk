@@ -113,6 +113,43 @@ test('the record command writes the staged inventory without writing the archive
   s.git('add', '--', P + file); s.git('commit', '-qm', subject); accepted(s.run('check-hold'));
 });
 
+test('the record command leaves the README out of a record\'s files and keeps it in the commit inventory', t => {
+  const s = scratch(t);
+  appendFileSync(join(s.dir, 'src/index.mjs'), '\n// additional source text\n');
+  appendFileSync(join(s.dir, 'README.md'), '\nAdditional package guidance.\n');
+  s.git('add', '--', P + 'src/index.mjs', P + 'README.md');
+  const subject = 'delta(client): WF record a staged source and README edit';
+  accepted(s.run('delta-map', '--record', 'WF', subject));
+  const file = 'records/' + recordName({ delta: 'WF', subject }), saved = JSON.parse(readFileSync(join(s.dir, file), 'utf8'));
+  assert.equal(saved.kind, 'change');
+  assert.deepEqual(saved.files.map(f => f.path), [P + 'src/index.mjs']);
+  assert.deepEqual(saved.commitFiles, [P + 'README.md', P + file, P + 'src/index.mjs'].sort());
+  s.git('add', '--', P + file); s.git('commit', '-qm', subject);
+  accepted(s.run('check-hold')); accepted(s.run('check-provenance', '--local-only'));
+  // A staged README edit alone makes a commit-only record.
+  appendFileSync(join(s.dir, 'README.md'), '\nMore package guidance.\n'); s.git('add', '--', P + 'README.md');
+  const alone = 'delta(client): WF record a staged README edit alone';
+  accepted(s.run('delta-map', '--record', 'WF', alone));
+  const other = 'records/' + recordName({ delta: 'WF', subject: alone }), only = JSON.parse(readFileSync(join(s.dir, other), 'utf8'));
+  assert.equal(only.kind, 'commit-only');
+  assert.deepEqual(only.commitFiles, [P + 'README.md', P + other].sort());
+  s.git('add', '--', P + other); s.git('commit', '-qm', alone);
+  accepted(s.run('check-hold')); accepted(s.run('check-provenance', '--local-only'));
+});
+
+test('a README of another package with a name of the same length keeps its place in the commit inventory', t => {
+  for (const other of ['packages/dacs-seller/README.md', 'packages/dacs-wallet/README.md']) {
+    const s = scratch(t);
+    mkdirSync(join(s.repo, other, '..'), { recursive: true });
+    appendFileSync(join(s.repo, other), '\nAdditional package guidance.\n');
+    s.git('add', '--', other);
+    // The record's inventory row names the notes and the record, not the other README the commit also changes.
+    const notes = readFileSync(join(s.dir, 'DELTA-NOTES.md'), 'utf8') + '\nAdditional notes.\n';
+    record(s, 'delta(client): WF update the notes beside another package README', { 'DELTA-NOTES.md': notes });
+    refused(s.run('check-provenance', '--local-only'), new RegExp(`complete commit/file inventory differs for ${s.git('rev-parse', 'HEAD')}`));
+  }
+});
+
 test('re-pinning keeps only core pins and never stages files', t => {
   const s = scratch(t), core = 'scripts/delta-record.test.mjs';
   appendFileSync(join(s.dir, core), '\n// Additional schema coverage.\n');

@@ -46,20 +46,43 @@ function recordedCommit(s, subject, edits, kind = 'change') {
   return { sha: s.git('rev-parse', 'HEAD'), record: name };
 }
 const readme = s => readFileSync(join(s.dir, 'README.md'), 'utf8');
+const notes = s => readFileSync(join(s.dir, 'DELTA-NOTES.md'), 'utf8');
+// The notes' expected blob comes from their newest record, else from the anchor.
+const NOTES_FROM = '(?:its newest record|the anchor)';
 
-test('the checked-out head passes, and a README change with a record that names only README.md passes', t => {
+test('the checked-out head passes, and a change with a new record that names only README.md or only DELTA-NOTES.md passes', t => {
   const s = scratch(t);
   assert.deepEqual(derived(s), []);
   recordedCommit(s, 'delta(client): WF TEST update the client README', { 'README.md': `${readme(s)}\nTEST recorded line\n` });
   assert.deepEqual(derived(s), []);
+  recordedCommit(s, 'delta(client): WF TEST update the client notes', { 'DELTA-NOTES.md': `${notes(s)}\nTEST recorded line\n` });
+  assert.deepEqual(derived(s), []);
 });
 
-test('an unrecorded README change after its latest record is refused on each side', t => {
-  const s = scratch(t), recordedBlob = s.git('rev-parse', `HEAD:${P}README.md`);
+test('an unrecorded DELTA-NOTES.md change is refused on each side', t => {
+  const s = scratch(t), recordedBlob = s.git('rev-parse', `HEAD:${P}DELTA-NOTES.md`);
+  appendFileSync(join(s.dir, 'DELTA-NOTES.md'), '\nTEST unrecorded line\n');
+  let failures = derived(s);
+  assert.equal(failures.length, 1, failures.join('\n'));
+  assert.match(failures[0], new RegExp(`^${P}DELTA-NOTES\\.md: working file differs from ${NOTES_FROM} \\(${recordedBlob}\\)$`));
+  s.git('add', '--', P); s.git('commit', '-qm', 'docs(client): TEST unrecorded notes change');
+  failures = derived(s);
+  assert.equal(failures.length, 1, failures.join('\n'));
+  assert.match(failures[0], new RegExp(`^${P}DELTA-NOTES\\.md: HEAD, index, working file differ from ${NOTES_FROM} \\(${recordedBlob}\\)$`));
+});
+
+test('an unrecorded README change passes on each side, after a README record too', t => {
+  const s = scratch(t);
   appendFileSync(join(s.dir, 'README.md'), '\nTEST unrecorded line\n');
-  assert.deepEqual(derived(s), [`${P}README.md: working file differs from its newest record (${recordedBlob})`]);
+  assert.deepEqual(derived(s), []);
   s.git('add', '--', P); s.git('commit', '-qm', 'docs(client): TEST unrecorded README change');
-  assert.deepEqual(derived(s), [`${P}README.md: HEAD, index, working file differ from its newest record (${recordedBlob})`]);
+  assert.deepEqual(derived(s), []);
+  recordedCommit(s, 'delta(client): WF TEST record a README change', { 'README.md': `${readme(s)}\nTEST recorded line\n` });
+  appendFileSync(join(s.dir, 'README.md'), '\nTEST later unrecorded line\n');
+  s.git('add', '--', P); s.git('commit', '-qm', 'docs(client): TEST later unrecorded README change');
+  assert.deepEqual(derived(s), []);
+  s.git('rm', '-q', '--', P + 'README.md'); s.git('commit', '-qm', 'docs(client): TEST remove the README');
+  assert.deepEqual(derived(s), []);
 });
 
 test('a file the anchor does not name, a file outside every class and a core path without a pin are refused', t => {
@@ -116,57 +139,81 @@ test('removing a committed checkpoint record is refused by record immutability',
   ]);
 });
 
-test('parallel records of different README blobs conflict until a later record chooses one', t => {
-  const s = scratch(t), start = s.git('rev-parse', 'HEAD'), text = readme(s);
+test('parallel records of different DELTA-NOTES.md blobs conflict until a later record chooses one', t => {
+  const s = scratch(t), start = s.git('rev-parse', 'HEAD'), text = notes(s);
   s.git('switch', '-qc', 'TEST-right', start);
-  const right = recordedCommit(s, 'delta(client): WF TEST right README', { 'README.md': `${text}\nTEST right\n` });
+  const right = recordedCommit(s, 'delta(client): WF TEST right notes', { 'DELTA-NOTES.md': `${text}\nTEST right\n` });
   s.git('switch', '-qc', 'TEST-left', start);
-  const left = recordedCommit(s, 'delta(client): WF TEST left README', { 'README.md': `${text}\nTEST left\n` });
+  const left = recordedCommit(s, 'delta(client): WF TEST left notes', { 'DELTA-NOTES.md': `${text}\nTEST left\n` });
   s.git('merge', '-q', '--no-ff', '-X', 'ours', '-m', 'TEST merge both records', 'TEST-right');
   const failures = derived(s);
   assert.equal(failures.length, 1, failures.join('\n'));
-  assert.match(failures[0], new RegExp(`^${P}README\\.md: newest records disagree \\((${left.sha}, ${right.sha}|${right.sha}, ${left.sha})\\); record the chosen blob after the merge$`));
-  recordedCommit(s, 'delta(client): WF TEST choose the left README', { 'README.md': undefined }, 'resolution');
+  assert.match(failures[0], new RegExp(`^${P}DELTA-NOTES\\.md: newest records disagree \\((${left.sha}, ${right.sha}|${right.sha}, ${left.sha})\\); record the chosen blob after the merge$`));
+  recordedCommit(s, 'delta(client): WF TEST choose the left notes', { 'DELTA-NOTES.md': undefined }, 'resolution');
   assert.deepEqual(derived(s), []);
 });
 
-// A record file for the newest README commit the anchor already contains.
-function recordOldReadmeCommit(s, anchor) {
-  const sha = s.git('log', '--no-merges', '--format=%H', '-n', '1', anchor, '--', `${P}README.md`);
+test('parallel records of different README blobs merge with no record choosing one', t => {
+  const s = scratch(t), start = s.git('rev-parse', 'HEAD'), text = readme(s);
+  s.git('switch', '-qc', 'TEST-right', start);
+  recordedCommit(s, 'delta(client): WF TEST right README', { 'README.md': `${text}\nTEST right\n` });
+  s.git('switch', '-qc', 'TEST-left', start);
+  recordedCommit(s, 'delta(client): WF TEST left README', { 'README.md': `${text}\nTEST left\n` });
+  s.git('merge', '-q', '--no-ff', '-X', 'ours', '-m', 'TEST merge both records', 'TEST-right');
+  assert.deepEqual(derived(s), []);
+});
+
+// A record file for the newest commit the anchor already contains that changes `path`.
+function recordOldCommit(s, anchor, path) {
+  const sha = s.git('log', '--no-merges', '--format=%H', '-n', '1', anchor, '--', `${P}${path}`);
   const record = { schema: 'dacs-client-delta-record/v1', delta: 'WF', subject: s.git('log', '-1', '--format=%s', sha), sha, kind: 'change',
-    files: [{ path: `${P}README.md`, before: s.git('rev-parse', `${sha}^:${P}README.md`), after: s.git('rev-parse', `${sha}:${P}README.md`) }], commitFiles: [`${P}README.md`] };
+    files: [{ path: `${P}${path}`, before: s.git('rev-parse', `${sha}^:${P}${path}`), after: s.git('rev-parse', `${sha}:${P}${path}`) }], commitFiles: [`${P}${path}`] };
   writeFileSync(join(s.dir, 'records', recordName(record)), JSON.stringify(record, null, 2) + '\n');
   return sha;
 }
 
 // A branch cut before the anchor's last change to an anchored file holds an older copy of it.
 // Its record cannot chain from the anchor's copy, so check-provenance refuses it until the branch is rebased onto the anchor.
-test('a README record of a commit the anchor contains is left out of the chain; a branch cut where README already equals the anchor copy may record it', t => {
+test('a DELTA-NOTES.md record of a commit the anchor contains is left out of the chain; a branch cut where the notes already equal the anchor copy may record them', t => {
   const s = scratch(t), { commit: anchor } = readAnchor(s.dir);
-  recordOldReadmeCommit(s, anchor);
-  s.git('add', '--', P); s.git('commit', '-qm', 'TEST record a README commit before the anchor');
+  recordOldCommit(s, anchor, 'DELTA-NOTES.md');
+  s.git('add', '--', P); s.git('commit', '-qm', 'TEST record a notes commit before the anchor');
   assert.deepEqual(derived(s), []);
   const early = scratch(t), main = early.git('branch', '--show-current');
   const parent = early.git('rev-list', '--parents', '-n', '1', anchor).split(' ').slice(1)
-    .find(sha => early.git('rev-parse', `${sha}:${P}README.md`) === readAnchor(early.dir).files[`${P}README.md`]);
-  assert.ok(parent, 'the early branch starts with the anchored README copy');
+    .find(sha => early.git('rev-parse', `${sha}:${P}DELTA-NOTES.md`) === readAnchor(early.dir).files[`${P}DELTA-NOTES.md`]);
+  assert.ok(parent, 'the early branch starts with the anchored notes copy');
   early.git('switch', '-qc', 'TEST-early', parent);
-  recordedCommit(early, 'delta(client): WF TEST README change from before the anchor', { 'README.md': `${readme(early)}\nTEST early line\n` });
+  recordedCommit(early, 'delta(client): WF TEST notes change from before the anchor', { 'DELTA-NOTES.md': `${notes(early)}\nTEST early line\n` });
   early.git('switch', '-q', main); early.git('merge', '-q', '--no-ff', '-m', 'TEST merge an early branch', 'TEST-early');
-  recordedCommit(early, 'delta(client): WF choose the README after a parallel change', { 'README.md': undefined }, 'resolution');
+  recordedCommit(early, 'delta(client): WF choose the notes after a parallel change', { 'DELTA-NOTES.md': undefined }, 'resolution');
   assert.deepEqual(derived(early), []);
 });
 
-test('a README record from a branch cut before the anchor\'s last README change is refused until the branch is rebased', t => {
+test('a DELTA-NOTES.md record from a branch cut before the anchor\'s last notes change is refused until the branch is rebased', t => {
   const s = scratch(t), { commit: anchor } = readAnchor(s.dir), main = s.git('branch', '--show-current');
+  const last = s.git('log', '--no-merges', '--format=%H', '-n', '1', anchor, '--', `${P}DELTA-NOTES.md`);
+  assert.notEqual(s.git('rev-parse', `${last}^:${P}DELTA-NOTES.md`), readAnchor(s.dir).files[`${P}DELTA-NOTES.md`]);
+  s.git('switch', '-qc', 'TEST-early', `${last}^`);
+  const early = recordedCommit(s, 'delta(client): WF TEST notes change from an old copy', { 'DELTA-NOTES.md': `${notes(s)}\nTEST early line\n` });
+  s.git('switch', '-q', main); s.git('merge', '-q', '--no-ff', '--no-commit', '-s', 'ours', 'TEST-early');
+  s.git('checkout', 'TEST-early', '--', `${P}DELTA-NOTES.md`, P + early.record); s.git('commit', '-qm', 'TEST merge an old branch');
+  recordedCommit(s, 'delta(client): WF choose the notes after merging an old copy', { 'DELTA-NOTES.md': undefined }, 'resolution');
+  assert.deepEqual(derived(s), [`${P}DELTA-NOTES.md: delta parent is discontinuous at ${early.sha}`]);
+});
+
+test('README records of a commit the anchor contains, or from a branch cut before the anchor\'s last README change, pass with no rebase', t => {
+  const s = scratch(t), { commit: anchor } = readAnchor(s.dir), main = s.git('branch', '--show-current');
+  recordOldCommit(s, anchor, 'README.md');
+  s.git('add', '--', P); s.git('commit', '-qm', 'TEST record a README commit before the anchor');
+  assert.deepEqual(derived(s), []);
   const last = s.git('log', '--no-merges', '--format=%H', '-n', '1', anchor, '--', `${P}README.md`);
   assert.notEqual(s.git('rev-parse', `${last}^:${P}README.md`), readAnchor(s.dir).files[`${P}README.md`]);
   s.git('switch', '-qc', 'TEST-early', `${last}^`);
   const early = recordedCommit(s, 'delta(client): WF TEST README change from an old copy', { 'README.md': `${readme(s)}\nTEST early line\n` });
   s.git('switch', '-q', main); s.git('merge', '-q', '--no-ff', '--no-commit', '-s', 'ours', 'TEST-early');
   s.git('checkout', 'TEST-early', '--', `${P}README.md`, P + early.record); s.git('commit', '-qm', 'TEST merge an old branch');
-  recordedCommit(s, 'delta(client): WF choose the README after merging an old copy', { 'README.md': undefined }, 'resolution');
-  assert.deepEqual(derived(s), [`${P}README.md: delta parent is discontinuous at ${early.sha}`]);
+  assert.deepEqual(derived(s), []);
 });
 
 test('a record whose selector resolves to no commit is refused', t => {
