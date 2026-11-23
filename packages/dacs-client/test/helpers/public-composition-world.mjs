@@ -40,9 +40,11 @@ function presentAnswer({ scope, buyerIdentityBundle }, listing) {
 /**
  * Builds the composed world. `sellerEndpoint(claim, options)` answers the protocol's seller lookups; `contextGate` (a Promise) holds the
  * operator's context read; `demDeliveryContext` (a capability) replaces the operator context. `unpaid` composes the default
- * configuration instead: no native payment, no payment evidence and no seller transport.
+ * configuration instead: no native payment, no payment evidence and no seller transport. `passiveOnly` builds both factories
+ * read-only; `native` replaces the native source world (a `passiveNativeWorld` over another journal, say).
  */
-export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, unpaid = false, stopped } = {}) {
+export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, unpaid = false, stopped,
+  passiveOnly = false, native = passiveNativeWorld() } = {}) {
   // The fixture authority's answer, with every participant it was asked about (the buyer and seller of the session
   // delegation) on the bound profile; its gate, failure and call count still apply.
   const authority = createAuthorityFixture();
@@ -55,7 +57,6 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => NOW });
   const coordinates = createCoordinateStore({ db, now: () => NOW });
   db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run(ACCOUNT_ID, 'TEST', ACCOUNT_ID, new Date(NOW).toISOString());
-  const native = passiveNativeWorld();
   const commitment = createDevnetNativeCommitmentCapability({ authority: AUTHORITY,
     anchor: { authority: AUTHORITY, readRetained() { throw new Error('not used'); }, verifyReceipt() { throw new Error('not used'); } } });
   // `observation` answers the passive transfer read; broadcast and signer counts stay at 0 in held tests.
@@ -81,14 +82,15 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
     settlementPublication: { policy: DEVNET_SETTLEMENT_POLICY, artifactKind: 'SettlementEvidence', phase: 'pay-dem', railId: 'demos-native:DEM', phaseIndex: 2, authority: AUTHORITY },
     expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },
     transportOwner: { getContext: unused('evidence context'), acquireConnectionFence: unused('evidence fence') } });
-  const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
+  const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, ...(passiveOnly ? { passiveOnly } : {}), now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
       nativeSellerCommitment: commitment,
       ...(unpaid ? {} : { nativeAgreementPayment: native.source, sellerTransport,
         nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: native.source.pins.endpoint, sourceCapability: evidenceSource }) }),
       ...(demDeliveryContext ? { demDeliveryContext } : { agreementContext }), sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: wallet.address }] }, verifier, chain, protocol,
-    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission, stopped });
+    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission, stopped,
+    ...(passiveOnly ? { passiveOnly } : {}) });
   const prepare = (idempotencyKey = 'TEST-key') => service.prepare({ accountId: ACCOUNT_ID, listingId: 'TEST-listing', version: 1, seller: seller.claim,
     idempotencyKey, walletAddress: wallet.address, protocol: OFFLINE_AGREEMENT_MODE });
   // Prepares a purchase and has the buyer present their identity and sign the seller session delegation; returns what agreementPlan needs.

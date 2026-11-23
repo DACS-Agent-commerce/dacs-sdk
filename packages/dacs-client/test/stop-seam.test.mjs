@@ -5,13 +5,16 @@ import { EventEmitter } from 'node:events';
 import { lstatSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync, StatementSync } from 'node:sqlite';
 import { storedWorld, PATHS, bodyFor, errorCode } from './helpers/stored-request-fixture.mjs';
 import { setPurchaseAdmission, T0 } from './helpers/wire-client-fixture.mjs';
 import { spawnJournalChild } from './helpers/journal-child-process.mjs';
 import { controlledClock, settleUntil } from './helpers/effect-boundary-fixture.mjs';
+import { passiveNativeWorld, HASH as NATIVE_HASH, PAYER } from './helpers/passive-native-world.mjs';
+import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 beforeEach(t => t.mock.method(Date, 'now', () => T0));
 const { createPurchaseService } = await import('../src/purchases.mjs');
-const { createProtocolPurchases } = await import('../src/index.mjs');
+const { createProtocolPurchases, createPurchaseService: createAdmittedPurchaseService } = await import('../src/index.mjs');
 const { createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
 const { StaleProtocolCheck, OFFLINE_AGREEMENT_PROFILE } = await import('../src/dacs/protocol-purchases.mjs');
 const { createHostStop, bindHostStop, isHostStopRefusal } = await import('../src/host-stop.mjs');
@@ -19,6 +22,7 @@ const { OperationError } = await import('../src/client-errors.mjs');
 const { SellerUnavailableError } = await import('../src/dacs/seller-http.mjs');
 const { createSellerHttpsConnector } = await import('../src/dacs/seller-https-connector.mjs');
 const { AUTHORITY_READ_DEADLINE_MS } = await import('../src/public-admission.mjs');
+const { openDurableWalletJournal } = await import('../src/wallet/durable-journal.mjs');
 const P = PATHS.proposals;
 const suspension = s => s.p.get().state.protocol.sellerSuspension;
 const events = (s, type) => s.p.ops.history(s.p.op.id).filter(event => event.type === type);
@@ -607,4 +611,283 @@ test('a stopped verifyDeal whose suspension write fails rejects with the stop it
   assert.deepEqual(s.p.get(), before); assert.equal(suspension(s), undefined);
   assert.equal(events(s, 'seller_suspended').length, 0);
   assert.equal(counters.sellerLookups, 0); assert.equal(s.w.state.signs.length, 0); assert.equal(s.fetches.length, 0);
+});
+
+// The read-only passiveOnly composition of both purchase factories.
+const { compositionWorld, ACCOUNT_ID, NOW } = await import('./helpers/public-composition-world.mjs');
+const { deliverableAddress, deliveryEvidenceAddress, listingPin } = await import('../src/dacs/purchase-protocol.mjs');
+const { finalityCommitmentAddress } = await import('@kynesyslabs/dacs');
+const PURCHASE_FACTORIES = { createProtocolPurchases, createPurchaseService: createAdmittedPurchaseService };
+const ILL_FORMED = { accountId: '', operationId: '', token: '' };
+const typeErrorOf = message => error => error instanceof TypeError && error.message === message;
+
+// Every member of the real objects the two purchase factories return, by kind. A member the table does not name fails.
+const MEMBER_TABLE = {
+  protocol: {
+    passive: ['assertBuyerAccess', 'observeReportedPayment', 'readIssued', 'readIssuedPayment', 'supportsMode'],
+    active: ['assertSellerAdmission', 'cancelNativePayment', 'checkDelivery', 'countersign', 'countersignRequest', 'holdChainReadback', 'identityRequest',
+      'nativeIntentsSupersededBy', 'nativePaymentClaimed', 'nativePaymentFailed', 'nativePaymentRefused', 'nativePaymentSuperseded', 'nativePaymentTermsCancelled',
+      'planFlightsRunning', 'planRequest', 'planRunning', 'prepareTerms', 'readNativePaymentLane', 'recheck', 'recheckCommitment', 'runningPlan', 'sessionRenewal',
+      'sessionRenewalAccept', 'signRequest', 'submitAgreement', 'withNativePaymentLane'],
+    value: ['actionsAdmitted', 'available', 'chainReadback', 'nativePaymentReadbackAvailable'],
+  },
+  service: {
+    passive: ['planRunning', 'portalEvidence', 'portalOperation', 'status', 'verifyDeal'],
+    active: ['agreementIdentity', 'agreementPlan', 'agreementSubmit', 'approve', 'cancel', 'completionCountersign', 'completionRequest', 'issueApprovalChallenge',
+      'nativePaymentLane', 'prepare', 'prepareHandoff', 'protocolRecheck', 'reportWalletResult', 'sessionRenewal', 'sessionRenewalAccept'],
+    value: ['actionsAdmitted'],
+  },
+};
+// Each member's kind as the admission wrapper built it: every function it wraps is named admittedAction.
+const memberKinds = object => Object.fromEntries(Object.entries(object).map(([name, value]) =>
+  [name, typeof value !== 'function' ? 'value' : value.name === 'admittedAction' ? 'active' : 'passive']));
+const tableKinds = (kind, kinds = ['passive', 'active', 'value']) => Object.fromEntries(kinds.flatMap(member => MEMBER_TABLE[kind][member].map(name => [name, member])));
+
+// Stand-in options that count every property read: each read is one construction step.
+function countingOptions() {
+  const count = { reads: 0 };
+  const standIn = () => new Proxy({}, { get() { count.reads++; return () => {}; } });
+  return { count, options: { db: standIn(), store: standIn(), ops: standIn(), coordinates: standIn(), journal: standIn(), custody: standIn() } };
+}
+
+// Counts every SQLite statement read and write, on any connection, from here to the end of the test.
+function statementCounts(t) {
+  const reads = ['get', 'all', 'iterate'].map(name => t.mock.method(StatementSync.prototype, name)), writes = t.mock.method(StatementSync.prototype, 'run');
+  return () => ({ reads: reads.reduce((sum, read) => sum + read.mock.callCount(), 0), writes: writes.mock.callCount() });
+}
+
+// A seeded agreement_pending protocol purchase with nothing queued and a portal lifetime.
+function pendingPurchase(w, key) {
+  const purchase = w.seed({ status: 'agreement_pending', key, protocolTerms: { profile: OFFLINE_AGREEMENT_PROFILE, jobId: '01HZY3K8V9Q2W4E6R7T8Y9X0AB' },
+    state: { protocol: { stage: 'agreement-signing' } } });
+  w.db.prepare('UPDATE operations SET handoff_expires_at = expires_at WHERE id = ?').run(purchase.operation.id);
+  return purchase;
+}
+
+// The ten passive members, each called on one purchase.
+const passiveCalls = (w, { operation, token }) => ({
+  status: () => w.service.status(ACCOUNT_ID, operation.id, token),
+  portalOperation: () => w.service.portalOperation(operation.id, token),
+  portalEvidence: () => w.service.portalEvidence(operation.id, token),
+  verifyDeal: () => w.service.verifyDeal({ accountId: ACCOUNT_ID, operationId: operation.id, token }),
+  planRunning: () => w.service.planRunning(operation),
+  assertBuyerAccess: () => w.protocol.assertBuyerAccess(operation.terms.buyer.wallet, operation),
+  supportsMode: () => w.protocol.supportsMode('TEST-mode'),
+  readIssued: () => w.protocol.readIssued(operation),
+  readIssuedPayment: () => w.protocol.readIssuedPayment(operation, HASH),
+  observeReportedPayment: () => w.protocol.observeReportedPayment(HASH),
+});
+// A source reader may answer with its own error; none is refused by the hold or the stop.
+async function runsEachPassive(calls) {
+  for (const [name, call] of Object.entries(calls)) {
+    try { await call(); } catch (error) { assert.ok(!isHostStopRefusal(error) && error?.code !== 'profile_not_admitted', `${name} refused: ${error?.code}`); }
+  }
+}
+// Seller lookups, chain broadcasts, the native source's journal writes and wallet challenges.
+const passiveEffects = w => [w.counters.sellerLookups, w.chain.broadcasts, w.native.writes.length, w.counters.challengesIssued];
+
+// A passiveOnly composition admitted through a real binding, with the hold lifted.
+async function admittedPassiveComposition(t, options = {}) {
+  setPurchaseAdmission('testnet-tp1'); t.after(() => setPurchaseAdmission('held'));
+  return compositionWorld(t, { passiveOnly: true, ...options });
+}
+
+test('passiveOnly accepts exactly true or nothing: any other value throws TypeError at construction', async t => {
+  const { binding, currentLocal } = await bindFixture(), admission = { binding, currentLocal };
+  const version = Object.getOwnPropertyDescriptor(process, 'version');
+  t.after(() => Object.defineProperty(process, 'version', version));
+  const runningOn = value => Object.defineProperty(process, 'version', { value, configurable: true });
+  // Construction order: each check refuses before the next runs and before the factory, though passiveOnly is also wrong.
+  const order = [
+    ['no admission', {}, 'v22.22.2', typeErrorOf('admission_required')],
+    ['refused runtime', { admission }, 'v20.19.0', error => error.code === 'runtime_unsupported'],
+    ['async stop check', { admission, stopped: async () => false }, 'v22.22.2', typeErrorOf('stop_seam_invalid')],
+    ['synchronous stop check', { admission, stopped: () => false }, 'v22.22.2', typeErrorOf('passive_only_invalid')],
+    ['no stop check', { admission }, 'v22.22.2', typeErrorOf('passive_only_invalid')],
+  ];
+  for (const [name, factory] of Object.entries(PURCHASE_FACTORIES)) {
+    for (const [leg, given, nodeVersion, refused] of order) {
+      runningOn(nodeVersion);
+      const { count, options } = countingOptions();
+      assert.throws(() => factory({ ...options, ...given, passiveOnly: 'yes' }), refused, `${name}: ${leg}`);
+      assert.equal(count.reads, 0, `${name}: ${leg}`);
+    }
+    runningOn('v22.22.2');
+    for (const passiveOnly of [false, null, 'yes', 'true', 1]) {
+      const { count, options } = countingOptions();
+      assert.throws(() => factory({ ...options, admission, passiveOnly }), typeErrorOf('passive_only_invalid'), `${name}: ${String(passiveOnly)}`);
+      assert.equal(count.reads, 0, `${name}: ${String(passiveOnly)}`);
+    }
+  }
+  Object.defineProperty(process, 'version', version);
+  const readOnly = await compositionWorld(t, { passiveOnly: true }), ordinary = await compositionWorld(t);
+  assert.deepEqual(memberKinds(readOnly.service), tableKinds('service', ['passive', 'value']));
+  assert.deepEqual(memberKinds(ordinary.service), tableKinds('service'));
+});
+
+test('one table enumerates every method on the real objects returned by both purchase factories as active or passive; an unclassified method fails; each active method calls the stop seam beside the purchase hold before any read or write: reportWalletResult, protocolRecheck, cancel and holdChainReadback given an ill-formed request each refuse writes_stopped with zero ops.transition calls, reads, writes, signer calls and wallet requests, and given a request that authenticates for a protocol purchase record only its suspension; passive methods run; independently holding admission refuses active calls before effects', async t => {
+  const stop = { now: false, calls: 0 };
+  const w = await admittedComposition(t, () => { stop.calls++; return stop.now; });
+  assert.deepEqual(memberKinds(w.protocol), tableKinds('protocol'));
+  assert.deepEqual(memberKinds(w.service), tableKinds('service'));
+  const seeded = ['protocolRecheck', 'reportWalletResult', 'cancel'].map(action => [action, pendingPurchase(w, `TEST-stopped-${action}`)]);
+  const active = [...MEMBER_TABLE.protocol.active.map(name => [w.protocol, name]), ...MEMBER_TABLE.service.active.map(name => [w.service, name])];
+  const transitions = t.mock.method(w.ops, 'transition'), before = w.rows(), statements = statementCounts(t);
+  stop.now = true;
+  // An ill-formed request is refused before any read, so it records nothing.
+  for (const [object, name] of active) await assert.rejects(object[name](ILL_FORMED), hostStopRefusal('writes_stopped'), name);
+  assert.deepEqual(statements(), { reads: 0, writes: 0 });
+  assert.equal(transitions.mock.callCount(), 0); assert.equal(w.rows(), before);
+  // A request that authenticates for a protocol purchase records that purchase's suspension and nothing else.
+  for (const [action, { operation, token }] of seeded) {
+    const request = action === 'cancel' ? { accountId: ACCOUNT_ID, operationId: operation.id } : { operationId: operation.id, token };
+    const saved = transitions.mock.callCount();
+    await assert.rejects(w.service[action](request), hostStopRefusal('writes_stopped'), action);
+    assert.deepEqual(transitions.mock.calls.slice(saved).map(call => call.arguments[3]?.event), ['seller_suspended'], action);
+    assert.equal(w.ops.get(ACCOUNT_ID, operation.id).state.protocol.sellerSuspension.cause, 'writes_stopped', action);
+  }
+  await runsEachPassive(passiveCalls(w, seeded[0][1]));
+  assert.deepEqual(passiveEffects(w), [0, 0, 0, 0]);
+  // Holding admission refuses every active method before the stop is read.
+  setPurchaseAdmission('held');
+  const stopCalls = stop.calls, saved = transitions.mock.callCount();
+  for (const [object, name] of active) await assert.rejects(object[name](ILL_FORMED), errorCode('profile_not_admitted'), name);
+  assert.equal(stop.calls, stopCalls); assert.equal(transitions.mock.callCount(), saved);
+  assert.deepEqual(passiveEffects(w), [0, 0, 0, 0]);
+});
+
+test('a passiveOnly purchase composition keeps all ten passive members callable while held, stopped and with a failing binding; every active name is absent and calling it throws TypeError before any read or write; without admission both factories still throw admission_required with zero SQLite, journal and custody opens', async t => {
+  const stop = { calls: 0 };
+  const w = await compositionWorld(t, { passiveOnly: true, stopped: () => { stop.calls++; return true; } });
+  t.after(() => setPurchaseAdmission('held'));
+  w.authority.state.failure = new Error('TEST-binding-refused');
+  const bindingReads = w.authority.state.calls, purchase = pendingPurchase(w, 'TEST-passive-only');
+  const objects = { protocol: w.protocol, service: w.service };
+  for (const [kind, object] of Object.entries(objects)) assert.deepEqual(memberKinds(object), tableKinds(kind, ['passive', 'value']), kind);
+  const transitions = t.mock.method(w.ops, 'transition'), before = w.rows();
+  for (const hold of ['held', 'testnet-tp1']) {
+    setPurchaseAdmission(hold);
+    await runsEachPassive(passiveCalls(w, purchase));
+    for (const [kind, object] of Object.entries(objects)) {
+      for (const name of MEMBER_TABLE[kind].active) {
+        assert.equal(Object.hasOwn(object, name), false, `${kind}.${name}`);
+        assert.throws(() => object[name](ILL_FORMED), TypeError, `${kind}.${name}`);
+      }
+    }
+  }
+  assert.equal(stop.calls, 0); assert.equal(w.authority.state.calls, bindingReads);
+  assert.equal(transitions.mock.callCount(), 0); assert.equal(w.rows(), before);
+  assert.deepEqual(passiveEffects(w), [0, 0, 0, 0]);
+  const { count, options } = countingOptions();
+  for (const [name, factory] of Object.entries(PURCHASE_FACTORIES)) {
+    assert.throws(() => factory({ ...options, passiveOnly: true }), typeErrorOf('admission_required'), name);
+    assert.throws(() => factory({ ...options, passiveOnly: true, admission: { binding: {} } }), typeErrorOf('admission_required'), name);
+  }
+  assert.equal(count.reads, 0);
+});
+
+test('passiveOnly portalOperation projects an elapsed approval as expired without ops.transition, signatures, seller requests or wallet actions after the hold lifts; status and portalEvidence in the same composition return approvalUrl null and actionable false without calling ops.handoffTokenFor', async t => {
+  const w = await admittedPassiveComposition(t);
+  const elapsed = w.seed({ status: 'awaiting_approval', key: 'TEST-passive-elapsed', expiresAt: new Date(NOW - 1).toISOString() });
+  const open = w.seed({ status: 'awaiting_approval', key: 'TEST-passive-open' });
+  const tokens = t.mock.method(w.ops, 'handoffTokenFor'), transitions = t.mock.method(w.ops, 'transition'), before = w.rows();
+  assert.equal((await w.service.portalOperation(elapsed.operation.id, elapsed.token)).status, 'expired');
+  for (const { operation, token } of [elapsed, open]) {
+    assert.equal((await w.service.status(ACCOUNT_ID, operation.id, token)).approvalUrl, null);
+    assert.equal((await w.service.portalEvidence(operation.id, token)).actionable, false);
+  }
+  assert.equal(tokens.mock.callCount(), 0); assert.equal(transitions.mock.callCount(), 0);
+  assert.equal(w.rows(), before);
+  assert.deepEqual(passiveEffects(w), [0, 0, 0, 0]); assert.equal(w.native.calls.length, 0);
+});
+
+test('passiveOnly verifyDeal returns diagnostic readback after the hold lifts and never attaches a hash, settles, rechecks, continues, signs or sends', async t => {
+  const w = await admittedPassiveComposition(t);
+  const passiveReads = { count: 0 };
+  w.chain.observePassiveTransfer = async () => { passiveReads.count++; return { status: 'not-found' }; };
+  w.chain.observeTransfer = async () => { throw new Error('TEST-settlement-read'); };
+  const pending = pendingPurchase(w, 'TEST-passive-pending');
+  const handoff = w.seed({ status: 'payment_handoff', key: 'TEST-passive-handoff', handoff: true });
+  const reported = w.seed({ status: 'broadcast_reported', key: 'TEST-passive-reported', reportedTxHash: HASH });
+  const transitions = t.mock.method(w.ops, 'transition'), before = w.rows();
+  const verify = ({ operation, token }, txHash) => w.service.verifyDeal({ accountId: ACCOUNT_ID, operationId: operation.id, token, ...(txHash ? { txHash } : {}) });
+  // Readback only accepts the hash already recorded, so a new one is never attached.
+  await assert.rejects(verify(handoff, HASH), errorCode('invalid_state'));
+  for (const purchase of [pending, handoff, reported]) {
+    const { operation, verification } = await verify(purchase);
+    assert.equal(verification.outcome, 'readback_only', purchase.operation.status);
+    assert.equal(verification.authority, 'unqualified_host', purchase.operation.status);
+    assert.equal(operation.status, purchase.operation.status);
+  }
+  assert.equal(passiveReads.count, 1);
+  assert.equal(transitions.mock.callCount(), 0); assert.equal(w.rows(), before);
+  assert.equal(w.coordinates.get(handoff.operation.id).reportedTxHash ?? null, null);
+  assert.equal(w.contextReads.count, 0);
+  assert.deepEqual(passiveEffects(w), [0, 0, 0, 0]); assert.equal(w.native.calls.length, 0);
+});
+
+// The node calls the source transport admits as read-only.
+const READ_ONLY_NODE_CALLS = new Set(['getBlockByNumber', 'getTxByHash', 'getTransactionStatus', 'getAddressNonce', 'getAddressInfo', 'searchStoragePrograms',
+  'getNetworkInfo', 'getNetworkParameters']);
+
+// A durable journal on a temporary file that lists each lock call by method and key; `fence()` reads meta.fence from the file.
+function lockListingJournal(t) {
+  const directory = mkdtempSync(join(tmpdir(), 'stop-seam-passive-')), path = join(directory, 'journal.sqlite');
+  const durable = openDurableWalletJournal({ path, mode: 'create' }), locks = [];
+  t.after(() => { durable.close(); rmSync(directory, { recursive: true, force: true }); });
+  const listed = method => (key, ...rest) => { locks.push(`${method} ${key}`); return durable[method](key, ...rest); };
+  const journal = { ...durable, withWalletLock: listed('withWalletLock'), withOwnedOrAcquiredLane: listed('withOwnedOrAcquiredLane'), appendUnderLock: listed('appendUnderLock') };
+  const fence = () => {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try { return Number(db.prepare("SELECT value FROM meta WHERE key = 'fence'").get().value); } finally { db.close(); }
+  };
+  return { durable, journal, locks, fence };
+}
+
+// Seller CREATE pointers for the chain readers: signed by the Listing seller's key, at each artifact's own address.
+const SELLER_CLAIM = 'did:demos:agent:' + 'a'.repeat(64);
+const sellerPointer = (logicalAddress, artifactKind) => ({ hash: 'b'.repeat(64), signature: { type: 'ed25519', data: '00' },
+  content: { from: '0x' + 'a'.repeat(64), to: 'stor-' + 'c'.repeat(40), data: ['storageProgram', { metadata: { logicalAddress, artifactKind } }] } });
+function chainReads(chainReadback, jobId) {
+  const listing = { listingId: 'TEST', listingVersion: 1, seller: { identity: { presentedBy: SELLER_CLAIM } } };
+  const party = (role, primaryClaim) => ({ role, primaryClaim, bundleHash: 'd'.repeat(64), vetRecordRef: {} });
+  const agreement = { jobId, listingRef: {}, parties: [party('seller', SELLER_CLAIM), party('buyer', 'did:demos:agent:' + 'e'.repeat(64))] };
+  const delivery = { jobId, agreementHash: 'd'.repeat(64), listing: listingPin(listing), payloadHash: 'e'.repeat(64) };
+  return {
+    readCommitment: () => chainReadback.readCommitment({ agreement, listing, seller: SELLER_CLAIM, fresh: true,
+      signedProjection: sellerPointer(finalityCommitmentAddress(jobId), 'FinalityCommitmentRecord') }),
+    readDeliverable: () => chainReadback.readDeliverable({ jobId, agreementHash: delivery.agreementHash, listing, seller: SELLER_CLAIM, deliveryBinding: delivery,
+      receiptContentHash: delivery.payloadHash, signedProjection: sellerPointer(deliverableAddress(jobId), 'Deliverable') }),
+    readDeliveryEvidence: () => chainReadback.readDeliveryEvidence({ agreement, listing, seller: SELLER_CLAIM,
+      signedProjection: sellerPointer(deliveryEvidenceAddress(jobId), 'SettlementEvidence') }),
+  };
+}
+
+test("with a supplied source capability, passiveOnly readIssued, readIssuedPayment, observeReportedPayment and chainReadback's readCommitment, readDeliverable and readDeliveryEvidence, held and after the hold lifts, change no journal record, send only read-only node calls, and take only the devnet/source-read lock; its row is gone after each return or throw, though meta.fence advances", async t => {
+  const j = lockListingJournal(t), native = passiveNativeWorld({ journal: j.journal });
+  await native.seed();
+  const w = await compositionWorld(t, { passiveOnly: true, native });
+  t.after(() => setPurchaseAdmission('held'));
+  // The purchase's buyer is the payer of the transfer the source journal retains.
+  const seeded = pendingPurchase(w, 'TEST-passive-source').operation;
+  const operation = { ...seeded, terms: { ...seeded.terms, buyer: { ...seeded.terms.buyer, wallet: PAYER } } };
+  const readers = { readIssued: () => w.protocol.readIssued(operation), readIssuedPayment: () => w.protocol.readIssuedPayment(operation, NATIVE_HASH),
+    observeReportedPayment: () => w.protocol.observeReportedPayment(NATIVE_HASH), ...chainReads(w.protocol.chainReadback, operation.terms.protocol.jobId) };
+  const records = await j.durable.entries(), fenceBefore = j.fence();
+  j.locks.length = 0; native.calls.length = 0;
+  for (const hold of ['held', 'testnet-tp1']) {
+    setPurchaseAdmission(hold);
+    for (const [name, read] of Object.entries(readers)) {
+      // A reader may answer with its own error; either way it leaves no lock row.
+      await read().catch(() => {});
+      assert.deepEqual(j.durable.inspectLocks(), [], `${name} ${hold}`);
+    }
+  }
+  assert.deepEqual(await j.durable.entries(), records);
+  assert.deepEqual(native.writes, []);
+  assert.ok(native.calls.length > 0);
+  for (const call of native.calls) assert.ok(READ_ONLY_NODE_CALLS.has(call), call);
+  assert.ok(j.locks.length > 0);
+  for (const lock of j.locks) assert.match(lock, /^withWalletLock devnet\/source-read\//);
+  assert.ok(j.fence() > fenceBefore);
 });

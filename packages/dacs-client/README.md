@@ -63,6 +63,12 @@ The stop option: `createProtocolPurchases` and `createPurchaseService` take an o
 - If that suspension cannot be saved, `verifyDeal` returns no readback: it rejects with the stop's own refusal, with the write's error as `details.suspensionWriteError`.
 - It does not stop wallet effects or the wallet's own signatures; pass the same function to the wallet session. `createDeliveryDeadlineWatch` has no stop check: a stopped host must not start it, or must give it a delivery check that goes through the service.
 
+The read-only option: `passiveOnly: true` on `createProtocolPurchases` and `createPurchaseService` builds a composition that can only read.
+- `admission` is still required, and the construction checks run in this order: admission, the Node floor, `stopped`, then `passiveOnly`. Any value other than `true` or absent throws `TypeError('passive_only_invalid')` before the factory runs.
+- The object carries the ten passive readers and the non-function members (`available`, `actionsAdmitted`, `nativePaymentReadbackAvailable` and, with a source capability, `chainReadback`). Every active name is absent, so calling one throws `TypeError` before any read or write.
+- The service's readers return the diagnostic projection on every call, also after the hold lifts: `portalOperation` reports an elapsed approval as `expired` without saving it, `status` and `portalEvidence` give no approval link, and `verifyDeal` returns diagnostic readback without attaching a hash, settling or continuing the purchase.
+- `stopped` stays optional, and no reader calls it in this mode. The protocol's source readers and `chainReadback` change no journal record and send only read-only node calls. Each node read takes and releases the source journal's `devnet/source-read/<bindingId>` lock, which advances the journal's lock fence and leaves no lock row.
+
 ### createProtocolPurchases
 
 Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `sessionRenewal`, `sessionRenewalAccept`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`

@@ -217,9 +217,10 @@ export function approvalBinding(operation) {
 // CORE §11.1.2(3): profile admission is held while the one constant says so;
 // readback chooses its projection on each call. Host diagnostics are not
 // artifact verification or the archival path described in §11.1.2(4).
+// `passiveOnly: true` keeps every reader on the diagnostic projection after the hold lifts.
 // verifyDeal accepts an optional signal to cancel its passive chain reads.
-export function createPublicPurchaseService(options) {
-  return createPurchaseService(options, () => !purchaseActionsAdmitted());
+export function createPublicPurchaseService({ passiveOnly, ...options }) {
+  return createPurchaseService(options, () => passiveOnly === true || !purchaseActionsAdmitted());
 }
 
 // Schema rows as plain objects with numbers, whatever the host's connection
