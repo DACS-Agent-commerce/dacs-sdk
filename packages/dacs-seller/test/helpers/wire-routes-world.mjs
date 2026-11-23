@@ -117,7 +117,24 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   const pin = fixture ? listingPin(fixture.listing) : PIN;
   // A world over an existing directory reopens its store and journal; whoever made the directory removes it.
   const directory = existingDirectory ?? await mkdtemp(join(tmpdir(), 'TEST-wire-routes-'));
-  if (existingDirectory === null) t.after(() => rm(directory, { recursive: true, force: true }));
+  let ownedStore = null;
+  t.after(async () => {
+    const errors = [];
+    try { ownedStore?.close(); } catch (error) { errors.push(error); }
+    try {
+      if (performanceMocksByTest.has(t)) {
+        const originalNow = performanceMocksByTest.get(t);
+        if (originalNow) Object.defineProperty(performance, 'now', originalNow);
+        else delete performance.now;
+        performanceMocksByTest.delete(t);
+      }
+    } catch (error) { errors.push(error); }
+    if (existingDirectory === null) {
+      try { await rm(directory, { recursive: true, force: true }); } catch (error) { errors.push(error); }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'wire-routes world cleanup failed');
+  });
   mkdirSync(join(directory, 'transport'), { mode: 0o700, recursive: true });
   const storePath = join(directory, 'transport', 'transport.sqlite');
   const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [], session: null };
@@ -126,11 +143,6 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   if (!performanceMocksByTest.has(t)) {
     const originalNow = Object.getOwnPropertyDescriptor(performance, 'now');
     performanceMocksByTest.set(t, originalNow);
-    t.after(() => {
-      if (originalNow) Object.defineProperty(performance, 'now', originalNow);
-      else delete performance.now;
-      performanceMocksByTest.delete(t);
-    });
   }
   Object.defineProperty(performance, 'now', {
     configurable: true,
@@ -176,6 +188,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   const mount = () => {
     if (fixture) fixture.admittedListing = admitWireArtifact(Buffer.from(JSON.stringify(fixture.listing)));
     const store = createUnboundStore({ path: storePath, maxJobs, maxRecords, maxNoncesPerBuyerPerWindow, now: clock, contextSessionState: () => state.session });
+    ownedStore = store;
     const capacity = createPurchaseCapacity({ store, now: clock, maxRecords, commitOnSignature, sessionState: sellerStoreInternals(store).sessionState });
     // A restart reopens the same journal.
     const journalDirectory = join(directory, 'wire-journal');
@@ -191,8 +204,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     Object.assign(handle, { store, capacity, wire, handler: createSellerHttpHandler(agent, { wire, commitOnSignature }) });
   };
   mount();
-  t.after(() => handle.store.close());
-  const reopen = (options = {}) => { handle.store.close(); handle.finishFails = false; if (options.maxRecords !== undefined) maxRecords = options.maxRecords; mount(); };
+  const reopen = (options = {}) => { handle.store.close(); ownedStore = null; handle.finishFails = false; if (options.maxRecords !== undefined) maxRecords = options.maxRecords; mount(); };
   /** Runs `work` on a restarted seller whose wire context takes `overrides` (the context is frozen), then restarts it again without them. */
   const withWire = async (overrides, work) => {
     handle.wireOverrides = overrides; reopen();
