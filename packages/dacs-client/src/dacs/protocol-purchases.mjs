@@ -798,7 +798,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   // Step 2: the wallet's delegation is accepted, the session key asks for the seller's challenge, and the presentation message
-  // over the seller's nonce is returned. A repeat returns the saved message; the accepted delegation is never replaced.
+  // over the seller's nonce is returned. A repeat returns the saved message; only a session renewal replaces the accepted delegation.
   async function agreementDelegation(operation, delegationSignature) {
     assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
@@ -811,6 +811,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     requireStage(operation, 'identity');
     requireSellerChallenge(operation);
     const p = operation.state.protocol;
+    assertDelegationNamesKey(p.sessionDelegation, sellerTransport.sessionSignerFor(operation));
     if (p.identity) {
       requireLiveChallenge(operation);
       return { operation, message: p.identity.message };
@@ -832,11 +833,13 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   // The wire verifies the wallet's delegation over the saved payload; it is saved with the challenge scope it authorizes, in one save.
+  // Without a signature, the one a session renewal saved is used; the wire verifies it again before anything is sent.
   async function acceptDelegation(operation, delegationSignature) {
+    const saved = operation.state.protocol.sessionDelegation;
     let signature;
-    try { signature = decodeSignature(delegationSignature).toString('base64url'); }
+    try { signature = decodeSignature(delegationSignature ?? saved.signature).toString('base64url'); }
     catch (cause) { throw new OperationError('bad_signature', 'the wallet delegation signature encoding is invalid', undefined, { cause }); }
-    const delegation = { payload: operation.state.protocol.sessionDelegation.payload, signature };
+    const delegation = { payload: saved.payload, signature };
     await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), delegationScope(operation)));
     const challengeScope = agreementChallengeScope({ operation, buyer: buyerClaim(operation), generatedAt: now() });
     return save(operation, { sessionDelegation: delegation, challengeScope }, { event: 'protocol_seller_session_delegated' });
@@ -947,7 +950,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       if (operation.status === 'settled_verified' && error?.code === 'peer_delegation_expired' && !(pending.payload.expiresAt > now())) throw paidDelegationExpired(pending.payload.expiresAt, { cause: error });
       throw error;
     }
-    const next = save(operation, { sessionDelegation: delegation, pendingSessionDelegation: undefined },
+    // The saved wallet message is replaced with the payload, so identityRequest never returns one payload with another's message.
+    const delegationMessage = await delegationWalletMessage(pending.payload);
+    const next = save(operation, { sessionDelegation: delegation, pendingSessionDelegation: undefined, delegationMessage },
       { event: 'protocol_seller_session_renewed', data: { previousSessionPublicKey: p.sessionDelegation.payload.sessionPublicKey, sessionPublicKey: pending.payload.sessionPublicKey } });
     return { operation: next };
   }

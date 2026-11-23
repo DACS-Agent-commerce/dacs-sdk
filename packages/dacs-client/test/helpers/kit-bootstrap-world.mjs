@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { contentHash } from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
 import { setPurchaseAdmission } from './wire-client-fixture.mjs';
+import { withSeller } from './seller-stand-in.mjs';
 
 // Everything that loads client source comes after the admission hook the fixture above installs.
 const { openDatabase } = await import('./purchase-integrity-database.mjs');
@@ -17,6 +18,7 @@ const { JOB, JOB2 } = await import('../../../dacs-seller/test/helpers/context-wi
 const { NOW, buyer, seller, testWallet } = await import('../../../dacs-seller/test/helpers/protocol-fixture.mjs');
 const { TEST_CONNECTION, authorityReader } = await import('../../../dacs-seller/test/helpers/wire-authority-fixture.mjs');
 const { FIXTURE_ENDPOINT } = await import('../../../dacs-seller/test/helpers/wire-buyer.mjs');
+const { kitEndpointProof } = await import('./kit-endpoint-proof.mjs');
 const { fetchAsHost } = await import('../../../dacs-seller/test/helpers/listener-host.mjs');
 const { purchaseSupport } = await import('../../../dacs-seller/src/dacs/listing.mjs');
 const { createSqlitePurchaseStore } = await import('../../src/seams/purchase-store-not-wired.mjs');
@@ -29,20 +31,7 @@ export const CHALLENGE = wire.DACS_SELLER_HTTP_PATHS.contextChallenge;
 const SELLER_DEADLINE_MS = 4_000;
 const DELEGATION_LIFETIME_MS = 1_800_000;
 const PURCHASE_WINDOW_MS = 3_600_000;
-const DISCOVERY_LIFETIME_MS = 600_000;
-const LISTING_WINDOW_MS = 86_400_000;
 const SESSION_KEY_TAG = 99;
-
-/** The buyer's endpoint proof of a discovery document the kit's seller signed, announcing `ready`. */
-async function endpointProof({ binding, listingPin, ready }) {
-  const listing = { seller: seller.claim, publicEndpoint: FIXTURE_ENDPOINT, listingPin };
-  const document = await wire.signDiscoveryDocument({ format: wire.DACS_SELLER_DISCOVERY_FORMAT, profile: binding.profile, seller: seller.claim, publicEndpoint: FIXTURE_ENDPOINT,
-    transport: [wire.DACS_SELLER_HTTP_V1], listings: [listingPin], capabilities: wire.TP1_CAPABILITIES, ready, issuedAt: NOW, expiresAt: NOW + DISCOVERY_LIFETIME_MS },
-  { claim: seller.claim, sign: seller.signBytes }, binding, { ...TEST_CONNECTION });
-  const eligibility = () => ({ ...listing, pricingKind: 'fixed', negotiation: 'negotiate-fixed-price', commitPhase: wire.TP1_COMMIT_PHASE, rail: 'pay-dem', delivery: wire.TP1_CAPABILITIES.delivery,
-    service: { kind: 'fixed-text' }, output: wire.TP1_CAPABILITIES.output, buyerRequestInput: false, notBefore: NOW - LISTING_WINDOW_MS, expiresAt: NOW + LISTING_WINDOW_MS });
-  return wire.verifyEndpointProof(document, { listing, binding, local: { ...TEST_CONNECTION }, now: NOW, readListingEligibility: eligibility });
-}
 
 /**
  * Starts the kit host and returns the world: `purchase(jobId)` seeds a prepared purchase, `sent(path)` the requests the client sent on
@@ -56,7 +45,7 @@ export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = D
   const host = await f.start();
   const binding = await wire.bindTp1Profile({ record: wire.TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
   const admission = { binding, currentLocal: () => ({ ...TEST_CONNECTION }) };
-  const proof = await endpointProof({ binding, listingPin: host.listingPin, ready });
+  const proof = await kitEndpointProof({ binding, local: TEST_CONNECTION, listingPin: host.listingPin, ready, now: NOW });
   const session = testWallet(SESSION_KEY_TAG), signs = [];
   const sessionSigner = { claim: session.claim, sign(bytes) { signs.push(Buffer.from(bytes)); return session.signBytes(bytes); } };
   const world = { host, binding, signs, requests: [], answers: [], clock: { time: NOW }, intercept: null, policies: 0 };
@@ -80,8 +69,8 @@ export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = D
     const db = openDatabase(file);
     connections.push(db);
     const ops = createOperationStore({ db, handoffSecret: 'TEST-wire-bootstrap-'.repeat(3), now: () => world.clock.time });
-    const service = createProtocolPurchases({ db, ops, admission, now: () => world.clock.time, store: createSqlitePurchaseStore(), fetchImpl,
-      coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, dacsProtocol: { sellerTransport: transport, sellerEndpoint: () => FIXTURE_ENDPOINT, sellerRequestTimeoutMs: SELLER_DEADLINE_MS } });
+    const service = withSeller(fetchImpl, () => createProtocolPurchases({ db, ops, admission, now: () => world.clock.time, store: createSqlitePurchaseStore(),
+      coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, dacsProtocol: { sellerTransport: transport, sellerEndpoint: () => FIXTURE_ENDPOINT, sellerRequestTimeoutMs: SELLER_DEADLINE_MS } }));
     return { db, ops, service };
   };
   let current = open();

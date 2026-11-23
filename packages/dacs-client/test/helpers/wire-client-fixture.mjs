@@ -9,6 +9,7 @@ import { installPurchaseAdmissionHook, loadAdmissionDouble } from './purchase-ad
 import { LOCAL } from '../fixtures/tp1-authority-reader.mjs';
 import { fixtureListing } from '../fixtures/listings.mjs';
 import { readOnlyBoundary } from './read-only-boundary.mjs';
+import { withSeller } from './seller-stand-in.mjs';
 installPurchaseAdmissionHook();
 export const { setPurchaseAdmission } = await loadAdmissionDouble();
 const { openDatabase } = await import('./purchase-integrity-database.mjs');
@@ -84,13 +85,18 @@ export async function world(t, { pin: committedPin, agreementHash = sha256Hex('a
   const auth = createSellerWireAuthentication(options);
   return { buyer, seller, session, other, local, state, binding, admission, pin, endpointProof, publicEndpoint, payload, delegation, job, options, auth, createSellerWireAuthentication };
 }
+/** A world whose endpoint proof names the fixture purchase's own Listing, so the purchase's seller requests can be signed. */
+export const sellerWorld = (t) => {
+  const listing = fixtureListing(party(2), { now: T0 });
+  return world(t, { pin: { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) } });
+};
 const BOOTSTRAP_PATHS = new Set([wire.DACS_SELLER_HTTP_PATHS.contextChallenge, wire.DACS_SELLER_HTTP_PATHS.context]);
 export const request = (w, path = wire.DACS_SELLER_HTTP_PATHS.state) => {
   const body = BOOTSTRAP_PATHS.has(path) ? { scope: { jobId: JOB } } : { transportIdentity: { jobId: JOB } };
   return w.auth.request(path, body, JSON.stringify(body));
 };
-// fetchImpl: the protocol service's transport (default: the global fetch).
-export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {}, fetchImpl, sessionSignerFor = () => w.options.sessionSigner } = {}) {
+// seller: answers the service's seller requests as `seller(url, init)` (default: no seller is reachable).
+export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {}, seller = unreachableSeller, sessionSignerFor = () => w.options.sessionSigner } = {}) {
   const { createSourceDemoSellerTransport } = await import('../../src/dacs/source-demo-seller-transport.mjs');
   const { createProtocolPurchases } = await import('../../src/index.mjs');
   let policies = 0;
@@ -158,10 +164,10 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
       db.close();
     db = openDatabase(path);
     ops = createOperationStore({ db, handoffSecret: 'TEST-wire-fixture-'.repeat(3), now: () => w.state.time });
-    service = createProtocolPurchases({
-      db, ops, admission: w.admission, now: () => w.state.time, store: createSqlitePurchaseStore(), ...(fetchImpl ? { fetchImpl } : {}), coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {
+    service = withSeller(seller, () => createProtocolPurchases({
+      db, ops, admission: w.admission, now: () => w.state.time, store: createSqlitePurchaseStore(), coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {
         } }, dacsProtocol: config
-    });
+    }));
   };
   reopen();
   t.after(() => {
