@@ -1,3 +1,6 @@
+import { open } from "node:fs/promises";
+import { join } from "node:path";
+
 import {
   canonicalize,
   payDemConfirmedNonceSlot,
@@ -12,21 +15,40 @@ import {
   type WalletSpendStateV1,
 } from "@kynesyslabs/dacs";
 
+import { createRecordExclusive, ensurePrivateDirectory, readRecord } from "./walletSpendFileRecords.js";
 import type { DacsWalletSpendDemosReaderV1 } from "./walletSpendDemosReader.js";
 
-/** 64 lowercase hex digits: the spelling of a Demos transaction hash and of a hold's payee. */
 const BARE_HEX_32_RE = /^[0-9a-f]{64}$/;
 const FEE_MISMATCH = "wallet-spend-dem-fee-mismatch";
 const UNAVAILABLE = "wallet-spend-dem-unavailable";
 const RELEASE_PAID = "wallet-spend-dem-release-paid";
 const RELEASE_UNPROVEN = "wallet-spend-dem-release-unproven";
+const MAXIMUM_EVIDENCE_BYTES = 1024;
+type DemEvidenceStore = Readonly<{ claim(hash: string, reservationId: string): Promise<boolean> }>;
+
+/** Opens a permanent transfer-claim store; share its directory across wallet instances and policies.
+ * @throws If the private directory cannot be opened safely.
+ */
+export async function openDacsWalletSpendDemEvidenceStoreV1(directory: string): Promise<DemEvidenceStore> {
+  await ensurePrivateDirectory(directory);
+  return {
+    async claim(hash, reservationId) {
+      const path = join(directory, `${hash}.json`);
+      if (await createRecordExclusive(path, { reservationId })) return true;
+      if (canonicalize(await readRecord(path, MAXIMUM_EVIDENCE_BYTES)) !== canonicalize({ reservationId })) return false;
+      // A prior writer may have stopped after linking the record but before syncing its directory.
+      const handle = await open(directory, "r");
+      try { await handle.sync(); } finally { await handle.close(); }
+      return true;
+    },
+  };
+}
 
 type DemRecoveryCheck = (
   reservation: Readonly<WalletSpendReservationV1>,
   observation: Readonly<WalletSpendRecoveryObservationV1>,
 ) => Promise<Readonly<{ accepted: boolean; reasonCode: string }>>;
 
-/** Ends a check with a refusal and its reason code. */
 class DemCheckStop extends Error {
   constructor(readonly reasonCode: string) { super(reasonCode); }
 }
@@ -36,10 +58,8 @@ const stop = (reasonCode: string): never => { throw new DemCheckStop(reasonCode)
 /** A failed node read changes nothing. */
 const unavailable = (): never => stop(UNAVAILABLE);
 
-/** The parts of a hold the chain rule checks against. */
 interface BoundHold { reservationId: string; payee: string; amount: string; feeReserved: boolean }
 
-/** Step 0: the hold is shaped exactly as the SDK's pay-dem buyer reserves it. */
 function bindHold(reservation: Readonly<WalletSpendReservationV1>): BoundHold {
   const [service, fee, ...others] = reservation.debits;
   let expectedId: string | undefined;
@@ -60,11 +80,12 @@ function bindHold(reservation: Readonly<WalletSpendReservationV1>): BoundHold {
  * Builds the chain rule for the testnet authority's Demos lane. `settled` is accepted only when the
  * chain shows that transfer executed from the policy wallet to the hold's payee for the exact amount,
  * at the hold's planned nonce when it has one, with the fee its confirmed record removed, and only for
- * one hold per transfer. A signed DEM transfer carries no expiry, so neither time nor the buyer's word
- * releases a hold. An absence claim releases one only when the chain shows the wallet's account nonce
- * past the hold's planned nonce, the claimed transfer not on chain, and the wallet's own confirmed
- * transaction at the planned nonce paying the payee nothing. A hold without a planned nonce is never
- * released.
+ * one hold per transfer, claimed durably in the evidence store. Supply the same evidence store across
+ * all instances and policies for a wallet. A signed DEM transfer carries no expiry, so neither time nor
+ * the buyer's word releases a hold. An absence claim releases one only when the chain shows the wallet's
+ * account nonce past the hold's planned nonce, the claimed transfer not on chain, and the wallet's own
+ * confirmed transaction at the planned nonce paying the payee nothing. A hold without a planned nonce
+ * is never released.
  * @returns `authenticateRecovery` for the core, and `check`, the same decision with its reason code.
  */
 export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
@@ -72,18 +93,16 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
   reader: Pick<DacsWalletSpendDemosReaderV1,
     "observeTransfer" | "readAccountNonce" | "findTransactionAtNonce" | "readRecord">;
   readState(): Promise<Readonly<WalletSpendStateV1>>;
+  /** Atomically retain one hold per transfer, durably before success; allow retries by that hold. */
+  evidenceStore: DemEvidenceStore;
   report(line: Readonly<Record<string, string>>): void;
 }>): Readonly<{
   authenticateRecovery: WalletSpendAuthorityDependenciesV1["authenticateRecovery"];
   check: DemRecoveryCheck;
 }> {
-  // The observer reports addresses as bare lowercase hex.
   const payer = input.policy.wallet.slice(2);
   const reported = new Set<string>();
-  // Transfers accepted in this process, by hash, so two claims cannot both pass before the core commits either.
-  const counted = new Map<string, string>();
 
-  /** Refuses with `reasonCode` and prints one `hold-needs-operator` line per hold and code. */
   function stopForOperator(reasonCode: string, reservationId: string, transactionHash?: string): never {
     const key = JSON.stringify([reservationId, reasonCode]);
     if (!reported.has(key)) {
@@ -96,16 +115,6 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
     return stop(reasonCode);
   }
 
-  function assertNotCounted(hold: BoundHold, hash: string, state: Readonly<WalletSpendStateV1>): void {
-    const countedFor = counted.get(hash);
-    if ((countedFor !== undefined && countedFor !== hold.reservationId) || state.reservations.some(
-      (stored) => stored.reservationId !== hold.reservationId && stored.evidenceHash === hash,
-    )) {
-      stopForOperator("wallet-spend-dem-evidence-reused", hold.reservationId, hash);
-    }
-  }
-
-  /** Steps 3 to 5: the executed transfer on chain, at the planned nonce if any, and the payer's real total debit. */
   async function chainTotal(hold: BoundHold, hash: string, planned: number | undefined): Promise<string> {
     const seen = await input.reader.observeTransfer(hash).catch(unavailable);
     const chain = seen.observation;
@@ -132,7 +141,9 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
   ): Promise<void> {
     const hash = claim.evidenceHash;
     if (!BARE_HEX_32_RE.test(hash)) stop("wallet-spend-dem-evidence-invalid");
-    assertNotCounted(hold, hash, state);
+    if (state.reservations.some((stored) => stored.reservationId !== hold.reservationId && stored.evidenceHash === hash)) {
+      stopForOperator("wallet-spend-dem-evidence-reused", hold.reservationId, hash);
+    }
     const fee = (BigInt(await chainTotal(hold, hash, planned)) - BigInt(hold.amount)).toString();
     if (!hold.feeReserved && fee !== "0") stop(FEE_MISMATCH);
     const expected: WalletSpendSettlementObservationV1 = {
@@ -144,9 +155,9 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
       ],
     };
     if (canonicalize(expected) !== canonicalize(claim)) stop(FEE_MISMATCH);
-    // Re-checked after the chain read: another claim for this transfer may have been accepted meanwhile.
-    assertNotCounted(hold, hash, state);
-    counted.set(hash, hold.reservationId);
+    if (!await input.evidenceStore.claim(hash, hold.reservationId)) {
+      stopForOperator("wallet-spend-dem-evidence-reused", hold.reservationId, hash);
+    }
   }
 
   /**

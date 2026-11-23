@@ -146,6 +146,15 @@ const lookup = (url: string, operationId: string, body: string) => {
 };
 
 describe("testnet wallet-spend authority process", { timeout: 60_000 }, () => {
+  it("a stop requested the moment the listening line is printed still exits cleanly", async () => {
+    const { settings } = await fixture();
+    const service = run(settings.environment, [], [
+      "--import", pathToFileURL(join(PACKAGE_DIRECTORY, "test/helpers/stopOnListening.mjs")).href,
+    ]);
+    await expect(service.exited).resolves.toBe(0);
+    expect(service.stdout()).toContain("\"status\":\"listening\"");
+  });
+
   it("a real restart answers held for the recorded hold", async () => {
     const { settings, sent, client } = await fixture();
     const first = run(settings.environment);
