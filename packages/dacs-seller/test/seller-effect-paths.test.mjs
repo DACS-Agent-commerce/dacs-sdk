@@ -23,7 +23,6 @@ const { MONOTONIC_CLOCK, TEST_BINDING, TEST_PASS_SESSION, integrityRoleOf, readO
 const { createSellerCreatePass, isSellerCreatePass, lateSellerCreatePass } = await import('../src/devnet-demo/create-pass.mjs');
 const { signInPass, signRetainedInPass } = await import('../src/devnet-demo/wallet-signature-pass.mjs');
 const { createAnswerSigners } = await import('../src/dacs/answer-signers.mjs');
-const { createDevnetDemoAgreementContextProvider } = await import('../src/devnet-demo/agreement-context.mjs');
 const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
 const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs');
 const { orchestratorFixture } = await import('./helpers/vet-orchestrator-fixture.mjs');
@@ -448,7 +447,6 @@ const rejectsWith = async (promise, code, label) => {
   const { value, codes = [] } = await settled(promise);
   assert.ok(value === undefined && codes.includes(code), `${label ?? 'refused'}: expected ${code} in ${codes}`);
 };
-const flushTurns = async () => { for (let turn = 0; turn < 50; turn++) await new Promise((resolve) => setImmediate(resolve)); };
 
 // A monotonic test clock that moves only when the test moves it, firing the timers that come due.
 function manualClock() {
@@ -532,8 +530,7 @@ test('the Listing signature and the identity presentation are retained by signPa
   const vet = await orchestratorFixture(t);
   assert.equal((await vet.run()).disposition, 'present');
   assert.equal(vet.controls.signatures.length, 2, 'both Vet component signatures were made');
-  let vetLanes = [];
-  try { vetLanes = readdirSync(join(vet.effectsDirectory, 'effects')); } catch { vetLanes = []; }
+  const vetLanes = existsSync(join(vet.effectsDirectory, 'effects')) ? readdirSync(join(vet.effectsDirectory, 'effects')) : [];
   const vetRecords = (await Promise.all(vetLanes.map((name) => historyOf(vet.effectsDirectory).read(name)))).flat();
   assert.deepEqual(vetRecords, [], 'the Vet component signatures add no effect-history record');
 });
