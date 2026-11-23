@@ -2302,6 +2302,7 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
 /** Internal strict record helpers shared by the filesystem implementation. */
 export const x402BuyerSettlementStoreInternals = Object.freeze({
   captureIntent,
+  captureJson: snapshotJson,
   captureDisclosure,
   captureOutcome,
   captureStoredRecord,

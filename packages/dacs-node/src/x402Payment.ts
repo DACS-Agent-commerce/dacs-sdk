@@ -383,8 +383,9 @@ export function createDacsX402WalletSpendRecoveryAuthenticatorV1(
       if (settlementKey.length === 0) return false;
       let candidate: Readonly<X402BuyerSettlementDisclosure> | undefined;
       const loaded = await settlementStore.load(settlementKey);
-      // No stored input means nothing was signed for sending, so only a hold that never
-      // began can be released, and only with the evidence preparation computes.
+      // This checks only the settlement store. The wallet authority also requires an
+      // unbegun hold with an expired lease, so only a hold that never began is released,
+      // and only with the evidence preparation computes.
       if (loaded.status === "absent") {
         return observation.disposition === "not-invoked" &&
           observation.evidenceHash === unstoredHoldEvidenceHash(reservation.reservationId);
@@ -924,6 +925,7 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
       ? {} : { retryDelayMs: options.retryDelayMs }),
     async buildInput(operationInput) {
       let permit: Readonly<WalletSpendPermitV1> | undefined;
+      let held = false;
       const bindAuthorization = async (scope: Readonly<X402BuyerUnsignedIntentScope>) => {
         if (scope.jobId !== operationInput.order.jobId ||
             await options.authorizePreparedIntent({ order: operationInput.order, intent: scope }) !== true) {
@@ -958,6 +960,7 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
             claim.status === "denied" ? `wallet-spend-${claim.reason}` : `wallet-spend-${claim.status}`,
           );
         }
+        held = true;
         const validBefore = claim.permit.authorizationValidBefore;
         if (validBefore === undefined || !Number.isSafeInteger(validBefore) || validBefore <= 0) {
           throw new DacsLiveEffectInputControlError("operator-action", "x402-authorization-valid-before-unbound");
@@ -985,9 +988,13 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
           intent,
         };
       } catch (error) {
-        if (error instanceof DacsLiveEffectInputControlError) throw error;
-        if (permit !== undefined || error instanceof DacsX402BuyerPaymentError) {
-          throw new DacsLiveEffectInputControlError(permit === undefined ? "operator-action" : "indeterminate",
+        if (error instanceof DacsLiveEffectInputControlError) {
+          // A parked payment is never retried, and only a retry frees a hold no input will use.
+          if (!held || error.status !== "operator-action") throw error;
+          throw new DacsLiveEffectInputControlError("indeterminate", error.reasonCode);
+        }
+        if (held || error instanceof DacsX402BuyerPaymentError) {
+          throw new DacsLiveEffectInputControlError(held ? "indeterminate" : "operator-action",
             error instanceof Error && "reasonCode" in error && typeof error.reasonCode === "string"
               ? error.reasonCode : "x402-signing-after-hold-failed");
         }
