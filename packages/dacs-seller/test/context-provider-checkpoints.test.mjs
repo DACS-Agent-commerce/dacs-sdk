@@ -18,8 +18,16 @@ function purchaseCheck() {
     check.open = () => !(check.armed && ++check.calls >= check.after);
     return check;
 }
-// A CREATE the source reports pending is read again after a wait of minutes; this ends that wait at its first poll.
-const endWait = async () => { throw new Error('TEST the wait for inclusion ends'); };
+// A CREATE the source reports pending is read again after a wait of minutes. The fake sleep advances by the requested
+// interval, so the anchor reaches its 30-minute deadline through the same five-second polling loop as production.
+const lateWriteDeadline = () => {
+    let at = T0, polls = 0;
+    return {
+        anchorNow: () => at,
+        sleep: async (ms) => { polls++; at += ms; },
+        polls: () => polls,
+    };
+};
 const resolve = (f, provider, writable = () => true) => provider.resolveBuyer(f.input, { writable });
 const closureStages = step => (step.provenance?.entries ?? []).filter(entry => entry.result.kind === 'closure').map(entry => entry.stage);
 const complete = async (f, role) => Object.values((await f.row()).ops[role].steps).every(step => step.state === 'complete');
@@ -226,9 +234,13 @@ test("a generic SDK anchor failure is classified from publication and observatio
     });
     await t.test('a CREATE the source has not included yet is held until the source answers, then adopted without a second CREATE', async (t) => {
         for (const role of ROLES) {
-            const f = await orchestratorFixture(t, { disk: true, real: true, sleep: endWait }), binding = f.native.source.binding;
+            const clock = lateWriteDeadline();
+            const f = await orchestratorFixture(t, { disk: true, real: true, anchorNow: clock.anchorNow, sleep: clock.sleep }), binding = f.native.source.binding;
             f.when(role, 'signature', () => { f.native.source.binding = async () => ({ disposition: 'pending' }); });
             await blocked(() => resolve(f, f.provider()));
+            // The wait ended after 360 five-second polls at its deadline; the anchor step is cleared, not saved as failed.
+            assert.equal(stepOf(await f.row(), role, ANCHOR).step, undefined);
+            if (role === 'seller') assert.equal(clock.polls(), 360);
             await assertReplays(f);
             f.native.source.binding = binding;
             assertPresent(await resolve(f, f.fresh()));
@@ -465,7 +477,8 @@ test('a recovered run keeps the producer order, the Vet mode and the retained by
 test('every context observation remains passive for a pending accepted CREATE, including recovery, completed replay, outside-step reads and closed attempts', async (t) => {
     // An RPC signer and a spy on the source's recovery send are wired in, so a read that was not passive would act.
     const withRecoverySpy = async (t) => {
-        const f = await orchestratorFixture(t, { disk: true, real: true, signRpc: async () => ({}), sleep: endWait }), seen = { recoveries: 0, closedReads: 0 };
+        const clock = lateWriteDeadline();
+        const f = await orchestratorFixture(t, { disk: true, real: true, signRpc: async () => ({}), anchorNow: clock.anchorNow, sleep: clock.sleep }), seen = { recoveries: 0, closedReads: 0 };
         f.native.source.recoverStorageWrite = async () => { seen.recoveries++; return { resent: true }; };
         f.native.source.binding = async () => ({ disposition: 'included' });
         return { f, seen };
