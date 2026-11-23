@@ -1,6 +1,7 @@
 // Test-only effect boundary for the session-key request path: real durable history and journal, and a
 // real actor fence over a queuing owner, bound to the wire world's binding and live connection.
 // `control.stopped` and `control.onStop(call)` steer the host's stop check; `control.acquired` counts fence acquisitions.
+// `path` is the journal's database file, for a second process opening the same journal.
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,7 +31,7 @@ export function requestBoundary(t, { binding, currentLocal }) {
   };
   build();
   t.after(() => { state.journal.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { control, get boundary() { return state.boundary; }, get history() { return state.history; }, get journal() { return state.journal; },
+  return { control, path, get boundary() { return state.boundary; }, get history() { return state.history; }, get journal() { return state.journal; },
     reopen() { state.journal.close(); state.journal = openDurableWalletJournal({ path, mode: 'open' }); build(); },
     records: async () => (await state.journal.entries()).filter(([key]) => key.startsWith('eb/')).map(([, record]) => record) };
 }
