@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spyOnFsync } from './helpers/fsync-spy.mjs';
@@ -47,6 +47,19 @@ test('the fsync spy runs its hook before the real sync, so a hook that throws ma
     assert.throws(() => syncFile(path), (error) => error === cause);
   } finally {
     spy.restore();
+  }
+  assert.deepEqual(spy.synced, [path]);
+});
+
+test('the fsync spy names FileHandle syncs from the open path without reading /proc', async (t) => {
+  const path = join(await fixture(t), 'file');
+  const spy = spyOnFsync();
+  let handle;
+  try {
+    handle = await open(path, 'a');
+    await handle.sync();
+  } finally {
+    try { await handle?.close(); } finally { spy.restore(); }
   }
   assert.deepEqual(spy.synced, [path]);
 });

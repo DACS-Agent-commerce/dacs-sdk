@@ -21,6 +21,7 @@ import {DACS_SELLER_DISCOVERY_PATH} from '@kynesyslabs/dacs/wire';
 import {FIXTURE_ENDPOINT,wireAuthentication,wireBuyer} from './helpers/wire-buyer.mjs';
 import {LISTING_AUTHORITY,fetchAsHost,proxyListener} from './helpers/listener-host.mjs';
 import {PROCESS_LEASE_ID,PROCESS_NAMESPACE} from '../src/dacs/process-lease.mjs';
+import {spyOnFsync} from './helpers/fsync-spy.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 async function fixture(t,{wrap=agent=>agent,publicEndpoint=FIXTURE_ENDPOINT}={}){
  const f=await commitmentFixture(t,{vetMode:KIT_TP1_VET_MODE,publicEndpoint}),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
@@ -268,15 +269,12 @@ test('host reports both literal loopback URLs',async t=>{
 });
 
 test('host makes newly created seller, transport and journal directories durable before listening',async t=>{
- const f=await fixture(t),handle=await fs.promises.open(f.dataDirectory,'r'),proto=Object.getPrototypeOf(handle),original=proto.sync,synced=[];
- await handle.close();
+ const f=await fixture(t),spy=spyOnFsync();let host;
  try{
-  proto.sync=async function(){try{synced.push(fs.realpathSync(`/proc/self/fd/${this.fd}`));}catch{}return original.call(this);};
-  const host=await f.start();
-  assert.ok(synced.includes(join(f.dataDirectory,'transport')),'the new transport directory entry is synced');
-  assert.ok(synced.includes(f.dataDirectory),'the new seller, transport and wire-journal directory entries are synced in dataDirectory');
-  await host.close();
- }finally{proto.sync=original;}
+  host=await f.start();
+  assert.ok(spy.synced.includes(join(f.dataDirectory,'transport')),'the new transport directory entry is synced');
+  assert.ok(spy.synced.includes(f.dataDirectory),'the new seller, transport and wire-journal directory entries are synced in dataDirectory');
+ }finally{try{await host?.close();}finally{spy.restore();}}
 });
 
 const lockOwner=(lease,pid,namespace)=>`${pid}:${lease}:${Date.now()}:${randomUUID()}${namespace?`:${namespace.ns}.${namespace.boot}.${namespace.start}`:''}`;

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { Dir, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { mkdtemp, open, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { Server } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -28,6 +28,7 @@ import { hostAuthority, testWalletSession } from './helpers/kit-wallet-session.m
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { LISTING_AUTHORITY, proxyListener } from './helpers/listener-host.mjs';
 import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
+import { spyOnFsync } from './helpers/fsync-spy.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall, isBoundedCallTimeout } from '../src/dacs/bounded-call.mjs';
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
@@ -165,18 +166,11 @@ function recordingSync(f, log, options = {}) {
 // Runs `work` while every FileHandle sync (the only kind the marker and the host's directory
 // syncs use) and the opening of a listener are logged, so syncs can be ordered against listen.
 async function withHostSyncs(f, log, work, options = {}) {
-  const probe = await open(f.dataDirectory, 'r');
-  const handles = Object.getPrototypeOf(probe);
-  await probe.close();
   const step = syncStep(f, log, options);
-  const sync = handles.sync;
   const listen = Server.prototype.listen;
-  handles.sync = function recordedSync() {
-    const path = realpathSync(`/proc/self/fd/${this.fd}`);
-    return step({ kind: statSync(path).isDirectory() ? 'directory' : 'file', path }, () => sync.call(this));
-  };
+  const spy = spyOnFsync({ aroundSync: (path, sync) => step({ kind: statSync(path).isDirectory() ? 'directory' : 'file', path }, sync) });
   Server.prototype.listen = function recordedListen(...args) { log.push({ kind: 'listen' }); return listen.apply(this, args); };
-  try { return await work(); } finally { handles.sync = sync; Server.prototype.listen = listen; }
+  try { return await work(); } finally { spy.restore(); Server.prototype.listen = listen; }
 }
 
 const isMarkerFileSync = (event) => event.kind === 'file' && basename(event.path).startsWith(`${MARKER_FILE}.`);
