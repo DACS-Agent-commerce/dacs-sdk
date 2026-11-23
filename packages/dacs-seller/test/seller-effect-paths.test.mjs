@@ -4,11 +4,11 @@
 // The agent's signatures and the answer that carries its Agreement co-signature, through the host's effect boundary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import * as core from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { T0, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 
@@ -19,7 +19,18 @@ const { agentFixture, fixtureProposal } = await import('./helpers/seller-agent-i
 const { countedKeyRoles } = await import('./helpers/counted-key-roles.mjs');
 const { proposalWireWorld } = await import('./helpers/proposal-wire-world.mjs');
 const { PATHS } = await import('./helpers/wire-routes-world.mjs');
-const { MONOTONIC_CLOCK, TEST_BINDING, integrityRoleOf, readOnlyRoleOf } = await import('./helpers/agent-signing.mjs');
+const { MONOTONIC_CLOCK, TEST_BINDING, TEST_PASS_SESSION, integrityRoleOf, readOnlyRoleOf, testEffectBoundary, testRunCreate } = await import('./helpers/agent-signing.mjs');
+const { createSellerCreatePass, isSellerCreatePass, lateSellerCreatePass } = await import('../src/devnet-demo/create-pass.mjs');
+const { signInPass, signRetainedInPass } = await import('../src/devnet-demo/wallet-signature-pass.mjs');
+const { createAnswerSigners } = await import('../src/dacs/answer-signers.mjs');
+const { createDevnetDemoAgreementContextProvider } = await import('../src/devnet-demo/agreement-context.mjs');
+const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
+const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs');
+const { orchestratorFixture } = await import('./helpers/vet-orchestrator-fixture.mjs');
+const { productionFixture } = await import('./helpers/vet-production-fixture.mjs');
+const { contextHostFixture } = await import('./helpers/host-context-client.mjs');
+const { seller: protocolSeller } = await import('./helpers/protocol-fixture.mjs');
+const { world: wireWorld } = await import('./helpers/wire-routes-world.mjs');
 const { TEST_CONNECTION } = await import('./helpers/wire-authority-fixture.mjs');
 const { JOBS } = await import('./helpers/bilateral-vet-fixture.mjs');
 const guard = await import('../src/kit-operation-guard.mjs');
@@ -417,3 +428,217 @@ for (const [label, change, refusal] of [
     assert.equal(control.agreementSignatures(), 1);
   });
 }
+
+// ---- The Listing, Vet and presentation signatures and the seller's answers through the boundary ----
+
+const LISTING_WALLET = Object.freeze({ claim: protocolSeller.claim, signBytes: protocolSeller.signBytes });
+const PUBLISHED = 'TEST_published';
+const historyOf = (directory) => createEffectHistory({ dataDirectory: directory });
+const listingLanes = (directory) => { try { return readdirSync(join(directory, 'effects')).filter((name) => name.startsWith('listing-signature-')).sort(); } catch { return []; } };
+const statesOf = async (directory, lane) => (await historyOf(directory).read(lane)).map((record) => record.state);
+const codesOf = (error) => { const codes = []; for (let link = error; link; link = link.cause ?? link.errors?.[0]) codes.push(link.code); return codes; };
+const settled = (promise) => promise.then((value) => ({ value }), (error) => ({ error, codes: codesOf(error) }));
+// Asserts that `promise` rejects with `code` somewhere in its cause chain (the Listing core wraps its callbacks' errors).
+const rejectsWith = async (promise, code, label) => {
+  const { value, codes = [] } = await settled(promise);
+  assert.ok(value === undefined && codes.includes(code), `${label ?? 'refused'}: expected ${code} in ${codes}`);
+};
+const flushTurns = async () => { for (let turn = 0; turn < 50; turn++) await new Promise((resolve) => setImmediate(resolve)); };
+
+// A monotonic test clock that moves only when the test moves it, firing the timers that come due.
+function manualClock() {
+  let now = 0;
+  const timers = new Set();
+  return { now: () => now, after(ms, callback) { const timer = { at: now + ms, callback }; timers.add(timer); return () => timers.delete(timer); },
+    advance(ms) { now += ms; for (const timer of [...timers].sort((a, b) => a.at - b.at)) if (timer.at <= now && timers.delete(timer)) timer.callback(); } };
+}
+
+// A Listing publisher over `runCreate` whose anchor ends each publication at publish, after its signature; `sign` is the wallet's.
+function stoppingListing(runCreate, { now = T0, sign = (bytes) => LISTING_WALLET.signBytes(bytes) } = {}) {
+  const counts = { signs: 0, publishes: 0, signed: [] };
+  const anchor = { publish: async () => { counts.publishes++; throw Object.assign(new Error('TEST the publication ends at publish'), { code: PUBLISHED }); },
+    read: async () => ({ status: 'absent' }), verifyReceipt: async () => 'invalid' };
+  const publish = createDevnetDemoListingPublisher({ anchor, runCreate, scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: railAuthority,
+    sign: async (bytes, options) => { counts.signs++; counts.signed.push(Buffer.from(bytes)); return sign(bytes, options); } });
+  const draft = fixtureListing(LISTING_WALLET, { now });
+  delete draft.signature;
+  return { publish, draft, counts };
+}
+
+test('the Listing signature and the identity presentation are retained by signPass: each leaves one signed record with the signed bytes on its lane before the call returns, a second call for the same Listing returns those bytes with zero signer calls, a refusal after the signature keeps the signed record and adds signed-held, a signer that has not answered within 10 s on the test clock refuses eb_sign_timeout and retains nothing, and a signer that answers after the pass window but within its own 10 s is retained and refused stop_check_timeout with signed-held, after which the Listing retry reuses it with zero signer calls; two Listing drafts use two lanes; the Vet component signatures add no effect-history record', async (t) => {
+  const retained = testEffectBoundary();
+  const listing = stoppingListing(testRunCreate({ effectBoundary: retained.effectBoundary }).runCreate);
+  await rejectsWith(listing.publish(listing.draft), PUBLISHED);
+  const [lane] = listingLanes(retained.dataDirectory);
+  assert.equal(lane, `listing-signature-${core.sha256Hex(listing.counts.signed[0])}`, 'the lane is the signature\'s own operation');
+  const [record, ...more] = await historyOf(retained.dataDirectory).read(lane);
+  assert.deepEqual([record.state, record.operationId, more.length], ['signed', lane, 0]);
+  assert.equal(Buffer.from(record.bytes, 'base64').toString(), LISTING_WALLET.signBytes(listing.counts.signed[0]).toString('base64url'), 'the record holds the wallet\'s signature');
+  assert.equal(listing.counts.publishes, 1, 'the publication went on only after the signature was retained');
+  await rejectsWith(listing.publish(listing.draft), PUBLISHED);
+  assert.deepEqual([listing.counts.signs, listing.counts.publishes, (await statesOf(retained.dataDirectory, lane)).length], [1, 2, 1], 'the second call reused the retained bytes');
+  const other = stoppingListing(testRunCreate({ effectBoundary: retained.effectBoundary }).runCreate, { now: T0 + 1000 });
+  await rejectsWith(other.publish(other.draft), PUBLISHED);
+  assert.equal(listingLanes(retained.dataDirectory).length, 2, 'two drafts, two lanes');
+
+  let stop = false;
+  const held = testEffectBoundary({ stopped: () => stop });
+  const heldListing = stoppingListing(testRunCreate({ effectBoundary: held.effectBoundary }).runCreate, { sign: (bytes) => { stop = true; return LISTING_WALLET.signBytes(bytes); } });
+  await rejectsWith(heldListing.publish(heldListing.draft), 'seller_stopped');
+  assert.deepEqual(await statesOf(held.dataDirectory, listingLanes(held.dataDirectory)[0]), ['signed', 'signed-held'], 'a refusal after the signature keeps it and records signed-held');
+  stop = false;
+  await rejectsWith(heldListing.publish(heldListing.draft), PUBLISHED);
+  assert.equal(heldListing.counts.signs, 1, 'the retry reused the held signature');
+
+  const late = manualClock(), timing = testEffectBoundary({ clock: late });
+  let called = false;
+  const silent = stoppingListing(testRunCreate({ effectBoundary: timing.effectBoundary }).runCreate, { sign: () => { called = true; return new Promise(() => {}); } });
+  const timedOut = settled(silent.publish(silent.draft));
+  for (let turn = 0; turn < 200 && !called; turn++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(called, true, 'the signer was called');
+  late.advance(10_000);
+  assert.ok((await timedOut).codes.includes('eb_sign_timeout'), `refused eb_sign_timeout: ${(await timedOut).codes}`);
+  assert.deepEqual(listingLanes(timing.dataDirectory).length === 0 ? [] : await statesOf(timing.dataDirectory, listingLanes(timing.dataDirectory)[0]), [], 'nothing was retained');
+
+  const between = manualClock(), window = testEffectBoundary({ clock: between });
+  let lateStart = true, answer;
+  // The session pass starts 6 s into the kit pass window, so the signer is called inside the window and answers 5 s later, after it ends.
+  const session = { ...TEST_PASS_SESSION, runInEffectPass: async (handle, work) => { if (lateStart) { lateStart = false; between.advance(6_000); } return TEST_PASS_SESSION.runInEffectPass(handle, work); } };
+  const { runCreate: betweenRunCreate } = createSellerCreatePass({ effectBoundary: window.effectBoundary, session, stopped: () => false, feeCeilingOs: String(WRITE_FEE_CEILING_OS), clock: between });
+  const slow = stoppingListing(betweenRunCreate, { sign: (bytes) => new Promise((resolve) => { answer = () => resolve(LISTING_WALLET.signBytes(bytes)); }) });
+  const outcome = settled(slow.publish(slow.draft));
+  for (let turn = 0; turn < 200 && answer === undefined; turn++) await new Promise((resolve) => setImmediate(resolve));
+  between.advance(5_000);
+  answer();
+  assert.ok((await outcome).codes.includes('stop_check_timeout'), `refused stop_check_timeout: ${(await outcome).codes}`);
+  assert.deepEqual(await statesOf(window.dataDirectory, listingLanes(window.dataDirectory)[0]), ['signed', 'signed-held'], 'the late answer is retained, then held');
+  await rejectsWith(slow.publish(slow.draft), PUBLISHED);
+  assert.equal(slow.counts.signs, 1, 'the Listing retry reused it with zero signer calls');
+
+  const presentation = productionFixture();
+  t.after(() => presentation.base.close());
+  await presentation.run();
+  assert.equal(presentation.controls.presentationSigns, 1);
+  const jobLanes = readdirSync(join(presentation.effectsDirectory, 'effects'));
+  const presentations = (await Promise.all(jobLanes.map((name) => historyOf(presentation.effectsDirectory).read(name)))).flat().filter((entry) => entry.operationId.startsWith('presentation-'));
+  assert.deepEqual(presentations.map((entry) => entry.state), ['signed'], 'one signed record of the presentation');
+  assert.match(Buffer.from(presentations[0].bytes, 'base64').toString(), /^[A-Za-z0-9_-]+$/, 'it holds the wallet\'s signature string');
+
+  const vet = await orchestratorFixture(t);
+  assert.equal((await vet.run()).disposition, 'present');
+  assert.equal(vet.controls.signatures.length, 2, 'both Vet component signatures were made');
+  let vetLanes = [];
+  try { vetLanes = readdirSync(join(vet.effectsDirectory, 'effects')); } catch { vetLanes = []; }
+  const vetRecords = (await Promise.all(vetLanes.map((name) => historyOf(vet.effectsDirectory).read(name)))).flat();
+  assert.deepEqual(vetRecords, [], 'the Vet component signatures add no effect-history record');
+});
+
+test('a restart between the Listing signature and its CREATE intent reuses the retained Listing signature, calls the signer zero times and stores one intent, and a restart after the intent issues no second CREATE', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'TEST-listing-restart-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const f = await anchorFixture({ writer: { claim: LISTING_WALLET.claim, sign: LISTING_WALLET.signBytes }, artifactKinds: ['Listing'], now: () => T0 });
+  // The wallet signs the CREATE and journals its broadcast, then the process loses the answer.
+  f.controls.request = async (request) => {
+    const signedTransaction = await signSdkCreate(request.transaction, { writer: protocolSeller }), hash = signedTransaction.hash;
+    await f.journal.put(`demo/wallet/${request.jobId}`, { stage: 'broadcast-started', hash, signedTransaction });
+    await f.sourceJournal.put(`source/${request.jobId}`, { stage: 'signed', hash, signedTransaction });
+    return { success: false, error: { code: 'internal_error' } };
+  };
+  const signs = { count: 0 };
+  // One process: a new boundary over the same data directory, an issued runCreate and a publisher over `anchor`.
+  const processOver = (anchor) => createDevnetDemoListingPublisher({ anchor, runCreate: testRunCreate({ effectBoundary: testEffectBoundary({ dataDirectory: directory }).effectBoundary }).runCreate,
+    scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: railAuthority, sign: (bytes) => { signs.count++; return LISTING_WALLET.signBytes(bytes); } });
+  const draft = fixtureListing(LISTING_WALLET, { now: T0 });
+  delete draft.signature;
+  const intents = () => [...f.journal.rows.values()].filter((row) => row.input?.artifactKind === 'Listing').length;
+  const crashing = { ...f.open(), publish: async () => { throw Object.assign(new Error('TEST the process dies before the CREATE intent is stored'), { code: 'TEST_crash' }); } };
+  await rejectsWith(processOver(crashing)(draft), 'TEST_crash');
+  assert.deepEqual({ signs: signs.count, intents: intents(), lanes: listingLanes(directory).length }, { signs: 1, intents: 0, lanes: 1 }, 'signed and retained, no intent');
+  await assert.rejects(processOver(f.open())(draft));
+  assert.deepEqual({ signs: signs.count, intents: intents(), creates: f.captured.length }, { signs: 1, intents: 1, creates: 1 }, 'the restart reused the signature and stored one intent');
+  await assert.rejects(processOver(f.open())(draft));
+  assert.deepEqual({ signs: signs.count, intents: intents(), creates: f.captured.length }, { signs: 1, intents: 1, creates: 1 }, 'a restart after the intent issued no second CREATE');
+});
+
+// A runCreate the kit did not issue: one that calls `work` with a bare signer, a wrapper around an issued one, and a non-function.
+const unissuedRunCreates = (issued) => [
+  ['a pass-through substitute', async (op, work) => work({ guardedSigner: (sign) => sign, signPass: async (inner) => inner() })],
+  ['a wrapper around an issued runCreate', (op, work) => issued(op, work)],
+  ['a non-function', Object.freeze({ runCreate: issued })],
+];
+
+test('the Vet provider, the Listing publisher and the signature helpers refuse a runCreate the kit did not issue: a pass-through substitute that calls work with a bare signer, a wrapper around an issued runCreate and a non-function each throw a TypeError at construction or call, and the wallet and Listing signers are called zero times; the port\'s runCreate and createSellerCreatePass\'s runCreate are accepted', async (t) => {
+  const { runCreate: issued } = testRunCreate();
+  const f = await orchestratorFixture(t);
+  let walletCalls = 0;
+  const wallet = { claim: f.config.wallet.claim, signBytes: (bytes) => { walletCalls++; return f.config.wallet.signBytes(bytes); } };
+  const op = (runCreate) => ({ runCreate, operationId: 'TEST-signature', lane: 'TEST-signature', operationClass: 'job-create', currentAuthorization: () => true });
+  for (const [label, runCreate] of unissuedRunCreates(issued)) {
+    assert.equal(isSellerCreatePass(runCreate), false, label);
+    assert.throws(() => f.provider({ runCreate, wallet }), TypeError, `${label}: the provider`);
+    assert.throws(() => stoppingListing(runCreate), TypeError, `${label}: the publisher`);
+    await assert.rejects(signRetainedInPass(op(runCreate), async () => { walletCalls++; return 'TEST'; }), TypeError, `${label}: signRetainedInPass`);
+    await assert.rejects(signInPass(op(runCreate), wallet.signBytes, Buffer.from('TEST')), TypeError, `${label}: signInPass`);
+  }
+  assert.equal(walletCalls, 0, 'no signer was called');
+  const { world } = await finalizedWorld(t);
+  for (const [label, runCreate] of [['the port\'s runCreate', world.port.runCreate], ['createSellerCreatePass\'s runCreate', issued], ['a late-bound issued runCreate', lateSellerCreatePass(() => issued)]]) {
+    assert.equal(isSellerCreatePass(runCreate), true, label);
+    assert.doesNotThrow(() => f.provider({ runCreate }), label);
+    assert.doesNotThrow(() => stoppingListing(runCreate), label);
+  }
+  assert.equal(await signRetainedInPass(op(issued), async () => 'TEST-signature-value'), 'TEST-signature-value', 'the issued runCreate signs');
+  await assert.rejects(lateSellerCreatePass(() => async () => {})(op(issued), () => {}), TypeError, 'a late-bound pass that resolves an unissued runCreate refuses at call');
+});
+
+test('createSellerAgent without readOnlyAnswerSigner, createWireContext with a signer that has no read-only role, and the host with a signer that lacks one of the three roles each throw a TypeError before anything is opened', async (t) => {
+  const agent = await agentFixture({ memory: true });
+  t.after(() => agent.close());
+  const durableDirectory = join(mkdtempSync(join(tmpdir(), 'TEST-three-roles-')), 'seller');
+  t.after(() => rmSync(dirname(durableDirectory), { recursive: true, force: true }));
+  const { effectSigner, integritySigner, effectBoundary } = { effectSigner: agent.config.signer, integritySigner: integrityRoleOf(agent.config.signer), effectBoundary: testEffectBoundary().effectBoundary };
+  await assert.rejects(createSellerAgent({ ...agent.config, durableDirectory, effectSigner, integritySigner, effectBoundary }), { name: 'TypeError', message: /readOnlyAnswerSigner/ });
+  assert.equal(existsSync(durableDirectory), false, 'the agent opened no durable state');
+
+  const w = await wireWorld(t);
+  const { binding, journal, store, readCommitmentReceipt } = w.handle.wire;
+  const bindings = [];
+  const watched = { ...store, bind: (input) => { bindings.push(input); return store.bind(input); } };
+  assert.throws(() => createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer: { claim: protocolSeller.claim, sign: protocolSeller.signBytes },
+    effectBoundary: w.effectBoundary, journal, store: watched, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt }), TypeError);
+  assert.deepEqual(bindings, [], 'the wire context bound no store');
+
+  const host = await contextHostFixture(t);
+  const { signer } = host.config;
+  for (const missing of ['sign', 'integritySigner', 'readOnlyAnswerSigner']) {
+    const partial = { ...signer };
+    delete partial[missing];
+    await assert.rejects(host.start({ signer: partial }), { name: 'TypeError', message: /signing roles \(sign, integritySigner and readOnlyAnswerSigner\)/ }, missing);
+    assert.deepEqual(readdirSync(host.dataDirectory), [], `${missing}: the host opened nothing, the state lock included`);
+  }
+});
+
+test('a success answer on an effect route is signed by the effect role in its own short pass before the co-signature answer pass opens, and never waits on the fence that pass holds', async (t) => {
+  const w = await proposalWireWorld(t);
+  const roles = { effect: 0, readOnly: 0 }, sellerSigner = w.f.config.signer;
+  const counted = { claim: sellerSigner.claim, sign: (bytes) => { roles.effect++; return sellerSigner.sign(bytes); },
+    readOnlyAnswerSigner: async (request) => { const signer = await sellerSigner.readOnlyAnswerSigner(request); return { claim: signer.claim, sign: (bytes) => { roles.readOnly++; return signer.sign(bytes); } }; } };
+  // The wire signs in the agent's own boundary, as the host composes them: one fence for the co-signature pass and the answer's pass.
+  await w.withWire({ binding: TEST_BINDING, effectBoundary: w.f.effectBoundary, signer: counted }, async () => {
+    const atResponse = [];
+    w.signing.before = null;
+    const sign = counted.sign;
+    counted.sign = (bytes) => {
+      if (Buffer.from(bytes).toString().startsWith(DACS_SELLER_HTTP_DOMAINS.response)) atResponse.push(lastLaneState(w.f.effectsDirectory, w.jobId));
+      return sign(bytes);
+    };
+    const started = Date.now();
+    const answer = await w.post();
+    assert.deepEqual([answer.status, typeof answer.body.contribution?.signature?.value], [200, 'string'], 'the co-signature answer is sent');
+    assert.deepEqual(atResponse, ['signed'], 'the response was signed by the effect role after the co-signature was retained and before its answer pass opened');
+    assert.ok(Date.now() - started < 10_000, 'the answer never waited out the fence');
+    assert.equal(roles.readOnly, 0, 'the read-only role signed nothing for an effect-route success');
+    assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).at(-1), 'dispatch-acknowledged');
+  });
+});
+
