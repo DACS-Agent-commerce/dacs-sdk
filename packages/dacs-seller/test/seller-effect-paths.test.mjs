@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import * as core from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, TP1_APPROVED_IDENTITY_RECORD, WireError, bindTp1Profile } from '@kynesyslabs/dacs/wire';
 import { T0, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 
@@ -30,7 +30,12 @@ const { orchestratorFixture } = await import('./helpers/vet-orchestrator-fixture
 const { productionFixture } = await import('./helpers/vet-production-fixture.mjs');
 const { contextHostFixture } = await import('./helpers/host-context-client.mjs');
 const { seller: protocolSeller } = await import('./helpers/protocol-fixture.mjs');
-const { world: wireWorld } = await import('./helpers/wire-routes-world.mjs');
+const { world: wireWorld, proposeJob, identityBody, BUYER, PIN } = await import('./helpers/wire-routes-world.mjs');
+const { FIXTURE_ENDPOINT } = await import('./helpers/wire-buyer.mjs');
+const { createSellerWireClientAuth } = await import('../src/dacs/seller-wire-client-auth.mjs');
+const { authorityReader } = await import('./helpers/wire-authority-fixture.mjs');
+const { SELLER_STATE_SIGNING_DOMAIN } = await import('../src/dacs/seller-durable-state.mjs');
+const { LOCAL: KEY_LOCAL, discoveryPayload, testBinding: keyTestBinding, wire: wireApi } = await import('./helpers/seller-key-fixture.mjs');
 const { TEST_CONNECTION } = await import('./helpers/wire-authority-fixture.mjs');
 const { JOBS } = await import('./helpers/bilateral-vet-fixture.mjs');
 const guard = await import('../src/kit-operation-guard.mjs');
@@ -641,4 +646,251 @@ test('a success answer on an effect route is signed by the effect role in its ow
     assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).at(-1), 'dispatch-acknowledged');
   });
 });
+
+// ---- The seller inventory paths this composition signs on ----
+
+// The identity records no binding may be made from, each as a copy of the test binding carrying the record's digest:
+// bindTp1Profile never made such a binding, so a boundary over it refuses tp1_binding_required.
+const REFUSED_RECORDS = [
+  ['a mainnet-labelled record', { ...TP1_APPROVED_IDENTITY_RECORD, network: 'demos-mainnet' }],
+  ['a self-approved record', { ...TP1_APPROVED_IDENTITY_RECORD, recordId: 'dacs-demos-testnet-identity/TEST-self-approved',
+    provenance: { ...TP1_APPROVED_IDENTITY_RECORD.provenance, approvedBy: protocolSeller.claim } }],
+  ['an approved-but-refused record', { ...TP1_APPROVED_IDENTITY_RECORD, refused: true }],
+];
+const forgedBinding = (record) => ({ ...structuredClone(TEST_BINDING), recordDigest: core.sha256Hex(core.canonicalize(record)) });
+const EFFECT_ANSWER = Object.freeze({ request: { path: PATHS.proposals, jobId: JOB_ID }, status: 200, text: '{"disposition":"complete"}' });
+
+// Each seller inventory path of this composition over `pass` (`{ runCreate, effectBoundary, binding }`): `attempt()` runs the path once,
+// `signatures()` counts its cryptographic signer calls and `transmissions()` its wallet requests or POSTs.
+async function inventory(t, pass) {
+  const listing = stoppingListing(pass.runCreate);
+  const vet = await orchestratorFixture(t);
+  const provider = vet.provider({ runCreate: pass.runCreate });
+  const presentation = productionFixture();
+  t.after(() => presentation.base.close());
+  presentation.config.runCreate = pass.runCreate;
+  const answerSigns = { count: 0 };
+  const roles = { claim: protocolSeller.claim, sign: (bytes) => { answerSigns.count++; return protocolSeller.signBytes(bytes); }, readOnlyAnswerSigner: readOnlyRoleOf(protocolSeller) };
+  const answers = createAnswerSigners({ roles, effectBoundary: pass.effectBoundary, binding: pass.binding, local: () => ({ ...TEST_CONNECTION }) });
+  return [
+    { label: 'the Listing publication', attempt: () => settled(listing.publish(listing.draft)), signatures: () => listing.counts.signs, transmissions: () => listing.counts.publishes },
+    { label: 'the Vet component signatures through the provider\'s resolveBuyer', attempt: () => settled(provider.resolveBuyer(vet.input, { writable: () => true })),
+      signatures: () => vet.controls.signatures.length, transmissions: () => vet.controls.creates.length },
+    { label: 'the identity presentation', attempt: () => settled(presentation.run()), signatures: () => presentation.controls.signs, transmissions: () => presentation.local.writes.length },
+    { label: 'an effect-route answer', attempt: () => settled(answers.signAnswer(EFFECT_ANSWER, (signer) => signer.sign(Buffer.from('TEST-answer')))), signatures: () => answerSigns.count, transmissions: () => 0 },
+  ];
+}
+const passOver = ({ binding = TEST_BINDING, stopped = () => false } = {}) => {
+  const { effectBoundary } = testEffectBoundary({ binding, stopped });
+  return { effectBoundary, binding, runCreate: testRunCreate({ effectBoundary, stopped }).runCreate };
+};
+// The kit client's returned method over a counting fetch that answers 200.
+const countingClient = () => {
+  const posts = { count: 0 };
+  const client = createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: async () => { posts.count++; return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }); } });
+  return { posts, client };
+};
+
+test('zero signatures and transmissions on every seller inventory path, returned methods and Vet component signatures included, for a mainnet-labelled, self-approved or approved-but-refused record; the same inventory table, Listing publication included, with the in-process stop flag set before the call makes zero cryptographic signer calls and zero wallet requests, counted on the signer, not on anchor.publish; repeat with a re-hold; the closed read-only and integrity roles are tested separately', async (t) => {
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  const conditions = [
+    ...REFUSED_RECORDS.map(([label, record]) => [label, () => passOver({ binding: forgedBinding(record) }), () => {}]),
+    ['the stop flag set before the call', () => passOver({ stopped: () => true }), () => {}],
+    ['a re-hold', () => passOver(), () => guard.setKitOperationGuardForTest('off')],
+  ];
+  for (const [condition, makePass, before] of conditions) {
+    const rows = await inventory(t, makePass());
+    const client = countingClient();
+    before();
+    for (const row of rows) {
+      const outcome = await row.attempt();
+      assert.ok(outcome.error !== undefined || outcome.value?.disposition !== 'present', `${condition}, ${row.label}: refused`);
+      assert.deepEqual([row.signatures(), row.transmissions()], [0, 0], `${condition}, ${row.label}: zero signatures and transmissions`);
+    }
+    if (condition === 'a re-hold') {
+      assert.throws(() => client.client.propose({}), { code: 'kit_operation_guard_off' }, 'the kit client\'s returned method');
+      assert.equal(client.posts.count, 0, 'the kit client sent nothing');
+    }
+    guard.setKitOperationGuardForTest('testnet-tp1');
+  }
+});
+
+test('the approved record signs and transmits on every seller inventory path', async (t) => {
+  for (const row of await inventory(t, passOver())) {
+    await row.attempt();
+    assert.ok(row.signatures() >= 1, `${row.label}: signed`);
+    if (row.label !== 'an effect-route answer') assert.ok(row.transmissions() >= 1, `${row.label}: transmitted after signing`);
+  }
+  const { posts, client } = countingClient();
+  await client.propose({});
+  assert.equal(posts.count, 1, 'the kit client\'s returned method sends');
+});
+
+test('with the guard off, every seller effect path refuses kit_operation_guard_off before any read; effect, permitted read-only and integrity signatures are counted separately', async (t) => {
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  const roles = await countedKeyRoles(t);
+  const f = await orchestratorFixture(t);
+  const reads = { store: 0, scans: 0 };
+  const store = { ...f.store, read: (...args) => { reads.store++; return f.store.read(...args); }, entries: (...args) => { reads.store++; return f.store.entries(...args); } };
+  const provider = f.provider({ store });
+  const { runCreate, effectBoundary } = passOver();
+  const listing = createDevnetDemoListingPublisher({ anchor: { publish: async () => {}, read: async () => {}, verifyReceipt: async () => {} }, runCreate, sign: roles.effectSigner.sign,
+    scanOwnListings: async () => { reads.scans++; return { status: 'ok', anchors: [] }; }, loadRailResolution: () => { reads.scans++; return railAuthority(); } });
+  const answers = createAnswerSigners({ roles: { claim: roles.key.claim, sign: roles.effectSigner.sign, readOnlyAnswerSigner: roles.readOnlyAnswerSigner }, effectBoundary, binding: TEST_BINDING,
+    local: () => ({ ...TEST_CONNECTION }) });
+  const { posts, client } = countingClient();
+  const w = await wireWorld(t);
+  const buyerSigns = { count: 0 };
+  const buyerSigner = createSellerWireClientAuth({ signer: { claim: BUYER.claim, sign: (bytes) => { buyerSigns.count++; return BUYER.sign(bytes); } }, binding: w.buyerWire.binding,
+    connection: w.buyerWire.connection, endpointProof: w.buyerWire.endpointProof, publicEndpoint: FIXTURE_ENDPOINT, seller: protocolSeller.claim,
+    resolveJob: async () => ({ listingPin: PIN, agreementHash: 'a'.repeat(64) }) });
+  const op = { runCreate, operationId: 'TEST-off', lane: 'TEST-off', operationClass: 'job-create', currentAuthorization: () => true };
+  const discoveryBinding = await keyTestBinding();
+  guard.setKitOperationGuardForTest('off');
+  const refusals = {
+    'agreementContextProvider.resolveBuyer': () => provider.resolveBuyer(f.input, { writable: () => true }),
+    'agreementContextProvider.recoverBuyer': () => provider.recoverBuyer(f.input),
+    'agreementContextProvider.resolveSeller': () => provider.resolveSeller(f.sellerRequest()),
+    createDevnetDemoListingPublisher: () => listing(fixtureListing(LISTING_WALLET, { now: T0 })),
+    'signRetainedInPass (effectBoundary)': () => signRetainedInPass(op, async () => roles.effectSigner.sign(Buffer.from('TEST'))),
+    'signInPass (effectBoundary)': () => signInPass(op, roles.effectSigner.sign, Buffer.from('TEST')),
+    'signAnswer (effectBoundary)': () => answers.signAnswer(EFFECT_ANSWER, (signer) => signer.sign(Buffer.from('TEST-answer'))),
+    ...Object.fromEntries(['propose', 'agreementState', 'commit', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy', 'agreementContext', 'contextChallenge']
+      .map((method) => [`sellerAgentClient.${method}`, () => client[method]({})])),
+    'createSellerWireClientAuth.request': () => buyerSigner.request(PATHS.proposals, {}, '{}'),
+  };
+  for (const [entry, run] of Object.entries(refusals)) {
+    const outcome = await settled(Promise.resolve().then(run));
+    assert.ok(outcome.codes?.includes('kit_operation_guard_off'), `${entry}: refused kit_operation_guard_off, got ${outcome.codes}`);
+  }
+  assert.deepEqual({ ...reads, posts: posts.count, effect: roles.counts.effect, buyerSigns: buyerSigns.count }, { store: 0, scans: 0, posts: 0, effect: 0, buyerSigns: 0 },
+    'refused before any read, POST or signature');
+  roles.integritySigner.sign(Buffer.concat([Buffer.from(SELLER_STATE_SIGNING_DOMAIN), Buffer.from('TEST-journal-record')]));
+  await (await roles.readOnlyAnswerSigner({ purpose: 'discovery', binding: discoveryBinding, local: KEY_LOCAL }))
+    .sign(wireApi.discoverySigningBytes(discoveryPayload(discoveryBinding, { seller: roles.key.claim })));
+  assert.deepEqual(roles.counts, { effect: 0, integrity: 1, readOnly: 1 }, 'while off the integrity role signs journal bytes and the read-only role a ready:false document, each counted on its own');
+});
+
+test('read-only and refusal answers are signed after the binding check only, through the read-only role, never through effect sign', async (t) => {
+  const roles = await countedKeyRoles(t);
+  const w = await wireWorld(t);
+  const signer = { claim: roles.key.claim, sign: roles.effectSigner.sign, readOnlyAnswerSigner: roles.readOnlyAnswerSigner };
+  await w.withWire({ signer }, async () => {
+    const job = await proposeJob(w, 'read-only-answers');
+    const proposed = await job.post();
+    assert.equal(proposed.status, 200);
+    assert.deepEqual([roles.counts.effect, roles.counts.readOnly], [1, 0], 'an effect-route success is the effect role\'s');
+    const read = await w.post(PATHS.state, identityBody(job.jobId, job.agreementHash), { jobId: job.jobId, agreementHash: job.agreementHash });
+    assert.equal(read.status, 200);
+    assert.ok(await w.verified(read), 'the read answer verifies under the binding');
+    assert.deepEqual([roles.counts.effect, roles.counts.readOnly], [1, 1], 'a read answer is the read-only role\'s');
+    w.state.ready = false;
+    const refused = await (await proposeJob(w, 'read-only-refusal')).post();
+    w.state.ready = true;
+    assert.ok(refused.status >= 400 && refused.signed, `a signed refusal: ${refused.status} ${refused.text}`);
+    assert.ok(await w.verified(refused), 'the refusal verifies under the binding');
+    assert.deepEqual([roles.counts.effect, roles.counts.readOnly], [1, 2], 'a refusal is the read-only role\'s');
+  });
+});
+
+// A pass whose authority reads and stop checks can each be paused at a chosen call: `gate.pause('authority' | 'stop', at)` holds that
+// call until `gate.resume()`; `gate.closed` makes the authority refuse and `gate.stop` makes the stop check answer true.
+async function pausablePass() {
+  const reader = authorityReader();
+  const gate = { calls: { authority: 0, stop: 0 }, at: null, held: null, closed: false, stop: false,
+    pause(kind, at) { this.calls = { authority: 0, stop: 0 }; this.at = { kind, at }; },
+    resume() { const held = this.held; this.held = null; held?.(); } };
+  const hold = async (kind) => { gate.calls[kind] += 1; if (gate.at?.kind === kind && gate.at.at === gate.calls[kind]) await new Promise((resume) => { gate.held = resume; }); };
+  const readAuthority = async (scope) => {
+    await hold('authority');
+    if (gate.closed) throw new WireError('tp1_participant_refused', 503, undefined, new Error('TEST authority closed'));
+    return reader(scope);
+  };
+  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority });
+  const stopped = async () => { await hold('stop'); return gate.stop; };
+  const { effectBoundary } = testEffectBoundary({ binding, stopped });
+  return { gate, binding, effectBoundary, runCreate: testRunCreate({ effectBoundary }).runCreate };
+}
+
+// The paths whose final checks are paused: each `make(pass)` gives `{ attempt(), signatures(), onSign(hook), reclaim?, rollback?, restart? }`.
+const PAUSED_PATHS = [
+  ['the Vet component signature', async (t, pass) => {
+    const f = await orchestratorFixture(t), open = { value: true };
+    const provider = f.provider({ runCreate: pass.runCreate });
+    return { attempt: () => settled(provider.resolveBuyer(f.input, { writable: () => open.value })), signatures: () => f.controls.signatures.length,
+      onSign: (hook) => { f.controls.beforeSign = hook; }, reclaim: () => { open.value = false; }, rollback: () => { open.value = 'TEST-rev-advanced'; },
+      restart: () => settled(f.fresh({ runCreate: testRunCreate().runCreate }).resolveBuyer(f.input, { writable: () => true })) };
+  }],
+  ['the identity presentation', async (t, pass) => {
+    const p = productionFixture();
+    t.after(() => p.base.close());
+    p.config.runCreate = pass.runCreate;
+    const signBytes = p.config.wallet.signBytes;
+    let hook = null;
+    p.config.wallet.signBytes = (bytes, request) => { if (Buffer.from(bytes).toString().startsWith('dacs-bundle-presentation:v1:')) hook?.(bytes); return signBytes(bytes, request); };
+    return { attempt: () => settled(p.run()), signatures: () => p.controls.presentationSigns, onSign: (next) => { hook = next; } };
+  }],
+  ['the Listing signature', async (t, pass) => {
+    let hook = null;
+    const listing = stoppingListing(pass.runCreate, { sign: (bytes) => { hook?.(bytes); return LISTING_WALLET.signBytes(bytes); } });
+    return { attempt: () => settled(listing.publish(listing.draft)), signatures: () => listing.counts.signs, onSign: (next) => { hook = next; },
+      restart: () => settled(listing.publish(listing.draft)) };
+  }],
+  ['an effect-route answer', async (t, pass) => {
+    let hook = null, count = 0;
+    const roles = { claim: protocolSeller.claim, sign: (bytes) => { count++; hook?.(bytes); return protocolSeller.signBytes(bytes); }, readOnlyAnswerSigner: readOnlyRoleOf(protocolSeller) };
+    const answers = createAnswerSigners({ roles, effectBoundary: pass.effectBoundary, binding: pass.binding, local: () => ({ ...TEST_CONNECTION }) });
+    return { attempt: () => settled(answers.signAnswer(EFFECT_ANSWER, (signer) => signer.sign(Buffer.from('TEST-answer')))), signatures: () => count, onSign: (next) => { hook = next; } };
+  }],
+];
+
+test('run the final pause-and-resume subcases at the real final authority and stop awaits through the composed host and the real seller routes: issuance and reclamation, rollback, closure and restart, each with its expected outcome and refusal cause; closed authority grants no signature or transmission, and the unchanged authorized control succeeds; the payment-evidence leg and the CREATE-lane matrix included', async (t) => {
+  for (const [label, make] of PAUSED_PATHS) {
+    // The control finds where the final authority read and stop check of the first signature's pass are: the last of each before the signer.
+    const probe = await pausablePass(), probed = await make(t, probe);
+    let finals = null;
+    probe.gate.pause('none', 0);
+    probed.onSign(() => { finals ??= { ...probe.gate.calls }; });
+    await probed.attempt();
+    assert.ok(finals !== null && finals.authority >= 1 && finals.stop >= 1, `${label}: the control reached its signer after its checks`);
+    for (const kind of ['authority', 'stop']) {
+      const subcases = [
+        ['the unchanged authorized control', null, null],
+        ['closure', (target, gate) => { if (kind === 'authority') gate.closed = true; else gate.stop = true; }, kind === 'authority' ? 'tp1_participant_refused' : 'seller_stopped'],
+        ['issuance and reclamation', 'reclaim', 'not-pending'],
+        ['rollback', 'rollback', 'not-pending'],
+        ['restart', 'restart', null],
+      ];
+      for (const [subcase, change, code] of subcases) {
+        const pass = await pausablePass(), target = await make(t, pass);
+        if (typeof change === 'string' && target[change] === undefined) continue;
+        pass.gate.pause(kind, finals[kind]);
+        const outcome = target.attempt();
+        for (let turn = 0; turn < 500 && pass.gate.held === null; turn++) await new Promise((resolve) => setImmediate(resolve));
+        assert.notEqual(pass.gate.held, null, `${label}, ${kind}, ${subcase}: paused at the final ${kind} await`);
+        const name = `${label}, final ${kind} await, ${subcase}`;
+        if (subcase === 'restart') {
+          // The paused process dies there; a new process over the same durable state signs the same signature at most once.
+          const restarted = await target.restart();
+          const signedAfterRestart = target.signatures();
+          pass.gate.stop = true;
+          pass.gate.resume();
+          await outcome;
+          assert.ok(signedAfterRestart <= 1 && target.signatures() === signedAfterRestart, `${name}: no second signature (${signedAfterRestart}, ${restarted.codes ?? 'answered'})`);
+          continue;
+        }
+        if (typeof change === 'string') target[change](); else change?.(target, pass.gate);
+        pass.gate.resume();
+        const result = await outcome;
+        if (change === null) {
+          assert.ok(target.signatures() >= 1, `${name}: signs`);
+          continue;
+        }
+        assert.equal(target.signatures(), 0, `${name}: no signature`);
+        assert.ok(result.codes?.includes(code) || JSON.stringify(result.value ?? {}).includes(code), `${name}: refused ${code}, got ${result.codes} ${JSON.stringify(result.value)}`);
+      }
+    }
+  }
+});
+
 
