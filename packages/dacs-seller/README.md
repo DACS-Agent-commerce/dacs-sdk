@@ -307,24 +307,12 @@ parts the host composes, for operators who compose their own:
 `createWireSellerContextRoute` (the context step on the wire),
 `createSellerAuthorityReader` (the host's TP-1 authority reader),
 `createSellerWalletSession` (the host's production `walletSession` port) and the buyer
-side `createSellerAgentClient` and `createSellerWireClientAuth`. The host
+side `createSellerAgentClient`. The host
 answers every route through the wire, under the wire domain with a TP-1
 profile in each request, and refuses a request signed under the transport's
-old domain. The buyer's `authentication` for
-`createSellerAgentClient` is `createSellerWireClientAuth({ signer, binding,
-connection, endpointProof, publicEndpoint, seller, resolveJob })`: it signs
-and verifies every route the host serves, the challenge and the context step
-included, through the wire, from the `binding` of `bindTp1Profile` and the
-`endpointProof` of `verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`,
-over the seller's signed discovery document), and `resolveJob(jobId)` gives the
-approved job's `{ listingPin, agreementHash, deadline? }`; a `deadline` it gives
-is passed to the check of the buyer's `delegation`. On the challenge and the
-context step there is no Agreement yet: the signed Agreement hash is the hash of
-the request's own `scope`, and only `listingPin` and `deadline` of `resolveJob`
-are used. Signing (the
-`resolveJob` and `evidenceFor` lookups and the buyer's authority read) must
-finish within `signingTimeoutMs` (default 10,000 ms), or the
-request ends as `wire_client_signing_timeout` before anything is sent. A host mounts the Vet and Agreement context
+old domain. `createSellerAgentClient` sends unsigned requests only: it refuses
+an `authentication` option (`seller_client_signing_unsupported`), so it never
+signs. A buyer that signs its requests uses `@kynesyslabs/dacs-client`. A host mounts the Vet and Agreement context
 route on the wire by passing `{ ...createSellerContextRoute({ ... }), ...createWireSellerContextRoute({ ... }) }`
 as the `context` option of `createSellerHttpHandler(agent, { wire, context })`;
 `wire` is a `createWireContext` context made for the same agent, and the handler
@@ -343,7 +331,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createWireSellerContextRoute`,
-`createSellerTransportStore`, `createSellerAuthorityReader`, `createSellerWalletSession` and `createSellerWireClientAuth`. The kit's other modules are reachable by
+`createSellerTransportStore`, `createSellerAuthorityReader` and `createSellerWalletSession`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -1298,9 +1286,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   nothing retained). One that answers in time but after the pass window ends is
   retained and then refused `stop_check_timeout`; the Listing retry reuses it.
   A Vet signer that waits for a person holds the host's fence until it answers.
-  The provider's `resolveBuyer`, `recoverBuyer` and `resolveSeller`, each method
-  of the kit client `createSellerAgentClient` and the `request` of
-  `createSellerWireClientAuth` check the kit operation guard at each call.
+  The provider's `resolveBuyer`, `recoverBuyer` and `resolveSeller` and each
+  method of the kit client `createSellerAgentClient` check the kit operation
+  guard at each call.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).

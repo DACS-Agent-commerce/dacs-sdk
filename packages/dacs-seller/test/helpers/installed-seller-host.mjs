@@ -25,6 +25,8 @@ import { createDemDeliveryContext } from '@kynesyslabs/dacs-seller/src/dacs/dem-
 import { KIT_TP1_VET_MODE } from '@kynesyslabs/dacs-seller/src/host.mjs';
 import { createNativeDemDeliveryCapability } from '@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer } from '@kynesyslabs/dacs-seller/src/dacs/native-payment-evidence-consumer.mjs';
+// Copied next to this file by the test; it imports only through package names.
+import { signedBuyerClient } from './signed-buyer-driver.mjs';
 
 const require = createRequire(import.meta.url);
 const packageRoot = dirname(require.resolve('@kynesyslabs/dacs-seller/package.json'));
@@ -303,7 +305,7 @@ const hostFetch = (input, init = {}) => new Promise((resolve, reject) => {
   request.on('error', reject);
   request.end(init.body);
 });
-const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, fetchImpl: hostFetch, authentication: {
+const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => signedBuyerClient({ url, fetchImpl: hostFetch, authentication: {
   request: async (path, body, text) => {
     const { binding, endpointProof } = await (wireBuyerReady ??= wireBuyerSession());
     const jobId = body.transportIdentity?.jobId ?? body.jobId;

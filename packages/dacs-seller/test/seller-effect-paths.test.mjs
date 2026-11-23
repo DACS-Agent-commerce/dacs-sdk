@@ -29,9 +29,7 @@ const { orchestratorFixture } = await import('./helpers/vet-orchestrator-fixture
 const { productionFixture } = await import('./helpers/vet-production-fixture.mjs');
 const { contextHostFixture } = await import('./helpers/host-context-client.mjs');
 const { seller: protocolSeller } = await import('./helpers/protocol-fixture.mjs');
-const { world: wireWorld, proposeJob, identityBody, BUYER, PIN } = await import('./helpers/wire-routes-world.mjs');
-const { FIXTURE_ENDPOINT } = await import('./helpers/wire-buyer.mjs');
-const { createSellerWireClientAuth } = await import('../src/dacs/seller-wire-client-auth.mjs');
+const { world: wireWorld, proposeJob, identityBody } = await import('./helpers/wire-routes-world.mjs');
 const { authorityReader } = await import('./helpers/wire-authority-fixture.mjs');
 const { SELLER_STATE_SIGNING_DOMAIN } = await import('../src/dacs/seller-durable-state.mjs');
 const { LOCAL: KEY_LOCAL, discoveryPayload, testBinding: keyTestBinding, wire: wireApi } = await import('./helpers/seller-key-fixture.mjs');
@@ -736,11 +734,6 @@ test('with the guard off, every seller effect path refuses kit_operation_guard_o
   const answers = createAnswerSigners({ roles: { claim: roles.key.claim, sign: roles.effectSigner.sign, readOnlyAnswerSigner: roles.readOnlyAnswerSigner }, effectBoundary, binding: TEST_BINDING,
     local: () => ({ ...TEST_CONNECTION }) });
   const { posts, client } = countingClient();
-  const w = await wireWorld(t);
-  const buyerSigns = { count: 0 };
-  const buyerSigner = createSellerWireClientAuth({ signer: { claim: BUYER.claim, sign: (bytes) => { buyerSigns.count++; return BUYER.sign(bytes); } }, binding: w.buyerWire.binding,
-    connection: w.buyerWire.connection, endpointProof: w.buyerWire.endpointProof, publicEndpoint: FIXTURE_ENDPOINT, seller: protocolSeller.claim,
-    resolveJob: async () => ({ listingPin: PIN, agreementHash: 'a'.repeat(64) }) });
   const op = { runCreate, operationId: 'TEST-off', lane: 'TEST-off', operationClass: 'job-create', currentAuthorization: () => true };
   const discoveryBinding = await keyTestBinding();
   guard.setKitOperationGuardForTest('off');
@@ -754,18 +747,37 @@ test('with the guard off, every seller effect path refuses kit_operation_guard_o
     'signAnswer (effectBoundary)': () => answers.signAnswer(EFFECT_ANSWER, (signer) => signer.sign(Buffer.from('TEST-answer'))),
     ...Object.fromEntries(['propose', 'agreementState', 'commit', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy', 'agreementContext', 'contextChallenge']
       .map((method) => [`sellerAgentClient.${method}`, () => client[method]({})])),
-    'createSellerWireClientAuth.request': () => buyerSigner.request(PATHS.proposals, {}, '{}'),
   };
   for (const [entry, run] of Object.entries(refusals)) {
     const outcome = await settled(Promise.resolve().then(run));
     assert.ok(outcome.codes?.includes('kit_operation_guard_off'), `${entry}: refused kit_operation_guard_off, got ${outcome.codes}`);
   }
-  assert.deepEqual({ ...reads, posts: posts.count, effect: roles.counts.effect, buyerSigns: buyerSigns.count }, { store: 0, scans: 0, posts: 0, effect: 0, buyerSigns: 0 },
+  assert.deepEqual({ ...reads, posts: posts.count, effect: roles.counts.effect }, { store: 0, scans: 0, posts: 0, effect: 0 },
     'refused before any read, POST or signature');
   roles.integritySigner.sign(Buffer.concat([Buffer.from(SELLER_STATE_SIGNING_DOMAIN), Buffer.from('TEST-journal-record')]));
   await (await roles.readOnlyAnswerSigner({ purpose: 'discovery', binding: discoveryBinding, local: KEY_LOCAL }))
     .sign(wireApi.discoverySigningBytes(discoveryPayload(discoveryBinding, { seller: roles.key.claim })));
   assert.deepEqual(roles.counts, { effect: 0, integrity: 1, readOnly: 1 }, 'while off the integrity role signs journal bytes and the read-only role a ready:false document, each counted on its own');
+});
+
+test('the kit\'s createSellerAgentClient refuses authentication at construction, and a client built while admitted sends zero POSTs after a re-hold', async (t) => {
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  const adapterCalls = { count: 0 };
+  const authentication = { request: async () => { adapterCalls.count++; return { header: 'TEST', payload: {} }; }, verifyResponse: () => { adapterCalls.count++; } };
+  const posts = { count: 0 };
+  const fetchImpl = async () => { posts.count++; return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }); };
+  assert.throws(() => createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl, authentication }), { code: 'seller_client_signing_unsupported' });
+
+  const client = createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl, commitOnSignature: true });
+  const methods = Object.keys(client).filter((name) => typeof client[name] === 'function');
+  assert.equal(methods.length, 10, 'every request method, commitOnSignature included');
+  guard.setKitOperationGuardForTest('off');
+  for (const method of methods) assert.throws(() => client[method]({}), { code: 'kit_operation_guard_off', entry: `sellerAgentClient.${method}` }, method);
+  assert.deepEqual({ posts: posts.count, adapterCalls: adapterCalls.count }, { posts: 0, adapterCalls: 0 }, 'nothing signed or sent after the re-hold');
+
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  await client.propose({});
+  assert.equal(posts.count, 1, 'admitted again, the same client sends');
 });
 
 test('read-only and refusal answers are signed after the binding check only, through the read-only role, never through effect sign', async (t) => {

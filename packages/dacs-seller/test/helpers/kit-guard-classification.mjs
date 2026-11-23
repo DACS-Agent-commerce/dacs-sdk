@@ -62,7 +62,6 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-purchase-capacity.mjs': { effect: {  }, pure: ['createPurchaseCapacity', 'ownsPurchaseCapacity'] },
   'src/dacs/seller-reservation-accounting.mjs': { effect: { createReservationAccounting: ['reserveAccounted'], createReservationCoordinator: ['reserveCoordinated'] }, pure: ['createLiveAttemptGate', 'requestNonceKey'] },
   'src/dacs/seller-transport-auth.mjs': { effect: {  }, pure: ['SellerTransportError', 'createSellerTransportStore', 'pinValid', 'readSellerSessionState', 'sellerContextChallengeScope', 'sellerContextScopeHash', 'sellerStoreInternals', 'validateBody'] },
-  'src/dacs/seller-wire-client-auth.mjs': { effect: { createSellerWireClientAuth: ['createSellerWireClientAuth'] }, pure: [] },
   'src/dacs/seller-wire-discovery.mjs': { effect: {  }, pure: ['signedDiscovery'] },
   'src/dacs/seller-wire-requests.mjs': { effect: {  }, pure: ['createWireContext', 'openWireRequest', 'wireAuthenticator'] },
   'src/dacs/session-admission.mjs': { effect: {  }, pure: ['hasPresenceOnlyClaim', 'identityPresentationValid', 'isOrchestratorVetMode', 'listingRevocationProblem', 'readAdmissionCapability', 'sellerBundleProblem', 'sellerRecordVerifier', 'sellerSessionPresentationProblem', 'sessionAdmissionConfig', 'sessionAdmissionProblem', 'vetAnchorReceiptProblem', 'vetRecordProblem'] },
@@ -138,5 +137,4 @@ export const RETURNED_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-context-continuation.mjs#createContextOutcomeRevalidation': { role: [], effect: { '()': ['agreementContextProvider.recoverBuyer'] }, pure: [] },
   'src/dacs/dem-delivery-context-consumer.mjs#demDeliveryContextHost': { role: [],
     effect: { resolveBuyer: ['agreementContextProvider.resolveBuyer'], recoverBuyer: ['agreementContextProvider.recoverBuyer'] }, pure: ['resumableBuyer', 'bindRetainedScope'] },
-  'src/dacs/seller-wire-client-auth.mjs#createSellerWireClientAuth': { role: [], effect: { request: ['createSellerWireClientAuth.request'] }, pure: ['verifyResponse'] },
 });

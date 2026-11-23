@@ -34,6 +34,7 @@ import { wireRouteFixture } from './helpers/wire-continuation-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 import { createOldDomainRequestSigner } from './helpers/old-domain-request.mjs';
 import { wireAuthentication, wireBuyer } from './helpers/wire-buyer.mjs';
+import { signedBuyerClient } from './helpers/signed-buyer-driver.mjs';
 import { fetchAsHost, proxyListener } from './helpers/listener-host.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import { INACTIVE_FORK_NETWORK_INFO, readInactiveForkNetworkInfo } from './helpers/network-info.mjs';
@@ -640,7 +641,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
     // Every route used by this purchase is signed and verified through wire.
     const client = () => {
-      const api = seller.createSellerAgentClient({ url: host.url, timeoutMs:NATIVE_FLOW_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
+      const api = signedBuyerClient({ url: host.url, timeoutMs:NATIVE_FLOW_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
       { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash) });
       return { ...api, commit: (...args) => { retrySeam.beforeRetry(); return api.commit(...args); } };
     };

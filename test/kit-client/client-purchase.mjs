@@ -16,7 +16,7 @@ import { readOnlyBoundary } from '../../packages/dacs-client/test/helpers/read-o
 import { bindFixture, createAuthorityFixture } from '../../packages/dacs-client/test/fixtures/tp1-authority-reader.mjs';
 import { createEphemeralWallet } from '../../packages/dacs-client/test/fixtures/wallet.mjs';
 import { buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
-import { createSellerAgentClient } from '../../packages/dacs-seller/src/dacs/seller-http.mjs';
+import { signedBuyerClient } from '../../packages/dacs-seller/test/helpers/signed-buyer-driver.mjs';
 import { clientAuthFor } from './kit-host.mjs';
 import { FIXTURE_ENDPOINT } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
 import { fetchAsHost } from '../../packages/dacs-seller/test/helpers/listener-host.mjs';
@@ -55,7 +55,7 @@ export async function purchaseWorld(t, { host, listing }) {
     anchor: { kind: 'storage-program', locator: 'TEST-locator' }, listing, checks: [], evidence: {} }) };
   // Every request this client sends to the host, by path.
   const sellerRequests = [];
-  const sellerClient = createSellerAgentClient({ url: host.url, authentication: clientAuthFor(host),
+  const sellerClient = signedBuyerClient({ url: host.url, authentication: clientAuthFor(host),
     fetchImpl: (url, init) => { sellerRequests.push(new URL(url).pathname); return fetchAsHost()(url, init); } });
   // What the seller client reported for each failed context exchange: its error class and transport cause label.
   const contextFailures = [];

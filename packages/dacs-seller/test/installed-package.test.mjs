@@ -26,7 +26,7 @@ const SELLER_BIN = 'bin/dacs-seller.mjs';
 const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerAuthorityReader', 'createSellerContextRoute', 'createSellerHttpHandler',
-  'createSellerTransportStore', 'createSellerWalletSession', 'createSellerWireClientAuth', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
+  'createSellerTransportStore', 'createSellerWalletSession', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
 // The seller's Node wallet suites.
 const NODE_WALLET_TESTS = ['node-wallet-approval.test.mjs', 'node-wallet-balance.test.mjs', 'node-wallet-composition.test.mjs', 'node-wallet-payment-evidence.test.mjs', 'node-wallet-sr2-bounds.test.mjs'];
 const INSTALLED_RUN_TIMEOUT_MS = 120000;
@@ -256,7 +256,7 @@ function packedHostRun() {
   const app = realpathSync(preparedPath);
   assert.ok(relative(root, app).startsWith('..') && isAbsolute(app), 'prepared consumer is outside the repository');
   assert.equal(staleSetupReason(app), null, 'setup must provision these exact sources, lock and runtime');
-  for (const helper of ['wire-buyer.mjs', 'wire-authority-fixture.mjs']) {
+  for (const helper of ['wire-buyer.mjs', 'wire-authority-fixture.mjs', 'signed-buyer-driver.mjs']) {
     writeFileSync(join(app, helper), readFileSync(new URL(`./helpers/${helper}`, import.meta.url)));
   }
   const { sellerPack } = JSON.parse(readFileSync(join(app, 'prepared.json'), 'utf8'));

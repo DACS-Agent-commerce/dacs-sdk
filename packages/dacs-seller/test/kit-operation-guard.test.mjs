@@ -24,12 +24,12 @@ const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/se
 // off-state probe cannot reach them; context-admission-transaction.test.mjs flips the guard off after the capability exists and pins
 // `complete`, and helpers/coordinator-guard-off-probe.mjs pins `terminalSession`. The wallet-session port's `finalize` exists only on
 // a port built while the guard is on; seller-wallet-session.test.mjs flips the guard off after construction and pins it. The Vet
-// provider's entries, the kit client's methods and the buyer signer's request exist only on a capability built while the guard is
-// on; seller-effect-paths.test.mjs flips the guard off after construction and pins each refusal.
+// provider's entries and the kit client's methods exist only on a capability built while the guard is on;
+// seller-effect-paths.test.mjs flips the guard off after construction and pins each refusal.
 const PROVIDER_ENTRIES = ['agreementContextProvider.resolveBuyer', 'agreementContextProvider.recoverBuyer', 'agreementContextProvider.resolveSeller'];
 const CLIENT_METHODS = ['propose', 'agreementState', 'commit', 'commitOnSignature', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy', 'agreementContext',
   'contextChallenge'].map((method) => `sellerAgentClient.${method}`);
-const REACHED_BY_ISSUED_CAPABILITY = ['complete', 'terminalSession', 'sellerWalletSession.finalize', ...PROVIDER_ENTRIES, ...CLIENT_METHODS, 'createSellerWireClientAuth.request'];
+const REACHED_BY_ISSUED_CAPABILITY = ['complete', 'terminalSession', 'sellerWalletSession.finalize', ...PROVIDER_ENTRIES, ...CLIENT_METHODS];
 // The entries each module guards, named as the error's `entry` (51-2, 51-3).
 const GUARD_SITES = {
   'src/host.mjs': ['startSellerHost'],
@@ -39,7 +39,6 @@ const GUARD_SITES = {
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient', ...CLIENT_METHODS],
   'src/dacs/seller-transport-auth.mjs': ['terminalSession'],
   'src/dacs/seller-reservation-accounting.mjs': ['reserveAccounted', 'reserveCoordinated'],
-  'src/dacs/seller-wire-client-auth.mjs': ['createSellerWireClientAuth', 'createSellerWireClientAuth.request'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
   'src/dacs/effect-boundary.mjs': ['effectBoundary'],
   'src/dacs/payment-evidence-wallet-journal.mjs': ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'],

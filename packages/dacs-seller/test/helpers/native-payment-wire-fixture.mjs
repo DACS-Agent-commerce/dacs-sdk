@@ -23,6 +23,7 @@ import { createSessionAdmissionFixture } from './session-admission-fixture.mjs';
 import { presentContextAnswer } from './host-context-callbacks.mjs';
 import { hostBuyer } from './host-context-client.mjs';
 import { wireAuthentication, wireBuyer } from './wire-buyer.mjs';
+import { signedBuyerClient } from './signed-buyer-driver.mjs';
 import { fetchAsHost, proxyListener } from './listener-host.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
@@ -307,7 +308,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   const purchase = async ({ resume = null } = {}) => {
     const jobId = resume ?? `01J8N4YV7YVYQ4DB7M8T${String(++jobSequence).padStart(6, '0')}`;
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
-    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
+    const client = () => signedBuyerClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
       { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash) });
     if (resume === null) {
       const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });

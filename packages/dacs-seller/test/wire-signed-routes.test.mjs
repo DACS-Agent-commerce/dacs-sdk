@@ -19,7 +19,8 @@ import { contextWireWorld } from './helpers/context-wire-world.mjs';
 import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './helpers/wire-authority-fixture.mjs';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
-import { createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { signedBuyerClient } from './helpers/signed-buyer-driver.mjs';
 import { WIRE_ROUTE_PATHS, createWireContext, wireAuthenticator } from '../src/dacs/seller-wire-requests.mjs';
 import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { createOldDomainRequestSigner, oldDomainHeader } from './helpers/old-domain-request.mjs';
@@ -537,7 +538,7 @@ test('with the shipped guard off, the host refuses before it creates its data di
   assert.equal(existsSync(dataDirectory), false, 'the refused host created nothing');
 });
 
-test('P11a1-T23: through the exported kit client, with response verification paused, no answer or downstream action is available; released, a valid response succeeds; a bad signature, another profile, a mismatched body or status and a refusing authority reader each fail as response authentication; verification past the client timeout fails timeout, and its late result releases nothing', async (t) => {
+test('P11a1-T23: through a signed buyer client, with response verification paused, no answer or downstream action is available; released, a valid response succeeds; a bad signature, another profile, a mismatched body or status and a refusing authority reader each fail as response authentication; verification past the client timeout fails timeout, and its late result releases nothing', async (t) => {
   const w = await world(t);
   const job = await proposeJob(w, 't23');
   const stateBody = identityBody(job.jobId, job.agreementHash);
@@ -552,7 +553,7 @@ test('P11a1-T23: through the exported kit client, with response verification pau
     return new Response(answer.text, { status: answer.status, headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: answer.header ?? '' } });
   };
   const authentication = (verify) => ({ ...w.buyerWire.authentication(() => job.agreementHash), ...(verify ? { verifyResponse: verify } : {}) });
-  const clientWith = ({ alter, verify, timeoutMs } = {}) => createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: fetchThrough(alter), authentication: authentication(verify), ...(timeoutMs ? { timeoutMs } : {}) });
+  const clientWith = ({ alter, verify, timeoutMs } = {}) => signedBuyerClient({ url: 'http://127.0.0.1:1', fetchImpl: fetchThrough(alter), authentication: authentication(verify), ...(timeoutMs ? { timeoutMs } : {}) });
   const flush = () => new Promise((resolve) => setImmediate(resolve));
 
   let release;

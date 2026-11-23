@@ -1,5 +1,5 @@
 // Unshipped test helper: a buyer that signs with the wire's `signWireRequest` against a seller-signed fixture
-// discovery document, and the `authentication` adapter `createSellerAgentClient` takes. Its `verifyResponse`
+// discovery document, and the `authentication` adapter `signedBuyerClient` (signed-buyer-driver.mjs) takes. Its `verifyResponse`
 // returns the Promise from `verifyWireResponse` over the exact received bytes.
 import { DACS_SELLER_DISCOVERY_FORMAT, DACS_SELLER_HTTP_V1, TP1_APPROVED_IDENTITY_RECORD, TP1_CAPABILITIES, TP1_COMMIT_PHASE, bindTp1Profile, signDiscoveryDocument, signWireRequest, verifyEndpointProof, verifyWireResponse } from '@kynesyslabs/dacs/wire';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
@@ -33,7 +33,7 @@ export async function wireBuyer({ buyer, seller, listingPin, clock, connection =
       job: { listingPin, agreementHash, profile: binding.profile }, ...await evidenceFor(path, jobId), delegation, now: clock(), lifetimeMs, ...(nonce === undefined ? {} : { nonce }) });
     return { payload, header, text };
   };
-  /** The `authentication` adapter of `createSellerAgentClient`: `jobFor(jobId)` supplies the buyer's Agreement hash. */
+  /** The `authentication` adapter of `signedBuyerClient`: `jobFor(jobId)` supplies the buyer's Agreement hash. */
   const authentication = (jobFor) => ({
     request: async (path, body, text) => {
       const jobId = body.transportIdentity?.jobId ?? body.jobId;

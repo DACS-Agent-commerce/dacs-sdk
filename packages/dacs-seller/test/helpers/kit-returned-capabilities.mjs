@@ -7,8 +7,7 @@ import { countedKeyRoles } from './counted-key-roles.mjs';
 import { HOST_CONTEXT_CALLBACKS } from './host-context-callbacks.mjs';
 import { orchestratorFixture } from './vet-orchestrator-fixture.mjs';
 import { readOnlyRoleOf, TEST_BINDING, testEffectBoundary, testRunCreate } from './agent-signing.mjs';
-import { BUYER, PIN, world as wireWorld } from './wire-routes-world.mjs';
-import { FIXTURE_ENDPOINT } from './wire-buyer.mjs';
+import { world as wireWorld } from './wire-routes-world.mjs';
 import { TEST_CONNECTION } from './wire-authority-fixture.mjs';
 import { seller } from './protocol-fixture.mjs';
 import { createAnswerSigners } from '../../src/dacs/answer-signers.mjs';
@@ -16,7 +15,6 @@ import { createDemDeliveryContext, demDeliveryContextHost } from '../../src/dacs
 import { createContextOutcomeRevalidation } from '../../src/dacs/seller-context-continuation.mjs';
 import { resumeContext } from '../../src/dacs/seller-context-recovery.mjs';
 import { createSellerAgentClient } from '../../src/dacs/seller-http.mjs';
-import { createSellerWireClientAuth } from '../../src/dacs/seller-wire-client-auth.mjs';
 import { wireAuthenticator } from '../../src/dacs/seller-wire-requests.mjs';
 import { lateSellerCreatePass } from '../../src/devnet-demo/create-pass.mjs';
 import { createDevnetDemoListingPublisher } from '../../src/devnet-demo/listing.mjs';
@@ -47,7 +45,5 @@ export async function returnedCapabilities(t) {
     ['src/dacs/seller-context-recovery.mjs#resumeContext', resumeContext(provider, vet.input)],
     ['src/dacs/seller-context-continuation.mjs#createContextOutcomeRevalidation', createContextOutcomeRevalidation({ provider, retainedBody: vet.input })],
     ['src/dacs/dem-delivery-context-consumer.mjs#demDeliveryContextHost', demDeliveryContextHost(capability)],
-    ['src/dacs/seller-wire-client-auth.mjs#createSellerWireClientAuth', createSellerWireClientAuth({ signer: BUYER, binding: wire.buyerWire.binding, connection: wire.buyerWire.connection,
-      endpointProof: wire.buyerWire.endpointProof, publicEndpoint: FIXTURE_ENDPOINT, seller: seller.claim, resolveJob: async () => ({ listingPin: PIN, agreementHash: 'a'.repeat(64) }) })],
   ]);
 }
