@@ -4,8 +4,8 @@ name: demosdk compatibility
 # detects new in-range releases before another PR arrives
 # (the demosdk-pin-drift job, scheduled runs only, so it never blocks a PR)
 # and adds build/declaration emit at 4.0.23 and the newest in-range release.
-# PR runs cover changes to this workflow, dependency files, type configuration, the SDK source, the tests
-# and the client and Node host packages, so a break against 4.0.23 shows up before the change merges.
+# PR runs cover the tracked files read by the core, example, and Node host typechecks, so a break against
+# 4.0.23 shows up before the change merges.
 # When bumping the pinned demosdk, update demosdk-pinned-tests; update the matrix entry here too.
 # The demosdk-pin-drift job also passes the pinned version to scripts/demosdk-pin-drift.mjs.
 
@@ -21,6 +21,9 @@ on:
       - "tsconfig*.json"
       - "src/**"
       - "test/**"
+      - "examples/**"
+      - "conformance/**"
+      - "packages/create-dacs-agent/src/**"
       - "packages/dacs-client/**"
       - "packages/dacs-node/**"
 

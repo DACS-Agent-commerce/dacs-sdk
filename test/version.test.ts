@@ -46,7 +46,7 @@ describe("public version metadata", () => {
     expect(security).toContain(`peerDependencies: { "@kynesyslabs/demosdk": "${peer}" }`);
   });
 
-  it("runs the demosdk compatibility workflow on pull requests that change source, tests, type configuration or dependencies", async () => {
+  it("runs the demosdk compatibility workflow for every tracked compiler input", async () => {
     const workflow = parse(
       await readFile(new URL("../.github/workflows/demosdk-compat.yml", import.meta.url), "utf8"),
     ) as { on: { pull_request: { paths: string[] } } };
@@ -57,6 +57,9 @@ describe("public version metadata", () => {
       "tsconfig*.json",
       "src/**",
       "test/**",
+      "examples/**",
+      "conformance/**",
+      "packages/create-dacs-agent/src/**",
       "packages/dacs-client/**",
       "packages/dacs-node/**",
     ]);
