@@ -882,7 +882,7 @@ test('P11a1-T16: when not ready, new-purchase routes are refused signed while st
 });
 
 test("P11a1-T24: request and delegation expiry and current authority are rechecked before wire publication, with late refusals charged and no agent effect", async (t) => {
-  mock.method(performance, 'now', () => 0);
+  t.mock.method(performance, 'now', () => 0);
   const w = await continuingWorld(t);
   for (const path of [PATHS.proposals, PATHS.commitments, PATHS.commitmentSignature, PATHS.payments]) {
     for (const shape of ['direct', 'request-first', 'equal']) {
@@ -903,7 +903,7 @@ test("P11a1-T24: request and delegation expiry and current authority are recheck
 });
 
 test('wire-bundle-final-authorization-barrier', async (t) => {
-  mock.method(performance, 'now', () => 0);
+  t.mock.method(performance, 'now', () => 0);
   const w = await continuingWorld(t);
   for (const path of [PATHS.bundleRequest, PATHS.bundleCountersignature]) {
     await assertFinalBarrier(w, path, () => w.request(path, { lifetimeMs: BARRIER_REQUEST_MS }), answeredStatus(path));
