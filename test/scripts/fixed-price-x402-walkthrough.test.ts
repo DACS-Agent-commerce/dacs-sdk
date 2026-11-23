@@ -501,7 +501,8 @@ describe("record", () => {
   const ready = () => Response.json({ ready: true, checkedAt: 1, reasonCodes: [] });
 
   /** A run directory that init and registry would have left, with the secrets and provider key a record must not copy. */
-  function recordFixture(demosRpc = "https://node2.demos.sh", evmRpc = `https://rpc.example/v2/${providerKey}?token=1`) {
+  function recordFixture(demosRpc = "https://node2.demos.sh", evmRpc = `https://rpc.example/v2/${providerKey}?token=1`,
+    buyerServiceUrl = "http://127.0.0.1:3101", sellerServiceUrl = "http://127.0.0.1:3102") {
     const run = freshDirectory();
     const project = join(run, "project");
     for (const directory of [project, join(run, "packs"), join(run, "logs"), join(run, "secrets")]) mkdirSync(directory);
@@ -514,7 +515,7 @@ describe("record", () => {
     writeFileSync(join(project, ".env.example"), "DACS_DEPLOYMENT=local\nDACS_X402_LISTING_DRAFT_FILE=./listing-draft-x402.json\n");
     writeFileSync(join(project, ".env"), [
       "DACS_DEPLOYMENT=local", `DACS_DEMOS_RPC_URL=${demosRpc}`, `DACS_EVM_RPC_URL=${evmRpc}`,
-      "DACS_BUYER_SERVICE_URL=http://127.0.0.1:3101", "DACS_SELLER_SERVICE_URL=http://127.0.0.1:3102",
+      `DACS_BUYER_SERVICE_URL=${buyerServiceUrl}`, `DACS_SELLER_SERVICE_URL=${sellerServiceUrl}`,
       `DACS_BUYER_AUTHORITY=did:demos:agent:${"a".repeat(64)}`, `DACS_SELLER_AUTHORITY=${seller}`, `DACS_RAIL_STEWARD_AUTHORITY=${seller}`,
       `DACS_SELLER_EVM_PAYEE=${PAYEE}`, `DACS_BUYER_DEMOS_SECRET_FILE=${join(run, "secrets", "buyer-demos")}`, "",
     ].join("\n"));
@@ -590,6 +591,37 @@ describe("record", () => {
       readiness: { status: "ran" }, buy: { status: "ran", planOnly: true },
       setup: { status: "ran", evidence: "the buy found the Listing" },
     });
+  });
+
+  it("requests the origin-root readiness route for both configured service URLs", async () => {
+    quietly();
+    const fetcher = vi.fn(network("0x14a34", { "3101": ready, "3102": ready }));
+    const run = recordFixture(undefined, undefined, "http://127.0.0.1:3101/tenant/path/?mode=buyer", "http://127.0.0.1:3102/tenant/service/");
+
+    const record = await walkthrough.record({ runDir: run }, fetcher as unknown as typeof fetch);
+
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+      `https://rpc.example/v2/${providerKey}?token=1`, "http://127.0.0.1:3101/ready", "http://127.0.0.1:3102/ready",
+    ]);
+    expect(record.readiness).toEqual({
+      buyer: { status: "ran", code: 200, reasonCodes: [] },
+      seller: { status: "ran", code: 200, reasonCodes: [] },
+    });
+  });
+
+  it("keeps a malformed service URL unrun while recording the other role", async () => {
+    quietly();
+    const fetcher = vi.fn(network("0x14a34", { "3101": ready, "3102": ready }));
+    const run = recordFixture(undefined, undefined, "", "http://127.0.0.1:3102");
+
+    const record = await walkthrough.record({ runDir: run }, fetcher as unknown as typeof fetch);
+
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([`https://rpc.example/v2/${providerKey}?token=1`, "http://127.0.0.1:3102/ready"]);
+    expect(record.readiness).toEqual({
+      buyer: { status: "unrun", reason: "the reply of /ready could not be read" },
+      seller: { status: "ran", code: 200, reasonCodes: [] },
+    });
+    expect(existsSync(join(run, "record.json"))).toBe(true);
   });
 
   it("keeps no key, secret, absolute path or URL path", async () => {

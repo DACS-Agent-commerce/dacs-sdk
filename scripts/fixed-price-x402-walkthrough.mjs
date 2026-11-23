@@ -271,9 +271,10 @@ export function parseBuyOutput(text, exitCode) {
 }
 
 /** Read a role service's /ready reply. A service that cannot be read is unrun, with the reason; nothing is guessed. */
-export async function readReadiness(url, fetchImpl = fetch) {
+export async function readReadiness(endpoint, fetchImpl = fetch) {
   try {
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), redirect: "error" });
+    const url = new URL("/ready", endpoint);
+    const response = await fetchImpl(url.href, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), redirect: "error" });
     const { reasonCodes } = JSON.parse(await readBounded(response));
     if (!Array.isArray(reasonCodes) || !reasonCodes.every((code) => typeof code === "string" && REASON_CODE_RE.test(code))) throw new Error("unreadable");
     return { status: response.ok ? "ran" : "blocked", code: response.status, reasonCodes };
@@ -500,8 +501,8 @@ export async function record({ runDir, listingRef }, fetchImpl = fetch) {
   }
   await assertBaseSepolia(env.DACS_EVM_RPC_URL, fetchImpl);
   const readiness = {
-    buyer: await readReadiness(`${env.DACS_BUYER_SERVICE_URL}/ready`, fetchImpl),
-    seller: await readReadiness(`${env.DACS_SELLER_SERVICE_URL}/ready`, fetchImpl),
+    buyer: await readReadiness(env.DACS_BUYER_SERVICE_URL, fetchImpl),
+    seller: await readReadiness(env.DACS_SELLER_SERVICE_URL, fetchImpl),
   };
   let buy;
   if (listingRef !== undefined) {
