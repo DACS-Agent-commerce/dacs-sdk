@@ -7,6 +7,7 @@
 // record) is unknown. Each status, code, route and provenance cell has exactly
 // one class; an unlisted signed 5xx, 408 or 429 is unknown, any other unlisted
 // signed 4xx with an error is a definite refusal.
+import { FAILED_BOOTSTRAP_CODES } from './bootstrap-outcome.mjs';
 import { DACS_SELLER_HTTP_PATHS as PATHS } from '@kynesyslabs/dacs/wire';
 
 /** The classes of a seller answer: a frozen map of constant name to class string. */
@@ -32,7 +33,6 @@ const BUNDLE_PATHS = new Set([PATHS.bundleRequest, PATHS.bundleCountersignature]
 const PROGRESS_PATHS = new Set([PATHS.payments, PATHS.proposals]);
 const NONTERMINAL_VALUES = new Set(['held', 'indeterminate', 'waiting']);
 const DELIVERY_FINAL_VALUES = new Set(['delivered', 'delivery-ready']);
-const BOOTSTRAP_CODES = ['context_challenge_failed', 'context_challenge_consumed', 'context_challenge_expired', 'context_challenge_mismatch', 'context_job_closed', 'context_admission_closed'];
 
 // Rows keyed by "status code" for every route.
 const ROWS = new Map([
@@ -44,7 +44,7 @@ const ROWS = new Map([
   [`500 ${SELLER_EFFECT_UNRESOLVED}`, HELD],
   ['408 peer_delegation_expired', READBACK_ONLY],
   ['409 peer_operation_mismatch', DEFINITE],
-  ...BOOTSTRAP_CODES.map((code) => [`409 ${code}`, FAILED_BOOTSTRAP]),
+  ...FAILED_BOOTSTRAP_CODES.map((code) => [`409 ${code}`, FAILED_BOOTSTRAP]),
 ]);
 // Rows that hold only on the bundle routes.
 const BUNDLE_ROWS = new Map([['503 bundle_finalization_unavailable', HELD], ['422 not_delivered', HELD]]);
