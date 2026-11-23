@@ -354,7 +354,7 @@ async function replayCompleted<Result>(
           return finalResult(stored);
         }
       } catch {
-        return operatorAction("effect-result-invalid");
+        return pending("indeterminate", "effect-reauthentication-unavailable", unavailableAt());
       }
       return operatorAction("effect-replay-result-mismatch");
     }

@@ -303,12 +303,18 @@ describe("durable live irreversible-effect track", () => {
       expect(opened.loadEffect("payment", EFFECT_ID)).toEqual(stored);
     });
 
-    it("reports a non-projectable fresh observation as operator action without changing stored evidence", async () => {
-      const { opened, execute, operation } = await completedTrack(
-        async () => ({
+    it("retries reauthentication when a fresh completed observation cannot be projected", async () => {
+      const reauthenticate = vi.fn()
+        .mockResolvedValueOnce({
           status: "completed" as const,
           result: { ...COMPLETED, reference: "evm:payment:malformed" },
-        }),
+        })
+        .mockResolvedValueOnce({
+          status: "completed" as const,
+          result: COMPLETED,
+        });
+      const { opened, execute, operation } = await completedTrack(
+        reauthenticate,
         (result) => result.reference === "evm:payment:malformed"
           ? { reference: "" }
           : result,
@@ -320,9 +326,23 @@ describe("durable live irreversible-effect track", () => {
         await operation(operationInput());
 
       expect(outcome).toEqual({
-        status: "operator-action",
-        reasonCode: "effect-result-invalid",
+        status: "indeterminate",
+        reasonCode: "effect-reauthentication-unavailable",
+        retryAt: expect.any(Number),
       });
+      expect(execute).not.toHaveBeenCalled();
+      expect(opened.loadEffect("payment", EFFECT_ID)).toEqual(stored);
+
+      const retriedOutcome: FixedPriceX402TrackOperationResult =
+        await operation(operationInput());
+
+      expect(retriedOutcome).toEqual({
+        status: "final",
+        outcome: "success",
+        reference: COMPLETED.reference,
+        authenticationHash: COMPLETED.authenticationHash,
+      });
+      expect(reauthenticate).toHaveBeenCalledTimes(2);
       expect(execute).not.toHaveBeenCalled();
       expect(opened.loadEffect("payment", EFFECT_ID)).toEqual(stored);
     });
