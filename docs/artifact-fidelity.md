@@ -1,13 +1,13 @@
 # Normative artifact fidelity
 
-Normative source: DACS-Standard `next` at
-`c2ecd9fa658776f5511f2414d7b4c3e23b847463`, pinned by
-`scripts/sync-vectors.mjs`.
+Normative source: DACS-Standard at commit
+[`d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20`](https://github.com/DACS-Agent-commerce/DACS-Standard/tree/d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20),
+pinned by `scripts/sync-vectors.mjs`.
 
 | SDK surface | Normative rule | Runtime behavior |
 | --- | --- | --- |
 | `AttestationRef` / `isAttestationRef` | DACS-2 §7.5.2 | Requires the exact `anchor.kind` closed set (`storage-program`, `ipfs`, `https`), a locator, content hash, and optional signer. Flat SDK MVP refs fail the normative validator. |
-| `ChainTxRef` (`TxRef`) / `isChainTxRef` | DACS-4 §9.3 | Implements every discriminated arm and rejects flattened or cross-arm fields. Replays the Standard's 19-case reference-shape oracle. |
+| `ChainTxRef` (`TxRef`) / `isChainTxRef` | DACS-4 §9.3 | Implements every discriminated arm and rejects flattened or cross-arm fields. Replays the Standard's 23-case reference-shape oracle (19 `ChainTxRef` cases and 4 `AttestationRef` cases). |
 | `SettlementEvidence` / `isSettlementEvidence` | DACS-4 §9.7; §9.5.8 SB-1; AP2-2; DPA-6 | Enforces the phase/outcome conditions, finality model parameters, exact nested refs, required component signature, AP2 receipt attestation on successful AP2 refs, and attested-payload back-pointer. A signed `phaseIndex` is rejected. |
 | `PhaseSummaryEntry` | DACS-1 §6.3 `PhaseType`; DACS-5 §10.4 | New `FaultAttestationBundle` writes accept only the closed phase set and exact `ChainTxRef` / `AttestationRef` values. Historical `AttestationBundle` phase labels remain readable. |
 | `FaultAttestationBundle` / `isFaultAttestationBundle` | DACS-5 §10.4–§10.4.3 | Requires the fault discriminator, absolute permissible `faultedParty`, current references, current phases, role provenance, and signatures. Unknown discriminators/outcomes fail closed. |
