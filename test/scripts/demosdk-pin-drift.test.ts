@@ -10,8 +10,10 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const ciPath = join(repoRoot, ".github/workflows/ci.yml");
 const compatPath = join(repoRoot, ".github/workflows/demosdk-compat.yml");
 const driftScript = join(repoRoot, "scripts/demosdk-pin-drift.mjs");
-const PIN_STEP = "Typecheck and test against demosdk 4.0.18";
-const PINNED = "4.0.18";
+const PIN_STEP = "Typecheck and test against demosdk 4.0.23";
+const PINNED = "4.0.23";
+// A release newer than PINNED, within RANGE.
+const NEWER = "4.0.24";
 const RANGE = "^4.0.17";
 const TIMEOUT_OVERRIDE_MS = "200";
 
@@ -53,9 +55,9 @@ describe("scheduled demosdk pin drift check", () => {
   });
 
   it("fails with exit 1 naming both versions when a newer 4.x is published", () => {
-    const result = runDrift(registryReplying(["4.0.19", PINNED]));
+    const result = runDrift(registryReplying([NEWER, PINNED]));
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("4.0.19");
+    expect(result.stderr).toContain(NEWER);
     expect(result.stderr).toContain(PINNED);
   });
 
@@ -132,7 +134,7 @@ describe("pinned demosdk step", () => {
   });
 
   it("passes when a newer 4.x is published and never looks up the newest version", () => {
-    const { result, calls } = runPinnedStep(registryReplying(["4.0.17", PINNED, "4.0.19"]));
+    const { result, calls } = runPinnedStep(registryReplying(["4.0.17", PINNED, NEWER]));
     expect(result.status).toBe(0);
     expect(calls.some((call) => call.startsWith("view"))).toBe(false);
   });

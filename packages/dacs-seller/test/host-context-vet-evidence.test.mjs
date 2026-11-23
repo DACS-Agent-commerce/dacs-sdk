@@ -245,11 +245,13 @@ for (const { name, writes, ends, contextOutcome } of CLOSED) for (const [path, e
     const calls = () => ({ ...w.provider.seen, published: [...w.vet.published] });
     const before = calls();
     assert.deepEqual(before, { resolves: 1, recovers: 0, resumes: 0, published: [ADDRESS.seller] });
+    // The host reads its authority from its own job rows, so a job whose row was aborted is refused as a profile mismatch.
+    const refused = ends === 'aborted';
     const retry = async () => {
       const same = await w.buyer.context(JOB, w.issued.body.sessionNonce);
-      assert.deepEqual([same.status, same.body.error], [409, 'context_admission_closed'], same.text);
+      assert.deepEqual([same.status, same.body.error], refused ? [500, 'tp1_participant_profile_mismatch'] : [409, 'context_admission_closed'], same.text);
       const again = await w.buyer.challenge();
-      assert.deepEqual([again.status, again.body.error], [409, 'context_job_closed'], again.text);
+      assert.deepEqual([again.status, again.body.error], refused ? [500, 'tp1_participant_profile_mismatch'] : [409, 'context_job_closed'], again.text);
     };
     await retry();
     await w.sweeps.sweep();

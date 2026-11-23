@@ -1,0 +1,24 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF refuse a seller call for a purchase that declares no seller transport with seller_agent_unavailable instead of a TypeError",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "0e472dc099bc07562c6ca2382ae59537d65a558a",
+      "after": "e0b3ff62e71220d0a93f64848d3536707cf901ef"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-public-endpoint.test.mjs",
+      "before": "9ec6dcb3212048f39bd98e8f350baf00aea116a5",
+      "after": "30d05a5604f4dc36fe68537bd8cb631ecf13fb67"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-accbb6b9ec16.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/test/seller-public-endpoint.test.mjs"
+  ],
+  "note": "The seller client is built in one place for every seller call of a purchase. When the purchase's terms declared no seller transport it built no wire authentication and the seller client constructor threw a bare TypeError. Prepare now refuses such terms, and the seller call path refuses them too, with OperationError('seller_agent_unavailable') before any request is signed or sent and without changing the row. The wire authentication is now always built from the declared transport."
+}

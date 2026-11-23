@@ -1,10 +1,10 @@
 {
   "schema": "dacs-client-anchor/v1",
-  "commit": "96dcb41bfbc38fe03adc2a1f96abe12264e0535f",
+  "commit": "ae3a746190d89ee59d9e5d0125b8933f1467aecb",
   "files": {
-    "packages/dacs-client/DELTA-NOTES.md": "8b582646a7369d32ad7462fc9c88fb6519f6d5d6",
-    "packages/dacs-client/README.md": "73d0105200cb8ccc9991eb7748d1a192034e49c0",
-    "packages/dacs-client/package.json": "4f0b105f73bcbe642866b8c01b9e73a3ff0796e2",
+    "packages/dacs-client/DELTA-NOTES.md": "f41ed61551271c019379b776aac06b95814ecdc0",
+    "packages/dacs-client/README.md": "f4bd587eb341e3cf3d37eefc85990a7b4f5d6251",
+    "packages/dacs-client/package.json": "2b7f47c05f1db7223900c8b7c2130b452b47219a",
     "packages/dacs-client/scripts/check-imports.test.mjs": "8ab39a389c6714a7eebdc46204dada4415cff793",
     "packages/dacs-client/scripts/delta-batch-git.test.mjs": "6b8a3f1df542ae318192787310bacd75bc349a1f",
     "packages/dacs-client/scripts/generate-payload-helpers.mjs": "668c42fd6e34a0b055b32063698350677335622a"

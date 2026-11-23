@@ -179,7 +179,7 @@ describe("durable live irreversible-effect track", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
-  it("performs once and replays the retained completion without executing again", async () => {
+  it("performs once and re-reads the retained completion before replaying it without executing again", async () => {
     const opened = await database();
     const buildInput = vi.fn(async () => ({ jobId: JOB_ID, amount: "1" }));
     const execute = vi.fn(async ({ fence }) => {
@@ -190,6 +190,13 @@ describe("durable live irreversible-effect track", () => {
       };
     });
     const reconcile = vi.fn();
+    const reauthenticate = vi.fn(async () => ({
+      status: "completed" as const,
+      result: {
+        reference: "evm:payment:1",
+        authenticationHash: "e".repeat(64),
+      },
+    }));
     const operation = createDacsLiveEffectTrackV1({
       database: opened,
       kind: "payment",
@@ -198,7 +205,7 @@ describe("durable live irreversible-effect track", () => {
       workerId: "effect-worker",
       retryDelayMs: 1,
       buildInput,
-      adapter: { execute, reconcile },
+      adapter: { execute, reconcile, reauthenticate },
       projectResult: (result) => result,
     });
 
@@ -208,16 +215,148 @@ describe("durable live irreversible-effect track", () => {
       reference: "evm:payment:1",
       authenticationHash: "e".repeat(64),
     });
+    expect(reauthenticate).not.toHaveBeenCalled();
     await expect(operation(operationInput())).resolves.toMatchObject({
       status: "final",
       reference: "evm:payment:1",
     });
+    expect(reauthenticate).toHaveBeenCalledTimes(1);
+    expect(reauthenticate).toHaveBeenCalledWith(expect.objectContaining({
+      input: { jobId: JOB_ID, amount: "1" },
+    }));
     expect(execute).toHaveBeenCalledTimes(1);
     expect(reconcile).not.toHaveBeenCalled();
     expect(buildInput).toHaveBeenCalledTimes(1);
     expect(opened.loadEffect("payment", EFFECT_ID)).toMatchObject({
       state: "completed",
       idempotencyKey: EFFECT_ID,
+    });
+  });
+
+  it("replays the retained completion as before when the adapter has no re-read", async () => {
+    const opened = await database();
+    const execute = vi.fn(async () => ({
+      reference: "evm:payment:plain",
+      authenticationHash: "4".repeat(64),
+    }));
+    const operation = track(opened, { execute, reconcile: vi.fn() });
+
+    await operation(operationInput());
+    await expect(operation(operationInput())).resolves.toMatchObject({
+      status: "final",
+      reference: "evm:payment:plain",
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  describe("replaying a completed effect", () => {
+    const COMPLETED: EffectResult = {
+      reference: "evm:payment:completed",
+      authenticationHash: "5".repeat(64),
+    };
+
+    async function completedTrack(
+      reauthenticate: DacsLiveEffectAdapterV1<EffectInput, EffectResult>["reauthenticate"],
+    ) {
+      const opened = await database();
+      const execute = vi.fn(async () => COMPLETED);
+      const operation = track(opened, {
+        execute,
+        reconcile: vi.fn(),
+        reauthenticate,
+      });
+      await expect(operation(operationInput())).resolves.toMatchObject({
+        status: "final",
+      });
+      return { opened, execute, operation };
+    }
+
+    it("does not report completion when the re-read finds a different transaction", async () => {
+      const { opened, execute, operation } = await completedTrack(async () => ({
+        status: "completed" as const,
+        result: { ...COMPLETED, reference: "evm:payment:other" },
+      }));
+
+      await expect(operation(operationInput())).resolves.toEqual({
+        status: "operator-action",
+        reasonCode: "effect-replay-result-mismatch",
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(opened.loadEffect("payment", EFFECT_ID)).toMatchObject({
+        state: "completed",
+      });
+    });
+
+    it("does not report completion when the re-read finds the payment absent", async () => {
+      const { execute, operation } = await completedTrack(async () => ({
+        status: "absent" as const,
+        absenceProofHash: "6".repeat(64),
+      }));
+
+      await expect(operation(operationInput())).resolves.toEqual({
+        status: "operator-action",
+        reasonCode: "effect-replay-record-absent",
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not report completion when the re-read is unavailable and reports it once the read works", async () => {
+      const reauthenticate = vi.fn()
+        .mockRejectedValueOnce(new Error("node unreachable"))
+        .mockResolvedValueOnce({ status: "completed", result: COMPLETED });
+      const { execute, operation } = await completedTrack(reauthenticate);
+
+      await expect(operation(operationInput())).resolves.toMatchObject({
+        status: "indeterminate",
+        reasonCode: "effect-reauthentication-unavailable",
+      });
+      await expect(operation(operationInput())).resolves.toMatchObject({
+        status: "final",
+        reference: COMPLETED.reference,
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the cause and retry time of an indeterminate re-read", async () => {
+      const { opened, operation } = await completedTrack(async () => ({
+        status: "indeterminate" as const,
+        reasonCode: "chain-read-timeout",
+      }));
+
+      await expect(operation(operationInput())).resolves.toMatchObject({
+        status: "indeterminate",
+        reasonCode: "chain-read-timeout",
+        retryAt: expect.any(Number),
+      });
+      expect(opened.loadEffect("payment", EFFECT_ID)).toMatchObject({
+        state: "completed",
+      });
+    });
+
+    it("keeps the reason of a re-read that needs an operator", async () => {
+      const { operation } = await completedTrack(async () => ({
+        status: "operator-action" as const,
+        reasonCode: "chain-record-failed",
+      }));
+
+      await expect(operation(operationInput())).resolves.toEqual({
+        status: "operator-action",
+        reasonCode: "chain-record-failed",
+      });
+    });
+
+    it("gives the re-read a read-only fence", async () => {
+      let checkpointError: unknown;
+      const { operation } = await completedTrack(async ({ fence }) => {
+        await fence.assertCurrent();
+        checkpointError = await fence.checkpoint("late", { v: 1 }).catch((error: unknown) => error);
+        return { status: "completed" as const, result: COMPLETED };
+      });
+
+      await expect(operation(operationInput())).resolves.toMatchObject({
+        status: "final",
+      });
+      expect(checkpointError).toMatchObject({ reasonCode: "effect-replay-read-only" });
     });
   });
 

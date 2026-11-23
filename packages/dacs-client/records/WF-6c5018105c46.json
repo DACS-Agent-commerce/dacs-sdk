@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged stored request fixture after the current base records",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/helpers/stored-request-fixture.mjs",
+      "before": "38e578883535047e9043b1be4c6e2de780284eb6",
+      "after": "38e578883535047e9043b1be4c6e2de780284eb6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-6c5018105c46.json"
+  ],
+  "note": "The merged file combines the current base with the stopped service seam. This resolution chooses the unchanged merged blob after both record histories meet."
+}

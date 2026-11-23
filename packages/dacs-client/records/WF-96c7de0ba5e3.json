@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged protocol purchases after the current base records",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "5677b03103412aa53e7493b9dafa332f6d7fae3e",
+      "after": "5677b03103412aa53e7493b9dafa332f6d7fae3e"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-96c7de0ba5e3.json"
+  ],
+  "note": "The merged file combines the current base with the stopped service seam. This resolution chooses the unchanged merged blob after both record histories meet."
+}
