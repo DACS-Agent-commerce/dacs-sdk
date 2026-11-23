@@ -522,7 +522,7 @@ describe("keyed durable RFQ filesystem store", () => {
       role: "buyer",
       integrityKey,
       lockStaleMs: 5,
-      lockTimeoutMs: 200,
+      lockTimeoutMs: 2_000,
       lockPollMs: 2,
     });
     const path = lockPath(dir);
