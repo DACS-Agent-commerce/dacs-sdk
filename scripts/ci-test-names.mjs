@@ -11,7 +11,7 @@
 // the file imports from node:test (describe, it, before, mock, ...) does not exist here, so loading fails instead of
 // listing the wrong tests. A name that is not a string, or a test registered with test.only/skip/todo (or any other
 // property of the default export, such as test.describe), is refused for the same reason.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
@@ -53,12 +53,51 @@ export function listTests(file, cwd = process.cwd()) {
 /** A --test-skip-pattern value that matches exactly this test name. */
 export const exactPattern = (name) => `^${name.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&")}$`;
 
+export const SPLIT_RUN_TIMEOUT_MS = 30 * 60_000;
+const SPLIT_RUN_KILL_GRACE_MS = 5_000;
+const MAX_CAPTURE_BYTES = 16 << 20;
+
+// Share a single pair of terminal listeners across concurrent split runs and remove them when
+// the last run closes, so repeated use does not accumulate process listeners.
+const activeRuns = new Set();
+let parentSignalHandlers;
+function trackRun(run) {
+  if (process.platform === "win32") return;
+  activeRuns.add(run);
+  if (parentSignalHandlers) return;
+  parentSignalHandlers = new Map();
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    const handler = () => {
+      if (!parentSignalHandlers) return;
+      for (const active of activeRuns) active.cancelForParent();
+      const handlers = parentSignalHandlers;
+      parentSignalHandlers = undefined;
+      for (const [name, listener] of handlers) process.removeListener(name, listener);
+      // Re-raise after this signal dispatch returns to preserve the caller's signal exit status.
+      setImmediate(() => process.kill(process.pid, signal));
+    };
+    parentSignalHandlers.set(signal, handler);
+    process.on(signal, handler);
+  }
+}
+
+function untrackRun(run) {
+  if (process.platform === "win32") return;
+  activeRuns.delete(run);
+  if (activeRuns.size !== 0 || !parentSignalHandlers) return;
+  for (const [signal, handler] of parentSignalHandlers) process.removeListener(signal, handler);
+  parentSignalHandlers = undefined;
+}
+
 /**
  * Runs file (relative to cwd) with node --test, every test of all that is not in given skipped by exact name.
- * Returns the child result and wrong: null when the tests that ran are exactly given (each once) and the TAP count
+ * The child's output is forwarded as it arrives and also returned. Resolves to the child result and wrong: null when
+ * the tests that ran are exactly given (each once) and the TAP count
  * agrees, else why not. A test that listTests missed is not skipped, so it runs and makes wrong non-null.
  */
-export function runSome(file, all, given, { cwd, env = process.env, args = [] } = {}) {
+export async function runSome(file, all, given, { cwd, env = process.env, args = [], timeoutMs = SPLIT_RUN_TIMEOUT_MS, maxCaptureBytes = MAX_CAPTURE_BYTES } = {}) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("split test timeout must be a positive finite number");
+  if (!Number.isSafeInteger(maxCaptureBytes) || maxCaptureBytes <= 0) throw new RangeError("split test capture limit must be a positive safe integer");
   const out = mkdtempSync(join(tmpdir(), "ci-test-names-"));
   // A node --test process started under another node --test run (NODE_TEST_CONTEXT set) reports to that parent and
   // ignores its own reporters, so the record of what ran would never be written.
@@ -66,14 +105,109 @@ export function runSome(file, all, given, { cwd, env = process.env, args = [] } 
   delete childEnv.NODE_TEST_CONTEXT;
   try {
     const skip = all.filter((name) => !given.includes(name)).map((name) => `--test-skip-pattern=${exactPattern(name)}`);
-    const result = spawnSync(process.execPath, ["--test", ...args, ...skip, "--test-reporter=tap", "--test-reporter-destination=stdout",
-      `--test-reporter=${fileURLToPath(new URL("./ci-test-reporter.mjs", self))}`, `--test-reporter-destination=${join(out, "ran.jsonl")}`, file],
-    { cwd, env: childEnv, encoding: "utf8", maxBuffer: 16 << 20 });
+    const result = await new Promise((settle) => {
+      const child = spawn(process.execPath, ["--test", ...args, ...skip, "--test-reporter=tap", "--test-reporter-destination=stdout",
+        `--test-reporter=${fileURLToPath(new URL("./ci-test-reporter.mjs", self))}`, `--test-reporter-destination=${join(out, "ran.jsonl")}`, file],
+      { cwd, env: childEnv, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+      const stdout = [];
+      const stderr = [];
+      let capturedBytes = 0;
+      let outputOverflow = false;
+      let error;
+      let timedOut = false;
+      let timer;
+      let killTimer;
+      let exitKillTimer;
+      let childExited = false;
+      let closed = false;
+      let stopping = false;
+      const killGroup = (signal) => {
+        if (child.pid === undefined) return;
+        try {
+          if (process.platform === "win32") child.kill(signal);
+          else process.kill(-child.pid, signal);
+        } catch (failure) {
+          if (failure.code !== "ESRCH") error ??= failure;
+        }
+      };
+      const groupExists = () => {
+        if (child.pid === undefined || process.platform === "win32") return false;
+        try { process.kill(-child.pid, 0); return true; }
+        catch (failure) { return failure.code !== "ESRCH"; }
+      };
+      const terminate = () => {
+        if (stopping) return;
+        stopping = true;
+        killGroup("SIGTERM");
+        killTimer = setTimeout(() => {
+          // On POSIX, signal only a group that still exists; the leader PID may already be reaped.
+          if (process.platform === "win32" || groupExists()) killGroup("SIGKILL");
+        }, SPLIT_RUN_KILL_GRACE_MS);
+        killTimer.unref();
+      };
+      const forward = (source, destination) => {
+        source.on("data", (chunk) => {
+          const available = maxCaptureBytes - capturedBytes;
+          if (available > 0) {
+            const captured = chunk.length <= available ? chunk : chunk.subarray(0, available);
+            (source === child.stdout ? stdout : stderr).push(captured);
+            capturedBytes += captured.length;
+          }
+          if (chunk.length > available && !outputOverflow) {
+            outputOverflow = true;
+            terminate();
+          }
+          if (!destination.write(chunk)) {
+            source.pause();
+            destination.once("drain", () => source.resume());
+          }
+        });
+      };
+      forward(child.stdout, process.stdout);
+      forward(child.stderr, process.stderr);
+      child.on("error", (failure) => { error = failure; });
+      const trackedRun = {
+        cancelForParent() {
+          // The runner is about to exit on this signal, so clean the detached group immediately.
+          if (!childExited || groupExists()) killGroup("SIGKILL");
+          if (child.pid === undefined) child.kill("SIGKILL");
+        },
+      };
+      trackRun(trackedRun);
+      timer = setTimeout(() => { timedOut = true; terminate(); }, timeoutMs);
+      child.on("exit", () => {
+        childExited = true;
+        clearTimeout(timer);
+        // The leader can finish while a descendant holds inherited stdout/stderr open. Clean its
+        // process group now, but keep waiting for close so all completed output is captured.
+        if (process.platform !== "win32") {
+          if (groupExists()) killGroup("SIGTERM");
+          exitKillTimer = setTimeout(() => {
+            if (!closed && groupExists()) killGroup("SIGKILL");
+          }, SPLIT_RUN_KILL_GRACE_MS);
+          exitKillTimer.unref();
+        }
+      });
+      child.on("close", (status, signal) => {
+        closed = true;
+        clearTimeout(timer);
+        // `close` may arrive before the grace timer when a background child closed its pipes but
+        // ignored SIGTERM. The group existence check avoids signaling a reused, now-stale PID.
+        if (childExited && groupExists()) killGroup("SIGKILL");
+        clearTimeout(killTimer);
+        clearTimeout(exitKillTimer);
+        untrackRun(trackedRun);
+        settle({ status, signal, error, timedOut, outputOverflow, capturedBytes, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") });
+      });
+    });
+    const timeout = result.timedOut ? `timed out after ${timeoutMs / 1000} s; ` : "";
     let ran;
     try {
       ran = readFileSync(join(out, "ran.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line).name);
     } catch (error) {
-      return { result, wrong: `no list of the tests that ran (${error.message})` };
+      if (!result.timedOut) return { result, wrong: `no list of the tests that ran (${error.message})` };
+      // A killed node --test process may not flush its custom reporter. Treat every requested test as unconfirmed.
+      ran = [];
     }
     const count = /^# tests (\d+)$/m.exec(result.stdout ?? "");
     const extra = ran.filter((name, index) => !given.includes(name) || ran.indexOf(name) !== index);
@@ -81,8 +215,10 @@ export function runSome(file, all, given, { cwd, env = process.env, args = [] } 
     const parts = [];
     if (extra.length > 0) parts.push(`ran but not given, or ran twice: ${extra.join(" | ")}`);
     if (missing.length > 0) parts.push(`given but not run: ${missing.join(" | ")}`);
+    if (result.outputOverflow) parts.push(`child output exceeded the ${maxCaptureBytes}-byte capture limit`);
     if (parts.length === 0 && Number(count?.[1]) !== given.length) parts.push(`TAP says # tests ${count?.[1] ?? "(none)"}`);
-    return { result, wrong: parts.length ? `not exactly this shard's ${given.length} tests: ${parts.join("; ")}` : null };
+    if (result.timedOut && parts.length === 0) parts.push("every given test finished");
+    return { result, wrong: parts.length ? `${timeout}not exactly this shard's ${given.length} tests: ${parts.join("; ")}` : null };
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
