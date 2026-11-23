@@ -214,7 +214,7 @@ async function buildArtifacts() {
   return { listing, agreement, evidence };
 }
 
-function buildLegacyMvpListing() {
+function buildFlatShapeListing() {
   return {
     agentId: sellerDid,
     serviceId: "svc",
@@ -360,8 +360,8 @@ async function convertToAlternativePaymentFixture(fx: Fixture): Promise<void> {
   ]);
 }
 
-async function buildLegacyMvpAbortFixture() {
-  const listingScope = buildLegacyMvpListing();
+async function buildFlatShapeAbortFixture() {
+  const listingScope = buildFlatShapeListing();
   const listing = {
     ...listingScope,
     signature: await componentSignature(
@@ -826,7 +826,7 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
 
   test("normative graph rejects a hash-matched legacy MVP Listing", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
-    const legacyListing = buildLegacyMvpListing();
+    const legacyListing = buildFlatShapeListing();
     const legacyHash = contentHash(legacyListing);
     (fx.agreement.listingRef as { contentHash: string }).contentHash = legacyHash;
     (fx.bundle.listingRef as { contentHash: string }).contentHash = legacyHash;
@@ -1877,7 +1877,7 @@ describe("verifyBundleCore refuses old shapes", () => {
    * old reduced shape, which is what an old-shape reader would accept.
    */
   async function buildAbortBundle(edit: (body: Record<string, unknown>) => void) {
-    const { listing, bundle } = await buildLegacyMvpAbortFixture();
+    const { listing, bundle } = await buildFlatShapeAbortFixture();
     const { signatures: _signatures, ...body } = bundle;
     body.anchoredByRole = "buyer";
     edit(body);
@@ -1911,7 +1911,7 @@ describe("verifyBundleCore refuses old shapes", () => {
   };
 
   test("refuses an old-shape bundle and never calls a resolver", async () => {
-    const fx = await buildLegacyMvpAbortFixture();
+    const fx = await buildFlatShapeAbortFixture();
     const calls = { resolveRef: 0, resolveListingRef: 0, resolveAttestationRef: 0 };
     const deps = {
       readArtifact: async () => fx.bundle,
@@ -2012,7 +2012,7 @@ describe("verifyBundleCore refuses old shapes", () => {
   test("refuses a current bundle whose Listing carries an old-shape raw-hex signature", async () => {
     const fx = await buildFixture(buyerDid, signBuyer);
     const { signature: _signature, ...currentScope } = fx.listing;
-    const hybridScope = { ...currentScope, ...buildLegacyMvpListing() };
+    const hybridScope = { ...currentScope, ...buildFlatShapeListing() };
     const hybridListing = {
       ...hybridScope,
       signature: Buffer.from(
@@ -2119,7 +2119,7 @@ describe("verifyBundleCore refuses old shapes", () => {
   });
 
   test("public verifyBundle refuses an old-shape bundle without resolving session anchor names", async () => {
-    const fx = await buildLegacyMvpAbortFixture();
+    const fx = await buildFlatShapeAbortFixture();
     const readAnchor = vi.fn(async (address: string) =>
       address === "legacy-bundle" ? fx.bundle : fx.listing,
     );
