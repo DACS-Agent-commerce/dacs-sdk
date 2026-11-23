@@ -1,18 +1,24 @@
 // The client's stop seam: where a host stop or a re-hold is recorded as the purchase's suspension, and what clears it.
 import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { lstatSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { storedWorld, PATHS, bodyFor, errorCode } from './helpers/stored-request-fixture.mjs';
 import { setPurchaseAdmission, T0 } from './helpers/wire-client-fixture.mjs';
 import { spawnJournalChild } from './helpers/journal-child-process.mjs';
+import { controlledClock, settleUntil } from './helpers/effect-boundary-fixture.mjs';
 beforeEach(t => t.mock.method(Date, 'now', () => T0));
 const { createPurchaseService } = await import('../src/purchases.mjs');
 const { createProtocolPurchases } = await import('../src/index.mjs');
 const { createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
 const { StaleProtocolCheck, OFFLINE_AGREEMENT_PROFILE } = await import('../src/dacs/protocol-purchases.mjs');
 const { createHostStop } = await import('../src/host-stop.mjs');
+const { OperationError } = await import('../src/client-errors.mjs');
+const { SellerUnavailableError } = await import('../src/dacs/seller-http.mjs');
+const { createSellerHttpsConnector } = await import('../src/dacs/seller-https-connector.mjs');
+const { AUTHORITY_READ_DEADLINE_MS } = await import('../src/public-admission.mjs');
 const P = PATHS.proposals;
 const suspension = s => s.p.get().state.protocol.sellerSuspension;
 const events = (s, type) => s.p.ops.history(s.p.op.id).filter(event => event.type === type);
@@ -55,6 +61,37 @@ async function composedPurchase(t, stopped, key) {
   const portal = { operationId: p.operation.id, token: p.token };
   return { w, portal, account: { accountId: ACCOUNT_ID, ...portal },
     row: () => w.ops.get(ACCOUNT_ID, p.operation.id), events: type => w.ops.history(p.operation.id).filter(event => event.type === type) };
+}
+
+// The real seller connector over a stand-in TLS request: the handshake completes with no network, `onHandshake` runs
+// just before the connector's transmit step (the signed request's last checks), and each body it writes is kept.
+function handshakeConnector(onHandshake = () => {}) {
+  const written = [];
+  const request = () => {
+    const req = new EventEmitter(), socket = new EventEmitter();
+    req.destroy = () => {}; socket.destroy = () => {};
+    req.end = body => { written.push(body); req.emit('error', new Error('TEST-no-answer')); };
+    queueMicrotask(() => { req.emit('socket', socket); onHandshake(); socket.emit('secureConnect'); });
+    return req;
+  };
+  return { written, connector: createSellerHttpsConnector({ resolveHost: async () => ['8.8.8.8'], request }) };
+}
+const effectStates = async s => (await s.w.requests.records()).map(record => record.state);
+const storedText = s => Buffer.from(s.record(P).bodyB64, 'base64url').toString();
+
+// A restart with the stop or hold lifted: a retry of the stored request and verifyDeal sign and send nothing, and the
+// purchase keeps the suspension `held`. Returns the service and a wire authentication over the reopened journal.
+async function staysSuspendedAfterRestart(s, held) {
+  s.restart(); s.w.requests.reopen();
+  const signs = s.w.state.signs.length, fetches = s.fetches.length;
+  const authentication = s.w.createSellerWireAuthentication({ ...s.w.options, effectBoundary: s.w.requests.boundary });
+  await assert.rejects(s.client({ authentication }).propose(bodyFor(P)), errorCode('invalid_state'));
+  const { service, request, counters } = stoppedService(s, () => false);
+  await service.verifyDeal(request);
+  assert.deepEqual(suspension(s), held); assert.equal(counters.sellerLookups, 0);
+  assert.equal(s.w.state.signs.length, signs); assert.equal(s.fetches.length, fetches);
+  assert.equal(events(s, 'seller_resumed').length, 0);
+  return { service, request, authentication };
 }
 
 test('a stop observed before the first signature, and separately before dequeue, is durably suspended with no signature or dispatch record; after the seam clears and the process restarts, timers and retries make zero signatures and transmissions until a new explicit request. A real child killed while it holds the operation\'s wallet lane, after the suspension was recorded: on reopen the journal reclaims the provably dead lock, and the suspension still holds with zero signatures and transmissions', async t => {
@@ -253,4 +290,157 @@ test('two explicit resume requests for one suspension have one winner by compare
   s.restart();
   await s.client().propose(bodyFor(P));
   assert.equal(s.fetches.length, 2); assert.equal(s.fetches[1].body, s.fetches[0].body);
+});
+
+test('stopped after approval and before signing: zero signatures', async t => {
+  const s = await storedWorld(t, { paid: true }), control = s.w.requests.control;
+  // The records' reads at start and at the wire's request entry answer not stopped; the stop turns on at the effect boundary's own check.
+  control.onStop = () => { control.stopped = true; };
+  await assert.rejects(s.client({ stopped: () => false }).propose(bodyFor(P)),
+    error => error instanceof OperationError && error.code === 'writes_stopped' && error.answerClass === undefined);
+  assert.equal(s.w.state.signs.length, 0); assert.equal(s.fetches.length, 0);
+  const held = suspension(s);
+  assert.equal(held.cause, 'writes_stopped'); assert.equal(held.path, P);
+  assert.equal(s.record(P).lastClass, 'unknown');
+  control.onStop = null; control.stopped = false;
+  const { service, request } = await staysSuspendedAfterRestart(s, held);
+  await service.protocolRecheck({ ...request, resumeSuspensionId: held.id });
+  assert.equal(suspension(s), undefined); assert.equal(events(s, 'seller_resumed').length, 1);
+});
+
+test('stopped after signing and before broadcast: signed-held, zero transmissions', async t => {
+  const s = await storedWorld(t), control = s.w.requests.control;
+  const { connector, written } = handshakeConnector(() => { control.stopped = true; });
+  await assert.rejects(s.client({ connector }).propose(bodyFor(P)),
+    error => error instanceof OperationError && error.code === 'writes_stopped' && !(error instanceof SellerUnavailableError));
+  assert.equal(written.length, 0); assert.equal(s.w.state.signs.length, 1);
+  assert.deepEqual(await effectStates(s), ['signed', 'signed-held']);
+  assert.equal(s.record(P).lastClass, 'unknown'); assert.equal(s.record(P).attempts, 1);
+  assert.equal(suspension(s).cause, 'writes_stopped');
+});
+
+test('a signature returning after a stop is retained and never sent by automatic work or after restart', async t => {
+  const s = await storedWorld(t, { paid: true }), control = s.w.requests.control;
+  const signer = s.w.options.sessionSigner;
+  const sessionSigner = { claim: signer.claim, sign: bytes => { control.stopped = true; return signer.sign(bytes); } };
+  const authentication = s.w.createSellerWireAuthentication({ ...s.w.options, sessionSigner });
+  await assert.rejects(s.client({ authentication }).propose(bodyFor(P)), error => error instanceof OperationError && error.code === 'writes_stopped');
+  assert.equal(s.w.state.signs.length, 1); assert.equal(s.fetches.length, 0);
+  assert.deepEqual(await effectStates(s), ['signed', 'signed-held']);
+  const held = suspension(s), stored = storedText(s);
+  assert.equal(held.cause, 'writes_stopped');
+  control.stopped = false;
+  const { service, request, authentication: reopened } = await staysSuspendedAfterRestart(s, held);
+  assert.deepEqual(await effectStates(s), ['signed', 'signed-held'], 'the signature stays retained and unreleased');
+  // Only a new explicit request naming the suspension continues, and the next send carries the stored request bytes.
+  await service.protocolRecheck({ ...request, resumeSuspensionId: held.id });
+  assert.equal(suspension(s), undefined);
+  await s.client({ authentication: reopened }).propose(bodyFor(P));
+  assert.equal(s.fetches.length, 1); assert.equal(s.fetches[0].body, stored);
+});
+
+test("a stop caught by the connector before the first byte suspends the purchase, rejects with the stop's own OperationError, and nothing is sent after the stop lifts", async t => {
+  const s = await storedWorld(t, { paid: true }), control = s.w.requests.control;
+  const { connector, written } = handshakeConnector(() => { control.stopped = true; });
+  const client = s.client({ connector });
+  await assert.rejects(client.propose(bodyFor(P)), error => error instanceof OperationError && error.code === 'writes_stopped' && error.message === 'effect refused: writes_stopped');
+  const held = suspension(s);
+  assert.equal(held.cause, 'writes_stopped');
+  control.stopped = false;
+  await assert.rejects(client.propose(bodyFor(P)), errorCode('invalid_state'));
+  await staysSuspendedAfterRestart(s, held);
+  assert.equal(written.length, 0); assert.equal(s.fetches.length, 0);
+});
+
+test('a re-hold caught while signing or by the connector before the first byte suspends the purchase, still reaches the caller as SellerUnavailableError not-sent, and nothing is sent after the hold lifts, also after a restart', async t => {
+  const legs = [
+    // The hold turns on at the effect boundary's first stop check, before the session signer.
+    ['client-sign', 0, s => { s.w.requests.control.onStop = () => setPurchaseAdmission('held'); return { client: s.client(), written: [] }; }],
+    // The hold turns on after signing, just before the connector's transmit step.
+    ['other', 1, s => { const { connector, written } = handshakeConnector(() => setPurchaseAdmission('held')); return { client: s.client({ connector }), written }; }],
+  ];
+  for (const [causeCode, signs, clientOf] of legs) {
+    const s = await storedWorld(t, { paid: true }), { client, written } = clientOf(s);
+    await assert.rejects(client.propose(bodyFor(P)),
+      error => error instanceof SellerUnavailableError && error.answerClass === 'not-sent' && error.causeCode === causeCode);
+    const held = suspension(s);
+    assert.equal(held?.cause, 'profile_not_admitted', causeCode);
+    assert.equal(s.record(P).lastClass, 'not-sent', causeCode);
+    assert.equal(s.w.state.signs.length, signs, causeCode); assert.equal(written.length + s.fetches.length, 0, causeCode);
+    s.w.requests.control.onStop = null;
+    setPurchaseAdmission('testnet-tp1');
+    await assert.rejects(client.propose(bodyFor(P)), errorCode('invalid_state'));
+    await staysSuspendedAfterRestart(s, held);
+    assert.equal(written.length, 0, causeCode);
+  }
+});
+
+test("a re-hold observed before signing, and a stop seam that fails, times out or answers invalid, suspend through the purchase's suspension record with their causes; the unobserved-pulse control records nothing", async t => {
+  // The effect boundary's stop check stalls until its bounded read times out on a controlled clock.
+  const stalledBoundaryStop = async s => {
+    const control = s.w.requests.control, clock = controlledClock();
+    control.clock = clock; s.w.requests.reopen();
+    control.onStop = () => new Promise(() => {});
+    const authentication = s.w.createSellerWireAuthentication({ ...s.w.options, effectBoundary: s.w.requests.boundary });
+    const sending = s.client({ authentication }).propose(bodyFor(P));
+    await settleUntil(() => control.stopCalls === 1);
+    clock.advance(AUTHORITY_READ_DEADLINE_MS);
+    return sending;
+  };
+  const legs = [
+    // The hold turns on after the records' start read it, so the wire's own hold check sees the re-hold before signing.
+    ['profile_not_admitted', s => {
+      let seen = false;
+      return s.client({ stopped: () => { if (!seen) { seen = true; setPurchaseAdmission('held'); } return false; } }).propose(bodyFor(P));
+    }],
+    ['stop_check_failed', s => s.client({ stopped: () => { throw new Error('TEST-stop-check-broken'); } }).propose(bodyFor(P))],
+    ['stop_check_timeout', stalledBoundaryStop],
+    ['stop_check_invalid', s => s.client({ stopped: () => 'yes' }).propose(bodyFor(P))],
+  ];
+  for (const [cause, run] of legs) {
+    const s = await storedWorld(t);
+    await assert.rejects(run(s), error => error.code === cause || (cause === 'profile_not_admitted' && error.answerClass === 'not-sent'));
+    assert.equal(suspension(s)?.cause, cause, cause);
+    assert.equal(s.w.state.signs.length, 0, cause); assert.equal(s.fetches.length, 0, cause);
+  }
+  const control = await storedWorld(t), stop = { now: true };
+  stop.now = false;
+  await control.client({ stopped: () => stop.now }).propose(bodyFor(P));
+  assert.equal(suspension(control), undefined); assert.equal(control.fetches.length, 1);
+});
+
+test('an unobserved stop pulse records no suspension', async t => {
+  const s = await storedWorld(t), stop = { now: false }, control = s.w.requests.control;
+  // Both the client's seam and the effect boundary's stop turn on and off with no check reading them in between.
+  stop.now = true; control.stopped = true;
+  stop.now = false; control.stopped = false;
+  await s.client({ stopped: () => stop.now }).propose(bodyFor(P));
+  assert.equal(suspension(s), undefined); assert.equal(events(s, 'seller_suspended').length, 0);
+  assert.equal(s.fetches.length, 1); assert.equal(s.record(P).lastClass, 'result');
+});
+
+test("a signed seller answer whose error is writes_stopped or profile_not_admitted is the seller's code: no local suspension, the outcome stays unknown and answerCode is the seller's code", async t => {
+  for (const code of ['writes_stopped', 'profile_not_admitted']) {
+    const s = await storedWorld(t);
+    await assert.rejects(s.client({ respond: init => s.reply(init, 503, { error: code }) }).propose(bodyFor(P)),
+      error => error instanceof SellerUnavailableError && error.answerClass === 'unknown' && error.answerCode === code);
+    assert.equal(suspension(s), undefined, code); assert.equal(events(s, 'seller_suspended').length, 0, code);
+    assert.equal(s.record(P).lastClass, 'unknown', code);
+  }
+});
+
+test('a stop raised while signing whose suspension write fails rejects with the stop itself, carries the write failure as details.suspensionWriteError, records no suspension and leaves the attempt unknown', async t => {
+  const s = await storedWorld(t), failure = new Error('TEST-store-write-failed');
+  const { transaction } = createSqlitePurchaseStore();
+  const records = s.records(s.holder, (db, work) => transaction(db, () => {
+    const result = work();
+    if (suspension(s)) throw failure;
+    return result;
+  }));
+  s.w.requests.control.stopped = true;
+  await assert.rejects(s.client({ requestRecords: records }).propose(bodyFor(P)),
+    error => error.code === 'writes_stopped' && error.answerClass === undefined && error.cause === undefined && error.details?.suspensionWriteError === failure);
+  assert.equal(suspension(s), undefined);
+  assert.equal(s.record(P).lastClass, 'unknown'); assert.equal(s.record(P).attempts, 1);
+  assert.equal(s.w.state.signs.length, 0); assert.equal(s.fetches.length, 0);
 });
