@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { recordName } from './delta-record.mjs';
+import { blobIds } from './delta-map.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -52,7 +53,8 @@ async function fixture(t, initial = 'original\n') {
   }
   writeFileSync(join(pkg, 'scripts/delta-map.mjs'), checker);
   for (const name of ['delta-assemble.mjs', 'delta-record.mjs', 'delta-freeze.mjs', 'source-git.mjs', 'publication-text.mjs']) copyFileSync(join(scripts, name), join(pkg, 'scripts', name));
-  const { blob, checkDeltas, lastRecordOnlyFailures, table } = await import(pathToFileURL(join(pkg, 'scripts/delta-map.mjs')));
+  const imported = await import(pathToFileURL(join(pkg, 'scripts/delta-map.mjs')));
+  const { blob, checkDeltas, lastRecordOnlyFailures, table } = imported;
   json('DELTA-LEDGER.json', { schema: 'dacs-client-deltas/v2', baseline, changes: [] });
   const setupSubject = 'delta(client): D11 declare the fixture lane';
   mkdirSync(join(pkg, 'records/ids'), { recursive: true });
@@ -271,7 +273,7 @@ test('an archived control-only record is refused with the ledger path even when 
 // own commit and no other entry or record file, superseded ones included,
 // recorded that blob for the path.
 const unblob = failures => failures.map(failure => failure.replace(/[0-9a-f]{40}/g, '<blob>'));
-const restates = `${path}: the last record-only entry restates <blob>, a blob already recorded for it; it records nothing new`;
+const restates = `${path}: the last record-only entry restates <blob>, a blob already recorded for it; a source or test change must come next`;
 const notAtCommit = (holds = '<blob>') => `${path}: the last record-only entry records <blob>, but its commit holds ${holds}`;
 
 // Two parallel records of one path, merged to `merged` bytes that no record names,
@@ -290,6 +292,10 @@ test('a trailing record-only entry for a committed blob that no other record nam
   assert.ok(last.files.every(file => file.before === file.after), 'the last entry changes no blob itself');
   assert.deepEqual(history.check(), []);
   assert.deepEqual(history.recordOnlyFailures(), []);
+});
+
+test('a failed Git batch lookup for trailing record-only validation propagates', () => {
+  assert.throws(() => blobIds(['HEAD:packages/dacs-client/src/example.mjs'], join(tmpdir(), 'TEST-missing-git-repository')));
 });
 
 test('a trailing record-only entry that records a deletion committed at HEAD is accepted', async t => {

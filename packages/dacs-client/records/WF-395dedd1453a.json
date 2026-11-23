@@ -1,0 +1,14 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF batch trailing ledger blob lookups (#1890)",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/WF-395dedd1453a.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/delta-continuity.test.mjs",
+    "packages/dacs-client/scripts/delta-map.mjs",
+    "packages/dacs-client/test/delta-ledger-gate.test.mjs"
+  ]
+}

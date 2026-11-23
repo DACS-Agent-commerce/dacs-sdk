@@ -133,7 +133,6 @@ export function expectedBlob(records, independent) {
   const blobs=new Set(newest.map(sha=>latest.get(sha)));
   return blobs.size===1?{blob:[...blobs][0]}:{conflict:newest};
 }
-const blobAt=(rev,path)=>{try{return git('rev-parse','--verify',`${rev}:${path}`);}catch{return null;}};
 const describeBlob=sha=>sha??'no file';
 /**
  * The last-entry rule for a trailing record-only entry (one that changes no
@@ -145,9 +144,10 @@ const describeBlob=sha=>sha??'no file';
  * affect the answer. `archive` is the ledger file; `combined` is the ledger the
  * gates read (the file followed by the `records/` files). Earlier entries are
  * the other entries of the ledger file, `supersededChanges` included, in any
- * order, and the entries of the `records/` files whose commit comes before the
- * trailing entry's commit; a record file committed after it never counts. When
- * no earlier entry names the path, the baseline blob counts as recorded.
+ * order, and entries of `records/` files that select commits before the
+ * trailing entry's commit. A record file committed later can contain an entry
+ * that selects an earlier commit. If no earlier entry names the path, the
+ * baseline blob counts as recorded.
  * Returns the failures, each naming its path; none means the entry counts.
  */
 export function lastRecordOnlyFailures(archive=readArchive(pkg).ledger, combined=view().ledger) {
@@ -160,12 +160,18 @@ export function lastRecordOnlyFailures(archive=readArchive(pkg).ledger, combined
   const fromFiles=[...(combined.supersededChanges??[]).slice(superseded.length),...combined.changes.slice(archive.changes.length)];
   const earlier=[...superseded,...archive.changes.slice(0,-1),...fromFiles.filter(change=>history.some(commit=>selects(change,commit)&&below.has(commit.sha)))];
   const failures=[];
+  const specs=[];
+  for(const {path} of last.files) {
+    specs.push(`${selected[0].sha}:${path}`);
+    if(!earlier.some(change=>change.files.some(file=>file.path===path))) specs.push(`${BASELINE}:${path}`);
+  }
+  const blobs=blobIds(specs);
   for(const {path,after} of last.files) {
-    const committed=blobAt(selected[0].sha,path);
+    const committed=blobs.get(`${selected[0].sha}:${path}`);
     if(after!==committed) failures.push(`${path}: the last record-only entry records ${describeBlob(after)}, but its commit holds ${describeBlob(committed)}`);
     const named=earlier.flatMap(change=>change.files.filter(file=>file.path===path));
-    const recorded=named.length?named.map(file=>file.after):[blobAt(BASELINE,path)];
-    if(recorded.includes(after)) failures.push(`${path}: the last record-only entry restates ${describeBlob(after)}, a blob already recorded for it; it records nothing new`);
+    const recorded=named.length?named.map(file=>file.after):[blobs.get(`${BASELINE}:${path}`)];
+    if(recorded.includes(after)) failures.push(`${path}: the last record-only entry restates ${describeBlob(after)}, a blob already recorded for it; a source or test change must come next`);
   }
   return failures;
 }
