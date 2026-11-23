@@ -37,7 +37,7 @@ export const MAX_RESPONSE_BYTES = 512 * 1024;
 export const MAX_BODY_BYTES = 64 * 1024;
 export const MAX_HEADER_CHARS = 4096;
 export const MAX_REQUEST_LIFETIME_MS = 60_000;
-const performanceMocksByTest = new WeakMap();
+const performanceClocksByTest = new WeakMap();
 export const MAX_SIGNED_LIFETIME_MS = 30_000;
 export const SKEW_MS = 30_000;
 export const DAY_MS = 86_400_000;
@@ -118,15 +118,21 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   // A world over an existing directory reopens its store and journal; whoever made the directory removes it.
   const directory = existingDirectory ?? await mkdtemp(join(tmpdir(), 'TEST-wire-routes-'));
   let ownedStore = null;
+  let performanceClock = null;
   t.after(async () => {
     const errors = [];
     try { ownedStore?.close(); } catch (error) { errors.push(error); }
     try {
-      if (performanceMocksByTest.has(t)) {
-        const originalNow = performanceMocksByTest.get(t);
-        if (originalNow) Object.defineProperty(performance, 'now', originalNow);
-        else delete performance.now;
-        performanceMocksByTest.delete(t);
+      if (performanceClock) {
+        performanceClock.worlds--;
+        if (performanceClock.worlds === 0) {
+          try {
+            if (performanceClock.descriptor) Object.defineProperty(performance, 'now', performanceClock.descriptor);
+            else delete performance.now;
+          } finally {
+            performanceClocksByTest.delete(t);
+          }
+        }
       }
     } catch (error) { errors.push(error); }
     if (existingDirectory === null) {
@@ -139,16 +145,21 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   const storePath = join(directory, 'transport', 'transport.sqlite');
   const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [], session: null };
   // The wire measures the time an admission takes with `performance.now`: the test moves it forward by `elapsedMs`.
-  const monotonicNow = performance.now.bind(performance);
-  if (!performanceMocksByTest.has(t)) {
-    const originalNow = Object.getOwnPropertyDescriptor(performance, 'now');
-    performanceMocksByTest.set(t, originalNow);
+  performanceClock = performanceClocksByTest.get(t);
+  if (!performanceClock) {
+    performanceClock = {
+      descriptor: Object.getOwnPropertyDescriptor(performance, 'now'),
+      monotonicNow: performance.now.bind(performance),
+      worlds: 0,
+    };
+    performanceClocksByTest.set(t, performanceClock);
   }
+  performanceClock.worlds++;
   Object.defineProperty(performance, 'now', {
     configurable: true,
     enumerable: true,
     writable: true,
-    value: () => monotonicNow() + state.elapsedMs,
+    value: () => performanceClock.monotonicNow() + state.elapsedMs,
   });
   const clock = () => state.time;
   const connection = () => ({ ...state.connection });

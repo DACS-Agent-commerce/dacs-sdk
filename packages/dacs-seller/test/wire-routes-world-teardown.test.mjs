@@ -71,6 +71,21 @@ test('a world teardown preserves a parent-owned mock on another object', async (
   assert.equal(target.value(), 'original');
 });
 
+test('repeated worlds keep their clock offsets independent', async (t) => {
+  await t.test('the latest world does not follow an earlier world clock', async (st) => {
+    const earlier = await world(st);
+    earlier.state.elapsedMs = 1_000;
+    const latest = await world(st);
+    latest.state.elapsedMs = 2_000;
+
+    const before = performance.now();
+    earlier.state.elapsedMs += 50_000;
+    const elapsed = performance.now() - before;
+
+    assert.ok(elapsed < 5_000, `the latest world inherited ${elapsed} ms from the earlier world`);
+  });
+});
+
 test('a failed owned-directory removal still restores the test clock', async () => {
   const probe = fileURLToPath(new URL('./helpers/wire-routes-world-cleanup-probe.mjs', import.meta.url));
   const guard = fileURLToPath(new URL('./helpers/kit-guard-fixture.mjs', import.meta.url));
