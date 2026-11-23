@@ -41,7 +41,8 @@ const ROOT = {
     'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
     'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence',
     'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
-    'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader', 'createPublicSellerClient'],
+    'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader', 'createPublicSellerClient',
+    'createPurchaseOperations', 'isPurchaseOperationId', 'createPurchaseChallenges', 'purchaseApprovalChallengeText', 'createLocalPurchaseAccount'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
   values: ['PURCHASE_STATE_SCHEMA', 'PURCHASE_STATUS_HELP', 'DEM_DECIMAL', 'OS_INTEGER', 'vetNotPerformedRef', 'AGREEMENT_CONTEXT_SOURCE', 'DEM_DELIVERY_CONTEXT_SOURCE',
@@ -80,7 +81,11 @@ const modules = {
   "dacs/buyer-chain-readback.mjs": "BuyerChainReadbackUnsupported",
   "client-errors.mjs": "OperationError NotWiredError",
   "signatures.mjs": "WalletFormatError",
-  "buyer-funding.mjs": "fundingHelpSentence"
+  "buyer-funding.mjs": "fundingHelpSentence",
+  "host/purchase-ops.mjs": "createPurchaseOperations",
+  "util/ids.mjs": "isPurchaseOperationId",
+  "host/purchase-challenges.mjs": "createPurchaseChallenges purchaseApprovalChallengeText",
+  "host/local-account.mjs": "createLocalPurchaseAccount"
 };
 
 for (const name of [...ROOT.functions, ...ROOT.classes, ...ROOT.values]) {
