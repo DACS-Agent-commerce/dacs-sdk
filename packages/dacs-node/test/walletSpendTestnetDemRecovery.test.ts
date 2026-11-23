@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -10,7 +14,10 @@ import {
 import { TP1_APPROVED_IDENTITY_RECORD } from "@kynesyslabs/dacs/wire";
 
 import { createDacsWalletSpendDemosReaderV1 } from "../src/walletSpendDemosReader.js";
-import { createDacsWalletSpendTestnetDemRecoveryV1 } from "../src/walletSpendTestnetDemRecovery.js";
+import {
+  createDacsWalletSpendTestnetDemRecoveryV1,
+  openDacsWalletSpendDemEvidenceStoreV1,
+} from "../src/walletSpendTestnetDemRecovery.js";
 import {
   CONFIRMED_FEE,
   CONFIRMED_HASH,
@@ -29,9 +36,17 @@ import {
   type DemosNodeState,
 } from "./helpers/walletSpendDemosNode.js";
 
+const evidenceDirectories: string[] = [];
+async function evidenceDirectory(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "dem-evidence-"));
+  evidenceDirectories.push(directory);
+  return directory;
+}
+
 afterEach(async () => {
   vi.useRealTimers();
   await closeDemosNodeStubs();
+  await Promise.all(evidenceDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
 const POLICY = captureWalletSpendPolicyV1(demosPolicy());
@@ -67,6 +82,8 @@ async function world(state: WalletSpendStateV1, options: Readonly<{
   answer?: (call: DemosNodeCall) => DemosNodeAnswer | undefined;
   hold?: (call: DemosNodeCall) => Promise<void> | undefined;
   url?: string;
+  evidenceDirectory?: string;
+  evidenceStore?: Parameters<typeof createDacsWalletSpendTestnetDemRecoveryV1>[0]["evidenceStore"];
 }> = {}): Promise<RuleWorld> {
   const stub = await demosNodeStub(recordedDemosState(TP1_APPROVED_IDENTITY_RECORD.chainIdentity), options);
   const reports: Readonly<Record<string, string>>[] = [];
@@ -75,6 +92,8 @@ async function world(state: WalletSpendStateV1, options: Readonly<{
     policy: POLICY,
     reader,
     readState: async () => state,
+    evidenceStore: options.evidenceStore ??
+      await openDacsWalletSpendDemEvidenceStoreV1(options.evidenceDirectory ?? await evidenceDirectory()),
     report: (line) => reports.push(line),
   });
   return { rule, calls: stub.calls, node: stub.state, reports };
@@ -234,21 +253,95 @@ describe("DEM chain rule for the testnet wallet-spend authority", () => {
     expect(answers.filter((answer) => answer.reasonCode === "wallet-spend-dem-evidence-reused")).toHaveLength(1);
   });
 
+  it("shares transfer ownership across independent rule instances", async () => {
+    const first = demHold("job-first");
+    const second = demHold("job-second");
+    const state = stateOf(row(first), row(second));
+    const directory = await evidenceDirectory();
+    let release!: () => void;
+    const bothReading = new Promise<void>((resolve) => { release = resolve; });
+    let reads = 0;
+    const options = {
+      evidenceDirectory: directory,
+      hold: (call: DemosNodeCall) => {
+        if (call.message !== "getTransactionStatus") return undefined;
+        if (++reads === 2) release();
+        return bothReading;
+      },
+    };
+    const one = await world(state, options);
+    const two = await world(state, options);
+    const answers = await Promise.all([
+      one.rule.check(first, settled()),
+      two.rule.authenticateRecovery(second, settled()),
+    ]);
+    expect([answers[0].accepted, answers[1]].filter(Boolean)).toHaveLength(1);
+    expect([...one.reports, ...two.reports]).toEqual([expect.objectContaining({
+      reasonCode: "wallet-spend-dem-evidence-reused",
+    })]);
+    expect(state.reservations.every((stored) => stored.evidenceHash === undefined)).toBe(true);
+  });
+
+  it("keeps transfer ownership across a restart before core settlement", async () => {
+    const first = demHold("job-first");
+    const second = demHold("job-second");
+    const state = stateOf(row(first), row(second));
+    const directory = await evidenceDirectory();
+    const original = await world(state, { evidenceDirectory: directory });
+    await expect(original.rule.check(first, settled())).resolves.toMatchObject({ accepted: true });
+    const restarted = await world(structuredClone(state), { evidenceDirectory: directory });
+    await expect(restarted.rule.check(second, settled())).resolves.toEqual({
+      accepted: false, reasonCode: "wallet-spend-dem-evidence-reused",
+    });
+    await expect(restarted.rule.check(first, settled())).resolves.toMatchObject({ accepted: true });
+  });
+
   it("checks a retried claim again from the chain after a restart before the core recorded it", async () => {
     const hold = demHold();
     const other = demHold("job-other");
     // The core had not recorded the first acceptance, so the state still shows no transfer for either hold.
     const state = stateOf(row(hold), row(other));
-    const beforeRestart = await world(state);
+    const directory = await evidenceDirectory();
+    const beforeRestart = await world(state, { evidenceDirectory: directory });
     await expect(beforeRestart.rule.check(hold, settled()))
       .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-paid" });
 
-    const afterRestart = await world(state);
+    const afterRestart = await world(state, { evidenceDirectory: directory });
     await expect(afterRestart.rule.check(hold, settled()))
       .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-paid" });
     expect(afterRestart.calls.filter((call) => call.message === "getTxByHash")).toHaveLength(1);
     await expect(afterRestart.rule.check(other, settled()))
       .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-evidence-reused" });
+    editConfirmed(afterRestart.node, (_content, record) => { record.status = "included"; });
+    await expect(afterRestart.rule.check(hold, settled()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-transfer-pending" });
+  });
+
+  it.each(["fee", "payee", "absence", "pending"] as const)(
+    "does not consume transfer ownership for a rejected %s claim",
+    async (kind) => {
+      const first = demHold("job-first", kind === "payee" ? { payee: "ab".repeat(32) } : {});
+      const second = demHold("job-second");
+      const state = stateOf(row(first), row(second));
+      const directory = await evidenceDirectory();
+      const rejected = await world(state, { evidenceDirectory: directory });
+      if (kind === "pending") editConfirmed(rejected.node, (_content, record) => { record.status = "included"; });
+      const observation = kind === "absence" ? { disposition: "terminal-absent" as const, evidenceHash: CONFIRMED_HASH } :
+        kind === "fee" ? settled(CONFIRMED_HASH, "0") : settled();
+      await expect(rejected.rule.check(first, observation)).resolves.toMatchObject({ accepted: false });
+      const valid = await world(state, { evidenceDirectory: directory });
+      await expect(valid.rule.authenticateRecovery(second, settled())).resolves.toBe(true);
+    },
+  );
+
+  it("refuses acceptance when the evidence store cannot commit", async () => {
+    const hold = demHold();
+    const subject = await world(stateOf(row(hold)), {
+      evidenceStore: { claim: async () => { throw new Error("storage unavailable"); } },
+    });
+    await expect(subject.rule.check(hold, settled()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-unavailable" });
+    await expect(subject.rule.authenticateRecovery(hold, settled())).resolves.toBe(false);
   });
 
   it("refuses DEM holds the rule cannot bind", async () => {

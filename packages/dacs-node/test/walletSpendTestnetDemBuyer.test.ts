@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -213,6 +213,7 @@ async function purchase(chainFee: string) {
     reserveRequests,
     paymentTrack: (await coordinator.getOrderStatus(JOB_ID))?.tracks.payment,
     hold: headStateFile(lane.dataDirectory).reservations[0],
+    dataDirectory: lane.dataDirectory,
   };
 }
 
@@ -235,6 +236,9 @@ describe("pay-dem buyer against the testnet wallet-spend authority", { timeout: 
         { asset: "DEM", purpose: "network-fee", amount: CONFIRMED_FEE },
       ],
     });
+    // The transfer's owner is kept on disk in the lane's data directory, so a restart cannot lose it.
+    expect(JSON.parse(readFileSync(join(paid.dataDirectory, "transfers", `${CONFIRMED_HASH}.json`), "utf8")))
+      .toEqual({ reservationId: paid.hold?.reservationId });
 
     const overCharged = await purchase((BigInt(CONFIRMED_FEE) + 1n).toString());
     expect(overCharged.events.filter((event) => event === "service-settle")).toHaveLength(1);

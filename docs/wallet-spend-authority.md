@@ -193,7 +193,9 @@ runtime user that owns the secret files:
    hold lease has ended; the buyer's next request then releases it.
    The DEM lane counts a payment only when the chain shows that transfer
    executed from the policy wallet to the agreed payee for the exact amount,
-   with the fee the chain record shows. A DEM transfer carries no expiry, so the
+   with the fee the chain record shows, and it keeps one claim per transfer in
+   its data directory's `transfers/` folder, so a transfer settles one hold even
+   across restarts. A DEM transfer carries no expiry, so the
    DEM lane never releases a hold on the buyer's word or by time: an interrupted
    DEM purchase keeps its hold. Never reuse an epoch.
 8. In a dual-rail project one service on one address serves both lanes, because
