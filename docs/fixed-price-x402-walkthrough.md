@@ -308,6 +308,9 @@ npm run dacs:down
 ```
 
 `dacs:down` stops both services and keeps their data. The record is described next.
+If the `record` command rejects its arguments or run directory, an earlier `record.json` can remain;
+do not treat it as the result of that attempt. Once the run directory passes validation, `record`
+removes the earlier file before continuing, so a later failure leaves no `record.json`.
 
 ## The record
 
@@ -343,7 +346,9 @@ writes no readiness record or doctor report.
   `unrun`. It exits 1 and writes no record when `init` has not run; when the chain is not Base
   Sepolia; when a tarball no longer matches; when `project/.env` is missing or holds a bad public
   value; when the EVM RPC cannot be reached or does not answer with a chain id; or when the buy does
-  not finish or prints something other than a doctor report.
+  not finish or prints something other than a doctor report. A CLI argument error or run-directory
+  validation error happens before the existing record is removed, so an earlier `record.json` may
+  remain; after run-directory validation succeeds, any later failure leaves no record.
 - **Before you share** `record.json`, read it. It holds public values. Both RPC hosts are masked as
   `custom`, except the Demos host when it is the default public one. **Never share** keys, phrases or tokens, `<run>/secrets`,
   `project/.env`, or `<run>/logs/*.log`, which hold raw output nobody has filtered.
