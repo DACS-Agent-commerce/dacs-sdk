@@ -27,7 +27,7 @@ export function createRetainingDacsWalletSpendOperationLogV1(
     }
     return false;
   };
-  return Object.freeze({
+  const store: DacsWalletSpendRemoteOperationStoreV1 = {
     async load(input) { return values.get(key(input.roleId, input.operationId)); },
     async claim(input: Claim) {
       const prior = values.get(key(input.roleId, input.operationId));
@@ -51,5 +51,6 @@ export function createRetainingDacsWalletSpendOperationLogV1(
           canonicalize(prior.response) !== canonicalize(input.response)) throw conflict();
       values.set(identity, { ...prior, response: input.response });
     },
-  });
+  };
+  return Object.freeze(store);
 }
