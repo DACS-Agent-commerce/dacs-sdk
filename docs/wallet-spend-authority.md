@@ -69,7 +69,9 @@ A retry with stored input and no carried permit reconciles without sending.
 If a process fails after `beginEffect()`, the reservation remains charged at its
 worst case. Lease expiry does not release it or authorize another effect.
 `authority.reconcile()` releases it only after the injected rail authenticator
-accepts an exact finalized settlement or authoritative absence proof.
+accepts an exact finalized settlement or authoritative absence proof. For an
+absence it passes the authenticator the stored hold's generation and expiry, and
+the release applies only while that generation is still the stored one.
 
 ## Durable stores
 
