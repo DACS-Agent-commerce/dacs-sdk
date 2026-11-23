@@ -479,6 +479,17 @@ describe("DEM chain rule for the testnet wallet-spend authority", () => {
     }
   });
 
+  it("reads the account nonce answered as { nonce } for the release check", async () => {
+    const released = await releaseWorld((node) => { node.accountNonce = { nonce: PLANNED + 1 }; },
+      answering("getTransactionStatus", { status: 200, body: { result: 400, response: "error" } }));
+    await expect(released.rule.check(released.hold, absent()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-released" });
+
+    const pending = await releaseWorld((node) => { node.accountNonce = { nonce: PLANNED }; });
+    await expect(pending.rule.check(pending.hold, absent()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-release-nonce-pending" });
+  });
+
   it("releases a DEM hold once another own transaction took the planned nonce and the account nonce is past it", async () => {
     // (a) The prepared transfer is unknown to the node, and an own self-transfer took the planned nonce.
     const released = await releaseWorld(undefined,

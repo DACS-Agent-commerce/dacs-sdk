@@ -697,6 +697,18 @@ describe("testnet wallet-spend authority service", () => {
         .toMatchObject({ plannedTransferNonce: CONFIRMED_NONCE + 2 });
     });
 
+    it("a DEM hold binds the planned nonce from a node that answers the account nonce as { nonce }", async () => {
+      const node = await approvedNode();
+      node.state.accountNonce = { nonce: CONFIRMED_NONCE - 1 };
+      const settings = await withDemLane();
+      const service = await startDem(settings);
+      await expect((await service.demClient()).reserve(demosHold()))
+        .resolves.toMatchObject({ status: "reserved" });
+      expect(headState(settings.demDirectory).reservations).toEqual([
+        expect.objectContaining({ stage: "reserved", plannedTransferNonce: CONFIRMED_NONCE }),
+      ]);
+    });
+
     it("the x402 lane is unchanged beside the DEM lane", async () => {
       const chain = await chainStub(defaultChain(FIRST_FINAL_TIME));
       await approvedNode();
