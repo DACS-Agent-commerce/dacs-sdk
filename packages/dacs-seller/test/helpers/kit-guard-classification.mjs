@@ -104,3 +104,39 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/util/immutable-readbacks.mjs': { effect: {  }, pure: ['createImmutableReadbacks'] },
   'src/util/text.mjs': { effect: {  }, pure: ['cutText'] },
 });
+
+// Classification of every function member a constructor's capability hands out, keyed '<file>#<constructor>' (built in
+// helpers/kit-returned-capabilities.mjs). A member's class is what that member can reach, never the class of the export that
+// returned it: an effect member names the guard entries it reaches at each call (each listed in kit-operation-guard.test.mjs), a
+// role member is one of the seller key's closed non-effect roles, and a pure member signs, sends and rebroadcasts nothing itself.
+// `()` is a capability that is itself a function; `a.b` is a function member of a plain object member.
+const PROVIDER_CALLS = ['agreementContextProvider.resolveBuyer', 'agreementContextProvider.recoverBuyer'];
+export const RETURNED_CLASSIFICATION = Object.freeze({
+  'src/devnet-demo/agreement-context.mjs#createDevnetDemoAgreementContextProvider': { role: [],
+    effect: { resolveBuyer: ['agreementContextProvider.resolveBuyer', 'effectBoundary'], recoverBuyer: ['agreementContextProvider.recoverBuyer'],
+      resolveSeller: ['agreementContextProvider.resolveSeller', 'effectBoundary'] },
+    pure: ['readBackRecords', 'resumableBuyer', 'release', 'sweep', 'bindRetainedScope', 'usage', 'assertBuyerAccess'] },
+  'src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession': { role: [],
+    effect: { finalize: ['sellerWalletSession.finalize'], runCreate: ['effectBoundary'], 'artifactAnchor.publish': ['publish'], 'artifactAnchor.read': ['effectBoundary'],
+      'artifactAnchor.readRetained': ['effectBoundary'] },
+    pure: ['close', 'connectionAuthority', 'authority.authorityRpc', 'authority.claim', 'authority.context', 'authority.connectionGeneration', 'artifactAnchor.retainedSignedCreate',
+      'artifactAnchor.hasIntent', 'artifactAnchor.verifyReceipt'] },
+  'src/devnet-demo/listing.mjs#createDevnetDemoListingPublisher': { role: [], effect: { '()': ['createDevnetDemoListingPublisher', 'effectBoundary'] }, pure: [] },
+  'src/devnet-demo/create-pass.mjs#createSellerCreatePass': { role: [], effect: { runCreate: ['effectBoundary'] }, pure: [] },
+  'src/devnet-demo/create-pass.mjs#lateSellerCreatePass': { role: [], effect: { '()': ['effectBoundary'] }, pure: [] },
+  'src/seller-key.mjs#openSellerKey': { effect: { sign: ['sellerKey.sign'] }, role: ['readOnlyAnswerSigner', 'integritySigner.sign'], pure: ['close'] },
+  'src/dacs/seller-http.mjs#createSellerAgentClient': { role: [], pure: [], effect: Object.fromEntries(['propose', 'agreementState', 'commit', 'commitOnSignature', 'submitPayment', 'bundleRequest',
+    'countersign', 'confirmBuyerCopy', 'agreementContext', 'contextChallenge'].map((method) => [method, [`sellerAgentClient.${method}`]])) },
+  // For an effect-route success signAnswer signs in a pass of the guarded boundary; a read answer or refusal goes to the closed read-only role.
+  'src/dacs/answer-signers.mjs#createAnswerSigners': { role: [], effect: { signAnswer: ['effectBoundary'] }, pure: [] },
+  'src/dacs/seller-wire-requests.mjs#wireAuthenticator': { role: [], effect: { sign: ['effectBoundary'], 'store.reserve': ['reserveCoordinated'] },
+    pure: ['encode', 'open', 'store.claim', 'store.reconcile', 'store.finish', 'store.assertPending'] },
+  'src/dacs/seller-context-route.mjs#createWireSellerContextRoute': { role: [],
+    effect: { handleContext: PROVIDER_CALLS, revalidateContextOutcome: ['agreementContextProvider.recoverBuyer'], readPlannedAgreement: ['agreementContextProvider.recoverBuyer'] },
+    pure: ['closeAttempts'] },
+  'src/dacs/seller-context-recovery.mjs#resumeContext': { role: [], effect: { '()': PROVIDER_CALLS }, pure: [] },
+  'src/dacs/seller-context-continuation.mjs#createContextOutcomeRevalidation': { role: [], effect: { '()': ['agreementContextProvider.recoverBuyer'] }, pure: [] },
+  'src/dacs/dem-delivery-context-consumer.mjs#demDeliveryContextHost': { role: [],
+    effect: { resolveBuyer: ['agreementContextProvider.resolveBuyer'], recoverBuyer: ['agreementContextProvider.recoverBuyer'] }, pure: ['resumableBuyer', 'bindRetainedScope'] },
+  'src/dacs/seller-wire-client-auth.mjs#createSellerWireClientAuth': { role: [], effect: { request: ['createSellerWireClientAuth.request'] }, pure: ['verifyResponse'] },
+});

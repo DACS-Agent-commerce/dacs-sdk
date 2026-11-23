@@ -9,7 +9,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathS
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { EXPORT_CLASSIFICATION } from './helpers/kit-guard-classification.mjs';
+import { EXPORT_CLASSIFICATION, RETURNED_CLASSIFICATION } from './helpers/kit-guard-classification.mjs';
 
 const packageDirectory = fileURLToPath(new URL('../', import.meta.url));
 const probePath = fileURLToPath(new URL('./helpers/kit-guard-probe.mjs', import.meta.url));
@@ -83,9 +83,21 @@ const sourceOf = (file) => readFileSync(join(packageDirectory, file), 'utf8');
 const withoutComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const functionNames = (module) => Object.entries(module).filter(([, value]) => typeof value === 'function').map(([name]) => name).sort();
 // The exports a classification row does not name, and the names it holds that the module no longer exports.
-const classificationDrift = (exported, { effect, pure }) => {
-  const classified = [...Object.keys(effect), ...pure];
+const classificationDrift = (exported, { effect, pure, role = [] }) => {
+  const classified = [...Object.keys(effect), ...role, ...pure];
   return { unclassified: exported.filter((name) => !classified.includes(name)), stale: classified.filter((name) => !exported.includes(name)) };
+};
+const isPlainObject = (value) => value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+// The function members a capability hands out: `()` for a function, else each own enumerable function member, and the function
+// members of a plain object member as `<key>.<inner>`, one level deep. Data (strings, Maps, arrays, getters that answer data) is skipped.
+const returnedMembers = (value) => {
+  if (typeof value === 'function') return ['()'];
+  const members = [];
+  for (const [key, member] of Object.entries(value)) {
+    if (typeof member === 'function') members.push(key);
+    else if (isPlainObject(member)) for (const [inner, nested] of Object.entries(member)) if (typeof nested === 'function') members.push(`${key}.${inner}`);
+  }
+  return members.sort();
 };
 
 test('while the guard is off, startSellerHost refuses kit_operation_guard_off before it reads options or opens any file', () => {
@@ -142,6 +154,35 @@ test('every function exported by a shipped module is classified as an effect ent
   }
   const guarding = modules.filter((file) => file !== 'src/kit-operation-guard.mjs' && sourceOf(file).includes('assertKitOperationAdmitted('));
   assert.deepEqual(guarding, Object.keys(GUARD_SITES).sort(), 'every module that calls the guard is listed with its entries');
+});
+
+test('every capability a shipped constructor returns, whatever its export class, is classified as an effect entry guarded at each call, a closed non-effect signing role, or pure; an unclassified returned method, including one added to a constructor whose export is pure, fails', async (t) => {
+  const { returnedCapabilities } = await import('./helpers/kit-returned-capabilities.mjs');
+  const capabilities = await returnedCapabilities(t);
+  assert.deepEqual([...capabilities.keys()].sort(), Object.keys(RETURNED_CLASSIFICATION).sort(), 'every classified constructor was built, and only those');
+  const guarded = new Set(Object.values(GUARD_SITES).flat());
+  for (const [key, row] of Object.entries(RETURNED_CLASSIFICATION)) {
+    const [file, constructor] = key.split('#');
+    const row0 = EXPORT_CLASSIFICATION[file];
+    assert.ok(row0 && [...Object.keys(row0.effect), ...row0.pure].includes(constructor), `${key} names an existing export`);
+    assert.deepEqual(classificationDrift(returnedMembers(capabilities.get(key)), row), { unclassified: [], stale: [] }, `${key} returned-member classification drifted`);
+    for (const [member, entries] of Object.entries(row.effect)) for (const entry of entries) assert.ok(guarded.has(entry), `${key} ${member} reaches ${entry}, which no module guards`);
+  }
+  const rowOf = (key) => RETURNED_CLASSIFICATION[key];
+  const PROVIDER = 'src/devnet-demo/agreement-context.mjs#createDevnetDemoAgreementContextProvider', PORT = 'src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession';
+  const ROUTE = 'src/dacs/seller-context-route.mjs#createWireSellerContextRoute', ANSWERS = 'src/dacs/answer-signers.mjs#createAnswerSigners';
+  const injected = () => {};
+  assert.deepEqual(classificationDrift(returnedMembers({ ...capabilities.get(PROVIDER), injected }), rowOf(PROVIDER)).unclassified, ['injected'], 'an extra provider member');
+  const port = capabilities.get(PORT);
+  assert.deepEqual(classificationDrift(returnedMembers({ ...port, artifactAnchor: { ...port.artifactAnchor, injected } }), rowOf(PORT)).unclassified, ['artifactAnchor.injected'], 'a nested extra member');
+  for (const key of [ROUTE, ANSWERS]) {
+    assert.deepEqual(classificationDrift(returnedMembers({ ...capabilities.get(key), injected }), rowOf(key)).unclassified, ['injected'], `an extra member of ${key}, whose export is pure`);
+  }
+  assert.deepEqual(classificationDrift(returnedMembers({}), rowOf(ANSWERS)).stale, ['signAnswer'], 'a row naming a member the capability lacks is stale');
+  assert.ok(EXPORT_CLASSIFICATION['src/dacs/seller-context-route.mjs'].pure.includes('createWireSellerContextRoute') && EXPORT_CLASSIFICATION['src/dacs/answer-signers.mjs'].pure.includes('createAnswerSigners'),
+    'both constructors are pure exports');
+  assert.ok(rowOf(ROUTE).effect.handleContext.includes('agreementContextProvider.resolveBuyer') && !rowOf(ROUTE).pure.includes('handleContext'), 'the context route\'s handleContext is an effect member');
+  assert.ok(rowOf(ANSWERS).effect.signAnswer.includes('effectBoundary') && !rowOf(ANSWERS).pure.includes('signAnswer'), 'signAnswer is an effect member');
 });
 
 test('an environment variable, a CLI argument or a host option naming the guard changes nothing', () => {
