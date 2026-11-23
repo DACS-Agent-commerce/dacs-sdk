@@ -269,7 +269,9 @@ the DEM lane. In each case the hold stays.
   pays the payee. Settle the hold with that transfer instead.
 - `wallet-spend-dem-release-unproven`: the buyer asked to release a DEM hold,
   but the chain does not show which transaction took the recorded nonce, for
-  example because it is not on the wallet's newest history page.
+  example because it is not on the wallet's newest history page, or because
+  the node's transaction record has no block or another block than the history
+  row.
 - `wallet-spend-dem-transfer-mismatch`: the transfer the buyer named does not
   move the hold's amount from the policy wallet to the hold's payee, or does
   not carry the hold's recorded nonce.
