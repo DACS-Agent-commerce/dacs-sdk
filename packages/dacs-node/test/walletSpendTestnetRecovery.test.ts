@@ -11,6 +11,8 @@ vi.mock("@kynesyslabs/dacs", async (importOriginal) => ({
 import {
   assertX402BuyerSettlementIntent,
   captureWalletSpendPolicyV1,
+  createInMemoryWalletSpendStateStore,
+  createWalletSpendAuthorityV1,
   createX402BuyerSettlementIntent,
   type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationV1,
@@ -90,10 +92,17 @@ function rule(
     reader: createDacsWalletSpendEvmReaderV1({
       rpcUrl: stub.url, policy: POLICY, authorizationSearchFromBlock: searchFloor,
     }),
-    readState: async () => state,
     report: (line) => reports.push(line),
   });
-  return { ...recovery, reports };
+  /** Checks as the core does: with the stored row's generation and expiry. */
+  const check = (reservation: WalletSpendReservationV1, observation: WalletSpendRecoveryObservationV1) => {
+    const row = state.reservations.find((stored) => stored.reservationId === reservation.reservationId);
+    return recovery.check(reservation, observation, row === undefined ? undefined : {
+      generation: row.generation,
+      ...(row.authorizationValidBefore === undefined ? {} : { authorizationValidBefore: row.authorizationValidBefore }),
+    });
+  };
+  return { ...recovery, check, raw: recovery, reports };
 }
 
 function payment(state: ChainState, overrides: Partial<Parameters<typeof recordAuthorization>[1]> = {}) {
@@ -281,7 +290,9 @@ describe("testnet wallet-spend recovery rule", () => {
       await expect(rule(stub, stateWithHold(reservation, VALID_BEFORE)).check(reservation, settledClaim()))
         .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-hold-unbound" });
     }
-    await expect(rule(stub, stateWithHold(testnetReservation("job-two"))).check(RESERVATION, settledClaim()))
+    await expect(rule(stub, stateWithHold(testnetReservation("job-two"))).check(RESERVATION, absentClaim))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-hold-missing" });
+    await expect(rule(stub).raw.check(RESERVATION, absentClaim))
       .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-hold-missing" });
     await expect(rule(stub).check(RESERVATION, { disposition: "not-invoked", evidenceHash: "e".repeat(64) }))
       .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-absence-kind-refused" });
@@ -429,5 +440,155 @@ describe("testnet wallet-spend recovery rule", () => {
     await expect(rule({ url: await closedUrl() }).bindAuthorizationValidBefore({
       reservation: RESERVATION, authorizationWindowSeconds: 120,
     })).rejects.toThrow("wallet-spend-chain-unavailable");
+  });
+
+  it("judges the expiry of the hold it is given, and a settlement needs no hold", async () => {
+    const finalTime = 1_800_000_000;
+    const hold = (authorizationValidBefore: number) => ({ generation: 5, authorizationValidBefore });
+    const stub = await chainStub(defaultChain(finalTime));
+    const { raw } = rule(stub);
+    await expect(raw.check(RESERVATION, absentClaim, hold(finalTime)))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-authorization-still-valid" });
+    await expect(raw.check(RESERVATION, absentClaim, hold(finalTime - 1)))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-expired-unused" });
+    await expect(raw.check(RESERVATION, absentClaim, { generation: 5 }))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-authorization-valid-before-missing" });
+
+    const paid = defaultChain();
+    payment(paid);
+    await expect(rule(await chainStub(paid)).raw.check(RESERVATION, settledClaim()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-paid" });
+  });
+});
+
+describe("testnet wallet-spend recovery rule inside the authority, with the hold reserved again", () => {
+  const FINAL_TIME = 1_800_000_000;
+  /** Past at the chain's final head: the first hold's signed authorization has expired. */
+  const FIRST_EXPIRY = FINAL_TIME - 10;
+  /** Still ahead of the final head: the replacement hold's signed authorization is valid. */
+  const SECOND_EXPIRY = FINAL_TIME + 120;
+  const LEASE_MS = 100_000;
+  const ITEM = testnetReservation("01J9ZQ6X3F8K2M5N7P4R1T0VWA");
+
+  async function authority() {
+    const stub = await chainStub(defaultChain(FINAL_TIME));
+    const real = createDacsWalletSpendEvmReaderV1({
+      rpcUrl: stub.url, policy: POLICY, authorizationSearchFromBlock: SEARCH_FLOOR,
+    });
+    let armed = false;
+    let reached: () => void = () => undefined;
+    let open: () => void = () => undefined;
+    const arrived = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const recovery = createDacsWalletSpendTestnetRecoveryV1({
+      policy: POLICY,
+      reader: {
+        readBlock: (block) => real.readBlock(block),
+        readBlockByHash: (hash) => real.readBlockByHash(hash),
+        readAuthorizationState: (request) => real.readAuthorizationState(request),
+        readReceipt: (hash) => real.readReceipt(hash),
+        async readAuthorizationLogs(request) {
+          if (armed) {
+            armed = false;
+            reached();
+            await opened;
+          }
+          return real.readAuthorizationLogs(request);
+        },
+      },
+      report: () => undefined,
+    });
+    const expiries = [FIRST_EXPIRY, SECOND_EXPIRY];
+    const clock = { value: 1_000_000 };
+    const wallet = createWalletSpendAuthorityV1(POLICY, {
+      store: createInMemoryWalletSpendStateStore(),
+      readBalance: async () => "100000000",
+      authenticateRecovery: recovery.authenticateRecovery,
+      bindAuthorizationValidBefore: async () => expiries.shift() ?? SECOND_EXPIRY,
+      now: () => clock.value,
+      owner: "testnet-authority",
+      leaseDurationMs: LEASE_MS,
+    });
+    const reserve = async () => {
+      const claim = await wallet.reserve(ITEM, { authorizationWindowSeconds: 120 });
+      if (claim.status !== "reserved") throw new Error(`expected a hold, got ${claim.status}`);
+      return claim.permit;
+    };
+    return {
+      wallet,
+      reserve,
+      /** Moves the wall clock past the current lease. */
+      lapse: () => {
+        clock.value += LEASE_MS + 1;
+      },
+      /** The next log search stops until `resume()`. */
+      pauseNextCheck: () => {
+        armed = true;
+        return arrived;
+      },
+      resume: open,
+    };
+  }
+
+  for (const scenario of [
+    { name: "a hold the slow check read as reserved", stalledOnReleased: false, effect: false },
+    { name: "an effect-pending replacement of a hold the slow check read as reserved", stalledOnReleased: false, effect: true },
+    { name: "a hold the slow check read as already released", stalledOnReleased: true, effect: false },
+  ]) {
+    it(`does not release a replacement hold on the proof of an older one: ${scenario.name}`, async () => {
+      const harness = await authority();
+      await harness.reserve();
+      harness.lapse();
+      let stalled: Promise<unknown>;
+      if (scenario.stalledOnReleased) {
+        await expect(harness.wallet.reconcile(ITEM, absentClaim)).resolves.toBe("released");
+        const reached = harness.pauseNextCheck();
+        stalled = harness.wallet.reconcile(ITEM, absentClaim).then(() => "released", (error: unknown) => error);
+        await reached;
+      } else {
+        const reached = harness.pauseNextCheck();
+        stalled = harness.wallet.reconcile(ITEM, absentClaim).then(() => "released", (error: unknown) => error);
+        await reached;
+        await expect(harness.wallet.reconcile(ITEM, absentClaim)).resolves.toBe("released");
+      }
+      const replacement = await harness.reserve();
+      if (scenario.effect) await replacement.beginEffect();
+      harness.lapse();
+      harness.resume();
+
+      await expect(stalled).resolves.toMatchObject({
+        message: "wallet spend absence was checked against another hold",
+      });
+      expect(await harness.wallet.reserve(ITEM)).toMatchObject({
+        status: "held", stage: scenario.effect ? "effect-pending" : "reserved",
+      });
+      expect((await harness.wallet.inspect()).activeEffects).toBe(1);
+    });
+  }
+
+  it("refuses a check that starts after the hold was reserved again, on the replacement's own expiry", async () => {
+    const harness = await authority();
+    await harness.reserve();
+    harness.lapse();
+    await harness.wallet.reconcile(ITEM, absentClaim);
+    await harness.reserve();
+    harness.lapse();
+    await expect(harness.wallet.reconcile(ITEM, absentClaim)).rejects.toThrow("recovery authentication failed");
+    expect((await harness.wallet.inspect()).activeEffects).toBe(1);
+  });
+
+  it("two simultaneous checks of one hold release it once", async () => {
+    const harness = await authority();
+    await harness.reserve();
+    harness.lapse();
+    const results = await Promise.all([
+      harness.wallet.reconcile(ITEM, absentClaim),
+      harness.wallet.reconcile(ITEM, absentClaim),
+    ]);
+    expect([...results].sort()).toEqual(["existing", "released"]);
   });
 });

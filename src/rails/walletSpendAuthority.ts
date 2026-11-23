@@ -186,11 +186,13 @@ export interface WalletSpendAuthorityDependenciesV1 {
   /**
    * Rail-specific authentication of final debit or authoritative absence.
    * A store entry is never released merely because a caller says an effect is
-   * absent.
+   * absent. For an absence claim, `hold` is the stored hold the claim is
+   * checked against; the release applies only while that hold is current.
    */
   authenticateRecovery(
     reservation: Readonly<WalletSpendReservationV1>,
     observation: Readonly<WalletSpendRecoveryObservationV1>,
+    hold?: Readonly<{ generation: number; authorizationValidBefore?: number }>,
   ): Promise<boolean>;
   /** Bind a new hold to an authorization expiry in Unix seconds from chain time. */
   bindAuthorizationValidBefore?(input: Readonly<{
@@ -1744,11 +1746,26 @@ export function createWalletSpendAuthorityV1(
       const reservation = captureReservation(inputReservation, policy);
       const binding = bindingHash(reservation);
       const observation = captureObservation(inputObservation, reservation);
-      if (!await authenticateRecovery(reservation, observation)) {
-        throw new DacsError("wallet spend recovery authentication failed");
-      }
       if (observation.disposition === "settled") {
+        if (!await authenticateRecovery(reservation, observation)) {
+          throw new DacsError("wallet spend recovery authentication failed");
+        }
         return settleStored(reservation, binding, observation);
+      }
+      const checked = await update((state) => {
+        const row = state.reservations.find(({ reservationId }) =>
+          reservationId === reservation.reservationId);
+        if (!row || row.bindingHash !== binding) {
+          throw new DacsError("wallet spend absence does not match a reservation");
+        }
+        return { state, value: {
+          generation: row.generation,
+          ...(row.authorizationValidBefore === undefined
+            ? {} : { authorizationValidBefore: row.authorizationValidBefore }),
+        } };
+      });
+      if (!await authenticateRecovery(reservation, observation, checked)) {
+        throw new DacsError("wallet spend recovery authentication failed");
       }
       return update((state, timestamp) => {
         const existing = state.reservations.find(({ reservationId }) =>
@@ -1764,6 +1781,9 @@ export function createWalletSpendAuthorityV1(
             throw new DacsError("wallet spend absence conflicts with durable accounting");
           }
           return { state, value: "existing" as const };
+        }
+        if (existing.generation !== checked.generation) {
+          throw new DacsError("wallet spend absence was checked against another hold");
         }
         if ((existing.leaseExpiresAt ?? Number.MAX_SAFE_INTEGER) >= timestamp) {
           throw new DacsError("wallet spend recovery cannot supersede a live worker");
