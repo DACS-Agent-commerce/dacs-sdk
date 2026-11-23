@@ -51,7 +51,7 @@ export function fixtureLocator(seed) {
   return `stor-${createHash('sha256').update(seed).digest('hex').slice(0, 40)}`;
 }
 
-export function summaryFor(listing, locator, { status = 'active', observedAt = new Date().toISOString() } = {}) {
+export function summaryFor(listing, locator, { status = 'active', observedAt = Date.now() } = {}) {
   return {
     listingId: listing.listingId,
     version: listing.listingVersion,
@@ -63,6 +63,7 @@ export function summaryFor(listing, locator, { status = 'active', observedAt = n
     publicEndpoint: listing.seller.publicEndpoint,
     artifactProfile: 'dacs-v0.1',
     status,
+    transactionReadiness: { disposition: 'unassessed', reason: 'catalog only' },
     catalogObservedAt: observedAt,
     inspection: { artifactType: 'directory-service-profile', maturity: 'listed', href: '/x' },
   };

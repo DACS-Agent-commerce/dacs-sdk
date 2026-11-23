@@ -5,35 +5,125 @@
 // 074f040e2165fb581000fb60c53c65530d6e29d6/reference-implementations/dacs-directory
 // app/api/dacs/listings/route.ts and src/catalog/types.ts. Bounded-origin
 // transport is local policy, with no historical demo authority claim.
+//
+// A row is read as the Directory's row contract defines it: a `status` of
+// `active` or `revoked`, a `revocation` object exactly when the row is revoked,
+// `transactionReadiness` of `{disposition: "unassessed", reason}` and an
+// integer `catalogObservedAt`. A row that does not match is refused, never
+// repaired, and no legacy field is read in its place.
+import { encodeAddressSegment, isRevocationBinding } from '@kynesyslabs/dacs';
 import { fetchBoundedJson, OutboundError } from '../util/http.mjs';
-import { SIMULATION_HEADER } from './chain.mjs';
+import { SIMULATION_HEADER, isRecord } from './chain.mjs';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const LOCATOR = /^stor-[0-9a-f]{40}$/;
 const LISTING_ID = /^(?!\.+$)[A-Za-z0-9._~-]{1,128}$/;
 const CLAIM = /^did:demos:agent:[0-9a-f]{64}$/;
+const CURSOR = /^\d{1,9}$/;
+
+const MIN_PAGE_LIMIT = 1;
+const MAX_PAGE_LIMIT = 50;
+// A lookup reads at most this many pages; a cursor still present after the last one is an incomplete scan.
+const MAX_SCAN_PAGES = 5;
+const MAX_MEMBER_NAME = 64;
+const REVOCATION_MEMBERS = ['sellerPrimaryClaim', 'listingId', 'listingVersion', 'listingContentHash', 'logicalAddress', 'markerAnchor', 'markerContentHash'];
+const MARKER_ANCHOR_MEMBERS = ['kind', 'locator'];
+
+/** Codes (on an `invalid` OutboundError) for a Directory answer that breaks the row or list contract. */
+export const DIRECTORY_CONTRACT_CODES = Object.freeze([
+  'directory_row_ambiguous',
+  'directory_row_malformed',
+  'directory_scan_incomplete',
+  'directory_cursor_invalid',
+  'directory_page_oversized',
+]);
+
+function contractError(code, message, member) {
+  const error = new OutboundError('invalid', message);
+  error.code = code;
+  if (member !== undefined) error.member = member;
+  return error;
+}
 
 function str(value, max = 2000) {
   return typeof value === 'string' ? value.slice(0, max) : undefined;
 }
 
-// The SDK uses epoch milliseconds; retain bounded legacy date strings too.
+const matches = (pattern, value) => typeof value === 'string' && pattern.test(value);
+
+/**
+ * Epoch milliseconds from a Directory observation time. This is the reader's
+ * policy, stricter than the schema's `integer`: only a non-negative safe
+ * integer is accepted, and a date string is not. Returns undefined otherwise.
+ */
 export function normalizeCatalogObservedAt(value) {
-  const observedAt = typeof value === 'string' && value.length <= 64 ? Date.parse(value) : value;
-  return Number.isSafeInteger(observedAt) && observedAt >= 0 ? observedAt : undefined;
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-// Whitelist projection: only these fields ever reach the model, with lengths
-// capped, so a hostile directory cannot inject arbitrary payloads.
-export function projectSummary(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  if (!LISTING_ID.test(raw.listingId ?? '') || !Number.isSafeInteger(raw.version) || raw.version < 1) return null;
-  if (!HEX64.test(raw.contentHash ?? '')) return null;
-  if (raw.anchor?.kind !== 'storage-program' || !LOCATOR.test(raw.anchor?.locator ?? '')) return null;
-  if (!CLAIM.test(raw.seller?.primaryClaim ?? '')) return null;
-  if (!['active', 'revoked'].includes(raw.status)) return null;
+const extraMember = (record, allowed) => Object.keys(record).find((name) => !allowed.includes(name));
+
+// The first member of a revoked row's `revocation` that breaks the contract,
+// or null. It must have exactly its seven members, and name this row's
+// Listing: claim, id, version, content hash and the dacs1-revoked address.
+function revocationProblem(revocation, row) {
+  if (!isRecord(revocation)) return 'revocation';
+  const extra = extraMember(revocation, REVOCATION_MEMBERS);
+  if (extra !== undefined) return `revocation.${extra.slice(0, MAX_MEMBER_NAME)}`;
+  const expected = {
+    sellerPrimaryClaim: row.seller.primaryClaim,
+    listingId: row.listingId,
+    listingVersion: row.version,
+    listingContentHash: row.contentHash,
+    logicalAddress: `dacs1-revoked:${encodeAddressSegment(row.seller.primaryClaim)}:${row.listingId}:v${row.version}`,
+  };
+  const wrong = Object.keys(expected).find((name) => revocation[name] !== expected[name]);
+  if (wrong !== undefined) return `revocation.${wrong}`;
+  if (!isRecord(revocation.markerAnchor)) return 'revocation.markerAnchor';
+  const anchorExtra = extraMember(revocation.markerAnchor, MARKER_ANCHOR_MEMBERS);
+  if (anchorExtra !== undefined) return `revocation.markerAnchor.${anchorExtra.slice(0, MAX_MEMBER_NAME)}`;
+  if (isRevocationBinding(revocation)) return null;
+  return HEX64.test(revocation.markerContentHash) ? 'revocation.markerAnchor' : 'revocation.markerContentHash';
+}
+
+const readinessIsUnassessed = (readiness) => isRecord(readiness)
+  && Object.keys(readiness).length === 2
+  && readiness.disposition === 'unassessed'
+  && typeof readiness.reason === 'string'
+  && readiness.reason.length > 0;
+
+// The member of `raw` that breaks the row contract, or null.
+function rowProblem(raw) {
+  if (!matches(LISTING_ID, raw.listingId)) return 'listingId';
+  if (!Number.isSafeInteger(raw.version) || raw.version < 1) return 'version';
+  if (!matches(HEX64, raw.contentHash)) return 'contentHash';
+  if (raw.anchor?.kind !== 'storage-program' || !matches(LOCATOR, raw.anchor.locator)) return 'anchor';
+  if (!matches(CLAIM, raw.seller?.primaryClaim)) return 'seller.primaryClaim';
+  if (raw.status !== 'active' && raw.status !== 'revoked') return 'status';
+  // Presence decides for an active row: `revocation: null` is still a violation.
+  if (raw.status === 'active' && Object.hasOwn(raw, 'revocation')) return 'revocation';
+  if (raw.status === 'revoked') {
+    const problem = revocationProblem(raw.revocation, raw);
+    if (problem !== null) return problem;
+  }
+  // Absent members confer nothing, and the verifier blocks a missing or stale
+  // observation; a present member must match the contract.
+  if (raw.transactionReadiness !== undefined && !readinessIsUnassessed(raw.transactionReadiness)) return 'transactionReadiness';
+  if (raw.catalogObservedAt !== undefined && normalizeCatalogObservedAt(raw.catalogObservedAt) === undefined) return 'catalogObservedAt';
+  return null;
+}
+
+/**
+ * Whitelist projection: only these fields ever reach the model, with lengths
+ * capped, so a hostile directory cannot inject arbitrary payloads. Returns
+ * exactly one of `{summary}` or `{problem}`, where `problem` names the member
+ * of the row that breaks the contract.
+ */
+function projectSummary(raw) {
+  if (!isRecord(raw)) return { problem: 'row' };
+  const problem = rowProblem(raw);
+  if (problem !== null) return { problem };
   const pricing = raw.pricing ?? {};
-  return {
+  return { summary: {
     listingId: raw.listingId,
     version: raw.version,
     contentHash: raw.contentHash,
@@ -53,10 +143,33 @@ export function projectSummary(raw) {
     publicEndpoint: str(raw.publicEndpoint, 512),
     artifactProfile: str(raw.artifactProfile, 64),
     status: raw.status,
-    revocationBinding: raw.revocationBinding && typeof raw.revocationBinding === 'object' ? raw.revocationBinding : undefined,
-    catalogObservedAt: normalizeCatalogObservedAt(raw.catalogObservedAt),
-  };
+    ...(raw.status === 'revoked' ? { revocation: { ...raw.revocation, markerAnchor: { ...raw.revocation.markerAnchor } } } : {}),
+    catalogObservedAt: raw.catalogObservedAt,
+  } };
 }
+
+// The one integer limit a page request sends: an integer, held to 1 to 50.
+function pageLimit(limit) {
+  if (!Number.isSafeInteger(limit)) throw new OutboundError('invalid', 'directory page limit must be an integer');
+  return Math.min(Math.max(limit, MIN_PAGE_LIMIT), MAX_PAGE_LIMIT);
+}
+
+// A page's continuation cursor: absent means the end of the list; a present one must be well formed.
+function pageCursor(body) {
+  if (body.cursor === undefined) return undefined;
+  if (!matches(CURSOR, body.cursor)) throw contractError('directory_cursor_invalid', 'directory page cursor is malformed');
+  return body.cursor;
+}
+
+// The summary of a row a lookup matched, or a directory_row_malformed error naming the broken member.
+function summaryOf(raw) {
+  const { summary, problem } = projectSummary(raw);
+  if (!summary) throw contractError('directory_row_malformed', `directory row is malformed at ${problem}`, problem);
+  return summary;
+}
+
+const sameCoordinates = (raw, { listingId, version, seller }) =>
+  isRecord(raw) && raw.listingId === listingId && raw.version === version && raw.seller?.primaryClaim === seller;
 
 export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_000_000, fetchImpl = globalThis.fetch }) {
   let simulated = false;
@@ -68,40 +181,62 @@ export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_0
   const get = (path, max = maxBytes) =>
     fetchBoundedJson(`${origin}${path}`, { fetchImpl: observingFetch, timeoutMs, maxBytes: max, expectedOrigin: origin });
 
-  async function search({ query, category, primaryClaim, limit = 20, cursor } = {}) {
-    const params = new URLSearchParams({ profile: 'dacs-v0.1', limit: String(Math.min(Math.max(limit, 1), 50)) });
+  // One bounded page: its raw rows (never more than the limit sent), its
+  // continuation cursor and its total.
+  async function readPage({ query, category, primaryClaim, limit, cursor }) {
+    const sent = pageLimit(limit);
+    const params = new URLSearchParams({ profile: 'dacs-v0.1', limit: String(sent) });
     if (query) params.set('q', query.slice(0, 200));
     if (category) params.set('category', category.slice(0, 64));
     if (primaryClaim) params.set('primaryClaim', primaryClaim);
     if (cursor) params.set('cursor', String(cursor).slice(0, 32));
     const body = await get(`/api/dacs/listings?${params}`);
     if (!body || !Array.isArray(body.listings)) throw new OutboundError('invalid', 'directory listings response is malformed');
-    const listings = [];
-    let rejected = 0;
-    for (const raw of body.listings.slice(0, 200)) {
-      const projected = projectSummary(raw);
-      if (projected) listings.push(projected);
-      else rejected += 1;
-    }
-    return {
-      listings,
-      rejected,
-      cursor: typeof body.cursor === 'string' && /^\d{1,9}$/.test(body.cursor) ? body.cursor : undefined,
-      total: Number.isSafeInteger(body.total) ? body.total : undefined,
-    };
+    if (body.listings.length > sent) throw contractError('directory_page_oversized', `directory page holds ${body.listings.length} rows, more than the ${sent} requested`);
+    return { rows: body.listings, cursor: pageCursor(body), total: Number.isSafeInteger(body.total) ? body.total : undefined };
   }
 
-  // Find the summary (anchor locator, catalog status) for one exact listing.
-  async function findSummary({ listingId, version, seller }) {
-    let cursor;
-    for (let page = 0; page < 5; page += 1) {
-      const result = await search({ primaryClaim: seller, limit: 50, cursor });
-      const match = result.listings.find((l) => l.listingId === listingId && l.version === version && l.seller.primaryClaim === seller);
-      if (match) return match;
-      if (!result.cursor) return null;
-      cursor = result.cursor;
+  /**
+   * One page of listing summaries. Only rows that match the contract are
+   * listed; every other row adds one to `rejected`. Throws OutboundError for an
+   * unavailable, oversized or malformed answer, or a malformed cursor.
+   */
+  async function search({ query, category, primaryClaim, limit = 20, cursor } = {}) {
+    const page = await readPage({ query, category, primaryClaim, limit, cursor });
+    const listings = [];
+    let rejected = 0;
+    for (const raw of page.rows) {
+      const { summary } = projectSummary(raw);
+      if (summary) listings.push(summary);
+      else rejected += 1;
     }
-    return null;
+    return { listings, rejected, cursor: page.cursor, total: page.total };
+  }
+
+  /**
+   * The summary (anchor locator, catalog status) for one exact listing, or null
+   * when a complete scan finds none. The scan reads at most five pages and
+   * answers only after a valid end. Throws OutboundError with a
+   * DIRECTORY_CONTRACT_CODES code for a second matching row, a malformed
+   * matching row, a repeated or malformed cursor, an oversized page, or a
+   * cursor still present after the last page.
+   */
+  async function findSummary(coordinates) {
+    const cursors = new Set();
+    let match = null;
+    let cursor;
+    for (let pages = 0; pages < MAX_SCAN_PAGES; pages += 1) {
+      const page = await readPage({ primaryClaim: coordinates.seller, limit: MAX_PAGE_LIMIT, cursor });
+      for (const raw of page.rows.filter((row) => sameCoordinates(row, coordinates))) {
+        if (match) throw contractError('directory_row_ambiguous', 'more than one directory row matches the listing coordinates');
+        match = raw;
+      }
+      if (page.cursor === undefined) return match && summaryOf(match);
+      if (cursors.has(page.cursor)) throw contractError('directory_cursor_invalid', 'directory page cursor repeats an earlier cursor');
+      cursors.add(page.cursor);
+      cursor = page.cursor;
+    }
+    throw contractError('directory_scan_incomplete', `directory scan has more pages after ${MAX_SCAN_PAGES}`);
   }
 
   async function getListingDetail({ listingId, version, seller }) {
