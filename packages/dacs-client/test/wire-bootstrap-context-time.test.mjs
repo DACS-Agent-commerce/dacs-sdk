@@ -21,6 +21,8 @@ const RETRY_AFTER_MS = 5_000;
 const signerOf = (wallet) => ({ claim: wallet.claim, sign: wallet.signBytes });
 const refusal = (expected) => (error) => { assert.equal(error.code, expected); return true; };
 const protocolOf = (purchase) => purchase.get().state.protocol;
+/** A copy of `value` without the members `keys` name. */
+const without = (value, ...keys) => Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
 
 /**
  * The kit world with a DEM delivery context provider that sends each step-3 scope it is given, without the local account and
@@ -33,7 +35,7 @@ async function forwardingWorld(t) {
   const capability = createDemDeliveryContext({
     authority: 'TEST-context-time',
     async resolveBuyer({ scope, buyerIdentityBundle }) {
-      const { account: _account, operation: _operation, ...sellerScope } = scope;
+      const sellerScope = without(scope, 'account', 'operation');
       scopes.push(sellerScope);
       const body = { scope: sellerScope, buyerIdentityBundle };
       const signed = await world.signer.signRequest(CONTEXT, body, { jobId: sellerScope.jobId, agreementHash: sha256Hex(canonicalize(sellerScope)),
@@ -60,8 +62,7 @@ test("the plan step's context scope carries the generatedAt the seller challenge
   world.clock.time += WALLET_SIGNING_MS;
   await assert.rejects(world.service().planRequest(purchase.get(), walletSign(presentation.message)), refusal('agreement_context_held'));
   assert.deepEqual(answers, [{ status: 200, error: undefined }], "the seller's context route accepted the request");
-  const { buyerBundleHash: _hash, ...bound } = scopes[0];
-  assert.deepEqual(bound, challengeScope, 'the context scope, less its bundle hash, is the challenge scope');
+  assert.deepEqual(without(scopes[0], 'buyerBundleHash'), challengeScope, 'the context scope, less its bundle hash, is the challenge scope');
   assert.equal(purchase.get().status, 'agreement_pending');
 });
 
@@ -81,7 +82,7 @@ test('a retried plan step sends the same context scope as the first, at a later 
 test('a context purchase with an identity but no saved challenge scope is refused at the plan step with no context read', async (t) => {
   const { world, purchase, scopes } = await forwardingWorld(t);
   const { presentation } = await bootstrapThroughChallenge(world, purchase);
-  const row = purchase.get(), { challengeScope: _scope, ...protocol } = row.state.protocol;
+  const row = purchase.get(), protocol = without(row.state.protocol, 'challengeScope');
   world.ops().transition(row.id, row.status, row.status, { state: { ...row.state, protocol: { ...protocol, revision: protocol.revision + 1 } }, event: 'TEST-scope-removed', data: {} });
   await assert.rejects(world.service().planRequest(purchase.get(), walletSign(presentation.message)), refusal('invalid_state'));
   assert.deepEqual(scopes, [], 'no context was read');
